@@ -7,6 +7,31 @@ class MascopeError(Exception):
     pass
 
 
+class ConfirmationRequiredError(MascopeError):
+    """Raised when a load needs confirming and nobody is there to confirm it.
+
+    A loader whose ``confirm_above`` threshold is exceeded asks on stdin
+    before it starts; a script, a pipeline or an agent has no stdin to answer
+    from, and is stopped here rather than waved through. Pass
+    ``confirm_above=None`` (or a higher threshold) to load without asking.
+
+    :ivar count: The number of samples the load would read.
+    :vartype count: int
+    :ivar threshold: The ``confirm_above`` threshold it exceeded.
+    :vartype threshold: int
+    """
+
+    def __init__(self, count: int, threshold: int):
+        self.count = count
+        self.threshold = threshold
+        super().__init__(
+            f"About to load data for {count} samples, above the confirmation "
+            f"threshold of {threshold}, and there is no interactive input to "
+            "confirm it. Pass confirm_above=None to load without asking, or "
+            "narrow the selection."
+        )
+
+
 class ConfigurationError(MascopeError):
     """Raised when SDK configuration is invalid or missing.
 

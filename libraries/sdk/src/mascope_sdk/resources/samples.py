@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
-from .._concurrent import progress_bar, run_concurrent
+from .._concurrent import failure_record, mark_complete, progress_bar, run_concurrent
 from .._resolve import _match_names, _pattern_text, resolve_id
 from ._base import (
     BaseResource,
@@ -162,7 +162,10 @@ class SamplesResource(BaseResource):
         :type dataset: str, optional
         :return: A DataFrame containing sample information, or None if no
                  samples found. When ``batches`` is used the result includes
-                 a ``sample_batch_name`` column.
+                 a ``sample_batch_name`` column, ``attrs["complete"]`` is False
+                 when the listing of some batch failed, and
+                 ``attrs["failures"]`` names each such batch and its error
+                 (an empty frame carries them when every listing failed).
         :param drop_columns: Optional list of columns to drop from the final DataFrame.
             If None, a default set of less relevant columns will be dropped.
         :type drop_columns: list[str], optional
@@ -222,33 +225,42 @@ class SamplesResource(BaseResource):
             df.insert(0, "sample_batch_name", id_to_name.get(bid, ""))
             return df
 
-        frames: list[pd.DataFrame] = run_concurrent(
+        frames, failures = run_concurrent(
             _fetch_batch_samples,
             [(bid,) for bid in batch_ids],
             max_workers=min(8, len(batch_ids)),
             desc="Listing samples",
             unit="batch",
         )
+        failed = [
+            failure_record(
+                failure,
+                sample_batch_id=failure.args[0],
+                sample_batch_name=id_to_name.get(failure.args[0], ""),
+            )
+            for failure in failures
+        ]
 
         if not frames:
-            return None
+            return mark_complete(None, failed)
 
         df = pd.concat(frames, ignore_index=True)
         if drop_columns is not None:
             df = df.drop(columns=drop_columns, errors="ignore")
-        return df
+        return mark_complete(df, failed)
 
     def _list_by_id(self, batch_id: str) -> pd.DataFrame | None:
         """List samples by batch ID (no name resolution)."""
         cache_key = f"samples:{batch_id}"
         if cache_key in self._client._cache:
-            return self._client._cache[cache_key]
+            # A copy: a caller editing its listing must not edit the cache
+            return self._client._cache[cache_key].copy()
         data = self._get("samples", params={"sample_batch_id": batch_id})
         if not data:
             return None
         df = _coerce_datetime_columns(pd.DataFrame(data))
         self._client._cache[cache_key] = df
-        return df
+        return df.copy()
 
     def get(self, sample_id: str) -> dict | None:
         """Get details of a specific sample.

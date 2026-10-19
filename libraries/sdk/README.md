@@ -400,6 +400,29 @@ Key columns: `sample_batch_name`, `sample_item_name`, `datetime_utc`, plus all c
 
 `load_peaks`, `load_peak_timeseries`, and `load_assignments` show an interactive confirmation prompt when the number of samples exceeds `confirm_above`. Defaults are 100 for `load_peaks` and `load_assignments`, and 20 for `load_peak_timeseries`. This prevents accidentally launching hundreds of concurrent requests from a notebook cell. Set `confirm_above=None` to disable.
 
+A caller with no interactive input - a script run with stdin closed or redirected from `/dev/null`, a pipeline, an agent's shell - cannot answer the prompt, and is stopped rather than waved through: the loader raises `ConfirmationRequiredError` before loading anything, with the sample count and the threshold on `count` and `threshold`. A script that means to load that many passes `confirm_above=None` (or a higher threshold).
+
+```python
+from mascope_sdk import ConfirmationRequiredError
+
+try:
+    peaks = mascope.load_peaks(dataset="My Dataset")
+except ConfirmationRequiredError as e:
+    print(f"{e.count} samples - narrow the selection, or pass confirm_above=None")
+```
+
+### Partial loads
+
+The loaders read sample by sample, and a sample whose read fails does not stop the others: the load returns what it could read, and logs a warning. So that a script can tell "these samples have little in them" from "some samples failed to load", the frame says which it is:
+
+```python
+peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium")
+peaks.attrs["complete"]  # True when every read succeeded
+peaks.attrs["failures"]  # one dict per failed read, [] when none failed
+```
+
+Each failure names the sample (`sample_batch_name`, `sample_item_id`, `sample_item_name`; `load_peaks_by_stage` the stage, `load_peak_timeseries` also the `peak_id` where a peak's series failed) and the error (`error_type`, `error`). When every read failed the loader returns an empty frame carrying the failures, not None, which would say there was nothing to load. `load_peaks`, `load_assignments`, `load_peaks_by_stage`, `load_peak_timeseries` and `samples.list(batches=...)` (per batch) report this; `mascope.concat` of several loads keeps every load's failures, and is complete only when every load was.
+
 ### Provenance
 
 Every frame a high-level loader returns carries the provenance of the server that served it, on `df.attrs["provenance"]`: the deployment's id, the Mascope version it runs, the match-score and peak-assignment engine versions in force, and when this client first heard from that build. Keep it with what you derive from the frame, and a published figure can name the build its numbers came from.
@@ -564,7 +587,7 @@ loader; for a guided walk-through see tutorial notebook `10_peak_assignment.ipyn
 
 ## Caching
 
-Dataset, batch, sample, and ionization mechanism listings are cached (in volatile memory) automatically after the first call. This speeds up repeated name resolution and avoids redundant API calls. When data on the server changes (e.g. new batch created), the cache needs to be cleared to reload the data on the next call. The cache is not persisted on disk, so restarting the kernel always clears the cache.
+Dataset, batch, sample, and ionization mechanism listings are cached (in volatile memory) automatically after the first call. This speeds up repeated name resolution and avoids redundant API calls. Each call hands out a copy of the cached listing, so editing what you got leaves the cache, and the next call, as fetched. When data on the server changes (e.g. new batch created), the cache needs to be cleared to reload the data on the next call. The cache is not persisted on disk, so restarting the kernel always clears the cache.
 
 ```python
 # Clear the cache when server data changes
@@ -864,6 +887,6 @@ mascope_sdk/
 
 - **`client.py`** owns the public API. High-level loaders (`load_peaks`, etc.) are thin wrappers that delegate to `_loaders.py`.
 - **`resources/`** contains one class per API domain. Each resource inherits `BaseResource` which provides `_get()` / `_post()` helpers and automatic datetime column coercion.
-- **`_concurrent.py`** centralises `ThreadPoolExecutor` usage with `run_concurrent()`, which handles progress bars (tqdm), `None`-filtering, future cancellation on error, and the `max_workers <= 8` guard.
+- **`_concurrent.py`** centralises `ThreadPoolExecutor` usage with `run_concurrent()`, which handles progress bars (tqdm), `None`-filtering, future cancellation on error, and the `max_workers <= 8` guard. It returns the failed tasks beside the results; `mark_complete()` turns them into a frame's `attrs["complete"]` / `attrs["failures"]`.
 - **`_resolve.py`** handles name matching (literal substring for strings, regex for compiled patterns) and name -> ID resolution (used by resources and loaders).
 - **Underscore-prefixed modules** (`_http`, `_loaders`, `_concurrent`, `_resolve`, `_agents`) are internal — not part of the public API.

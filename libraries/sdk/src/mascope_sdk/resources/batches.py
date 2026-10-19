@@ -70,7 +70,8 @@ class BatchesResource(BaseResource):
         """List batches by dataset ID (no name resolution)."""
         cache_key = f"batches:{dataset_id}"
         if cache_key in self._client._cache:
-            return self._client._cache[cache_key]
+            # A copy: a caller editing its listing must not edit the cache
+            return self._client._cache[cache_key].copy()
         logger.info("Fetching batches for dataset '{}'", dataset_id)
         data = self._get("sample/batches", params={"dataset_id": dataset_id})
         if not data:
@@ -78,7 +79,7 @@ class BatchesResource(BaseResource):
         df = _coerce_datetime_columns(pd.DataFrame(data))
         logger.info("Found {} batch(es)", len(df))
         self._client._cache[cache_key] = df
-        return df
+        return df.copy()
 
     def get_data(self, batch_id: str) -> dict[str, Any]:
         """Retrieve detailed data for all samples in a batch.

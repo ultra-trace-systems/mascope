@@ -8,9 +8,10 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
-from ._concurrent import run_concurrent
+from ._concurrent import TaskFailure, failure_record, mark_complete, run_concurrent
 from ._resolve import _name_mask
 from .client import MascopeClient
+from .exceptions import ConfirmationRequiredError
 
 
 def _note_warnings(warned: list[str], peaks: pd.DataFrame | None) -> None:
@@ -35,6 +36,28 @@ def _distinct(warned: list[str]) -> list[str]:
     warn alike.
     """
     return list(dict.fromkeys(warned))
+
+
+def _sample_failures(
+    failures: list[TaskFailure], *, peak: bool = False
+) -> list[dict[str, Any]]:
+    """The records of failed per-sample tasks, whose args start ``(row, batch)``.
+
+    :param failures: What :func:`run_concurrent` returned as failed.
+    :param peak: The tasks were per peak, the peak id third in their args.
+    """
+    records = []
+    for failure in failures:
+        sample_row, batch_name = failure.args[:2]
+        where = {
+            "sample_batch_name": batch_name,
+            "sample_item_id": sample_row["sample_item_id"],
+            "sample_item_name": sample_row["sample_item_name"],
+        }
+        if peak:
+            where["peak_id"] = failure.args[2]
+        records.append(failure_record(failure, **where))
+    return records
 
 
 def _stack(frames: list[pd.DataFrame], warned: list[str]) -> pd.DataFrame | None:
@@ -90,9 +113,10 @@ def concat_frames(
     over samples.
 
     Here each entry of ``attrs`` is decided on its own. The warnings of every
-    frame are kept, each once. Any other entry is kept when every frame
-    carries it with the same value - the provenance of loads from one build -
-    and dropped otherwise.
+    frame are kept, each once, and so are the failures of every frame; the
+    result is ``complete`` unless some frame says it is not. Any other entry
+    is kept when every frame carries it with the same value - the provenance
+    of loads from one build - and dropped otherwise.
 
     The rows are stacked without their ``attrs``, so nothing depends on how
     pandas compares them: it compares with ``==``, which raises on frames
@@ -126,6 +150,14 @@ def concat_frames(
         attrs["warnings"] = _distinct(
             [warning for frame in kept for warning in frame.attrs.get("warnings", ())]
         )
+    if any("failures" in frame.attrs for frame in kept):
+        attrs["failures"] = [
+            copy.deepcopy(failure)
+            for frame in kept
+            for failure in frame.attrs.get("failures", ())
+        ]
+    if any("complete" in frame.attrs for frame in kept):
+        attrs["complete"] = all(frame.attrs.get("complete", True) for frame in kept)
     result.attrs = attrs
     return result
 
@@ -179,7 +211,10 @@ def _resolve_sample(client: MascopeClient, sample: str) -> str:
 def _confirm_sample_count(count: int, threshold: int) -> None:
     """Ask the user to confirm if sample count exceeds *threshold*.
 
-    Raises ``KeyboardInterrupt`` when the user declines.
+    Raises ``KeyboardInterrupt`` when the user declines, and
+    :class:`~mascope_sdk.exceptions.ConfirmationRequiredError` when there is
+    no interactive input to ask (stdin at end of file, as in a script or an
+    agent's shell): a caller that cannot answer is not waved through.
     """
     # INFO: preamble for the interactive confirmation prompt below, not a fault
     logger.info(
@@ -196,8 +231,7 @@ def _confirm_sample_count(count: int, threshold: int) -> None:
             f" Continue? [y/N] "
         )
     except EOFError:
-        # Non-interactive environment (e.g. script) - proceed silently
-        return
+        raise ConfirmationRequiredError(count, threshold) from None
     if answer.strip().lower() not in ("y", "yes"):
         raise KeyboardInterrupt(
             f"Cancelled by user ({count} samples exceeded threshold of {threshold})"
@@ -352,7 +386,9 @@ def load_peaks(
     :type average: bool
     :param confirm_above: If the number of samples exceeds this threshold,
                           an interactive confirmation prompt is shown before
-                          loading starts. Set to ``None`` to disable.
+                          loading starts; a caller with no interactive input
+                          gets :class:`~mascope_sdk.ConfirmationRequiredError`
+                          instead. Set to ``None`` to disable.
                           Defaults to 100.
     :type confirm_above: int | None
     :param max_workers: Maximum number of concurrent requests. Defaults to 8.
@@ -378,9 +414,16 @@ def load_peaks(
              ``df.attrs["warnings"]`` lists what the server warned about
              the samples' reads, each warning once; empty when it warned
              about none.
+
+             ``df.attrs["complete"]`` is False when the read of some
+             sample failed, and ``df.attrs["failures"]`` names each
+             one and its error ([] when none did). When every read
+             failed the result is an empty frame carrying them.
     :rtype: pd.DataFrame | None
     :raises ValueError: If the dataset or batches cannot be resolved.
     :raises KeyboardInterrupt: If the user declines the confirmation prompt.
+    :raises ConfirmationRequiredError: If the prompt has no interactive
+        input to read.
 
     Example::
 
@@ -445,7 +488,7 @@ def load_peaks(
             )
         return peaks
 
-    frames: list[pd.DataFrame] = run_concurrent(
+    frames, failures = run_concurrent(
         _fetch_peaks,
         sample_tasks,
         max_workers=max_workers,
@@ -453,7 +496,7 @@ def load_peaks(
         unit="sample",
     )
 
-    result = _stack(frames, warned)
+    result = mark_complete(_stack(frames, warned), _sample_failures(failures))
     if result is None:
         logger.info("No peaks found")
         return None
@@ -519,7 +562,9 @@ def load_assignments(
     :type source: str, optional
     :param confirm_above: If the number of samples exceeds this threshold,
                           an interactive confirmation prompt is shown before
-                          loading starts. Set to ``None`` to disable.
+                          loading starts; a caller with no interactive input
+                          gets :class:`~mascope_sdk.ConfirmationRequiredError`
+                          instead. Set to ``None`` to disable.
                           Defaults to 100.
     :type confirm_above: int | None
     :param max_workers: Maximum number of concurrent requests. Defaults to 8.
@@ -535,10 +580,17 @@ def load_assignments(
              (one row per observed peak).
 
              Returns None if no assignments are found.
+
+             ``df.attrs["complete"]`` is False when the read of some
+             sample failed, and ``df.attrs["failures"]`` names each
+             one and its error ([] when none did). When every read
+             failed the result is an empty frame carrying them.
     :rtype: pd.DataFrame | None
     :raises ValueError: If the dataset or batches cannot be resolved, or
                         ``run`` is not ``"latest"``.
     :raises KeyboardInterrupt: If the user declines the confirmation prompt.
+    :raises ConfirmationRequiredError: If the prompt has no interactive
+        input to read.
 
     Example::
 
@@ -593,19 +645,20 @@ def load_assignments(
             )
         return assignments
 
-    frames: list[pd.DataFrame] = run_concurrent(
+    frames, failures = run_concurrent(
         _fetch_assignments,
         sample_tasks,
         max_workers=max_workers,
         desc="Loading assignments",
         unit="sample",
     )
+    failed = _sample_failures(failures)
 
     if not frames:
         logger.info("No assignments found")
-        return None
+        return mark_complete(None, failed)
 
-    skipped = len(sample_tasks) - len(frames)
+    skipped = len(sample_tasks) - len(frames) - len(failed)
     if skipped:
         logger.info("{} sample(s) contributed no assignments", skipped)
 
@@ -614,7 +667,7 @@ def load_assignments(
     frames = [f.dropna(axis=1, how="all") for f in frames]
     result = pd.concat(frames, ignore_index=True)
     logger.info("Loaded {} assignments total", len(result))
-    return result
+    return mark_complete(result, failed)
 
 
 def load_peaks_by_stage(
@@ -668,6 +721,11 @@ def load_peaks_by_stage(
              ``df.attrs["warnings"]`` lists what the server warned about
              the stages, each warning once; it is empty when no stage was
              warned about.
+
+             ``df.attrs["complete"]`` is False when the read of some
+             stage failed, and ``df.attrs["failures"]`` names each
+             one and its error ([] when none did). When every read
+             failed the result is an empty frame carrying them.
     :rtype: pd.DataFrame | None
     :raises ValueError: If stages is empty or the sample cannot be found.
 
@@ -748,7 +806,7 @@ def load_peaks_by_stage(
         peaks["t_max"] = t_max
         return peaks
 
-    frames: list[pd.DataFrame] = run_concurrent(
+    frames, failures = run_concurrent(
         _fetch_stage_peaks,
         [
             (idx, t_min, t_max, name)
@@ -758,13 +816,26 @@ def load_peaks_by_stage(
         desc="Loading stages",
         unit="stage",
     )
+    failed = [
+        failure_record(
+            failure,
+            sample_item_id=sample_id,
+            stage=failure.args[0],
+            stage_name=failure.args[3],
+            t_min=failure.args[1],
+            t_max=failure.args[2],
+        )
+        for failure in failures
+    ]
 
     result = _stack(frames, warned)
+    if result is not None:
+        result = result.sort_values("stage").reset_index(drop=True)
+    result = mark_complete(result, failed)
     if result is None:
         logger.info("No peaks found")
         return None
 
-    result = result.sort_values("stage").reset_index(drop=True)
     result.attrs["warnings"] = _distinct(warned)
     logger.info("Loaded {} peaks across {} stages", len(result), len(stages))
     return result
@@ -830,7 +901,9 @@ def load_peak_timeseries(
     :type isotope: str | list[str], optional
     :param confirm_above: If the number of samples exceeds this threshold,
                           an interactive confirmation prompt is shown before
-                          loading starts. Set to ``None`` to disable.
+                          loading starts; a caller with no interactive input
+                          gets :class:`~mascope_sdk.ConfirmationRequiredError`
+                          instead. Set to ``None`` to disable.
                           Defaults to 20.
     :type confirm_above: int | None
     :param max_workers: Maximum number of concurrent requests. Defaults to 8.
@@ -851,9 +924,16 @@ def load_peak_timeseries(
              - ``height``: Intensity at each time point
 
              Returns None if no matching peaks are found.
+
+             ``df.attrs["complete"]`` is False when the read of some
+             sample or peak failed, and ``df.attrs["failures"]`` names each
+             one and its error ([] when none did). When every read
+             failed the result is an empty frame carrying them.
     :rtype: pd.DataFrame | None
     :raises ValueError: If zero or more than one formula parameter is provided.
     :raises KeyboardInterrupt: If the user declines the confirmation prompt.
+    :raises ConfirmationRequiredError: If the prompt has no interactive
+        input to read.
 
     Example::
 
@@ -942,7 +1022,7 @@ def load_peak_timeseries(
         return result
 
     # Collect all peak tasks across all samples
-    matched_lists = run_concurrent(
+    matched_lists, discovery_failures = run_concurrent(
         _get_matched_peaks,
         sample_tasks,
         max_workers=max_workers,
@@ -952,10 +1032,11 @@ def load_peak_timeseries(
     all_peak_tasks: list[
         tuple[Any, str, str, str | None, str | None, str | None, str | None]
     ] = [task for batch in matched_lists for task in batch]
+    failed = _sample_failures(discovery_failures)
 
     if not all_peak_tasks:
         logger.info("No peaks matching {} in {}", formula_column, formula_values)
-        return None
+        return mark_complete(None, failed)
 
     logger.info(
         "Found {} peak(s) across {} sample(s)",
@@ -1000,22 +1081,23 @@ def load_peak_timeseries(
         ts["target_isotope_formula"] = isotope_formula
         return ts
 
-    frames: list[pd.DataFrame] = run_concurrent(
+    frames, timeseries_failures = run_concurrent(
         _fetch_timeseries,
         all_peak_tasks,
         max_workers=max_workers,
         desc="Loading timeseries",
         unit="peak",
     )
+    failed += _sample_failures(timeseries_failures, peak=True)
 
     if not frames:
         logger.info("No timeseries data loaded")
-        return None
+        return mark_complete(None, failed)
 
     frames = [f.dropna(axis=1, how="all") for f in frames]
     result = pd.concat(frames, ignore_index=True)
     logger.info("Loaded {} timeseries points total", len(result))
-    return result
+    return mark_complete(result, failed)
 
 
 def load_batch_ledger(

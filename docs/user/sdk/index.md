@@ -27,6 +27,13 @@ runs, among others. Keep it beside a figure you publish, and the figure names
 the build its numbers came from. Saving the frame as CSV or Excel drops it;
 the SDK readme shows how to keep it.
 
+A load that could not read every sample returns what it read, and says so:
+`peaks.attrs["complete"]` is False and `peaks.attrs["failures"]` names each
+sample that failed and why. A script that loads more samples than the
+`confirm_above` threshold (100 by default) cannot answer the confirmation
+prompt, so the load raises `ConfirmationRequiredError` instead of starting;
+pass `confirm_above=None` to load without asking.
+
 ## Built on the SDK: Peaky
 
 Want the analysis without writing the notebook code?
