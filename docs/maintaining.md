@@ -970,6 +970,70 @@ Deleting rows returns space to Postgres for reuse but not to the filesystem;
 `VACUUM FULL peak_assignment` (or `pg_repack`) afterwards does that, and takes
 an exclusive lock while it runs.
 
+### The composite cut
+
+**The composite cut** (`composite_scan_streams` in the server's `[backend]`
+config) detects the peaks of a file whose acquisition method measures more
+than one m/z range in a polarity per range, and stitches the ranges into one
+spectrum per polarity: each m/z is read from the range that owns it, averaged
+over that range's own scans, so an ion a short range measures no longer reads
+low for being divided by every range's scans. The 1.11.0 and 1.12.0 release
+notes describe it, and [the design note](dev/ingest_routing_and_splitting.md)
+(section 4.5) the design. It ships **off**; two sites run it as canaries.
+The backend and the file converter read the setting when they start, so after
+changing it restart both:
+
+```sh
+mascope prod restart backend
+mascope prod restart file_converter
+```
+
+Switching it on changes only files converted from then on. Whether a file's
+peaks are detected per range is decided at its first conversion and recorded
+with the file, and every later rebuild of its peak store goes by that record;
+a file converted pooled stays pooled. The one run that decides again is a
+**re-process** - *Re-process* in Raw files, or `POST /api/sample/files/reprocess`
+from a signed-in web session (the route does not accept API tokens yet) - which
+detects the file's peaks under the setting as it is at that moment, then
+calibrates and matches as a first processing does. With the setting off, a
+re-process leaves a pooled file alone.
+
+#### Re-processing a site's older files under the cut
+
+Done on both canary sites in October 2026, with the site acquiring throughout.
+What to expect and how to pace it:
+
+- **Which files.** The files acquired before the switch whose method measures
+  several ranges in a polarity. The scan-stream census in each file's `.props`
+  says which; by the database, they are the files of the methods whose files
+  since the switch carry a composite stream row (`acquisition_stream` with no
+  `signature_key`) that have no such row themselves. Files parked without a
+  chemistry have no samples to re-process and are left as they are until a
+  chemistry binds them; a re-process then stitches them too.
+- **Batch size and pace.** 25 files per re-process, one batch at a time, the
+  next only once every file of the last has reached a terminal status (`done`,
+  `calibration_failed`, `failed` or `needs_chemistry`) with a processing time
+  after the submission. Inside a batch each file took 2.5 to 3 s on a 32-core
+  server - the detection per range, the calibration and the matching - so a
+  batch is about a minute; with a minute's pause between batches, 7,300 files
+  took ten hours. Hold while the site's own ingest has more than about twenty
+  fresh files still processing; at 80 to 110 files an hour the live ingest
+  never queued behind the re-processing, and the load stayed under 1.
+- **What to watch.** Every file of a batch ends `done` and carries a composite
+  stream row; the fresh files keep ending `done`; error tracking shows only
+  the drift warning a re-calibrated file raises anyway, one per file, so that
+  count climbs by the number of files re-processed. A re-process takes no
+  database dump, so the backups directory is untouched. Keep a list of what
+  was submitted, so an interrupted run resumes where it stopped rather than
+  re-submitting.
+- **What it changes.** A pooled file becomes stitched: one reading of each
+  m/z from the range that owns it, averaged over that range's scans, so ions a
+  short range measures read higher than they did, and a batch mixing
+  re-processed and untouched files shows a step at the boundary until every
+  file is done. A file already stitched by 1.11.0 gains, when re-processed
+  under 1.12.0, a calibration factor per range and the overlap readings in its
+  processing detail.
+
 ### Loading reference chemistry data
 
 Peak assignment can additionally match against a mirror of public chemistry
