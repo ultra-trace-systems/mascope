@@ -42,6 +42,7 @@ from mascope_backend.api.new.users.util import check_username_exists
 from mascope_backend.api.new.workspaces.system import add_to_system_workspaces
 from mascope_backend.db import Role, User, async_session
 from mascope_backend.runtime import runtime
+from mascope_backend.socket.eviction import evict_ended_sessions
 from mascope_backend.socket.records.service import emit_record_updated
 
 
@@ -399,6 +400,7 @@ async def sign_out_everywhere(user_id: int) -> dict:
 
     if await revoke_user_sessions(user_id) is None:
         raise NotFoundException(f"User with ID '{user_id}' not found.")
+    await evict_ended_sessions(user_id)
 
     # Open tabs re-fetch the current user on this event, which is how they find
     # out their session is over without waiting for the next click. The auth

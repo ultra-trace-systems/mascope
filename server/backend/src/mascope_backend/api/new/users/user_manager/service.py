@@ -36,6 +36,7 @@ from mascope_backend.socket.auth import (
     SocketUnauthenticatedError,
     authenticate_socket_connection,
 )
+from mascope_backend.socket.eviction import evict_ended_sessions
 from mascope_backend.socket.records.service import (
     emit_record_created,
     emit_record_deleted,
@@ -482,6 +483,10 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
             editor_level = auth_settings.ROLE_ACCESS_LEVELS.get("editor")
             if user.role_id is not None and user.role_id >= editor_level:
                 await regenerate_access_token(user=user, service_name="file-converter")
+
+        # A password write or a disable may leave this account's open sockets
+        # in rooms subscribe would now refuse them; eviction decides which.
+        await evict_ended_sessions(user.id, user)
 
         user_dict = await self._get_user_dict_with_role(user)
         validated_user_dict = UserRead.model_validate(user_dict).model_dump()

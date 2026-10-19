@@ -3,12 +3,14 @@
 Handles subscribe/unsubscribe events for Socket.IO rooms with cross-worker
 membership tracking. Each subscription:
 1. Adds SID to Socket.IO room (for AsyncRedisManager pub/sub routing)
-2. Records membership in Redis (for cross-worker presence queries)
+2. Records membership in Redis (for cross-worker presence queries, and per
+   socket so eviction can find the rooms of a socket on another worker)
 """
 
 from mascope_backend.runtime import runtime
 from mascope_backend.socket import sio
 from mascope_backend.socket.auth.decorators import socket_auth
+from mascope_backend.socket.eviction import socket_hold_reason
 from mascope_backend.socket.storage import get_session_user, room_tracker
 
 
@@ -36,7 +38,9 @@ async def subscribe(sid, room):
     account's session cutoff has moved past the token's issue time, the same
     comparison the cookie strategy makes - is held to the same room, and so is
     a disabled account. The tab hears there that its session is over, and its
-    next REST request is refused.
+    next REST request is refused. A socket already subscribed when any of this
+    happens is evicted from its rooms by whatever changed the account
+    (:mod:`mascope_backend.socket.eviction`).
 
     Performs dual registration on success:
     - Socket.IO room (for event routing via AsyncRedisManager)
@@ -49,8 +53,6 @@ async def subscribe(sid, room):
     """
     # Imported lazily: the workspace ACL pulls in the auth/user-manager stack,
     # which imports socket.auth - a module-level import here would be circular.
-    # The session cutoff lives in the same package, so the same holds for it.
-    from mascope_backend.api.new.auth.sessions import session_revoked
     from mascope_backend.api.new.workspaces.dependencies import (
         user_can_subscribe_to_room,
     )
@@ -71,26 +73,23 @@ async def subscribe(sid, room):
         return
 
     # Checked after the ACL so the log says which boundary refused, and using
-    # the user already loaded above rather than a second query.
-    if room != f"user-{user_id}":
-        if user.must_change_password:
-            runtime.logger.warning(
-                f"Denied room subscription: user {user_id} owes a password change "
-                f"-> room '{room}'"
-            )
-            return
-        if not user.is_active or session_revoked(user, session.get("issued_at")):
-            runtime.logger.warning(
-                f"Denied room subscription: user {user_id}'s session has ended "
-                f"-> room '{room}'"
-            )
-            return
+    # the user already loaded above rather than a second query. Eviction makes
+    # the same check of a socket that subscribed before the account changed.
+    if room != f"user-{user_id}" and (
+        reason := socket_hold_reason(user, session.get("issued_at"))
+    ):
+        runtime.logger.warning(
+            f"Denied room subscription: user {user_id} {reason} -> room '{room}'"
+        )
+        return
 
     # Socket.IO room (AsyncRedisManager handles pub/sub routing)
     await sio.enter_room(sid, room)
 
-    # Redis tracking (cross-worker membership queries)
+    # Redis tracking (cross-worker membership queries, and the socket's own
+    # rooms for eviction)
     await room_tracker.join(user_id, room)
+    await room_tracker.join_socket(sid, room)
 
 
 @sio.event(namespace="/")
@@ -115,3 +114,4 @@ async def unsubscribe(sid, room):
 
     # Remove from Redis tracking
     await room_tracker.leave(user_id, room)
+    await room_tracker.leave_socket(sid, room)

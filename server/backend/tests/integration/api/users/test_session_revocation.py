@@ -33,7 +33,7 @@ from mascope_backend.db import AccessToken, User
 from mascope_backend.db.id import gen_id
 from mascope_backend.socket.auth.service import authenticate_socket_connection
 from mascope_backend.socket.events.handlers.default.subscription import subscribe
-from mascope_backend.socket.storage import get_session_user, redis_storage_client
+from mascope_backend.socket.storage import get_session_user
 
 
 ORIGINAL_PASSWORD = "nine bushels of slate"
@@ -305,29 +305,9 @@ async def test_other_updates_leave_the_cutoff_alone(
 # --- A socket's session ---
 
 
-class _SessionRedis:
-    """The Redis commands the socket session store uses, over a plain dict."""
-
-    def __init__(self):
-        self.values: dict[str, str] = {}
-
-    async def setex(self, key: str, seconds: int, value: str) -> bool:
-        self.values[key] = value
-        return True
-
-    async def get(self, key: str) -> str | None:
-        return self.values.get(key)
-
-    async def expire(self, key: str, seconds: int) -> bool:
-        return key in self.values
-
-    async def delete(self, *keys: str) -> int:
-        return sum(self.values.pop(key, None) is not None for key in keys)
-
-
 @pytest.mark.asyncio
 async def test_a_socket_keeps_its_tokens_issue_time_and_its_rooms(
-    person, async_session_factory, monkeypatch
+    person, async_session_factory
 ):
     """
     The socket session records the ``iat`` of the token it authenticated with.
@@ -343,7 +323,7 @@ async def test_a_socket_keeps_its_tokens_issue_time_and_its_rooms(
         stored = await session.get(User, person.id)
         stored.password_changed_at = datetime.now(timezone.utc) - LONG_AGO
         await session.commit()
-    monkeypatch.setattr(redis_storage_client, "_client", _SessionRedis())
+    # The socket session store runs on this package's in-memory Redis stub.
 
     token = await auth_backend_jwt.get_strategy().write_token(person)
     issued_at = jwt.decode(token, options={"verify_signature": False})["iat"]
@@ -355,6 +335,7 @@ async def test_a_socket_keeps_its_tokens_issue_time_and_its_rooms(
     sio.enter_room = AsyncMock()
     room_tracker = MagicMock()
     room_tracker.join = AsyncMock()
+    room_tracker.join_socket = AsyncMock()
     handler = "mascope_backend.socket.events.handlers.default.subscription"
     with (
         patch(f"{handler}.sio", sio),
