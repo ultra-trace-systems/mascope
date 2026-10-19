@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 
-import { TOAST_TITLES, toastTitle, toastWanted } from '@/lib/toastTitles'
+import {
+  TOAST_TITLES,
+  notificationTitle,
+  toastFor,
+  toastTitle,
+  toastWanted
+} from '@/lib/toastTitles'
 
 // Every toast used to be headed by its notification type beautified and the
 // status word: "Shared link success", "Match compositions by mz success",
@@ -84,5 +90,60 @@ describe('whether a toast is shown at all', () => {
     )
     expect(toastWanted({ type: 'shared_link', status: 'success' })).toBe(true)
     expect(toastWanted()).toBe(true)
+  })
+})
+
+describe('the name of an event', () => {
+  // What the progress bar's tooltip leads with: no status, since the bar is
+  // the status.
+  it('is the mapped heading, or the type beautified', () => {
+    expect(notificationTitle('calibration_mz_fit')).toBe('Calibration fit')
+    expect(notificationTitle('update_target_compound')).toBe('Update target compound')
+  })
+})
+
+// What App.vue hands the toaster, whole, so that the wiring there is one line
+// with nothing left to get wrong.
+describe('the toast a notification gets', () => {
+  it('carries the heading, the message, the severity and a life by status', () => {
+    expect(
+      toastFor({ type: 'sample_file_upload', status: 'success', message: 'Uploaded 1 file' })
+    ).toEqual({ severity: 'success', summary: 'Upload', detail: 'Uploaded 1 file', life: 3000 })
+    expect(toastFor({ type: 'rematch_batch', status: 'warning', message: 'm' })).toMatchObject({
+      severity: 'warn',
+      summary: 'Match refresh warning',
+      life: 7000
+    })
+    expect(toastFor({ type: 'shared_link', status: 'error', message: 'm' })).toMatchObject({
+      severity: 'error',
+      summary: 'Share link failed',
+      life: 10000
+    })
+    expect(toastFor({ type: 'read_params', status: 'info', message: 'm' })).toMatchObject({
+      severity: 'info',
+      summary: 'Read params info',
+      life: 3000
+    })
+  })
+
+  // The progress bar carries a pending report; a toast would say it twice.
+  it('is none for a pending report', () => {
+    expect(toastFor({ type: 'sample_file_upload', status: 'pending', message: '50%' })).toBeNull()
+  })
+
+  it('is none where no toast is wanted', () => {
+    expect(
+      toastFor({
+        type: 'match_compositions_by_mz',
+        status: 'success',
+        message: 'No matching compositions found',
+        data: { results: 0 }
+      })
+    ).toBeNull()
+  })
+
+  it('is none for nothing', () => {
+    expect(toastFor(null)).toBeNull()
+    expect(toastFor({})).toBeNull()
   })
 })

@@ -1,15 +1,17 @@
 /**
- * What a notification toast is headed, and whether it is shown at all.
+ * What a notification is headed, as a toast and in the log, and which
+ * notifications earn a toast at all.
  *
  * A notification's `type` names the operation it reports, in the snake case
- * the API knows it by, and the toaster used to head every toast with that name
- * and the status word after it: "Shared link success", "Match compositions by
- * mz success", "Calibration mz fit success". The common events get a heading
- * written for the reader instead. Anything else keeps the generated form, so a
- * new operation is never headed by nothing.
+ * the API knows it by: `shared_link`, `match_compositions_by_mz`,
+ * `calibration_mz_fit`. The common events get a heading written for the
+ * reader; anything else is headed by that name beautified, with the status
+ * word after it, so a new operation is never headed by nothing. The toast, the
+ * notification log and the progress bar all read from here, so they name an
+ * event alike.
  */
 
-import { beautifySnakeCase } from '@/lib/utils'
+import { beautifySnakeCase, messageSeverity } from '@/lib/utils'
 
 /** Headings by notification type, for the events a user meets every day. */
 export const TOAST_TITLES = {
@@ -43,8 +45,23 @@ export const TOAST_TITLES = {
 // the heading names the event, and the detail says what came of it.
 const STATUS_WORDS = { success: '', info: '', warning: 'warning', error: 'failed' }
 
+// How long a toast stays, by status. An error long enough to read twice;
+// anything else is good news or a progress note.
+const LIFE_MS = { error: 10000, warning: 7000 }
+const DEFAULT_LIFE_MS = 3000
+
 /**
- * The heading of a notification's toast.
+ * The name of the operation a notification type reports, for a reader.
+ *
+ * @param {string} type The notification type.
+ * @returns {string}
+ */
+export function notificationTitle(type) {
+  return TOAST_TITLES[type] ?? beautifySnakeCase(type ?? 'notification')
+}
+
+/**
+ * The heading of a notification, with its outcome where that is the news.
  *
  * @param {string} type The notification type.
  * @param {string} status The notification status: success, info, warning or error.
@@ -52,7 +69,7 @@ const STATUS_WORDS = { success: '', info: '', warning: 'warning', error: 'failed
  */
 export function toastTitle(type, status) {
   const title = TOAST_TITLES[type]
-  if (!title) return `${beautifySnakeCase(type ?? 'notification')} ${status}`
+  if (!title) return `${notificationTitle(type)} ${status}`
   const word = STATUS_WORDS[status] ?? status
   return word ? `${title} ${word}` : title
 }
@@ -73,4 +90,23 @@ export function toastWanted({ type, status, data } = {}) {
     return false
   }
   return true
+}
+
+/**
+ * The toast a notification gets: what the toaster is handed, or null for one
+ * that shows no toast - a pending progress report, which the progress bar
+ * carries, or a notification `toastWanted` leaves out.
+ *
+ * @param {object} notification The notification, as the store hands it on.
+ * @returns {{severity: string, summary: string, detail: string, life: number}|null}
+ */
+export function toastFor(notification) {
+  const { type, status, message } = notification ?? {}
+  if (!status || status === 'pending' || !toastWanted(notification)) return null
+  return {
+    severity: messageSeverity(status),
+    summary: toastTitle(type, status),
+    detail: message,
+    life: LIFE_MS[status] ?? DEFAULT_LIFE_MS
+  }
 }
