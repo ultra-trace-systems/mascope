@@ -21,6 +21,7 @@ import pandas as pd
 import xarray as xr
 
 from mascope_thermo.backend import open_backend
+from mascope_thermo.calibration import calibration_status, stream_calibrations
 from mascope_thermo.lib import load_dotnet
 from mascope_thermo.runtime import runtime
 
@@ -1395,13 +1396,25 @@ def get_scan_table(
     :return: ``{"num_of_scans", "stats_per_scan", "stats_per_file"}``.
         ``num_of_scans`` counts the scans of the file, whatever was asked for;
         ``stats_per_scan`` is keyed by scan number, and empty when no scan
-        matches. A float JSON cannot represent is None.
+        matches. ``stats_per_file`` holds the instrument's details under
+        ``Value`` and, for every scan of the file whatever was asked for,
+        the conversion parameters per stream under ``calibrations``
+        (:func:`mascope_thermo.calibration.stream_calibrations`) and, where
+        the reader gives a status log, ``calibration_status``
+        (:func:`mascope_thermo.calibration.calibration_status`). A float JSON
+        cannot represent is None.
     :rtype: dict
     """
     with open_backend(datafile_path) as backend:
         num_of_scans = backend.num_scans()
         rows = backend.scan_rows(polarity, t_min, t_max, first_scan, last_scan)
-        instrument_details = backend.instrument_details()
+        stats_per_file = {
+            "Value": backend.instrument_details(),
+            "calibrations": stream_calibrations(backend),
+        }
+        status = calibration_status(backend)
+        if status is not None:
+            stats_per_file["calibration_status"] = status
 
     if fields is not None:
         # A dict rather than a set: the entries keep the order asked for.
@@ -1415,7 +1428,7 @@ def get_scan_table(
         {
             "num_of_scans": num_of_scans,
             "stats_per_scan": rows,
-            "stats_per_file": {"Value": instrument_details},
+            "stats_per_file": stats_per_file,
         }
     )
 
