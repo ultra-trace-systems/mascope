@@ -111,9 +111,9 @@ const breadcrumb = computed(() => {
         @click="contextMenu.dialog.op = 'create'"
       />
     </template>
-    <!-- Without an open batch there is no list to show, and the pane used to
-         be a blank box with a plus in its corner. Styled as the assignment
-         pane's "No sample selected". -->
+    <!-- Without an open batch there is no list to show, so the pane says what
+         it is for and how it fills. Styled as the assignment pane's "No sample
+         selected". -->
     <div v-if="!app.data.batch.focused" class="center empty">
       <div class="col" style="gap: 0.5rem; text-align: center; max-width: 40ch">
         <strong><span class="pi ph ph-crosshair" /> Target collections</strong>
