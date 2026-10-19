@@ -18,6 +18,7 @@ from thermo_test_support import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
 import mascope_thermo.thermo as m_thermo
 from mascope_thermo.backend import OpenTFRawBackend, ThermoBackend
 from mascope_thermo.calibration import (
+    CONVERSION_C,
     calibration_status,
     overdue_calibrations,
     stream_calibrations,
@@ -124,21 +125,28 @@ def test_the_medians_are_medians_not_the_first_or_a_mean():
 
 
 @pytest.mark.parametrize(
-    ("b", "c"),
+    ("b", "c", "expected"),
     [
-        pytest.param("100.5", " 4.25 ", id="decimal-point"),
-        # Formatted in the machine's culture, as a Finnish or German one does.
-        pytest.param("100,5", " 4,25 ", id="decimal-comma"),
+        pytest.param("100.5", " 4.25 ", (100.5, 4.25), id="decimal-point"),
+        # Formatted in the server's culture: a decimal comma (fi-FI, de-DE),
+        # and where .NET takes the culture from ICU the minus sign U+2212
+        # (sv-SE, nb-NO), in an exponent too.
+        pytest.param("100,5", " 4,25 ", (100.5, 4.25), id="decimal-comma"),
+        pytest.param("100,5", "-4,25", (100.5, -4.25), id="signed"),
+        pytest.param("1,005E+02", "4,25E+00", (100.5, 4.25), id="exponent"),
+        pytest.param("100,5", "\u22124,25", (100.5, -4.25), id="minus-sign"),
+        pytest.param(
+            "1,005E+002", "4,25E\u2212001", (100.5, 0.425), id="minus-sign-exponent"
+        ),
     ],
 )
-def test_trailer_text_is_read_as_numbers(b, c):
+def test_trailer_text_is_read_as_numbers(b, c, expected):
     # The Thermo library gives trailer values as text.
     reader = _Reader([(NEG, _params(b, c))])
 
     calibration = stream_calibrations(reader)[NEG_KEY]
 
-    assert calibration["b"] == 100.5
-    assert calibration["c"] == 4.25
+    assert (calibration["b"], calibration["c"]) == expected
 
 
 @pytest.mark.parametrize(
@@ -377,3 +385,29 @@ def test_a_committed_file_has_one_calibration_per_stream(backend, path):  # noqa
             # One calibration: constant within the file, far inside the 1e-11
             # that files are grouped by.
             assert high - low < 1e-13
+
+
+@pytest.mark.parametrize("culture", ["de-DE", "sv-SE"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        pytest.param(POS_ORBI_FILE_PATH, id="pos"),
+        pytest.param(NEG_ORBI_FILE_PATH, id="neg"),
+    ],
+)
+def test_the_thermo_library_reads_alike_in_every_culture(dotnet_culture, path, culture):
+    # de-DE writes a decimal comma; sv-SE does too, and where .NET takes the
+    # culture from ICU also the minus sign U+2212, which the negative-mode
+    # file's C carries.
+    dotnet_culture("")
+    expected = m_thermo.get_scan_table(path)["stats_per_file"]["calibrations"]
+
+    dotnet_culture(culture)
+    with ThermoBackend(path) as reader:
+        text = reader.scan_trailer(reader.scan_filters()[0]["scan"])[CONVERSION_C]
+    calibrations = m_thermo.get_scan_table(path)["stats_per_file"]["calibrations"]
+
+    # The culture is the one the library wrote in.
+    assert "," in text
+    assert expected
+    assert calibrations == expected

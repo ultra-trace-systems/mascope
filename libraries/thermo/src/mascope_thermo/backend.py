@@ -555,6 +555,33 @@ def _json_safe(value):
     return str(value)
 
 
+def trailer_float(value) -> float | None:
+    """A trailer value as a finite float, or None where it reads as none.
+
+    OpenTFRaw gives trailer values as numbers, the Thermo library as text
+    formatted in the server's culture. That text may write a decimal comma
+    (``"-71050473,7320"``) and, where the culture's data comes from ICU (sv-SE,
+    nb-NO and others), the minus sign U+2212 rather than ``-``, in an
+    exponent too. It writes no group separators, so a comma is always the
+    decimal mark. A flag, empty or other text, and a non-finite number read
+    as none.
+
+    :param value: One trailer value, as either reader gives it.
+    :return: The number, or None.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        text = str(value).strip().replace(",", ".").replace("\u2212", "-")
+        try:
+            number = float(text)
+        except ValueError:
+            return None
+    return number if math.isfinite(number) else None
+
+
 def _method_scan_event(index_event: int) -> int | None:
     """A scan's event as the acquisition method numbers it, or ``None``.
 
@@ -1449,7 +1476,7 @@ class ThermoBackend:
         isolation_widths.discard(None)
         isolation_widths.discard("")
         if len(isolation_widths) == 1:
-            isolation_width = float(isolation_widths.pop().replace(",", "."))
+            isolation_width = trailer_float(isolation_widths.pop())
         else:
             raise ValueError("Multiple isolation widths found for MS2 scans.")
         return isolation_width, scan_idx_to_hcd
@@ -2789,21 +2816,15 @@ class OpenTFRawBackend:
         # The calibrated "HCD Energy V:" and "MS2 Isolation Width:" live in the
         # per-scan trailer (generic record), surfaced by the scan_parameters()
         # accessor.
-
-        def _as_float(value) -> float:
-            if isinstance(value, (int, float)):
-                return float(value)
-            return float(str(value).replace(",", "."))
-
         isolation_widths: set[float] = set()
         scan_idx_to_hcd: dict[int, str] = {}
         for s in self._selected(polarity, t_min, t_max, ms_type="Ms2"):
             scan_number = int(s["scan_number"])
             params = self._raw.scan_parameters(scan_number) or {}
-            width = params.get("MS2 Isolation Width:")
-            if width is not None and str(width) != "":
+            width = trailer_float(params.get("MS2 Isolation Width:"))
+            if width is not None:
                 # round away the f32->f64 noise so identical widths dedupe.
-                isolation_widths.add(round(_as_float(width), 6))
+                isolation_widths.add(round(width, 6))
             hcd = params.get("HCD Energy V:")
             scan_idx_to_hcd[scan_number] = "" if hcd is None else str(hcd)
 
