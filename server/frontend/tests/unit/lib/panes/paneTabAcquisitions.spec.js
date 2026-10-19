@@ -70,7 +70,8 @@ const passthrough = (name) => ({
     resume: { type: Boolean, default: false }
   },
   emits: ['update:modelValue', 'update:visible', 'update:action', 'click', 'configure', 'submit'],
-  template: '<div><slot /><slot name="footer" /></div>'
+  // The empty slot the way DataTable renders it: only with nothing to list.
+  template: '<div><slot /><slot v-if="!value?.length" name="empty" /><slot name="footer" /></div>'
 })
 
 const stubs = Object.fromEntries(
@@ -86,6 +87,7 @@ const stubs = Object.fromEntries(
     'InputText',
     'FloatLabel',
     'ContextMenu',
+    'ProgressSpinner',
     'DialogSampleOp',
     'DialogBatchImport',
     'DialogFileUpload',
@@ -121,6 +123,10 @@ function makeApp() {
         sortOrder: -1,
         time: { mode: 'Last 24 hours', range: { min: null, max: null } },
         processingStatus: null,
+        loaded: true,
+        pending: false,
+        loadError: null,
+        load: vi.fn(),
         setSort: vi.fn(),
         setPage: vi.fn(),
         setTimeMode: vi.fn(),
@@ -362,6 +368,14 @@ describe('PaneTabAcquisitions', () => {
     // lowercased.
     const timeSelect = (wrapper) =>
       wrapper.findAllComponents({ name: 'Select' }).find((s) => s.attributes('inputid') === 'time')
+    // v-show hides the table through its inline style; the stub keeps its
+    // own empty-slot text in the DOM either way, so the explanation under the
+    // table is read off its own element.
+    const tableHidden = (wrapper) =>
+      (wrapper.findComponent({ name: 'DataTable' }).attributes('style') ?? '').includes(
+        'display: none'
+      )
+    const explanation = (wrapper) => wrapper.find('.empty-list').text()
 
     it('offers All time among the ranges', () => {
       const wrapper = mountPane()
@@ -381,6 +395,17 @@ describe('PaneTabAcquisitions', () => {
 
       expect(wrapper.text()).toContain('No raw files in the last 24 hours')
       expect(labels(wrapper)).toEqual(['Show last 7 days', 'Show all time'])
+      expect(tableHidden(wrapper)).toBe(true)
+    })
+
+    // The selector goes through the store as the empty list does, so the two
+    // leave the same state behind: a date range's ends are dropped either way.
+    it('routes the selector through the store', async () => {
+      const wrapper = mountPane()
+
+      await timeSelect(wrapper).vm.$emit('update:modelValue', 'Last 30 days')
+
+      expect(mocks.app.data.acquisition.setTimeMode).toHaveBeenCalledWith('Last 30 days')
     })
 
     it('widens the range in one click', async () => {
@@ -433,27 +458,69 @@ describe('PaneTabAcquisitions', () => {
       expect(wrapper.text()).toContain('No raw files from this instrument')
     })
 
-    // The page filters narrow the page on screen: files were found, and the
-    // range is not what hid them.
-    it('blames the filters when they are what emptied it', async () => {
+    // The page filters narrow only the page on screen: files were found, and
+    // the match may be on another page. So the table stays up, paginator
+    // included, with the message in its body, and nothing is said about the
+    // range, which is not what hid them.
+    it('keeps the table up when the page filters are what emptied it', () => {
       mocks.app.data.acquisition.search = 'nothing-is-called-this'
       const wrapper = mountPane()
 
-      expect(wrapper.text()).toContain(
-        'No raw files match the current filters in the last 24 hours'
-      )
-      expect(labels(wrapper)).toContain('Clear filters')
+      expect(tableHidden(wrapper)).toBe(false)
+      expect(wrapper.text()).toContain('No raw files on this page match the filters')
+      expect(wrapper.find('.empty-list').exists()).toBe(false)
+      expect(labels(wrapper)).toEqual(['Clear filters'])
     })
 
-    it('blames a status filter too', () => {
+    // The status filter narrows the query itself, so an empty answer under it
+    // is about the whole range.
+    it('names the status filter when it is what emptied the answer', () => {
       mocks.app.data.acquisition.list = []
       mocks.app.data.acquisition.processingStatus = ['failed']
       const wrapper = mountPane()
 
-      expect(wrapper.text()).toContain(
-        'No raw files match the current filters in the last 24 hours'
-      )
+      expect(wrapper.text()).toContain('No raw files with the chosen status in the last 24 hours')
       expect(labels(wrapper)).toContain('Clear filters')
+    })
+
+    // Before the first answer there is nothing to explain, and offering the
+    // wider ranges would invite the wider load the default exists to avoid.
+    it('waits for the first answer before saying anything', () => {
+      mocks.app.data.acquisition.list = []
+      mocks.app.data.acquisition.loaded = false
+      mocks.app.data.acquisition.pending = true
+      const wrapper = mountPane()
+
+      expect(wrapper.findComponent({ name: 'ProgressSpinner' }).exists()).toBe(true)
+      expect(explanation(wrapper)).not.toContain('No raw files')
+      expect(labels(wrapper)).toEqual([])
+    })
+
+    it('waits while a wider range is loading', async () => {
+      mocks.app.data.acquisition.list = []
+      const wrapper = mountPane()
+      expect(labels(wrapper)).toEqual(['Show last 7 days', 'Show all time'])
+
+      mocks.app.data.acquisition.pending = true
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.findComponent({ name: 'ProgressSpinner' }).exists()).toBe(true)
+      expect(labels(wrapper)).toEqual([])
+    })
+
+    // A failed load is not an empty week, and must not invite widening.
+    it('says a failed load is one, and offers to try again', async () => {
+      mocks.app.data.acquisition.list = []
+      mocks.app.data.acquisition.loaded = false
+      mocks.app.data.acquisition.loadError = new Error('offline')
+      const wrapper = mountPane()
+
+      expect(explanation(wrapper)).toContain('Could not load the raw files')
+      expect(explanation(wrapper)).not.toContain('No raw files')
+      expect(labels(wrapper)).toEqual([])
+
+      await button(wrapper, 'Retry').vm.$emit('click')
+      expect(mocks.app.data.acquisition.load).toHaveBeenCalled()
     })
 
     // Unlike the toolbar's clear, which also puts the time range back: a range

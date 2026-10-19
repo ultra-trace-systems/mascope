@@ -283,9 +283,9 @@ Which sample that is depends on whether the file records MS1 scans:
   **Done**.
 
 !!! tip "Finding files after upload"
-    The table shows one time window at a time (default: the last 24 hours). Use
-    the time-range, status and polarity filters and the filename search at the
-    top of the tab to locate older files.
+    The table shows one time window at a time (default: the last 7 days; **All
+    time** lists every file). Use the time-range, status and polarity filters
+    and the filename search at the top of the tab to locate older files.
 
 ## Build your batch from the acquisition samples
 

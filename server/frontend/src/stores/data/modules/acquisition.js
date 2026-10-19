@@ -2,7 +2,7 @@ import { ref, reactive, computed, watch, watchEffect } from 'vue'
 import { defineStore } from 'pinia'
 
 import { api } from '@/api'
-import { ALL_TIME, DEFAULT_TIME_MODE, daysOf } from '@/lib/acquisitionTime'
+import { ALL_TIME, DEFAULT_TIME_MODE, daysOf, isTimeMode } from '@/lib/acquisitionTime'
 import { makeLogger } from '@/lib/logging'
 import { runtime } from '@/lib/runtime'
 import { debounce } from '@/lib/utils'
@@ -49,7 +49,7 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
 
   // --- time filter: a preset ('Last 7 days', 'All time', ...) or 'range'
   // with the ends the date pickers hold.
-  const time = reactive(initTime())
+  const time = reactive(initTime(logger))
   const days = computed(() => daysOf(time.mode))
   // Coerce mode to 'range' when an explicit range is set, and back to the
   // default preset when both ends are cleared.
@@ -62,9 +62,11 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
   })
 
   /**
-   * Show a preset range. An explicit date range is left behind with it: while
-   * either end is set the mode is coerced back to 'range', so the ends are
-   * cleared first.
+   * Show a preset range, dropping an explicit date range's ends with it. The
+   * pickers go on showing the ends they hold, greyed out, and would bring the
+   * range back the moment one of them is edited. Both ways of picking a
+   * preset, the selector and the empty list, go through here, so they leave
+   * the same state behind.
    *
    * @param {string} mode The preset, one of `TIME_MODES`.
    */
@@ -161,9 +163,18 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
   let latestLoad = 0
   let updatesDuringLoad = null
 
+  // Where the list stands, for the pane to tell an empty answer from no answer
+  // yet: whether any answer has landed, whether the latest request is still
+  // out, and what the latest request failed with, if it did. A failed request
+  // leaves the list as it was.
+  const loaded = ref(false)
+  const pending = ref(false)
+  const loadError = ref(null)
+
   async function load() {
     const loadId = ++latestLoad
     updatesDuringLoad ??= new Map()
+    pending.value = true
     let answer = null
     if (time.mode === ALL_TIME) {
       // The range route with neither end: every file the filters keep.
@@ -174,9 +185,16 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
       answer = await loadRange(time.range)
     }
     if (loadId !== latestLoad) return
+    pending.value = false
     const updates = updatesDuringLoad
     updatesDuringLoad = null
     if (!answer) return
+    if (answer.error) {
+      loadError.value = answer.error
+      return
+    }
+    loadError.value = null
+    loaded.value = true
     list.value = answer.items
     total.value = answer.results
     for (const [recordId, record] of updates) applyUpdate(recordId, record)
@@ -206,7 +224,7 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
       return { items, results }
     } catch (err) {
       logger.error(`failed to load recent sample files: ${err}`)
-      return null
+      return { error: err }
     }
   }
 
@@ -230,7 +248,7 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
       return { items, results }
     } catch (err) {
       logger.error(`failed to load sample file range: ${err}`)
-      return null
+      return { error: err }
     }
   }
 
@@ -329,8 +347,8 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
   const resetFilters = () => {
     selected.value = []
     first.value = 0
-    time.mode = initTime().mode
-    time.range = initTime().range
+    time.mode = initTime(logger).mode
+    time.range = initTime(logger).range
     processingStatus.value = null
     search.value = ''
     polarity.value = ''
@@ -372,6 +390,9 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     first,
     rows,
     total,
+    loaded,
+    pending,
+    loadError,
     // actions
     load,
     watching,
@@ -388,11 +409,23 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
 
 const toDate = (iso) => (iso ? new Date(iso) : null)
 
-function initTime() {
+/**
+ * The range the list opens on: the deployment's `acquisition_filter`, else the
+ * default. A string names a preset or a `Last N days` of its own; one that
+ * names neither would send no request at all, or the recent route's own
+ * one-day default under a label that says otherwise, so it is reported and
+ * the default stands in.
+ *
+ * @param {object} logger Where a setting that cannot be read is reported.
+ */
+function initTime(logger) {
   const configured = runtime.config.acquisition_filter
   if (configured) {
     if (typeof configured == 'string') {
-      return { mode: configured, range: { min: null, max: null } }
+      if (isTimeMode(configured)) return { mode: configured, range: { min: null, max: null } }
+      logger.warn(
+        `acquisition_filter '${configured}' names no time range; opening on '${DEFAULT_TIME_MODE}'`
+      )
     } else if (typeof configured == 'object') {
       return {
         mode: 'range',
