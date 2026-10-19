@@ -4,6 +4,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+Changes merged since the newest release below are described in
+[`changelog.d/`](changelog.d/), one file per pull request, until the next
+release gathers them here.
+
 ## [1.12.0] - 2026.10.14
 
 ### Added
