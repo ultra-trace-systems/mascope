@@ -379,6 +379,51 @@ async def test_a_socket_that_never_emits_stays_on_record(
 
 
 @pytest.mark.asyncio
+async def test_a_socket_authenticated_at_sign_in_stays_on_record(
+    person, sio, live_rate_limiter, monkeypatch
+):
+    """
+    A socket that signs in after it connected is renewed too.
+
+    The SPA connects before sign-in, so ``connect`` finds no cookie and leaves
+    the socket unauthenticated; the login route then authenticates it from the
+    ``X-SID`` header, on whichever worker serves the request. The renewal
+    started at connect, on the worker holding the connection, keeps what it
+    saved alive from then on.
+    """
+    monkeypatch.setattr(storage_config, "session_renewal_interval", 0.01)
+    assert await connect("sid-a", {})
+    async with AsyncClient(
+        transport=ASGITransport(app=fast), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/auth/login",
+            data={"username": person.email, "password": ORIGINAL_PASSWORD},
+            headers={"X-SID": "sid-a"},
+        )
+    assert resp.status_code in (200, 204), resp.text
+    assert (await get_session_user("sid-a"))["user_id"] == person.id
+    await subscribe("sid-a", RESOURCE_ROOM)
+    refreshed: list[str] = []
+    expire = live_rate_limiter.expire
+
+    async def recording_expire(key: str, seconds: int) -> bool:
+        refreshed.append(key)
+        return await expire(key, seconds)
+
+    live_rate_limiter.expire = recording_expire
+    await asyncio.sleep(0.05)
+
+    assert storage_config.session_key("sid-a", "/") in refreshed
+    assert storage_config.user_sockets_key(person.id) in refreshed
+    assert storage_config.socket_rooms_key("sid-a") in refreshed
+
+    renewal = session_store._renewal_tasks["sid-a"]
+    await disconnect("sid-a")
+    assert renewal.cancelled()
+
+
+@pytest.mark.asyncio
 async def test_a_long_lived_socket_stays_on_record(person, sio, live_rate_limiter):
     """
     Every access that keeps the session alive keeps the index and rooms alive.

@@ -278,8 +278,10 @@ def start_session_renewal(sid: str) -> None:
     """
     Keep a web socket's session and records alive for the life of its connection.
 
-    Call from the default namespace's connect handler once the socket is
-    authenticated. Idempotent per sid: a lingering task is cancelled first.
+    Call from the default namespace's connect handler for every connection,
+    authenticated there or not: a socket may be authenticated later, at
+    sign-in, by a request another worker serves. Idempotent per sid: a
+    lingering task is cancelled first.
 
     :param sid: Socket.IO session ID
     :type sid: str
