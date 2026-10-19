@@ -280,8 +280,9 @@ function install_mascope() {
     sudo cp "${SYSTEMD_SRC}/mascope-update.timer" \
         /etc/systemd/system/mascope-update.timer
 
-    # Disk-space monitor service + timer. Read-only (it never deletes anything),
-    # so unlike the updater it is enabled by default below.
+    # Disk-space monitor service + timer. It never deletes anything (it writes
+    # only its own free-space history), so unlike the updater it is enabled by
+    # default below.
     DISK_CHECK="${ROOT_PATH}/tooling/disk-check.sh"
     sed -e "s|@@USER@@|${USER}|g" \
         -e "s|@@DISK_CHECK@@|${DISK_CHECK}|g" \

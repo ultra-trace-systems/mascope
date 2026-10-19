@@ -491,6 +491,21 @@ def test_format_text_folds_paths_on_one_filesystem_into_one_row():
     assert "\n         filestore 12 GiB / 3% free  LOW\n" in text
 
 
+@pytest.mark.parametrize(
+    "days, word",
+    [
+        (0.4, "<1 day"),
+        (1.0, "~1 day"),
+        (1.49, "~1 day"),
+        (1.5, "~2 days"),
+        (21.4, "~21 days"),
+        (4000, ">10 years"),
+    ],
+)
+def test_days_are_worded_as_disk_check_words_them(days, word):
+    assert doctor._days_word(days) == word
+
+
 def test_format_text_not_filling():
     report = _healthy_report()
     report.disks[0].rates = [doctor.FillRate(7, 7.0, -0.25)]

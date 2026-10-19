@@ -579,6 +579,8 @@ def _days_word(days: float) -> str:
     """A projection in days, worded as disk-check.sh words it."""
     if days < 1:
         return "<1 day"
+    if days < 1.5:
+        return "~1 day"
     if days > 3650:
         return ">10 years"
     return f"~{days:.0f} days"

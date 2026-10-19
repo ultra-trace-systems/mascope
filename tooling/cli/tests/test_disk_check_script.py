@@ -184,6 +184,15 @@ def test_a_fast_fill_warns_weeks_before_the_floor(check):
     assert check.pings() == [URL, f"{FILLING_URL}/fail"]
 
 
+def test_the_30_day_rate_waits_for_history_past_the_7_day_window(check):
+    # Five days of history: the 30-day window holds the same samples as the
+    # 7-day one, so it would only repeat it. The doctor gates it the same way.
+    check.seed(_filling(5, 2, avail_now=400))
+    result = check.run(avail_gb=400)
+    line = next(ln for ln in result.stdout.splitlines() if "state (.runtime)" in ln)
+    assert re.findall(r"GiB/day \((\d+)d\)", line) == ["5"], line
+
+
 def test_a_slow_fill_is_ok_and_logs_the_projection(check):
     check.seed(_filling(10, 2, avail_now=400))
     result = check.run(avail_gb=400, HEALTHCHECK_FILLING_URL=FILLING_URL)
@@ -237,6 +246,7 @@ def test_a_filling_disk_that_crosses_the_floor_keeps_the_filling_check_down(chec
     check.seed(_filling(10, 19, avail_now=120))
     first = check.run(avail_gb=120, HEALTHCHECK_FILLING_URL=FILLING_URL)
     assert "FILLING: state (.runtime) (/) has 120.0 GiB" in first.stdout, _out(first)
+    assert "100.0 GiB floor in ~1 day, full in ~6 days" in first.stdout
     second = check.run(
         avail_gb=95, now=NOW + 3 * 3600, HEALTHCHECK_FILLING_URL=FILLING_URL
     )
@@ -379,6 +389,34 @@ def test_history_is_trimmed_to_sixty_days(check):
     assert check.history.stat().st_mode & 0o777 == 0o644
     left = {p.name for p in check.history.parent.iterdir()} - {".lock"}
     assert left == {"history.tsv"}
+
+
+@pytest.mark.skipif(shutil.which("flock") is None, reason="needs flock(1)")
+def test_the_trim_runs_while_the_run_holds_the_lock(check, tmp_path):
+    # The trim's rename is what loses a concurrent run's sample, so it must
+    # happen under the lock. A stub mv asks for the lock on a fresh open of
+    # the lock file: refused means this run still holds it.
+    probes = tmp_path / "mv.log"
+    real_mv = shutil.which("mv")
+    stub = check.bin / "mv"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'if flock -n "$PROBE_LOCK" true; then echo free; else echo held; fi'
+        ' >>"$MV_LOG"\n'
+        f'exec "{real_mv}" "$@"\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    check.seed([(NOW - 70 * DAY, 500), (NOW - DAY, 400)])
+
+    result = check.run(
+        avail_gb=400,
+        PROBE_LOCK=check.history.parent / ".lock",
+        MV_LOG=probes,
+    )
+    assert result.returncode == 0, _out(result)
+    assert len(check.history.read_text().splitlines()) == 2  # it did trim
+    assert probes.read_text().split() == ["held"]
 
 
 def test_history_is_not_rewritten_on_every_run(check):

@@ -170,6 +170,7 @@ fill_trend() {
         }
         function days(d) {
             if (d < 1) return "<1 day"
+            if (d < 1.5) return "~1 day"
             if (d > 3650) return ">10 years"
             return sprintf("~%.0f days", d)
         }
