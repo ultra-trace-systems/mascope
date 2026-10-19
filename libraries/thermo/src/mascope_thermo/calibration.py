@@ -27,7 +27,7 @@ import re
 import statistics
 
 from mascope_thermo.backend import ReaderBackend, trailer_float
-from mascope_thermo.streams import scan_stream_keys
+from mascope_thermo.streams import scan_stream_values
 
 
 CONVERSION_B = "Conversion Parameter B:"
@@ -64,12 +64,20 @@ def stream_calibrations(backend: ReaderBackend) -> dict[str, dict]:
     :param backend: An open reader backend.
     :return: ``{stream key: {...}}``, in the order the streams first appear.
     """
+    return _stream_calibrations(_scans(backend))
+
+
+def _scans(backend: ReaderBackend) -> list[tuple[dict, str, dict]]:
+    """Every scan's row, stream key and conversion parameters."""
+    return scan_stream_values(backend, (CONVERSION_B, CONVERSION_C))
+
+
+def _stream_calibrations(scans: list[tuple[dict, str, dict]]) -> dict[str, dict]:
+    """:func:`stream_calibrations` of the scans :func:`_scans` read."""
     per_stream: dict[str, tuple[list[float], list[float], list[float]]] = {}
-    keys = scan_stream_keys(backend)
-    for row, key in zip(backend.scan_filters(), keys):
-        trailer = backend.scan_trailer(row["scan"])
-        b = trailer_float(trailer.get(CONVERSION_B))
-        c = trailer_float(trailer.get(CONVERSION_C))
+    for _row, key, parameters in scans:
+        b = trailer_float(parameters.get(CONVERSION_B))
+        c = trailer_float(parameters.get(CONVERSION_C))
         if b is None or c is None or b == 0:
             continue
         bs, cs, ratios = per_stream.setdefault(key, ([], [], []))
@@ -124,7 +132,11 @@ def calibration_status(backend: ReaderBackend) -> dict | None:
     :return: The status, or None when the reader gives no record for either
         scan.
     """
-    rows = backend.scan_filters()
+    return _calibration_status(backend, backend.scan_filters())
+
+
+def _calibration_status(backend: ReaderBackend, rows: list[dict]) -> dict | None:
+    """:func:`calibration_status`, the file's scans being these rows."""
     if not rows:
         return None
     status = {}
@@ -138,3 +150,23 @@ def calibration_status(backend: ReaderBackend) -> dict | None:
     if all(value is None for value in status.values()):
         return None
     return status
+
+
+def calibration_identity(backend: ReaderBackend) -> dict:
+    """What a scan table says of the mass calibration of the file.
+
+    ``calibrations`` as :func:`stream_calibrations` gives it and, where the
+    reader gives a status log, ``calibration_status`` as
+    :func:`calibration_status` does: both from one pass over the file's scan
+    filters and trailers, where calling the two would take two.
+
+    :param backend: An open reader backend.
+    :return: ``{"calibrations": {...}}``, with ``"calibration_status"`` where
+        the reader gives a record for the first or last scan.
+    """
+    scans = _scans(backend)
+    identity = {"calibrations": _stream_calibrations(scans)}
+    status = _calibration_status(backend, [row for row, _key, _values in scans])
+    if status is not None:
+        identity["calibration_status"] = status
+    return identity
