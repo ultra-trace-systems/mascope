@@ -3,9 +3,9 @@
 The revision only adds three indexes to ``sample_file``. The stairway proves
 they apply and drop on an empty table, and the drift test that the models
 declare the same ones. Neither says whether an index is in the order the list
-reads it in: an index on ``datetime_utc`` in the default order is still an
-index on ``datetime_utc``, and the planner bounds the scan with it and then
-sorts anyway. So rows are seeded, the upgrade runs over them, and the list's
+reads it in: an index on ``datetime_utc`` in another order is still an index
+on ``datetime_utc``, and the planner bounds the scan with it and then sorts
+anyway. So rows are seeded, the upgrade runs over them, and the list's
 statements are EXPLAINed with sorting priced out - a plan with no sort in it
 is one an index delivers in order.
 
@@ -34,9 +34,9 @@ PRIOR_REVISION = _SCRIPT.down_revision
 
 # Name -> the column list Postgres reports in the index's definition.
 _INDEXES = {
-    "ix_sample_file_datetime_utc": "(datetime_utc DESC NULLS LAST, sample_file_id)",
+    "ix_sample_file_datetime_utc": "(datetime_utc, sample_file_id)",
     "ix_sample_file_instrument_datetime_utc": (
-        "(instrument, datetime_utc DESC NULLS LAST, sample_file_id)"
+        "(instrument, datetime_utc, sample_file_id)"
     ),
     "ix_sample_file_processing_updated_utc": "(processing_updated_utc)",
 }
@@ -69,23 +69,25 @@ _SEED_SQL = """
 
 # --- The list's statements -------------------------------------------------
 
-# `get_sample_files` in its default order: newest first, rows without a time
-# last, the id breaking ties. The count wraps the ordered statement whole,
-# ORDER BY and all, which is how the controller counts it.
-_ORDER = "ORDER BY datetime_utc DESC NULLS LAST, sample_file_id"
-_RECENT = f"SELECT * FROM sample_file WHERE datetime_utc >= :since {_ORDER}"
-_ONE_INSTRUMENT = (
-    "SELECT * FROM sample_file"
-    f" WHERE datetime_utc >= :since AND instrument = 'instrument-1' {_ORDER}"
-)
+# The shapes `get_sample_files` sends: the time and then the id, both in the
+# sort's direction, for the page, and no order at all for the count. The
+# controller's own statements are EXPLAINed against the models' indexes in
+# tests/integration/api/sample/test_sample_file_list_plan.py; these are the
+# same shapes against what the migration built.
+_NEWEST_FIRST = "ORDER BY datetime_utc DESC, sample_file_id DESC"
+_OLDEST_FIRST = "ORDER BY datetime_utc, sample_file_id"
+_RECENT = "SELECT * FROM sample_file WHERE datetime_utc >= :since"
+_ONE_INSTRUMENT = f"{_RECENT} AND instrument = 'instrument-1'"
 _STATEMENTS = {
-    "recent page": f"{_RECENT} LIMIT 50",
+    "recent, newest first": f"{_RECENT} {_NEWEST_FIRST} LIMIT 50",
+    "recent, oldest first": f"{_RECENT} {_OLDEST_FIRST} LIMIT 50",
     "recent count": f"SELECT count(*) FROM ({_RECENT}) AS anon_1",
-    "instrument page": f"{_ONE_INSTRUMENT} LIMIT 50",
+    "instrument, newest first": f"{_ONE_INSTRUMENT} {_NEWEST_FIRST} LIMIT 50",
+    "instrument, oldest first": f"{_ONE_INSTRUMENT} {_OLDEST_FIRST} LIMIT 50",
     "instrument count": f"SELECT count(*) FROM ({_ONE_INSTRUMENT}) AS anon_1",
 }
 _BY_PROCESSING = (
-    f"SELECT * FROM sample_file WHERE processing_updated_utc >= :since {_ORDER}"
+    f"SELECT * FROM sample_file WHERE processing_updated_utc >= :since {_NEWEST_FIRST}"
 )
 
 
@@ -180,16 +182,18 @@ def test_the_upgrade_adds_the_indexes_and_changes_no_row(migrated: dict) -> None
 @pytest.mark.parametrize(
     ("statement", "index"),
     [
-        ("recent page", "ix_sample_file_datetime_utc"),
+        ("recent, newest first", "ix_sample_file_datetime_utc"),
+        ("recent, oldest first", "ix_sample_file_datetime_utc"),
         ("recent count", "ix_sample_file_datetime_utc"),
-        ("instrument page", "ix_sample_file_instrument_datetime_utc"),
+        ("instrument, newest first", "ix_sample_file_instrument_datetime_utc"),
+        ("instrument, oldest first", "ix_sample_file_instrument_datetime_utc"),
         ("instrument count", "ix_sample_file_instrument_datetime_utc"),
     ],
 )
 def test_the_list_is_read_in_order_off_its_index(
     migrated: dict, statement: str, index: str
 ) -> None:
-    """The count sorts too: the statement it counts carries the ORDER BY."""
+    """Either direction is one read of the index, backwards or forwards."""
     plan = migrated["plans"][statement]
     assert index in plan, plan
     assert "Sort" not in plan, plan
