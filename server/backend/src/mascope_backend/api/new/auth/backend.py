@@ -123,6 +123,16 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
                 ),
             )
 
+        # The service the token was minted for, which the header has just been
+        # checked against: the access log names it, so an agent's requests
+        # (ai-agent, the File Agent, ...) are told apart from a notebook's
+        # under the same account. Set before the device policy and the route
+        # check, so a token either of them refuses is attributed as well. The
+        # token row's expiry is checked later, by the access-token strategy,
+        # so an expired or revoked token still in the cache is logged under
+        # its service too, then refused.
+        request.state.token_service_name = token_service_name
+
         # Device policy for agent tokens: refuse unbound ones when the
         # deployment requires paired devices, refuse a device token past its
         # short lifetime, and record when a bound device was last seen. All
@@ -143,12 +153,6 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
         # bearer path sets it, so a cookie-authenticated request carrying a
         # stray Authorization header stays unattributed.
         request.state.token_device_id = token_device_id
-        # The service the token was minted for, which the header has just been
-        # checked against: the access log names it, so an agent's requests
-        # (ai-agent, the File Agent, ...) are told apart from a notebook's
-        # under the same account. Set before the route check, so a token
-        # refused by a route that takes none is attributed as well.
-        request.state.token_service_name = token_service_name
 
         # Check if the endpoint allows for token access
         if hasattr(route_func, "token_access") and route_func.token_access:

@@ -56,9 +56,10 @@ const SERVICE_CONFIGS = [
   },
   {
     id: 'ai-agent',
-    // An AI agent acting for this person through the SDK: the reads a
-    // notebook makes, under a name of its own so the backend log tells its
-    // requests apart. A personal token, like the notebook's; it does not pair.
+    // An AI agent acting for this person through the SDK: the routes a
+    // notebook's token opens, writes included, with this person's role, under
+    // a name of its own so the backend log tells its requests apart. A
+    // personal token, like the notebook's; it does not pair.
     label: 'AI Agent',
     minRole: 100 // guest role_id
   },

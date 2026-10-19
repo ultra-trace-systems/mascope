@@ -14,6 +14,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select, update
+from test_utils import captured_logs
 
 from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.new.auth.access_token import cache as token_cache
@@ -268,6 +269,34 @@ async def test_strict_mode_refuses_an_unbound_agent_token_over_http(
         strict = await client.get("/api/sample/files", params={"page": 0, "limit": 1})
     assert strict.status_code == 401, strict.text
     assert "paired agent credentials" in strict.text
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_refusal_is_logged_under_the_token_service(
+    test_users, strict_mode
+):
+    """The access log names the service of a token the device policy refuses.
+
+    The name is recorded once the token and its header agree, before the
+    device policy runs, so an unpaired agent refused in strict mode is still
+    told apart in the log from a notebook or a web session.
+    """
+    unbound = await create_access_token(
+        user=test_users["editor"], service_name="file-agent"
+    )
+
+    strict_mode(True)
+    with captured_logs("INFO") as records:
+        async with _bearer_client(unbound) as client:
+            resp = await client.get("/api/sample/files", params={"page": 0, "limit": 1})
+    assert resp.status_code == 401, resp.text
+    logged = [
+        r["extra"]["service_name"]
+        for r in records
+        if r["message"] == "/api/sample/files"
+        and r["extra"].get("path") == "/api/sample/files"
+    ]
+    assert logged == ["file-agent"]
 
 
 @pytest.mark.asyncio
