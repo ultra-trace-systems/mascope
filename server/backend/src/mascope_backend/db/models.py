@@ -5,6 +5,7 @@ This module defines all database models including user management, datasets,
 samples, targets, and analysis matches.
 """
 
+import hashlib
 from datetime import datetime as dt
 from datetime import timezone
 from functools import lru_cache
@@ -12,9 +13,6 @@ from typing import Optional
 
 from fastapi_users.db import (
     SQLAlchemyBaseUserTable,
-)
-from fastapi_users_db_sqlalchemy.access_token import (
-    SQLAlchemyBaseAccessTokenTable,
 )
 from sqlalchemy import (
     JSON,
@@ -324,15 +322,35 @@ class Role(Base):
     user = relationship("User", back_populates="role")
 
 
-class AccessToken(SQLAlchemyBaseAccessTokenTable[int], Base):
+def hash_access_token(token: str) -> str:
+    """
+    The digest an access token is stored and looked up by.
+
+    A plain SHA-256, as for recovery codes: the token is a random secret the
+    server generates, so there is no brute-force margin a slow or keyed hash
+    would buy, and a digest keeps the lookup an indexed equality.
+
+    :param token: The token as its holder presents it.
+    :type token: str
+    :return: The hex digest, 64 characters.
+    :rtype: str
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+class AccessToken(Base):
     """
     AccessToken model for storing access tokens linked to user accounts.
     Supports different services for authentication.
+
+    Only a digest of the token is kept (:func:`hash_access_token`), so a copy
+    of the table hands out no credential: the token itself is shown once, to
+    whoever it is minted for, and every lookup hashes the presented value.
     """
 
     __tablename__ = "access_token"
 
-    token: Mapped[str] = mapped_column(String(length=43), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(length=64), primary_key=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("user.id", ondelete="CASCADE"), nullable=False
     )
@@ -3242,6 +3260,7 @@ __all__ = [
     "User",
     "Role",
     "AccessToken",
+    "hash_access_token",
     "UserRecoveryCode",
     "Notification",
     "NotificationFile",

@@ -21,10 +21,7 @@ window. Two kinds of entry are held, and they differ in what they cost:
   has already read the row through ``read_token`` before it asks for the
   context. See :func:`get_auth_context`.
 - ``user`` - a validated ``User`` row from ``validate_service_access_token``:
-  the Socket.IO path, and the liveness probe in
-  ``access_token.service.get_access_token`` that decides whether to hand back
-  an existing converter token or mint a replacement - so that decision comes
-  out of this window too. **This one is stale for up to the TTL, in two
+  the Socket.IO path. **This one is stale for up to the TTL, in two
   ways.** The token itself: a deleted token keeps authenticating until the
   entry lapses, and several things delete tokens - unpairing a device, an
   administrator clearing a user's credentials, and any password write (see
@@ -52,9 +49,9 @@ applies to each worker independently. It is deliberately seconds, not minutes,
 and setting the TTL to 0 disables caching entirely.
 
 Only successes are cached. A rejection must stay cheap to reverse: tokens are
-minted on demand (a machine account's file-converter token is created at its
-first upload), so a negative result pinned even briefly would refuse a token
-that had just come into existence. It is also what keeps the window between a
+minted on demand (a file-converter token is created for each upload), so a
+negative result pinned even briefly would refuse a token that had just come
+into existence. It is also what keeps the window between a
 token's INSERT and the UPDATE that labels it harmless - a row read in between
 has no service name, is refused, and the refusal is not remembered.
 """

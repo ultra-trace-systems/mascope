@@ -154,6 +154,24 @@ URL** and an **API token**.
     Treat it like a password. Do not share it or commit it to version control.
     To expire an existing token, you can simply generate a new one.
 
+### When your token expires
+
+An API token works for **90 days** from the moment you generate it. After
+that, every request made with it is refused with a `401`, and the SDK reports
+an `AuthenticationError` (see [Troubleshooting](#authenticationerror-or-401-response)).
+
+To rotate a token, before or after it expires:
+
+1. Generate a new token in the **Settings** tab, as above. This also revokes
+   the token you had for that service, so anything still using the old one
+   stops working at once.
+2. Replace the value of `MASCOPE_ACCESS_TOKEN` in your `.env` file with the
+   new token.
+3. Restart the Jupyter kernel, so the SDK reads the new value.
+
+Mascope stores only a fingerprint of your token, not the token itself, so it
+cannot show you a token again: if you lose it, generate a new one.
+
 ### Create a `.env` file
 
 In your project folder, create a new file called `.env` (note the leading dot).
@@ -287,8 +305,9 @@ The SDK can't find your credentials. Verify that:
 
 ### `AuthenticationError` or `401` response
 
-Your API token is invalid or expired. Generate a new one in your Mascope
-account settings.
+Your API token is invalid or expired: a token works for 90 days after it is
+generated. Generate a new one in your Mascope account settings and put it in
+your `.env` file (see [When your token expires](#when-your-token-expires)).
 
 !!! note
     Every time you edit the `.env` file, you will need to restart the Jupyter

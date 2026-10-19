@@ -630,9 +630,10 @@ instead.
 
 ### Effect on API access tokens
 
-When a user changes their password, that user's access tokens are revoked. The
-file-converter token is reissued automatically, but **SDK and notebook tokens are
-not** - their holders must regenerate them.
+When a user changes their password, that user's access tokens are revoked.
+New uploads are unaffected, since each upload is given a file-converter token of
+its own, but **SDK and notebook tokens are not reissued** - their holders must
+regenerate them.
 
 A **paired instrument agent is not affected**: its credential belongs to the
 machine account the pairing created, not to the person who approved it, so no

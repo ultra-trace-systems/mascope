@@ -79,7 +79,7 @@ def ensure_device_token_fresh(
     Refuse a device-bound agent token that is older than its short lifetime.
 
     Device tokens live in plaintext on shared instrument PCs, so they expire
-    far sooner than the 360-day database-strategy cap and the agent renews them
+    far sooner than the 90-day database-strategy cap and the agent renews them
     automatically. Enforced only for device-bound tokens; unbound personal or
     internal tokens keep the default lifetime. A token past the limit is
     refused, not deleted - renewal (a fresh token) or re-pairing is the way

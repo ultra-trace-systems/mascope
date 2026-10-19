@@ -42,6 +42,7 @@ from mascope_backend.db import (
     User,
     async_session,
     configure_database_engine,
+    hash_access_token,
 )
 from mascope_backend.runtime import runtime
 
@@ -56,7 +57,7 @@ DEMO_PASSWORD = "mascope-demo"
 # first-owner signup page until an owner-role user exists) and can do anything
 # in the local demo without a separate signup step.
 DEMO_ROLE = "owner"
-# Fixed access tokens per service (each <= 43 chars - AccessToken.token column).
+# Fixed access tokens per service, stored as their digests like any token.
 # - mascope_sdk: notebook/SDK access (MASCOPE_ACCESS_TOKEN)
 # - file-converter: required internally by the upload route (get_access_token)
 #   and used by the converter for its API/socket callbacks
@@ -144,17 +145,20 @@ async def _refresh_demo_tokens(session, user: User) -> None:
     now = datetime.now(timezone.utc)
     for service, token in DEMO_TOKENS.items():
         # Drop any prior token for this user+service, and any holder of the
-        # fixed token string (the PK) from a previous run.
+        # fixed token's digest (the PK) from a previous run.
         await session.execute(
             delete(AccessToken).where(
                 AccessToken.user_id == user.id,
                 AccessToken.service_name == service,
             )
         )
-        await session.execute(delete(AccessToken).where(AccessToken.token == token))
+        token_hash = hash_access_token(token)
+        await session.execute(
+            delete(AccessToken).where(AccessToken.token_hash == token_hash)
+        )
         session.add(
             AccessToken(
-                token=token,
+                token_hash=token_hash,
                 user_id=user.id,
                 service_name=service,
                 created_at=now,
