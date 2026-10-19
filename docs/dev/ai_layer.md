@@ -62,9 +62,14 @@ time it is asked for one, which `compute_peak_timeseries` drives on purpose
 ([samples.py:671-778](../../libraries/sdk/src/mascope_sdk/resources/samples.py)).
 The high-level loaders stamp the server's provenance block (deployment id,
 `mascope_version`, `match_score_version`, `peak_assignment_engine_version`) on
-every frame they return as `df.attrs["provenance"]`
-([client.py:393-485](../../libraries/sdk/src/mascope_sdk/client.py)), which is
-what an agent's answer cites (section 3.4). There is still no collections
+every frame they return as `df.attrs["provenance"]`: the five loaders stamp
+it on return
+([client.py:648, 755, 859, 928, 1036](../../libraries/sdk/src/mascope_sdk/client.py)),
+through a helper that fetches the block once
+([client.py:460-485](../../libraries/sdk/src/mascope_sdk/client.py)). That is
+what an agent's answer cites (section 3.4), but it is best effort: an older
+server without the provenance route, or a failed call, returns the frame
+unstamped, so the toolkit must check for the key rather than assume it. There is still no collections
 resource: collections surface only as the `target_collection_ids` and
 `target_collection_names` columns on peaks
 ([samples.py:332-345](../../libraries/sdk/src/mascope_sdk/resources/samples.py)).
@@ -78,12 +83,17 @@ The server matches each row to the nearest batch peak, measures the engine's
 formula against that peak's members, and lands the result as a new batch run
 under the engine's name; curated and isotopologue batch peaks are left alone,
 and the name `mascope` is reserved so an import cannot pass as the server's
-own run. Its docstring's example lands a peaky (1.4) result. (The module's
-own docstring still calls the resource read-only.) Besides it, the agent
-upload helpers in
-[_agents.py](../../libraries/sdk/src/mascope_sdk/_agents.py) (`api_post_file`,
-`api_post_file_tus`) are exported but documented as not part of the public
-SDK; the File Agent uploads through them under its own service name.
+own run. The `BatchPeaksResource` class docstring's example lands a peaky
+(1.4) result
+([batch_peaks.py:55-58](../../libraries/sdk/src/mascope_sdk/resources/batch_peaks.py)).
+(The module's own docstring still calls the resource read-only.) Besides it,
+the agent helpers in
+[_agents.py](../../libraries/sdk/src/mascope_sdk/_agents.py) - the uploads
+`api_post_file` and `api_post_file_tus`, and the device-token renewal
+`api_renew_agent_token`, which posts to `POST /api/auth/devices/token`
+([_agents.py:276-301](../../libraries/sdk/src/mascope_sdk/_agents.py)) - are
+exported but documented as not part of the public SDK; the File Agent uses
+them under its own service name.
 
 How phase 3 relates to it: `import_run` is additive (a new run beside the
 existing ones, nothing deleted or moved), engine-specific, and reaches a route
@@ -128,11 +138,14 @@ the fifth has been fixed since the draft:
   by object, not copy: workspaces, datasets, batches and ionization
   mechanisms ([datasets.py:41-52](../../libraries/sdk/src/mascope_sdk/resources/datasets.py)
   and its siblings) and the per-batch sample cache
-  ([samples.py:242-251](../../libraries/sdk/src/mascope_sdk/resources/samples.py));
-  a mutating caller corrupts the session cache. `samples.list()` itself copies
-  each batch's frame before adding a column
+  ([samples.py:241-251](../../libraries/sdk/src/mascope_sdk/resources/samples.py));
+  a mutating caller corrupts the session cache. That includes the common
+  single-batch call: `samples.list(batch=...)` returns the cached frame itself
+  ([samples.py:200-202](../../libraries/sdk/src/mascope_sdk/resources/samples.py)).
+  Only the multi-batch `samples.list(batches=...)` copies each batch's frame
+  before adding a column
   ([samples.py:221](../../libraries/sdk/src/mascope_sdk/resources/samples.py)),
-  so its result is safe; the others are not.
+  so only its result is safe to mutate.
 - **Score columns are client-side.** `match_score_ion` and
   `match_score_compound` are computed in the SDK from per-isotope scores
   ([samples.py:479-513](../../libraries/sdk/src/mascope_sdk/resources/samples.py)),
@@ -178,10 +191,11 @@ Two verified facts settle the draft's open questions:
   `/resave`, `/compute`, `/rematch` paths. `/save` overwrites the scope's
   stored aggregates: it clears the scope's sample-level match rows up front as
   a crash-safe completeness marker, then upserts the ion, compound, collection
-  and sample levels chunk by chunk (`aggregate_and_create_matches`, same
-  controller). `/resave` (batch only) is still a **destructive rebuild**: it
-  removes the ion, compound, collection and sample levels before recreating
-  them (`aggregate_and_recreate_matches`). So: preview freely, gate `/save`
+  and sample levels, in bounded sample chunks for a batch save
+  ([`aggregate_and_create_matches`, match_aggregate_controller.py:578](../../server/backend/src/mascope_backend/api/controllers/match/aggregate/match_aggregate_controller.py)).
+  `/resave` (batch only) is still a **destructive rebuild**: it removes the
+  ion, compound, collection and sample levels before recreating them
+  (`aggregate_and_recreate_matches`, the same file, `:823`). So: preview freely, gate `/save`
   and `/resave` hard.
 
 One asymmetry needs designing around: **target compounds have no workspace
@@ -213,7 +227,7 @@ allowlist is `mascope_sdk`, the internal `file-converter`, and four agents
 ([access_token/config.py:16-23](../../server/backend/src/mascope_backend/api/new/auth/access_token/config.py)).
 62 handlers carry the decorator, plus the six generated resumable-upload (tus)
 operations stamped by hand
-([sample_files_routes.py:1044-1049](../../server/backend/src/mascope_backend/api/routes/sample/files/sample_files_routes.py)):
+([sample_files_routes.py:1059-1067](../../server/backend/src/mascope_backend/api/routes/sample/files/sample_files_routes.py)):
 68 operations in the OpenAPI schema, 35 of them GETs.
 
 Consequences:
@@ -224,8 +238,8 @@ Consequences:
   backend work (auditing and opening routes) before it is SDK work (wrapping
   them). The draft's "roughly 15 thin wrapper methods" stands, but as the
   second half of the phase.
-- **Other write routes are, now.** Since the draft, 31 non-GET operations take
-  a token. Some are queries (peak and sample-file time series,
+- **Other write routes are, now.** Since the draft, 33 non-GET operations take
+  a token (31 POST, PATCH or DELETE, plus the tus HEAD and OPTIONS). Some are queries (peak and sample-file time series,
   `cheminfo/mz/query`, sample `match/aggregate/.../compound(s)`, the
   peak-assignment fits). The real writes are uploads and sample-file creation
   and bulk delete
@@ -263,7 +277,9 @@ Consequences:
   Hashing them and shortening the default lifetime is in progress (MAS-75); the
   number is still open. One short-lived facility exists since the draft, for
   paired devices only: a device-bound agent token expires after 30 days and the
-  agent renews it
+  agent renews it before then through `POST /api/auth/devices/token`
+  ([devices/routes.py:40-42](../../server/backend/src/mascope_backend/api/new/auth/devices/routes.py);
+  the SDK's `api_renew_agent_token`, 1.1); an expired one is refused
   ([access_token/config.py:56](../../server/backend/src/mascope_backend/api/new/auth/access_token/config.py),
   [validation.py:75-103](../../server/backend/src/mascope_backend/api/new/auth/access_token/validation.py)).
   **There is still no per-session or scoped token for a person** — the in-app
@@ -705,15 +721,23 @@ a token.
 | Capability | Endpoints | ACL | Token |
 |---|---|---|---|
 | Datasets ([dataset_routes.py](../../server/backend/src/mascope_backend/api/routes/dataset/dataset_routes.py)) | `POST /api/workspaces/{ws}/datasets`, `PATCH/DELETE .../{id}`, `POST .../{id}/move` | workspace editor (move: editor on both workspaces); a locked dataset needs global admin to update, delete or move | no |
-| Batches ([sample_batches_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/sample_batches_routes.py)) | `POST /api/sample/batches`, `PATCH /{id}`, `PATCH /status`, `POST /{id}/import`, `POST /{id}/copy`, `DELETE /{id}` | dataset editor to create; batch editor otherwise (status: editor on every listed batch; copy: also editor on the destination dataset); locked: update needs global admin, delete needs owner, import into it and copy into a locked dataset are refused | no |
-| Samples ([sample_items_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/items/sample_items_routes.py)) | `POST /api/sample/items`, `PATCH /{id}`, `POST /move`, `/copy`, `/delete`, `/process`, `DELETE /{id}` | editor (copy: **guest** on source, editor on destination batch; move: editor on both); locked: update and delete need owner, move and copy refuse a locked destination | no |
-| Target collections ([target_collections_routes.py](../../server/backend/src/mascope_backend/api/routes/target/collections/target_collections_routes.py)) | `POST/PATCH/DELETE /api/target/collections[/{id}]`; association via the `sample_batch_ids` payload field | workspace editor (global collection: global admin); batches-only update: guest on collection + editor on changed batches | no |
+| Batches ([sample_batches_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/sample_batches_routes.py)) | `POST /api/sample/batches`, `PATCH /{id}`, `PATCH /status`, `POST /{id}/import`, `POST /{id}/copy`, `DELETE /{id}`; background jobs `POST /{id}/peaks` (batch-peak aggregation), `POST /{id}/export_peaks` and `POST /{id}/export/spreadsheet` ([batches/export/routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/export/routes.py), included in this router) | dataset editor to create; batch editor otherwise, the background jobs included (status: editor on every listed batch; copy: also editor on the destination dataset); locked: update needs global admin, delete needs owner, import into it and copy into a locked dataset are refused | no |
+| Samples ([sample_items_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/items/sample_items_routes.py)) | `POST /api/sample/items`, `PATCH /{id}`, `POST /move`, `/copy`, `/delete`, `/process`, `/{id}/export_peak_data`, `DELETE /{id}` | editor (copy: **guest** on source, editor on destination batch; move: editor on both); locked: update and delete need owner, move refuses a locked source item or destination, copy a locked destination | no |
+| Target collections ([target_collections_routes.py](../../server/backend/src/mascope_backend/api/routes/target/collections/target_collections_routes.py)) | `POST/PATCH/DELETE /api/target/collections[/{id}]`; association via the `sample_batch_ids` payload field | workspace editor (global collection: global admin or superuser); batches-only update: guest on collection + editor on changed batches | no |
 | Target compounds ([target_compounds_routes.py](../../server/backend/src/mascope_backend/api/routes/target/compounds/target_compounds_routes.py)) | `POST/PATCH /api/target/compounds`, `DELETE /{id}` | **global editor only — no workspace ACL** | no |
-| Matching ([aggregate/](../../server/backend/src/mascope_backend/api/routes/match/aggregate/), [match_routes.py](../../server/backend/src/mascope_backend/api/routes/match/match_routes.py)) | `POST /api/match/aggregate/{sample\|batch}/{id}` and its `/isotope`, `/ion`, `/compound(s)` previews (+`/save`; `/resave` batch-only); `/api/match/{rematch,compute,remove}/...`; `/remove/all` | aggregate: guest (pure); save/resave: editor (save upserts, resave rebuilds); rematch/compute/remove: editor on the scope; remove/all: global admin | sample `/compound(s)` previews and **`POST /rematch/sample/{id}`** only |
-| Peak assignments ([peak_assignments/routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py)) | `POST /api/peak-assignments/sample/{id}/verify`, `PATCH .../assignment/{id}`, `POST .../assign`, `POST .../runs/import`, `DELETE .../runs/{id}`, `POST /calibration/{instrument}/recalibrate`, `POST .../fit/{aggregate,visualize}` | sample editor (recalibrate: superuser; fits: guest, compute only); behind the peak-assignment feature flag | **yes**, all |
-| Batch ledger ([batch_peaks_routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_routes.py)) | `POST /api/batch-peaks/batch/{id}/{backfill,search-untargeted,verify,retract,curate,release-curation,export,runs/import}` | batch editor (export: guest, writes a CSV to the user's temp store); behind the feature flag | **yes**, all |
-| Sample files ([sample_files_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/files/sample_files_routes.py)) | `POST /api/sample/files`, `POST /upload`, tus `/upload/tus[/{id}]`, `POST /delete`; `PATCH/DELETE /{id}`, `POST /{id}/peaks/compute`, `/{id}/process`, `/bind`, `/reprocess` | upload and create: editor in the instrument's workspace; bulk delete and the rest: instrument admin or editor | upload, create and bulk delete only |
+| Matching ([aggregate/](../../server/backend/src/mascope_backend/api/routes/match/aggregate/), [match_routes.py](../../server/backend/src/mascope_backend/api/routes/match/match_routes.py)) | `POST /api/match/aggregate/{sample\|batch}/{id}` and its previews (sample: `/isotope`, `/ion`, `/compound(s)`; batch: `/isotope` only), +`/save` (`/resave` batch-only); `/api/match/{rematch,compute,remove}/...`; `/remove/all`; the direct match-row writers `POST`/`DELETE /api/match/{isotopes,ions,compounds,collections,samples}` ([match/*/match_*_routes.py](../../server/backend/src/mascope_backend/api/routes/match/)) | aggregate: guest (pure); save/resave: editor (save upserts, resave rebuilds); rematch/compute/remove: editor on the scope; remove/all: global admin; direct writers: editor on every sample written (`DELETE`: on the sample or batch) | sample `/compound(s)` previews and **`POST /rematch/sample/{id}`** only |
+| Peak assignments ([peak_assignments/routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py)) | `POST /api/peak-assignments/sample/{id}/verify`, `PATCH .../assignment/{id}`, `POST .../assign`, `POST .../runs/import`, `DELETE .../runs/{id}`, `POST /calibration/{instrument}/recalibrate`, `POST .../fit/{aggregate,visualize}` | sample editor (recalibrate: superuser; fits: guest, compute only); behind the peak-assignment feature flag, except the two fits | **yes**, all |
+| Batch ledger ([batch_peaks_routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_routes.py)) | `POST /api/batch-peaks/batch/{id}/{backfill,search-untargeted,verify,retract,curate,release-curation,export,runs/import}` | batch editor (export: guest, writes a CSV to the user's temp store); behind the feature flag, except export, which stays open so a ledger outlives an opt-out | **yes**, these eight; the router's `POST /records/series` is a guest query and takes no token |
+| Sample files ([sample_files_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/files/sample_files_routes.py)) | `POST /api/sample/files`, `POST /upload`, tus `/upload/tus[/{id}]`, `POST /delete`; `PATCH/DELETE /{id}`, `POST /{id}/peaks/compute`, `/{id}/process`, `/bind`, `/reprocess` | upload and create: editor in the instrument's workspace; `process` and `bind`: instrument editor; bulk delete, `PATCH`/`DELETE /{id}`, `peaks/compute` and `reprocess`: instrument **admin** | upload, create and bulk delete only |
 
 **The data-organisation rows (datasets to matching `/save`) accept no
 access-token auth** (`token_access=True` absent); the token-reachable writes are
 the rematch route and the assignment and upload surfaces (section 1.3).
+
+Left out on purpose, as edits to configuration or reference data rather than
+to the data an agent organises: `PATCH /api/target/ions/{id}`, the
+`/api/calibration/mz_*` POSTs, `POST /api/match_ratings`, and the
+workspace-setup routes (workspaces and members, ionization mechanisms and
+modes, attribute templates, acquisition datasets, and instrument configs,
+whose create takes a token, 1.3). The write-route table of phase 0's token
+audit (section 4) should still list them.
