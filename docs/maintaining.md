@@ -1234,17 +1234,21 @@ processing, and the command says so. It
 reads a copy of the file on this machine, inside the backend container, so the
 stack must be up.
 
-**Acquisition times are hours off for files uploaded from the browser**, and
-their ingest appears to precede their acquisition. A raw file records its
-acquisition time as the instrument PC's wall clock, with no offset, and the
-server can only place it in UTC if the upload says which zone that clock was
-in. A File Agent reports its machine's zone; until the fix that shipped with
-this script the web app reported none, and the converter then read the wall
-clock in its own zone, which is UTC in the backend image. Such a file is stored with
-`utc_offset_source = 'guess'`, no `acquisition_timezone`, and a `datetime_utc`
-that is the wall clock labelled UTC - two hours late in central European
-summer time. New uploads from the web app are right; the rows already stored
-are repaired by reading each wall clock in the zone the instrument PC was in:
+**Acquisition times are hours off for files that were uploaded without a
+timezone**, and their ingest appears to precede their acquisition. A raw file
+records its acquisition time as the instrument PC's wall clock, with no
+offset, and the server can only place it in UTC if the upload says which
+zone that clock was in. An upload that reports none - the web app before it
+reported the browser's zone, an SDK script, a File Agent older than zone
+reporting - has the wall clock read in the converter's own zone, which is UTC
+in the backend image. Such a file is stored with `utc_offset_source =
+'guess'`, no `acquisition_timezone`, and a `datetime_utc` that is the wall
+clock labelled UTC - two hours late in central European summer time. Such
+rows keep arriving until every client of the site reports a zone; the rows
+already stored are repaired by reading each wall clock in the zone the
+instrument PC's clock is *set to* (its Windows time zone), which is not
+always the zone the site is in - a PC whose clock is set to UTC needs no
+repair, and naming the site's zone for it would shift every one of its rows:
 
 ```sh
 # report what would change, without changing anything
@@ -1254,16 +1258,29 @@ MASCOPE_FIX_GUESSED_UTC_ZONE=Europe/Vienna mascope prod db script run fix_guesse
 MASCOPE_FIX_GUESSED_UTC_ZONE=Europe/Vienna MASCOPE_FIX_GUESSED_UTC_APPLY=1 mascope prod db script run fix_guessed_datetime_utc
 ```
 
-`MASCOPE_FIX_GUESSED_UTC_INSTRUMENT` narrows it to one instrument, for a
-server whose instruments stand in different zones, and
+Read the dry run's evidence line before applying: it counts the rows that end
+after their own registration time, as stored and as they would be after the
+repair. A wall clock stored as UTC east of UTC shows as rows that end after
+they were registered, which the repair clears; rows that are already right
+show none, and a repair that creates such rows is in the wrong zone.
+`MASCOPE_FIX_GUESSED_UTC_INSTRUMENT` narrows the run to one instrument, for a
+server whose instruments' clocks are set to different zones, and
 `MASCOPE_FIX_GUESSED_UTC_CREATED_MIN` / `_CREATED_MAX` (ISO instants) to a
-window of registration time. The script touches only rows guessed with a zero
-offset; a guessed row stored with another offset was guessed in a real zone
-and is counted and left alone, as is a row that carries a reported zone. A
-row already right in the named zone, as a British winter file is, is not
-written, so running the script again is harmless. The repair follows the
-converter's rule for the hour the clocks repeat or skip, and names the rows
-that fall in one.
+window of registration time - rows that have no registration time (registered
+before the column existed) fall outside any window and are counted as such.
+The script repairs Orbitrap rows only: a guessed TOF row's `datetime_utc` is
+already right, since its local time is the acquisition's UTC instant plus the
+guessed offset, and it is that local column that is off. It touches only rows
+guessed with a zero offset; a guessed row stored with another offset was
+guessed in a real zone, or repaired by an earlier run, and is counted and left
+alone, as is a row that carries a reported zone. A row already right in the
+named zone, as a British winter file is, is not written. The instrument
+function fitted from a repaired file is moved with it. Every apply writes a
+ledger of the rows it changed, old and new value, to
+`.runtime/env/<env>/repairs/` under the Mascope home, so a repair made in the
+wrong zone can be found and undone row by row without restoring a dump. The
+repair follows the converter's rule for the hour the clocks repeat or skip,
+and names the rows that fall in one.
 
 **Backend unhealthy after an update.** The updater stops and leaves the stack in
 place (no automatic rollback). Investigate with `mascope prod logs backend`. To
