@@ -13,6 +13,7 @@ import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 import FloatLabel from 'primevue/floatlabel'
 import ContextMenu from 'primevue/contextmenu'
+import ProgressSpinner from 'primevue/progressspinner'
 import { useConfirm } from 'primevue/useconfirm'
 
 import { UppyContextProvider } from '@uppy/vue'
@@ -284,26 +285,25 @@ const filterActive = computed(
 const filteredCount = computed(() => acquisitions.value.length)
 const pageCount = computed(() => app.data.acquisition.list?.length ?? 0)
 
-// --- the empty list. It says what narrowed it and offers the way out. The
-// time range is the usual reason on a server whose files are older than the
-// range in force - the list then opened empty with no hint why, and nothing
-// closer than the selector to do about it - so the range is named and the next
-// one up, or all time, is a click away. The filters are the other reason: the
-// page filters above narrow the page on screen, the status filter the query.
+// --- an empty list says what emptied it and offers the way out. The page
+// filters above narrow only the page on screen, so when they are what emptied
+// it the table stays up, paginator included, with the message in its body: the
+// match may be on another page. The time range and the status filter narrow
+// the query itself, so an empty answer is explained under the table, with the
+// range named and the next one up, or all time, a click away. Before the first
+// answer, or after a failed one, there is nothing to explain yet.
 const timeMode = computed(() => app.data.acquisition.time.mode)
 const widerMode = computed(() => widerTimeMode(timeMode.value))
 // All time is offered on its own unless it is the next range up anyway, or
 // the range in force.
 const allTimeOffered = computed(() => timeMode.value !== ALL_TIME && widerMode.value !== ALL_TIME)
-const narrowed = computed(
-  () => filterActive.value || Boolean(app.data.acquisition.processingStatus)
-)
+const statusFiltered = computed(() => Boolean(app.data.acquisition.processingStatus))
 const emptyMessage = computed(() => {
   const range = describeTimeMode(timeMode.value)
-  if (narrowed.value) {
+  if (statusFiltered.value) {
     return range
-      ? `No raw files match the current filters ${range}`
-      : 'No raw files match the current filters'
+      ? `No raw files with the chosen status ${range}`
+      : 'No raw files with the chosen status'
   }
   if (range) return `No raw files ${range}`
   return app.data.instrument.focused ? 'No raw files from this instrument' : 'No raw files yet'
@@ -402,7 +402,8 @@ const currentPageReportTemplate =
       </div>
       <Select
         inputId="time"
-        v-model="app.data.acquisition.time.mode"
+        :modelValue="app.data.acquisition.time.mode"
+        @update:modelValue="app.data.acquisition.setTimeMode"
         :options="TIME_MODES"
         style="flex-direction: row-reverse"
         placeholder="Recent"
@@ -473,7 +474,7 @@ const currentPageReportTemplate =
           <div class="table-container">
             <DataTable
               :key="tableKey"
-              v-show="acquisitions?.length"
+              v-show="pageCount > 0"
               :selection="app.data.acquisition.selected"
               @update:selection="
                 (sel) => (app.data.acquisition.selected = (sel ?? []).filter(Boolean))
@@ -562,9 +563,52 @@ const currentPageReportTemplate =
                   {{ app.data.acquisition.selected.length }} files selected
                 </strong>
               </template>
+              <!-- The page filters emptied the page on screen; the paginator
+                   above stays, since the match may be on another page. -->
+              <template #empty>
+                <div class="center" style="padding: 1rem">
+                  <div class="col" style="gap: 0.75rem">
+                    <i class="info-line">
+                      <span class="pi pi-filter" /><span
+                        >No raw files on this page match the filters</span
+                      >
+                    </i>
+                    <Button
+                      v-if="filterActive"
+                      label="Clear filters"
+                      icon="pi pi-filter-slash"
+                      size="small"
+                      text
+                      severity="secondary"
+                      @click="clearNarrowingFilters"
+                    />
+                  </div>
+                </div>
+              </template>
             </DataTable>
-            <div v-if="!acquisitions?.length" class="center empty-list" style="min-height: 150px">
-              <div class="col" style="gap: 0.75rem">
+            <div v-if="!pageCount" class="center empty-list" style="min-height: 150px">
+              <div v-if="app.data.acquisition.loadError" class="col" style="gap: 0.75rem">
+                <i class="info-line">
+                  <span class="pi pi-exclamation-triangle" /><span
+                    >Could not load the raw files</span
+                  >
+                </i>
+                <Button
+                  label="Retry"
+                  icon="pi pi-refresh"
+                  size="small"
+                  outlined
+                  severity="secondary"
+                  @click="app.data.acquisition.load()"
+                />
+              </div>
+              <ProgressSpinner
+                v-else-if="app.data.acquisition.pending || !app.data.acquisition.loaded"
+                style="width: 2rem; height: 2rem"
+                strokeWidth="6"
+                aria-label="Loading raw files"
+              />
+              <div v-else class="col" style="gap: 0.75rem">
                 <i class="info-line">
                   <span class="pi pi-inbox" /><span>{{ emptyMessage }}</span>
                 </i>
@@ -588,7 +632,7 @@ const currentPageReportTemplate =
                     @click="app.data.acquisition.setTimeMode(ALL_TIME)"
                   />
                   <Button
-                    v-if="narrowed"
+                    v-if="statusFiltered"
                     label="Clear filters"
                     icon="pi pi-filter-slash"
                     size="small"
