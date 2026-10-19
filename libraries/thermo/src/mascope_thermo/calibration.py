@@ -49,11 +49,13 @@ def _number(value) -> float | None:
     """A trailer value as a finite float, or None.
 
     The Thermo backend gives trailer values as text, OpenTFRaw as numbers.
+    The text is formatted in the machine's culture, so its decimal mark may
+    be a comma (``"169409639,6526"``); it carries no group separators.
     """
     if value is None:
         return None
     try:
-        number = float(str(value).strip())
+        number = float(str(value).strip().replace(",", "."))
     except ValueError:
         return None
     return number if math.isfinite(number) else None

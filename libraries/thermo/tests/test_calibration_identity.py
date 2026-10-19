@@ -123,9 +123,17 @@ def test_the_medians_are_medians_not_the_first_or_a_mean():
     assert calibration["c_over_b2"] == 2.0 / 110.0**2
 
 
-def test_trailer_text_is_read_as_numbers():
+@pytest.mark.parametrize(
+    ("b", "c"),
+    [
+        pytest.param("100.5", " 4.25 ", id="decimal-point"),
+        # Formatted in the machine's culture, as a Finnish or German one does.
+        pytest.param("100,5", " 4,25 ", id="decimal-comma"),
+    ],
+)
+def test_trailer_text_is_read_as_numbers(b, c):
     # The Thermo library gives trailer values as text.
-    reader = _Reader([(NEG, _params("100.5", " 4.25 "))])
+    reader = _Reader([(NEG, _params(b, c))])
 
     calibration = stream_calibrations(reader)[NEG_KEY]
 
