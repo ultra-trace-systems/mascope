@@ -65,7 +65,7 @@ async def get_sample_batches_route(
 
 
 @sample_batches_router.get("/{sample_batch_id}")
-@api_route()
+@api_route(token_access=True)
 async def get_sample_batch_route(
     sample_batch_id: str,
     user=Depends(current_active_user),

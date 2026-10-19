@@ -31,7 +31,7 @@ target_collections_router = APIRouter(
 
 
 @target_collections_router.get("")
-@api_route()
+@api_route(token_access=True)
 async def get_target_collections_route(
     query_params: GetTargetCollectionsQueryParams = Query(),
     user=Depends(current_active_user),
@@ -52,7 +52,7 @@ async def get_target_collections_route(
 
 
 @target_collections_router.get("/{target_collection_id}")
-@api_route()
+@api_route(token_access=True)
 async def get_target_collection_route(
     target_collection_id: str,
     user=Depends(current_active_user),
