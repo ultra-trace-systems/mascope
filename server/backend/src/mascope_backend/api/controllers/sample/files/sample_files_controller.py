@@ -78,6 +78,7 @@ from mascope_backend.socket.records.service import (
 from mascope_backend.socket.storage.services import is_service_connected
 from mascope_file.io import load_peak_data
 from mascope_file.name import (
+    filename_to_datafile_path,
     forget_instrument_type,
     get_instrument_name,
     get_sample_file_type,
@@ -1984,12 +1985,6 @@ async def get_sample_file_metadata(
     )
 
 
-#: The source data file each kind of stored sample keeps in its directory, by
-#: the sample file type ``get_sample_file_type`` reads: the processor that
-#: converted it decides, a raw file for an Orbitrap and an HDF5 file for a TOF.
-_STORED_DATA_FILES = {"orbi_raw": "data.raw", "tof_h5": "data.h5"}
-
-
 def _stored_data_file(filename: str) -> str | None:
     """The path of the source data file a sample file keeps, if it keeps one.
 
@@ -2001,10 +1996,7 @@ def _stored_data_file(filename: str) -> str | None:
     :rtype: str | None
     """
     try:
-        data_file = _STORED_DATA_FILES.get(get_sample_file_type(filename))
-        if data_file is None:
-            return None
-        path = os.path.join(parse_path_from_item_filename(filename), data_file)
+        path = filename_to_datafile_path(filename)
     except (OSError, ValueError):
         return None
     return path if os.path.isfile(path) else None

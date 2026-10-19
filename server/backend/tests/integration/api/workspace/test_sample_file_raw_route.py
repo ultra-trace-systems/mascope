@@ -29,6 +29,7 @@ from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken, SampleFile
 from mascope_backend.db.id import gen_id
 from mascope_backend.socket.storage import redis_storage_client
+from mascope_file import name as mascope_name
 
 
 #: Not a valid raw file, and need not be: the route sends bytes, it reads none.
@@ -72,11 +73,9 @@ def filestore(monkeypatch, tmp_path):
         ``data=None``; it returns the file's path.
     """
     kind = {"type": "orbi_raw"}
+    monkeypatch.setattr(mascope_name, "get_sample_file_type", lambda _f: kind["type"])
     monkeypatch.setattr(
-        sample_files_controller, "get_sample_file_type", lambda _f: kind["type"]
-    )
-    monkeypatch.setattr(
-        sample_files_controller,
+        mascope_name,
         "parse_path_from_item_filename",
         lambda _f: str(tmp_path),
     )
@@ -236,7 +235,7 @@ async def test_a_file_whose_kind_cannot_be_told_is_not_found(
     def cannot_tell(_filename):
         raise ValueError("Failed to get instrument type")
 
-    monkeypatch.setattr(sample_files_controller, "get_sample_file_type", cannot_tell)
+    monkeypatch.setattr(mascope_name, "get_sample_file_type", cannot_tell)
 
     resp = await guest_client.get(f"/api/sample/files/{sample_file}/raw")
 
