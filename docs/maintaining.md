@@ -542,10 +542,11 @@ Configure it in `/etc/mascope/disk-check.env` (chmod 600, template
   backup one.
 - `HEALTHCHECK_FILLING_URL` - a **second** check, for the fill-rate warning:
   `<url>/fail` while a filesystem is projected to reach the floor within
-  `MIN_DAYS_TO_FLOOR` days, `<url>` otherwise. It is kept apart because
-  healthchecks.io notifies on a change of state: one check already down for
-  the warning would say nothing when the floor is actually crossed. Without
-  it, the warning is journalled and recorded as a `/log` event on
+  `MIN_DAYS_TO_FLOOR` days, or is below it, and `<url>` otherwise - so it does
+  not report "recovered" at the moment the floor is crossed. It is kept apart
+  because healthchecks.io notifies on a change of state: one check already
+  down for the warning would say nothing when the floor is actually crossed.
+  Without it, the warning is journalled and recorded as a `/log` event on
   `HEALTHCHECK_URL`, which notifies no one.
 
 ```sh

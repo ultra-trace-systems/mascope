@@ -230,6 +230,25 @@ def test_crossing_the_floor_fails_the_floor_check_while_filling_stays_its_own(
     assert check.pings() == [f"{URL}/fail", f"{FILLING_URL}/fail"]
 
 
+def test_a_filling_disk_that_crosses_the_floor_keeps_the_filling_check_down(check):
+    # Below the floor a filesystem is LOW, not FILLING; the filling check must
+    # not read that as recovered, nor turn down again if a cleanup lifts the
+    # disk just above the floor.
+    check.seed(_filling(10, 19, avail_now=120))
+    first = check.run(avail_gb=120, HEALTHCHECK_FILLING_URL=FILLING_URL)
+    assert "FILLING: state (.runtime) (/) has 120.0 GiB" in first.stdout, _out(first)
+    second = check.run(
+        avail_gb=95, now=NOW + 3 * 3600, HEALTHCHECK_FILLING_URL=FILLING_URL
+    )
+    assert "LOW: state (.runtime) (/) has 95.0 GiB" in second.stdout, _out(second)
+    assert check.pings() == [
+        URL,
+        f"{FILLING_URL}/fail",
+        f"{URL}/fail",
+        f"{FILLING_URL}/fail",
+    ]
+
+
 def test_the_projection_alert_can_be_turned_off(check):
     check.seed(_filling(10, 19, avail_now=400))
     result = check.run(avail_gb=400, MIN_DAYS_TO_FLOOR=0)
