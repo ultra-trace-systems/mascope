@@ -10,6 +10,8 @@ the request exactly as given - a label carries a colon and spaces, and must
 not be rewritten on the way.
 """
 
+import os
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -17,7 +19,7 @@ import pytest
 from loguru import logger
 from requests.exceptions import ChunkedEncodingError
 
-from mascope_sdk.exceptions import MascopeConnectionError
+from mascope_sdk.exceptions import MascopeConnectionError, NotFoundError
 from mascope_sdk.resources.sample_files import SampleFilesResource
 
 
@@ -292,6 +294,40 @@ def test_download_raw_into_a_directory_takes_the_upload_name(downloads, tmp_path
 
     assert written == tmp_path / "instr_2026.01.01.raw"
     assert written.read_bytes() == RAW
+
+
+@pytest.mark.parametrize("separator", sorted({os.sep, "/"}))
+def test_download_raw_into_a_directory_not_made_yet_makes_it(
+    downloads, tmp_path, separator
+):
+    directory = tmp_path / "downloads" / "today"
+
+    written = downloads.download_raw(FILE_ID, f"{directory}{separator}")
+
+    assert written == directory / "instr_2026.01.01.raw"
+    assert written.read_bytes() == RAW
+    assert list(directory.iterdir()) == [written]
+
+
+def test_download_raw_as_the_readme_shows_it(downloads, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    written = downloads.download_raw(FILE_ID, "downloads/")
+
+    assert written == Path("downloads") / "instr_2026.01.01.raw"
+    assert (tmp_path / written).read_bytes() == RAW
+
+
+def test_download_raw_refused_makes_no_directory(downloads, tmp_path, monkeypatch):
+    def refuse(path, params=None, stream=False):
+        raise NotFoundError("no source data file")
+
+    monkeypatch.setattr(downloads, "_get", refuse)
+
+    with pytest.raises(NotFoundError):
+        downloads.download_raw(FILE_ID, f"{tmp_path / 'downloads'}/")
+
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(

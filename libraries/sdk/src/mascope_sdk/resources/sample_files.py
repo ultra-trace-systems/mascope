@@ -17,6 +17,9 @@ from ._base import BaseResource
 #: How much of a downloaded file is held in memory at once.
 _DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 
+#: The characters a path given as text may end in to name a directory.
+_SEPARATORS = tuple(sep for sep in (os.sep, os.altsep) if sep)
+
 
 def _attachment_name(content_disposition: str | None) -> str | None:
     """The file name a ``Content-Disposition`` header gives, without a path.
@@ -191,9 +194,11 @@ class SampleFilesResource(BaseResource):
 
         :param sample_file_id: The ID of the sample file.
         :type sample_file_id: str
-        :param path: Where to write the file. An existing directory takes the
-            file under the name it was uploaded with; any other path is the
-            file itself, replaced if it exists.
+        :param path: Where to write the file. A directory takes the file under
+            the name it was uploaded with: an existing one, or text ending in
+            a path separator (``"downloads/"``), which is made if it does not
+            exist yet. Any other path is the file itself, replaced if it
+            exists.
         :type path: str | os.PathLike
         :return: The path the file was written to.
         :rtype: pathlib.Path
@@ -216,6 +221,10 @@ class SampleFilesResource(BaseResource):
         response = self._get(url_path, stream=True)
         with response:
             target = Path(path)
+            # Path() drops a trailing separator, so read it off the text: a
+            # directory named that way is one even before it exists.
+            if isinstance(path, str) and path.endswith(_SEPARATORS):
+                target.mkdir(parents=True, exist_ok=True)
             if target.is_dir():
                 name = _attachment_name(response.headers.get("Content-Disposition"))
                 target = target / (name or sample_file_id)
