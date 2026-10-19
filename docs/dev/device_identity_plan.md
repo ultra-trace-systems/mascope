@@ -349,8 +349,8 @@ The fix replaces the guess with a fact:
   itself carries (the TOF HDF5 attribute, written by the acquisition
   software) wins; the agent-supplied zone is next; the browser's zone, for
   a web upload, after that (see below); the host-clock guess remains only
-  as the last resort for old agents, and for a browser that names no
-  geographic zone.
+  as the last resort for old agents and SDK scripts, which send no zone,
+  and for a browser that names no geographic zone.
 - `sample_file` records the zone applied and its source (file, agent,
   browser, or guess), so every timestamp is auditable and recomputable
   later. The

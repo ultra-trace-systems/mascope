@@ -496,10 +496,12 @@ async def test_storing_an_upload_tells_the_converter_what_it_carried(
         access_token="t",
         acquisition=RECORD,
         sha256=SHA256,
+        browser_timezone="Europe/Vienna",
     )
 
     assert told.await_args.kwargs["acquisition"] == RECORD
     assert told.await_args.kwargs["sha256"] == SHA256
+    assert told.await_args.kwargs["browser_timezone"] == "Europe/Vienna"
 
 
 # ---------------------------------------------------------------------------

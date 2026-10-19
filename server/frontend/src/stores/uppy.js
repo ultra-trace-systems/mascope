@@ -66,6 +66,24 @@ export const useUppy = defineStore('app.uppy', () => {
       maxFileSize: maxUploadBytes,
       maxNumberOfFiles: 1000
     },
+    // The zone the acquisition times of these files are read in, as a File
+    // Agent sends its machine's: set on each file as its upload starts, not
+    // in the global meta at app start, since a tab stays open for days and
+    // the machine's zone can change under it - and a zone the browser stops
+    // naming must stop being sent, which a global meta never clears. The
+    // server ranks it below an agent's zone and above its own guess, and
+    // records it as the browser's, since the browser is wherever the person
+    // uploading sits. Nothing is sent when the browser names no geographic
+    // zone, and the server then falls back as before.
+    onBeforeUpload: (files) => {
+      const zone = browserTimezone()
+      return Object.fromEntries(
+        Object.entries(files).map(([id, file]) => {
+          const { browser_timezone: _stale, ...meta } = file.meta
+          return [id, { ...file, meta: zone ? { ...meta, browser_timezone: zone } : meta }]
+        })
+      )
+    },
     onBeforeFileAdded: (currentFile) => {
       let isValid = validateFile(currentFile)
       if (!isValid) {
@@ -107,18 +125,6 @@ export const useUppy = defineStore('app.uppy', () => {
       req.setHeader('X-SID', api.socket.id)
     }
   })
-  // The zone the acquisition times of these files are read in, as a File
-  // Agent sends its machine's. Read as each upload starts, not once at app
-  // start: a tab stays open for days, and the machine's zone can change
-  // under it. The server ranks it below an agent's zone and above its own
-  // guess, and records it as the browser's, since the browser is wherever
-  // the person uploading sits. Nothing is sent when the browser names no
-  // geographic zone, and the server then falls back as before.
-  uppy.on('upload', () => {
-    const zone = browserTimezone()
-    if (zone) uppy.setMeta({ browser_timezone: zone })
-  })
-
   // One note for a drop, about the files Uppy admitted - after its own checks
   // for duplicates, types and sizes - and only once the modes are known.
   uppy.on('files-added', (files) => {
