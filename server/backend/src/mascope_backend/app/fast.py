@@ -145,9 +145,9 @@ Each operation lists the credentials it accepts:
 - `APIToken` with `ServiceName`, as the SDK authenticates: an API token
   generated in the web app's settings, sent as `Authorization: Bearer <token>`
   together with an `X-Service-Name` header naming the service the token was
-  generated for - `mascope_sdk` for a Jupyter Notebooks token. Without that
-  header, or on an operation that does not list it, a token is refused with
-  401.
+  generated for - `mascope_sdk` for a Jupyter Notebooks token, `ai-agent` for
+  an AI agent's. Without that header, or on an operation that does not list
+  it, a token is refused with 401.
 """
 
 # Initialize FastAPI with the lifespan. The document names the version the
@@ -182,7 +182,7 @@ _TOKEN_SECURITY_SCHEMES = {
         "in": "header",
         "name": "X-Service-Name",
         "description": "The service the token was generated for: `mascope_sdk` "
-        "for a Jupyter Notebooks token.",
+        "for a Jupyter Notebooks token, `ai-agent` for an AI agent's.",
     },
 }
 
@@ -318,6 +318,11 @@ async def logger_middleware(request: Request, call_next):
     # per-client key so the access log and the limiter agree on the client.
     client_host = client_ip(request)
 
+    # The service an API token was minted for, set by get_enabled_backends
+    # once the token and its X-Service-Name agree; None for the web app's
+    # session and for a request no token authenticated.
+    service_name = getattr(request.state, "token_service_name", None)
+
     with runtime.logger.contextualize(
         path=request.url.path,
         method=request.method,
@@ -326,6 +331,7 @@ async def logger_middleware(request: Request, call_next):
         status_code=response.status_code,
         worker_pid=worker_pid,
         duration_ms=duration_ms,
+        service_name=service_name,
     ):
         # Log full URL with query params in debug mode
         if runtime.config.log_level == "debug":

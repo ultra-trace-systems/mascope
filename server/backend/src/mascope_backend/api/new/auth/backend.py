@@ -143,6 +143,12 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
         # bearer path sets it, so a cookie-authenticated request carrying a
         # stray Authorization header stays unattributed.
         request.state.token_device_id = token_device_id
+        # The service the token was minted for, which the header has just been
+        # checked against: the access log names it, so an agent's requests
+        # (ai-agent, the File Agent, ...) are told apart from a notebook's
+        # under the same account. Set before the route check, so a token
+        # refused by a route that takes none is attributed as well.
+        request.state.token_service_name = token_service_name
 
         # Check if the endpoint allows for token access
         if hasattr(route_func, "token_access") and route_func.token_access:

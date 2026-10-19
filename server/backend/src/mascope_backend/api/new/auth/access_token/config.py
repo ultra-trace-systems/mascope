@@ -20,6 +20,11 @@ class AccessTokenConfig(BaseModel):
         "file-agent",  # for the File Agent
         "export-agent",  # for CSV Export Agent
         "instrument-agent",  # for the File Agent inside an instrument control program
+        # For an AI agent acting for a person through the SDK: the same reads a
+        # notebook makes, under a name of its own so its requests are told
+        # apart from the person's in the backend log. A personal token, not a
+        # paired one.
+        "ai-agent",
     ]
     # How long a bearer token (SDK, agent, converter) authenticates after it
     # is minted. Its holder regenerates it from the profile dialog, or the
