@@ -589,7 +589,9 @@ class MascopeClient:
         :type average: bool
         :param confirm_above: If the number of samples exceeds this threshold,
                               an interactive confirmation prompt is shown before
-                              loading starts. Set to ``None`` to disable.
+                              loading starts; a caller with no interactive input
+                              gets :class:`~mascope_sdk.ConfirmationRequiredError`
+                              instead. Set to ``None`` to disable.
                               Defaults to 100.
         :type confirm_above: int | None
         :param max_workers: Maximum number of concurrent requests. Defaults to 8.
@@ -615,9 +617,16 @@ class MascopeClient:
             ``df.attrs["warnings"]`` lists what the server warned about
             the samples' reads, each warning once; empty when it warned
             about none.
+
+            ``df.attrs["complete"]`` is False when the read of some
+            sample failed, and ``df.attrs["failures"]`` names each
+            one and its error ([] when none did). When every read
+            failed the result is an empty frame carrying them.
         :rtype: pd.DataFrame | None
         :raises ValueError: If the dataset or batches cannot be resolved.
         :raises KeyboardInterrupt: If the user declines the confirmation prompt.
+        :raises ConfirmationRequiredError: If the prompt has no interactive
+            input to read.
 
         Example::
 
@@ -710,7 +719,9 @@ class MascopeClient:
         :type isotope: str | list[str], optional
         :param confirm_above: If the number of samples exceeds this threshold,
                               an interactive confirmation prompt is shown before
-                              loading starts. Set to ``None`` to disable.
+                              loading starts; a caller with no interactive input
+                              gets :class:`~mascope_sdk.ConfirmationRequiredError`
+                              instead. Set to ``None`` to disable.
                               Defaults to 20.
         :type confirm_above: int | None
         :param max_workers: Maximum number of concurrent requests. Defaults to 8.
@@ -729,9 +740,16 @@ class MascopeClient:
                  - ``height``: Intensity at each time point
 
                  Returns None if no matching peaks are found.
+
+                 ``df.attrs["complete"]`` is False when the read of some
+                 sample or peak failed, and ``df.attrs["failures"]`` names each
+                 one and its error ([] when none did). When every read
+                 failed the result is an empty frame carrying them.
         :rtype: pd.DataFrame | None
         :raises ValueError: If zero or more than one formula parameter is provided.
         :raises KeyboardInterrupt: If the user declines the confirmation prompt.
+        :raises ConfirmationRequiredError: If the prompt has no interactive
+            input to read.
 
         Example::
 
@@ -809,6 +827,11 @@ class MascopeClient:
                  ``df.attrs["warnings"]`` lists what the server warned about
                  the stages, each warning once; it is empty when no stage was
                  warned about.
+
+                 ``df.attrs["complete"]`` is False when the read of some
+                 stage failed, and ``df.attrs["failures"]`` names each
+                 one and its error ([] when none did). When every read
+                 failed the result is an empty frame carrying them.
         :rtype: pd.DataFrame | None
 
         .. note::
@@ -991,8 +1014,11 @@ class MascopeClient:
         :type source: str, optional
         :param confirm_above: If the number of samples exceeds this threshold,
                               an interactive confirmation prompt is shown
-                              before loading starts. Set to ``None`` to
-                              disable. Defaults to 100.
+                              before loading starts; a caller with no
+                              interactive input gets
+                              :class:`~mascope_sdk.ConfirmationRequiredError`
+                              instead. Set to ``None`` to disable. Defaults
+                              to 100.
         :type confirm_above: int | None
         :param max_workers: Maximum number of concurrent requests. Defaults to 8.
         :type max_workers: int
@@ -1009,10 +1035,17 @@ class MascopeClient:
             :meth:`~mascope_sdk.resources.peak_assignments.PeakAssignmentsResource.detail`).
 
             Returns None if no assignments are found.
+
+            ``df.attrs["complete"]`` is False when the read of some
+            sample failed, and ``df.attrs["failures"]`` names each
+            one and its error ([] when none did). When every read
+            failed the result is an empty frame carrying them.
         :rtype: pd.DataFrame | None
         :raises ValueError: If the dataset or batches cannot be resolved, or
                             ``run`` is not ``"latest"``.
         :raises KeyboardInterrupt: If the user declines the confirmation prompt.
+        :raises ConfirmationRequiredError: If the prompt has no interactive
+            input to read.
 
         Example::
 
@@ -1060,9 +1093,11 @@ class MascopeClient:
         ``attrs["warnings"]``: it then drops the warnings and
         ``attrs["provenance"]`` with them.
 
-        Here every frame's warnings are kept, each once. Any other entry of
-        ``attrs`` is kept when every frame carries it with the same value -
-        the provenance of loads from one build - and dropped otherwise. It
+        Here every frame's warnings are kept, each once, and every frame's
+        ``failures``; the result is ``complete`` unless some frame says it is
+        not. Any other entry of ``attrs`` is kept when every frame carries it
+        with the same value - the provenance of loads from one build - and
+        dropped otherwise. It
         also stacks frames ``pd.concat`` raises on: those whose ``attrs``
         hold a frame, as a batch ledger's ``attrs["batch_peaks"]`` is.
 

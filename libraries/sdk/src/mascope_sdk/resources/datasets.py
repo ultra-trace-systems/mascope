@@ -41,7 +41,8 @@ class DatasetsResource(BaseResource):
         workspace_id = self._client.workspace_id
         cache_key = f"datasets:{workspace_id}"
         if cache_key in self._client._cache:
-            return self._client._cache[cache_key]
+            # A copy: a caller editing its listing must not edit the cache
+            return self._client._cache[cache_key].copy()
         logger.info("Fetching datasets")
         data = self._get(f"workspaces/{workspace_id}/datasets")
         if not data:
@@ -49,4 +50,4 @@ class DatasetsResource(BaseResource):
         df = _coerce_datetime_columns(pd.DataFrame(data))
         logger.info("Found {} dataset(s)", len(df))
         self._client._cache[cache_key] = df
-        return df
+        return df.copy()

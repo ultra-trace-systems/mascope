@@ -30,6 +30,7 @@ from .client import MascopeClient
 from .exceptions import (
     AuthenticationError,
     ConfigurationError,
+    ConfirmationRequiredError,
     MascopeAPIError,
     MascopeConnectionError,
     MascopeError,
@@ -74,6 +75,7 @@ __all__ = [
     # Exceptions
     "MascopeError",
     "ConfigurationError",
+    "ConfirmationRequiredError",
     "MascopeAPIError",
     "AuthenticationError",
     "NotFoundError",

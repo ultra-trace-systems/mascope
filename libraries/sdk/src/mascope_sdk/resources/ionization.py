@@ -41,10 +41,11 @@ class IonizationResource(BaseResource):
         """
         cache_key = "ionization_mechanisms"
         if cache_key in self._client._cache:
-            return self._client._cache[cache_key]
+            # A copy: a caller editing its listing must not edit the cache
+            return self._client._cache[cache_key].copy()
         data = self._get("ionization_mechanisms")
         if not data:
             return None
         df = _coerce_datetime_columns(pd.DataFrame(data))
         self._client._cache[cache_key] = df
-        return df
+        return df.copy()
