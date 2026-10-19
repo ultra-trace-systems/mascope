@@ -6,6 +6,10 @@ import { createPinia, setActivePinia } from 'pinia'
 // member's predicted m/z and height, recovered from the row's stored errors.
 // A lone M0, whose assignment has no isotopologue row, is drawn too: its one
 // circle beside the measured stick is how its m/z error is judged by eye.
+// Heights are the members' measured sticks, not their stored intensities,
+// which on a TOF are areas and would put the envelope above the trace.
+// Rows are shaped as the API sends them: the peak list keys a peak by a
+// numeric `peak_id`, an assignment row by its string `sample_peak_id`.
 
 const get = vi.fn()
 vi.mock('@/api', () => ({ api: { http: { get: (...args) => get(...args) } } }))
@@ -25,7 +29,7 @@ const spectrum = {
 
 const m0 = {
   peak_assignment_id: 'a-0',
-  sample_peak_id: 'p-0',
+  sample_peak_id: '7',
   sample_peak_mz: 100.001,
   sample_peak_intensity: 2000,
   mz_error_ppm: 10,
@@ -33,7 +37,7 @@ const m0 = {
 }
 const m1 = {
   peak_assignment_id: 'a-1',
-  sample_peak_id: 'p-1',
+  sample_peak_id: '8',
   owner_peak_assignment_id: 'a-0',
   sample_peak_mz: 101.004,
   sample_peak_intensity: 220,
@@ -43,21 +47,26 @@ const m1 = {
 
 let chart
 
-const open = async (family) => {
+const open = async (family, peaks = [], focused = m0) => {
   const rows = new Map(family.map((row) => [row.sample_peak_id, row]))
   app.current = reactive({
     data: {
       sample: { focusedId: null },
       peak: {
         pending: false,
-        list: [],
+        list: peaks,
         segments: null,
-        focused: { peak_id: 'p-0', mz: m0.sample_peak_mz, height: m0.sample_peak_intensity }
+        focused: {
+          peak_id: Number(focused.sample_peak_id),
+          mz: focused.sample_peak_mz,
+          height: focused.sample_peak_intensity
+        }
       },
       peakAssignment: {
         peak: {
           run: { peak_assignment_run_id: 'r-1' },
-          forPeak: (peakId) => rows.get(peakId) ?? null,
+          forPeak: (peakId) => rows.get(String(peakId)) ?? null,
+          m0Of: () => family[0],
           familyOf: () => family
         }
       }
@@ -99,5 +108,34 @@ describe('the theoretical envelope of the focused peak', () => {
     expect(trace.x.filter((x) => x != null)).toHaveLength(4)
     expect(trace.x[3]).toBeCloseTo(101.004 / (1 - 5 / 1e6), 9)
     expect(trace.y[4]).toBeCloseTo(220 / 1.1, 9)
+  })
+
+  // A TOF: each stored intensity is the peak's area, 4x its measured height
+  const tofPeaks = [
+    { peak_id: 7, mz: m0.sample_peak_mz, height: 500, area: 2000 },
+    { peak_id: 8, mz: m1.sample_peak_mz, height: 50, area: 220 }
+  ]
+
+  it('draws each member at its measured height, not its stored intensity', async () => {
+    await open([m0, m1], tofPeaks)
+
+    const [trace] = envelope()
+    expect(trace.y[1]).toBeCloseTo(500, 9)
+    expect(trace.y[4]).toBeCloseTo(50 / 1.1, 9)
+  })
+
+  it("draws a member whose peak is not in the list at the M0's height per intensity", async () => {
+    await open([m0, m1], tofPeaks.slice(0, 1))
+
+    const [trace] = envelope()
+    expect(trace.y[1]).toBeCloseTo(500, 9)
+    expect(trace.y[4]).toBeCloseTo((220 * (500 / 2000)) / 1.1, 9)
+  })
+
+  it("borrows the M0's height per intensity when an isotopologue is focused", async () => {
+    await open([m0, m1], tofPeaks.slice(0, 1), m1)
+
+    const [trace] = envelope()
+    expect(trace.y[4]).toBeCloseTo((220 * (500 / 2000)) / 1.1, 9)
   })
 })
