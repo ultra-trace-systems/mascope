@@ -3,9 +3,12 @@
 OpenTFRaw derives a scan's analyzer, polarity, MS order and filter, and the
 calibration of its profile, from the scan's event, and a file whose events it
 reads from the wrong bytes gives noise in all of them (GitHub issue #2394). On
-an instrument whose only analyzer is an Orbitrap, a scan read as any other is
-the one part of that noise that cannot be data, so the OpenTFRaw backend
-refuses the file, whatever made it misread.
+an instrument whose only analyzer is an Orbitrap, a scan read as an analyzer
+no Orbitrap instrument has is the one part of that noise that cannot be data,
+so the OpenTFRaw backend refuses the file, whatever made it misread
+(``mascope_thermo.scan_events``). An ion-trap scan is not refused: the model
+is a match on the file's free text, and a hybrid's file can carry a
+Q Exactive's name.
 
 The reader is a stand-in that answers ``scan_table()`` with the analyzers a
 test gives it, and opens nothing: the backend's path names no file, which the
@@ -19,7 +22,8 @@ import pytest
 from thermo_test_support import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
 
 from mascope_thermo.backend import OpenTFRawBackend
-from mascope_thermo.thermo import MisreadScanEventsError, NoScansFoundError
+from mascope_thermo.scan_events import MisreadScanEventsError
+from mascope_thermo.thermo import NoScansFoundError
 
 
 # Models as OpenTFRaw names them.
@@ -38,8 +42,8 @@ WITH_OTHER_ANALYZERS = (
     "LTQ Orbitrap Velos",
 )
 
-# A survey scan and its fragment scans, one of them read as the ion trap.
-ONE_ITMS = ["FTMS", "FTMS", "ITMS", "FTMS", "FTMS"]
+# A survey scan and its fragment scans, one of them read as a single quadrupole.
+ONE_FOREIGN = ["FTMS", "FTMS", "SQMS", "FTMS", "FTMS"]
 
 
 class Reader:
@@ -86,26 +90,42 @@ def opened(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("model", ORBITRAP_ONLY)
 def test_another_analyzer_on_an_orbitrap_only_instrument(opened, model):
-    backend = opened(ONE_ITMS, model)
+    backend = opened(ONE_FOREIGN, model)
 
     with pytest.raises(MisreadScanEventsError) as refused:
         backend.scan_indices(ms_type=None)
 
     message = str(refused.value)
-    assert "1 of its 5 scans read as an analyzer other than the Orbitrap" in message
-    assert model in message
+    assert "1 of its 5 scans read as an analyzer no Orbitrap instrument has" in message
+    assert f"the {model} has only the Orbitrap" in message
+    assert "scans per analyzer read: FTMS 4, SQMS 1" in message
     assert "#2394" in message
+
+
+@pytest.mark.parametrize(
+    "analyzers",
+    [
+        pytest.param(["FTMS", "ITMS", "ITMS", "ITMS"], id="ion-trap-fragments"),
+        pytest.param(["ITMS"] * 4, id="ion-trap-only"),
+    ],
+)
+def test_an_ion_trap_scan_is_not_refused(opened, analyzers):
+    # A hybrid's file named as a Q Exactive by a sample comment: OpenTFRaw
+    # takes the first model name in the file's free text.
+    backend = opened(analyzers, "Q Exactive")
+
+    assert backend.scan_indices(ms_type=None) == [1, 2, 3, 4]
 
 
 @pytest.mark.parametrize("model", WITH_OTHER_ANALYZERS)
 def test_an_instrument_with_other_analyzers_is_not_judged(opened, model):
-    backend = opened(ONE_ITMS, model)
+    backend = opened(ONE_FOREIGN, model)
 
     assert backend.scan_indices(ms_type=None) == [1, 2, 3, 4, 5]
 
 
 def test_an_instrument_it_cannot_name_is_not_judged(opened):
-    backend = opened(ONE_ITMS, None)
+    backend = opened(ONE_FOREIGN, None)
 
     assert backend.scan_indices(ms_type=None) == [1, 2, 3, 4, 5]
 
@@ -125,17 +145,25 @@ def test_a_scan_read_as_no_analyzer(opened):
         backend.polarities()
 
 
-def test_every_foreign_scan_is_counted(opened):
-    backend = opened(["FTMS", "ITMS", "SQMS", "TQMS", "Sector", None], "Q Exactive")
+def test_every_foreign_scan_is_counted_and_every_analyzer_named(opened):
+    analyzers = ["ITMS", "ITMS", "FTMS", "SQMS", "TQMS", "Sector", "TOFMS", None]
+    backend = opened(analyzers, "Q Exactive")
 
-    with pytest.raises(MisreadScanEventsError, match="5 of its 6 scans"):
+    with pytest.raises(MisreadScanEventsError) as refused:
         backend.polarities()
+
+    message = str(refused.value)
+    assert "5 of its 8 scans" in message
+    assert (
+        "(scans per analyzer read: ITMS 2, FTMS 1, SQMS 1, TQMS 1, Sector 1, "
+        "TOFMS 1, none 1)" in message
+    )
 
 
 def test_opening_reads_no_scan_table(opened):
     # Opening costs what it did: what needs no scan event is still answered,
     # and the table is read once, for the first selection, and judged there.
-    backend = opened(ONE_ITMS, "Q Exactive HF-X")
+    backend = opened(ONE_FOREIGN, "Q Exactive HF-X")
     reader = opened.readers[0]
 
     assert backend.instrument_details()["Model"] == "Q Exactive HF-X"
@@ -146,7 +174,7 @@ def test_opening_reads_no_scan_table(opened):
 
 
 def test_every_selection_is_refused(opened):
-    backend = opened(ONE_ITMS, "Q Exactive HF-X")
+    backend = opened(ONE_FOREIGN, "Q Exactive HF-X")
 
     for select in (
         backend.polarities,
@@ -159,7 +187,7 @@ def test_every_selection_is_refused(opened):
 
 
 def test_a_refusal_is_a_value_error_and_no_empty_file(opened):
-    backend = opened(ONE_ITMS, "Q Exactive HF-X")
+    backend = opened(ONE_FOREIGN, "Q Exactive HF-X")
 
     with pytest.raises(ValueError) as refused:
         backend.polarities()
@@ -174,7 +202,7 @@ def test_a_refused_file_is_let_go(monkeypatch, tmp_path):
     readers = []
 
     def raw_file(_path):
-        readers.append(Reader(ONE_ITMS, "Q Exactive HF-X"))
+        readers.append(Reader(ONE_FOREIGN, "Q Exactive HF-X"))
         return readers[-1]
 
     monkeypatch.setattr(opentfraw, "RawFile", raw_file)

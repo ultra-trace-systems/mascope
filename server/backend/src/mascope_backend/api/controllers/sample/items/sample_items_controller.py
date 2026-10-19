@@ -73,6 +73,7 @@ from mascope_backend.socket.records.service import (
     emit_record_updated,
 )
 from mascope_file.name import get_instrument_type
+from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_thermo.thermo import NoScansFoundError
 
 
@@ -412,6 +413,11 @@ async def create_sample_items(
                         base_filename=sample_file.filename,
                         polarity=sample_item.polarity,
                     )
+                except MisreadScanEventsError:
+                    # A ValueError too, but the file holds scans: what keeps
+                    # them from being read is its own reason, which the
+                    # handler for ValueError answers with.
+                    raise
                 except (TypeError, ValueError) as e:
                     # One condition, three spellings: the TOF path raises
                     # TypeError on an empty selection, the raw readers raise

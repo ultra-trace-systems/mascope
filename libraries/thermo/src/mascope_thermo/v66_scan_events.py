@@ -37,16 +37,15 @@ m/z axis of :meth:`profile`. The rest is the ``RawFile``'s own. The scan
 filter follows OpenTFRaw's grammar exactly, so a file's stream keys are the
 ones a reader that reads these records will give it.
 
-**The backstop.** A stand-in that cannot be right is refused: when the scans
-of one trailer scan event (of one segment: a method numbers its events within
-each) read as more than one MS order, the file does not open
-(:class:`UnreadableScanEventsError`). Polarity is not compared within an
-event, since a polarity-switching full scan alternates under one, and scan
-event 0, which a manual acquisition records on every scan, is no event. A
-scan that reads as an analyzer its instrument does not have is refused for
-every file, an engaged one included, by the backend's own check
-(``mascope_thermo.backend._refuse_misread_analyzers``), which judges the
-stand-in's scan table.
+**The backstop.** A stand-in that cannot be right is refused, and the file
+does not open (:class:`UnreadableScanEventsError`), before the warning that
+it was read: when a scan reads as an analyzer its instrument cannot have, by
+the rule the backend judges every file by (:mod:`mascope_thermo.scan_events`),
+or when the scans of one trailer scan event (of one segment: a method numbers
+its events within each) read as more than one MS order. Polarity is not
+compared within an event, since a polarity-switching full scan alternates
+under one, and scan event 0, which a manual acquisition records on every
+scan, is no event.
 
 The byte layouts and the derivations are ported from OpenTFRaw v2.0.0
 (https://github.com/Sigilweaver/OpenTFRaw, ``crates/opentfraw/src``):
@@ -73,6 +72,7 @@ import numpy as np
 
 from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_thermo.run_header import _address_table, _NotFollowed
+from mascope_thermo.scan_events import MisreadScanEventsError, misread_analyzers
 
 
 _VERSION = 66
@@ -148,13 +148,12 @@ _RUST_FLOAT = re.compile(
 )
 
 
-class UnreadableScanEventsError(ValueError):
+class UnreadableScanEventsError(MisreadScanEventsError):
     """A raw file whose scan events read past OpenTFRaw cannot be right.
 
-    A ``ValueError``, the error class whose text a file's processing status
-    shows the person who reads it, and deliberately not a
-    ``NoScansFoundError``: the file holds scans, and calling it empty would
-    say the wrong thing about it.
+    A :class:`MisreadScanEventsError`, so a caller handles both refusals as
+    one and nothing changes for it when this module goes (MAS-170); its text
+    names the cause, the inclusion-list names the reader does not yet read.
     """
 
 
@@ -712,7 +711,7 @@ class _RedecodedRawFile:
             )
             self._trailer_events.append(_trailer_scan_event(params))
         self._packet_offsets: np.ndarray | None = None
-        _refuse_if_implausible(self._scans, self._trailer_events)
+        _refuse_if_implausible(raw.instrument_model, self._scans, self._trailer_events)
 
     def __getattr__(self, name):
         if name in self._NOT_REDECODED:
@@ -881,10 +880,14 @@ def _trailer_scan_event(params: dict) -> tuple[int | None, int] | None:
 
 
 def _refuse_if_implausible(
+    model: str | None,
     scans: list[dict],
     trailer_events: list[tuple[int | None, int] | None],
 ) -> None:
     """Refuse a stand-in whose scan events still cannot be right."""
+    problem = misread_analyzers(model, [scan["analyzer"] for scan in scans])
+    if problem:
+        raise UnreadableScanEventsError(_refusal(problem))
     levels: dict[tuple[int | None, int], set[int]] = {}
     for scan, event in zip(scans, trailer_events):
         if event:
