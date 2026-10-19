@@ -176,6 +176,12 @@ screen on its next request:
 A session started in the minute before one of these may survive it: the
 servers allow that much for their clocks to disagree.
 
+The same holds for the live updates an open tab receives. When a session ends,
+or its account is held at the password screen, that tab's live connection
+stops receiving updates about workspaces and their data straight away, before
+its next request: the connection stays open only to hear that the session is
+over.
+
 None of this touches **access tokens** (below), which are separate credentials
 with their own revocation - except a password change, which also revokes the
 account's tokens.

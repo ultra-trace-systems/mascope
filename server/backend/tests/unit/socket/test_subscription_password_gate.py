@@ -93,6 +93,7 @@ async def _subscribe(
     sio.enter_room = AsyncMock()
     room_tracker = MagicMock()
     room_tracker.join = AsyncMock()
+    room_tracker.join_socket = AsyncMock()
 
     with (
         patch(f"{_DECORATORS}.get_session_user", AsyncMock(return_value=session)),

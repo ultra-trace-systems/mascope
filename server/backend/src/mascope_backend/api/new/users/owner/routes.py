@@ -26,6 +26,7 @@ from mascope_backend.db.admin.user.require_password_change import (
     require_password_change_for_all_users,
 )
 from mascope_backend.runtime import runtime
+from mascope_backend.socket.eviction import evict_ended_sessions
 from mascope_backend.socket.records.service import (
     emit_record_reload,
     emit_record_updated,
@@ -118,7 +119,10 @@ async def owner_require_password_change_route(
     # without this nothing reaches a browser until its next request is refused.
     # The auth store re-fetches the current user on this event and ignores the
     # payload, so a minimal record is enough.
+    # Sockets subscribed before the sweep are evicted from their rooms first,
+    # so nothing more reaches them.
     for user_id in data["user_ids"]:
+        await evict_ended_sessions(user_id)
         await emit_record_updated(
             record_type="user_me",
             record_id=str(user_id),

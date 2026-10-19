@@ -111,5 +111,6 @@ async def disconnect(sid: str) -> None:
         )
 
     finally:
-        # Clear session from Redis storage
+        # Clear session from Redis storage, and the socket's own room record
+        await room_tracker.forget_socket(sid)
         await clear_user_session(sid)
