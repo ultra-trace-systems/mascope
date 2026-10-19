@@ -328,8 +328,9 @@ develop merges PRs by rebase, so **every commit must pass the suite alone**:
 5. Item 9 backend: validation, controllers, backfill script, export
    columns + tests.
 6. Frontend: dataset metadata section + compound identity fields + Vitest.
-7. Docs + CHANGELOG (one appended entry; never edit an existing one - the
-   file merges by union and shows no conflicts).
+7. Docs + a changelog entry, as a fragment of its own in `changelog.d/`
+   (`<branch>.<section>.md`; `CHANGELOG.md` itself is not edited - see
+   `changelog.d/README.md`).
 
 Branch from develop; rebase (never merge) to stay current; Conventional
 Commits, ASCII-only, no attribution trailers (repo rule overrides any
@@ -372,5 +373,5 @@ customer names anywhere, including test data.
 - [ ] Phase 0's export-shape tests still pass untouched except for appended
       expectations
 - [ ] Backend suite green on the LAN host at the final tree; frontend unit
-      and SDK suites green; CHANGELOG entry appended
+      and SDK suites green; changelog fragment added in `changelog.d/`
 - [ ] Roadmap §9 Phase 1 acceptance lines hold against the real-data check
