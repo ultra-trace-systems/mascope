@@ -1,0 +1,37 @@
+[project]
+name = "mascope_ai"
+version = "2026.10.21"
+description = "Mascope's toolkit for AI agents: handles to Mascope's data, never tables in a model's context."
+classifiers = [
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+authors = [
+    { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
+    ]
+maintainers = [
+    { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
+    ]
+license.text = "Apache-2.0"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # The toolkit loads through the SDK's per-sample loaders and its
+    # concurrency hook, which are internal to it: it needs the SDK of the
+    # same release, not merely a compatible one.
+    "mascope_sdk>=2026.10.20",
+    "loguru>=0.7.3",
+    "pandas>=2.0.0",
+    # Frames are kept as parquet in the session directory.
+    "pyarrow>=14.0.0",
+]
+
+[project.urls]
+homepage = "https://ultratrace.eu/"
+repository = "https://github.com/ultra-trace-systems/mascope"
+documentation = "https://github.com/ultra-trace-systems/mascope/blob/develop/docs/dev/ai_layer.md"
+"Bug Tracker" = "https://github.com/ultra-trace-systems/mascope/issues"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.14"]
+build-backend = "uv_build"
