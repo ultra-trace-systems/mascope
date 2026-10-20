@@ -1304,6 +1304,7 @@ To enable authenticated access for external applications, such as Jupyter server
   - Tokens can be generated and revoked via dedicated routes under `/api/auth/access_token`.
 - **Endpoint compatibility**:
   - Endpoints that support access token authentication are explicitly marked with `token_access=True` in the `api_route` decorator.
+  - `token_access` can instead name the services whose tokens the endpoint takes, e.g. `token_access=("file-converter",)`; a token of any other service is refused with 401. The sample rematch route is opened this way, to the file converter alone.
   - The authentication system dynamically selects the appropriate backend (`auth_backend_access_token`) for such requests.
 - **Use cases**:
   - Jupyter server integration, where tokens are passed via the `Authorization` header (`Bearer <access_token>`).
