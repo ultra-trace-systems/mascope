@@ -1,8 +1,8 @@
 import json
 from datetime import datetime as dt
-from datetime import timezone
+from datetime import timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, update
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.new.auth.backend import auth_backend_access_token
@@ -20,14 +20,6 @@ from mascope_backend.runtime import runtime
 #: ``get_access_token``: the server keeps only a digest of a token, so it has
 #: none it could hand out again.
 _FILE_CONVERTER_SERVICE = "file-converter"
-
-
-def _age_seconds(token: AccessToken) -> float:
-    """How long ago the token was minted."""
-    created_at = token.created_at
-    if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=timezone.utc)
-    return (dt.now(timezone.utc) - created_at).total_seconds()
 
 
 def may_hold_converter_token(user: User) -> bool:
@@ -185,23 +177,20 @@ async def remove_access_tokens(
         every token of the service
     :type older_than_seconds: float, optional
     """
+    statement = (
+        delete(AccessToken)
+        .where(AccessToken.user_id == user.id)
+        .where(AccessToken.service_name == service_name)
+    )
+    if older_than_seconds is not None:
+        cutoff = dt.now(timezone.utc) - timedelta(seconds=older_than_seconds)
+        statement = statement.where(AccessToken.created_at <= cutoff)
     async with async_session() as session:
-        # Query all access tokens associated with the user
-        tokens_query = await session.execute(
-            select(AccessToken)
-            .where(AccessToken.user_id == user.id)
-            .where(AccessToken.service_name == service_name)
-        )
-        tokens = tokens_query.scalars().all()
-        if older_than_seconds is not None:
-            tokens = [t for t in tokens if _age_seconds(t) >= older_than_seconds]
-
-        if not tokens:
-            return {"message": f"No access tokens found for user `{user.username}`."}
-
-        for token in tokens:
-            await session.delete(token)
+        removed = (await session.execute(statement)).rowcount
         await session.commit()
+
+    if not removed:
+        return {"message": f"No access tokens found for user `{user.username}`."}
 
     return {
         "message": f"All {service_name} access tokens for user {user.username} have been removed."
