@@ -97,6 +97,10 @@ class MascopeClient:
     :vartype sample_files: SampleFilesResource
     :ivar matching: Resource for compound matching operations.
     :vartype matching: MatchingResource
+    :ivar collections: Resource for target collection writes.
+    :vartype collections: CollectionsResource
+    :ivar compounds: Resource for target compound writes.
+    :vartype compounds: CompoundsResource
     :ivar cheminfo: Resource for chemical information queries.
     :vartype cheminfo: ChemInfoResource
     :ivar peak_assignments: Resource for reading peak-centric assignment results.
@@ -265,6 +269,8 @@ class MascopeClient:
         self._samples: Any = None
         self._sample_files: Any = None
         self._matching: Any = None
+        self._collections: Any = None
+        self._compounds: Any = None
         self._cheminfo: Any = None
         self._ionization: Any = None
         self._peak_assignments: Any = None
@@ -352,6 +358,24 @@ class MascopeClient:
 
             self._matching = MatchingResource(self)
         return self._matching
+
+    @property
+    def collections(self) -> "CollectionsResource":
+        """Resource for target collection writes."""
+        if self._collections is None:
+            from .resources.collections import CollectionsResource
+
+            self._collections = CollectionsResource(self)
+        return self._collections
+
+    @property
+    def compounds(self) -> "CompoundsResource":
+        """Resource for target compound writes."""
+        if self._compounds is None:
+            from .resources.compounds import CompoundsResource
+
+            self._compounds = CompoundsResource(self)
+        return self._compounds
 
     @property
     def cheminfo(self) -> "ChemInfoResource":
@@ -1155,6 +1179,8 @@ if TYPE_CHECKING:
     from .resources.batch_peaks import BatchPeaksResource
     from .resources.batches import BatchesResource
     from .resources.cheminfo import ChemInfoResource
+    from .resources.collections import CollectionsResource
+    from .resources.compounds import CompoundsResource
     from .resources.datasets import DatasetsResource
     from .resources.ionization import IonizationResource
     from .resources.matching import MatchingResource

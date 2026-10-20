@@ -6,6 +6,8 @@ area of the Mascope API.
 
 from .batches import BatchesResource
 from .cheminfo import ChemInfoResource
+from .collections import CollectionsResource
+from .compounds import CompoundsResource
 from .datasets import DatasetsResource
 from .ionization import IonizationResource
 from .matching import MatchingResource
@@ -18,6 +20,8 @@ from .workspaces import WorkspacesResource
 __all__ = [
     "BatchesResource",
     "ChemInfoResource",
+    "CollectionsResource",
+    "CompoundsResource",
     "IonizationResource",
     "MatchingResource",
     "Ms2Resource",

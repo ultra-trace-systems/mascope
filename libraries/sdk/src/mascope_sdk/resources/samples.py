@@ -11,6 +11,7 @@ from .._concurrent import failure_record, mark_complete, progress_bar, run_concu
 from .._resolve import _match_names, _pattern_text, resolve_id
 from ._base import (
     BaseResource,
+    Needs,
     _coerce_datetime_columns,
     _lists_warnings,
     _log_api_message,
@@ -999,3 +1000,90 @@ class SamplesResource(BaseResource):
             complex nested structure of per-scan centroid data.
         """
         return self._get("samples/centroids", params={"sample_item_ids": sample_ids})
+
+    def update(self, sample_id: str, sample_item: dict[str, Any]) -> dict[str, Any]:
+        """Update a sample's fields: its name, type, attributes and the rest.
+
+        The route takes the whole sample, not only what changes, so start
+        from :meth:`get` and change what you mean to; fields the route does
+        not take are ignored::
+
+            sample = mascope.samples.get(sample_id)
+            mascope.samples.update(sample_id, {**sample, "sample_item_name": "Blank 1"})
+
+        :param sample_id: The sample.
+        :type sample_id: str
+        :param sample_item: The sample's fields, as :meth:`get` returns them.
+        :type sample_item: dict[str, Any]
+        :return: The updated sample.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the editor role on the sample,
+            or the owner role for a locked sample.
+        :raises ValidationError: If a required field is missing, or a type
+            only the system sets is given.
+        """
+        return self._write(
+            "PATCH",
+            f"sample/items/{sample_id}",
+            Needs(
+                "update",
+                "sample",
+                sample_id,
+                "editor on the sample (a locked sample: the owner role)",
+            ),
+            data={"sample_item": sample_item},
+        )
+
+    def move(self, sample_ids: Sequence[str], batch_id: str) -> dict[str, Any]:
+        """Move samples into another batch.
+
+        The move runs in the background on the server: the call returns when
+        it has started. A locked sample cannot be moved.
+
+        :param sample_ids: The samples.
+        :type sample_ids: Sequence[str]
+        :param batch_id: The batch to move them into.
+        :type batch_id: str
+        :return: The server's ``message`` and the task's ``process_id``.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the editor role on the samples
+            and on the destination batch.
+        """
+        return self._write(
+            "POST",
+            "sample/items/move",
+            Needs(
+                "move samples into",
+                "batch",
+                batch_id,
+                "editor on the samples and on the batch",
+            ),
+            data={"sample_batch_id": batch_id, "sample_item_ids": list(sample_ids)},
+        )
+
+    def copy(self, sample_ids: Sequence[str], batch_id: str) -> dict[str, Any]:
+        """Copy samples into a batch.
+
+        The copy runs in the background on the server: the call returns when
+        it has started, and the copies appear in :meth:`list` once done.
+
+        :param sample_ids: The samples.
+        :type sample_ids: Sequence[str]
+        :param batch_id: The batch to copy them into.
+        :type batch_id: str
+        :return: The server's ``message`` and the task's ``process_id``.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the guest role on the samples
+            and the editor role on the destination batch.
+        """
+        return self._write(
+            "POST",
+            "sample/items/copy",
+            Needs(
+                "copy samples into",
+                "batch",
+                batch_id,
+                "guest on the samples and editor on the batch",
+            ),
+            data={"sample_batch_id": batch_id, "sample_item_ids": list(sample_ids)},
+        )
