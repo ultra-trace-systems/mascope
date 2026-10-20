@@ -9,22 +9,28 @@ import Tooltip from 'primevue/tooltip'
 // icon beside a full one. It is named for a screen reader in both states, and
 // explained in a tooltip only while the label is hidden.
 
-const mocks = vi.hoisted(() => ({ app: null }))
+const mocks = vi.hoisted(() => ({ app: null, menu: null }))
 vi.mock('@/stores', () => ({ useApp: () => mocks.app }))
 
 vi.mock('@/lib/base', () => ({
+  BaseEmptyState: {
+    props: ['icon', 'title', 'hint'],
+    template:
+      '<div class="empty-state"><strong class="title">{{ title }}</strong><span class="hint">{{ hint }}</span><slot name="actions" /></div>'
+  },
   BaseTabbedPanel: { template: '<div class="panel"><slot name="menu" /><slot /></div>' },
   BaseCopyableField: true,
   BaseStatusIcon: true
 }))
 
 vi.mock('@/lib/panes/PaneBrowserSample/stores', () => ({
-  useBatchContextMenu: () => ({
-    dialog: { op: null, calibration: false },
-    selection: null,
-    row: null,
-    onClick: vi.fn()
-  }),
+  useBatchContextMenu: () =>
+    (mocks.menu = {
+      dialog: { op: null, calibration: false },
+      selection: null,
+      row: null,
+      onClick: vi.fn()
+    }),
   useBatchTableConfig: () => ({
     config: { filters: { global: { value: null } }, sortField: null, sortOrder: null },
     filteredBatchList: []
@@ -57,7 +63,10 @@ const mountTable = () =>
       plugins: [PrimeVue],
       directives: { tooltip: Tooltip },
       stubs: {
-        DataTable: { template: '<div class="datatable"><slot /></div>' },
+        // The table decides when its #empty slot shows (no rows, or none the
+        // search left); the stub always renders it, so what the pane puts
+        // in it is what these tests read.
+        DataTable: { template: '<div class="datatable"><slot name="empty" /><slot /></div>' },
         Column: true,
         IconField: { template: '<div><slot /></div>' },
         InputIcon: true,
@@ -104,5 +113,29 @@ describe('the Create batch button', () => {
 
     mocks.app = makeApp([BATCH])
     expect(createButton(mountTable()).attributes('aria-label')).toBe('Create batch')
+  })
+})
+
+// The table's empty slot: a dataset with no batches is told what a batch is
+// and offered the first one; one whose batches the search hid is told that
+// instead, with no create offer that would read as "you have none".
+describe('the empty batch list', () => {
+  it('names the empty list and offers to create the first batch', async () => {
+    mocks.app = makeApp([])
+    const empty = mountTable().get('.empty-state')
+
+    expect(empty.get('.title').text()).toBe('No batches yet')
+    expect(empty.get('.hint').text()).toMatch(/samples/)
+
+    await empty.get('button').trigger('click')
+    expect(mocks.menu.dialog.op).toBe('create')
+  })
+
+  it('says the search hid the rows when there are batches', () => {
+    mocks.app = makeApp([BATCH])
+    const empty = mountTable().get('.empty-state')
+
+    expect(empty.get('.title').text()).toBe('No batches match the search')
+    expect(empty.find('button').exists()).toBe(false)
   })
 })

@@ -8,6 +8,9 @@ import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 
+// From its file, not the base index: the index loads components that read the
+// runtime config on import, which this pane (and its specs) need not pull in.
+import BaseEmptyState from '@/lib/base/BaseEmptyState.vue'
 import { useApp } from '@/stores'
 import { toastTitle } from '@/lib/toastTitles'
 import { messageSeverity } from '@/lib/utils'
@@ -88,6 +91,14 @@ watch(open, (isOpen) => {
       </InputIcon>
       <InputText v-model="log.query" placeholder="Search" style="width: 100%" />
     </IconField>
+    <!-- An empty log says what will fill it, rather than leaving a bare
+         search field over nothing. -->
+    <BaseEmptyState
+      v-if="app.ui.notification.log.length === 0"
+      icon="pi ph ph-bell"
+      title="Nothing yet"
+      hint="Results and warnings of what you run appear here and stay until you clear them."
+    />
     <ScrollPanel>
       <!-- The raw status stays searchable beside the heading: a mapped
            heading says "failed" where the status says "error", and a search

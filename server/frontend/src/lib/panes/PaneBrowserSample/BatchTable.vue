@@ -10,7 +10,7 @@ import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 
-import { BaseTabbedPanel, BaseCopyableField, BaseStatusIcon } from '@/lib/base'
+import { BaseTabbedPanel, BaseCopyableField, BaseStatusIcon, BaseEmptyState } from '@/lib/base'
 import { useApp } from '@/stores'
 
 import { useBatchContextMenu, useBatchTableConfig, useBatchStatus } from './stores'
@@ -155,6 +155,26 @@ const onStatusAction = (batch) => {
       :scrollHeight="`${tableHeight}px`"
       :virtualScrollerOptions="{ itemSize: 35.74 }"
     >
+      <!-- The table also renders this when the search hides every row; a
+           dataset with batches is not told it has none. -->
+      <template #empty>
+        <BaseEmptyState v-if="hasBatches" icon="pi pi-search" title="No batches match the search" />
+        <BaseEmptyState
+          v-else
+          icon="pi pi-folder-open"
+          title="No batches yet"
+          hint="A batch holds the samples you analyse and compare together."
+        >
+          <template #actions>
+            <Button
+              label="Create the first batch"
+              icon="pi pi-plus"
+              size="small"
+              @click="contextMenu.dialog.op = 'create'"
+            />
+          </template>
+        </BaseEmptyState>
+      </template>
       <!-- batch columns -->
       <Column header="Batch" field="sample_batch_name" sortable>
         <template #body="{ data }">

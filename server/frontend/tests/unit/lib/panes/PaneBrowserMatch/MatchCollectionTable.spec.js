@@ -9,22 +9,32 @@ import Tooltip from 'primevue/tooltip'
 // spells itself out above an empty list rather than hiding behind the icon it
 // uses beside a full one.
 
-const mocks = vi.hoisted(() => ({ app: null }))
+const mocks = vi.hoisted(() => ({ app: null, menu: null }))
 vi.mock('@/stores', () => ({ useApp: () => mocks.app }))
 
 vi.mock('@/lib/base', () => ({
-  BaseTabbedPanel: { template: '<div class="panel"><slot name="menu" /><slot /></div>' },
+  BaseEmptyState: {
+    props: ['icon', 'title', 'hint'],
+    template:
+      '<div class="empty-state"><strong class="title">{{ title }}</strong><span class="hint">{{ hint }}</span><slot name="actions" /></div>'
+  },
+  BaseTabbedPanel: {
+    name: 'BaseTabbedPanel',
+    props: ['breadcrumb', 'label', 'icon'],
+    template: '<div class="panel"><slot name="menu" /><slot /></div>'
+  },
   BaseMatchTag: true,
   BaseCopyableField: true
 }))
 
 vi.mock('@/lib/panes/PaneBrowserMatch/stores', () => ({
-  useCollectionContextMenu: () => ({
-    entries: { value: [] },
-    selection: null,
-    dialog: { op: null },
-    onClick: vi.fn()
-  })
+  useCollectionContextMenu: () =>
+    (mocks.menu = {
+      entries: { value: [] },
+      selection: null,
+      dialog: { op: null },
+      onClick: vi.fn()
+    })
 }))
 
 vi.mock('@/lib/panes/PaneBrowserMatch/MatchCollectionContextMenu.vue', () => ({
@@ -70,7 +80,10 @@ const mountTable = () =>
       plugins: [PrimeVue],
       directives: { tooltip: Tooltip },
       stubs: {
-        DataTable: { template: '<div class="datatable"><slot /></div>' },
+        // The table decides when its #empty slot shows (no rows, or none the
+        // search left); the stub always renders it, so what the pane puts
+        // in it is what these tests read.
+        DataTable: { template: '<div class="datatable"><slot name="empty" /><slot /></div>' },
         Column: true
       }
     }
@@ -87,8 +100,20 @@ describe('the collection pane with no batch open', () => {
     const wrapper = mountTable()
 
     expect(wrapper.find('.datatable').exists()).toBe(false)
-    expect(wrapper.find('.empty strong').text()).toContain('Target collections')
-    expect(wrapper.find('.empty').text()).toMatch(/once one is open/)
+    expect(wrapper.get('.empty-state .title').text()).toBe(
+      'Select a batch to see its target collections'
+    )
+    expect(wrapper.get('.empty-state .hint').text()).toMatch(/sample browser/)
+  })
+
+  // A header that names the pane, where a breadcrumb would have no chain to
+  // show; the panel falls back to its label only without a breadcrumb.
+  it('is headed by its name instead of an empty breadcrumb', () => {
+    const panel = mountTable().getComponent({ name: 'BaseTabbedPanel' })
+
+    expect(panel.props('breadcrumb')).toBeNull()
+    expect(panel.props('label')).toBe('Target collections')
+    expect(panel.props('icon')).toBe('pi ph ph-crosshair')
   })
 
   it('shows the table once a batch is open', async () => {
@@ -97,8 +122,23 @@ describe('the collection pane with no batch open', () => {
     mocks.app.data.batch.focused = BATCH
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.find('.empty').exists()).toBe(false)
     expect(wrapper.find('.datatable').exists()).toBe(true)
+    expect(wrapper.find('.empty-state .title').text()).not.toMatch(/Select a batch/)
+    expect(
+      wrapper.getComponent({ name: 'BaseTabbedPanel' }).props('breadcrumb').items.length
+    ).toBeGreaterThan(0)
+  })
+})
+
+describe('an open batch with no target collections', () => {
+  it('names the empty list and offers to create the first collection', async () => {
+    mocks.app = makeApp({ batch: BATCH })
+    const empty = mountTable().get('.datatable .empty-state')
+
+    expect(empty.get('.title').text()).toBe('No target collections yet')
+
+    await empty.get('button').trigger('click')
+    expect(mocks.menu.dialog.op).toBe('create')
   })
 })
 

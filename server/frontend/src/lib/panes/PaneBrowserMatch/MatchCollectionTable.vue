@@ -5,7 +5,7 @@ import Button from 'primevue/button'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 
-import { BaseTabbedPanel, BaseMatchTag, BaseCopyableField } from '@/lib/base'
+import { BaseTabbedPanel, BaseMatchTag, BaseCopyableField, BaseEmptyState } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { collectionTypeIcons } from '@/lib/constants'
 import { prettyTrim } from '@/lib/utils'
@@ -27,8 +27,9 @@ const breadcrumb = computed(() => {
     ? app.data.sample.focused.sample_item_name
     : app.data.batch.focused?.sample_batch_name || null
 
-  // Return empty breadcrumb to keep #menu slot right-aligned when no sample/batch focused
-  if (!entityName) return { items: [] }
+  // Nothing focused: no chain to show, so the panel is headed by its plain
+  // label instead (BaseTabbedPanel falls back to it without a breadcrumb).
+  if (!entityName) return null
 
   return {
     items: [
@@ -68,6 +69,8 @@ const breadcrumb = computed(() => {
 <template>
   <BaseTabbedPanel
     :breadcrumb="breadcrumb"
+    label="Target collections"
+    icon="pi ph ph-crosshair"
     :loading="app.data.match.collection.pending"
     :error="app.data.match.collection.error"
     :onRetry="() => app.data.match.collection.load('retry')"
@@ -112,16 +115,13 @@ const breadcrumb = computed(() => {
       />
     </template>
     <!-- Without an open batch there is no list to show, so the pane says what
-         it is for and how it fills. Styled as the assignment pane's "No sample
-         selected". -->
-    <div v-if="!app.data.batch.focused" class="center empty">
-      <div class="col" style="gap: 0.5rem; text-align: center; max-width: 40ch">
-        <strong><span class="pi ph ph-crosshair" /> Target collections</strong>
-        <i style="opacity: 0.6">
-          The target collections of a batch are listed here once one is open in the sample browser.
-        </i>
-      </div>
-    </div>
+         it is for and how it fills. -->
+    <BaseEmptyState
+      v-if="!app.data.batch.focused"
+      icon="pi ph ph-crosshair"
+      title="Select a batch to see its target collections"
+      hint="The target collections of the batch open in the sample browser are listed here."
+    />
     <DataTable
       v-else
       :value="app.data.match.collection.list"
@@ -146,6 +146,22 @@ const breadcrumb = computed(() => {
       sortField="match.match_score"
       :sortOrder="-1"
     >
+      <template #empty>
+        <BaseEmptyState
+          icon="pi ph ph-crosshair"
+          title="No target collections yet"
+          hint="A target collection lists the compounds to match in this batch."
+        >
+          <template #actions>
+            <Button
+              label="Create the first target collection"
+              icon="pi pi-plus"
+              size="small"
+              @click="contextMenu.dialog.op = 'create'"
+            />
+          </template>
+        </BaseEmptyState>
+      </template>
       <Column sortable sortField="match.match_score" class="match-column">
         <template #header>
           <span class="pi ph ph-seal-percent" />
@@ -196,11 +212,6 @@ const breadcrumb = computed(() => {
 </template>
 
 <style scoped>
-.empty {
-  width: 100%;
-  height: 220px;
-}
-
 .active-filter {
   visibility: visible !important;
   color: var(--p-button-text-info-color);
