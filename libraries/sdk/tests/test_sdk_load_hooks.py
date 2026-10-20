@@ -344,8 +344,11 @@ class TestCollectionsList:
         wire.answer = {"data": COLLECTIONS}
         resource = CollectionsResource(_StubClient())
 
-        resource.list()
+        # Both the listing that fills the cache and one served from it
+        fetched = resource.list()
+        fetched.loc[0, "target_collection_name"] = "edited first"
         cached = resource.list()
+        assert cached.loc[0, "target_collection_name"] == "Organic acids"
         cached.loc[0, "target_collection_name"] = "edited"
         again = resource.list()
         resource.list("b1")
