@@ -107,6 +107,10 @@ SDK_WRITES = {
     # batches
     ("PATCH", "/api/sample/batches/{sample_batch_id}"): "batches.update",
     ("POST", "/api/sample/batches/{sample_batch_id}/copy"): "batches.copy",
+    # samples
+    ("PATCH", "/api/sample/items/{sample_item_id}"): "samples.update",
+    ("POST", "/api/sample/items/move"): "samples.move",
+    ("POST", "/api/sample/items/copy"): "samples.copy",
 }
 
 #: Every other route that answers a token, by the client that needs it.

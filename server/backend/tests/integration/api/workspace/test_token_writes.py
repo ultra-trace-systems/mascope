@@ -36,6 +36,7 @@ from mascope_backend.db.id import gen_id
 
 _DATASETS = "mascope_backend.api.routes.dataset.dataset_routes"
 _BATCHES = "mascope_backend.api.routes.sample.batches.sample_batches_routes"
+_SAMPLES = "mascope_backend.api.routes.sample.items.sample_items_routes"
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,43 @@ WRITES = [
         lambda ids: {"dataset_id": ids["dataset"], "sample_batch_name": "Token copy"},
         _BATCHES,
         "copy_sample_batch",
+        202,
+    ),
+    Write(
+        "PATCH",
+        "/api/sample/items/{item}",
+        lambda ids: {
+            "sample_item": {
+                "sample_batch_id": ids["batch"],
+                "sample_file_id": "file",
+                "sample_item_name": "Written with a token",
+                "sample_item_type": "SAMPLE",
+                "sample_item_attributes": {},
+                "tic": 1000.0,
+                "polarity": "+",
+                "ionization_mode_id": "mode",
+                "t0": 0.0,
+                "t1": 60.0,
+            }
+        },
+        _SAMPLES,
+        "update_sample_item",
+        200,
+    ),
+    Write(
+        "POST",
+        "/api/sample/items/move",
+        lambda ids: {"sample_batch_id": ids["batch"], "sample_item_ids": [ids["item"]]},
+        _SAMPLES,
+        "move_sample_items",
+        202,
+    ),
+    Write(
+        "POST",
+        "/api/sample/items/copy",
+        lambda ids: {"sample_batch_id": ids["batch"], "sample_item_ids": [ids["item"]]},
+        _SAMPLES,
+        "copy_sample_items",
         202,
     ),
 ]

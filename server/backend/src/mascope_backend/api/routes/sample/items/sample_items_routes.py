@@ -89,7 +89,7 @@ async def create_sample_item_route(
 
 
 @sample_items_router.patch("/{sample_item_id}")
-@api_route()
+@api_route(token_access=True)
 async def update_sample_item_route(
     sample_item_id: str,
     body: SampleItemUpdateBody,
@@ -156,7 +156,7 @@ async def delete_sample_item_route(
 
 
 @sample_items_router.post("/copy")
-@api_route(status_code=202)
+@api_route(status_code=202, token_access=True)
 async def copy_sample_items_route(
     body: SampleItemsCopyBody,
     background_tasks: BackgroundTasks,
@@ -193,7 +193,7 @@ async def copy_sample_items_route(
 
 
 @sample_items_router.post("/move")
-@api_route(status_code=202)
+@api_route(status_code=202, token_access=True)
 async def move_sample_items_route(
     body: SampleItemsMoveBody,
     background_tasks: BackgroundTasks,
