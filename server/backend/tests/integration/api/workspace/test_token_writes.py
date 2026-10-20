@@ -178,6 +178,30 @@ WRITES = [
         200,
         variant="batches only",
     ),
+    Write(
+        "DELETE",
+        "/api/workspaces/{ws}/datasets/{dataset}",
+        None,
+        _DATASETS,
+        "delete_dataset",
+        200,
+    ),
+    Write(
+        "DELETE",
+        "/api/sample/batches/{batch}",
+        None,
+        _BATCHES,
+        "delete_sample_batch",
+        202,
+    ),
+    Write(
+        "DELETE",
+        "/api/target/collections/{collection}",
+        None,
+        _COLLECTIONS,
+        "delete_target_collection",
+        200,
+    ),
 ]
 
 #: The writes whose ACL is a workspace's.
@@ -400,11 +424,55 @@ async def test_a_token_writes_nothing_outside_its_users_workspaces(
     assert not calls
 
 
+@pytest_asyncio.fixture
+async def locked_dataset(async_session_factory, ws_alpha):
+    """A locked dataset in ws_alpha: only a global admin may change it."""
+    dataset_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            Dataset(
+                dataset_id=dataset_id,
+                workspace_id=ws_alpha["workspace_id"],
+                dataset_name="Locked Dataset",
+                dataset_type="ANALYSIS",
+                dataset_utc_created=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                locked=1,
+            )
+        )
+        await session.commit()
+    yield dataset_id
+    async with async_session_factory() as session:
+        await session.execute(delete(Dataset).where(Dataset.dataset_id == dataset_id))
+        await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "write",
+    [w for w in WRITES if w.path == "/api/workspaces/{ws}/datasets/{dataset}"],
+    ids=str,
+)
+async def test_a_lock_refuses_a_token_as_it_refuses_a_session(
+    write, alpha_ids, locked_dataset, test_users, token_client, session_client, stubbed
+):
+    """The lock is checked in the handler, after the token has been let in."""
+    calls = stubbed(write)
+    editor = test_users["editor"]
+    ids = {**alpha_ids, "dataset": locked_dataset}
+
+    by_token = await _send(await token_client(editor), write, ids)
+    by_session = await _send(session_client(editor), write, ids)
+
+    assert by_token.status_code == 403, by_token.text
+    assert by_session.status_code == 403, by_session.text
+    assert not calls
+
+
 @pytest.mark.asyncio
 async def test_a_dataset_round_trip_with_a_token(
     ws_alpha, test_users, token_client, async_session_factory
 ):
-    """Create and rename a dataset with a token, on the real controllers."""
+    """Create, rename and delete a dataset with a token, on the real controllers."""
     client = await token_client(test_users["editor"])
     workspace_id = ws_alpha["workspace_id"]
 
@@ -423,7 +491,15 @@ async def test_a_dataset_round_trip_with_a_token(
 
         read = await client.get(f"/api/workspaces/{workspace_id}/datasets/{dataset_id}")
         assert read.json()["data"]["dataset_name"] == "Token round trip, renamed"
+
+        deleted = await client.delete(
+            f"/api/workspaces/{workspace_id}/datasets/{dataset_id}"
+        )
+        assert deleted.status_code == 200, deleted.text
+        gone = await client.get(f"/api/workspaces/{workspace_id}/datasets/{dataset_id}")
+        assert gone.status_code == 404, gone.text
     finally:
+        # A no-op once the route has deleted it; here for a failed assertion.
         async with async_session_factory() as session:
             await session.execute(
                 delete(Dataset).where(Dataset.dataset_id == dataset_id)

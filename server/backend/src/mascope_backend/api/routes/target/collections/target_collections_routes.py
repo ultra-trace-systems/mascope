@@ -159,7 +159,7 @@ async def update_target_collection_route(
 
 
 @target_collections_router.delete("/{target_collection_id}")
-@api_route()
+@api_route(token_access=True)
 async def delete_target_collection_route(
     target_collection_id: str,
     delete_orphan_compounds: bool = Query(
