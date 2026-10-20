@@ -167,6 +167,8 @@ OTHER_TOKEN_ROUTES = {
     ("GET", "/api/sample/files/{sample_file_id}/scans"),
     ("GET", "/api/sample/files/{sample_file_id}/spectrum"),
     ("GET", "/api/version"),
+    # The SDK's datasets.tombstones(): what deleted datasets were.
+    ("GET", "/api/datasets/tombstones"),
     # The file converter's peak-recompute worker, after every recompute: a
     # destructive recompute, so its token alone (NARROWED below).
     ("POST", "/api/match/rematch/sample/{sample_item_id}"),

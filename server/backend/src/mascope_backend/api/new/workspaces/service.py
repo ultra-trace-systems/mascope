@@ -12,12 +12,13 @@ from sqlalchemy import asc, func, select
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.auth.config import auth_settings
+from mascope_backend.api.new.dataset_tombstones.service import write_tombstones
 from mascope_backend.api.new.workspaces.exceptions import (
     WorkspaceMemberAlreadyExistsException,
     WorkspaceMemberNotFoundException,
     WorkspaceNotFoundException,
 )
-from mascope_backend.db import User, Workspace, WorkspaceMember, async_session
+from mascope_backend.db import Dataset, User, Workspace, WorkspaceMember, async_session
 from mascope_backend.db.id import gen_id
 from mascope_backend.socket.records.service import (
     emit_record_reload,
@@ -277,8 +278,15 @@ async def update_workspace(
 
 
 @api_controller()
-async def delete_workspace(workspace_id: str) -> dict:
-    """Delete a workspace and all its datasets (cascading)."""
+async def delete_workspace(workspace_id: str, deleted_by: str | None = None) -> dict:
+    """Delete a workspace and all its datasets (cascading).
+
+    The cascade bypasses the dataset controller, so the datasets' tombstones
+    are written here, in the same transaction as the delete.
+
+    :param workspace_id: The workspace to delete.
+    :param deleted_by: The acting user's email, kept on the tombstones.
+    """
     async with async_session() as session:
         result = await session.execute(
             select(Workspace).where(Workspace.workspace_id == workspace_id)
@@ -287,6 +295,16 @@ async def delete_workspace(workspace_id: str) -> dict:
         if workspace is None:
             raise WorkspaceNotFoundException(workspace_id)
 
+        datasets = await session.execute(
+            select(Dataset).where(Dataset.workspace_id == workspace_id)
+        )
+        await write_tombstones(
+            session,
+            datasets.scalars().all(),
+            workspace_name=workspace.workspace_name,
+            deleted_via="workspace",
+            deleted_by=deleted_by,
+        )
         await session.delete(workspace)
         await session.commit()
 
