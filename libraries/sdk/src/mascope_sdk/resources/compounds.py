@@ -59,6 +59,11 @@ class CompoundsResource(BaseResource):
     def update(self, compounds: Sequence[dict[str, Any]]) -> Any:
         """Update compounds.
 
+        A formula change makes the server delete the compound and create it
+        again under a new ID, with the name and the CAS number the item
+        gives: send both with a new formula, or the name comes back empty
+        and the CAS number unset. The answer names the new ID.
+
         :param compounds: Each a dict with its ``target_compound_id`` and the
             fields to change: ``target_compound_name``,
             ``target_compound_formula``, ``cas_number``.
@@ -78,7 +83,9 @@ class CompoundsResource(BaseResource):
         )
 
     def remove(self, compound_id: str) -> Any:
-        """Remove a compound from every collection. This cannot be undone.
+        """Delete a compound, taking it out of every collection with it.
+
+        This cannot be undone.
 
         :param compound_id: The compound.
         :type compound_id: str

@@ -620,10 +620,18 @@ mascope.matching.save_batch(batch_id)
   target collections and sets them to that list, so to only rename a batch
   send the collections it has now; `collections.associate` sets the batches a
   collection is associated with, and an empty list detaches it from them all.
-  `samples.update` takes the whole sample: start from `samples.get`.
+  `collections.update` sets a collection's compounds to the ones it creates
+  (`compounds=`) and names (`compound_ids=`): to add compounds, send the
+  current `compound_ids` too, or the ones left out are taken out.
+  `samples.update` takes the whole sample: start from `samples.get`, and give
+  an ingested sample (type `ACQUISITION`, which only the system sets) a user
+  type in the same call, or the route refuses it.
+- A formula change in `compounds.update` deletes the compound and creates it
+  again under a new ID, with the name and CAS number the item gives: send
+  both with the formula.
 - A write clears the client's cache (see [Caching](#caching)), so the next
   listing shows the change.
-- Deleting a dataset, a batch or a collection, removing a compound and
+- Deleting a dataset, a batch, a collection or a compound and
   `matching.resave_batch` cannot be undone.
 
 A write your role does not allow raises `PermissionDeniedError`. The server
@@ -756,7 +764,7 @@ raw = mascope.sample_files.download_raw(file_id, "downloads/")
 | `save_batch(batch_id, ...)` | Run a batch's matching and save it | `dict` |
 | `resave_batch(batch_id, ...)` | Replace a batch's saved matches with a fresh run's | `dict` |
 
-The saves take `target_ion_id` and `match_params` as the runs do, and `match_ions=`, `match_compounds=`, `match_collections=`, `match_samples=`: False leaves that level's matches out. A save answers with the server's `status` and `message`.
+The saves take `target_ion_id` and `match_params` as the runs do. The batch saves also take `match_ions=`, `match_compounds=`, `match_collections=`, `match_samples=`: False leaves that level's matches out. `save_sample` always saves every level; its route takes no such flags. A save answers with the server's `status` and `message`.
 
 #### `mascope.collections`
 
@@ -775,7 +783,7 @@ A collection belongs to the client's workspace unless `workspace_id` names anoth
 | ------ | ----------- | ------- |
 | `add(compounds)` | Add compounds, each `{"target_compound_formula": ..., "target_compound_name": ...}` | `dict` |
 | `update(compounds)` | Update compounds, each with its `target_compound_id` | `dict` |
-| `remove(compound_id)` | Remove a compound from every collection | `dict` |
+| `remove(compound_id)` | Delete a compound, taking it out of every collection | `dict` |
 
 The compound list is shared by every workspace, so these need the global editor role. `add` lists a compound that already exists (the same name and formula, or CAS number) under `existing_compounds` instead of creating it again.
 

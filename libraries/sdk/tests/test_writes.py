@@ -407,24 +407,11 @@ REQUESTS = [
     ),
     (
         lambda r: r["matching"].save_sample(
-            "s-1",
-            target_ion_id="i-1",
-            match_params={"mz_tolerance": 5},
-            match_ions=False,
-            match_compounds=True,
-            match_collections=False,
-            match_samples=True,
+            "s-1", target_ion_id="i-1", match_params={"mz_tolerance": 5}
         ),
         "POST",
         "match/aggregate/sample/s-1/save",
-        {
-            "target_ion_id": "i-1",
-            "match_params": {"mz_tolerance": 5},
-            "match_ions": False,
-            "match_compounds": True,
-            "match_collections": False,
-            "match_samples": True,
-        },
+        {"target_ion_id": "i-1", "match_params": {"mz_tolerance": 5}},
         None,
     ),
     (
@@ -525,6 +512,15 @@ def test_an_answer_without_data_is_returned_whole(wire, client):
     assert answer == {"status": "failed", "message": "no peaks"}
 
 
+@pytest.mark.parametrize(
+    "level", ["match_ions", "match_compounds", "match_collections", "match_samples"]
+)
+def test_a_sample_save_takes_no_level_flags(wire, client, level):
+    """The sample save route saves every level whatever the body says."""
+    with pytest.raises(TypeError):
+        MatchingResource(client).save_sample("s-1", **{level: False})
+
+
 def test_a_write_clears_the_clients_cache(wire, client):
     """A listing read before the write would show the old state."""
     DatasetsResource(client).update("ds-1", name="d2")
@@ -590,7 +586,7 @@ REFUSALS = [
         "copy",
         "batch",
         "b-1",
-        "dataset 'ds-2'",
+        "dataset 'ds-2' (a locked dataset: none)",
     ),
     (
         lambda r: r["batches"].delete("b-1"),

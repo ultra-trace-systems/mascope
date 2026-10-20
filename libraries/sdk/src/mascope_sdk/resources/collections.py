@@ -118,7 +118,9 @@ class CollectionsResource(BaseResource):
     ) -> dict[str, Any]:
         """Change a collection's name, description, type or compounds.
 
-        Only the fields given are sent; the others stay as they are. To
+        Only the fields given are sent; the others stay as they are. The
+        compounds are the exception within what is sent: *compounds* and
+        *compound_ids* together replace the collection's list. To
         change which batches it is associated with, use :meth:`associate`:
         the route refuses compounds and batches in one request.
 
@@ -130,9 +132,13 @@ class CollectionsResource(BaseResource):
         :type description: str, optional
         :param collection_type: Its new type.
         :type collection_type: str, optional
-        :param compounds: Compounds to create and add, as for :meth:`create`.
+        :param compounds: Compounds to create, as for :meth:`create`. With
+            *compound_ids* they make up the collection's whole compound list:
+            a compound it has now that neither names is taken out of it. To
+            add compounds, send the current ``compound_ids`` too.
         :type compounds: Sequence[dict[str, Any]], optional
-        :param compound_ids: The existing compounds it is to hold.
+        :param compound_ids: The existing compounds it is to hold, all of
+            them: as with *compounds*, the rest are taken out.
         :type compound_ids: Sequence[str], optional
         :return: The updated collection.
         :rtype: dict[str, Any]
@@ -201,7 +207,7 @@ class CollectionsResource(BaseResource):
         :param delete_orphan_compounds: Also delete the compounds no other
             collection uses. They are shared by every workspace.
         :type delete_orphan_compounds: bool, optional
-        :return: ``{"message": ...}``.
+        :return: ``{"status": ..., "message": ...}``.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the editor role in the
             collection's workspace (a global collection: the global admin
