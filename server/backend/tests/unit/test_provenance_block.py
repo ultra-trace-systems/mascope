@@ -111,6 +111,64 @@ def test_inputs_are_recorded_as_given():
     block = build_provenance(inputs=inputs)
     inputs["dataset_id"] = "changed later"
 
+    assert block["inputs"]["dataset_id"] == "d1"
+    assert block["inputs"]["sample_batch_id"] == "b1"
+
+
+def test_each_recognised_input_gains_its_global_id_beside_it():
+    block = build_provenance(
+        inputs={
+            "dataset_id": "d1",
+            "sample_batch_id": "b1",
+            "target_collection_ids": ["c1"],
+            "sample_item_id": "s1",
+            "sample_file_id": "f1",
+            "target_collection_id": "c1",
+            "target_compound_id": "tc1",
+            "target_ion_id": "ti1",
+        }
+    )
+
+    assert block["inputs"] == {
+        "dataset_id": "d1",
+        "dataset_global_id": "example-lab:dataset:d1",
+        "sample_batch_id": "b1",
+        "sample_batch_global_id": "example-lab:sample_batch:b1",
+        "target_collection_ids": ["c1"],
+        "sample_item_id": "s1",
+        "sample_item_global_id": "example-lab:sample_item:s1",
+        "sample_file_id": "f1",
+        "sample_file_global_id": "example-lab:sample_file:f1",
+        "target_collection_id": "c1",
+        "target_collection_global_id": "example-lab:target_collection:c1",
+        "target_compound_id": "tc1",
+        "target_compound_global_id": "example-lab:target_compound:tc1",
+        "target_ion_id": "ti1",
+        "target_ion_global_id": "example-lab:target_ion:ti1",
+    }
+    assert list(block["inputs"])[:4] == [
+        "dataset_id",
+        "dataset_global_id",
+        "sample_batch_id",
+        "sample_batch_global_id",
+    ]
+
+
+def test_an_unrecognised_or_unset_input_gains_no_global_id():
+    """Only an ``<entity>_id`` of a known entity, with a value: not another
+    table's id, not a key that merely names an entity, not a missing record."""
+    inputs = {"workspace_id": "w1", "dataset": "d1", "sample_batch_id": None}
+
+    assert build_provenance(inputs=inputs)["inputs"] == inputs
+
+
+def test_a_deployment_without_an_id_adds_no_global_ids(monkeypatch, tmp_path):
+    """Never a made-up namespace."""
+    monkeypatch.setattr(runtime.config, "deployment_id", None)
+    monkeypatch.setattr(runtime.meta, "filestore", str(tmp_path))
+
+    block = build_provenance(inputs={"dataset_id": "d1", "sample_batch_id": "b1"})
+
     assert block["inputs"] == {"dataset_id": "d1", "sample_batch_id": "b1"}
 
 
@@ -136,12 +194,14 @@ def test_flattening_joins_nested_keys_and_lists_in_order(monkeypatch):
         "produced_with.match_score_version",
         "produced_with.peak_assignment_engine_version",
         "inputs.sample_batch_id",
+        "inputs.sample_batch_global_id",
         "inputs.target_collection_ids",
     ]
     values = dict(rows)
     assert values["produced_with.mascope_version"] == "v9.9.9-test"
     assert values["inputs.target_collection_ids"] == "c1, c2"
     assert values["deployment_id"] == "example-lab"
+    assert values["inputs.sample_batch_global_id"] == "example-lab:sample_batch:b1"
 
 
 def test_an_empty_list_flattens_to_an_empty_value():

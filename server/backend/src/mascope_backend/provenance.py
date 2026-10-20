@@ -17,7 +17,12 @@ Shape, ``provenance_version`` 1::
             "match_score_version": 1,
             "peak_assignment_engine_version": "0.5.0"
         },
-        "inputs": {"dataset_id": "...", "sample_batch_id": "..."}
+        "inputs": {
+            "dataset_id": "...",
+            "dataset_global_id": "k3J9...:dataset:...",
+            "sample_batch_id": "...",
+            "sample_batch_global_id": "k3J9...:sample_batch:..."
+        }
     }
 
 ``produced_with`` uses the vocabulary of the demo bundle's ``manifest.json``,
@@ -25,6 +30,11 @@ which records ``mascope_version`` and ``match_score_version`` for the goldens
 it ships. ``inputs`` names the records a result was built from, and is present
 only when the caller passes them. ``deployment_id`` is null when the deployment
 has none (``mascope_backend.deployment``).
+
+Each ``<entity>_id`` in ``inputs`` whose entity has a global id
+(``GLOBAL_ID_ENTITIES``) and whose value is set gains a sibling
+``<entity>_global_id``, ``<deployment_id>:<entity>:<local_id>``, right after
+it. A deployment without an id gets no such key rather than a made-up one.
 
 The keys are a contract: a key that has shipped is never renamed or given a new
 meaning. A key may be added without changing ``provenance_version``, which
@@ -58,7 +68,7 @@ from mascope_backend.api.controllers.match.lib.match_score_v2 import (
 from mascope_backend.api.new.peak_assignments.config import (
     PEAK_ASSIGNMENT_ENGINE_VERSION,
 )
-from mascope_backend.deployment import deployment_id
+from mascope_backend.deployment import GLOBAL_ID_ENTITIES, deployment_id, global_id
 from mascope_backend.runtime import runtime
 
 
@@ -88,8 +98,33 @@ def build_provenance(inputs: Mapping[str, Any] | None = None) -> dict[str, Any]:
         },
     }
     if inputs is not None:
-        block["inputs"] = dict(inputs)
+        block["inputs"] = _with_global_ids(inputs, block["deployment_id"])
     return block
+
+
+def _with_global_ids(inputs: Mapping[str, Any], namespace: str | None) -> dict:
+    """
+    ``inputs``, with a ``<entity>_global_id`` after each recognised
+    ``<entity>_id`` that is set.
+
+    :param inputs: The records a result is built from, by id.
+    :param namespace: The deployment id the block names; no global id is
+        added when it is None.
+    :return: A new dict, in the order of ``inputs``.
+    :rtype: dict
+    """
+    derived: dict[str, Any] = {}
+    for key, value in inputs.items():
+        derived[key] = value
+        entity = key.removesuffix("_id")
+        if (
+            namespace is not None
+            and key.endswith("_id")
+            and entity in GLOBAL_ID_ENTITIES
+            and value is not None
+        ):
+            derived[f"{entity}_global_id"] = global_id(entity, value)
+    return derived
 
 
 def flatten_provenance(

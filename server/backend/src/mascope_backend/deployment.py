@@ -33,6 +33,13 @@ id it had or generates its own. A restore from backup brings it back, which is
 the point when the original is gone. A backup restored beside an original that
 keeps running carries the original's id too, unless its file is moved aside
 before the copy's first start.
+
+An exported record is named across deployments by its global id,
+``<deployment_id>:<entity>:<local_id>`` (:func:`global_id`). The nanoid stays
+the storage key; the prefix only makes the exported id unambiguous. The format
+parses by construction: a configured id cannot hold ``:``
+(``DEPLOYMENT_ID_PATTERN``), the generated id's alphabet has none, and the
+entities are table names, written with ``_``.
 """
 
 import json
@@ -52,6 +59,17 @@ from mascope_runtime.config import DEPLOYMENT_FILE, DEPLOYMENT_ID_PATTERN
 #: each time. A failed read is not kept: a repaired file is picked up without a
 #: restart.
 _read_ids: dict[str, str] = {}
+
+#: The entities a global id can name: the tables whose ids an export carries.
+GLOBAL_ID_ENTITIES = (
+    "dataset",
+    "sample_batch",
+    "sample_item",
+    "sample_file",
+    "target_collection",
+    "target_compound",
+    "target_ion",
+)
 
 
 class UnreadableDeploymentFile(ValueError):
@@ -111,6 +129,25 @@ def deployment_id() -> str | None:
     if value:
         _read_ids[path] = value
     return value
+
+
+def global_id(entity: str, local_id: str) -> str | None:
+    """
+    The id that names a record of this deployment in any other.
+
+    :param entity: The record's table, one of :data:`GLOBAL_ID_ENTITIES`.
+    :param local_id: The record's id in that table.
+    :return: ``<deployment_id>:<entity>:<local_id>``, or None when the
+        deployment has no id - a namespace is never made up.
+    :rtype: str | None
+    :raises ValueError: If ``entity`` is not one of :data:`GLOBAL_ID_ENTITIES`.
+    """
+    if entity not in GLOBAL_ID_ENTITIES:
+        raise ValueError(f"No global id for the entity {entity!r}")
+    namespace = deployment_id()
+    if namespace is None:
+        return None
+    return f"{namespace}:{entity}:{local_id}"
 
 
 def ensure_deployment_id() -> str | None:
