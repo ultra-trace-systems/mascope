@@ -10,6 +10,7 @@ so drift becomes a weekly diff instead of a months-later incident:
 | `docker_daemon` | `/etc/docker/daemon.json` with `iptables: false` (load-bearing: with stock Docker, published ports bypass ufw) |
 | `unattended_upgrades` | unattended security updates enabled |
 | `deploy_env` | `MASCOPE_PATH` in `/etc/environment` (load-bearing: it is how the CLI finds the checkout, and so which release a unit starts) |
+| `postgres_readonly` | the `mascope_readonly` Postgres role in `mascope_prod_postgres`: SELECT only, read-only by default, its password in `.runtime/secrets/` (see [Read-only database access](#read-only-database-access)) |
 
 The monitoring box is deliberately **not** in the fleet group — it
 runs a different network model (stock Docker + `DOCKER-USER` rules).
@@ -128,6 +129,78 @@ ansible-playbook site.yml --check --diff -K --limit <host>
 - Cloudflare ranges are fetched live at run time; rules for ranges Cloudflare
   has *withdrawn* are not auto-pruned (same behavior as
   `tooling/ufw-allow-cf.sh`) — prune manually on the rare CF delisting.
+
+## Read-only database access
+
+`postgres_readonly` gives every server a Postgres role, `mascope_readonly`,
+for work that reads production without the app's own credentials: fleet
+audits, and prod jobs (a reviewed read-only script whose output is checked
+before anyone else sees it).
+
+**What the role may do.** It logs in, with a connection limit of 4, and is
+`NOSUPERUSER NOINHERIT NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS`,
+a member of no other role. `default_transaction_read_only = on` is set on it.
+In every app database (`mascope_<env>`) it has USAGE on the schemas and
+SELECT on every table, view and materialized view, and default privileges on
+the app's role (`mascope_user`, which runs the migrations) make the tables and
+schemas created later readable too. Nothing else is granted to it, and a run
+takes away anything else it finds granted: write privileges on tables, USAGE
+on sequences, CREATE on a schema or database, other default privileges. What
+PUBLIC holds by default (CONNECT and TEMPORARY on a database, EXECUTE on
+functions) it keeps. A write privilege it would hold through PUBLIC, such as
+CREATE on the `public` schema in a cluster first initialised before
+PostgreSQL 15, makes the role fail on that server rather than leave it
+writable: revoking that from PUBLIC is an operator's call.
+
+`default_transaction_read_only` is a default a session can turn off; the
+privileges are what make the role read-only.
+
+**The password** is `.runtime/secrets/postgres_readonly_password.txt` in the
+deployment checkout, mode 0600 and the deploy user's, made on the first run.
+Postgres is given only its SCRAM verifier, and each run checks the role's
+verifier against the file, so a run with no drift changes nothing. It is not a
+compose secret: no container mounts it and the app never reads it. To rotate
+it, delete the file and run the role again.
+
+**How a job connects.** A job runs in the backend container, which reaches the
+database as host `postgres` on the compose network (the port is not
+published). Whoever runs the job reads the password on the server and hands it
+to `docker exec` by name, never on a command line, with libpq's environment:
+
+```sh
+cd "$MASCOPE_PATH"
+PGPASSWORD=$(head -n 1 .runtime/secrets/postgres_readonly_password.txt) \
+  docker exec -i -e PGHOST=postgres -e PGUSER=mascope_readonly -e PGPASSWORD \
+    -e PGOPTIONS='-c default_transaction_read_only=on' \
+    mascope_prod_backend /opt/uv/tools/mascope/bin/python - < job.py
+```
+
+and the job connects with `psycopg2.connect(dbname=os.environ["MASCOPE_DB_NAME"])`,
+which takes the rest from that environment. The backend container already has
+`MASCOPE_DB_NAME`. Peer or trust authentication cannot do this instead: the
+backend and the database are separate containers, the image's `pg_hba.conf`
+trusts only its own socket and loopback, and a trust rule for the compose
+network would let every container on it log in as the role with no password.
+A job must not read `/run/secrets/postgres_password` or use the app's own
+engine, which connect as the app's role.
+
+**Running it.** It is part of `site.yml`, so the usual check and apply cover
+it:
+
+```sh
+ansible-playbook site.yml --check --diff --ask-vault-pass --limit <canary-host>
+ansible-playbook site.yml --ask-vault-pass --limit <canary-host>
+```
+
+In check mode the role lists what it would change. Once there is nothing to
+change, check and apply runs both end by connecting as the role from
+`mascope_prod_backend`, as a job does, and checking the session is read-only;
+a stopped backend skips that check with a note.
+
+**After a restore.** `mascope prod db restore` restores without privileges
+(`pg_restore --no-acl`), and a new env starts a new database: either leaves the
+role without its grants and default privileges there. Run the role again
+afterwards. The role itself is cluster-wide and survives both.
 
 ## Rolling out a release
 

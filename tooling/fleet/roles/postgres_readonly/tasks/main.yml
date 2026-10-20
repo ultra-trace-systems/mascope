@@ -1,0 +1,44 @@
+---
+# A read-only Postgres role, so that audits and prod jobs read production
+# without the app's own credentials: LOGIN with a password from the checkout's
+# .runtime/secrets/, default_transaction_read_only = on, SELECT on every table
+# and view of the app databases plus default privileges for the tables later
+# migrations create, and no other rights. README.md ("Read-only database
+# access") has the details and how a job connects.
+#
+# One script does the work, through `docker exec mascope_prod_postgres psql`:
+# the database port is not published, so Ansible's postgresql modules, which
+# connect over the network, cannot reach it. The script reads what the cluster
+# holds, plans the difference, and applies it; then it reads everything back,
+# fails if the role still differs, and connects as the role from the backend
+# container the way a job does.
+
+# The script honours --check itself and then changes nothing, so it also runs
+# in check mode: that is how `--check --diff` shows this role's drift.
+- name: Converge the read-only Postgres role
+  ansible.builtin.script:
+    cmd: >-
+      readonly_role.py
+      --file {{ mascope_readonly_secret | quote }}
+      --file-owner {{ ansible_user | quote }}
+      --role {{ mascope_readonly_role | quote }}
+      --app-role {{ mascope_readonly_app_role | quote }}
+      --container {{ mascope_readonly_postgres_container | quote }}
+      --database-prefix {{ mascope_readonly_database_prefix | quote }}
+      --connection-limit {{ mascope_readonly_connection_limit | int }}
+      --verify-container {{ mascope_readonly_backend_container | quote }}
+      {{ '--check' if ansible_check_mode else '' }}
+    executable: /usr/bin/python3
+  check_mode: false
+  register: mascope_readonly_run
+  changed_when: (mascope_readonly_run.stdout | from_json).changed
+  failed_when: mascope_readonly_run.rc != 0
+
+- name: The read-only role's changes
+  ansible.builtin.debug:
+    msg: "{{ (mascope_readonly_run.stdout | from_json).changes }}"
+  when: (mascope_readonly_run.stdout | from_json).changes | length > 0
+
+- name: The read-only role's connection check
+  ansible.builtin.debug:
+    msg: "{{ (mascope_readonly_run.stdout | from_json).verified }}"
