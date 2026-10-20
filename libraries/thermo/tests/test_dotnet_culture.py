@@ -2,9 +2,10 @@
 
 The library formats trailer values in the current .NET culture, which starts
 as the server's regional format. ``load_dotnet`` pins the invariant culture,
-so a trailer reads alike whichever server read the file. Needs the Thermo
-RawFileReader DLLs (``MASCOPE_THERMO_DLL_DIR``); the ``dotnet_culture``
-fixture skips without them.
+so a trailer reads alike whichever server read the file. The numbers the
+trailer stores are read as stored (``trailer_numbers``), apart from any
+culture. Needs the Thermo RawFileReader DLLs (``MASCOPE_THERMO_DLL_DIR``);
+the ``dotnet_culture`` fixture skips without them.
 """
 
 import concurrent.futures
@@ -14,13 +15,20 @@ import pytest
 from thermo_test_support import NEG_ORBI_FILE_PATH
 
 import mascope_thermo.lib as m_lib
-from mascope_thermo.backend import ThermoBackend
-from mascope_thermo.calibration import CONVERSION_C
+from mascope_thermo.backend import MS2_ISOLATION_WIDTH, OpenTFRawBackend, ThermoBackend
+from mascope_thermo.calibration import CONVERSION_B, CONVERSION_C
 from mascope_thermo.thermo import _ensure_dotnet
 
 
 # The negative-mode sample file's C, as the invariant culture writes it.
 NEG_C = "-71050473.7320"
+
+# The numbers its first scan's trailer stores, which that text rounds.
+NEG_NUMBERS = {
+    CONVERSION_B: 169409639.6525657,
+    CONVERSION_C: -71050473.73203687,
+    MS2_ISOLATION_WIDTH: 460.0,
+}
 
 
 def _conversion_c() -> str:
@@ -61,3 +69,25 @@ def test_the_library_writes_invariant_text_whatever_culture_it_starts_in(
 
     assert _conversion_c() == NEG_C
     assert _conversion_c_on_another_thread() == NEG_C
+
+
+@pytest.mark.parametrize("culture", ["", "fi-FI", "de-DE", "sv-SE"])
+def test_the_numbers_a_trailer_stores_are_read_alike_in_every_culture(
+    dotnet_culture, culture
+):
+    """``trailer_numbers`` reads no text, so the culture the library writes
+    in, pinned or not, does not reach the numbers: they are the stored ones,
+    OpenTFRaw's, in each. ``""`` is the invariant culture.
+    """
+    with OpenTFRawBackend(NEG_ORBI_FILE_PATH) as reader:
+        scan = reader.scan_filters()[0]["scan"]
+        assert reader.trailer_numbers(scan, NEG_NUMBERS) == NEG_NUMBERS
+
+    dotnet_culture(culture)
+    with ThermoBackend(NEG_ORBI_FILE_PATH) as reader:
+        text = reader.scan_trailer(scan)[CONVERSION_C]
+        numbers = reader.trailer_numbers(scan, NEG_NUMBERS)
+
+    # The culture is the one the library wrote in.
+    assert (text == NEG_C) == (culture == "")
+    assert numbers == NEG_NUMBERS

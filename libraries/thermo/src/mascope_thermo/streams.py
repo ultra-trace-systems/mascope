@@ -166,22 +166,27 @@ def scan_stream_keys(backend: ReaderBackend) -> list[str]:
     return [scan.key for scan in _keyed_scans(backend)]
 
 
-def scan_stream_values(
+def scan_stream_numbers(
     backend: ReaderBackend, labels: Iterable[str]
-) -> list[tuple[dict, str, dict]]:
-    """Every scan's stream key, with what its trailer gives for ``labels``.
+) -> list[tuple[dict, str, dict[str, float]]]:
+    """Every scan's stream key, with the numbers its trailer stores under
+    ``labels``.
 
-    :func:`scan_stream_keys` for a caller that needs trailer values beside
-    the keys: they come from the one read of each trailer the keys take, and
-    under the Thermo library every read is a call into it per scan.
+    :func:`scan_stream_keys` for a caller that computes with trailer values
+    beside the keys, in the same pass over the file's scans. The numbers
+    are as stored (``ReaderBackend.trailer_numbers``), not read from the
+    trailer's text, which under the Thermo library is rounded.
 
     :param backend: An open reader backend.
     :param labels: Trailer labels, spelled as the trailer spells them.
-    :return: ``(row, key, {label: value})`` per scan, the row as
+    :return: ``(row, key, {label: number})`` per scan, the row as
         ``ReaderBackend.scan_filters`` gives it and in its order. A label
-        the scan's trailer lacks is left out of its values.
+        under which the scan's trailer stores no number is left out of its
+        numbers.
     """
-    return [(scan.row, scan.key, scan.values) for scan in _keyed_scans(backend, labels)]
+    return [
+        (scan.row, scan.key, scan.numbers) for scan in _keyed_scans(backend, labels)
+    ]
 
 
 class _KeyedScan(NamedTuple):
@@ -189,8 +194,8 @@ class _KeyedScan(NamedTuple):
 
     ``segment`` and ``event`` are the experiment the scan is grouped by:
     ``None`` for a survey scan that records none, and for every
-    fragmentation scan, which is not grouped by it. ``values`` are the
-    trailer values its caller asked :func:`_keyed_scans` for.
+    fragmentation scan, which is not grouped by it. ``numbers`` are the
+    trailer numbers its caller asked :func:`_keyed_scans` for.
     """
 
     row: dict
@@ -200,7 +205,7 @@ class _KeyedScan(NamedTuple):
     signature_key: str
     segment: int | None
     event: int | None
-    values: dict
+    numbers: dict[str, float]
 
 
 def _keyed_scans(
@@ -210,8 +215,9 @@ def _keyed_scans(
 
     The one place that decides which stream a scan belongs to, so that the
     census and anything that later selects a stream's scans cannot disagree.
-    Each scan also keeps its trailer's values for ``labels``, where its
-    trailer has them, so that nothing reads the trailers a second time.
+    Each scan also keeps the numbers its trailer stores under ``labels``,
+    where it stores them, so that nothing passes over the scans a second
+    time.
 
     A survey scan belongs to its experiment: its signature together with
     its segment and scan event. The experiment closes the key only where one
@@ -230,7 +236,9 @@ def _keyed_scans(
         parsed = parse_scan_filter(row["filter"])
         trailer = backend.scan_trailer(row["scan"])
         resolution = _resolution(trailer)
-        values = {label: trailer[label] for label in labels if label in trailer}
+        numbers = (
+            backend.trailer_numbers(row["scan"], labels, trailer) if labels else {}
+        )
         experiment = (None, None)
         if parsed.ms_order == 1 and row.get("event") is not None:
             # An event with no segment is in the method's first, as the
@@ -238,7 +246,7 @@ def _keyed_scans(
             experiment = (row.get("segment") or 1, row["event"])
         signature_key = parsed.stream_key(resolution)
         experiments.setdefault(signature_key, set()).add(experiment)
-        scans.append((row, parsed, resolution, experiment, signature_key, values))
+        scans.append((row, parsed, resolution, experiment, signature_key, numbers))
     return [
         _KeyedScan(
             row,
@@ -254,9 +262,9 @@ def _keyed_scans(
             signature_key,
             segment,
             event,
-            values,
+            numbers,
         )
-        for row, parsed, resolution, (segment, event), signature_key, values in scans
+        for row, parsed, resolution, (segment, event), signature_key, numbers in scans
     ]
 
 

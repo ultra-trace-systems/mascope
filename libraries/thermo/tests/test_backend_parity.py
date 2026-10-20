@@ -540,6 +540,36 @@ def test_scan_acquisition_settings_match_thermo(monkeypatch, path):
             )
 
 
+def _trailer_numbers(path):
+    """Every scan's trailer numbers, under every label of its trailer."""
+    with open_backend(path) as backend:
+        return {
+            row["scan"]: backend.trailer_numbers(
+                row["scan"], list(backend.scan_trailer(row["scan"]))
+            )
+            for row in backend.scan_filters()
+        }
+
+
+@pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_trailer_numbers_match_thermo(monkeypatch, path):
+    """The numbers a trailer stores are the same under both backends, to the
+    last bit, on every scan and under every label: the Thermo library's
+    typed accessor gives what OpenTFRaw reads, where its text rounds it.
+    """
+    path = str(path)
+
+    th = _run_under(monkeypatch, "thermo", _trailer_numbers, path)
+    ot = _run_under(monkeypatch, "opentfraw", _trailer_numbers, path)
+
+    assert set(ot) == set(th), "scan set differs"
+    for scan_number, numbers in th.items():
+        # A trailer stores numbers beside its text, switches and headings.
+        assert numbers, f"scan {scan_number} stores no number"
+        assert ot[scan_number] == numbers, f"scan {scan_number}"
+
+
 def _stats_per_scan(path):
     return m_thermo.RawFileMetadataLegacy(path).to_dict()["stats_per_scan"]
 
@@ -595,7 +625,8 @@ def _hcd_tuple(value):
 def test_ms2_acquisition_info_matches_thermo(monkeypatch, path):
     """OpenTFRaw's MS2 isolation width + calibrated HCD energy (read from the
     decoded trailer) must match Thermo's "MS2 Isolation Width:" / "HCD Energy
-    V:". Skips files without MS2 scans.
+    V:". Both read the width as stored, so it is the same number. Skips files
+    without MS2 scans.
     """
     path = str(path)
 
@@ -610,7 +641,7 @@ def test_ms2_acquisition_info_matches_thermo(monkeypatch, path):
     with open_backend(path) as backend:
         ot_width, ot_hcd = backend.ms2_acquisition_info()
 
-    assert ot_width == pytest.approx(th_width, abs=1e-3), "isolation width differs"
+    assert ot_width == th_width, "isolation width differs"
     assert set(ot_hcd) == set(th_hcd), "MS2 scan set differs"
     for scan_number, hcd in th_hcd.items():
         assert _hcd_tuple(ot_hcd[scan_number]) == _hcd_tuple(hcd), (

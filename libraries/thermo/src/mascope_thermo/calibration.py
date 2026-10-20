@@ -26,8 +26,8 @@ from __future__ import annotations
 import re
 import statistics
 
-from mascope_thermo.backend import ReaderBackend, trailer_float
-from mascope_thermo.streams import scan_stream_values
+from mascope_thermo.backend import ReaderBackend
+from mascope_thermo.streams import scan_stream_numbers
 
 
 CONVERSION_B = "Conversion Parameter B:"
@@ -56,10 +56,10 @@ def stream_calibrations(backend: ReaderBackend) -> dict[str, dict]:
     - ``c_over_b2``, ``c_over_b2_min``, ``c_over_b2_max``: the median,
       smallest and largest C/B^2 of a scan.
 
-    A stream with no such scan is left out. The values are as precise as the
-    reader gives them: OpenTFRaw's at full precision, the Thermo library's
-    rounded to the digits it displays, which can be too few to tell two
-    calibrations apart.
+    A stream with no such scan is left out. The parameters are the numbers
+    the file stores, the same under either reader
+    (``ReaderBackend.trailer_numbers``), rather than the Thermo library's
+    text of them, which is rounded to the digits it displays.
 
     :param backend: An open reader backend.
     :return: ``{stream key: {...}}``, in the order the streams first appear.
@@ -67,17 +67,19 @@ def stream_calibrations(backend: ReaderBackend) -> dict[str, dict]:
     return _stream_calibrations(_scans(backend))
 
 
-def _scans(backend: ReaderBackend) -> list[tuple[dict, str, dict]]:
+def _scans(backend: ReaderBackend) -> list[tuple[dict, str, dict[str, float]]]:
     """Every scan's row, stream key and conversion parameters."""
-    return scan_stream_values(backend, (CONVERSION_B, CONVERSION_C))
+    return scan_stream_numbers(backend, (CONVERSION_B, CONVERSION_C))
 
 
-def _stream_calibrations(scans: list[tuple[dict, str, dict]]) -> dict[str, dict]:
+def _stream_calibrations(
+    scans: list[tuple[dict, str, dict[str, float]]],
+) -> dict[str, dict]:
     """:func:`stream_calibrations` of the scans :func:`_scans` read."""
     per_stream: dict[str, tuple[list[float], list[float], list[float]]] = {}
     for _row, key, parameters in scans:
-        b = trailer_float(parameters.get(CONVERSION_B))
-        c = trailer_float(parameters.get(CONVERSION_C))
+        b = parameters.get(CONVERSION_B)
+        c = parameters.get(CONVERSION_C)
         if b is None or c is None or b == 0:
             continue
         bs, cs, ratios = per_stream.setdefault(key, ([], [], []))
@@ -166,7 +168,7 @@ def calibration_identity(backend: ReaderBackend) -> dict:
     """
     scans = _scans(backend)
     identity = {"calibrations": _stream_calibrations(scans)}
-    status = _calibration_status(backend, [row for row, _key, _values in scans])
+    status = _calibration_status(backend, [row for row, _key, _numbers in scans])
     if status is not None:
         identity["calibration_status"] = status
     return identity
