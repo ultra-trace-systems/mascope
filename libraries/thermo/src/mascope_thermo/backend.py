@@ -461,7 +461,9 @@ class ReaderBackend(Protocol):
         ``"HCD Energy V:"``).
 
         A width the trailer holds as text is no width under either backend:
-        both read only the fields the file types as numbers.
+        both read only the fields the file types as numbers. A scan whose
+        trailer has no ``"HCD Energy V:"`` has the energy ``""``, as one that
+        leaves it empty does.
 
         :raises ValueError: No MS2 scan stores a width, or they store more
             than one.
@@ -645,8 +647,10 @@ def _trailer_numbers(trailer: dict, labels: Iterable[str]) -> dict[str, float]:
     return numbers
 
 
-#: The trailer label of an MS2 scan's isolation width.
+#: The trailer labels of an MS2 scan's isolation width, and of the
+#: collision energy it was fragmented at, as text the instrument wrote.
 MS2_ISOLATION_WIDTH = "MS2 Isolation Width:"
+MS2_HCD_ENERGY = "HCD Energy V:"
 
 
 def _one_isolation_width(widths: Iterable[float]) -> float:
@@ -1598,7 +1602,12 @@ class ThermoBackend:
         t_max: float | None = None,
     ) -> tuple[float | None, dict[int, str]]:
         acq = self.scan_acquisition_settings(polarity, t_min, t_max, ms_type="Ms2")
-        hcd_label_idx = acq["header_labels"].index("HCD Energy V:")
+        # Some instruments label the energy otherwise ("HCD Energy:",
+        # "HCD Energy eV:"); their scans have none here, as under OpenTFRaw.
+        labels = acq["header_labels"] or []
+        hcd_label_idx = (
+            labels.index(MS2_HCD_ENERGY) if MS2_HCD_ENERGY in labels else None
+        )
 
         # The HCD energy is text the instrument wrote; the width is a number
         # it stored, read as stored rather than from the text.
@@ -1608,7 +1617,8 @@ class ThermoBackend:
             isolation_widths.extend(
                 self.trailer_numbers(scan_idx, (MS2_ISOLATION_WIDTH,)).values()
             )
-            scan_idx_to_hcd[scan_idx] = trailer_values[hcd_label_idx]
+            hcd = None if hcd_label_idx is None else trailer_values[hcd_label_idx]
+            scan_idx_to_hcd[scan_idx] = "" if hcd is None else str(hcd)
         return _one_isolation_width(isolation_widths), scan_idx_to_hcd
 
     def ms2_centroids_for_scans(
@@ -2963,7 +2973,7 @@ class OpenTFRawBackend:
             isolation_widths.extend(
                 _trailer_numbers(params, (MS2_ISOLATION_WIDTH,)).values()
             )
-            hcd = params.get("HCD Energy V:")
+            hcd = params.get(MS2_HCD_ENERGY)
             scan_idx_to_hcd[scan_number] = "" if hcd is None else str(hcd)
         return _one_isolation_width(isolation_widths), scan_idx_to_hcd
 

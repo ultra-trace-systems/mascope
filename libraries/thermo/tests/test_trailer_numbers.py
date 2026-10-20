@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from mascope_thermo.backend import (
+    MS2_HCD_ENERGY,
     MS2_ISOLATION_WIDTH,
     OpenTFRawBackend,
     ThermoBackend,
@@ -26,7 +27,6 @@ from mascope_thermo.backend import (
 
 B = "Conversion Parameter B:"
 C = "Conversion Parameter C:"
-HCD = "HCD Energy V:"
 
 
 class _ScriptedThermoRaw:
@@ -257,20 +257,42 @@ def ms2_reader(request):
 def test_a_width_held_as_text_is_no_width(ms2_reader):
     # Both read only the fields the file types as numbers, and a reader
     # gives a field typed as text as text.
-    reader = ms2_reader([{MS2_ISOLATION_WIDTH: "1.6", HCD: "25"}] * 2)
+    reader = ms2_reader([{MS2_ISOLATION_WIDTH: "1.6", MS2_HCD_ENERGY: "25"}] * 2)
 
     with pytest.raises(ValueError, match="No MS2 scan stores an isolation width"):
         reader.ms2_acquisition_info()
 
 
+def test_each_scans_energy_is_the_text_its_trailer_holds(ms2_reader):
+    reader = ms2_reader(
+        [
+            {MS2_ISOLATION_WIDTH: 2.0, MS2_HCD_ENERGY: "25"},
+            {MS2_ISOLATION_WIDTH: 2.0, MS2_HCD_ENERGY: "25,30"},
+            {MS2_ISOLATION_WIDTH: 2.0, MS2_HCD_ENERGY: None},
+        ]
+    )
+
+    assert reader.ms2_acquisition_info() == (2.0, {3: "25", 4: "25,30", 5: ""})
+
+
+def test_a_trailer_that_names_the_energy_otherwise_gives_none(ms2_reader):
+    # A Q Exactive Plus DDA run writes "HCD Energy:" and "HCD Energy eV:",
+    # and no "HCD Energy V:". Neither backend reads those, and neither fails.
+    reader = ms2_reader(
+        [{MS2_ISOLATION_WIDTH: 2.0, "HCD Energy:": "27", "HCD Energy eV:": "27.0"}] * 2
+    )
+
+    assert reader.ms2_acquisition_info() == (2.0, {3: "", 4: ""})
+
+
 def test_thermo_gives_the_isolation_width_it_stores_and_the_energy_it_wrote():
     reader = _thermo(
-        [(MS2_ISOLATION_WIDTH, True), (HCD, False)],
+        [(MS2_ISOLATION_WIDTH, True), (MS2_HCD_ENERGY, False)],
         {3: [1.234567, "25"], 4: [1.234567, "25,30"]},
     )
     # The trailer's text, as the library formats it.
     reader.scan_acquisition_settings = lambda *_args, **_kwargs: {
-        "header_labels": [MS2_ISOLATION_WIDTH, HCD],
+        "header_labels": [MS2_ISOLATION_WIDTH, MS2_HCD_ENERGY],
         "settings": {3: ["1.23", "25"], 4: ["1.23", "25,30"]},
     }
 
