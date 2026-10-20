@@ -1,0 +1,26 @@
+---
+# The read-only Postgres role audits and prod jobs connect as. README.md
+# ("Read-only database access") has how a job reaches it.
+mascope_readonly_role: mascope_readonly
+
+# The app's role: the compose file's POSTGRES_USER, so the cluster's bootstrap
+# superuser, which the role is managed as, and the owner of every table the
+# migrations create, whose default privileges make new tables readable.
+mascope_readonly_app_role: mascope_user
+
+mascope_readonly_postgres_container: mascope_prod_postgres
+# The connection check at the end runs from here, as a prod job does. A server
+# whose backend is down gets the role all the same, with the check skipped.
+mascope_readonly_backend_container: mascope_prod_backend
+
+# The app databases are mascope_<env>.
+mascope_readonly_database_prefix: mascope_
+
+# Prod jobs run one at a time; the cap keeps a runaway one from taking the
+# connections the app needs.
+mascope_readonly_connection_limit: 4
+
+# The role's password: made on the first run, mode 0600 and the deploy user's,
+# next to the stack's other secrets. Deleting it makes the next run set a new one.
+mascope_readonly_secret: >-
+  {{ mascope_path | default('/home/' ~ ansible_user ~ '/mascope') }}/.runtime/secrets/postgres_readonly_password.txt
