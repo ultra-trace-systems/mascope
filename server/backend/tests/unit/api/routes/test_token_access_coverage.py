@@ -21,14 +21,31 @@ client that needs it.
 ``NARROWED`` pins the routes whose token access is narrowed to some services
 (``api_route(token_access=("file-converter",))``), and to which.
 
+The writes among them, every POST, PUT, PATCH and DELETE, are also declared in
+``security/pentest/token_writes.json``, which the pen-test suite's TOKEN-01
+compares with what a deployment publishes. The two lists are kept equal here,
+so a write opened to tokens is declared to the assessment in the same change.
+
 Structural, like ``test_api_route_coverage.py``: it walks whatever routes the
 app registers. That a real SDK token reaches the toolkit's reads end to end is
 ``integration/api/workspace/test_toolkit_token_reads.py``.
 """
 
+import json
+from pathlib import Path
+
 from fastapi.routing import APIRoute, iter_route_contexts
 
 from mascope_backend.app.fast import fast
+
+
+#: The token writes the pen-test suite holds every deployment to (TOKEN-01).
+PENTEST_TOKEN_WRITES = (
+    Path(__file__).resolve().parents[6] / "security/pentest/token_writes.json"
+)
+
+#: The methods that change state; the pen-test list declares exactly these.
+STATE_CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 #: (method, path) -> the toolkit operation that reads it.
@@ -221,3 +238,19 @@ def test_only_the_known_routes_are_narrowed_and_to_their_services():
     # A route widened back to every service, narrowed to another one, or
     # narrowed without a word here fails, as a route gaining the flag does.
     assert _narrowed_routes() == NARROWED
+
+
+def test_the_pentest_suite_declares_every_token_write():
+    declared = {
+        (method, path)
+        for method, path in json.loads(PENTEST_TOKEN_WRITES.read_text("utf-8"))[
+            "writes"
+        ]
+    }
+    writes = {(m, p) for m, p in _token_routes() if m in STATE_CHANGING}
+
+    assert writes == declared, (
+        "security/pentest/token_writes.json and the token routes disagree; "
+        f"undeclared: {sorted(writes - declared)}, "
+        f"declared but closed: {sorted(declared - writes)}"
+    )
