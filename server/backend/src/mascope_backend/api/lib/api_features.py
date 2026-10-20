@@ -201,9 +201,49 @@ def api_controller():
     return decorator
 
 
+def _token_access_settings(
+    route_name: str, token_access: bool | tuple[str, ...]
+) -> tuple[bool, frozenset[str] | None]:
+    """
+    Split ``api_route``'s ``token_access`` into the two endpoint attributes.
+
+    ``token_access`` stays a plain bool, so everything that asks whether a
+    route takes a token at all (the OpenAPI document, the coverage tests) keeps
+    reading it as before. ``token_services`` is ``None`` for a route open to
+    every allowed service's token, or the services it is narrowed to, which
+    ``get_enabled_backends`` enforces.
+
+    :param route_name: The handler's name, for the configuration error.
+    :param token_access: ``api_route``'s argument.
+    :return: ``(token_access, token_services)``.
+    :raises ValueError: For an empty or a bare-string service list, or a
+        service no token can be minted for, which would leave the route open
+        to nobody while reading as open to someone.
+    """
+    if isinstance(token_access, bool):
+        return token_access, None
+    if isinstance(token_access, str) or not token_access:
+        raise ValueError(
+            f"Configuration error in route '{route_name}': token_access takes "
+            f"True, False or a non-empty tuple of service names, not {token_access!r}"
+        )
+    # Imported here: the auth package's __init__ imports routes built with
+    # this module, so a module-level import is circular.
+    from mascope_backend.api.new.auth.access_token.config import AccessTokenConfig
+
+    services = frozenset(token_access)
+    unknown = services - set(AccessTokenConfig().ALLOWED_SERVICES)
+    if unknown:
+        raise ValueError(
+            f"Configuration error in route '{route_name}': token_access names "
+            f"services no token is minted for: {sorted(unknown)}"
+        )
+    return True, services
+
+
 def api_route(
     status_code: int = 200,
-    token_access: bool = False,
+    token_access: bool | tuple[str, ...] = False,
     public: bool = False,
 ):
     """
@@ -248,8 +288,10 @@ def api_route(
     :param status_code: HTTP status code to be used for successful responses, defaults to 200.
     :type status_code: int, optional
     :param token_access: Flag to indicate if the route allows access via an access token (for Jupyter or external access).
-                           If set to True, the endpoint is accessible via a Bearer token in addition to standard JWT authentication.
-    :type token_access: bool, optional
+                           If set to True, the endpoint is accessible via a Bearer token of any allowed service in addition
+                           to standard JWT authentication. A tuple of service names opens it to those services' tokens
+                           only, e.g. ``token_access=("file-converter",)``; any other service's token is refused with 401.
+    :type token_access: bool | tuple[str, ...], optional
     :param public: Flag to explicitly mark route as public (no auth)
     :type public: bool, optional
     :return: The wrapped route handler function with standardized response formatting and exception handling.
@@ -258,7 +300,9 @@ def api_route(
 
     def decorator(func: Callable):
         # --- Configure route access token settings ---
-        func.token_access = token_access
+        func.token_access, func.token_services = _token_access_settings(
+            func.__name__, token_access
+        )
 
         # --- Verify route security - either must be public or bind an auth
         # dependency to a `user` parameter. Requiring an actual Depends(...)
