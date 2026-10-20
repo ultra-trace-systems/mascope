@@ -11,6 +11,7 @@ dependencies = [
     "mascope_cli[dev,demo]",
     "mascope_backend",
     # libraries
+    "mascope_ai",
     "mascope_runtime",
     "mascope_chem",
     "mascope_match",
@@ -65,6 +66,7 @@ members = [
 mascope_backend = { workspace = true }
 mascope_cli = { workspace = true }
 # libraries
+mascope_ai = { workspace = true }
 mascope_chem = { workspace = true }
 mascope_file = { workspace = true }
 mascope_match = { workspace = true }

@@ -69,10 +69,12 @@ through a helper that fetches the block once
 ([client.py:460-485](../../libraries/sdk/src/mascope_sdk/client.py)). That is
 what an agent's answer cites (section 3.4), but it is best effort: an older
 server without the provenance route, or a failed call, returns the frame
-unstamped, so the toolkit must check for the key rather than assume it. There is still no collections
-resource: collections surface only as the `target_collection_ids` and
-`target_collection_names` columns on peaks
-([samples.py:332-345](../../libraries/sdk/src/mascope_sdk/resources/samples.py)).
+unstamped, so the toolkit must check for the key rather than assume it.
+Collections are listed and read by `collections.list()` and
+`collections.get()` since phase 1's first toolkit issue
+([collections.py](../../libraries/sdk/src/mascope_sdk/resources/collections.py));
+before it they surfaced only as the `target_collection_ids` and
+`target_collection_names` columns on peaks.
 
 **One write path exists: the batch-ledger import.**
 `batch_peaks.import_run` posts an external engine's batch-level result to
@@ -538,7 +540,8 @@ Each phase is intended to land independently and leave the system shippable.
 ### Phase 1 - `mascope_ai` toolkit + MCP server, read-only
 
 - The library: `Ref`/`Frame` types, session store, `find`/`describe`, the four
-  loaders with `max_rows`, oracle wrappers with condensed verdicts, `chart`/
+  loaders with `max_rows` (these in [libraries/ai](../../libraries/ai/), the
+  package `mascope_ai`), oracle wrappers with condensed verdicts, `chart`/
   `table`, provenance manifest.
 - MCP server exposing the thin tool set; heavy work documented as the
   local-Python path (Bash + `mascope_ai` imports), mirroring peaky.

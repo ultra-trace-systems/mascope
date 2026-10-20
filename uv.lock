@@ -10,6 +10,7 @@ resolution-markers = [
 [manifest]
 members = [
     "mascope",
+    "mascope-ai",
     "mascope-backend",
     "mascope-chem",
     "mascope-cli",
@@ -1448,6 +1449,7 @@ name = "mascope"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "mascope-ai" },
     { name = "mascope-backend" },
     { name = "mascope-chem" },
     { name = "mascope-cli", extra = ["demo", "dev"] },
@@ -1485,6 +1487,7 @@ lint = [
 
 [package.metadata]
 requires-dist = [
+    { name = "mascope-ai", editable = "libraries/ai" },
     { name = "mascope-backend", editable = "server/backend" },
     { name = "mascope-chem", editable = "libraries/chem" },
     { name = "mascope-cli", extras = ["dev", "demo"], editable = "tooling/cli" },
@@ -1515,6 +1518,25 @@ dev = [
 ]
 docs = [{ name = "mkdocs-material", specifier = ">=9.7,<10" }]
 lint = [{ name = "ruff", specifier = ">=0.16.3,<0.18" }]
+
+[[package]]
+name = "mascope-ai"
+version = "2026.10.21"
+source = { editable = "libraries/ai" }
+dependencies = [
+    { name = "loguru" },
+    { name = "mascope-sdk" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "mascope-sdk", editable = "libraries/sdk" },
+    { name = "pandas", specifier = ">=2.0.0" },
+    { name = "pyarrow", specifier = ">=14.0.0" },
+]
 
 [[package]]
 name = "mascope-backend"
