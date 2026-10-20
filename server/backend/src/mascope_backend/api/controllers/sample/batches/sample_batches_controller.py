@@ -38,6 +38,9 @@ from mascope_backend.api.controllers.sample.lib.sample_file_fetch import (
 from mascope_backend.api.controllers.sample.lib.sample_items_fetch import (
     fetch_sample_item_ids,
 )
+from mascope_backend.api.controllers.samples.lib.samples_peaks import (
+    extract_file_peaks,
+)
 from mascope_backend.api.controllers.samples.samples_controller import get_sample
 from mascope_backend.api.controllers.target.collections.target_collections_controller import (
     get_target_collections,
@@ -98,7 +101,6 @@ from mascope_backend.socket.records import (
 )
 from mascope_file import io as m_io
 from mascope_signal import compute as m_compute
-from mascope_signal.peak import get_peaks
 from mascope_tools.alignment.calibration import Spectra
 
 
@@ -1067,14 +1069,12 @@ async def sample_batch_export_peaks(
 
             await send_progress_user_notification(notification, 0.9)
 
-            # One hop: the dataset is lazy, so the read lands on .compute().
-            peak_data_item = await asyncio.to_thread(
-                lambda: (
-                    get_peaks(m_io.load_peak_data(filename), unit)
-                    .sum(dim="time")
-                    .compute()
-                )
-            )
+            # Each peak's stored sum over the file's scans: it exists from
+            # detection on, where a peak's timeseries is computed only once
+            # something asks for it, and summed would give 0 until then. An
+            # instrument with no unit fails the lookup and is skipped.
+            peaks = await asyncio.to_thread(extract_file_peaks, filename, average=False)
+            intensities = {"area": peaks.areas, "height": peaks.heights}[unit]
 
             await send_progress_user_notification(notification, 1)
         except Exception:
@@ -1083,11 +1083,11 @@ async def sample_batch_export_peaks(
             )
             continue
 
-        for peak in peak_data_item:
+        for mz, intensity in zip(peaks.mz_values, intensities, strict=True):
             peak_data.append(
                 {
-                    "mz": peak.mz.item(),
-                    "intensity": peak.item(),
+                    "mz": mz,
+                    "intensity": intensity,
                     "unit": "ions" if instrument_type == "tof" else "counts",
                     "sample_batch_name": sample_batch_name,
                     "sample_item_name": row["sample_item_name"],

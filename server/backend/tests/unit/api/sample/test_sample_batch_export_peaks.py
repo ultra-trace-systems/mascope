@@ -24,7 +24,9 @@ _MOD = "mascope_backend.api.controllers.sample.batches.sample_batches_controller
 # these tests are about.
 _export = sample_batches_controller.sample_batch_export_peaks.__wrapped__
 
-MZ_VALUES = np.array([100.0, 200.0])
+# The third peak's timeseries has not been computed: its per-scan heights
+# are the NaN placeholders detection allocates, its stored sum is not.
+MZ_VALUES = np.array([100.0, 200.0, 300.0])
 
 #: The columns the export wrote before the batch and dataset ids, in order.
 LEGACY_COLUMNS = [
@@ -62,16 +64,28 @@ def _sample_view(item_id: str, file_id: str) -> dict:
     }
 
 
-def _summed_peaks(*args, **kwargs) -> xr.DataArray:
-    """What ``get_peaks`` gives back: peak values over (time, mz)."""
-    return xr.DataArray(
-        [[1.0, 2.0], [3.0, 4.0]],
-        dims=("time", "mz"),
+def _peak_store(*args, **kwargs) -> xr.Dataset:
+    """What ``load_peak_data`` gives back: two peaks with a timeseries and
+    one without, each with its stored sums."""
+    heights = np.array([[1.0, 2.0, np.nan], [3.0, 4.0, np.nan]])
+    return xr.Dataset(
+        {
+            "peak_heights": (("time", "mz"), heights),
+            "peak_areas": (("time", "mz"), heights * 10),
+            "sum_peak_heights": ("mz", [4.0, 6.0, 9.0]),
+            "sum_peak_areas": ("mz", [40.0, 60.0, 90.0]),
+            "peak_id": ("mz", ["p1", "p2", "p3"]),
+            "polarity": ("mz", ["+", "+", "+"]),
+            "sparsity": ("mz", [0.0, 0.0, 1.0]),
+        },
         coords={"time": [0.0, 1.0], "mz": MZ_VALUES},
+        attrs={"props": {"filename": "OrbiTest_1001.01.01_12h00m00s_file-1"}},
     )
 
 
-async def _run_export(tmp_path) -> pd.DataFrame:
+async def _run_export(
+    tmp_path, instrument_type=lambda filename: "orbi"
+) -> pd.DataFrame:
     samples = {"item-1": _sample_view("item-1", "file-1")}
     samples["item-2"] = _sample_view("item-2", "file-2")
 
@@ -96,9 +110,14 @@ async def _run_export(tmp_path) -> pd.DataFrame:
             f"{_MOD}.get_sample",
             AsyncMock(side_effect=lambda item_id: {"data": samples[item_id]}),
         ),
-        patch(f"{_MOD}.m_name.get_instrument_type", return_value="orbi"),
-        patch(f"{_MOD}.m_io.load_peak_data", return_value=None),
-        patch(f"{_MOD}.get_peaks", _summed_peaks),
+        patch(f"{_MOD}.m_name.get_instrument_type", side_effect=instrument_type),
+        # A raw file's store: one whose peaks keep their timeseries placeholders
+        patch("mascope_file.name.get_sample_file_type", return_value="orbi_raw"),
+        patch("mascope_file.io.load_peak_data", _peak_store),
+        patch(
+            "mascope_backend.api.controllers.samples.lib.samples_peaks.load_peak_data",
+            _peak_store,
+        ),
         patch(f"{_MOD}.send_progress_user_notification", AsyncMock()),
         # The directory, not user_temp_path itself, so the export's own file
         # naming stays under test.
@@ -125,12 +144,45 @@ async def test_every_row_names_its_batch_and_dataset_after_the_old_columns(tmp_p
 async def test_every_row_keeps_its_own_sample_and_file(tmp_path):
     frame = await _run_export(tmp_path)
 
-    # Two peaks per sample, summed over time
-    assert len(frame) == 4
+    # Three peaks per sample
+    assert len(frame) == 6
     assert dict(zip(frame.sample_item_id, frame.sample_file_id)) == {
         "item-1": "file-1",
         "item-2": "file-2",
     }
     np.testing.assert_allclose(
-        frame[frame.sample_item_id == "item-1"].intensity, [4.0, 6.0]
+        frame[frame.sample_item_id == "item-1"].intensity, [4.0, 6.0, 9.0]
     )
+
+
+@pytest.mark.asyncio
+async def test_a_peak_without_a_timeseries_exports_its_stored_sum(tmp_path):
+    """Summing its timeseries would write 0, as if the peak were not there:
+    a peak's timeseries is computed only once something asks for it."""
+    frame = await _run_export(tmp_path)
+
+    uncomputed = frame[frame.mz == 300.0]
+    assert len(uncomputed) == 2
+    np.testing.assert_allclose(uncomputed.intensity, [9.0, 9.0])
+
+
+@pytest.mark.asyncio
+async def test_a_tof_file_exports_its_stored_areas(tmp_path):
+    """The export's unit follows the instrument: areas for a TOF."""
+    frame = await _run_export(tmp_path, instrument_type=lambda filename: "tof")
+
+    np.testing.assert_allclose(
+        frame[frame.sample_item_id == "item-1"].intensity, [40.0, 60.0, 90.0]
+    )
+    assert (frame.unit == "ions").all()
+
+
+@pytest.mark.asyncio
+async def test_a_file_of_an_instrument_without_a_unit_is_skipped(tmp_path):
+    """No unit, no value to export: its rows are left out, the others kept."""
+    frame = await _run_export(
+        tmp_path,
+        instrument_type=lambda filename: "other" if "file-2" in filename else "orbi",
+    )
+
+    assert set(frame.sample_item_id) == {"item-1"}
