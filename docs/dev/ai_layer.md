@@ -225,21 +225,25 @@ stored token is not re-checked against the list per request. The
 allowlist is `mascope_sdk`, the internal `file-converter`, and four agents
 (`tof-agent`, `file-agent`, `export-agent`, `instrument-agent`)
 ([access_token/config.py:16-23](../../server/backend/src/mascope_backend/api/new/auth/access_token/config.py)).
-70 handlers carry the decorator, seven of them toolkit reads opened by phase
-0's token audit (appendix), plus the six generated resumable-upload (tus)
-operations stamped by hand
+89 handlers carry the decorator, seven of them toolkit reads opened by phase
+0's token audit and 19 data-organisation writes opened in phase 3 (appendix),
+plus the six generated resumable-upload (tus) operations stamped by hand
 ([sample_files_routes.py:1059-1067](../../server/backend/src/mascope_backend/api/routes/sample/files/sample_files_routes.py)):
-76 operations in the OpenAPI schema, 41 of them GETs.
+95 operations in the OpenAPI schema, 41 of them GETs.
 
 Consequences:
 
-- **The organisation routes are not token-reachable.** Datasets, batches,
-  sample items, target collections, target compounds, and aggregate `/save`
-  and `/resave` all still refuse a token (appendix). Phase 3 is therefore still
-  backend work (auditing and opening routes) before it is SDK work (wrapping
-  them). The draft's "roughly 15 thin wrapper methods" stands, but as the
-  second half of the phase.
-- **Other write routes are, now.** Since the draft, 35 non-GET operations take
+- **The organisation routes the SDK's write wrappers need are token-reachable
+  since phase 3** (2026-10-20): dataset create, update, move and delete; batch
+  update, copy and delete; sample update, move and copy; collection create,
+  update and delete; compound add, update and remove; and aggregate `/save`
+  and `/resave`, each opened after reading its ACL and side effects
+  (appendix). The rest of the organisation surface (dataset-level and
+  multi-batch rematch, compute, remove, batch create and import, sample create
+  and delete) still refuses a token. The pen-test suite's TOKEN-01 holds every
+  deployment to the declared list of token writes
+  (`security/pentest/token_writes.json`).
+- **Other write routes are, too.** Before phase 3, 35 non-GET operations took
   a token (33 POST, PATCH or DELETE, plus the tus HEAD and OPTIONS). Some are queries (peak and sample-file time series,
   `cheminfo/mz/query`, the sample and batch aggregate match previews and the
   sample `match/aggregate/.../compound(s)`, the peak-assignment fits). The real writes are uploads and sample-file creation
@@ -725,22 +729,22 @@ a token.
 
 | Capability | Endpoints | ACL | Token |
 |---|---|---|---|
-| Datasets ([dataset_routes.py](../../server/backend/src/mascope_backend/api/routes/dataset/dataset_routes.py)) | `POST /api/workspaces/{ws}/datasets`, `PATCH/DELETE .../{id}`, `POST .../{id}/move` | workspace editor (move: editor on both workspaces); a locked dataset needs global admin to update, delete or move | no |
-| Batches ([sample_batches_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/sample_batches_routes.py)) | `POST /api/sample/batches`, `PATCH /{id}`, `PATCH /status`, `POST /{id}/import`, `POST /{id}/copy`, `DELETE /{id}`; background jobs `POST /{id}/peaks` (batch-peak aggregation), `POST /{id}/export_peaks` and `POST /{id}/export/spreadsheet` ([batches/export/routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/export/routes.py), included in this router) | dataset editor to create; batch editor otherwise, the background jobs included (status: editor on every listed batch; copy: also editor on the destination dataset); locked: update needs global admin, delete needs owner, import into it and copy into a locked dataset are refused | no |
-| Samples ([sample_items_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/items/sample_items_routes.py)) | `POST /api/sample/items`, `PATCH /{id}`, `POST /move`, `/copy`, `/delete`, `/process`, `/{id}/export_peak_data`, `DELETE /{id}` | editor (copy: **guest** on source, editor on destination batch; move: editor on both); locked: update and delete need owner, move refuses a locked source item or destination, copy a locked destination | no |
-| Target collections ([target_collections_routes.py](../../server/backend/src/mascope_backend/api/routes/target/collections/target_collections_routes.py)) | `POST/PATCH/DELETE /api/target/collections[/{id}]`; association via the `sample_batch_ids` payload field | workspace editor (global collection: global admin or superuser); batches-only update: guest on collection + editor on changed batches | no |
-| Target compounds ([target_compounds_routes.py](../../server/backend/src/mascope_backend/api/routes/target/compounds/target_compounds_routes.py)) | `POST/PATCH /api/target/compounds`, `DELETE /{id}` | **global editor only — no workspace ACL** | no |
-| Matching ([aggregate/](../../server/backend/src/mascope_backend/api/routes/match/aggregate/), [match_routes.py](../../server/backend/src/mascope_backend/api/routes/match/match_routes.py)) | `POST /api/match/aggregate/{sample\|batch}/{id}` and its previews (sample: `/isotope`, `/ion`, `/compound(s)`; batch: `/isotope` only), +`/save` (`/resave` batch-only); `/api/match/{rematch,compute,remove}/...`; `/remove/all`; the direct match-row writers `POST`/`DELETE /api/match/{isotopes,ions,compounds,collections,samples}` ([match/*/match_*_routes.py](../../server/backend/src/mascope_backend/api/routes/match/)) | aggregate: guest (pure); save/resave: editor (save upserts, resave rebuilds); rematch/compute/remove: editor on the scope; remove/all: global admin; direct writers: editor on every sample written (`DELETE`: on the sample or batch) | the sample and batch aggregate previews, the sample `/compound(s)` previews and **`POST /rematch/sample/{id}`** (the `file-converter` token only) |
+| Datasets ([dataset_routes.py](../../server/backend/src/mascope_backend/api/routes/dataset/dataset_routes.py)) | `POST /api/workspaces/{ws}/datasets`, `PATCH/DELETE .../{id}`, `POST .../{id}/move` | workspace editor (move: editor on both workspaces); a locked dataset needs global admin to update, delete or move | **yes** (phase 3): all four |
+| Batches ([sample_batches_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/sample_batches_routes.py)) | `POST /api/sample/batches`, `PATCH /{id}`, `PATCH /status`, `POST /{id}/import`, `POST /{id}/copy`, `DELETE /{id}`; background jobs `POST /{id}/peaks` (batch-peak aggregation), `POST /{id}/export_peaks` and `POST /{id}/export/spreadsheet` ([batches/export/routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/export/routes.py), included in this router) | dataset editor to create; batch editor otherwise, the background jobs included (status: editor on every listed batch; copy: also editor on the destination dataset); locked: update needs global admin, delete needs owner, import into it and copy into a locked dataset are refused | **yes** (phase 3): update, copy, delete |
+| Samples ([sample_items_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/items/sample_items_routes.py)) | `POST /api/sample/items`, `PATCH /{id}`, `POST /move`, `/copy`, `/delete`, `/process`, `/{id}/export_peak_data`, `DELETE /{id}` | editor (copy: **guest** on source, editor on destination batch; move: editor on both); locked: update and delete need owner, move refuses a locked source item or destination, copy a locked destination | **yes** (phase 3): update, move, copy |
+| Target collections ([target_collections_routes.py](../../server/backend/src/mascope_backend/api/routes/target/collections/target_collections_routes.py)) | `POST/PATCH/DELETE /api/target/collections[/{id}]`; association via the `sample_batch_ids` payload field | workspace editor (global collection: global admin or superuser); batches-only update: guest on collection + editor on changed batches | **yes** (phase 3): all three |
+| Target compounds ([target_compounds_routes.py](../../server/backend/src/mascope_backend/api/routes/target/compounds/target_compounds_routes.py)) | `POST/PATCH /api/target/compounds`, `DELETE /{id}` | **global editor only — no workspace ACL** | **yes** (phase 3): all three |
+| Matching ([aggregate/](../../server/backend/src/mascope_backend/api/routes/match/aggregate/), [match_routes.py](../../server/backend/src/mascope_backend/api/routes/match/match_routes.py)) | `POST /api/match/aggregate/{sample\|batch}/{id}` and its previews (sample: `/isotope`, `/ion`, `/compound(s)`; batch: `/isotope` only), +`/save` (`/resave` batch-only); `/api/match/{rematch,compute,remove}/...`; `/remove/all`; the direct match-row writers `POST`/`DELETE /api/match/{isotopes,ions,compounds,collections,samples}` ([match/*/match_*_routes.py](../../server/backend/src/mascope_backend/api/routes/match/)) | aggregate: guest (pure); save/resave: editor (save upserts, resave rebuilds); rematch/compute/remove: editor on the scope; remove/all: global admin; direct writers: editor on every sample written (`DELETE`: on the sample or batch) | the sample and batch aggregate previews, the sample `/compound(s)` previews, **`POST /rematch/sample/{id}`** (the `file-converter` token only), and since phase 3 the sample and batch `/save` and the batch `/resave` |
 | Peak assignments ([peak_assignments/routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py)) | `POST /api/peak-assignments/sample/{id}/verify`, `PATCH .../assignment/{id}`, `POST .../assign`, `POST .../runs/import`, `DELETE .../runs/{id}`, `POST /calibration/{instrument}/recalibrate`, `POST .../fit/{aggregate,visualize}` | sample editor (recalibrate: superuser; fits: guest, compute only); behind the peak-assignment feature flag, except the two fits | **yes**, all |
 | Batch ledger ([batch_peaks_routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_routes.py)) | `POST /api/batch-peaks/batch/{id}/{backfill,search-untargeted,verify,retract,curate,release-curation,export,runs/import}` | batch editor (export: guest, writes a CSV to the user's temp store); behind the feature flag, except export, which stays open so a ledger outlives an opt-out | **yes**, these eight; the router's `POST /records/series` is a guest query and takes no token |
 | Sample files ([sample_files_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/files/sample_files_routes.py)) | `POST /api/sample/files`, `POST /upload`, tus `/upload/tus[/{id}]`, `POST /delete`; `PATCH/DELETE /{id}`, `POST /{id}/peaks/compute`, `/{id}/process`, `/bind`, `/reprocess` | upload and create: editor in the instrument's workspace; `process` and `bind`: instrument editor; bulk delete, `PATCH`/`DELETE /{id}`, `peaks/compute` and `reprocess`: instrument **admin** (`process`, `PATCH`/`DELETE /{id}` and `peaks/compute` also accept that role in a workspace holding a sample of the file) | upload, create and bulk delete only |
 
-**The data-organisation writes (datasets to matching `/save`) accept no
-access-token auth** (`token_access=True` absent); the token-reachable writes are
-the rematch route (the file converter's token only) and the assignment and
-upload surfaces (section 1.3). The
-aggregate previews a token reaches compute and write nothing: phase 0's token
-audit, below, opened them as toolkit reads.
+**The data-organisation writes the SDK's wrappers need accept access-token
+auth since phase 3**, route by route (the write table below); the rest of
+that surface does not. The other token-reachable writes are the sample
+rematch route (the file converter's token only) and the assignment and upload
+surfaces (section 1.3). The aggregate previews a token reaches compute and
+write nothing: phase 0's token audit, below, opened them as toolkit reads.
 
 Left out on purpose, as edits to configuration or reference data rather than
 to the data an agent organises: `PATCH /api/target/ions/{id}`, the
@@ -803,7 +807,11 @@ preview of a large batch is heavy; the toolkit's caps apply to it as to a load.
 ### The write routes (phase 3's input)
 
 The write surface of the appendix above, route by route, the routes left out
-of it on purpose included (the second table). *Destructive* means the change
+of it on purpose included (the second table). *Yes (phase 3)* marks the 19 writes
+opened for the SDK's write wrappers (MAS-136), in the order the wrappers need
+them, the destructive ones last; each kept its ACL, and a token passes it as
+its user's session does
+([test_token_writes.py](../../server/backend/tests/integration/api/workspace/test_token_writes.py)). *Destructive* means the change
 cannot be undone from the API: rows or files are deleted or rebuilt. A
 *locked* entity additionally needs the global role named; no route outside the
 dataset, batch and sample rows checks a lock. A superuser passes every
@@ -811,36 +819,36 @@ workspace check, and a global admin every instrument-workspace check.
 
 | Route | ACL | Token access | Destructive |
 |---|---|---|---|
-| `POST /api/workspaces/{ws}/datasets` | workspace editor | no | no |
-| `PATCH /api/workspaces/{ws}/datasets/{id}` | workspace editor; locked: admin | no | no |
-| `POST /api/workspaces/{ws}/datasets/{id}/move` | editor on source and target workspace; locked: admin | no | no |
-| `DELETE /api/workspaces/{ws}/datasets/{id}` | workspace editor; locked: admin | no | **yes** |
+| `POST /api/workspaces/{ws}/datasets` | workspace editor | **yes** (phase 3) | no |
+| `PATCH /api/workspaces/{ws}/datasets/{id}` | workspace editor; locked: admin | **yes** (phase 3) | no |
+| `POST /api/workspaces/{ws}/datasets/{id}/move` | editor on source and target workspace; locked: admin | **yes** (phase 3) | no |
+| `DELETE /api/workspaces/{ws}/datasets/{id}` | workspace editor; locked: admin | **yes** (phase 3) | **yes** |
 | `POST /api/sample/batches` | dataset editor | no | no |
-| `PATCH /api/sample/batches/{id}` | batch editor; locked: admin | no | no |
+| `PATCH /api/sample/batches/{id}` | batch editor; locked: admin | **yes** (phase 3) | no |
 | `PATCH /api/sample/batches/status` | editor on every batch | no | no |
-| `POST /api/sample/batches/{id}/copy` | batch editor + destination dataset editor | no | no |
-| `DELETE /api/sample/batches/{id}` | batch editor; locked: owner | no | **yes** |
+| `POST /api/sample/batches/{id}/copy` | batch editor + destination dataset editor | **yes** (phase 3) | no |
+| `DELETE /api/sample/batches/{id}` | batch editor; locked: owner | **yes** (phase 3) | **yes** |
 | `POST /api/sample/batches/{id}/import` | batch editor; refused into a locked batch | no | no (creates and matches samples) |
 | `POST /api/sample/batches/{id}/peaks` | batch editor | no | no (background job; writes the batch peak cache only if missing) |
 | `POST /api/sample/batches/{id}/export_peaks` | batch editor | no | no (background job; a CSV in the user's temp store) |
 | `POST /api/sample/batches/{id}/export/spreadsheet` | batch editor | no | no (background job; an .xlsx in the user's temp store) |
 | `POST /api/sample/items` | batch editor | no | no |
 | `POST /api/sample/items/process` | batch editor | no | no (creates and matches a sample) |
-| `PATCH /api/sample/items/{id}` | sample editor; locked: owner | no | no |
-| `POST /api/sample/items/move` | editor on the samples + destination batch | no | no |
-| `POST /api/sample/items/copy` | **guest** on the samples + editor on destination batch | no | no |
+| `PATCH /api/sample/items/{id}` | sample editor; locked: owner | **yes** (phase 3) | no |
+| `POST /api/sample/items/move` | editor on the samples + destination batch | **yes** (phase 3) | no |
+| `POST /api/sample/items/copy` | **guest** on the samples + editor on destination batch | **yes** (phase 3) | no |
 | `POST /api/sample/items/delete` | editor on every sample; locked: owner | no | **yes** |
 | `DELETE /api/sample/items/{id}` | sample editor; locked: owner | no | **yes** |
 | `POST /api/sample/items/{id}/export_peak_data` | sample editor | no | no (background job; a CSV in the user's temp store) |
-| `POST /api/target/collections` | workspace editor (global: admin) + editor on its batches | no | no |
-| `PATCH /api/target/collections/{id}` | collection editor; batches-only: collection guest + editor on changed batches | no | no |
-| `DELETE /api/target/collections/{id}` | collection editor | no | **yes** |
-| `POST /api/target/compounds` | **global editor, no workspace ACL** | no | no |
-| `PATCH /api/target/compounds` | **global editor, no workspace ACL** | no | no (shared namespace) |
-| `DELETE /api/target/compounds/{id}` | **global editor, no workspace ACL** | no | **yes** |
-| `POST /api/match/aggregate/sample/{id}/save` | sample editor | no | **yes** (destructive rebuild) |
-| `POST /api/match/aggregate/batch/{id}/save` | batch editor | no | **yes** (destructive rebuild) |
-| `POST /api/match/aggregate/batch/{id}/resave` | batch editor | no | **yes** (removes every aggregate level first) |
+| `POST /api/target/collections` | workspace editor (global: admin) + editor on its batches | **yes** (phase 3) | no |
+| `PATCH /api/target/collections/{id}` | collection editor; batches-only: collection guest + editor on changed batches | **yes** (phase 3) | no |
+| `DELETE /api/target/collections/{id}` | collection editor | **yes** (phase 3) | **yes** |
+| `POST /api/target/compounds` | **global editor, no workspace ACL** | **yes** (phase 3) | no |
+| `PATCH /api/target/compounds` | **global editor, no workspace ACL** | **yes** (phase 3) | no (shared namespace) |
+| `DELETE /api/target/compounds/{id}` | **global editor, no workspace ACL** | **yes** (phase 3) | **yes** |
+| `POST /api/match/aggregate/sample/{id}/save` | sample editor | **yes** (phase 3) | **yes** (destructive rebuild) |
+| `POST /api/match/aggregate/batch/{id}/save` | batch editor | **yes** (phase 3) | **yes** (destructive rebuild) |
+| `POST /api/match/aggregate/batch/{id}/resave` | batch editor | **yes** (phase 3) | **yes** (removes every aggregate level first) |
 | `POST /api/match/compute/sample/{id}` | sample editor | no | no (computes missing matches only) |
 | `POST /api/match/compute/batch/{id}` | batch editor | no | no (computes missing matches only) |
 | `POST /api/match/rematch/sample/{id}` | sample editor | `file-converter` only | **yes** (removes orphaned or all matches, recomputes) |
