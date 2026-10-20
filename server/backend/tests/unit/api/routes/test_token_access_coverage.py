@@ -104,6 +104,9 @@ SDK_WRITES = {
     ("POST", "/api/workspaces/{workspace_id}/datasets/{dataset_id}/move"): (
         "datasets.move"
     ),
+    # batches
+    ("PATCH", "/api/sample/batches/{sample_batch_id}"): "batches.update",
+    ("POST", "/api/sample/batches/{sample_batch_id}/copy"): "batches.copy",
 }
 
 #: Every other route that answers a token, by the client that needs it.

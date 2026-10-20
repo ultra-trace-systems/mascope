@@ -152,7 +152,7 @@ async def update_sample_batch_status_route(
 
 
 @sample_batches_router.patch("/{sample_batch_id}")
-@api_route()
+@api_route(token_access=True)
 async def update_sample_batch_route(
     sample_batch_id: str,
     body: SampleBatchUpdate,
@@ -278,7 +278,7 @@ async def import_sample_items_route(
 
 
 @sample_batches_router.post("/{sample_batch_id}/copy")
-@api_route(status_code=202)
+@api_route(status_code=202, token_access=True)
 async def copy_sample_batch_route(
     sample_batch_id: str,
     body: SampleBatchCopyBody,
