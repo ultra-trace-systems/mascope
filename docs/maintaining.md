@@ -41,7 +41,7 @@ or to poll:
 $ mascope prod doctor
 [OK]
 Stack    backend healthy · frontend healthy · postgres healthy · redis healthy · file_converter running
-Version  v1.6.1
+Version  vX.Y.Z
 Disk     state, docker 142 GiB / 61% free · +0.4 GiB/day (7d), +0.3 GiB/day (30d) · full in ~355 days
          filestore 610 GiB / 31% free · +2.1 GiB/day (7d), +1.8 GiB/day (30d) · full in ~290 days
 Updates  no pending migration recorded
@@ -74,7 +74,7 @@ one this deployment would deploy right now (the `MASCOPE_VERSION` pin, else the
 release tag checked out, else `latest`). A mismatch is reported as drift:
 
 ```
-Version  backend latest · frontend latest  DRIFT (this checkout deploys v1.6.1)
+Version  backend latest · frontend latest  DRIFT (this checkout deploys vX.Y.Z)
 ```
 
 Drift means the next `mascope prod up` - a restart, or a reboot - moves the

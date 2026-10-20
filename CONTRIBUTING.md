@@ -12,7 +12,7 @@ Mascope is a uv-managed Python monorepo (Python 3.12) with a VueJS frontend (Nod
 git clone https://github.com/ultra-trace-systems/mascope.git && cd mascope && .\tooling\windows.ps1 install
 ```
 
-**Ubuntu** (22.04 LTS or later):
+**Ubuntu** (22.04 LTS or later; CI runs on 24.04):
 
 ```sh
 git clone https://github.com/ultra-trace-systems/mascope.git && cd mascope && ./tooling/ubuntu.sh install
@@ -58,9 +58,28 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/): `type(sc
 
 Breaking changes are marked with `!` after the type/scope.
 
-## Reporting bugs and proposing features
+## Reporting a bug and what happens next
 
-Use the issue templates. For questions and open-ended discussion, join our [Discord community](https://discord.gg/R5kEKJcKe8).
+Report a bug or propose a feature with one of the
+[issue templates](https://github.com/ultra-trace-systems/mascope/issues/new/choose).
+For questions, open-ended discussion, or a problem you are not sure is a bug,
+join our [Discord community](https://discord.gg/R5kEKJcKe8).
+
+**Security vulnerabilities never go in a public issue.** Report them privately
+as [SECURITY.md](SECURITY.md) describes.
+
+A maintainer reading a new issue:
+
+- labels it with the **area** it touches - `backend`, `frontend`, `library`,
+  `cli`, `agent`, `sdk`, `security`, `docs`, `ci`, `ops` - and any **flags**
+  that apply: `matching`, `perf`, `debt`, `design`, `test`, `blocked`,
+  `linear`. The issue type (Bug, Task, Feature) says what kind of issue it is;
+- gives a bug that a planned piece of work will fix the `linear` label: the plan
+  is tracked in the maintainers' Linear workspace, and the pull request that
+  fixes the bug closes the issue (`Fixes #N`);
+- otherwise leaves it open in the backlog, where anyone may pick it up.
+
+Issues are triaged as maintainers have time; no response time is promised.
 
 ## Contributor License Agreement
 
