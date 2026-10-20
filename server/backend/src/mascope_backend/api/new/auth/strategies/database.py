@@ -127,7 +127,9 @@ def get_database_strategy(
     Returns a DatabaseStrategy for access token authentication.
 
     This strategy validates access token stored in the database, associating each key with a user ID.
-    Tokens expire after the defined lifetime.
+    Tokens expire after their own service's lifetime (``read_token``); the
+    ``lifetime_seconds`` passed here is what the base class requires, and
+    no check reads it.
     """
     return HashedDatabaseStrategy(
         access_token_db,
