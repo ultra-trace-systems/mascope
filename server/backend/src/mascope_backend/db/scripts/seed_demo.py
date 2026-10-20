@@ -8,11 +8,10 @@ and use the SDK with zero setup. Idempotent: safe to run repeatedly. It
 - upserts a demo user with a fixed email/username/password (owner + superuser,
   active + verified), resetting the password each run so it always matches -
   being an owner also satisfies the app's "first owner" registration gate,
-- (re)creates fixed service access tokens (mascope_sdk, file-converter,
-  file-agent) with a fresh ``created_at`` so they never show up expired
-  regardless of how old the restored snapshot is. file-agent is the File
-  Agent's bearer token; the fixed file-converter token is unused, since each
-  upload mints its own.
+- (re)creates fixed service access tokens (mascope_sdk, file-agent) with a
+  fresh ``created_at`` so they never show up expired regardless of how old
+  the restored snapshot is. file-agent is the File Agent's bearer token. No
+  file-converter token is seeded: each upload mints its own.
 
 The demo user is a superuser, so it bypasses workspace-membership checks and
 sees all demo data without extra wiring.
@@ -60,12 +59,9 @@ DEMO_PASSWORD = "mascope-demo"
 DEMO_ROLE = "owner"
 # Fixed access tokens per service, stored as their digests like any token.
 # - mascope_sdk: notebook/SDK access (MASCOPE_ACCESS_TOKEN)
-# - file-converter: no longer read by anything - the upload route mints a
-#   fresh converter token per request (get_access_token)
 # - file-agent: bearer token for the File Agent uploader (if used)
 DEMO_TOKENS = {
     "mascope_sdk": "mascope_demo_sdk_token",
-    "file-converter": "mascope_demo_file_converter_token",
     "file-agent": "mascope_demo_file_agent_token",
 }
 # Back-compat alias for the SDK token (referenced by docs / CLI output).
