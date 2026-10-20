@@ -14,6 +14,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import numpy as np
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
@@ -158,6 +159,7 @@ def test_everything_can_be_set(no_env):
         ("TOF_AUDIT_BANDS", "100,40", "rise"),
         ("TOF_AUDIT_BANDS", "40,a", "not a list"),
         ("TOF_AUDIT_SERIES", '{"x": {"core": "Br"}}', "series 'x'"),
+        ("TOF_AUDIT_FAMILIES", "[M+NO3]-,[M-H]", "'\\[M-H\\]' must end"),
     ],
 )
 def test_what_cannot_be_read_stops_the_run(no_env, name, value, message):
@@ -626,6 +628,101 @@ async def test_a_record_the_set_cannot_have_made_is_said_so(filestore):
     assert "edited after the file was fitted" in file.reproduction["reason"]
 
 
+@pytest.mark.asyncio
+async def test_a_record_with_no_settings_is_reproduced_at_the_defaults(filestore):
+    """``fit_quality`` writes None for a setting it was not given: the
+    record is then fitted with the mode's own."""
+    peaks = support.calibrant_peaks()
+    record = await _node_record(filestore, peaks)
+    record["quality"].update(mz_error_tolerance=None, refine_window=None)
+
+    file = await _audit(filestore, peaks, record)
+
+    assert file.reproduction["reproduced"]
+
+
+async def _counted_refits(filestore, peaks, record, mode_audit=None):
+    calls = []
+    real = audit.refit
+
+    async def counted(*args, **kwargs):
+        calls.append(args[1])
+        return await real(*args, **kwargs)
+
+    with patch.object(audit, "refit", counted):
+        file = await _audit(filestore, peaks, record, mode_audit)
+    return file, calls
+
+
+@pytest.mark.asyncio
+async def test_a_record_fitted_with_the_mode_settings_is_not_refitted_twice(
+    filestore,
+):
+    peaks = support.calibrant_peaks()
+    record = await _node_record(filestore, peaks)
+
+    file, calls = await _counted_refits(filestore, peaks, record)
+
+    assert file.reproduction["reproduced"]
+    assert len(calls) == 1
+
+    record["quality"]["refine_window"] = 30.0
+    file, calls = await _counted_refits(filestore, peaks, record)
+    assert [call.refine_window for call in calls] == [100, 30]
+
+
+@pytest.mark.asyncio
+async def test_a_refit_that_raises_fails_alone(filestore):
+    """A least-squares failure under one set costs that fit, not the file's
+    other fits or its reproduction."""
+    peaks = support.calibrant_peaks()
+    record = await _node_record(filestore, peaks)
+    nitrate = support.isotopes(["NO3", "HN2O6", "H2N3O9"])
+    mode_audit = _mode_audit(
+        sets={"collection": support.isotopes(), "nitrate": nitrate}
+    )
+    real = audit.refit
+
+    async def failing(stored, params, isotopes, *args, **kwargs):
+        if isotopes is nitrate:
+            raise ValueError("least_squares did not converge")
+        return await real(stored, params, isotopes, *args, **kwargs)
+
+    with patch.object(audit, "refit", failing):
+        file = await _audit(filestore, peaks, record, mode_audit)
+
+    assert file.fits["nitrate/mode0"] is None
+    assert file.warnings["nitrate/mode0"] == "the refit raised ValueError"
+    assert file.fits["collection/mode0"] is not None
+    assert file.reproduction["reproduced"]
+
+    summary = _summary(mode_audit, ["stored", "collection/mode0", "nitrate/mode0"])
+    script.summarise_file(summary, file, mode_audit, _config("AuditTof"))
+    fits = script.summary_dict(summary)["fits"]
+    assert fits["nitrate/mode0"]["failed"] == {"the refit raised ValueError": 1}
+    assert fits["collection/mode0"]["fitted"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_reproduction_that_raises_says_so(filestore):
+    peaks = support.calibrant_peaks()
+    record = await _node_record(filestore, peaks)
+    record["quality"]["refine_window"] = 30.0
+    real = audit.refit
+
+    async def failing(stored, params, *args, **kwargs):
+        if params.refine_window == 30:
+            raise ValueError("least_squares did not converge")
+        return await real(stored, params, *args, **kwargs)
+
+    with patch.object(audit, "refit", failing):
+        file = await _audit(filestore, peaks, record)
+
+    assert file.fits["collection/mode0"] is not None
+    assert not file.reproduction["reproduced"]
+    assert file.reproduction["reason"] == "no refit: the refit raised ValueError"
+
+
 @pytest.mark.parametrize(
     "record",
     [
@@ -666,6 +763,8 @@ async def test_a_file_is_measured_under_every_fit(filestore):
     assert len(file.retained["collection/mode0"]) == 5
     assert len(file.retained["nitrate/mode0"]) == 3
     assert len(file.matched["nitrate"]) == 3
+    assert set(file.set_readings) == {"collection", "nitrate"}
+    assert set(file.set_readings["nitrate"]) == file.matched["nitrate"]
     assert any(label.startswith("HO4S-") for label in file.readings)
     # The calibrants and the series member, not the two others
     assert file.strong_tofs.size == len(peaks) - 2
@@ -726,6 +825,88 @@ async def test_an_ion_a_fit_did_not_use_is_held_out(filestore):
     assert bands["40-100"]["used"]["n"] == 1  # NO3-
     assert bands["40-100"]["held_out"]["n"] == 2  # both bromide lines
     assert bands["150-200"]["used"]["n"] == 1  # NO3-.(HNO3)2
+
+
+def test_a_fit_is_scored_at_the_peaks_its_own_set_matched():
+    """Two sets can match one label to different peaks: each set's fits are
+    read at its own, and the record at the first set's."""
+    label, mz = "L", 200.0
+    first = support.tof_of(mz)
+    other = support.tof_of(mz * (1 + 5e-6))
+    file = script.FileAudit(
+        row=script.FileRow("sf1", "f", datetime(2026, 10, 20, tzinfo=UTC), "m1"),
+        fits={
+            "stored": support.TRUE_FIT,
+            "a/mode0": support.TRUE_FIT,
+            "b/mode0": support.TRUE_FIT,
+        },
+        warnings={},
+        retained={"a/mode0": frozenset({label}), "b/mode0": frozenset({label})},
+        matched={"a": frozenset({label}), "b": frozenset({label})},
+        readings={label: (mz, first)},
+        set_readings={"a": {label: (mz, first)}, "b": {label: (mz, other)}},
+        strong_tofs=np.array([]),
+        estimated=0,
+        reproduction=None,
+    )
+    mode_audit = _mode_audit(sets={})
+    summary = _summary(mode_audit, ["stored", "a/mode0", "b/mode0"])
+
+    script.summarise_file(summary, file, mode_audit, _config("AuditTof"))
+
+    def used(name, bucket):
+        return summary.ion_errors[(name, label)][bucket]
+
+    assert used("a/mode0", "used") == [pytest.approx(0.0, abs=1e-6)]
+    assert used("b/mode0", "used") == [pytest.approx(5.0, abs=0.01)]
+    assert used("stored", "held_out") == [pytest.approx(0.0, abs=1e-6)]
+
+
+@pytest.mark.asyncio
+async def test_the_record_is_read_at_the_collection_peaks(filestore):
+    """Where the sets matched a label to different peaks, the record and
+    every other set's fits read it at the first set's, the collection's: the
+    set the node fitted the record under."""
+    nitrate = support.isotopes(["NO3", "HN2O6", "H2N3O9"])
+    mode_audit = _mode_audit(
+        sets={"collection": support.isotopes(), "nitrate": nitrate}
+    )
+    real = audit.refit
+
+    async def shifted(stored, params, isotopes, *args, **kwargs):
+        result = await real(stored, params, isotopes, *args, **kwargs)
+        if isotopes is nitrate:
+            result.readings = result.readings.assign(
+                sample_peak_tof=result.readings.sample_peak_tof + 1.0
+            )
+        return result
+
+    with patch.object(audit, "refit", shifted):
+        file = await _audit(
+            filestore, support.calibrant_peaks(), support.STORED_FIT, mode_audit
+        )
+
+    label = next(label for label in file.matched["nitrate"])
+    assert file.readings[label] == file.set_readings["collection"][label]
+    assert file.set_readings["nitrate"][label] != file.readings[label]
+
+
+@pytest.mark.asyncio
+async def test_a_set_name_may_hold_a_slash(filestore):
+    mode_audit = _mode_audit(
+        sets={"nitrate/v2": support.isotopes(["NO3", "HN2O6", "H2N3O9"])}
+    )
+    file = await _audit(
+        filestore, support.calibrant_peaks(), support.STORED_FIT, mode_audit
+    )
+    summary = _summary(mode_audit, ["stored", "nitrate/v2/mode0"])
+
+    script.summarise_file(summary, file, mode_audit, _config("AuditTof"))
+    ions = script.summary_dict(summary)["fits"]["nitrate/v2/mode0"]["ions"]
+
+    nitrate = next(ion for ion in ions if ion["ion"].startswith("NO3-"))
+    assert nitrate["calibrant"] is True
+    assert nitrate["presence"] == 1.0
 
 
 @pytest.mark.asyncio
