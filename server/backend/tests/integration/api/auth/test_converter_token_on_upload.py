@@ -75,6 +75,9 @@ def _user_fixture(role_name: str, email: str, username: str):
 
 
 uploader = _user_fixture("editor", "uploader-token@test.com", "uploader-token")
+other_uploader = _user_fixture(
+    "editor", "other-uploader-token@test.com", "other-uploader-token"
+)
 guest = _user_fixture("guest", "guest-token@test.com", "guest-token")
 
 
@@ -146,6 +149,28 @@ async def test_a_mint_reaps_the_users_tokens_past_the_converter_lifetime(
     assert await _token_hashes(async_session_factory, uploader.id) == {
         hash_access_token(queued),
         hash_access_token(new),
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_mint_reaps_only_the_users_own_converter_tokens(
+    uploader, other_uploader, async_session_factory
+):
+    """The uploader's SDK token and another user's converter token, both
+    past the converter lifetime, are left alone: the SDK token is within its
+    own lifetime still, and the other user's tokens are theirs to reap."""
+    lifetime = auth_settings.access_token.FILE_CONVERTER_TOKEN_LIFETIME_SECONDS
+    sdk = await create_access_token(user=uploader, service_name="mascope_sdk")
+    others = await get_access_token(user=other_uploader, service_name=SERVICE)
+    for token in (sdk, others):
+        await _age_token(async_session_factory, token, lifetime + DAY)
+
+    await get_access_token(user=uploader, service_name=SERVICE)
+    assert await _token_hashes(async_session_factory, uploader.id, "mascope_sdk") == {
+        hash_access_token(sdk)
+    }
+    assert await _token_hashes(async_session_factory, other_uploader.id) == {
+        hash_access_token(others)
     }
 
 
