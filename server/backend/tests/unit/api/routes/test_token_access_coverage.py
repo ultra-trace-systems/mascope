@@ -124,6 +124,10 @@ SDK_WRITES = {
     ("DELETE", "/api/target/collections/{target_collection_id}"): (
         "collections.delete"
     ),
+    # compounds: the shared list, guarded by the global editor role alone
+    ("POST", "/api/target/compounds"): "compounds.add",
+    ("PATCH", "/api/target/compounds"): "compounds.update",
+    ("DELETE", "/api/target/compounds/{target_compound_id}"): "compounds.remove",
 }
 
 #: Every other route that answers a token, by the client that needs it.
