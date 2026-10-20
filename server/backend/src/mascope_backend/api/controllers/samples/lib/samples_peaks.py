@@ -91,23 +91,38 @@ def _peak_streams(data: xr.Dataset) -> list[int] | None:
     return data.stream.values.astype(int).tolist()
 
 
+def _stored_sum_divisor(
+    data: xr.Dataset, filename: str, *, average: bool
+) -> np.ndarray | int:
+    """What each peak's stored sums are divided by: one for a sum, the scans
+    the sum is over for an average.
+
+    Per peak: a stored sum is over the scans the store's axis holds for the
+    peak - a stream's peak over its own stream's scans, a pooled store's over
+    its polarity's. A whole file can hold peaks of both polarities, so each
+    peak is counted against its own polarity's scans.
+    """
+    if not average:
+        return 1
+    divisor = np.ones(data.mz.size, dtype=int)
+    polarities = data.polarity.values
+    for polarity in np.unique(polarities):
+        at = np.flatnonzero(polarities == polarity)
+        timestamps = m_compute.get_scan_timestamps(filename, polarity=str(polarity))
+        divisor[at] = m_compute.stored_scans_per_peak(data.isel(mz=at), timestamps)
+    return divisor
+
+
 def _aggregate_full_sample(
     data: xr.Dataset,
     filename: str,
-    polarity: Literal["+", "-"],
     *,
     areas: bool,
     heights: bool,
     average: bool,
 ) -> PeakData:
     """Aggregate peak data over the full sample (pre-computed sums)."""
-    if average:
-        # Per peak: a stored sum is over the scans the store's axis holds
-        # for the peak - a stream's peak over its own stream's scans
-        timestamps = m_compute.get_scan_timestamps(filename, polarity=polarity)
-        average_factor = m_compute.stored_scans_per_peak(data, timestamps)
-    else:
-        average_factor = 1
+    average_factor = _stored_sum_divisor(data, filename, average=average)
 
     return PeakData(
         peak_ids=data.peak_id.values.tolist(),
@@ -283,5 +298,36 @@ def extract_peaks(
         )
 
     return _aggregate_full_sample(
-        data, filename, polarity, areas=areas, heights=heights, average=average
+        data, filename, areas=areas, heights=heights, average=average
+    )
+
+
+def extract_file_peaks(
+    filename: str,
+    *,
+    areas: bool = True,
+    heights: bool = True,
+    average: bool = True,
+) -> PeakData:
+    """Every peak of a sample file, both polarities, from its stored sums.
+
+    The whole-file counterpart of :func:`extract_peaks` without a time range:
+    the same peaks with the same values, a peak of either polarity averaged
+    over its own polarity's scans. A peak's stored sums exist from detection
+    on, where its per-scan timeseries is computed only once something asks
+    for it, so a read of the timeseries would leave out, or give no value
+    for, most peaks of a file.
+
+    :param filename: Sample file name.
+    :param areas: Include peak areas. Defaults to True.
+    :param heights: Include peak heights. Defaults to True.
+    :param average: Average over the scans instead of summing. Defaults to True.
+    :raises FileNotFoundError: No such sample file, or it is unprocessed.
+    """
+    return _aggregate_full_sample(
+        load_peak_data(filename),
+        filename,
+        areas=areas,
+        heights=heights,
+        average=average,
     )

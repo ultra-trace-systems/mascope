@@ -31,6 +31,9 @@ from mascope_backend.api.controllers.sample.files.process.status import (
 from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data import (
     fetch_affected_sample_data,
 )
+from mascope_backend.api.controllers.samples.lib.samples_peaks import (
+    extract_file_peaks,
+)
 from mascope_backend.api.controllers.samples.samples_controller import get_samples
 from mascope_backend.api.lib.api_features import (
     ClosingStreamingResponse,
@@ -1497,10 +1500,14 @@ def _sync_load_sample_file_peaks(
 ) -> dict:
     """Load a sample file's peaks and materialize them into plain lists.
 
+    Every peak of the file, from its stored sums, as the sample's own peak
+    listing reads them (:func:`extract_file_peaks`): a peak's per-scan
+    timeseries is computed only once something asks for it, so a read of
+    the timeseries gave no value for most peaks of a file.
+
     Kept as one synchronous unit so the caller can hand the whole thing to a
-    worker thread. Splitting it would not help: ``load_peak_data`` returns a
-    dask-backed dataset, so the store reads happen at the ``.tolist()`` calls
-    here rather than at the load.
+    worker thread: ``load_peak_data`` returns a dask-backed dataset, so the
+    store reads happen at the ``.tolist()`` calls rather than at the load.
 
     :param filename: Sample file filename
     :param areas: Include peak areas
@@ -1509,37 +1516,13 @@ def _sync_load_sample_file_peaks(
     :raises FileNotFoundError: No such sample file, or it is unprocessed
     :return: Response payload with mz, and area/height/sparsity as requested
     """
-    sample_file_data = load_peak_data(filename)
-    response_data = {}
-
+    peaks = extract_file_peaks(filename, areas=areas, heights=heights, average=average)
+    response_data = {"mz": peaks.mz_values}
     if areas:
-        peak_areas = get_peaks(sample_file_data, "area")
-        peak_areas = (
-            peak_areas.mean(dim="time") if average else peak_areas.sum(dim="time")
-        )
-        response_data["mz"] = peak_areas.mz.values.tolist()
-        response_data["area"] = peak_areas.values.tolist()
-
+        response_data["area"] = peaks.areas
     if heights:
-        peak_heights = get_peaks(sample_file_data, "height")
-        peak_heights = (
-            peak_heights.mean(dim="time") if average else peak_heights.sum(dim="time")
-        )
-        # If 'mz' was not populated from areas, populate it from heights
-        if "mz" not in response_data:
-            response_data["mz"] = peak_heights.mz.values.tolist()
-        response_data["height"] = peak_heights.values.tolist()
-
-    # Include sparsity aligned to the same mz coordinate as the response
-    if "mz" not in response_data:
-        response_data["mz"] = sample_file_data.mz.values.tolist()
-        response_data["sparsity"] = sample_file_data.sparsity.values.tolist()
-    else:
-        filtered_mz = peak_areas.mz if areas else peak_heights.mz
-        response_data["sparsity"] = sample_file_data.sparsity.sel(
-            mz=filtered_mz
-        ).values.tolist()
-
+        response_data["height"] = peaks.heights
+    response_data["sparsity"] = peaks.sparsity
     return response_data
 
 
