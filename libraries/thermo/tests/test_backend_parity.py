@@ -633,15 +633,16 @@ def test_ms2_acquisition_info_matches_thermo(monkeypatch, path):
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
     try:
         with open_backend(path) as backend:
-            th_width, th_hcd = backend.ms2_acquisition_info()
+            th_width, th_widths, th_hcd = backend.ms2_acquisition_info()
     except m_thermo.NoScansFoundError:
         pytest.skip("no MS2 scans")
 
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
     with open_backend(path) as backend:
-        ot_width, ot_hcd = backend.ms2_acquisition_info()
+        ot_width, ot_widths, ot_hcd = backend.ms2_acquisition_info()
 
     assert ot_width == th_width, "isolation width differs"
+    assert ot_widths == th_widths, "per-scan isolation widths differ"
     assert set(ot_hcd) == set(th_hcd), "MS2 scan set differs"
     for scan_number, hcd in th_hcd.items():
         assert _hcd_tuple(ot_hcd[scan_number]) == _hcd_tuple(hcd), (

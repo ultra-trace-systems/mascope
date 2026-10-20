@@ -485,3 +485,69 @@ class TestMs2SummaryGroups:
             assert type(g["t_min"]) is float
             assert type(g["t_max"]) is float
             assert g["t_min"] <= g["t_max"]
+
+
+class TestMs2SummaryIsolationWidths:
+    """Each group reports the width its scans were isolated with; the file's
+    one width only when every scan shares it. Runs against a stub reader, since
+    no committed acquisition carries MS2 scans."""
+
+    @staticmethod
+    def _summary(monkeypatch, widths):
+        # A targeted run: scans 2 and 4 fragment one precursor, 3 and 5
+        # another; scan 1 is the survey.
+        events = {
+            2: (300.5, "hcd25.00"),
+            3: (137.096, "hcd30.00"),
+            4: (300.5, "hcd25.00"),
+            5: (137.096, "hcd30.00"),
+        }
+
+        class StubReader:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def scan_indices(self, polarity=None, t_min=None, t_max=None, ms_type=None):
+                return [1, *events] if ms_type is None else list(events)
+
+            def scan_times(self, polarity=None, t_min=None, t_max=None, ms_type=None):
+                return [float(scan) for scan in events]
+
+            def ms2_events_by_scan(self, polarity=None, t_min=None, t_max=None):
+                return events
+
+            def ms2_acquisition_info(self, polarity=None, t_min=None, t_max=None):
+                return m_backend._ms2_isolation_widths(widths) + (
+                    dict.fromkeys(events, "25"),
+                )
+
+        monkeypatch.setattr(m_thermo, "open_backend", lambda path: StubReader())
+        return m_thermo.get_ms2_summary_metadata("stub.raw")
+
+    def test_events_isolated_otherwise_each_keep_their_width(self, monkeypatch):
+        summary = self._summary(monkeypatch, {2: 150.0, 3: 2.0, 4: 150.0, 5: 2.0})
+
+        assert summary["isolation_width"] is None
+        assert {
+            g["parent_peak_mz"]: g["isolation_width"] for g in summary["groups"]
+        } == {137.096: 2.0, 300.5: 150.0}
+
+    def test_one_width_is_the_files_and_every_groups(self, monkeypatch):
+        summary = self._summary(monkeypatch, dict.fromkeys([2, 3, 4, 5], 2.0))
+
+        assert summary["isolation_width"] == 2.0
+        assert [g["isolation_width"] for g in summary["groups"]] == [2.0, 2.0]
+
+    def test_a_group_whose_scans_disagree_or_store_none_has_no_width(self, monkeypatch):
+        # Scans 2 and 4 store two widths; 3 and 5 store none.
+        summary = self._summary(monkeypatch, {2: 150.0, 4: 2.0})
+
+        assert summary["isolation_width"] is None
+        assert [g["isolation_width"] for g in summary["groups"]] == [None, None]
+
+    def test_no_scan_storing_a_width_is_no_summary(self, monkeypatch):
+        with pytest.raises(ValueError, match="No MS2 scan stores an isolation width"):
+            self._summary(monkeypatch, {})

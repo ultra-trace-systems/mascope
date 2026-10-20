@@ -451,13 +451,17 @@ class ReaderBackend(Protocol):
         polarity: Polarity | None = None,
         t_min: float | None = None,
         t_max: float | None = None,
-    ) -> tuple[float | None, dict[int, str]]:
-        """``(isolation_width, {scan_number: hcd_energy_string})`` for MS2 scans.
+    ) -> tuple[float | None, dict[int, float], dict[int, str]]:
+        """``(isolation_width, {scan_number: width}, {scan_number: hcd_energy})``
+        for MS2 scans.
 
-        ``isolation_width`` is the single MS2 isolation width across the scans,
-        the number the trailer stores (:meth:`trailer_numbers`); the HCD energy
-        strings may be comma-separated (step dissociation). Both backends read
-        these from the trailer (``"MS2 Isolation Width:"`` /
+        The per-scan widths are the numbers the trailers store
+        (:meth:`trailer_numbers`), for the scans that store one.
+        ``isolation_width`` is the one width they all share, or ``None`` when
+        they store more than one: a targeted method sets the width per event
+        or per inclusion-list entry (:func:`_common_isolation_width`). The HCD
+        energy strings may be comma-separated (step dissociation). Both
+        backends read these from the trailer (``"MS2 Isolation Width:"`` /
         ``"HCD Energy V:"``).
 
         A width the trailer holds as text is no width under either backend:
@@ -465,8 +469,7 @@ class ReaderBackend(Protocol):
         trailer has no ``"HCD Energy V:"`` has the energy ``""``, as one that
         leaves it empty does.
 
-        :raises ValueError: No MS2 scan stores a width, or they store more
-            than one.
+        :raises ValueError: No MS2 scan stores a width.
         """
         ...
 
@@ -653,24 +656,33 @@ MS2_ISOLATION_WIDTH = "MS2 Isolation Width:"
 MS2_HCD_ENERGY = "HCD Energy V:"
 
 
-def _one_isolation_width(widths: Iterable[float]) -> float:
-    """The one isolation width of a file's MS2 scans.
+def _common_isolation_width(widths: Iterable[float]) -> float | None:
+    """The one isolation width these MS2 scans share, or ``None``.
 
     Rounded to six decimals first, away from the noise a 32-bit float
-    carries into its 64-bit copy, so that identical widths dedupe.
+    carries into its 64-bit copy, so that identical widths dedupe. ``None``
+    when the scans store more than one width, as the events of a targeted
+    method may, or none at all.
 
     :param widths: The widths the scans' trailers store
         (:meth:`ReaderBackend.trailer_numbers`). A width a trailer holds as
         text is not among them.
-    :raises ValueError: No scan stores a width, or the scans store more
-        than one; the message says which.
     """
     distinct = {round(width, 6) for width in widths}
-    if not distinct:
-        raise ValueError("No MS2 scan stores an isolation width.")
-    if len(distinct) > 1:
-        raise ValueError("Multiple isolation widths found for MS2 scans.")
-    return distinct.pop()
+    return distinct.pop() if len(distinct) == 1 else None
+
+
+def _ms2_isolation_widths(
+    scan_idx_to_width: dict[int, float],
+) -> tuple[float | None, dict[int, float]]:
+    """``ms2_acquisition_info``'s widths: the common one and the per-scan ones.
+
+    :raises ValueError: No scan stores a width. The message leaves its final
+        period to the route's error handling, which appends one.
+    """
+    if not scan_idx_to_width:
+        raise ValueError("No MS2 scan stores an isolation width")
+    return _common_isolation_width(scan_idx_to_width.values()), scan_idx_to_width
 
 
 def _method_scan_event(index_event: int) -> int | None:
@@ -1600,7 +1612,7 @@ class ThermoBackend:
         polarity: Polarity | None = None,
         t_min: float | None = None,
         t_max: float | None = None,
-    ) -> tuple[float | None, dict[int, str]]:
+    ) -> tuple[float | None, dict[int, float], dict[int, str]]:
         acq = self.scan_acquisition_settings(polarity, t_min, t_max, ms_type="Ms2")
         # Some instruments label the energy otherwise ("HCD Energy:",
         # "HCD Energy eV:"); their scans have none here, as under OpenTFRaw.
@@ -1611,15 +1623,15 @@ class ThermoBackend:
 
         # The HCD energy is text the instrument wrote; the width is a number
         # it stored, read as stored rather than from the text.
-        isolation_widths: list[float] = []
+        scan_idx_to_width: dict[int, float] = {}
         scan_idx_to_hcd: dict[int, str] = {}
         for scan_idx, trailer_values in acq["settings"].items():
-            isolation_widths.extend(
-                self.trailer_numbers(scan_idx, (MS2_ISOLATION_WIDTH,)).values()
-            )
+            width = self.trailer_numbers(scan_idx, (MS2_ISOLATION_WIDTH,))
+            if MS2_ISOLATION_WIDTH in width:
+                scan_idx_to_width[scan_idx] = width[MS2_ISOLATION_WIDTH]
             hcd = None if hcd_label_idx is None else trailer_values[hcd_label_idx]
             scan_idx_to_hcd[scan_idx] = "" if hcd is None else str(hcd)
-        return _one_isolation_width(isolation_widths), scan_idx_to_hcd
+        return *_ms2_isolation_widths(scan_idx_to_width), scan_idx_to_hcd
 
     def ms2_centroids_for_scans(
         self, scan_indices: list[int]
@@ -2961,21 +2973,21 @@ class OpenTFRawBackend:
         polarity: Polarity | None = None,
         t_min: float | None = None,
         t_max: float | None = None,
-    ) -> tuple[float | None, dict[int, str]]:
+    ) -> tuple[float | None, dict[int, float], dict[int, str]]:
         # The calibrated "HCD Energy V:" and "MS2 Isolation Width:" live in the
         # per-scan trailer (generic record), surfaced by the scan_parameters()
         # accessor.
-        isolation_widths: list[float] = []
+        scan_idx_to_width: dict[int, float] = {}
         scan_idx_to_hcd: dict[int, str] = {}
         for s in self._selected(polarity, t_min, t_max, ms_type="Ms2"):
             scan_number = int(s["scan_number"])
             params = self._raw.scan_parameters(scan_number) or {}
-            isolation_widths.extend(
-                _trailer_numbers(params, (MS2_ISOLATION_WIDTH,)).values()
-            )
+            width = _trailer_numbers(params, (MS2_ISOLATION_WIDTH,))
+            if MS2_ISOLATION_WIDTH in width:
+                scan_idx_to_width[scan_number] = width[MS2_ISOLATION_WIDTH]
             hcd = params.get(MS2_HCD_ENERGY)
             scan_idx_to_hcd[scan_number] = "" if hcd is None else str(hcd)
-        return _one_isolation_width(isolation_widths), scan_idx_to_hcd
+        return *_ms2_isolation_widths(scan_idx_to_width), scan_idx_to_hcd
 
     def ms2_centroids_for_scans(
         self, scan_indices: list[int]

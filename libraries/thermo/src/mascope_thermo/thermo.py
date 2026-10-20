@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from mascope_thermo.backend import open_backend
+from mascope_thermo.backend import _common_isolation_width, open_backend
 from mascope_thermo.calibration import calibration_identity
 from mascope_thermo.lib import load_dotnet
 from mascope_thermo.runtime import runtime
@@ -1072,6 +1072,15 @@ def get_ms2_summary_metadata(
     it does not index against ``groups``; read ``groups`` when the step a given
     energy belongs to matters.
 
+    Each group carries the ``isolation_width`` its scans were isolated with:
+    a targeted method sets the width per event or per inclusion-list entry,
+    so one file's groups may differ. The top-level ``isolation_width`` is the
+    one width every MS2 scan that stores one shares, and ``None`` when they
+    do not. A group's is ``None`` when its own scans store more than one, or
+    none. A file none of whose MS2 scans stores a width has no summary: that
+    stays a :class:`ValueError`, as the width is what a client reads the
+    isolation window off.
+
     :param datafile_path: Path to the Thermo Fisher raw file (.raw).
     :type datafile_path: str
     :param t_min: Minimum time [s], optional.
@@ -1116,8 +1125,8 @@ def get_ms2_summary_metadata(
         # Isolation width + (calibrated) HCD energy per MS2 scan. Thermo reads
         # these from the trailer ("MS2 Isolation Width:" / "HCD Energy V:");
         # backends that lack the calibrated HCD energy raise NotImplementedError.
-        isolation_width, scan_idx_to_hcd = backend.ms2_acquisition_info(
-            polarity, t_min, t_max
+        isolation_width, scan_idx_to_width, scan_idx_to_hcd = (
+            backend.ms2_acquisition_info(polarity, t_min, t_max)
         )
 
         # Scan times, so each group can report the span it was acquired over.
@@ -1171,6 +1180,11 @@ def get_ms2_summary_metadata(
                     "parent_peak_mz": pp,
                     "activation": activation,
                     "hcd_energy": energies,
+                    "isolation_width": _common_isolation_width(
+                        scan_idx_to_width[idx]
+                        for idx in scan_indices
+                        if idx in scan_idx_to_width
+                    ),
                     "scan_count": len(scan_indices),
                     "t_min": min(group_times) if group_times else None,
                     "t_max": max(group_times) if group_times else None,
