@@ -15,6 +15,7 @@ Python SDK for the Mascope mass spectrometry data analysis platform. Designed fo
 - [Configuration](#configuration)
 - [High-Level Loaders](#high-level-loaders)
 - [Peak Assignments](#peak-assignments)
+- [Changing Data](#changing-data)
 - [Caching](#caching)
 - [API Reference](#api-reference)
 - [Examples](#examples)
@@ -585,9 +586,66 @@ import may not write it.
 For cross-sample analysis use the [`load_assignments`](#load_assignments-peak-assignments-across-batches)
 loader; for a guided walk-through see tutorial notebook `10_peak_assignment.ipynb`.
 
+## Changing Data
+
+The SDK can also change what your role lets you change: datasets, batches,
+samples, target collections and compounds, and saved matches. Each write
+method is one call to one API route and does what that route does, no more:
+the server checks the fields and your role, and a refusal comes back as the
+SDK's exceptions.
+
+```python
+dataset = mascope.datasets.create("Spring campaign")
+mascope.batches.copy(batch_id, dataset["dataset_id"], name="Spring copy")
+
+collection = mascope.collections.create(
+    "Organic acids",
+    compounds=[
+        {"target_compound_formula": "C2H4O2", "target_compound_name": "Acetic acid"}
+    ],
+)
+mascope.collections.associate(collection["target_collection_id"], [batch_id])
+
+preview = mascope.matching.aggregate_batch(batch_id)  # what a save would save
+mascope.matching.save_batch(batch_id)
+```
+
+- A method returns the route's data: the dataset, batch, sample or collection
+  as it now is. One whose route answers with a message alone returns that
+  answer as a dict.
+- A **copy**, a **move** and a **batch delete** run in the background on the
+  server: the call returns once the work has started, with its `process_id`,
+  and the result shows in the listings when it is done.
+- Some updates replace rather than add. `batches.update` takes the batch's
+  target collections and sets them to that list, so to only rename a batch
+  send the collections it has now; `collections.associate` sets the batches a
+  collection is associated with, and an empty list detaches it from them all.
+  `samples.update` takes the whole sample: start from `samples.get`.
+- A write clears the client's cache (see [Caching](#caching)), so the next
+  listing shows the change.
+- Deleting a dataset, a batch or a collection, removing a compound and
+  `matching.resave_batch` cannot be undone.
+
+A write your role does not allow raises `PermissionDeniedError`. The server
+says only that it refused; the error also names what the call acted on and
+the role it needs:
+
+```python
+from mascope_sdk import PermissionDeniedError
+
+try:
+    mascope.datasets.move(dataset_id, other_workspace_id)
+except PermissionDeniedError as e:
+    print(e.object_type, e.object_id)  # dataset abc123
+    print(e.required_role)  # editor in its workspace and in workspace '...'
+```
+
+The role each write needs is listed in the
+[SDK & API guide](https://github.com/ultra-trace-systems/mascope/blob/master/docs/user/sdk/index.md#what-a-token-may-change).
+
 ## Caching
 
-Dataset, batch, sample, and ionization mechanism listings are cached (in volatile memory) automatically after the first call. This speeds up repeated name resolution and avoids redundant API calls. Each call hands out a copy of the cached listing, so editing what you got leaves the cache, and the next call, as fetched. When data on the server changes (e.g. new batch created), the cache needs to be cleared to reload the data on the next call. The cache is not persisted on disk, so restarting the kernel always clears the cache.
+Dataset, batch, sample, and ionization mechanism listings are cached (in volatile memory) automatically after the first call. This speeds up repeated name resolution and avoids redundant API calls. Each call hands out a copy of the cached listing, so editing what you got leaves the cache, and the next call, as fetched. A write made through the SDK clears it. When data on the server changes otherwise (e.g. a batch created in the web app, or a copy the server finishes in the background), the cache needs to be cleared to reload the data on the next call. The cache is not persisted on disk, so restarting the kernel always clears the cache.
 
 ```python
 # Clear the cache when server data changes
@@ -618,12 +676,21 @@ comes from its flags. For example,
 | Method   | Description                  | Returns             |
 | -------- | ---------------------------- | ------------------- |
 | `list()` | List all accessible datasets | `pd.DataFrame│None` |
+| `create(name, description=, dataset_type=, instrument=, icon=, workspace_id=)` | Create a dataset | `dict` |
+| `update(dataset_id, name=, description=, icon=, workspace_id=)` | Rename it, or change its description or icon | `dict` |
+| `move(dataset_id, target_workspace_id, workspace_id=)` | Move it into another workspace | `dict` |
+| `delete(dataset_id, workspace_id=)` | Delete it and everything in it | `dict` |
+
+The writes act in the client's workspace unless `workspace_id` names another.
 
 #### `mascope.batches`
 
 | Method          | Description                         | Returns             |
 | --------------- | ----------------------------------- | ------------------- |
 | `list(dataset)` | List batches in a dataset (by name) | `pd.DataFrame│None` |
+| `update(batch_id, target_collection_ids, name=, description=)` | Rename it and set its target collections | `dict` |
+| `copy(batch_id, dataset_id, name, description=)` | Copy it into a dataset, in the background | `dict` |
+| `delete(batch_id)` | Delete it and its samples, in the background | `dict` |
 
 #### `mascope.samples`
 
@@ -637,6 +704,9 @@ comes from its flags. For example,
 | `get_spectrum(sample_id, ...)`                  | Get averaged spectrum                                | `pd.DataFrame│None` |
 | `get_spectra(sample_ids, ...)`                  | Get spectra for multiple samples                     | `pd.DataFrame│None` |
 | `get_centroids(sample_ids)`                     | Get centroid data                                    | `dict│None`         |
+| `update(sample_id, sample_item)`                | Update a sample's fields (the whole sample)          | `dict`              |
+| `move(sample_ids, batch_id)`                    | Move samples into a batch, in the background         | `dict`              |
+| `copy(sample_ids, batch_id)`                    | Copy samples into a batch, in the background         | `dict`              |
 
 A `get_peaks` over a time range (`t_min` / `t_max`) leaves out the peaks whose timeseries has not been computed yet; see [Peaks left out of a time range](#peaks-left-out-of-a-time-range).
 
@@ -680,6 +750,34 @@ raw = mascope.sample_files.download_raw(file_id, "downloads/")
 | -------------------------------------- | ---------------------------- | ----------------- |
 | `match_compound(sample_id, formula)`   | Match a compound in a sample | `dict│None`       |
 | `match_compounds(sample_id, formulas)` | Match multiple compounds     | `list[dict]│None` |
+| `aggregate_sample(sample_id, target_ion_id=, match_params=)` | Run a sample's matching, saving nothing | `dict` |
+| `aggregate_batch(batch_id, target_ion_id=, match_params=)` | Run a batch's matching, saving nothing | `dict` |
+| `save_sample(sample_id, ...)` | Run a sample's matching and save it | `dict` |
+| `save_batch(batch_id, ...)` | Run a batch's matching and save it | `dict` |
+| `resave_batch(batch_id, ...)` | Replace a batch's saved matches with a fresh run's | `dict` |
+
+The saves take `target_ion_id` and `match_params` as the runs do, and `match_ions=`, `match_compounds=`, `match_collections=`, `match_samples=`: False leaves that level's matches out. A save answers with the server's `status` and `message`.
+
+#### `mascope.collections`
+
+| Method | Description | Returns |
+| ------ | ----------- | ------- |
+| `create(name, description=, collection_type=, compounds=, compound_ids=, batch_ids=, workspace_id=, is_global=)` | Create a target collection | `dict` |
+| `update(collection_id, name=, description=, collection_type=, compounds=, compound_ids=)` | Change it or its compounds | `dict` |
+| `associate(collection_id, batch_ids)` | Set the batches it is associated with | `dict` |
+| `delete(collection_id, delete_orphan_compounds=)` | Delete it | `dict` |
+
+A collection belongs to the client's workspace unless `workspace_id` names another, or to every workspace with `is_global=True`. `associate` needs only the guest role on the collection, and the editor role on each batch it adds or removes.
+
+#### `mascope.compounds`
+
+| Method | Description | Returns |
+| ------ | ----------- | ------- |
+| `add(compounds)` | Add compounds, each `{"target_compound_formula": ..., "target_compound_name": ...}` | `dict` |
+| `update(compounds)` | Update compounds, each with its `target_compound_id` | `dict` |
+| `remove(compound_id)` | Remove a compound from every collection | `dict` |
+
+The compound list is shared by every workspace, so these need the global editor role. `add` lists a compound that already exists (the same name and formula, or CAS number) under `existing_compounds` instead of creating it again.
 
 #### `mascope.peak_assignments`
 
@@ -853,6 +951,7 @@ except NotFoundError:
     - `MascopeTimeoutError` — Request timeout
   - `MascopeAPIError` — API errors (includes `status_code`, `message`, `url`)
     - `AuthenticationError` — 401/403 responses
+      - `PermissionDeniedError` — 403: the token is valid, its user lacks the role; a write names its `object_type`, `object_id` and `required_role`
     - `NotFoundError` — 404 responses
     - `ValidationError` — 422 responses
     - `ServerError` — 5xx responses

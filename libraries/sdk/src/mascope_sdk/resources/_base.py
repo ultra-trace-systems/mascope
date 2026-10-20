@@ -1,11 +1,13 @@
 """Base resource class for Mascope SDK resources."""
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 from loguru import logger
 
-from .._http import http_get, http_post
+from .._http import http_get, http_post, http_request
+from ..exceptions import PermissionDeniedError
 
 
 if TYPE_CHECKING:
@@ -116,6 +118,26 @@ def _log_api_message(body: Any, hint: str | None = None) -> list[str]:
     return warnings
 
 
+@dataclass(frozen=True)
+class Needs:
+    """What a write needs, said when the server refuses it with a 403.
+
+    The server's 403 names neither the object nor the role, so each write
+    method states both: the operation, the object it acts on, and the role
+    the route asks for (as ``docs/user/sdk/index.md`` lists them).
+
+    :ivar operation: What the call does, e.g. ``"move dataset"``.
+    :ivar object_type: The kind of object, e.g. ``"dataset"``.
+    :ivar object_id: The object's ID.
+    :ivar role: The role the operation needs, and where.
+    """
+
+    operation: str
+    object_type: str
+    object_id: str
+    role: str
+
+
 class BaseResource:
     """Base class for all API resource classes.
 
@@ -217,3 +239,67 @@ class BaseResource:
             service_name=self._client._service_name,
         )
         return response.json().get("data")
+
+    def _write(
+        self,
+        method: str,
+        path: str,
+        needs: Needs,
+        data: Any = None,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        """Send a write and return what the route answers with.
+
+        The route's own errors come through as the SDK's exceptions; a 403
+        comes through as :class:`~mascope_sdk.exceptions.PermissionDeniedError`
+        naming what *needs* says. A write can change what a listing shows, so
+        the client's metadata cache is cleared after one succeeds.
+
+        :param method: ``"POST"``, ``"PATCH"`` or ``"DELETE"``.
+        :type method: str
+        :param path: API path (without /api/ prefix).
+        :type path: str
+        :param needs: The operation, its object and the role it needs.
+        :type needs: Needs
+        :param data: The JSON body, if any.
+        :type data: Any, optional
+        :param params: Query parameters, if any.
+        :type params: dict[str, Any], optional
+        :return: The route's ``data``. A route that answers without one (a
+            delete, a save, or a copy or move that runs in the background)
+            returns its whole answer instead, ``{"message": ...}`` and what
+            else it sent, with the ``process_id`` of a background task.
+        :rtype: Any
+        :raises PermissionDeniedError: If the token's user lacks the role.
+        """
+        try:
+            response = http_request(
+                method,
+                url=self._client.url,
+                path=path,
+                access_token=self._client.access_token,
+                data=data,
+                params=params,
+                timeout=self._client._timeout,
+                verify_ssl=self._client._verify_ssl,
+                service_name=self._client._service_name,
+            )
+        except PermissionDeniedError as e:
+            raise PermissionDeniedError(
+                e.message,
+                status_code=e.status_code,
+                url=e.url,
+                operation=needs.operation,
+                object_type=needs.object_type,
+                object_id=needs.object_id,
+                required_role=needs.role,
+            ) from e
+        self._client.clear_cache()
+
+        body = response.json()
+        _log_api_message(body)
+        if "data" in body:
+            return body["data"]
+        if "Process-ID" in response.headers:
+            body["process_id"] = response.headers["Process-ID"]
+        return body

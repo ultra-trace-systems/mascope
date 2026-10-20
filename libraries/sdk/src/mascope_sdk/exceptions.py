@@ -81,6 +81,59 @@ class AuthenticationError(MascopeAPIError):
     pass
 
 
+class PermissionDeniedError(AuthenticationError):
+    """Raised when the token is valid but its user lacks the role (403).
+
+    The server answers a refused write with a bare 403, naming neither the
+    object nor the role. A write method of the SDK knows both - what it acted
+    on and the role its route asks for, as the SDK docs list them - and says
+    so here. On a read, or a write that does not say, they are None.
+
+    A subclass of :class:`AuthenticationError`, which a 403 raised before
+    this class existed, so an ``except AuthenticationError`` still catches it.
+
+    :ivar operation: What the call set out to do, e.g. ``"move dataset"``.
+    :vartype operation: str | None
+    :ivar object_type: The kind of object it acted on, e.g. ``"dataset"``.
+    :vartype object_type: str | None
+    :ivar object_id: That object's ID.
+    :vartype object_id: str | None
+    :ivar required_role: The role the operation needs, and where.
+    :vartype required_role: str | None
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = 403,
+        url: str | None = None,
+        *,
+        operation: str | None = None,
+        object_type: str | None = None,
+        object_id: str | None = None,
+        required_role: str | None = None,
+    ):
+        self.operation = operation
+        self.object_type = object_type
+        self.object_id = object_id
+        self.required_role = required_role
+        super().__init__(message, status_code=status_code, url=url)
+
+    def _format_message(self) -> str:
+        if self.operation is None:
+            return super()._format_message()
+        target = f"{self.object_type} '{self.object_id}'"
+        parts = [
+            f"[HTTP {self.status_code}]" if self.status_code else "",
+            f"Refused to {self.operation} {target}:",
+            f"it needs {self.required_role}.",
+            f"The server said: {self.message}",
+        ]
+        if self.url:
+            parts.append(f"(URL: {self.url})")
+        return " ".join(part for part in parts if part)
+
+
 class NotFoundError(MascopeAPIError):
     """Raised when a requested resource is not found (404 response)."""
 

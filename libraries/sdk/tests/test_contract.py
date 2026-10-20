@@ -22,6 +22,11 @@ In CI they run inside the demo-stack e2e job. Configuration:
 
 - ``MASCOPE_SDK_TEST_URL``: app origin (default ``http://127.0.0.1:8080``).
 - ``MASCOPE_SDK_TEST_TOKEN``: access token (default: the public demo token).
+- ``MASCOPE_SDK_TEST_EMAIL`` / ``MASCOPE_SDK_TEST_PASSWORD``: the token
+  user's sign-in (default: the public demo login). The write tests sign in
+  to make what a token may not - scratch workspaces and batches, and a
+  second user, a guest, to be refused - and remove it all afterwards. The
+  user must be an owner.
 - ``MASCOPE_SDK_TEST_MS2_SAMPLE``: a sample with MS2 scans, for a stack where
   the probe in ``ms2_sample_id`` would not find one.
 
@@ -33,12 +38,20 @@ means "not released yet", not "contract broken".
 """
 
 import os
+import secrets
 
 import pytest
 
 
 BASE_URL = os.environ.get("MASCOPE_SDK_TEST_URL", "http://127.0.0.1:8080")
 TOKEN = os.environ.get("MASCOPE_SDK_TEST_TOKEN", "mascope_demo_sdk_token")
+# The same user's sign-in, for what a token may not do: the write tests make
+# their scratch workspaces, batches and second user over a session.
+TEST_EMAIL = os.environ.get("MASCOPE_SDK_TEST_EMAIL", "demo@mascope.app")
+TEST_PASSWORD = os.environ.get("MASCOPE_SDK_TEST_PASSWORD", "mascope-demo")
+#: Names the write tests give what they create, so a listing can tell them
+#: from the demo data.
+SCRATCH_PREFIX = "sdk-contract-"
 
 requires_stack = pytest.mark.skipif(
     os.environ.get("MASCOPE_SDK_CONTRACT") != "1",
@@ -70,6 +83,10 @@ def _workspace_with_data() -> str | None:
         f"{BASE_URL}/api/workspaces", headers=headers, timeout=30
     ).json()["data"]
     for workspace in workspaces:
+        if workspace["workspace_name"].startswith(SCRATCH_PREFIX):
+            # A scratch workspace of the write tests, left by a run that
+            # could not remove it.
+            continue
         datasets = (
             requests.get(
                 f"{BASE_URL}/api/workspaces/{workspace['workspace_id']}/datasets",
@@ -758,6 +775,401 @@ class TestSampleFileContract:
 
     def test_a_window_no_scan_is_in_is_none(self, mascope, sample_file_id):
         assert mascope.sample_files.get_scans(sample_file_id, first_scan=10**9) is None
+
+
+@pytest.fixture(scope="module")
+def scratch(mascope):
+    """Two scratch workspaces and a client on the first; removed afterwards.
+
+    A token cannot create a workspace, nor a batch, so these are made over a
+    session of the same user (``MASCOPE_SDK_TEST_EMAIL`` /
+    ``MASCOPE_SDK_TEST_PASSWORD``); the writes under test then go through the
+    SDK with the token. Depends on ``mascope`` so the demo client has picked
+    its workspace before these exist. Deleting a workspace deletes its
+    datasets, batches and samples with it.
+    """
+    from types import SimpleNamespace
+
+    from mascope_sdk import MascopeClient
+
+    session = _signed_in(TEST_EMAIL, TEST_PASSWORD)
+    tag = secrets.token_hex(4)
+    workspace_ids = []
+    try:
+        for name in ("a", "b"):
+            workspace = _api(
+                session,
+                "POST",
+                "workspaces",
+                json={"workspace_name": f"{SCRATCH_PREFIX}{tag}-{name}"},
+            )
+            workspace_ids.append(workspace["workspace_id"])
+        dataset = _api(
+            session,
+            "POST",
+            f"workspaces/{workspace_ids[0]}/datasets",
+            json={"dataset_name": "scratch"},
+        )
+        yield SimpleNamespace(
+            session=session,
+            tag=tag,
+            workspace_id=workspace_ids[0],
+            other_workspace_id=workspace_ids[1],
+            dataset_id=dataset["dataset_id"],
+            client=MascopeClient(
+                url=BASE_URL, access_token=TOKEN, workspace=workspace_ids[0]
+            ),
+        )
+    finally:
+        for workspace_id in workspace_ids:
+            session.delete(f"{BASE_URL}/api/workspaces/{workspace_id}", timeout=60)
+
+
+@pytest.fixture(scope="module")
+def scratch_matched(mascope, scratch):
+    """``(batch ID, sample ID)``: a copy of a demo batch, matches and all.
+
+    Copied over the session, so the matching tests do not hang on the SDK's
+    own copy, and saved to only there: the demo data is never written to.
+    """
+    demo_batch = _first_batches(mascope).iloc[0]
+    scratch.session.post(
+        f"{BASE_URL}/api/sample/batches/{demo_batch['sample_batch_id']}/copy",
+        json={"dataset_id": scratch.dataset_id, "sample_batch_name": "matched"},
+        timeout=60,
+    ).raise_for_status()
+    copy = _eventually(scratch.client, lambda: _ready_batch(scratch, "matched"))
+    samples = _eventually(
+        scratch.client,
+        lambda: scratch.client.samples._list_by_id(copy["sample_batch_id"]),
+    )
+    return copy["sample_batch_id"], samples.iloc[0]["sample_item_id"]
+
+
+@pytest.fixture(scope="module")
+def guest(scratch):
+    """A client of a second user who is a guest, globally and in the scratch
+    workspace: what an unauthorised write is sent with. Removed afterwards.
+
+    Made as an owner would make a colleague's account: registered with a
+    temporary password, which the first sign-in replaces, and then the
+    token, minted over that sign-in's session.
+    """
+    from mascope_sdk import MascopeClient
+
+    user = _api(
+        scratch.session,
+        "POST",
+        "users/owner/register",
+        json={
+            "email": f"{SCRATCH_PREFIX}{scratch.tag}@example.com",
+            "username": f"{SCRATCH_PREFIX}{scratch.tag}",
+            "role_id": 100,  # guest
+        },
+        whole=True,
+    )
+    user_id = user["data"]["id"]
+    try:
+        _api(
+            scratch.session,
+            "POST",
+            f"workspaces/{scratch.workspace_id}/members",
+            json={"user_id": user_id, "workspace_role": "guest"},
+        )
+        session = _signed_in(user["data"]["email"], user["temporary_password"])
+        password = f"Contract-{secrets.token_urlsafe(16)}"
+        _api(
+            session,
+            "PATCH",
+            "users/me/creds",
+            json={
+                "current_password": user["temporary_password"],
+                "new_password": password,
+                "verify_new_password": password,
+            },
+        )
+        token = _api(
+            session,
+            "POST",
+            "auth/access_token/regenerate",
+            json={"service_name": "mascope_sdk"},
+            whole=True,
+        )["access_token"]
+        yield MascopeClient(
+            url=BASE_URL, access_token=token, workspace=scratch.workspace_id
+        )
+    finally:
+        scratch.session.delete(f"{BASE_URL}/api/users/owner/{user_id}", timeout=60)
+
+
+@requires_stack
+class TestWriteContract:
+    """Every write method round-trips on the live stack, in scratch workspaces.
+
+    A copy, a move or a batch delete runs in the background on the server,
+    so those are waited for. Matching is saved only on a scratch copy of a
+    demo sample, and the compounds a test adds it removes again.
+    """
+
+    def test_dataset_create_update_move_delete(self, scratch):
+        datasets = scratch.client.datasets
+        _skip_unless_attr(datasets, "create")
+
+        created = datasets.create(f"made {scratch.tag}", description="by the SDK")
+        dataset_id = created["dataset_id"]
+        assert created["workspace_id"] == scratch.workspace_id
+        assert dataset_id in datasets.list()["dataset_id"].tolist()
+
+        updated = datasets.update(dataset_id, name=f"renamed {scratch.tag}")
+        assert updated["dataset_name"] == f"renamed {scratch.tag}"
+        assert updated["dataset_description"] == "by the SDK"
+        # The listing read before the write is not served from the cache.
+        listed = datasets.list().set_index("dataset_id")
+        assert listed.loc[dataset_id, "dataset_name"] == f"renamed {scratch.tag}"
+
+        moved = datasets.move(dataset_id, scratch.other_workspace_id)
+        assert moved["workspace_id"] == scratch.other_workspace_id
+        assert dataset_id not in datasets.list()["dataset_id"].tolist()
+
+        datasets.delete(dataset_id, workspace_id=scratch.other_workspace_id)
+        remaining = _api(
+            scratch.session, "GET", f"workspaces/{scratch.other_workspace_id}/datasets"
+        )
+        assert dataset_id not in [row["dataset_id"] for row in remaining]
+
+    def test_batch_update_copy_delete(self, scratch):
+        batches = scratch.client.batches
+        _skip_unless_attr(batches, "copy")
+        batch_id = _scratch_batch(scratch, "batch")
+
+        updated = batches.update(batch_id, [], name="renamed batch")
+        assert updated["sample_batch_name"] == "renamed batch"
+
+        started = batches.copy(batch_id, scratch.dataset_id, "copied batch")
+        assert started["process_id"]
+        copied = _eventually(
+            scratch.client, lambda: _batch_named(scratch, "copied batch")
+        )
+
+        for doomed in (batch_id, copied["sample_batch_id"]):
+            assert batches.delete(doomed)["process_id"]
+        _eventually(
+            scratch.client,
+            lambda: (
+                not {batch_id, copied["sample_batch_id"]} & set(_batch_ids(scratch))
+            ),
+        )
+
+    def test_sample_copy_update_move(self, mascope, scratch):
+        samples = scratch.client.samples
+        _skip_unless_attr(samples, "copy")
+        source = _scratch_batch(scratch, "sample source")
+        target = _scratch_batch(scratch, "sample target")
+
+        started = samples.copy([_first_sample_id(mascope)], source)
+        assert started["process_id"]
+        copy = _eventually(scratch.client, lambda: samples._list_by_id(source)).iloc[0]
+        sample_id = copy["sample_item_id"]
+
+        sample = samples.get(sample_id)
+        updated = samples.update(
+            sample_id, {**sample, "sample_item_name": "renamed sample"}
+        )
+        assert updated["sample_item_name"] == "renamed sample"
+
+        assert samples.move([sample_id], target)["process_id"]
+        moved = _eventually(scratch.client, lambda: samples._list_by_id(target))
+        # A moved sample is a new row under a new ID; the name carries over.
+        assert moved["sample_item_name"].tolist() == ["renamed sample"]
+        _eventually(scratch.client, lambda: samples._list_by_id(source) is None)
+
+    def test_collection_create_update_associate_delete(self, scratch):
+        collections = scratch.client.collections
+        batch_id = _scratch_batch(scratch, "collection")
+
+        created = collections.create(
+            f"collection {scratch.tag}",
+            compounds=[
+                {
+                    "target_compound_formula": "C2H4O2",
+                    "target_compound_name": f"{SCRATCH_PREFIX}{scratch.tag}",
+                }
+            ],
+        )
+        collection_id = created["target_collection_id"]
+        assert created["workspace_id"] == scratch.workspace_id
+        assert len(created["target_compound"]) == 1
+
+        updated = collections.update(collection_id, name=f"renamed {scratch.tag}")
+        assert updated["target_collection_name"] == f"renamed {scratch.tag}"
+
+        associated = collections.associate(collection_id, [batch_id])
+        assert [row["sample_batch_id"] for row in associated["sample_batch"]] == [
+            batch_id
+        ]
+        assert collections.associate(collection_id, [])["sample_batch"] == []
+
+        # Its compound is used by no other collection, so it goes with it.
+        assert collections.delete(collection_id, delete_orphan_compounds=True)[
+            "message"
+        ]
+
+    def test_compound_add_update_remove(self, scratch):
+        compounds = scratch.client.compounds
+        name = f"{SCRATCH_PREFIX}{scratch.tag}-compound"
+
+        added = compounds.add(
+            [{"target_compound_formula": "C3H6O3", "target_compound_name": name}]
+        )
+        assert added["existing_compounds"] == []
+        (compound,) = added["created_compounds"]
+        compound_id = compound["target_compound_id"]
+        try:
+            compounds.update(
+                [
+                    {
+                        "target_compound_id": compound_id,
+                        "target_compound_name": name + "2",
+                    }
+                ]
+            )
+            stored = _api(scratch.session, "GET", f"target/compounds/{compound_id}")
+            assert stored["target_compound_name"] == name + "2"
+        finally:
+            compounds.remove(compound_id)
+        gone = scratch.session.get(
+            f"{BASE_URL}/api/target/compounds/{compound_id}", timeout=30
+        )
+        assert gone.status_code == 404
+
+    def test_matching_run_and_save(self, scratch, scratch_matched):
+        matching = scratch.client.matching
+        _skip_unless_attr(matching, "save_batch")
+        batch_id, sample_id = scratch_matched
+        levels = {"match_ions", "match_compounds", "match_collections", "match_samples"}
+
+        for ran in (
+            matching.aggregate_sample(sample_id),
+            matching.aggregate_batch(batch_id),
+        ):
+            assert set(ran) == levels
+            assert ran["match_samples"], "the copied batch carries its matches"
+
+        for saved in (
+            matching.save_sample(sample_id),
+            matching.save_batch(batch_id),
+            matching.resave_batch(batch_id, match_ions=False),
+        ):
+            # A level some of whose rows were refused is "partial".
+            assert saved["status"] in ("success", "partial")
+            assert "created or updated" in saved["message"]
+
+    def test_an_unauthorised_write_names_the_object_and_the_role(self, scratch, guest):
+        """The server's 403 names neither; the SDK's error does."""
+        import mascope_sdk
+
+        if not hasattr(mascope_sdk, "PermissionDeniedError"):
+            pytest.skip("installed mascope_sdk predates PermissionDeniedError")
+        from mascope_sdk import AuthenticationError, PermissionDeniedError
+
+        with pytest.raises(PermissionDeniedError) as refused:
+            guest.datasets.create(f"refused {scratch.tag}")
+        error = refused.value
+        assert error.status_code == 403
+        assert (error.object_type, error.object_id) == (
+            "workspace",
+            scratch.workspace_id,
+        )
+        assert "editor" in error.required_role
+        assert isinstance(error, AuthenticationError)
+
+        with pytest.raises(PermissionDeniedError) as refused:
+            guest.batches.update(_scratch_batch(scratch, "refused"), [], name="x")
+        assert refused.value.object_type == "batch"
+        assert "editor on the batch" in refused.value.required_role
+
+        with pytest.raises(PermissionDeniedError) as refused:
+            guest.compounds.add([{"target_compound_formula": "CH4"}])
+        assert "global editor role" in refused.value.required_role
+
+
+def _signed_in(email: str, password: str):
+    """A session signed in as *email*, for what a token may not do."""
+    import requests
+
+    session = requests.Session()
+    session.post(
+        f"{BASE_URL}/api/auth/login",
+        data={"username": email, "password": password},
+        timeout=30,
+    ).raise_for_status()
+    return session
+
+
+def _api(session, method: str, path: str, whole: bool = False, **kwargs):
+    """Send *method* over *session*; the answer's ``data``, or all of it."""
+    response = session.request(method, f"{BASE_URL}/api/{path}", timeout=60, **kwargs)
+    response.raise_for_status()
+    body = response.json()
+    return body if whole else body["data"]
+
+
+def _scratch_batch(scratch, name: str) -> str:
+    """A new, empty batch in the scratch dataset."""
+    batch = _api(
+        scratch.session,
+        "POST",
+        "sample/batches",
+        json={
+            "dataset_id": scratch.dataset_id,
+            "sample_batch_name": f"{name} {secrets.token_hex(3)}",
+            "target_collection_ids": [],
+        },
+    )
+    return batch["sample_batch_id"]
+
+
+def _batch_ids(scratch) -> list[str]:
+    batches = scratch.client.batches._list_by_id(scratch.dataset_id)
+    return [] if batches is None else batches["sample_batch_id"].tolist()
+
+
+def _ready_batch(scratch, name: str):
+    """The batch called *name* once the server has finished making it."""
+    batch = _batch_named(scratch, name)
+    return batch if batch is not None and batch["status"] == "ready" else None
+
+
+def _batch_named(scratch, name: str):
+    batches = scratch.client.batches._list_by_id(scratch.dataset_id)
+    if batches is None:
+        return None
+    named = batches[batches["sample_batch_name"] == name]
+    return None if named.empty else named.iloc[0]
+
+
+def _eventually(client, probe, timeout: float = 120):
+    """What *probe* returns once there is something, for a write the server
+    runs in the background; fails after *timeout* seconds.
+
+    The client caches its listings, and a write that finishes in the
+    background cannot clear that, so the cache is cleared before each probe.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout
+    while True:
+        client.clear_cache()
+        result = probe()
+        if hasattr(result, "empty"):
+            present = not result.empty
+        else:
+            present = bool(result)
+        if present:
+            return result
+        if time.monotonic() > deadline:
+            raise AssertionError(f"still waiting after {timeout} s")
+        time.sleep(1)
 
 
 def _skip_unless_attr(obj, name: str) -> None:

@@ -36,6 +36,7 @@ from .exceptions import (
     MascopeError,
     MascopeTimeoutError,
     NotFoundError,
+    PermissionDeniedError,
     ServerError,
     ValidationError,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "ConfirmationRequiredError",
     "MascopeAPIError",
     "AuthenticationError",
+    "PermissionDeniedError",
     "NotFoundError",
     "ValidationError",
     "ServerError",
