@@ -91,8 +91,9 @@ const heights = computed(() => [
         </div>
       </SplitterPanel>
       <SplitterPanel :size="50" :minSize="10">
-        <div style="height: 1rem" />
-        <ChartMatchTimeseries v-model="scale" :height="heights[1]" />
+        <div class="timeseries">
+          <ChartMatchTimeseries v-model="scale" :height="heights[1]" />
+        </div>
       </SplitterPanel>
     </Splitter>
   </div>
@@ -118,6 +119,13 @@ const heights = computed(() => [
   min-height: 0;
   height: 100%;
   overflow: hidden;
+}
+
+/* The time series fills the panel below a 1rem gap. */
+.match-splitter .timeseries {
+  height: 100%;
+  padding-top: 1rem;
+  box-sizing: border-box;
 }
 
 .topbar {

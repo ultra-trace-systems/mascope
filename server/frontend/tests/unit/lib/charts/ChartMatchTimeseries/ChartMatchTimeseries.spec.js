@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { enableAutoUnmount, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
-// The match tab sizes the time series from its splitter, in pixels. The height
-// goes on the chart's container and not into the Plotly layout: with
+// The time series fills its panel, and its Plotly layout names no height: with
 // `responsive` on, Plotly deletes a layout height whenever the plot div changes
 // size and autosizes to the container, so a container with no height of its
-// own collapses to nothing and the chart with it.
+// own collapses to nothing and the chart with it. The splitter's `height`
+// reaches the chart only as a cue to resize.
 
 const { app, resize } = vi.hoisted(() => ({ app: {}, resize: vi.fn() }))
 
@@ -49,8 +49,9 @@ function mountChart(height) {
   })
 }
 
-/** The element the chart fills: the plot stub's parent. */
+/** The element the chart fills, the plot stub's parent, and the figure around it. */
 const container = (wrapper) => wrapper.find('.plot').element.parentElement
+const figure = (wrapper) => container(wrapper).parentElement
 
 enableAutoUnmount(afterEach)
 
@@ -60,11 +61,13 @@ beforeEach(() => {
 })
 
 describe('ChartMatchTimeseries height', () => {
-  it('puts the height on the container and none in the layout', async () => {
+  it('fills its parent and names no height in the layout', async () => {
     const wrapper = mountChart(185)
     await nextTick()
 
-    expect(container(wrapper).style.height).toBe('185px')
+    expect(figure(wrapper).tagName).toBe('FIGURE')
+    expect(figure(wrapper).style.height).toBe('100%')
+    expect(container(wrapper).style.height).toBe('100%')
     const layout = wrapper.findComponent(BaseChartPlotly).props('layout')
     expect(layout.yaxis.type).toBe('log')
     expect(layout).not.toHaveProperty('height')
@@ -77,7 +80,7 @@ describe('ChartMatchTimeseries height', () => {
     await wrapper.setProps({ height: 240 })
     await nextTick()
 
-    expect(container(wrapper).style.height).toBe('240px')
+    expect(container(wrapper).style.height).toBe('100%')
     expect(resize).toHaveBeenCalledTimes(1)
   })
 
