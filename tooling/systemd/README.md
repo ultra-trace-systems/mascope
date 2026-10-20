@@ -10,7 +10,7 @@ operations story see [docs/maintaining.md](../../docs/maintaining.md).
 | `mascope.service` | `mascope.service` | yes | Bring the stack up on boot (`prod up --detach`) / down on stop. |
 | `mascope-update.service` | `mascope-update.service` | no (oneshot, run by the timer) | One unattended update pass (`prod update --auto`). |
 | `mascope-update.timer` | `mascope-update.timer` | **no - opt-in** | Fire the update service nightly. |
-| `update.env.example` | `/etc/mascope/update.env` (chmod 600) | seeded once | Update window / grace / release token. |
+| `update.env.example` | `/etc/mascope/update.env` (chmod 600) | seeded once | Update window / grace / tracked repository. No credentials: release discovery uses the public GitHub API. |
 | `mascope-disk-check.service` | `mascope-disk-check.service` | no (oneshot, run by the timer) | One disk-space check (`tooling/disk-check.sh`). |
 | `mascope-disk-check.timer` | `mascope-disk-check.timer` | **yes - on by default** | Fire the disk check every 15 minutes. |
 | (see `tooling/disk-check.env.example`) | `/etc/mascope/disk-check.env` (chmod 600) | seeded once | Disk thresholds + optional alert URL. |

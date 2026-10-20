@@ -76,7 +76,7 @@ _(optional brief description of written/updated tests)_
 
 **What was tested manually during development, for example:**
 
-- Tested success and validation error edge cases via Postman endpoints
+- Tested success and validation error edge cases against the API endpoints
 - Verified UI changes and error handling in browser
 - Ran database migration and tested schema configurations (create/restore cycle)
 - _(Add specific test scenarios relevant to your changes)_
@@ -85,9 +85,7 @@ _(optional brief description of written/updated tests)_
 
 - [ ] I have accepted the [Contributor License Agreement](https://github.com/ultra-trace-systems/mascope/blob/develop/CONTRIBUTING.md#contributor-license-agreement) _(first pull request only; the CLA assistant comments if it is still missing)_
 - [ ] I have tested this change locally
-- [ ] I have requested review from GitHub Copilot and addressed useful comments _(if applicable)_
 - [ ] Code changes include appropriate comments/docstrings
-- [ ] Postman collection updated or not applicable for this PR
 - [ ] Breaking changes are marked with `!` in commit message and team has been notified
 - [ ] I have filled out every section of the PR template
 - [ ] I have applied appropriate labels to categorize this PR
