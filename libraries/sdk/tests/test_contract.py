@@ -507,6 +507,37 @@ class TestReferenceDataContract:
             "ionization_mechanism_polarity",
         } <= set(df.columns)
 
+    def test_collections_listing_and_one_collection(self, mascope):
+        _skip_unless_attr(mascope, "collections")
+        _skip_unless_attr(mascope.collections, "list")
+        df = mascope.collections.list()
+
+        # The demo's samples are matched, so some collection is there to match
+        # them against.
+        assert df is not None and not df.empty
+        assert {
+            "target_collection_id",
+            "target_collection_name",
+            "target_collection_type",
+            "workspace_id",
+        } <= set(df.columns)
+
+        collection = mascope.collections.get(df.iloc[0]["target_collection_id"])
+
+        assert collection["target_collection_id"] == df.iloc[0]["target_collection_id"]
+        assert {"target_compounds", "sample_batches"} <= set(collection)
+
+    def test_collections_of_a_batch(self, mascope):
+        _skip_unless_attr(mascope, "collections")
+        _skip_unless_attr(mascope.collections, "list")
+        batch_id = _first_batches(mascope).iloc[0]["sample_batch_id"]
+
+        df = mascope.collections.list(batch_id)
+
+        for collection_id in [] if df is None else df["target_collection_id"]:
+            batches = mascope.collections.get(collection_id)["sample_batches"]
+            assert batch_id in {batch["sample_batch_id"] for batch in batches}
+
     def test_cheminfo_query_around_a_matched_peak(self, mascope, matched_peaks):
         # A CHON-only compound is guaranteed to be found again by the default
         # composition search (its formula ranges cover C/H/O/N only).

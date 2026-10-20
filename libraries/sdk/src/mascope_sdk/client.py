@@ -97,7 +97,7 @@ class MascopeClient:
     :vartype sample_files: SampleFilesResource
     :ivar matching: Resource for compound matching operations.
     :vartype matching: MatchingResource
-    :ivar collections: Resource for target collection writes.
+    :ivar collections: Resource for target collections.
     :vartype collections: CollectionsResource
     :ivar compounds: Resource for target compound writes.
     :vartype compounds: CompoundsResource
@@ -361,7 +361,7 @@ class MascopeClient:
 
     @property
     def collections(self) -> "CollectionsResource":
-        """Resource for target collection writes."""
+        """Resource for target collections: list, read and write them."""
         if self._collections is None:
             from .resources.collections import CollectionsResource
 
