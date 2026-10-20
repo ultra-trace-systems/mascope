@@ -15,8 +15,10 @@ says so.
 and oracle calls need (the note's section 3.2 and 3.3, and its appendix for
 what each one is). Every one of them is a read: a GET, or a POST that computes
 an answer without writing (a peak's time series, the aggregate match preview,
-the m/z query). The write routes are in ``OTHER_TOKEN_ROUTES``, each by the
-client that needs it.
+the m/z query). ``SDK_WRITES`` are the data-organisation writes opened for the
+SDK's write wrappers (phase 3 of the note), each after reading its ACL and its
+side effects; the destructive ones are marked. Every other route is in
+``OTHER_TOKEN_ROUTES``, by the client that needs it.
 
 ``NARROWED`` pins the routes whose token access is narrowed to some services
 (``api_route(token_access=("file-converter",))``), and to which.
@@ -88,6 +90,19 @@ TOOLKIT_READS = {
     ),
     ("POST", "/api/match/aggregate/batch/{sample_batch_id}"): (
         "describe(batch) match status, plan_match(save=False)"
+    ),
+}
+
+#: (method, path) -> the SDK write wrapper that calls it. Each keeps its own
+#: ACL, which a token passes as its user's session would.
+SDK_WRITES = {
+    # datasets
+    ("POST", "/api/workspaces/{workspace_id}/datasets"): "datasets.create",
+    ("PATCH", "/api/workspaces/{workspace_id}/datasets/{dataset_id}"): (
+        "datasets.update"
+    ),
+    ("POST", "/api/workspaces/{workspace_id}/datasets/{dataset_id}/move"): (
+        "datasets.move"
     ),
 }
 
@@ -200,8 +215,10 @@ def _token_routes() -> set[tuple[str, str]]:
     }
 
 
-def test_the_two_lists_do_not_overlap():
+def test_the_lists_do_not_overlap():
     assert not TOOLKIT_READS.keys() & OTHER_TOKEN_ROUTES
+    assert not TOOLKIT_READS.keys() & SDK_WRITES.keys()
+    assert not SDK_WRITES.keys() & OTHER_TOKEN_ROUTES
 
 
 def test_every_toolkit_read_answers_a_token():
@@ -215,7 +232,7 @@ def test_every_toolkit_read_answers_a_token():
 
 
 def test_only_the_known_routes_answer_a_token():
-    assert _token_routes() == set(TOOLKIT_READS) | OTHER_TOKEN_ROUTES
+    assert _token_routes() == set(TOOLKIT_READS) | set(SDK_WRITES) | OTHER_TOKEN_ROUTES
 
 
 def _narrowed_routes() -> dict[tuple[str, str], frozenset[str]]:
