@@ -514,7 +514,9 @@ def test_every_env_var_the_db_scripts_read_is_forwarded():
     # UTC_OFFSET_HOURS, ALLOW_MATCHED_LOSS) carry no prefix, so a prefix-only
     # pattern is blind to the majority spelling of exactly what it guards.
     # Anchoring on the env-reading calls keeps that from over-matching: no
-    # script reads an unrelated variable (PATH, HOME) through them.
+    # script reads an unrelated variable (PATH, HOME) through them. A
+    # script's own reader counts by its name: any ``_..._env`` helper, which
+    # is what every script that has one calls it.
     script_dir = (
         Path(__file__).resolve().parents[3]
         / "server"
@@ -531,7 +533,7 @@ def test_every_env_var_the_db_scripts_read_is_forwarded():
     for source in script_dir.glob("*.py"):
         read_by_scripts.update(
             re.findall(
-                r'(?:_int_env|_bool_env|os\.environ\.get|os\.getenv)\(\s*"([A-Z][A-Z0-9_]*)"',
+                r'(?:\b_[a-z_]*env|os\.environ\.get|os\.getenv)\(\s*"([A-Z][A-Z0-9_]*)"',
                 source.read_text(encoding="utf-8"),
             )
         )
