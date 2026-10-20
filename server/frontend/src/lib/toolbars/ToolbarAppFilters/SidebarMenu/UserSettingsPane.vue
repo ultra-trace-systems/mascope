@@ -307,7 +307,7 @@ const vHelpLayer = app.ui.help.directive(layer)
         API tokens are used for authentication when accessing Mascope programmatically,
         e.g., from Jupyter Notebooks or the instrument agents. Here you can generate
         tokens for specific services; each token is shown only once, and it expires
-        90 days after it is generated. Regenerate it before then to keep access.
+        360 days after it is generated. Regenerate it before then to keep access.
       </p>
       <p>
         The File Agent uploads data files from an instrument PC automatically — its

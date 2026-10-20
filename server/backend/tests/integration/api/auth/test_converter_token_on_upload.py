@@ -200,14 +200,14 @@ async def test_a_converter_token_lapses_after_thirty_days(
 
 
 @pytest.mark.asyncio
-async def test_an_sdk_token_lapses_after_ninety_days(uploader, async_session_factory):
+async def test_an_sdk_token_lapses_after_360_days(uploader, async_session_factory):
     """The default lifetime: a day short of it the token works, a day past it
     the bearer request is refused with the usual 401."""
-    assert auth_settings.access_token.ACCESS_TOKEN_EXPIRATION_SECONDS == 90 * DAY
+    assert auth_settings.access_token.ACCESS_TOKEN_EXPIRATION_SECONDS == 360 * DAY
     sdk = await create_access_token(user=uploader, service_name="mascope_sdk")
-    await _age_token(async_session_factory, sdk, 89 * DAY)
+    await _age_token(async_session_factory, sdk, 359 * DAY)
     assert await _bearer_status(sdk, "mascope_sdk") == 200
-    await _age_token(async_session_factory, sdk, 91 * DAY)
+    await _age_token(async_session_factory, sdk, 361 * DAY)
     assert await _bearer_status(sdk, "mascope_sdk") == 401
 
 

@@ -2,7 +2,7 @@
 Step-up verification for actions a session alone should not authorize.
 
 The second factor gates sign-in, but some routes hand out credentials that
-outlive the session that requested them - an access token is valid for 90 days
+outlive the session that requested them - an access token is valid for 360 days
 and is not tied to the browser it was minted in. Without a check here, one
 stolen session buys a permanent credential and the second factor is a formality
 after that.

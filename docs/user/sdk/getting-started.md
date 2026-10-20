@@ -172,7 +172,7 @@ URL** and an **API token**.
 
 ### When your token expires
 
-An API token works for **90 days** from the moment you generate it. After
+An API token works for **360 days** from the moment you generate it. After
 that, every request made with it is refused with a `401`, and the SDK reports
 an `AuthenticationError` (see [Troubleshooting](#authenticationerror-or-401-response)).
 
@@ -321,7 +321,7 @@ The SDK can't find your credentials. Verify that:
 
 ### `AuthenticationError` or `401` response
 
-Your API token is invalid or expired: a token works for 90 days after it is
+Your API token is invalid or expired: a token works for 360 days after it is
 generated. Generate a new one in your Mascope account settings and put it in
 your `.env` file (see [When your token expires](#when-your-token-expires)).
 
