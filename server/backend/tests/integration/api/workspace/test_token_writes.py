@@ -35,6 +35,7 @@ from mascope_backend.db.id import gen_id
 
 
 _DATASETS = "mascope_backend.api.routes.dataset.dataset_routes"
+_BATCHES = "mascope_backend.api.routes.sample.batches.sample_batches_routes"
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,25 @@ WRITES = [
         _DATASETS,
         "move_dataset",
         200,
+    ),
+    Write(
+        "PATCH",
+        "/api/sample/batches/{batch}",
+        lambda ids: {
+            "sample_batch_description": "Written with a token",
+            "target_collection_ids": [],
+        },
+        _BATCHES,
+        "update_sample_batch",
+        200,
+    ),
+    Write(
+        "POST",
+        "/api/sample/batches/{batch}/copy",
+        lambda ids: {"dataset_id": ids["dataset"], "sample_batch_name": "Token copy"},
+        _BATCHES,
+        "copy_sample_batch",
+        202,
     ),
 ]
 
