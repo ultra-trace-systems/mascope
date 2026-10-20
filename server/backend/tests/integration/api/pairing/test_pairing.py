@@ -8,6 +8,8 @@ pending/approved/expired) are what matter here, not Redis itself.
 """
 
 import json
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
@@ -20,6 +22,7 @@ from mascope_backend.app.fast import fast
 from mascope_backend.capabilities import SERVER_CAPABILITIES
 from mascope_backend.db import AccessToken, AgentDevice, User, hash_access_token
 from mascope_backend.roles import ROLE_ACCESS_LEVELS
+from mascope_backend.socket.storage import redis_storage_client
 
 
 class FakeRedis:
@@ -28,11 +31,14 @@ class FakeRedis:
     def __init__(self):
         self.store = {}
 
-    async def exists(self, key):
-        return 1 if key in self.store else 0
-
     async def setex(self, key, ttl, value):
         self.store[key] = value
+
+    async def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.store:
+            return None
+        self.store[key] = value
+        return True
 
     async def get(self, key):
         return self.store.get(key)
@@ -346,7 +352,9 @@ async def test_poll_unknown_device_code_is_expired(fake_redis, public_client):
         "/api/auth/pairing/poll", json={"device_code": "x" * 32}
     )
     assert resp.status_code == 200
-    assert resp.json()["status"] == "expired"
+    # Exactly the shape an expired code gets, so a poll cannot tell an unknown
+    # code from one that lapsed, and carries nothing else.
+    assert resp.json() == {"status": "expired"}
 
 
 @pytest.mark.asyncio
@@ -496,3 +504,179 @@ async def test_a_reported_value_cannot_forge_a_field_in_the_list(
     devices = (await editor_client.get("/api/auth/devices")).json()["data"]
     row = next(d for d in devices if d["name"] == "FORGE-PC")
     assert "\u00b7" not in row["last_seen_version"]
+
+
+@pytest.fixture
+def pairing_log(monkeypatch):
+    """The pairing service's log calls, as the messages it wrote."""
+    logger = MagicMock()
+    monkeypatch.setattr(pairing_service, "runtime", SimpleNamespace(logger=logger))
+    return lambda: [call.args[0] for call in logger.info.call_args_list]
+
+
+@pytest.mark.asyncio
+async def test_start_and_approval_are_logged_for_audit_without_the_code(
+    fake_redis,
+    public_client,
+    editor_client,
+    test_users,
+    pairing_log,
+    async_session_factory,
+):
+    resp = await public_client.post(
+        "/api/auth/pairing/start",
+        json={"service_name": "file-agent", "machine_name": "ORBI-PC"},
+        headers={"X-Real-IP": "203.0.113.7"},
+    )
+    assert resp.status_code == 200, resp.text
+    started = resp.json()
+    raw_code = started["user_code"].replace("-", "")
+
+    (start_line,) = pairing_log()
+    assert "file-agent" in start_line and "ORBI-PC" in start_line
+    assert "203.0.113.7" in start_line
+
+    resp = await editor_client.post(
+        "/api/auth/pairing/approve", json={"user_code": started["user_code"]}
+    )
+    assert resp.status_code == 200, resp.text
+    approve_line = pairing_log()[1]
+    editor = test_users["editor"]
+    assert editor.username in approve_line and f"user {editor.id}" in approve_line
+    assert "file-agent" in approve_line and "ORBI-PC" in approve_line
+    # The device the approval created, and where the pairing was asked for.
+    async with async_session_factory() as session:
+        device = (
+            await session.execute(
+                select(AgentDevice).where(AgentDevice.name == "ORBI-PC")
+            )
+        ).scalar_one()
+    assert f"device {device.device_id}" in approve_line
+    assert f"machine account {device.machine_user_id}" in approve_line
+    assert "203.0.113.7" in approve_line
+
+    for line in pairing_log():
+        assert raw_code not in line and started["user_code"] not in line
+        assert started["device_code"] not in line
+
+
+@pytest.mark.asyncio
+async def test_start_never_writes_over_a_code_another_pairing_holds(
+    fake_redis, public_client, monkeypatch
+):
+    """Every draw colliding refuses the start rather than taking the code over.
+
+    Overwriting an approved record would strand its agent's credential, and
+    overwriting a pending one would hand its approval to whoever started last.
+    """
+    held = json.dumps({"status": "approved", "access_token": "theirs"})
+    fake_redis.store[pairing_service._code_key("BBBBBB")] = held
+    monkeypatch.setattr(pairing_service.secrets, "choice", lambda alphabet: "B")
+
+    resp = await public_client.post(
+        "/api/auth/pairing/start", json={"service_name": "file-agent"}
+    )
+
+    assert resp.status_code == 503
+    assert fake_redis.store == {pairing_service._code_key("BBBBBB"): held}
+
+
+@pytest.mark.asyncio
+async def test_start_and_poll_cannot_complete_a_pairing(fake_redis, public_client):
+    """Only the authenticated approve step moves a pairing past pending.
+
+    A start that names a status or a token of its own is still pending, and
+    an anonymous approve is refused.
+    """
+    resp = await public_client.post(
+        "/api/auth/pairing/start",
+        json={
+            "service_name": "file-agent",
+            "status": "approved",
+            "access_token": "forged",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    started = resp.json()
+
+    resp = await public_client.post(
+        "/api/auth/pairing/approve", json={"user_code": started["user_code"]}
+    )
+    assert resp.status_code == 401
+
+    resp = await public_client.post(
+        "/api/auth/pairing/poll", json={"device_code": started["device_code"]}
+    )
+    assert resp.json() == {
+        "status": "pending",
+        "interval": pairing_service.pairing_settings.POLL_INTERVAL_SECONDS,
+    }
+
+
+class _CountingRedis:
+    """The fixed-window commands of the rate limiter, counting for real."""
+
+    def __init__(self):
+        self.counts = {}
+
+    async def incr(self, key):
+        self.counts[key] = self.counts.get(key, 0) + 1
+        return self.counts[key]
+
+    async def expire(self, key, seconds):
+        return True
+
+    async def ttl(self, key):
+        return 60
+
+
+@pytest.fixture
+def live_rate_limiter(monkeypatch):
+    """Point the limiter at a counting stub; the ASGI tests otherwise fail open."""
+    monkeypatch.setattr(redis_storage_client, "_client", _CountingRedis())
+
+
+@pytest.mark.asyncio
+async def test_start_is_limited_per_address_refused_starts_included(
+    fake_redis, live_rate_limiter, public_client
+):
+    """Ten starts a minute from one address; refused starts count too.
+
+    The security suite trips this limit with starts the server refuses, so
+    that a probe creates no pending pairing; that relies on the limiter
+    counting a request before its body is validated.
+    """
+    for _ in range(10):
+        resp = await public_client.post(
+            "/api/auth/pairing/start", json={"service_name": "mascope_sdk"}
+        )
+        assert resp.status_code == 422
+    resp = await public_client.post(
+        "/api/auth/pairing/start", json={"service_name": "file-agent"}
+    )
+    # No Retry-After assertion: the exception pipeline drops the header the
+    # limiter sets (#2430).
+    assert resp.status_code == 429
+
+    # Another address has a budget of its own.
+    resp = await public_client.post(
+        "/api/auth/pairing/start",
+        json={"service_name": "file-agent"},
+        headers={"X-Real-IP": "203.0.113.8"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_poll_is_limited_per_address(
+    fake_redis, live_rate_limiter, public_client
+):
+    for _ in range(30):
+        resp = await public_client.post(
+            "/api/auth/pairing/poll", json={"device_code": "x" * 43}
+        )
+        assert resp.status_code == 200
+    resp = await public_client.post(
+        "/api/auth/pairing/poll", json={"device_code": "x" * 43}
+    )
+    assert resp.status_code == 429
