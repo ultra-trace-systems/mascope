@@ -120,7 +120,10 @@ from mascope_sdk import MascopeClient
 # Auto-loads credentials from .env
 mascope = MascopeClient(workspace="My Workspace")
 
-# List datasets (returns a DataFrame)
+# List datasets (returns a DataFrame). Besides the name, type and instrument,
+# each row carries the dataset's descriptive metadata: license, authors
+# (name, orcid, affiliation), keywords, related_identifiers and funding,
+# empty where the dataset has none
 datasets = mascope.datasets.list()
 
 # List batches by dataset name

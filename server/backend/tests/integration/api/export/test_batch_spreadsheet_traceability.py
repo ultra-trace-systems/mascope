@@ -160,6 +160,27 @@ async def batch(async_session_factory):
                 dataset_name=f"Export DS {ids.dataset}",
                 dataset_type="ANALYSIS",
                 dataset_utc_created=_NOW,
+                license="CC-BY-4.0",
+                authors=[
+                    {
+                        "name": "Author One",
+                        "orcid": "0000-0002-1825-0097",
+                        "affiliation": "Lab A",
+                    },
+                    {"name": "Author Two", "orcid": None, "affiliation": None},
+                ],
+                keywords=["aerosol", "CI-MS"],
+                related_identifiers=[
+                    {
+                        "identifier": "10.1234/example",
+                        "relation": "IsSupplementTo",
+                        "identifier_type": "DOI",
+                    }
+                ],
+                funding=[
+                    {"funder": "Funder A", "award": "123"},
+                    {"funder": "Funder B", "award": None},
+                ],
             )
         )
         session.add(
@@ -371,6 +392,30 @@ async def test_the_batch_sheet_names_the_records_it_was_built_from(workbook, bat
     # A batch can span instruments; every one is named
     assert values["Instruments"] == "instrument-x, instrument-y"
     assert values["Method files"] == "C:/methods/method-a.meth"
+
+
+@pytest.mark.asyncio
+async def test_the_batch_sheet_ends_with_the_datasets_descriptive_metadata(
+    workbook,
+):
+    labels = [label for label, _ in workbook.batch_rows]
+    assert labels[-7:] == [
+        "Method files",
+        "",
+        "License",
+        "Authors",
+        "Keywords",
+        "Related identifiers",
+        "Funding",
+    ]
+
+    values = dict(workbook.batch_rows)
+    assert values["License"] == "CC-BY-4.0"
+    # Author order is kept; an author's absent ORCID and affiliation are left out
+    assert values["Authors"] == ("Author One (0000-0002-1825-0097), Lab A; Author Two")
+    assert values["Keywords"] == "aerosol; CI-MS"
+    assert values["Related identifiers"] == "IsSupplementTo: 10.1234/example"
+    assert values["Funding"] == "Funder A, 123; Funder B"
 
 
 @pytest.mark.asyncio

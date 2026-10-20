@@ -5,6 +5,7 @@ Defines data models for dataset related requests and responses
 with validation rules and business logic constraints.
 """
 
+import re
 from datetime import datetime
 from typing import Literal
 
@@ -43,6 +44,214 @@ class DatasetIcon(BaseModel):
         if not color.startswith("#") or len(color) != 7:
             raise ValueError("Color must be in hex format (e.g., #3B82F6)")
         return color
+
+
+# The width of `Dataset.license` (String(64)).
+DATASET_LICENSE_MAX_LENGTH = 64
+
+# An ORCID iD as written without its https://orcid.org/ prefix: four groups of
+# four digits, the last character a digit or X.
+ORCID_PATTERN = re.compile(r"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$")
+
+
+def _required_text(value: str, what: str) -> str:
+    """`value` stripped, refusing one that is empty or only whitespace."""
+    value = value.strip()
+    if not value:
+        raise ValueError(f"{what} cannot be empty or contain only whitespace")
+    return value
+
+
+def _optional_text(value: str | None) -> str | None:
+    """`value` stripped, a blank one read as absent.
+
+    The optional parts of a metadata entry (an author's ORCID or affiliation,
+    an award, an identifier type) are often left blank in a row editor; blank
+    there means "not known", never a value of its own."""
+    if value is None:
+        return None
+    return value.strip() or None
+
+
+class DatasetAuthorRead(BaseModel):
+    """One author of a dataset, as stored. A list of these is in author order."""
+
+    name: str = Field(..., description="The author's name")
+    orcid: str | None = Field(
+        None, description="ORCID iD, e.g. 0000-0002-1825-0097 (no URL prefix)"
+    )
+    affiliation: str | None = Field(None, description="The author's affiliation")
+
+
+class DatasetAuthor(DatasetAuthorRead):
+    """An author as a request sends one: the stored shape, checked."""
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, name: str) -> str:
+        """Require a name: an author entry without one says nothing."""
+        return _required_text(name, "Author name")
+
+    @field_validator("affiliation")
+    @classmethod
+    def validate_affiliation(cls, affiliation: str | None) -> str | None:
+        """Strip the affiliation, a blank one read as absent."""
+        return _optional_text(affiliation)
+
+    @field_validator("orcid")
+    @classmethod
+    def validate_orcid(cls, orcid: str | None) -> str | None:
+        """
+        Check the ORCID iD's format, a blank one read as absent.
+
+        Format only: `NNNN-NNNN-NNNN-NNNC`, `C` a digit or `X`. The ISO 7064
+        11,2 check digit is not recomputed, so a mistyped iD of the right
+        shape is accepted; the check would catch typos but not an iD that
+        belongs to someone else, which is the error that matters, and ORCID
+        itself is the place to resolve one.
+        """
+        orcid = _optional_text(orcid)
+        if orcid is not None and not ORCID_PATTERN.match(orcid):
+            raise ValueError(
+                f"'{orcid}' is not an ORCID iD (expected NNNN-NNNN-NNNN-NNNN, "
+                "the last character a digit or X)"
+            )
+        return orcid
+
+
+class RelatedIdentifierRead(BaseModel):
+    """A publication or other resource the dataset relates to, as stored.
+
+    `relation` is free text; the UI suggests the DataCite relationType values
+    (IsSupplementTo, IsDescribedBy, IsDerivedFrom, Cites, References,
+    IsPartOf), and `identifier_type` suggests DOI or URL."""
+
+    identifier: str = Field(..., description="The identifier, e.g. a DOI or URL")
+    relation: str = Field(
+        ..., description="How the dataset relates to it, e.g. IsSupplementTo"
+    )
+    identifier_type: str | None = Field(
+        None, description="The kind of identifier, e.g. DOI or URL"
+    )
+
+
+class RelatedIdentifier(RelatedIdentifierRead):
+    """A related identifier as a request sends one: the stored shape, checked."""
+
+    @field_validator("identifier")
+    @classmethod
+    def validate_identifier(cls, identifier: str) -> str:
+        """Require the identifier."""
+        return _required_text(identifier, "Identifier")
+
+    @field_validator("relation")
+    @classmethod
+    def validate_relation(cls, relation: str) -> str:
+        """Require the relation: an identifier alone does not say what it is."""
+        return _required_text(relation, "Relation")
+
+    @field_validator("identifier_type")
+    @classmethod
+    def validate_identifier_type(cls, identifier_type: str | None) -> str | None:
+        """Strip the identifier type, a blank one read as absent."""
+        return _optional_text(identifier_type)
+
+
+class FundingRead(BaseModel):
+    """A funder of the work behind the dataset, and the award if known, as
+    stored."""
+
+    funder: str = Field(..., description="The funding organisation")
+    award: str | None = Field(None, description="The award or grant number")
+
+
+class Funding(FundingRead):
+    """A funding entry as a request sends one: the stored shape, checked."""
+
+    @field_validator("funder")
+    @classmethod
+    def validate_funder(cls, funder: str) -> str:
+        """Require the funder."""
+        return _required_text(funder, "Funder")
+
+    @field_validator("award")
+    @classmethod
+    def validate_award(cls, award: str | None) -> str | None:
+        """Strip the award, a blank one read as absent."""
+        return _optional_text(award)
+
+
+class DatasetMetadataFields(BaseModel):
+    """
+    The dataset's descriptive metadata: licence, authors, keywords, related
+    identifiers, funding. Fields only, as stored; `DatasetMetadataInput` is
+    the checked form a request sends.
+    """
+
+    license: str | None = Field(
+        None,
+        description=(
+            "The dataset's data licence, a free string; common values are "
+            "CC-BY-4.0, CC0-1.0, CC-BY-NC-4.0 and proprietary"
+        ),
+    )
+    authors: list[DatasetAuthorRead] | None = Field(
+        None, description="The dataset's authors, in author order"
+    )
+    keywords: list[str] | None = Field(None, description="Keywords")
+    related_identifiers: list[RelatedIdentifierRead] | None = Field(
+        None, description="Publications and other resources the dataset relates to"
+    )
+    funding: list[FundingRead] | None = Field(None, description="Funding")
+
+
+class DatasetMetadataInput(BaseModel):
+    """
+    The descriptive metadata as a create or an update sends it, checked.
+
+    Every field is optional, on create and on update alike, and on any
+    dataset type: metadata a user does not have never blocks a create or an
+    ingest. On an update, sending `null` clears a field. Mixed into the write
+    models ahead of the base they share with `DatasetRead`, so these fields
+    replace the stored-shape ones there.
+    """
+
+    license: str | None = Field(
+        None,
+        max_length=DATASET_LICENSE_MAX_LENGTH,
+        description=DatasetMetadataFields.model_fields["license"].description,
+    )
+    authors: list[DatasetAuthor] | None = Field(
+        None, description="The dataset's authors, in author order"
+    )
+    keywords: list[str] | None = Field(None, description="Keywords")
+    related_identifiers: list[RelatedIdentifier] | None = Field(
+        None, description="Publications and other resources the dataset relates to"
+    )
+    funding: list[Funding] | None = Field(None, description="Funding")
+
+    @field_validator("license")
+    @classmethod
+    def validate_license(cls, license: str | None) -> str | None:
+        """
+        Strip the licence, refusing an empty one.
+
+        A free string, not a validated SPDX identifier: the UI offers the
+        common cases and accepts anything. This is the dataset's own data
+        licence - a different axis from `[backend] reference_licenses`,
+        which gates which mirrored reference sources may be matched.
+        """
+        if license is None:
+            return None
+        return _required_text(license, "License")
+
+    @field_validator("keywords")
+    @classmethod
+    def validate_keywords(cls, keywords: list[str] | None) -> list[str] | None:
+        """Strip every keyword, refusing an empty one."""
+        if keywords is None:
+            return None
+        return [_required_text(keyword, "Keyword") for keyword in keywords]
 
 
 class DatasetBaseValidator:
@@ -118,7 +327,7 @@ class DatasetValidator(DatasetBaseValidator):
         return instrument
 
 
-class DatasetBase(BaseModel):
+class DatasetBase(DatasetMetadataFields):
     """Base model with common fields for Dataset.
 
     Fields only, like SampleBatchBase: the write models mix the validators
@@ -146,7 +355,7 @@ class DatasetBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class DatasetCreate(DatasetValidator, DatasetBase):
+class DatasetCreate(DatasetValidator, DatasetMetadataInput, DatasetBase):
     """Model used for dataset creation requests."""
 
     @model_validator(mode="after")
@@ -182,7 +391,7 @@ class DatasetRead(DatasetBase):
     )
 
 
-class DatasetUpdate(DatasetBaseValidator, BaseModel):
+class DatasetUpdate(DatasetBaseValidator, DatasetMetadataInput):
     """Model used for dataset update requests - only user-editable fields.
     All fields optional."""
 
