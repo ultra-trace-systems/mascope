@@ -122,8 +122,8 @@ class NotFound(ToolkitError):
 class RowCapExceeded(ToolkitError):
     """A load that would pass its ``max_rows`` cap, stopped before it did.
 
-    Raised either before the load, from an estimate that is already over the
-    cap, or during it, as soon as the rows read pass it. No Frame is made
+    Raised either before the load, from a rough estimate that is already
+    over the cap, or during it, as soon as the rows read pass it. No Frame is made
     either way.
 
     :ivar rows: The rows read when the load stopped, or the estimate.
@@ -155,7 +155,7 @@ class RowCapExceeded(ToolkitError):
         self.done = done
         self.left = list(left)
         if estimated:
-            said = f"is estimated at {rows:,} rows or more"
+            said = f"is estimated at about {rows:,} rows"
         else:
             said = f"passed {rows:,} rows after {done} {unit}(s)"
         super().__init__(
@@ -220,6 +220,32 @@ class AccessDenied(ToolkitError):
             "current_role": self.current_role,
             "workspace": self.workspace,
         }
+
+
+class StaleFrame(ToolkitError):
+    """A Frame whose rows, loaded again from its query, are not its rows.
+
+    An evicted Frame's rows come back by running its recorded query again.
+    When the answer differs from the Frame - other rows or columns, or a
+    read that failed this time - it is not kept under the Frame's ID: the
+    server's data changed, or a read failed transiently.
+
+    :ivar frame_id: The Frame.
+    """
+
+    code = "stale_frame"
+
+    def __init__(self, frame_id: str, differences: Sequence[str]):
+        self.frame_id = frame_id
+        self.differences = list(differences)
+        super().__init__(
+            f"Frame {frame_id}'s rows were evicted, and loading them again "
+            f"gave a different table ({'; '.join(self.differences)}). Run "
+            "the load again for a new Frame, or try again if a read failed."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"frame_id": self.frame_id, "differences": self.differences}
 
 
 class NotAuthenticated(ToolkitError):

@@ -58,10 +58,26 @@ class TestRepr:
                 for i in range(300)
             }
         )
+        # A failed read names its sample and batch, users' text of any length
+        wide.attrs["complete"] = False
+        wide.attrs["failures"] = [
+            {
+                "sample_item_id": "s" * 5000,
+                "sample_item_name": "n" * 5000,
+                "sample_batch_name": "b" * 5000,
+                "stage": list(range(2000)),
+                "error_type": "E" * 5000,
+                "error": "e" * 5000,
+            }
+        ]
 
         text = repr(_frame(wide))
 
         assert len(text) < 4000
+        assert "1 read(s) failed" in text
+        assert "n" * CELL_CHARS not in text and "b" * CELL_CHARS not in text
+        assert "s" * CELL_CHARS not in text and "E" * CELL_CHARS not in text
+        assert "1999" not in text
         assert f"and {300 - SCHEMA_COLUMNS} more" in text
         assert f"first {HEAD_COLUMNS} columns" in text
         assert "x" * CELL_CHARS not in text

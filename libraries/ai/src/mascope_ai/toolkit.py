@@ -33,6 +33,7 @@ from .errors import (
     InvalidRequest,
     NotFound,
     RowCapExceeded,
+    Unavailable,
     sdk_errors,
 )
 from .frame import Frame, jsonable
@@ -43,11 +44,12 @@ from .session import Session
 #: The row cap of a load unless the caller sets another.
 DEFAULT_MAX_ROWS = 500_000
 
-#: The fewest rows a sample's (or a stage's) peak list is taken to hold when
-#: a load is estimated before it starts. Deliberately low: the estimate only
-#: refuses a load that is over the cap even so; the running count during the
-#: load is what holds the cap.
-ROWS_PER_SAMPLE_FLOOR = 100
+#: The rows a sample's (or a stage's) peak list is taken to hold when a load
+#: is estimated before it starts. A rough guess, set low - a measured
+#: sample's peak list is usually far longer, a blank's can be shorter - so
+#: that the estimate refuses only a load clearly too big for the cap; the
+#: running count during the load is what holds the cap.
+ROWS_PER_SAMPLE_ESTIMATE = 100
 
 #: The order ``find`` lists kinds in, among matches ranked alike.
 _KIND_ORDER = {kind: index for index, kind in enumerate(KINDS)}
@@ -352,15 +354,23 @@ class Toolkit:
             rows = self.client.samples.list(batch=batch.id, dataset=batch.parent)
         return rows if rows is not None else pd.DataFrame()
 
-    def _samples(self, within: Ref | None) -> tuple[list[Ref], list[dict[str, Any]]]:
-        """The samples of a batch, a dataset or the workspace, and the
-        listings that failed."""
+    def _samples(
+        self, within: Ref | None, among: list[Ref] | None = None
+    ) -> tuple[list[Ref], list[dict[str, Any]]]:
+        """The samples of a batch, a dataset or the workspace - or of the
+        batches *among*, when given - and the listings that failed."""
         columns = (
             "sample_item_id",
             "sample_item_name",
             "sample_batch_id",
             "sample_item_utc_modified",
         )
+        if among is not None:
+            return [
+                ref
+                for batch in among
+                for ref in _refs(self._sample_rows(batch), "sample", *columns)
+            ], []
         if within is not None and within.kind == "batch":
             return _refs(self._sample_rows(within), "sample", *columns), []
         dataset = within.id if within is not None and within.kind == "dataset" else None
@@ -390,7 +400,7 @@ class Toolkit:
         )
 
     def _listing(
-        self, kind: str, within: Ref | None
+        self, kind: str, within: Ref | None, among: list[Ref] | None = None
     ) -> tuple[list[Ref], list[dict[str, Any]]]:
         if kind == "workspace":
             return self._workspaces(), []
@@ -401,7 +411,7 @@ class Toolkit:
                 return self._batches(within), []
             return self._all_batches(), []
         if kind == "sample":
-            return self._samples(within)
+            return self._samples(within, among)
         return self._collections(within), []
 
     # --- find ----------------------------------------------------------------
@@ -411,6 +421,7 @@ class Toolkit:
         query: "str | re.Pattern",
         kind: str | None,
         within: Ref | None,
+        among: list[Ref] | None = None,
     ) -> tuple[list[tuple[int, Ref]], list[dict[str, Any]]]:
         if not isinstance(query, (str, re.Pattern)):
             raise InvalidRequest(
@@ -433,7 +444,7 @@ class Toolkit:
         ranked: list[tuple[int, Ref]] = []
         failures: list[dict[str, Any]] = []
         for each in kinds:
-            refs, failed = self._listing(each, within)
+            refs, failed = self._listing(each, within, among)
             failures += failed
             for ref in refs:
                 rank = _rank(query, ref)
@@ -491,11 +502,17 @@ class Toolkit:
 
     def _sample_by_id(self, sample_id: str) -> Ref | None:
         """The sample with this ID, by one direct read; None when there is
-        none (or none this user may see)."""
+        none (or none this user may see).
+
+        The server answers a sample ID that does not exist with a 403, not a
+        404, for anyone but a superuser: it cannot tell whose the sample
+        would be. So a refusal here means only that *sample_id* names no
+        sample this user may read - most often, that it is a name.
+        """
         try:
             with self._errors("read sample", None):
                 record = self.client.samples.get(sample_id)
-        except (NotFound, InvalidRequest):
+        except (NotFound, InvalidRequest, AccessDenied):
             return None
         if not record:
             return None
@@ -517,7 +534,20 @@ class Toolkit:
 
         :raises AmbiguousName: When it matches several, with the candidates.
         :raises NotFound: When it matches none.
+        :raises Unavailable: When a listing it searched failed, so that the
+            match it would answer with may not be the only one.
         """
+        return self._resolve(value, kind, within)
+
+    def _resolve(
+        self,
+        value: "Ref | str | re.Pattern",
+        kind: str,
+        within: Ref | None,
+        among: list[Ref] | None = None,
+    ) -> Ref:
+        """:meth:`resolve`, a sample's name looked for in the batches
+        *among* alone when given."""
         if isinstance(value, Ref):
             if value.kind != kind:
                 raise InvalidRequest(f"Expected a {kind}, got {value}")
@@ -526,20 +556,23 @@ class Toolkit:
             direct = self._sample_by_id(value)
             if direct is not None:
                 return direct
-        ranked, _ = self._matches(value, kind, within)
-        if not ranked:
-            raise NotFound(
-                value.pattern if isinstance(value, re.Pattern) else value,
-                kind,
-                f"find(..., kind={kind!r}) lists what there is.",
+        ranked, failures = self._matches(value, kind, within, among)
+        text = value.pattern if isinstance(value, re.Pattern) else value
+        if failures and (not ranked or ranked[0][0] > 0):
+            # Only an ID is the one match whatever the failed listings held
+            raise Unavailable(
+                f"Could not search every {kind} for {text!r}: "
+                f"{len(failures)} listing(s) failed, so a match may be "
+                "missing. Try again, or pass its Ref or ID."
             )
+        if not ranked:
+            raise NotFound(text, kind, f"find(..., kind={kind!r}) lists what there is.")
         best = ranked[0][0]
         top = [ref for rank, ref in ranked if rank == best]
         if best < 2 and len(top) == 1:
             return top[0]
         if len(ranked) == 1:
             return ranked[0][1]
-        text = value.pattern if isinstance(value, re.Pattern) else value
         raise AmbiguousName(text, kind, top if best < 2 else [r for _, r in ranked])
 
     # --- describe ------------------------------------------------------------
@@ -817,7 +850,21 @@ class Toolkit:
                 batch = known.get(batch_id) or self._batch(batch_id)
                 if dataset is not None and batch.parent != dataset.id:
                     raise InvalidRequest(f"{batch} is not in {dataset}")
-                add(self._sample_rows(batch), batch, ids)
+                rows = self._sample_rows(batch)
+                listed = (
+                    set(rows["sample_item_id"]) if "sample_item_id" in rows else set()
+                )
+                missing = sorted(ids - listed)
+                if missing:
+                    # A stale Ref, or one whose parent is wrong: never an
+                    # empty answer that says it is complete
+                    raise NotFound(
+                        missing[0],
+                        "sample",
+                        f"{batch} lists no such sample. "
+                        "find(..., kind='sample') lists what there is.",
+                    )
+                add(rows, batch, ids)
         else:
             for batch in batches or self._batches(dataset):  # type: ignore[arg-type]
                 if dataset is not None and batch.parent != dataset.id:
@@ -833,8 +880,11 @@ class Toolkit:
             self.resolve(b, "batch", within=dataset_ref) for b in _as_list(batches)
         ]
         within = batch_refs[0] if len(batch_refs) == 1 else dataset_ref
+        # Of several batches, their own samples: not the dataset's or the
+        # workspace's, which may have more of the same name
+        among = batch_refs if len(batch_refs) > 1 else None
         sample_refs = [
-            self.resolve(s, "sample", within=within) for s in _as_list(samples)
+            self._resolve(s, "sample", within, among) for s in _as_list(samples)
         ]
         return {
             "dataset": dataset_ref,
@@ -861,9 +911,10 @@ class Toolkit:
         name (:meth:`resolve`).
 
         The cap holds during the load: an estimate first refuses a load that
-        is over it even at :data:`ROWS_PER_SAMPLE_FLOOR` rows per sample,
-        then a running count stops the load as soon as the rows read pass
-        it. A Frame above the cap is never made. ``matches=True`` gives a
+        is over it at :data:`ROWS_PER_SAMPLE_ESTIMATE` rows per sample (a
+        rough guess: a load of samples with very short peak lists may be
+        refused under a small cap), then a running count stops the load as
+        soon as the rows read pass it. A Frame above the cap is never made. ``matches=True`` gives a
         peak one row per isotope it matches, so it can multiply the rows.
 
         :return: The Frame, with ``complete`` and ``failures`` from the
@@ -896,7 +947,7 @@ class Toolkit:
             row["sample_item_id"]: _sample_item(row, batch) for row, batch in tasks
         }
         hint = "Load fewer samples (name batches or samples), or raise max_rows."
-        estimate = len(tasks) * ROWS_PER_SAMPLE_FLOOR
+        estimate = len(tasks) * ROWS_PER_SAMPLE_ESTIMATE
         if estimate > max_rows:
             raise RowCapExceeded(
                 estimate,
@@ -985,7 +1036,9 @@ class Toolkit:
             "sample",
             items,
             lambda args: args[0]["sample_item_id"],
-            "Load fewer samples or targets, or raise max_rows.",
+            "The samples left include any with no peak matched to the targets, "
+            "which have nothing to load. Load fewer samples or targets, or "
+            "raise max_rows.",
         )
         with self._errors("read the time series of", sources[0] if sources else None):
             df = _loaders.load_sample_timeseries(
@@ -1101,7 +1154,7 @@ class Toolkit:
             for index, stage in enumerate(stages)
         }
         hint = "Load fewer stages, or raise max_rows."
-        estimate = len(stages) * ROWS_PER_SAMPLE_FLOOR
+        estimate = len(stages) * ROWS_PER_SAMPLE_ESTIMATE
         if estimate > max_rows:
             raise RowCapExceeded(
                 estimate,
@@ -1114,14 +1167,21 @@ class Toolkit:
             )
         cap = _RowCap(max_rows, "stage", items, lambda args: args[0], hint)
         with self._errors("read the stage peaks of", sample):
-            df = _loaders.load_peaks_by_stage(
-                self.client,
-                sample.id,
-                [tuple(stage) for stage in stages],
-                matches=matches,
-                areas=areas,
-                heights=heights,
-                max_workers=self.max_workers,
-                on_result=cap,
-            )
+            try:
+                df = _loaders.load_peaks_by_stage(
+                    self.client,
+                    sample.id,
+                    [tuple(stage) for stage in stages],
+                    matches=matches,
+                    areas=areas,
+                    heights=heights,
+                    max_workers=self.max_workers,
+                    on_result=cap,
+                )
+            except ValueError as e:  # the SDK's "Sample ... not found."
+                raise NotFound(
+                    sample.id,
+                    "sample",
+                    "It may have been deleted, or never been visible to this user.",
+                ) from e
         return df, [sample]

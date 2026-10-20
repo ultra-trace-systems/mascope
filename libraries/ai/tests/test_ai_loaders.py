@@ -12,7 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from mascope_ai import InvalidRequest, RowCapExceeded, Session
+from mascope_ai import (
+    InvalidRequest,
+    NotFound,
+    Ref,
+    RowCapExceeded,
+    Session,
+    StaleFrame,
+)
 from mascope_ai import toolkit as toolkit_module
 
 
@@ -54,6 +61,21 @@ class TestLoadPeaks:
         assert sorted(set(frame.df["sample_item_id"])) == ["s21", "s23"]
         assert len(api.requests_to(r"samples/\w+/peaks")) == 2
         assert [ref.id for ref in frame.source_refs] == ["b2", "s21", "s23"]
+
+    def test_a_sample_name_is_looked_for_in_the_batches_named(self, kit, api):
+        # "Sample 1" is in b2 and in b3; of b1 and b2, only in b2
+        frame = kit.load_peaks(batches=["b1", "b2"], samples="Sample 1")
+
+        assert set(frame.df["sample_item_id"]) == {"s21"}
+        listed = {c[2]["sample_batch_id"] for c in api.requests_to("samples")}
+        assert listed == {"b1", "b2"}
+
+    def test_a_sample_its_batch_does_not_list_is_not_found(self, kit, api):
+        ghost = Ref("s99", "sample", "ghost", parent="b1")
+
+        with pytest.raises(NotFound, match="s99"):
+            kit.load_peaks(samples=[ghost, "s11"])
+        assert api.requests_to(r"samples/\w+/peaks") == []
 
     def test_a_sample_outside_the_batches_named_is_refused(self, kit):
         with pytest.raises(InvalidRequest, match="none of the batches"):
@@ -114,13 +136,13 @@ class TestRowCap:
 
         error = caught.value
         assert error.estimated is True
-        assert error.rows == 3 * toolkit_module.ROWS_PER_SAMPLE_FLOOR
+        assert error.rows == 3 * toolkit_module.ROWS_PER_SAMPLE_ESTIMATE
         assert error.cap == 250 and error.done == 0
         assert [item["sample_item_id"] for item in error.left] == ["s21", "s22", "s23"]
         assert api.requests_to(r"samples/\w+/peaks") == []
 
     def test_the_running_count_stops_the_load_at_the_cap(self, kit, api, monkeypatch):
-        monkeypatch.setattr(toolkit_module, "ROWS_PER_SAMPLE_FLOOR", 1)
+        monkeypatch.setattr(toolkit_module, "ROWS_PER_SAMPLE_ESTIMATE", 1)
         kit.max_workers = 1
         api.peak_copies = 10  # 10 * ROWS rows a sample
 
@@ -139,7 +161,7 @@ class TestRowCap:
         assert len(api.requests_to(r"samples/\w+/peaks")) <= 3
 
     def test_no_frame_is_made_above_the_cap(self, kit, api, monkeypatch):
-        monkeypatch.setattr(toolkit_module, "ROWS_PER_SAMPLE_FLOOR", 1)
+        monkeypatch.setattr(toolkit_module, "ROWS_PER_SAMPLE_ESTIMATE", 1)
         api.peak_copies = 10
 
         with pytest.raises(RowCapExceeded):
@@ -148,7 +170,7 @@ class TestRowCap:
         assert kit.session.frames() == []
 
     def test_a_load_at_the_cap_is_kept(self, kit, monkeypatch):
-        monkeypatch.setattr(toolkit_module, "ROWS_PER_SAMPLE_FLOOR", 1)
+        monkeypatch.setattr(toolkit_module, "ROWS_PER_SAMPLE_ESTIMATE", 1)
 
         frame = kit.load_peaks(batches="Spring 2026", max_rows=3 * ROWS)
 
@@ -181,6 +203,7 @@ class TestOtherLoaders:
 
         assert caught.value.done == 1
         assert [item["sample_item_id"] for item in caught.value.left] == ["s22", "s23"]
+        assert "no peak matched" in str(caught.value)
 
     def test_timeseries_wants_one_target_kind(self, kit):
         with pytest.raises(InvalidRequest, match="exactly one"):
@@ -209,7 +232,7 @@ class TestOtherLoaders:
         assert sorted((p["t_min"], p["t_max"]) for p in ranged) == [(0, 5), (5, 10)]
 
     def test_stages_cap(self, kit, monkeypatch):
-        monkeypatch.setattr(toolkit_module, "ROWS_PER_SAMPLE_FLOOR", 1)
+        monkeypatch.setattr(toolkit_module, "ROWS_PER_SAMPLE_ESTIMATE", 1)
         kit.max_workers = 1
 
         with pytest.raises(RowCapExceeded) as caught:
@@ -223,6 +246,12 @@ class TestOtherLoaders:
             kit.load_peaks_by_stage("s21", [(0, 5), (5, 10)], max_rows=150)
 
         assert caught.value.estimated is True
+
+    def test_stages_of_a_sample_gone(self, kit, api):
+        api.fail("GET", "samples/s99", 404)
+
+        with pytest.raises(NotFound, match="s99"):
+            kit.load_peaks_by_stage(Ref("s99", "sample", "gone", parent="b1"), [(0, 5)])
 
     @pytest.mark.parametrize("stages", [[], [(1,)], ["ab"]])
     def test_bad_stages(self, kit, stages):
@@ -286,6 +315,26 @@ class TestSessionRoundTrip:
         frame.evict()
 
         assert len(frame.df) == frame.n_rows
+
+    def test_rows_that_changed_are_not_kept_as_the_frame(self, kit, api):
+        frame = kit.load_peaks(batches="Spring 2026")
+        kit.session.evict(frame.id)
+        frame.evict()
+        api.peak_copies = 2
+
+        with pytest.raises(StaleFrame, match=f"{6 * ROWS:,} rows"):
+            frame.df  # noqa: B018
+        assert not (kit.session.path / "frames" / f"{frame.id}.parquet").exists()
+
+    def test_a_read_that_fails_on_reload_is_not_kept_as_the_frame(self, kit, api):
+        frame = kit.load_peaks(batches="Spring 2026")
+        kit.session.evict(frame.id)
+        frame.evict()
+        api.fail("GET", "samples/s22/peaks", 500)
+
+        with pytest.raises(StaleFrame) as caught:
+            frame.df  # noqa: B018
+        assert any("a read failed" in d for d in caught.value.differences)
 
     def test_a_query_the_toolkit_did_not_record(self, kit):
         with pytest.raises(InvalidRequest):

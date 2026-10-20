@@ -90,8 +90,12 @@ class TestMapping:
 
         assert caught.value.to_dict()["error"] == "not_authenticated"
 
-    def test_a_404(self, kit):
+    def test_a_404(self, kit, api):
         from mascope_ai import Ref
+
+        # The server's 404 for a route with nothing behind it (an unknown
+        # sample ID is a 403 there, as conftest answers it)
+        api.fail("GET", "samples/gone", 404)
 
         with pytest.raises(NotFound) as caught:
             kit.describe(Ref("gone", "sample", "Gone", parent="b1"))

@@ -14,6 +14,7 @@ from .errors import (
     NotAuthenticated,
     NotFound,
     RowCapExceeded,
+    StaleFrame,
     ToolkitError,
     Unavailable,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "AmbiguousName",
     "NotFound",
     "RowCapExceeded",
+    "StaleFrame",
     "AccessDenied",
     "NotAuthenticated",
     "InvalidRequest",

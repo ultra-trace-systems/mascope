@@ -47,6 +47,11 @@ def _clip(text: str, limit: int = CELL_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _quoted(value: Any) -> str:
+    """*value* as its repr, a text one cut to :data:`CELL_CHARS` first."""
+    return repr(_clip(value)) if isinstance(value, str) else _clip(repr(value))
+
+
 def jsonable(value: Any) -> Any:
     """*value* as plain JSON values: timestamps as ISO text, NumPy scalars
     as Python ones, NaN and NaT as None, containers converted throughout."""
@@ -115,8 +120,11 @@ class FailureNote:
         return {**self.where, "error_type": self.error_type, "error": self.error}
 
     def __str__(self) -> str:
-        where = ", ".join(f"{key}={value!r}" for key, value in self.where.items())
-        return f"{where}: {self.error_type}: {_clip(self.error, 120)}"
+        # Bounded like the cells: the names here are the users' own text
+        where = ", ".join(
+            f"{_clip(key)}={_quoted(value)}" for key, value in self.where.items()
+        )
+        return f"{where}: {_clip(self.error_type)}: {_clip(self.error, 120)}"
 
 
 @dataclass(frozen=True, eq=False, repr=False)
