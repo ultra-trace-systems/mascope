@@ -18,6 +18,7 @@ from mascope_backend.api.models.dataset.dataset_pydantic_model import (
     DatasetSortColumn,
     DatasetUpdate,
 )
+from mascope_backend.api.new.dataset_tombstones.service import write_tombstones
 from mascope_backend.api.new.workspaces.exceptions import (
     WorkspaceNotFoundException,
 )
@@ -492,18 +493,22 @@ async def delete_dataset(
     dataset_id: str,
     workspace_id: str | None = None,
     independent_transaction: bool = False,
+    deleted_by: str | None = None,
 ) -> dict:
     """
     Deletes a dataset by its unique identifier.
 
     Steps:
     1. Fetch the dataset by its ID from the database.
-    2. If the dataset is found, delete it from the session and commit the changes to
-       the database.
+    2. If the dataset is found, write its tombstone, delete it from the session
+       and commit the two together.
     3. Emit socket.io events to inform clients about the dataset deletion.
 
     :param dataset_id: The unique identifier of the dataset to delete.
     :type dataset_id: str
+    :param deleted_by: The acting user's email, kept on the tombstone; None for
+                       a system delete.
+    :type deleted_by: str | None, optional
     :param independent_transaction: Flag indicating if operation is independent
                                     transaction, defaults to False.
     :type independent_transaction: bool, optional
@@ -517,7 +522,15 @@ async def delete_dataset(
         ):
             raise NotFoundException(f"Dataset with ID '{dataset_id}' not found")
 
-        # Step 2: Delete the dataset and commit changes
+        # Step 2: Snapshot the dataset, delete it, and commit both at once
+        workspace = await session.get(Workspace, dataset.workspace_id)
+        await write_tombstones(
+            session,
+            [dataset],
+            workspace_name=workspace.workspace_name if workspace else None,
+            deleted_via="dataset",
+            deleted_by=deleted_by,
+        )
         await session.delete(dataset)
         await session.commit()
 

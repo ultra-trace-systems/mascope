@@ -90,7 +90,7 @@ async def delete_workspace_route(
     user: User = Depends(current_active_user),
     membership=Depends(require_workspace_role("owner")),
 ):
-    return await delete_workspace(workspace_id=workspace_id)
+    return await delete_workspace(workspace_id=workspace_id, deleted_by=user.email)
 
 
 # ---------------------------------------------------------------------------

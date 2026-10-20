@@ -3266,6 +3266,7 @@ __all__ = [
     "NotificationFile",
     "AgentDevice",
     "Dataset",
+    "DatasetTombstone",
     "SampleBatch",
     "SampleFile",
     "AcquisitionStream",

@@ -177,6 +177,7 @@ async def delete_dataset_route(
         dataset_id=dataset_id,
         workspace_id=workspace_id,
         independent_transaction=True,
+        deleted_by=user.email,
     )
 
 
