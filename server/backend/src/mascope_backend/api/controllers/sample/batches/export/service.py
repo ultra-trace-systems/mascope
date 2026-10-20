@@ -122,6 +122,8 @@ async def sample_batch_export_spreadsheet(
         [""],
         ["Instruments", _distinct(data["samples"], "instrument")],
         ["Method files", _distinct(data["samples"], "method_file")],
+        [""],
+        *_dataset_metadata_rows(dataset),
     ]
     batch_info_df = pd.DataFrame(batch_info_data)
 
@@ -315,6 +317,52 @@ async def _ionization_mode_names(mode_ids: set[str | None]) -> dict[str, str]:
             ).where(IonizationMode.ionization_mode_id.in_(mode_ids))
         )
         return dict(rows.all())
+
+
+def _dataset_metadata_rows(dataset: dict | None) -> list[list]:
+    """
+    The dataset's descriptive metadata as Batch sheet rows.
+
+    Every row is written whether or not the dataset has the field, empty when
+    it does not, so the sheet's shape does not depend on what a user filled
+    in. A list renders its entries joined with ``"; "``, an entry's own parts
+    with ``", "`` - so an affiliation or keyword with a comma in it stays
+    readable.
+
+    :param dataset: The dataset as ``get_dataset`` reports it, None for a
+        batch without one.
+    :return: Label/value rows: License, Authors, Keywords, Related
+        identifiers, Funding.
+    :rtype: list[list]
+    """
+    dataset = dataset or {}
+
+    def joined(entries: list | None, render) -> str | None:
+        return "; ".join(render(entry) for entry in entries) if entries else None
+
+    def author(entry: dict) -> str:
+        text = entry["name"]
+        if entry.get("orcid"):
+            text += f" ({entry['orcid']})"
+        if entry.get("affiliation"):
+            text += f", {entry['affiliation']}"
+        return text
+
+    def related(entry: dict) -> str:
+        return f"{entry['relation']}: {entry['identifier']}"
+
+    def funding(entry: dict) -> str:
+        if entry.get("award"):
+            return f"{entry['funder']}, {entry['award']}"
+        return entry["funder"]
+
+    return [
+        ["License", dataset.get("license")],
+        ["Authors", joined(dataset.get("authors"), author)],
+        ["Keywords", joined(dataset.get("keywords"), str)],
+        ["Related identifiers", joined(dataset.get("related_identifiers"), related)],
+        ["Funding", joined(dataset.get("funding"), funding)],
+    ]
 
 
 def _distinct(samples: list[dict], key: str) -> str:
