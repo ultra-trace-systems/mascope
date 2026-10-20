@@ -58,6 +58,8 @@ pairing (`access_token.user_id`), and four problems follow from that.
   `server/backend/src/mascope_backend/api/new/auth/pairing/service.py`.
   The hostname in the free-text description is the only record of which
   machine holds the token.
+  The two open routes were reviewed before the CDN IP allowlist comes off;
+  see 2.1.
 - Tokens: `access_token` table (`db/models.py`), 360-day lifetime, service
   scopes in `auth/access_token/config.py` (`mascope_sdk`, `file-converter`,
   `tof-agent`, `file-agent`, `export-agent`), validation in
@@ -77,6 +79,84 @@ pairing (`access_token.user_id`), and four problems follow from that.
   **deprecated by this work**: its sites move to the File Agent during the
   rollout, and the server-side `tof-agent` scope, socket namespace, and
   acquisition event handlers are removed in the cleanup phase.
+
+### 2.1 The unauthenticated pairing routes: review before the allowlist comes off
+
+`pairing/start` and `pairing/poll` take no credential: a machine pairs
+before it holds one. While the CDN IP allowlist is on, only known client
+networks reach them. Once it is off, anyone can. This review (2026-10-20,
+MAS-76, #1719) checked each point against the code, and it is what the
+per-site campaign cites when it removes the allowlist.
+
+**1. Rate limiting.** Both routes use the Redis limiter
+(`api/lib/rate_limit.py`), per client address: start 10 per 60 s, poll
+30 per 60 s. The address is nginx's `X-Real-IP`, taken from the CDN's
+client header only on connections from the CDN's ranges, and an IPv6
+address is keyed by its /64. A refused start (a service that may not pair)
+spends the budget like an accepted one, because the limiter runs before the
+body is validated. In front of that, nginx's `/api/auth/` zone allows
+5 requests/s per address with a burst of 20. Neither route has a limit per
+pairing code, and neither needs one. Poll is keyed by the device code
+(256 random bits), so a guesser tries a different code on every request,
+which a per-code counter never sees. The user code is accepted only by
+approve, behind a session. The File Agent treats a 429 on poll as
+transient and keeps polling at its interval. That matters at a site where
+three or more machines pair at once behind one address, since the poll
+budget covers about two. The limiter fails open when Redis is down, like
+every other limiter here. Gaps filed: a 429 reaches the client without
+the `Retry-After` the limiter sets (#2430), and nothing bounds the number
+of pending pairings across addresses (#2431).
+
+**2. Codes, expiry, enumeration.** The user code is 6 characters from a
+28-letter alphabet, about 4.8e8 values (28.8 bits). It lives 10 minutes,
+gets 5 minutes for pickup once approved, and is deleted at pickup. It is
+a rendezvous label, not a secret: only approve accepts it. At the edge's
+5 requests/s, an editor guessing codes gets about 3000 tries in a code's
+lifetime, a 6e-6 chance per pending code. The device code is
+`token_urlsafe(32)`. A poll for an unknown device code answers exactly
+as one for a lapsed code, `{"status": "expired"}`, so a poll cannot tell
+a code that never existed from one that ran out. Both answer differently
+from a pending code, and that is on purpose. The agent stops polling on
+`expired` and offers a fresh code, so an unknown code answering `pending`
+would leave an agent with a lapsed code waiting forever. Enumeration is
+closed by the device code's 256 bits, not by the response shape. Fixed
+inline: a start checked for a free code and wrote it in two steps, and
+after five colliding draws wrote over the held code. That could strand an
+approved pairing's credential or hand a pending pairing's approval to the
+newest start. It now claims the code with `SET NX` and answers 503 when
+no draw is free.
+
+**3. Approval stays on the authenticated side.** Only approve moves a
+pairing past `pending` and mints a credential. It requires a session, the
+editor role and a recent second factor. A start can set only the fields
+`PairingStartRequest` declares. A `status` or `access_token` in its body
+is ignored, and the service must be one of the agent services. Poll only
+reads, then deletes the records once it has handed the token out.
+Accepted: two editors approving the same code at the same instant can
+each create a device. The agent receives the later token, and the other
+device stays under Paired machines, sponsored and revocable.
+
+**4. Logging.** Before the review, a start was logged without the address
+it came from, and an approval was logged with the pairing code. Now a
+start logs service, reported machine and instrument, and client address.
+An approval logs the approver (username and id), the service, the machine,
+the device and machine account it created, and the address the start came
+from (kept on the pending record). Neither line contains a code. Reported
+text is stripped of control characters before it is stored or logged
+(`auth/reported.py`), so it cannot forge log lines. The durable record is
+the device row: sponsor, creation time, service. Fixed inline. Not logged:
+the address that picks the token up. The approver also sees only what the
+starting machine reports about itself, which matters once anyone can
+start a pairing (#2432).
+
+**5. Controls.** `security/pentest/`: `DEV-05` probes start, poll and
+approve without a session. Approve must answer 401, a poll for a code
+never issued must answer exactly `{"status": "expired"}`, and a start for
+`mascope_sdk` must answer 422. It creates no pairing, so #1887 can class
+it non-mutating. `RL-03` bursts both routes from one address and expects
+a 429 on each. It spends the tester's budget, so it runs last, in
+`test_zz_rate_limiting.py`. The backend suite pins the same properties
+(`tests/integration/api/pairing/test_pairing.py`).
 
 ## 3. Goals and non-goals
 
