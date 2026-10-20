@@ -154,6 +154,24 @@ describe('DialogDatasetOp', () => {
     })
   })
 
+  it('leaves the name out when it saves an acquisition dataset', async () => {
+    dataset.update.mockResolvedValue({ data: DATASET })
+    const wrapper = mount(DialogDatasetOp, {
+      props: { action: null, dataset: { ...DATASET, dataset_type: 'ACQUISITION' } },
+      global: { plugins: [PrimeVue], stubs }
+    })
+    await wrapper.setProps({ action: 'edit' })
+    await flushPromises()
+
+    await saveButton(wrapper).trigger('click')
+    await flushPromises()
+
+    const sent = dataset.update.mock.calls[0][0]
+    expect(sent).not.toHaveProperty('dataset_name')
+    expect(sent.license).toBe('CC-BY-4.0')
+    expect(closed(wrapper)).toBe(true)
+  })
+
   it('holds the save back while an ORCID is malformed', async () => {
     const wrapper = await openEditDialog()
     const form = section(wrapper).props('modelValue')
