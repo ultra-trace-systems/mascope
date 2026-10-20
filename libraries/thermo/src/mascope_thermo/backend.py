@@ -242,6 +242,27 @@ class ReaderBackend(Protocol):
         """
         ...
 
+    def trailer_numbers(
+        self, scan_number: int, labels: Iterable[str], trailer: dict | None = None
+    ) -> dict[str, float]:
+        """The numbers one scan's trailer stores under ``labels``, as stored.
+
+        :meth:`scan_trailer` for a caller that computes with the values. The
+        Thermo library's text there holds only the digits it displays
+        (``"-71050473.7320"``); this is the number the file holds
+        (``-71050473.73203687``), the same under either backend. A label
+        the trailer lacks, or under which it stores no number - text, a
+        switch, a section heading - is left out, and so is a number that is
+        not finite.
+
+        ``trailer`` is the scan's :meth:`scan_trailer`, where the caller has
+        read it already. OpenTFRaw's holds the stored numbers, so that
+        backend takes them from it rather than read the trailer again; the
+        Thermo library's is text, and that backend reads the numbers
+        whatever is given.
+        """
+        ...
+
     def status_log(self, scan_number: int) -> dict | None:
         """The instrument's status-log record for one scan, ``{label: value}``.
 
@@ -433,10 +454,18 @@ class ReaderBackend(Protocol):
     ) -> tuple[float | None, dict[int, str]]:
         """``(isolation_width, {scan_number: hcd_energy_string})`` for MS2 scans.
 
-        ``isolation_width`` is the single MS2 isolation width across the scans;
-        the HCD energy strings may be comma-separated (step dissociation). Both
-        backends read these from the trailer (``"MS2 Isolation Width:"`` /
-        ``"HCD Energy V:"``)."""
+        ``isolation_width`` is the single MS2 isolation width across the scans,
+        the number the trailer stores (:meth:`trailer_numbers`); the HCD energy
+        strings may be comma-separated (step dissociation). Both backends read
+        these from the trailer (``"MS2 Isolation Width:"`` /
+        ``"HCD Energy V:"``).
+
+        A width the trailer holds as text is no width under either backend:
+        both read only the fields the file types as numbers.
+
+        :raises ValueError: No MS2 scan stores a width, or they store more
+            than one.
+        """
         ...
 
     def ms2_centroids_for_scans(
@@ -568,6 +597,11 @@ def trailer_float(value) -> float | None:
     no group separators, so a comma is always the decimal mark. A flag,
     empty or other text, and a non-finite number read as none.
 
+    The text holds only the digits the library displays, so a number read
+    from it is rounded. Read one to compute with from the file instead,
+    with :meth:`ReaderBackend.trailer_numbers`; this is for a value already
+    captured as text, such as a stream's ``acquisition_params``.
+
     :param value: One trailer value, as either reader gives it.
     :return: The number, or None.
     """
@@ -582,6 +616,57 @@ def trailer_float(value) -> float | None:
         except ValueError:
             return None
     return number if math.isfinite(number) else None
+
+
+def _stored_number(value) -> float | None:
+    """A trailer value that is a stored number, as a finite float, or None.
+
+    Both readers give a number the trailer stores as an int or a float:
+    OpenTFRaw among the values of its trailer, the Thermo library from
+    ``GetTrailerExtraValue``. Text is no number here, whatever it reads as,
+    and neither is a switch, which they give as a bool.
+    """
+    if isinstance(value, bool) or not isinstance(
+        value, (int, float, np.integer, np.floating)
+    ):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _trailer_numbers(trailer: dict, labels: Iterable[str]) -> dict[str, float]:
+    """:meth:`ReaderBackend.trailer_numbers` of a trailer read with its
+    values typed, as OpenTFRaw reads every trailer."""
+    numbers = {}
+    for label in labels:
+        number = _stored_number(trailer.get(label))
+        if number is not None:
+            numbers[label] = number
+    return numbers
+
+
+#: The trailer label of an MS2 scan's isolation width.
+MS2_ISOLATION_WIDTH = "MS2 Isolation Width:"
+
+
+def _one_isolation_width(widths: Iterable[float]) -> float:
+    """The one isolation width of a file's MS2 scans.
+
+    Rounded to six decimals first, away from the noise a 32-bit float
+    carries into its 64-bit copy, so that identical widths dedupe.
+
+    :param widths: The widths the scans' trailers store
+        (:meth:`ReaderBackend.trailer_numbers`). A width a trailer holds as
+        text is not among them.
+    :raises ValueError: No scan stores a width, or the scans store more
+        than one; the message says which.
+    """
+    distinct = {round(width, 6) for width in widths}
+    if not distinct:
+        raise ValueError("No MS2 scan stores an isolation width.")
+    if len(distinct) > 1:
+        raise ValueError("Multiple isolation widths found for MS2 scans.")
+    return distinct.pop()
 
 
 def _method_scan_event(index_event: int) -> int | None:
@@ -976,6 +1061,7 @@ class ThermoBackend:
         self._mgr = None
         self._raw = None
         self._stream_keys: list[str] | None = None
+        self._number_fields: dict[str, int] | None = None
 
     def __enter__(self) -> ThermoBackend:
         from mascope_thermo.thermo import RawFileManager
@@ -1000,6 +1086,7 @@ class ThermoBackend:
             self._mgr = None
             self._raw = None
             self._stream_keys = None
+            self._number_fields = None
 
     def _selector(
         self,
@@ -1142,6 +1229,49 @@ class ThermoBackend:
     def scan_trailer(self, scan_number: int) -> dict:
         header = self._raw.GetTrailerExtraInformation(scan_number)
         return dict(zip(list(header.Labels), list(header.Values)))
+
+    def _trailer_number_fields(self) -> dict[str, int]:
+        """``{label: field index}`` of the trailer's fields that store a
+        number, read once per open file."""
+        if self._number_fields is None:
+            # The file defines its trailer's fields once for all of its
+            # scans, each with a label and a DataType. IsNumeric is the
+            # library's reading of that type: the integer and floating-point
+            # types are numbers, and text, switches and section headings are
+            # not. A label the trailer repeats is read at its last field, the
+            # one scan_trailer's dict keeps.
+            fields = {
+                item.Label: (index, item.IsNumeric)
+                for index, item in enumerate(
+                    self._raw.GetTrailerExtraHeaderInformation()
+                )
+            }
+            self._number_fields = {
+                label: index for label, (index, numeric) in fields.items() if numeric
+            }
+        return self._number_fields
+
+    def trailer_numbers(
+        self,
+        scan_number: int,
+        labels: Iterable[str],
+        trailer: dict | None = None,
+    ) -> dict[str, float]:
+        # GetTrailerExtraValue gives the field's stored value, a .NET double
+        # or integer that pythonnet hands over as a float or an int, where
+        # scan_trailer's text, and so a trailer given, is formatted from it
+        # and rounded. It is a call into the library per value, which costs
+        # far less than the scan's whole trailer as text.
+        fields = self._trailer_number_fields()
+        numbers = {}
+        for label in labels:
+            index = fields.get(label)
+            if index is None:
+                continue
+            number = _stored_number(self._raw.GetTrailerExtraValue(scan_number, index))
+            if number is not None:
+                numbers[label] = number
+        return numbers
 
     def status_log(self, scan_number: int) -> dict | None:
         # The library keeps the log by time and gives the record nearest the
@@ -1468,23 +1598,18 @@ class ThermoBackend:
         t_max: float | None = None,
     ) -> tuple[float | None, dict[int, str]]:
         acq = self.scan_acquisition_settings(polarity, t_min, t_max, ms_type="Ms2")
-        trailer_labels = acq["header_labels"]
-        isolation_width_idx = trailer_labels.index("MS2 Isolation Width:")
-        hcd_label_idx = trailer_labels.index("HCD Energy V:")
+        hcd_label_idx = acq["header_labels"].index("HCD Energy V:")
 
-        isolation_widths = set()
+        # The HCD energy is text the instrument wrote; the width is a number
+        # it stored, read as stored rather than from the text.
+        isolation_widths: list[float] = []
         scan_idx_to_hcd: dict[int, str] = {}
         for scan_idx, trailer_values in acq["settings"].items():
-            isolation_widths.add(trailer_values[isolation_width_idx])
+            isolation_widths.extend(
+                self.trailer_numbers(scan_idx, (MS2_ISOLATION_WIDTH,)).values()
+            )
             scan_idx_to_hcd[scan_idx] = trailer_values[hcd_label_idx]
-
-        isolation_widths.discard(None)
-        isolation_widths.discard("")
-        if len(isolation_widths) == 1:
-            isolation_width = trailer_float(isolation_widths.pop())
-        else:
-            raise ValueError("Multiple isolation widths found for MS2 scans.")
-        return isolation_width, scan_idx_to_hcd
+        return _one_isolation_width(isolation_widths), scan_idx_to_hcd
 
     def ms2_centroids_for_scans(
         self, scan_indices: list[int]
@@ -1862,6 +1987,15 @@ class OpenTFRawBackend:
         # dict, so a label the trailer repeats appears here once, where
         # GetTrailerExtraInformation lists it each time.
         return self._raw.scan_parameters(scan_number) or {}
+
+    def trailer_numbers(
+        self, scan_number: int, labels: Iterable[str], trailer: dict | None = None
+    ) -> dict[str, float]:
+        # The trailer's numbers are the stored ones here, so a trailer the
+        # caller has read holds them.
+        if trailer is None:
+            trailer = self.scan_trailer(scan_number)
+        return _trailer_numbers(trailer, labels)
 
     def status_log(self, scan_number: int) -> dict | None:
         # None where the scan has no record. OpenTFRaw 3.0.0 raises where the
@@ -2821,24 +2955,17 @@ class OpenTFRawBackend:
         # The calibrated "HCD Energy V:" and "MS2 Isolation Width:" live in the
         # per-scan trailer (generic record), surfaced by the scan_parameters()
         # accessor.
-        isolation_widths: set[float] = set()
+        isolation_widths: list[float] = []
         scan_idx_to_hcd: dict[int, str] = {}
         for s in self._selected(polarity, t_min, t_max, ms_type="Ms2"):
             scan_number = int(s["scan_number"])
             params = self._raw.scan_parameters(scan_number) or {}
-            width = trailer_float(params.get("MS2 Isolation Width:"))
-            if width is not None:
-                # round away the f32->f64 noise so identical widths dedupe.
-                isolation_widths.add(round(width, 6))
+            isolation_widths.extend(
+                _trailer_numbers(params, (MS2_ISOLATION_WIDTH,)).values()
+            )
             hcd = params.get("HCD Energy V:")
             scan_idx_to_hcd[scan_number] = "" if hcd is None else str(hcd)
-
-        isolation_widths.discard(None)
-        if len(isolation_widths) == 1:
-            isolation_width = float(isolation_widths.pop())
-        else:
-            raise ValueError("Multiple isolation widths found for MS2 scans.")
-        return isolation_width, scan_idx_to_hcd
+        return _one_isolation_width(isolation_widths), scan_idx_to_hcd
 
     def ms2_centroids_for_scans(
         self, scan_indices: list[int]

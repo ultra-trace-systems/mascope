@@ -16,8 +16,9 @@ import pytest
 from thermo_test_support import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
 
 import mascope_thermo.thermo as m_thermo
-from mascope_thermo.backend import OpenTFRawBackend, ThermoBackend
+from mascope_thermo.backend import OpenTFRawBackend, ThermoBackend, _trailer_numbers
 from mascope_thermo.calibration import (
+    CONVERSION_B,
     CONVERSION_C,
     calibration_status,
     overdue_calibrations,
@@ -40,7 +41,9 @@ class _Reader:
     """A reader backend, as far as the calibration identity reads one.
 
     ``scans`` are ``(filter, trailer)`` pairs, numbered from 1; ``logs`` the
-    status-log record of a scan number, where it has one.
+    status-log record of a scan number, where it has one. A trailer's values
+    are typed, as OpenTFRaw reads them, and its numbers are read from it as
+    that backend reads them.
     """
 
     def __init__(self, scans, logs=None):
@@ -56,6 +59,11 @@ class _Reader:
 
     def scan_trailer(self, scan_number):
         return {"FT Resolution:": 120000, **self._scans[scan_number - 1][1]}
+
+    def trailer_numbers(self, scan_number, labels, trailer=None):
+        if trailer is None:
+            trailer = self.scan_trailer(scan_number)
+        return _trailer_numbers(trailer, labels)
 
     def status_log(self, scan_number):
         self.status_reads.append(scan_number)
@@ -124,29 +132,21 @@ def test_the_medians_are_medians_not_the_first_or_a_mean():
     assert calibration["c_over_b2"] == 2.0 / 110.0**2
 
 
-@pytest.mark.parametrize(
-    ("b", "c", "expected"),
-    [
-        pytest.param("100.5", " 4.25 ", (100.5, 4.25), id="decimal-point"),
-        # Formatted in the server's culture: a decimal comma (fi-FI, de-DE),
-        # and where .NET takes the culture from ICU the minus sign U+2212
-        # (sv-SE, nb-NO), in an exponent too.
-        pytest.param("100,5", " 4,25 ", (100.5, 4.25), id="decimal-comma"),
-        pytest.param("100,5", "-4,25", (100.5, -4.25), id="signed"),
-        pytest.param("1,005E+02", "4,25E+00", (100.5, 4.25), id="exponent"),
-        pytest.param("100,5", "\u22124,25", (100.5, -4.25), id="minus-sign"),
-        pytest.param(
-            "1,005E+002", "4,25E\u2212001", (100.5, 0.425), id="minus-sign-exponent"
-        ),
-    ],
-)
-def test_trailer_text_is_read_as_numbers(b, c, expected):
-    # The Thermo library gives trailer values as text.
-    reader = _Reader([(NEG, _params(b, c))])
+def test_the_parameters_are_the_numbers_the_reader_stores_not_its_text():
+    # The Thermo library's text holds the digits it displays; the numbers
+    # come from the file, through trailer_numbers.
+    class _TextAndNumbers(_Reader):
+        def trailer_numbers(self, scan_number, labels, trailer=None):
+            return {CONVERSION_B: 169409639.6525657, CONVERSION_C: -71050473.73203687}
+
+    reader = _TextAndNumbers([(NEG, _params("169409639.6526", "-71050473.7320"))])
 
     calibration = stream_calibrations(reader)[NEG_KEY]
 
-    assert (calibration["b"], calibration["c"]) == expected
+    assert (calibration["b"], calibration["c"]) == (
+        169409639.6525657,
+        -71050473.73203687,
+    )
 
 
 @pytest.mark.parametrize(
@@ -157,6 +157,8 @@ def test_trailer_text_is_read_as_numbers(b, c, expected):
         pytest.param({"Conversion Parameter C:": 4.0}, id="no-b"),
         pytest.param(_params(0.0, 4.0), id="b-zero"),
         pytest.param(_params("n/a", 4.0), id="b-not-a-number"),
+        # Text is no stored number, whatever it reads as.
+        pytest.param(_params("100.5", 4.0), id="b-text"),
         pytest.param(_params(float("nan"), 4.0), id="b-nan"),
         pytest.param(_params(100.0, None), id="c-none"),
         pytest.param(_params(True, 4.0), id="b-a-flag"),
@@ -381,13 +383,12 @@ def test_a_committed_file_has_one_calibration_per_stream(backend, path):  # noqa
             calibration["c_over_b2_max"],
         )
         assert low <= mid <= high
-        if backend == "opentfraw":
-            # One calibration: constant within the file, far inside the 1e-11
-            # that files are grouped by.
-            assert high - low < 1e-13
+        # One calibration: constant within the file, far inside the 1e-11
+        # that files are grouped by, under either reader.
+        assert high - low < 1e-13
 
 
-@pytest.mark.parametrize("culture", ["de-DE", "sv-SE"])
+@pytest.mark.parametrize("culture", ["", "de-DE", "sv-SE"])
 @pytest.mark.parametrize(
     "path",
     [
@@ -395,19 +396,26 @@ def test_a_committed_file_has_one_calibration_per_stream(backend, path):  # noqa
         pytest.param(NEG_ORBI_FILE_PATH, id="neg"),
     ],
 )
-def test_the_thermo_library_reads_alike_in_every_culture(dotnet_culture, path, culture):
-    # de-DE writes a decimal comma; sv-SE does too, and where .NET takes the
-    # culture from ICU also the minus sign U+2212, which the negative-mode
-    # file's C carries.
-    dotnet_culture("")
+def test_the_thermo_library_gives_opentfraws_calibrations_in_every_culture(
+    dotnet_culture, monkeypatch, path, culture
+):
+    """The Thermo backend's calibrations are OpenTFRaw's, to the last bit,
+    whatever culture the library writes its text in.
+
+    de-DE writes a decimal comma; sv-SE does too, and where .NET takes the
+    culture from ICU also the minus sign U+2212, which the negative-mode
+    file's C carries. ``""`` is the invariant culture ``load_dotnet`` pins.
+    """
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
     expected = m_thermo.get_scan_table(path)["stats_per_file"]["calibrations"]
 
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
     dotnet_culture(culture)
     with ThermoBackend(path) as reader:
         text = reader.scan_trailer(reader.scan_filters()[0]["scan"])[CONVERSION_C]
     calibrations = m_thermo.get_scan_table(path)["stats_per_file"]["calibrations"]
 
     # The culture is the one the library wrote in.
-    assert "," in text
+    assert ("," in text) == (culture != "")
     assert expected
     assert calibrations == expected
