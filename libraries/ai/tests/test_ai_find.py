@@ -14,7 +14,7 @@ import re
 
 import pytest
 
-from mascope_ai import AmbiguousName, InvalidRequest, NotFound, Ref
+from mascope_ai import AmbiguousName, InvalidRequest, NotFound, Ref, Unavailable
 
 
 def _names(found) -> list[tuple[str, str]]:
@@ -163,6 +163,42 @@ class TestResolve:
 
         assert (ref.id, ref.name, ref.parent) == ("s22", "Sample 2", "b2")
         assert api.requests_to("samples") == []  # no listing walked
+
+    def test_a_name_shaped_like_an_id_is_still_a_name(self, kit, api):
+        # The direct read of "Cal_1" is refused, as the server refuses an
+        # unknown sample ID: it is looked for by name next
+        ref = kit.resolve("Cal_1", "sample")
+
+        assert (ref.id, ref.parent) == ("s41", "b4")
+        assert api.requests_to("samples/Cal_1") != []
+
+    def test_a_sample_named_so_is_described_and_loaded(self, kit):
+        assert kit.describe("Cal_1", kind="sample")["ref"]["id"] == "s41"
+        assert kit.load_spectrum("Cal_1").source_refs[0].id == "s41"
+
+    def test_a_failed_listing_is_no_answer(self, kit, api):
+        api.fail("GET", "samples", 500)
+
+        with pytest.raises(Unavailable, match="4 listing"):
+            kit.resolve("Sample 2", "sample")
+
+    def test_the_only_match_seen_is_not_the_only_one(self, kit, api):
+        # Batch b3's "Sample 1" is not listed: "Sample 1" would resolve to
+        # b2's alone
+        api.fail("GET", "samples", 500, params={"sample_batch_id": "b3"})
+
+        with pytest.raises(Unavailable, match="1 listing"):
+            kit.resolve("Sample 1", "sample")
+        with pytest.raises(Unavailable):
+            kit.resolve("ple 3", "sample")  # a part of b2's "Sample 3"
+
+    def test_an_id_is_the_answer_whatever_failed(self, kit, api):
+        api.fail("GET", "samples", 500, params={"sample_batch_id": "b3"})
+
+        assert kit.resolve("b2", "batch").id == "b2"
+        # Its direct read refused too, s22 is found by ID in b2's listing
+        api.fail("GET", "samples/s22", 403)
+        assert kit.resolve("s22", "sample").id == "s22"
 
     def test_nothing_matches(self, kit):
         with pytest.raises(NotFound) as caught:

@@ -18,7 +18,10 @@ requires-python = ">=3.10"
 dependencies = [
     # The toolkit loads through the SDK's per-sample loaders and its
     # concurrency hook, which are internal to it: it needs the SDK of the
-    # same release, not merely a compatible one.
+    # same release, not merely a compatible one. This bound does not say so
+    # yet - develop's SDK carried this version before those were added - and
+    # needs not while the workspace resolves the SDK from this repository;
+    # pin it to the SDK's release when mascope_ai is first published.
     "mascope_sdk>=2026.10.20",
     "loguru>=0.7.3",
     "pandas>=2.0.0",

@@ -29,6 +29,7 @@ import pandas as pd
 import pyarrow as pa
 from loguru import logger
 
+from .errors import StaleFrame
 from .frame import Frame
 
 
@@ -100,7 +101,8 @@ class Session:
         """Keep a Frame and its rows in the session.
 
         A column parquet cannot hold as it is - values of mixed kinds in one
-        object column - is kept as JSON text, and the Frame's file says which.
+        object column - is kept as JSON text, and the Frame's file says
+        which; :meth:`rows` decodes it again.
 
         :param frame: The Frame.
         :param df: Its rows.
@@ -139,10 +141,23 @@ class Session:
 
         :raises RuntimeError: If the rows were evicted and the session has
             no :attr:`reloader` to load them again with.
+        :raises StaleFrame: If the rows loaded again are not the Frame's:
+            another row count, other columns, or another completeness.
         """
         path = self._file(frame.id, ".parquet")
+        meta_path = self._file(frame.id, ".json")
         if path.exists():
-            return pd.read_parquet(path)
+            df = pd.read_parquet(path)
+            meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+            for column in meta.get("stringified", ()):
+                if column in df:
+                    # Anything but text there is a null the column held
+                    df[column] = df[column].map(
+                        lambda value: (
+                            json.loads(value) if isinstance(value, str) else None
+                        )
+                    )
+            return df
         if self.reloader is None:
             raise RuntimeError(
                 f"Frame {frame.id}'s rows were evicted and session {self.id} "
@@ -150,6 +165,9 @@ class Session:
             )
         logger.info("Loading Frame {} again from its query", frame.id)
         df = self.reloader(frame.query)
+        differences = _differences(frame, df)
+        if differences:
+            raise StaleFrame(frame.id, differences)
         path.parent.mkdir(parents=True, exist_ok=True)
         _write_parquet(df, path)
         return df
@@ -161,6 +179,20 @@ class Session:
     def discard(self) -> None:
         """Delete the session's directory and everything in it."""
         shutil.rmtree(self.path, ignore_errors=True)
+
+
+def _differences(frame: Frame, df: pd.DataFrame) -> list[str]:
+    """How rows loaded again differ from what *frame* says it holds."""
+    differences = []
+    if len(df) != frame.n_rows:
+        differences.append(f"{len(df):,} rows, not {frame.n_rows:,}")
+    columns = tuple(str(column) for column in df.columns)
+    if columns != frame.columns:
+        differences.append("other columns")
+    complete = bool(df.attrs.get("complete", True))
+    if complete != frame.complete:
+        differences.append("complete" if complete else "incomplete: a read failed")
+    return differences
 
 
 def _write_atomic(path: Path, text: str) -> None:

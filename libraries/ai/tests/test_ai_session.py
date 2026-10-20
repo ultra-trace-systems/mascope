@@ -12,7 +12,7 @@ import json
 import pandas as pd
 import pytest
 
-from mascope_ai import Frame, Ref, Session
+from mascope_ai import Frame, Ref, Session, StaleFrame
 from mascope_ai.session import default_root
 
 
@@ -79,16 +79,20 @@ class TestRoundTrip:
         assert [f.id for f in session.frames()] == [first.id, second.id]
 
     def test_a_column_parquet_cannot_hold_is_kept_as_json_text(self, session):
-        df = pd.DataFrame({"mixed": [{"a": 1}, "text", 3], "n": [1, 2, 3]})
+        df = pd.DataFrame({"mixed": [{"a": 1}, "text", 3, None], "n": [1, 2, 3, 4]})
 
         frame = _saved(session, df)
 
         meta = json.loads((session.path / "frames" / f"{frame.id}.json").read_text())
         assert meta["stringified"] == ["mixed"]
+        stored = pd.read_parquet(session.path / "frames" / f"{frame.id}.parquet")
+        assert stored["mixed"].tolist()[:3] == ['{"a": 1}', '"text"', "3"]
+        # ... and read back as the values it held
         assert session.frame(frame.id).df["mixed"].tolist() == [
-            '{"a": 1}',
-            '"text"',
-            "3",
+            {"a": 1},
+            "text",
+            3,
+            None,
         ]
 
     def test_attrs_parquet_cannot_hold_stay_out_of_the_file(self, session):
@@ -127,6 +131,34 @@ class TestEviction:
         # ... and kept again, so the next read is the session's copy
         frame.df  # noqa: B018
         assert len(asked) == 1
+
+    @pytest.mark.parametrize(
+        "change, complete, said",
+        [
+            (lambda df: df.iloc[:2], False, "2 rows, not 3"),
+            (lambda df: df.drop(columns="mz"), False, "other columns"),
+            # The Frame was incomplete; the reload read everything
+            (lambda df: df, True, "complete"),
+        ],
+    )
+    def test_rows_loaded_again_that_differ_are_refused(
+        self, session, change, complete, said
+    ):
+        frame = _saved(session)
+        session.evict(frame.id)
+        frame.evict()
+
+        def reloader(query):
+            df = change(_df())
+            df.attrs = {"complete": complete}
+            return df
+
+        session.reloader = reloader
+
+        with pytest.raises(StaleFrame, match=said) as caught:
+            frame.df  # noqa: B018
+        assert caught.value.to_dict()["error"] == "stale_frame"
+        assert not (session.path / "frames" / f"{frame.id}.parquet").exists()
 
     def test_without_a_reloader_it_says_so(self, session):
         frame = _saved(session)

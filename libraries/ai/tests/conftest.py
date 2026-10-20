@@ -13,7 +13,7 @@ builds a small workspace whose names are chosen to test matching::
         Batch "Spring 2026"          Sample 1, Sample 2, Sample 3 (unmatched)
         Batch "Spring 2026 repeat"   Sample 1
       Dataset "Calibration runs"
-        Batch "Calibration"          Cal 1
+        Batch "Calibration"          Cal_1
     Collections: "Organic acids" (Workspace A; Blank (A), Spring 2026),
                  "Calibrants" (global; Calibration)
 """
@@ -46,7 +46,8 @@ SAMPLES = {
     "s22": ("b2", "Sample 2"),
     "s23": ("b2", "Sample 3"),
     "s31": ("b3", "Sample 1"),
-    "s41": ("b4", "Cal 1"),
+    # A name made of the characters of an ID, as most real names are
+    "s41": ("b4", "Cal_1"),
 }
 #: Samples whose matching has not run.
 UNMATCHED = {"s23"}
@@ -64,8 +65,8 @@ class FakeAPI:
     """Stands in for ``requests.get`` and ``requests.post`` under the SDK.
 
     :ivar calls: Each request, as ``(method, path, params, body)``.
-    :ivar failures: ``(method, path regex) -> HTTP status`` to answer with
-        instead, set through :meth:`fail`.
+    :ivar failures: ``(method, path regex, params) -> HTTP status`` to
+        answer with instead, set through :meth:`fail`.
     :ivar peak_copies: How many copies of the recorded peak list each
         sample answers with (each copy's peaks with IDs of their own), to
         make loads as large as a test needs.
@@ -73,12 +74,19 @@ class FakeAPI:
 
     def __init__(self):
         self.calls: list[tuple[str, str, dict[str, Any], Any]] = []
-        self.failures: list[tuple[str, re.Pattern, int]] = []
+        self.failures: list[tuple[str, re.Pattern, dict[str, Any], int]] = []
         self.peak_copies = 1
 
-    def fail(self, method: str, path: str, status: int) -> None:
-        """Answer requests whose path fully matches regex *path* with *status*."""
-        self.failures.append((method, re.compile(path), status))
+    def fail(
+        self,
+        method: str,
+        path: str,
+        status: int,
+        params: dict[str, Any] | None = None,
+    ) -> None:
+        """Answer requests whose path fully matches regex *path*, and whose
+        query has the *params* given, with *status*."""
+        self.failures.append((method, re.compile(path), dict(params or {}), status))
 
     def requests_to(self, path: str, method: str = "GET") -> list[tuple]:
         return [
@@ -100,8 +108,12 @@ class FakeAPI:
         params = dict(params or {})
         self.calls.append((method, path, params, body))
         status, payload = self._route(method, path, params, body)
-        for fail_method, pattern, fail_status in self.failures:
-            if fail_method == method and pattern.fullmatch(path):
+        for fail_method, pattern, fail_params, fail_status in self.failures:
+            if (
+                fail_method == method
+                and pattern.fullmatch(path)
+                and fail_params.items() <= params.items()
+            ):
                 status, payload = fail_status, {"error": "refused by the test"}
         response = requests.Response()
         response.status_code = status
@@ -152,7 +164,9 @@ class FakeAPI:
             return 200, _envelope(rows, results=len(rows))
         if re.fullmatch(r"samples/\w+", path):
             if parts[1] not in SAMPLES:
-                return 404, {"error": f"Sample {parts[1]} not found"}
+                # As the server answers anyone but a superuser: it cannot
+                # tell whose workspace a sample that does not exist is in
+                return 403, {"error": "Forbidden"}
             return 200, _envelope(self._sample(parts[1]))
         if re.fullmatch(r"samples/\w+/peaks", path):
             return 200, self._peaks(parts[1])

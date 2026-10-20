@@ -53,11 +53,13 @@ global collections).
 **Names.** A string matches a name as a case-insensitive literal substring
 (`"Sample (A)"` means those characters, not a regex); pass a compiled
 `re.Pattern` to match by regex. An ID, then a whole name, wins. Several
-matches are returned as candidates, not raised past.
+matches are returned as candidates, not raised past. When a listing
+`resolve` searched failed, it raises `Unavailable` rather than answer with
+the one match it saw (an ID match excepted).
 
 **Row caps.** `max_rows` (500,000 by default) holds during a load: an
-estimate from the sample count refuses a load that is over the cap even at
-a low floor of rows per sample, and a running count stops the load as soon
+estimate from the sample count (a rough 100 rows per sample) refuses a load
+clearly too big for the cap, and a running count stops the load as soon
 as the rows read pass the cap, raising `RowCapExceeded` with the rows
 reached and the samples left. A Frame above the cap is never made. Loads
 never prompt.
@@ -71,7 +73,7 @@ never prompt.
 to do next and a `to_dict()` for a transport: `AmbiguousName`, `NotFound`,
 `RowCapExceeded`, `AccessDenied` (a 403, naming the object, the role it
 needs and the role the user has), `NotAuthenticated`, `InvalidRequest`,
-`Unavailable`. Transient failures were already retried by the SDK; the
+`Unavailable`, `StaleFrame`. Transient failures were already retried by the SDK; the
 toolkit adds no retry.
 
 ## Sessions
@@ -80,7 +82,8 @@ A `Session` is one conversation's directory under the scratch root
 (`$MASCOPE_AI_SCRATCH`, else `~/.cache/mascope_ai/sessions`): each Frame as
 parquet beside a JSON file of its summary and the query that made it.
 `session.frame(id)` reopens a Frame, `session.evict(id)` drops its rows
-(the next `.df` loads them again through its query), and
+(the next `.df` loads them again through its query, and raises
+`StaleFrame` if the rows it gets are not the Frame's), and
 `session.discard()` deletes the session. Nothing in it is a source of
 truth.
 
