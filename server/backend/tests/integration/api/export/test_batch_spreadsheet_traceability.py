@@ -523,3 +523,10 @@ async def test_the_provenance_sheet_names_the_build_and_the_inputs(workbook, bat
     assert provenance["inputs.dataset_id"] == batch.dataset
     assert provenance["inputs.sample_batch_id"] == batch.batch
     assert provenance["inputs.target_collection_ids"] == batch.collection
+    assert (
+        provenance["inputs.dataset_global_id"] == f"export-test:dataset:{batch.dataset}"
+    )
+    assert (
+        provenance["inputs.sample_batch_global_id"]
+        == f"export-test:sample_batch:{batch.batch}"
+    )

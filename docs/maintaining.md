@@ -1298,6 +1298,29 @@ from it, it logs a warning at start and exports name no deployment until the
 file is repaired, moved aside (the next start generates a new id), or
 `deployment_id` is set.
 
+The deployment id is also the namespace of the global ids an export gives its
+records. Beside each record id it names - `inputs.dataset_id`,
+`inputs.sample_batch_id` - the provenance carries `inputs.dataset_global_id`,
+`inputs.sample_batch_global_id`, in the form
+
+```text
+<deployment_id>:<entity>:<local_id>     e.g. example-lab:sample_batch:V1StGXR8_Z5jdHi6
+```
+
+where `<entity>` is the record's table (`dataset`, `sample_batch`,
+`sample_item`, `sample_file`, `target_collection`, `target_compound`,
+`target_ion`) and `<local_id>` its id in this deployment. Neither a deployment
+id nor an entity can hold a `:`, so a global id splits back into its three
+parts. The format is stable: it is part of the provenance contract, and a
+change to it would change the provenance version. A deployment with no id
+gives no global ids rather than inventing a namespace.
+
+A global id is only as unique as the deployment id in it. Two deployments
+configured with the same `deployment_id` mint global ids that can name
+different records with the same string: give every deployment whose exports
+may meet a name of its own, and leave it unset where you have no reason to
+choose one.
+
 ### Where a deployment's settings live
 
 | Path | What |

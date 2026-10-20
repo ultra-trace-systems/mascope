@@ -158,3 +158,44 @@ def test_a_failed_read_is_not_kept(filestore):
     path.write_text(json.dumps({"deployment_id": "repaired-id"}), encoding="utf-8")
 
     assert deployment.deployment_id() == "repaired-id"
+
+
+def test_a_global_id_is_the_deployment_the_entity_and_the_local_id(
+    filestore, monkeypatch
+):
+    monkeypatch.setattr(runtime.config, "deployment_id", "example-lab")
+
+    assert deployment.global_id("sample_batch", "b1") == "example-lab:sample_batch:b1"
+
+
+def test_a_global_id_uses_the_generated_id(filestore):
+    generated = deployment.ensure_deployment_id()
+
+    assert deployment.global_id("dataset", "d1") == f"{generated}:dataset:d1"
+
+
+def test_a_deployment_without_an_id_has_no_global_ids(filestore):
+    """Never a made-up namespace: an id that names no deployment is worse
+    than none."""
+    assert deployment.global_id("dataset", "d1") is None
+
+
+@pytest.mark.parametrize("entity", deployment.GLOBAL_ID_ENTITIES)
+def test_a_global_id_parses_back_into_its_parts(filestore, entity):
+    """The contract is parseable by construction: neither a deployment id
+    nor an entity can hold the separator."""
+    generated = deployment.ensure_deployment_id()
+
+    assert ":" not in generated and ":" not in entity
+    assert deployment.global_id(entity, "local_1").split(":") == [
+        generated,
+        entity,
+        "local_1",
+    ]
+
+
+def test_an_unknown_entity_has_no_global_id(filestore, monkeypatch):
+    monkeypatch.setattr(runtime.config, "deployment_id", "example-lab")
+
+    with pytest.raises(ValueError, match="sample"):
+        deployment.global_id("sample", "s1")

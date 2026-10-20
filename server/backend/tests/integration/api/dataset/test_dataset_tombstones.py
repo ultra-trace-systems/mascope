@@ -211,7 +211,10 @@ async def test_deleting_a_dataset_leaves_its_tombstone(
     assert row["deleted_by"] == test_users["editor"].email
     assert row["deleted_via"] == "dataset"
     assert row["provenance"]["deployment_id"] == DEPLOYMENT
-    assert row["provenance"]["inputs"] == {"dataset_id": dataset_id}
+    assert row["provenance"]["inputs"] == {
+        "dataset_id": dataset_id,
+        "dataset_global_id": f"{DEPLOYMENT}:dataset:{dataset_id}",
+    }
     assert "mascope_version" in row["provenance"]["produced_with"]
 
     # The data itself is gone
