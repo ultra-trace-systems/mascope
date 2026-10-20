@@ -39,6 +39,10 @@ validate() {
         openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=ci \
           -keyout /run/secrets/ssl_secret_key \
           -out /run/secrets/ssl_certificate >/dev/null 2>&1
+        # nginx.conf includes the gateway trust line docker-entrypoint.sh
+        # writes at start; stand in a line of the same shape.
+        mkdir -p /etc/nginx/mascope
+        echo "set_real_ip_from 172.18.0.1;" > /etc/nginx/mascope/realip-gateway.conf
       fi
       nginx -t
     '

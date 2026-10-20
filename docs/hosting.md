@@ -119,6 +119,17 @@ and the checkout.
    This applies to any front proxy, whether Mascope terminates TLS itself or
    runs with `MASCOPE_TLS=off` behind yours.
 
+   Docker itself becomes such a proxy when it runs with `iptables: false` (so
+   that the host firewall, not Docker's NAT rules, governs the published port):
+   its userland proxy then relays every connection, and nginx sees each one
+   arrive from the Docker bridge gateway. Behind Cloudflare that is handled for
+   you - the HTTPS config trusts `CF-Connecting-IP` from the gateway as well as
+   from Cloudflare's ranges, so each visitor keeps a budget of their own. It
+   also means that a client reaching the published port *without* passing
+   through Cloudflare can name its own address in that header, so let the
+   firewall admit only Cloudflare to the port if the per-client limits matter
+   to you.
+
    A front proxy must also keep the browser-visible origin intact: pass the
    browser's `Host` header through unchanged (nginx: `proxy_set_header Host
    $host;`, Apache: `ProxyPreserveHost On`) - or forward it in
