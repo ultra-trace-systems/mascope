@@ -111,7 +111,7 @@ Mascope development checkout around it.
 
 The library is versioned by date (`2026.10.14`), like Mascope's other Python
 packages. The Windows program reports the Mascope release it was built for
-(`v1.12.0`).
+(`v1.13.0`).
 
 ## Licence
 
