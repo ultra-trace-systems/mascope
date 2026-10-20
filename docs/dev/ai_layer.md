@@ -257,10 +257,13 @@ Consequences:
   (`batch_peaks.import_run`, 1.1); the per-sample run import
   (`POST /api/peak-assignments/sample/{id}/runs/import`) has no SDK method.
   The toolkit must not call any of them outside plan/apply.
-- `POST /api/match/rematch/sample/{id}` **is** still token-accessible
-  ([match_routes.py:334-335](../../server/backend/src/mascope_backend/api/routes/match/match_routes.py))
-  — a destructive recompute reachable with any SDK token whose user is an
-  editor on the sample. Its token access deserves a review of its own.
+- `POST /api/match/rematch/sample/{id}` was token-accessible to every
+  service — a destructive recompute reachable with any SDK token whose user is
+  an editor on the sample. Reviewed (MAS-142, GitHub #2354): it now answers
+  the `file-converter` token alone, which the converter's peak-recompute
+  worker posts with, through `api_route(token_access=("file-converter",))`
+  ([match_routes.py](../../server/backend/src/mascope_backend/api/routes/match/match_routes.py)),
+  and logs each token-driven rematch.
 - A `mascope_ai` toolkit speaking through the SDK today must present
   `service_name="mascope_sdk"`; a token minted for one service is refused under
   another name, and a name outside the allowlist cannot be minted.
@@ -526,7 +529,7 @@ Each phase is intended to land independently and leave the system shippable.
 - **`ai-agent` service**: add to `ALLOWED_SERVICES` with a guest minting gate,
   so agent traffic is attributable from the first real session.
 - Decide the review of `POST /api/match/rematch/sample/{id}`'s token access
-  (1.3) — tracked as its own backend issue regardless of this project.
+  (1.3) — done in MAS-142: narrowed to the `file-converter` service.
 
 ### Phase 1 - `mascope_ai` toolkit + MCP server, read-only
 
@@ -727,14 +730,15 @@ a token.
 | Samples ([sample_items_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/items/sample_items_routes.py)) | `POST /api/sample/items`, `PATCH /{id}`, `POST /move`, `/copy`, `/delete`, `/process`, `/{id}/export_peak_data`, `DELETE /{id}` | editor (copy: **guest** on source, editor on destination batch; move: editor on both); locked: update and delete need owner, move refuses a locked source item or destination, copy a locked destination | no |
 | Target collections ([target_collections_routes.py](../../server/backend/src/mascope_backend/api/routes/target/collections/target_collections_routes.py)) | `POST/PATCH/DELETE /api/target/collections[/{id}]`; association via the `sample_batch_ids` payload field | workspace editor (global collection: global admin or superuser); batches-only update: guest on collection + editor on changed batches | no |
 | Target compounds ([target_compounds_routes.py](../../server/backend/src/mascope_backend/api/routes/target/compounds/target_compounds_routes.py)) | `POST/PATCH /api/target/compounds`, `DELETE /{id}` | **global editor only — no workspace ACL** | no |
-| Matching ([aggregate/](../../server/backend/src/mascope_backend/api/routes/match/aggregate/), [match_routes.py](../../server/backend/src/mascope_backend/api/routes/match/match_routes.py)) | `POST /api/match/aggregate/{sample\|batch}/{id}` and its previews (sample: `/isotope`, `/ion`, `/compound(s)`; batch: `/isotope` only), +`/save` (`/resave` batch-only); `/api/match/{rematch,compute,remove}/...`; `/remove/all`; the direct match-row writers `POST`/`DELETE /api/match/{isotopes,ions,compounds,collections,samples}` ([match/*/match_*_routes.py](../../server/backend/src/mascope_backend/api/routes/match/)) | aggregate: guest (pure); save/resave: editor (save upserts, resave rebuilds); rematch/compute/remove: editor on the scope; remove/all: global admin; direct writers: editor on every sample written (`DELETE`: on the sample or batch) | the sample and batch aggregate previews, the sample `/compound(s)` previews and **`POST /rematch/sample/{id}`** only |
+| Matching ([aggregate/](../../server/backend/src/mascope_backend/api/routes/match/aggregate/), [match_routes.py](../../server/backend/src/mascope_backend/api/routes/match/match_routes.py)) | `POST /api/match/aggregate/{sample\|batch}/{id}` and its previews (sample: `/isotope`, `/ion`, `/compound(s)`; batch: `/isotope` only), +`/save` (`/resave` batch-only); `/api/match/{rematch,compute,remove}/...`; `/remove/all`; the direct match-row writers `POST`/`DELETE /api/match/{isotopes,ions,compounds,collections,samples}` ([match/*/match_*_routes.py](../../server/backend/src/mascope_backend/api/routes/match/)) | aggregate: guest (pure); save/resave: editor (save upserts, resave rebuilds); rematch/compute/remove: editor on the scope; remove/all: global admin; direct writers: editor on every sample written (`DELETE`: on the sample or batch) | the sample and batch aggregate previews, the sample `/compound(s)` previews and **`POST /rematch/sample/{id}`** (the `file-converter` token only) |
 | Peak assignments ([peak_assignments/routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py)) | `POST /api/peak-assignments/sample/{id}/verify`, `PATCH .../assignment/{id}`, `POST .../assign`, `POST .../runs/import`, `DELETE .../runs/{id}`, `POST /calibration/{instrument}/recalibrate`, `POST .../fit/{aggregate,visualize}` | sample editor (recalibrate: superuser; fits: guest, compute only); behind the peak-assignment feature flag, except the two fits | **yes**, all |
 | Batch ledger ([batch_peaks_routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_routes.py)) | `POST /api/batch-peaks/batch/{id}/{backfill,search-untargeted,verify,retract,curate,release-curation,export,runs/import}` | batch editor (export: guest, writes a CSV to the user's temp store); behind the feature flag, except export, which stays open so a ledger outlives an opt-out | **yes**, these eight; the router's `POST /records/series` is a guest query and takes no token |
 | Sample files ([sample_files_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/files/sample_files_routes.py)) | `POST /api/sample/files`, `POST /upload`, tus `/upload/tus[/{id}]`, `POST /delete`; `PATCH/DELETE /{id}`, `POST /{id}/peaks/compute`, `/{id}/process`, `/bind`, `/reprocess` | upload and create: editor in the instrument's workspace; `process` and `bind`: instrument editor; bulk delete, `PATCH`/`DELETE /{id}`, `peaks/compute` and `reprocess`: instrument **admin** (`process`, `PATCH`/`DELETE /{id}` and `peaks/compute` also accept that role in a workspace holding a sample of the file) | upload, create and bulk delete only |
 
 **The data-organisation writes (datasets to matching `/save`) accept no
 access-token auth** (`token_access=True` absent); the token-reachable writes are
-the rematch route and the assignment and upload surfaces (section 1.3). The
+the rematch route (the file converter's token only) and the assignment and
+upload surfaces (section 1.3). The
 aggregate previews a token reaches compute and write nothing: phase 0's token
 audit, below, opened them as toolkit reads.
 
@@ -757,6 +761,9 @@ the auth selector refuses a token anywhere else with 401
 The whole set of routes that answer a token is pinned in
 [test_token_access_coverage.py](../../server/backend/tests/unit/api/routes/test_token_access_coverage.py),
 so a route that gains or loses the flag fails there until the list says so.
+A route can also be opened to some services' tokens only
+(`api_route(token_access=("file-converter",))`); the same test pins which
+routes are narrowed, and to what.
 
 ### The toolkit's reads
 
@@ -836,7 +843,7 @@ workspace check, and a global admin every instrument-workspace check.
 | `POST /api/match/aggregate/batch/{id}/resave` | batch editor | no | **yes** (removes every aggregate level first) |
 | `POST /api/match/compute/sample/{id}` | sample editor | no | no (computes missing matches only) |
 | `POST /api/match/compute/batch/{id}` | batch editor | no | no (computes missing matches only) |
-| `POST /api/match/rematch/sample/{id}` | sample editor | **yes** | **yes** (removes orphaned or all matches, recomputes) |
+| `POST /api/match/rematch/sample/{id}` | sample editor | `file-converter` only | **yes** (removes orphaned or all matches, recomputes) |
 | `POST /api/match/rematch/batch/{id}` | batch editor | no | **yes** |
 | `POST /api/match/rematch/batches` | editor on every batch | no | **yes** |
 | `POST /api/match/rematch/dataset/{id}` | dataset editor | no | **yes** |

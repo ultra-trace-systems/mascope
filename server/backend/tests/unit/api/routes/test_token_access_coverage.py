@@ -18,6 +18,9 @@ an answer without writing (a peak's time series, the aggregate match preview,
 the m/z query). The write routes are in ``OTHER_TOKEN_ROUTES``, each by the
 client that needs it.
 
+``NARROWED`` pins the routes whose token access is narrowed to some services
+(``api_route(token_access=("file-converter",))``), and to which.
+
 Structural, like ``test_api_route_coverage.py``: it walks whatever routes the
 app registers. That a real SDK token reaches the toolkit's reads end to end is
 ``integration/api/workspace/test_toolkit_token_reads.py``.
@@ -91,8 +94,8 @@ OTHER_TOKEN_ROUTES = {
     ("GET", "/api/sample/files/{sample_file_id}/scans"),
     ("GET", "/api/sample/files/{sample_file_id}/spectrum"),
     ("GET", "/api/version"),
-    # A destructive recompute, token-reachable; the note's 1.3 asks for its
-    # own review. The toolkit never calls it outside plan/apply.
+    # The file converter's peak-recompute worker, after every recompute: a
+    # destructive recompute, so its token alone (NARROWED below).
     ("POST", "/api/match/rematch/sample/{sample_item_id}"),
     # Peak assignment: the SDK's sample-level reads and the engine's writes.
     ("GET", "/api/peak-assignments/batch/{sample_batch_id}/profile-preview"),
@@ -156,6 +159,19 @@ OTHER_TOKEN_ROUTES = {
 }
 
 
+#: (method, path) -> the only services whose token the route answers, for the
+#: routes narrowed with ``api_route(token_access=("...",))``. Every route in the
+#: lists above and not here answers every allowed service's token.
+NARROWED = {
+    # Opened for the file converter alone (GitHub #2354, MAS-142): an SDK or
+    # agent token holder could otherwise delete a sample's matches and
+    # recompute them.
+    ("POST", "/api/match/rematch/sample/{sample_item_id}"): frozenset(
+        {"file-converter"}
+    ),
+}
+
+
 def _token_routes() -> set[tuple[str, str]]:
     """(method, path) of every API route whose endpoint is ``token_access``."""
     return {
@@ -183,3 +199,25 @@ def test_every_toolkit_read_answers_a_token():
 
 def test_only_the_known_routes_answer_a_token():
     assert _token_routes() == set(TOOLKIT_READS) | OTHER_TOKEN_ROUTES
+
+
+def _narrowed_routes() -> dict[tuple[str, str], frozenset[str]]:
+    """(method, path) -> ``token_services`` of every narrowed token route."""
+    return {
+        (method, context.path_format): context.endpoint.token_services
+        for context in iter_route_contexts(fast.routes)
+        if isinstance(context.route, APIRoute)
+        and getattr(context.endpoint, "token_access", False)
+        and getattr(context.endpoint, "token_services", None) is not None
+        for method in context.methods or ()
+    }
+
+
+def test_the_narrowed_routes_are_token_routes():
+    assert NARROWED.keys() <= set(TOOLKIT_READS) | OTHER_TOKEN_ROUTES
+
+
+def test_only_the_known_routes_are_narrowed_and_to_their_services():
+    # A route widened back to every service, narrowed to another one, or
+    # narrowed without a word here fails, as a route gaining the flag does.
+    assert _narrowed_routes() == NARROWED
