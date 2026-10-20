@@ -136,7 +136,7 @@ Scan selection reads metadata only. The OpenTFRaw backend builds it from `scan_t
 ### MS2 Specific Methods
 
 - **`ms2_events_by_scan(polarity, t_min, t_max)`**: Decodes and returns the precursor m/z and activation (e.g. `hcd40.00`) for MS2 acquisition events. The activation is what separates the steps of a stepped-energy acquisition, whose scans share one precursor.
-- **`ms2_acquisition_info(polarity, t_min, t_max)`**: Returns the MS2 isolation width, as stored (`trailer_numbers`), and each MS2 scan's collision energy.
+- **`ms2_acquisition_info(polarity, t_min, t_max)`**: Returns the MS2 isolation width, as stored (`trailer_numbers`), and each MS2 scan's collision energy, the text of its trailer's `HCD Energy V:`. A scan whose trailer has no such label, as where an instrument writes `HCD Energy:` or `HCD Energy eV:` instead, has the energy `""` under both backends. A file whose MS2 scans store no width, or more than one, raises a `ValueError` that says which.
 - **`ms2_centroids_for_scans(scan_indices)`**: Retrieves centroid data specifically for a set of MS2 scans.
 
 ## Scan Streams
