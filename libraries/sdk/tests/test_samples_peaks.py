@@ -5,11 +5,13 @@ particular the ``target_collection_names`` the peaks payload carries next to
 ``test_peak_assignments.py``) and do not need a running stack.
 """
 
+import re
 from typing import Any
 
 import pandas as pd
 import pytest
 
+from mascope_sdk import _loaders
 from mascope_sdk.resources.ionization import IonizationResource
 from mascope_sdk.resources.samples import SamplesResource
 
@@ -60,6 +62,19 @@ PEAK_MATCHES_WITHOUT_NAMES = [
 ]
 
 
+#: A stitched sample's segments as the listing describes them, one per scan
+#: stream - more of them than the peaks below, and fewer than a real sample's
+#: peaks, so a frame built with them in raises.
+SEGMENTS = [
+    {"index": i, "key": f"stream {i}", "label": f"m/z {lo}-{lo + 50}", "from": 0}
+    for i, lo in enumerate((50, 100, 150, 200))
+]
+
+#: The key left out of the listing altogether, as a server older than the
+#: segments sends it.
+OMITTED = object()
+
+
 class _FakeResponse:
     def __init__(self, payload: dict[str, Any]):
         self._payload = payload
@@ -82,8 +97,21 @@ class FakeServer:
         peak_matches: list[list[dict]] | None = None,
         *,
         signal_to_noise: bool = True,
+        segments: Any = OMITTED,
+        extra: dict[str, Any] | None = None,
     ):
         self.peak_matches = PEAK_MATCHES if peak_matches is None else peak_matches
+        #: A list is a stitched sample, None one that is not, and OMITTED a
+        #: server that predates the segments.
+        self.segments = segments
+        #: Keys a newer server might add to ``data``.
+        self.extra = extra or {}
+        #: Samples served as not stitched, whatever ``segments`` says.
+        self.unstitched: set[str] = set()
+        #: Warn each peak read differently, as reads short by different
+        #: numbers of peaks do - which is when ``pd.concat`` drops ``attrs``.
+        self.warn_each = False
+        self.reads = 0
         #: False models a file that stores no noise estimate: the endpoint sends
         #: the key with a null rather than omitting it.
         self.signal_to_noise = signal_to_noise
@@ -105,8 +133,10 @@ class FakeServer:
                     ],
                 }
             )
-        if path != f"samples/{SAMPLE_ID}/peaks":
+        sample = re.fullmatch(r"samples/([^/]+)/peaks", path)
+        if sample is None:
             raise AssertionError(f"unexpected request to {path!r}")
+        stitched = sample.group(1) not in self.unstitched
 
         params = dict(params or {})
         n = len(self.peak_matches)
@@ -121,16 +151,25 @@ class FakeServer:
             ),
             "match": self.peak_matches,
         }
+        if self.segments is not OMITTED:
+            segments = self.segments if stitched else None
+            data["segment"] = (
+                [i % len(segments) for i in range(n)] if segments else None
+            )
+            data["segments"] = segments
+        data.update(self.extra)
         if params.get("matches") == "false":
             data.pop("match")
-        return _FakeResponse(
-            {
-                "status": "success",
-                "message": f"Retrieved {n} peaks",
-                "results": n,
-                "data": data,
-            }
-        )
+        body = {
+            "status": "success",
+            "message": f"Retrieved {n} peaks",
+            "results": n,
+            "data": data,
+        }
+        if self.warn_each:
+            self.reads += 1
+            body["warnings"] = [f"read {self.reads}"]
+        return _FakeResponse(body)
 
 
 class _StubClient:
@@ -144,6 +183,7 @@ class _StubClient:
 
     def __init__(self):
         self._cache: dict[str, pd.DataFrame] = {}
+        self.samples = SamplesResource(self)
 
     @property
     def ionization(self) -> IonizationResource:
@@ -151,11 +191,11 @@ class _StubClient:
 
 
 def _serve(
-    monkeypatch, peak_matches=None, *, signal_to_noise: bool = True
+    monkeypatch, peak_matches=None, **kwargs
 ) -> tuple[SamplesResource, FakeServer]:
-    fake = FakeServer(peak_matches=peak_matches, signal_to_noise=signal_to_noise)
+    fake = FakeServer(peak_matches=peak_matches, **kwargs)
     monkeypatch.setattr("mascope_sdk.resources._base.http_get", fake.http_get)
-    return SamplesResource(_StubClient()), fake
+    return _StubClient().samples, fake
 
 
 @pytest.fixture()
@@ -264,3 +304,225 @@ class TestTargetCollectionNames:
 
         assert "target_collection_names" in peaks.columns
         assert peaks["target_collection_names"].isna().all()
+
+
+class TestSegments:
+    """A stitched sample's listing names its segments beside the peaks: a
+    list as long as the scan streams, not the peaks, which the frame must not
+    take for a column."""
+
+    def test_a_stitched_sample_reads_one_row_per_match(self, monkeypatch):
+        resource, _ = _serve(monkeypatch, segments=SEGMENTS)
+
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        # p1 and p2 matched once each, p3 not at all
+        assert peaks["peak_id"].tolist() == ["p1", "p2", "p3"]
+        assert peaks["segment"].tolist() == [0, 1, 2]
+        assert "segments" not in peaks.columns
+        assert peaks.attrs["segments"] == SEGMENTS
+        assert peaks.attrs["warnings"] == []
+        assert _row(peaks, "p1")["target_compound_name"] == "Glucose"
+
+    def test_a_multi_matched_peak_keeps_its_segment_on_every_row(self, monkeypatch):
+        two = [_match(["tc-1"], ["A"]), _match(["tc-2"], ["B"], isotope="iso-2")]
+        resource, _ = _serve(monkeypatch, peak_matches=[two, []], segments=SEGMENTS)
+
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert peaks["peak_id"].tolist() == ["p1", "p1", "p2"]
+        assert peaks["segment"].tolist() == [0, 0, 1]
+        assert peaks.attrs["segments"] == SEGMENTS
+
+    def test_a_stitched_sample_reads_without_matches(self, monkeypatch):
+        resource, _ = _serve(monkeypatch, segments=SEGMENTS)
+
+        peaks = resource.get_peaks(SAMPLE_ID, matches=False)
+
+        assert peaks["peak_id"].tolist() == ["p1", "p2", "p3"]
+        assert peaks["segment"].tolist() == [0, 1, 2]
+        assert peaks.attrs["segments"] == SEGMENTS
+
+    def test_as_many_segments_as_peaks_are_still_not_a_column(self, monkeypatch):
+        # A listing whose length happens to be the peaks' is no per-peak list
+        resource, _ = _serve(monkeypatch, segments=SEGMENTS[:3])
+
+        peaks = resource.get_peaks(SAMPLE_ID, matches=False)
+
+        assert "segments" not in peaks.columns
+        assert peaks.attrs["segments"] == SEGMENTS[:3]
+
+    def test_a_stitched_sample_with_no_peaks_is_an_empty_frame(self, monkeypatch):
+        resource, _ = _serve(monkeypatch, peak_matches=[], segments=SEGMENTS)
+
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert peaks is not None and peaks.empty
+        assert "segment" in peaks.columns
+        assert peaks.attrs["segments"] == SEGMENTS
+
+    def test_an_unstitched_sample_reads_as_before(self, monkeypatch):
+        # Both serve through the one seam, so one after the other
+        old = _serve(monkeypatch)[0].get_peaks(SAMPLE_ID)
+        resource, _ = _serve(monkeypatch, segments=None)
+
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert peaks.attrs["segments"] is None
+        assert peaks["segment"].isna().all()
+        assert "segments" not in peaks.columns
+        pd.testing.assert_frame_equal(peaks.drop(columns=["segment"]), old)
+
+    def test_a_server_without_segments_reads_as_before(self, resource):
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert peaks.attrs["segments"] is None
+        assert "segment" not in peaks.columns
+        assert "segments" not in peaks.columns
+        assert peaks["peak_id"].tolist() == ["p1", "p2", "p3"]
+
+
+class TestTheLoaders:
+    """The loaders read through ``get_peaks`` and stack what it returns, so a
+    stitched sample broke them too. They carry each sample's segments forward
+    the way they carry the warnings."""
+
+    @pytest.fixture
+    def two_samples(self, monkeypatch):
+        rows = pd.DataFrame(
+            {"sample_item_id": [SAMPLE_ID, "s2"], "sample_item_name": ["A", "B"]}
+        )
+        monkeypatch.setattr(
+            _loaders,
+            "_collect_sample_tasks",
+            lambda *a, **k: ([(row, "Batch") for _, row in rows.iterrows()], "ds-1"),
+        )
+
+    def test_load_peaks_keeps_each_samples_segments(self, monkeypatch, two_samples):
+        resource, server = _serve(monkeypatch, segments=SEGMENTS)
+        server.unstitched.add("s2")
+
+        peaks = _loaders.load_peaks(resource._client, "My Dataset", max_workers=1)
+
+        assert len(peaks) == 6
+        assert peaks.attrs["segments"] == {SAMPLE_ID: SEGMENTS, "s2": None}
+        assert peaks.attrs["warnings"] == []
+
+    def test_load_peaks_by_stage_keeps_the_samples_segments(self, monkeypatch):
+        resource, _ = _serve(monkeypatch, segments=SEGMENTS)
+        client = resource._client
+        client._cache["samples:ds-1"] = pd.DataFrame(
+            {"sample_item_id": [SAMPLE_ID], "sample_item_name": ["A"]}
+        )
+
+        peaks = _loaders.load_peaks_by_stage(
+            client, SAMPLE_ID, [(0, 30, "blank"), (30, 60, "sample")]
+        )
+
+        assert peaks["stage_name"].value_counts().to_dict() == {
+            "blank": 3,
+            "sample": 3,
+        }
+        assert peaks.attrs["segments"] == SEGMENTS
+
+    def test_stages_that_warn_differently_keep_the_samples_segments(self, monkeypatch):
+        resource, server = _serve(monkeypatch, segments=SEGMENTS)
+        server.warn_each = True
+        client = resource._client
+        client._cache["samples:ds-1"] = pd.DataFrame(
+            {"sample_item_id": [SAMPLE_ID], "sample_item_name": ["A"]}
+        )
+
+        peaks = _loaders.load_peaks_by_stage(
+            client, SAMPLE_ID, [(0, 30), (30, 60)], max_workers=1
+        )
+
+        assert sorted(peaks.attrs["warnings"]) == ["read 1", "read 2"]
+        assert peaks.attrs["segments"] == SEGMENTS
+
+    def test_load_peak_timeseries_reads_a_stitched_sample(
+        self, monkeypatch, two_samples
+    ):
+        # p1 and p2 match Glucose. The series are canned: what is under test
+        # is the peak read that finds them, which run_concurrent would swallow
+        # into a None if it raised.
+        resource, server = _serve(monkeypatch, segments=SEGMENTS)
+        server.unstitched.add("s2")
+        series: list[tuple[str, str]] = []
+
+        def get_peak_timeseries(sample_id, peak_id=None, **kwargs):
+            series.append((sample_id, peak_id))
+            return pd.DataFrame(
+                {"peak_id": peak_id, "mz": 100.0, "time": [0.0, 1.0], "height": 1.0}
+            )
+
+        monkeypatch.setattr(resource, "get_peak_timeseries", get_peak_timeseries)
+
+        ts = _loaders.load_peak_timeseries(
+            resource._client, "My Dataset", compound="Glucose", max_workers=1
+        )
+
+        assert sorted(series) == [
+            ("s2", "p1"),
+            ("s2", "p2"),
+            (SAMPLE_ID, "p1"),
+            (SAMPLE_ID, "p2"),
+        ]
+        assert len(ts) == 8
+        assert set(ts["target_compound_name"]) == {"Glucose"}
+
+
+class TestWhatIsNotPerPeak:
+    """What a newer server adds beside the per-peak lists goes to ``attrs``,
+    so the next addition cannot break the read the way the segments did."""
+
+    def test_a_list_of_another_length_goes_to_attrs(self, monkeypatch):
+        resource, _ = _serve(monkeypatch, extra={"streams": ["a", "b"]})
+
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert "streams" not in peaks.columns
+        assert peaks.attrs["streams"] == ["a", "b"]
+        assert len(peaks) == 3
+
+    def test_a_scalar_or_a_dict_goes_to_attrs(self, monkeypatch):
+        extra = {"unit": "counts/s", "summary": {"total": 3}}
+        resource, _ = _serve(monkeypatch, extra=extra)
+
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert "unit" not in peaks.columns and "summary" not in peaks.columns
+        assert peaks.attrs["unit"] == "counts/s"
+        assert peaks.attrs["summary"] == {"total": 3}
+
+    def test_a_per_peak_list_stays_a_column(self, monkeypatch):
+        resource, _ = _serve(monkeypatch, extra={"fwhm": [0.1, 0.2, 0.3]})
+
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert _row(peaks, "p2")["fwhm"] == 0.2
+        assert "fwhm" not in peaks.attrs
+
+    def test_it_cannot_overwrite_the_warnings(self, monkeypatch):
+        resource, _ = _serve(monkeypatch, extra={"warnings": "not a list"})
+
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert peaks.attrs["warnings"] == []
+
+    def test_it_is_logged_at_debug(self, monkeypatch):
+        from loguru import logger
+
+        records: list[tuple[str, str]] = []
+        handler = logger.add(
+            lambda m: records.append((m.record["level"].name, m.record["message"])),
+            level="DEBUG",
+            filter="mascope_sdk",
+        )
+        try:
+            resource, _ = _serve(monkeypatch, segments=SEGMENTS, extra={"x": 1})
+            resource.get_peaks(SAMPLE_ID)
+        finally:
+            logger.remove(handler)
+
+        assert ("DEBUG", "Peak listing: 'x' is not per peak, kept in attrs") in records

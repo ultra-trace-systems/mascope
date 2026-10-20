@@ -419,6 +419,11 @@ def load_peaks(
              sample failed, and ``df.attrs["failures"]`` names each
              one and its error ([] when none did). When every read
              failed the result is an empty frame carrying them.
+
+             ``df.attrs["segments"]`` maps each sample read, by
+             ``sample_item_id``, to its ``attrs["segments"]`` from
+             ``get_peaks``: the scan streams of a stitched sample, None for
+             one that is not stitched.
     :rtype: pd.DataFrame | None
     :raises ValueError: If the dataset or batches cannot be resolved.
     :raises KeyboardInterrupt: If the user declines the confirmation prompt.
@@ -458,6 +463,8 @@ def load_peaks(
         _confirm_sample_count(len(sample_tasks), confirm_above)
 
     warned: list[str] = []
+    # Each sample's own: the samples of a load need not be stitched alike
+    segments: dict[str, list[dict] | None] = {}
 
     # Load peaks concurrently with progress bar
     def _fetch_peaks(sample_row: Any, batch_name: str) -> pd.DataFrame | None:
@@ -472,6 +479,7 @@ def load_peaks(
         _note_warnings(warned, peaks)
         if peaks is None:
             return None
+        segments[sample_id] = peaks.attrs.get("segments")
 
         # Enrich with batch and sample context
         peaks.insert(0, "sample_batch_name", batch_name)
@@ -501,6 +509,7 @@ def load_peaks(
         logger.info("No peaks found")
         return None
 
+    result.attrs["segments"] = segments
     result.attrs["warnings"] = _distinct(warned)
     logger.info("Loaded {} peaks total", len(result))
     return result
@@ -726,6 +735,10 @@ def load_peaks_by_stage(
              stage failed, and ``df.attrs["failures"]`` names each
              one and its error ([] when none did). When every read
              failed the result is an empty frame carrying them.
+
+             ``df.attrs["segments"]`` is the sample's, as ``get_peaks``
+             gives it: the scan streams of a stitched sample, None for one
+             that is not stitched.
     :rtype: pd.DataFrame | None
     :raises ValueError: If stages is empty or the sample cannot be found.
 
@@ -780,6 +793,8 @@ def load_peaks_by_stage(
             )
 
     warned: list[str] = []
+    # The stages are reads of one sample, so they all say the same of it
+    segments: list[list[dict] | None] = []
 
     def _fetch_stage_peaks(
         stage_idx: int,
@@ -799,6 +814,7 @@ def load_peaks_by_stage(
         _note_warnings(warned, peaks)
         if peaks is None:
             return None
+        segments.append(peaks.attrs.get("segments"))
 
         peaks["stage"] = stage_idx
         peaks["stage_name"] = stage_name
@@ -836,6 +852,7 @@ def load_peaks_by_stage(
         logger.info("No peaks found")
         return None
 
+    result.attrs["segments"] = segments[0] if segments else None
     result.attrs["warnings"] = _distinct(warned)
     logger.info("Loaded {} peaks across {} stages", len(result), len(stages))
     return result
