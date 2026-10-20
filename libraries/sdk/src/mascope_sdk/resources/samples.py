@@ -1011,6 +1011,10 @@ class SamplesResource(BaseResource):
             sample = mascope.samples.get(sample_id)
             mascope.samples.update(sample_id, {**sample, "sample_item_name": "Blank 1"})
 
+        An ingested sample's type is ``ACQUISITION``, which only the system
+        sets, and the route refuses a sample that carries it: change
+        ``sample_item_type`` to a user type in the same call.
+
         :param sample_id: The sample.
         :type sample_id: str
         :param sample_item: The sample's fields, as :meth:`get` returns them.

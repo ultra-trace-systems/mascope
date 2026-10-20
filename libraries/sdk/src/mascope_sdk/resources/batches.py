@@ -198,6 +198,7 @@ class BatchesResource(BaseResource):
 
         The copy runs in the background on the server: the call returns when
         it has started, and the new batch appears in :meth:`list` once done.
+        A locked dataset takes no copy, whatever the caller's role.
 
         :param batch_id: The batch to copy.
         :type batch_id: str
@@ -210,7 +211,7 @@ class BatchesResource(BaseResource):
         :return: The server's ``message`` and the task's ``process_id``.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the editor role on the batch
-            and on the destination dataset.
+            and on the destination dataset, or if that dataset is locked.
         """
         body: dict[str, Any] = {"dataset_id": dataset_id, "sample_batch_name": name}
         if description is not None:
@@ -222,7 +223,8 @@ class BatchesResource(BaseResource):
                 "copy",
                 "batch",
                 batch_id,
-                f"editor on the batch and on dataset '{dataset_id}'",
+                f"editor on the batch and on dataset '{dataset_id}'"
+                " (a locked dataset: none)",
             ),
             data=body,
         )

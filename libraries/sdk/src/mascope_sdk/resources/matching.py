@@ -158,7 +158,8 @@ class MatchingResource(BaseResource):
         :param match_params: Filter parameters, as for :meth:`match_compound`.
         :type match_params: dict[str, Any], optional
         :return: ``match_ions``, ``match_compounds``, ``match_collections`` and
-            ``match_samples``, each a list of match records.
+            ``match_samples``, each a list of match records; an empty dict
+            when nothing matched.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the guest role on the sample.
         """
@@ -186,7 +187,8 @@ class MatchingResource(BaseResource):
         :param match_params: Filter parameters, as for :meth:`match_compound`.
         :type match_params: dict[str, Any], optional
         :return: ``match_ions``, ``match_compounds``, ``match_collections`` and
-            ``match_samples``, each a list of match records.
+            ``match_samples``, each a list of match records; an empty dict
+            when nothing matched.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the guest role on the batch.
         """
@@ -202,13 +204,12 @@ class MatchingResource(BaseResource):
         sample_id: str,
         target_ion_id: str | None = None,
         match_params: dict[str, Any] | None = None,
-        *,
-        match_ions: bool | None = None,
-        match_compounds: bool | None = None,
-        match_collections: bool | None = None,
-        match_samples: bool | None = None,
     ) -> dict[str, Any]:
         """Run the matching of a sample and save the matches it finds.
+
+        Every level is saved: ions, compounds, collections and the sample.
+        Unlike the batch saves, the sample's route takes no flags to leave
+        one out.
 
         :param sample_id: The sample.
         :type sample_id: str
@@ -216,15 +217,6 @@ class MatchingResource(BaseResource):
         :type target_ion_id: str, optional
         :param match_params: Filter parameters, as for :meth:`match_compound`.
         :type match_params: dict[str, Any], optional
-        :param match_ions: False to leave out the ion matches; the server
-            saves every level unless told otherwise.
-        :type match_ions: bool, optional
-        :param match_compounds: False to leave out the compound matches.
-        :type match_compounds: bool, optional
-        :param match_collections: False to leave out the collection matches.
-        :type match_collections: bool, optional
-        :param match_samples: False to leave out the sample matches.
-        :type match_samples: bool, optional
         :return: The server's ``status`` and ``message``.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the editor role on the sample.
@@ -233,14 +225,7 @@ class MatchingResource(BaseResource):
             "POST",
             f"match/aggregate/sample/{sample_id}/save",
             Needs("save the matches of", "sample", sample_id, "editor on the sample"),
-            data=_aggregate_body(
-                target_ion_id,
-                match_params,
-                match_ions=match_ions,
-                match_compounds=match_compounds,
-                match_collections=match_collections,
-                match_samples=match_samples,
-            ),
+            data=_aggregate_body(target_ion_id, match_params),
         )
 
     def save_batch(
@@ -262,10 +247,15 @@ class MatchingResource(BaseResource):
         :type target_ion_id: str, optional
         :param match_params: Filter parameters, as for :meth:`match_compound`.
         :type match_params: dict[str, Any], optional
-        :param match_ions: As for :meth:`save_sample`, and the other levels
-            likewise: ``match_compounds``, ``match_collections``,
-            ``match_samples``.
+        :param match_ions: False to leave out the ion matches; the server
+            saves every level unless told otherwise.
         :type match_ions: bool, optional
+        :param match_compounds: False to leave out the compound matches.
+        :type match_compounds: bool, optional
+        :param match_collections: False to leave out the collection matches.
+        :type match_collections: bool, optional
+        :param match_samples: False to leave out the sample matches.
+        :type match_samples: bool, optional
         :return: The server's ``status`` and ``message``.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the editor role on the batch.
@@ -305,7 +295,7 @@ class MatchingResource(BaseResource):
         :type target_ion_id: str, optional
         :param match_params: Filter parameters, as for :meth:`match_compound`.
         :type match_params: dict[str, Any], optional
-        :param match_ions: As for :meth:`save_sample`, and the other levels
+        :param match_ions: As for :meth:`save_batch`, and the other levels
             likewise: ``match_compounds``, ``match_collections``,
             ``match_samples``.
         :type match_ions: bool, optional
