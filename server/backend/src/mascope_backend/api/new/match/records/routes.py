@@ -149,7 +149,7 @@ async def get_match_ion_records_route(
 
 
 @match_records_router.post("/ion/series", response_model=MatchRecordsResponse)
-@api_route()
+@api_route(token_access=True)
 async def get_match_ion_series_route(
     body: MatchIonSeriesBody, user: User = Depends(current_active_user)
 ) -> MatchRecordsResponse:

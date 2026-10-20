@@ -150,7 +150,7 @@ class BatchPeakRecordsResponse(BaseModel):
 
 
 @batch_peaks_router.post("/records/series", response_model=BatchPeakRecordsResponse)
-@api_route()
+@api_route(token_access=True)
 async def get_batch_peak_series_route(
     body: BatchPeakSeriesBody, user: User = Depends(current_active_user)
 ) -> BatchPeakRecordsResponse:
