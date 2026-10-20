@@ -13,7 +13,6 @@ class Ms2Dashboard:
     def __init__(self, data: DataExtractor, compositions: CompositionMap):
         self._data = data
         self._compositions = compositions
-        self._half_iso = data.isolation_width / 2
 
         # Build dropdown options. One entry per group, not per precursor: a
         # stepped-energy acquisition measures one precursor at several
@@ -124,12 +123,12 @@ class Ms2Dashboard:
         group = self._parent_dropdown.value
         pp = group.parent_peak_mz
         d = self._data
-        half_iso = self._half_iso
+        # A group's own: the events of a targeted method may differ.
+        isolation_width = d.isolation_widths[group]
+        half_iso = isolation_width / 2
 
         # --- Info label ---
-        self._info_label.value = (
-            f"&emsp; <b>Isolation width:</b> {d.isolation_width} m/z"
-        )
+        self._info_label.value = f"&emsp; <b>Isolation width:</b> {isolation_width} m/z"
 
         # --- Composition data (needed by both MS1 and MS2 charts) ---
         ms2_spec = d.ms2_spectra[group]

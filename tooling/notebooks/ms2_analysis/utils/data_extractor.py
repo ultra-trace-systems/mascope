@@ -88,10 +88,10 @@ class DataExtractor:
                 "groups, so it predates grouping by collision energy. Upgrade "
                 "the server, or use a toolkit matching its version."
             )
-        if not summary_groups or isolation_width is None:
+        if not summary_groups:
             raise ValueError(
                 "No MS2 scans were found for the sample; MS2 analysis requires "
-                "at least one parent peak group and a valid isolation width."
+                "at least one parent peak group."
             )
 
         self.groups = [
@@ -99,7 +99,25 @@ class DataExtractor:
             for g in summary_groups
         ]
         self.parent_peaks = np.array(summary.get("parent_peaks", []))
+        # The width every scan shares, or None when the events of a targeted
+        # method isolate with different widths.
         self.isolation_width = isolation_width
+        # Each group's own width. A server older than per-group widths gives
+        # only the file's one width, so that stands in for every group; so it
+        # does for a group whose scans store no numeric width, which the server
+        # sends as null. The file's width is None when the groups disagree, so
+        # it never stands in for a width of its own.
+        self.isolation_widths: dict[Ms2Group, float] = {}
+        for group, g in zip(self.groups, summary_groups, strict=True):
+            width = g.get("isolation_width")
+            if width is None:
+                width = isolation_width
+            if width is None:
+                raise ValueError(
+                    f"The MS2 scans of {group} store no single isolation width; "
+                    "MS2 analysis requires a valid isolation width per group."
+                )
+            self.isolation_widths[group] = width
         # Keyed per group, not per precursor: a stepped-energy acquisition uses
         # a different collision energy in each of its groups.
         self.hcd_energy_map: dict[Ms2Group, list[float]] = {
@@ -193,10 +211,12 @@ class DataExtractor:
             if mz.size == 0 or intensity.size == 0:
                 self._ms1_isolation_tic = {group: float("nan") for group in self.groups}
                 return self._ms1_isolation_tic
-            half_iso = self.isolation_width / 2
             self._ms1_isolation_tic = {
                 group: float(
-                    intensity[np.abs(mz - group.parent_peak_mz) <= half_iso].sum()
+                    intensity[
+                        np.abs(mz - group.parent_peak_mz)
+                        <= self.isolation_widths[group] / 2
+                    ].sum()
                 )
                 for group in self.groups
             }
