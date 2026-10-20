@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
 from collections.abc import Iterable
@@ -54,7 +53,12 @@ from typing import NamedTuple
 
 import numpy as np
 
-from mascope_thermo.backend import ReaderBackend, _sample_evenly, open_backend
+from mascope_thermo.backend import (
+    ReaderBackend,
+    _sample_evenly,
+    open_backend,
+    trailer_float,
+)
 from mascope_thermo.scan_filter import ScanFilter, parse_scan_filter
 
 
@@ -334,15 +338,13 @@ def _setting(stream: dict, name: str) -> float | None:
 
     The value the stream's sampled scans agree on (``acquisition_params``).
     A reader reports it as a number or as text, by backend, and it is a
-    number here either way. A setting that varied among the scans sampled is
-    listed by name only, and reads as unknown like one no trailer carried.
+    number here either way, also in text a server captured in its own
+    regional format (:func:`~mascope_thermo.backend.trailer_float`). A
+    setting that varied among the scans sampled is listed by name only, and
+    reads as unknown like one no trailer carried.
     """
     constant = (stream.get("acquisition_params") or {}).get("constant") or {}
-    try:
-        value = float(constant.get(name))
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) else None
+    return trailer_float(constant.get(name))
 
 
 def microscans(stream: dict) -> float | None:
