@@ -46,6 +46,7 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
     get_sample_file_metadata,
     get_sample_file_peak_timeseries,
     get_sample_file_peaks,
+    get_sample_file_raw,
     get_sample_file_scans,
     get_sample_file_spectrum,
     get_sample_files,
@@ -55,6 +56,7 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
     upload_sample_files,
 )
 from mascope_backend.api.lib.api_features import api_route
+from mascope_backend.api.lib.rate_limit import enforce_user_rate_limit
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     BindSampleFilesBody,
     DeleteSampleFilesBody,
@@ -423,6 +425,24 @@ async def get_sample_file_scans_route(
     none is left out. No peak is read, so the response stays small and quick
     for a file whose centroids run to hundreds of megabytes.
 
+    `stats_per_file` also says which mass calibration the file was acquired
+    on, for every scan of the file whatever the filters keep:
+
+    - `calibrations`, per stream key: the median `b` and `c` of the trailer's
+      Conversion Parameters B and C, `c_over_b2` (C/B², the median, with
+      `c_over_b2_min` and `c_over_b2_max`) and `scans`, the scans counted.
+      C/B² is fixed by the calibration: within one it spreads by about
+      2e-13, and two differ by 1.3e-10 or more. Files share a calibration
+      when their C/B² agree **to within 1e-11**; compare the numbers with that
+      tolerance, never as printed digits, which can round the files of one
+      calibration apart. Grouping files is the client's.
+    - `calibration_status`, where the reader gives the instrument's status
+      log: for `first_scan` and `last_scan`, the `overdue` mass calibrations
+      the log names (`polarity`, and `calibrated`, the time of the
+      calibration in the instrument's local time, as recorded). The
+      instrument names one once it is older than 25 h, so an empty list says
+      none was. Left out when the reader gives no status log.
+
     :param sample_file_id: ID of the sample file.
     :param query_params: Which scans to describe, and which entries of each.
     :param user: Authenticated user.
@@ -430,6 +450,48 @@ async def get_sample_file_scans_route(
     """
     await check_sample_file_instrument_access(sample_file_id, user, "guest")
     return await get_sample_file_scans(sample_file_id, **query_params.model_dump())
+
+
+#: How many source files one account may download per window. A file runs to
+#: hundreds of megabytes, so a client looping over every id it holds is held
+#: to a pace a shared server can carry; a client working through a batch one
+#: file at a time stays well under it. Counted in Redis, so the limit holds
+#: across workers.
+RAW_DOWNLOADS_PER_WINDOW = 60
+RAW_DOWNLOAD_WINDOW_SECONDS = 600
+
+
+@sample_files_router.get("/{sample_file_id}/raw")
+@api_route(token_access=True)
+async def get_sample_file_raw_route(
+    sample_file_id: str,
+    user=Depends(current_active_user),
+):
+    """
+    Download the source data file of a sample file: the Orbitrap `.raw` or
+    the TOF `.h5` it was converted from, byte for byte as it is stored.
+
+    The file is streamed from the filestore with its `Content-Length`, under
+    the name it was uploaded with (`Content-Disposition`). A sample file that
+    keeps no source file - only its converted data is left - answers 404.
+    Each account may start at most 60 downloads in ten minutes; past that
+    the route answers 429.
+
+    `POST /api/file/download` remains the web app's way to fetch one or
+    several files at once.
+
+    :param sample_file_id: ID of the sample file.
+    :param user: Authenticated user.
+    :return: The source data file.
+    """
+    await enforce_user_rate_limit(
+        user.id,
+        times=RAW_DOWNLOADS_PER_WINDOW,
+        seconds=RAW_DOWNLOAD_WINDOW_SECONDS,
+        scope="sample-file-raw",
+    )
+    await check_sample_file_instrument_access(sample_file_id, user, "guest")
+    return await get_sample_file_raw(sample_file_id)
 
 
 @sample_files_router.post("/{sample_file_id}/process")
@@ -816,6 +878,7 @@ def get_upload_handler(
             access_token=access_token,
             device_id=_request_device_id(request),
             instrument_timezone=metadata.get("timezone"),
+            browser_timezone=metadata.get("browser_timezone"),
             source_filename=source_filename,
             acquisition=acquisition,
             sha256=sha256,

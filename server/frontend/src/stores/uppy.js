@@ -11,6 +11,7 @@ import { TOKENLESS_UPLOADS, useServer } from './server'
 import { useUi } from './ui'
 
 import { api } from '@/api'
+import { browserTimezone } from '@/lib/browserTimezone'
 import { maxUploadBytes } from '@/lib/features'
 import { hasIonizationToken } from '@/lib/ionizationModes'
 import { runtime } from '@/lib/runtime.js'
@@ -65,6 +66,24 @@ export const useUppy = defineStore('app.uppy', () => {
       maxFileSize: maxUploadBytes,
       maxNumberOfFiles: 1000
     },
+    // The zone the acquisition times of these files are read in, as a File
+    // Agent sends its machine's: set on each file as its upload starts, not
+    // in the global meta at app start, since a tab stays open for days and
+    // the machine's zone can change under it - and a zone the browser stops
+    // naming must stop being sent, which a global meta never clears. The
+    // server ranks it below an agent's zone and above its own guess, and
+    // records it as the browser's, since the browser is wherever the person
+    // uploading sits. Nothing is sent when the browser names no geographic
+    // zone, and the server then falls back as before.
+    onBeforeUpload: (files) => {
+      const zone = browserTimezone()
+      return Object.fromEntries(
+        Object.entries(files).map(([id, file]) => {
+          const { browser_timezone: _stale, ...meta } = file.meta
+          return [id, { ...file, meta: zone ? { ...meta, browser_timezone: zone } : meta }]
+        })
+      )
+    },
     onBeforeFileAdded: (currentFile) => {
       let isValid = validateFile(currentFile)
       if (!isValid) {
@@ -84,6 +103,12 @@ export const useUppy = defineStore('app.uppy', () => {
     // which aborts request bodies over ~25 MB behind Cloudflare - that
     // bug is why this used to be 5 MiB.
     chunkSize: 20 * 1024 * 1024,
+    // Every meta field a file carries goes to the server, which reads
+    // `instrument` and `browser_timezone` off the upload's metadata. The
+    // default, written out because the alternative looks safer and is not:
+    // a list of names sends each name whether the file carries it or not,
+    // an absent one as the string "undefined".
+    allowedMetaFields: true,
     withCredentials: true,
     removeFingerprintOnSuccess: true,
     limit: 1, // Upload files sequentially, one by one

@@ -38,15 +38,17 @@ async def get_jwt_from_cookies(cookies: str) -> str:
 
 async def validate_jwt_token(jwt_token: str):
     """
-    Validate JWT token and return associated user.
+    Validate JWT token and return associated user and the token's issue time.
 
     Verifies the provided JWT token using the configured authentication strategy
-    and retrieves the associated user from the database.
+    and retrieves the associated user from the database. A token whose session
+    has been revoked is refused here as it is on the REST API.
 
     :param jwt_token: JWT token string from client cookie
     :type jwt_token: str
-    :return: User instance if token is valid, None otherwise
-    :rtype: Optional[User]
+    :return: ``(user, iat)``; ``iat`` is ``None`` for a token minted before
+        tokens carried one
+    :rtype: tuple[User, Optional[int]]
     """
     try:
         # Step 1. Basic token format validation
@@ -64,12 +66,12 @@ async def validate_jwt_token(jwt_token: str):
         jwt_strategy = auth_backend_jwt.get_strategy()
 
         async with get_user_manager_context() as user_manager:
-            user = await jwt_strategy.read_token(jwt_token, user_manager)
-            if not user:
+            session = await jwt_strategy.read_session(jwt_token, user_manager)
+            if not session:
                 raise SocketUnauthenticatedError(
-                    "Token validation failed: user not found"
+                    "Token validation failed: user not found or session revoked"
                 )
-            return user
+            return session
     except SocketUnauthenticatedError:
         raise
     except Exception as e:

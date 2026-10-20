@@ -5,6 +5,7 @@ This module defines all database models including user management, datasets,
 samples, targets, and analysis matches.
 """
 
+import hashlib
 from datetime import datetime as dt
 from datetime import timezone
 from functools import lru_cache
@@ -12,9 +13,6 @@ from typing import Optional
 
 from fastapi_users.db import (
     SQLAlchemyBaseUserTable,
-)
-from fastapi_users_db_sqlalchemy.access_token import (
-    SQLAlchemyBaseAccessTokenTable,
 )
 from sqlalchemy import (
     JSON,
@@ -246,6 +244,14 @@ class User(SQLAlchemyBaseUserTable[int], Base):
     password_changed_at: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    # Web sessions issued before this moment are refused. Stamped by an account
+    # disable, the forced-password-change sweep and sign-out-everywhere; a
+    # password change ends sessions through password_changed_at instead, and the
+    # later of the two is the cutoff (see api/new/auth/sessions.py). NULL means
+    # nothing has revoked this account's sessions.
+    sessions_revoked_at: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
     # TOTP seed, encrypted at rest with the deployment's MFA key (see
     # api/new/auth/mfa/secrets.py). NULL when the account has never begun
@@ -316,15 +322,35 @@ class Role(Base):
     user = relationship("User", back_populates="role")
 
 
-class AccessToken(SQLAlchemyBaseAccessTokenTable[int], Base):
+def hash_access_token(token: str) -> str:
+    """
+    The digest an access token is stored and looked up by.
+
+    A plain SHA-256, as for recovery codes: the token is a random secret the
+    server generates, so there is no brute-force margin a slow or keyed hash
+    would buy, and a digest keeps the lookup an indexed equality.
+
+    :param token: The token as its holder presents it.
+    :type token: str
+    :return: The hex digest, 64 characters.
+    :rtype: str
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+class AccessToken(Base):
     """
     AccessToken model for storing access tokens linked to user accounts.
     Supports different services for authentication.
+
+    Only a digest of the token is kept (:func:`hash_access_token`), so a copy
+    of the table hands out no credential: the token itself is shown once, to
+    whoever it is minted for, and every lookup hashes the presented value.
     """
 
     __tablename__ = "access_token"
 
-    token: Mapped[str] = mapped_column(String(length=43), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(length=64), primary_key=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("user.id", ondelete="CASCADE"), nullable=False
     )
@@ -627,6 +653,22 @@ class Dataset(Base):
     dataset_utc_created: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
     dataset_utc_modified: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
 
+    # Descriptive metadata (FAIR F2, R1.1), all optional: nothing may refuse a
+    # dataset for metadata its user does not have. `license` is the dataset's
+    # own data licence as free text (an SPDX id such as CC-BY-4.0, or
+    # "proprietary"), not the `reference_licenses` gate on mirrored sources.
+    # The lists are JSON rather than child tables: small, always read with the
+    # dataset, never queried relationally. Shapes, validated by the API models:
+    #   authors:             [{"name", "orcid", "affiliation"}], in author order
+    #   keywords:            [str]
+    #   related_identifiers: [{"identifier", "relation", "identifier_type"}]
+    #   funding:             [{"funder", "award"}]
+    license: Mapped[Optional[str]] = mapped_column(String(64))
+    authors: Mapped[Optional[list]] = mapped_column(JSON)
+    keywords: Mapped[Optional[list]] = mapped_column(JSON)
+    related_identifiers: Mapped[Optional[list]] = mapped_column(JSON)
+    funding: Mapped[Optional[list]] = mapped_column(JSON)
+
     # Relationships
     workspace = relationship("Workspace", back_populates="datasets")
     sample_batch = relationship(
@@ -681,6 +723,55 @@ class Dataset(Base):
             func.lower(func.btrim(dataset_name)),
             unique=True,
             postgresql_where=text("dataset_type <> 'ACQUISITION'"),
+        ),
+    )
+
+
+class DatasetTombstone(Base):
+    """What a deleted dataset was, kept after its data is gone (FAIR A2).
+
+    One row per deleted dataset, keyed by its original id and written in the
+    same transaction as the delete, by both paths that delete datasets: the
+    dataset controller (``deleted_via='dataset'``) and workspace deletion,
+    which removes its datasets by cascade (``deleted_via='workspace'``). A
+    dataset restored from a dump and deleted again overwrites its earlier row.
+
+    Every column is a snapshot as the dataset stood, and the table has no
+    foreign keys and no relationships on purpose: a row has to outlive the
+    dataset, its workspace and the user who deleted it. ``deleted_by`` is
+    therefore the acting user's email as plain text, not a user id.
+
+    Raw SQL and restored dumps bypass the controllers and so write no
+    tombstone, as they bypass every other controller rule; a trigger would be
+    the database-level answer and is not worth its weight here.
+    """
+
+    __tablename__ = "dataset_tombstone"
+
+    dataset_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    workspace_id: Mapped[Optional[str]] = mapped_column(String(16))
+    workspace_name: Mapped[Optional[str]] = mapped_column(String(256))
+    dataset_name: Mapped[Optional[str]] = mapped_column(String(256))
+    dataset_description: Mapped[Optional[str]] = mapped_column(Text)
+    dataset_type: Mapped[Optional[str]] = mapped_column(String(64))
+    instrument: Mapped[Optional[str]] = mapped_column(String(64))
+    # The five descriptive fields of `Dataset` as one object:
+    # {license, authors, keywords, related_identifiers, funding}.
+    descriptive_metadata: Mapped[Optional[dict]] = mapped_column(JSON)
+    n_sample_batches: Mapped[Optional[int]] = mapped_column(Integer)
+    n_sample_items: Mapped[Optional[int]] = mapped_column(Integer)
+    n_sample_files: Mapped[Optional[int]] = mapped_column(Integer)
+    dataset_utc_created: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
+    dataset_utc_modified: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
+    deleted_utc: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
+    deleted_by: Mapped[Optional[str]] = mapped_column(Text)
+    deleted_via: Mapped[str] = mapped_column(String(16))
+    # build_provenance() at delete time: the build that deleted.
+    provenance: Mapped[Optional[dict]] = mapped_column(JSON)
+
+    __table_args__ = (
+        CheckConstraint(
+            "deleted_via IN ('dataset', 'workspace')", name="deleted_via_known"
         ),
     )
 
@@ -851,10 +942,13 @@ class SampleFile(Base):
         index=True,
     )
     # How datetime_utc was derived from the instrument-local datetime:
-    # the IANA zone the uploading agent reported (NULL when none was sent),
-    # and which source determined the applied offset - "file" (an offset
-    # embedded in the raw file), "agent" (the reported zone), or "guess"
-    # (the converter host's own clock, the legacy fallback).
+    # the IANA zone the upload reported - the agent's for the instrument PC,
+    # else the browser's for a web upload (NULL when none was sent) - and
+    # which source determined the applied offset: "file" (an offset embedded
+    # in the raw file), "agent" (the zone the agent reported), "browser" (the
+    # zone of the browser a web upload came from, a weaker hint, since that
+    # machine may stand anywhere), or "guess" (the converter host's own
+    # clock, the legacy fallback).
     acquisition_timezone: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )
@@ -925,6 +1019,24 @@ class SampleFile(Base):
     processing_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     processing_updated_utc: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
+    )
+
+    # The Raw files list (`get_sample_files`): a look-back on acquisition time,
+    # of every instrument or one, or on when processing was last recorded,
+    # paged newest or oldest first. The controller orders by the time and
+    # then the id, both in the sort's direction and with no NULLS LAST on this
+    # NOT NULL column, so the two acquisition-time indexes give a page read
+    # forwards or backwards instead of sorting every row the look-back keeps.
+    # The order and these indexes change together.
+    __table_args__ = (
+        Index("ix_sample_file_datetime_utc", datetime_utc, sample_file_id),
+        Index(
+            "ix_sample_file_instrument_datetime_utc",
+            instrument,
+            datetime_utc,
+            sample_file_id,
+        ),
+        Index("ix_sample_file_processing_updated_utc", processing_updated_utc),
     )
 
     def to_dict(self):
@@ -1457,6 +1569,14 @@ class TargetCompound(Base):
     target_compound_name: Mapped[Optional[str]] = mapped_column(Text)
     target_compound_formula: Mapped[str] = mapped_column(String(256))
     cas_number: Mapped[Optional[str]] = mapped_column(String(12))
+    # Structure identity (FAIR I3), all optional. `inchikey` is the link to
+    # reference chemistry - matched against `reference_compound.inchikey`, the
+    # cross-source key, at query time. There is deliberately no FK to a
+    # reference row: every ingest replaces those rows with new ids, and a
+    # prune deletes the old ones.
+    inchikey: Mapped[Optional[str]] = mapped_column(String(27), index=True)
+    inchi: Mapped[Optional[str]] = mapped_column(Text)
+    smiles: Mapped[Optional[str]] = mapped_column(Text)
 
     # Relationships
     target_collection = relationship(
@@ -3140,6 +3260,7 @@ __all__ = [
     "User",
     "Role",
     "AccessToken",
+    "hash_access_token",
     "UserRecoveryCode",
     "Notification",
     "NotificationFile",

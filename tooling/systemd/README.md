@@ -10,7 +10,7 @@ operations story see [docs/maintaining.md](../../docs/maintaining.md).
 | `mascope.service` | `mascope.service` | yes | Bring the stack up on boot (`prod up --detach`) / down on stop. |
 | `mascope-update.service` | `mascope-update.service` | no (oneshot, run by the timer) | One unattended update pass (`prod update --auto`). |
 | `mascope-update.timer` | `mascope-update.timer` | **no - opt-in** | Fire the update service nightly. |
-| `update.env.example` | `/etc/mascope/update.env` (chmod 600) | seeded once | Update window / grace / release token. |
+| `update.env.example` | `/etc/mascope/update.env` (chmod 600) | seeded once | Update window / grace / tracked repository. No credentials: release discovery uses the public GitHub API. |
 | `mascope-disk-check.service` | `mascope-disk-check.service` | no (oneshot, run by the timer) | One disk-space check (`tooling/disk-check.sh`). |
 | `mascope-disk-check.timer` | `mascope-disk-check.timer` | **yes - on by default** | Fire the disk check every 15 minutes. |
 | (see `tooling/disk-check.env.example`) | `/etc/mascope/disk-check.env` (chmod 600) | seeded once | Disk thresholds + optional alert URL. |
@@ -64,19 +64,42 @@ mascope prod update --snooze 7     # postpone it 7 days
 
 A full disk is the one failure that takes the stack down *and* can corrupt
 Postgres on the way - so unlike auto-updates, the disk check is **enabled by
-default**. Every 15 minutes (cheap, read-only) `mascope-disk-check.timer` runs
-`tooling/disk-check.sh`, which alerts when any monitored filesystem drops below
+default**. Every 15 minutes (cheap, and deleting nothing)
+`mascope-disk-check.timer` runs `tooling/disk-check.sh`, which measures the
+`.runtime` filesystem, each env's filestore when it is a symlink to a volume
+of its own, and docker's image store, and alerts when any of them drops below
 **either** threshold:
 
 - `MIN_FREE_GB` (default 10) - absolute floor, the "about to crash" signal;
 - `MIN_FREE_PCT` (default 10) - percentage floor, the earlier warning (set `0`
   to disable on very large disks).
 
-With no configuration it only logs to the journal; set `HEALTHCHECK_URL` in
-`/etc/mascope/disk-check.env` to get paged before the disk fills. The service
-treats exit 1 ("a filesystem is low") as expected, so systemd does not pile a
-`failed` unit on top of an alert the operator is already handling. Full
-operator docs: [docs/maintaining.md](../../docs/maintaining.md) -> Disk space.
+It also warns when a filesystem is **filling fast enough to reach that floor
+within `MIN_DAYS_TO_FLOOR` days** (default 30; `0` disables). Each run appends
+the free space to `$MASCOPE_PATH/.runtime/disk-check/history.tsv` (kept to 60
+days, written under a lock so overlapping runs cannot lose a sample), fits
+GiB/day over the last 7 and 30 days, and logs the rates and the projection on
+every line:
+
+```
+[disk-check] FILLING: state (.runtime) (/) has 400.0 GiB / 40% free; rate +19.0 GiB/day (7d), +18.6 GiB/day (30d); 100.0 GiB floor in ~16 days, full in ~21 days (warns under 30 days)
+```
+
+Rates start after a day of history. `mascope prod doctor` reads the same
+history file for its own projection.
+
+With no configuration it only logs to the journal. Set `HEALTHCHECK_URL` in
+`/etc/mascope/disk-check.env` to get paged when a filesystem is below the
+floor, and `HEALTHCHECK_FILLING_URL` - a **second** check - to get paged for
+the fill-rate warning, down while a filesystem is projected to reach the floor
+or is below it. They are kept apart because healthchecks.io notifies on
+a change of state: one check already down for the warning would say nothing
+when the floor is actually crossed. Without the second check the warning is
+journalled and recorded as a `/log` event on the first, which notifies no one.
+The service treats exit 1 (a filesystem is low or filling) as expected, so
+systemd does not pile a `failed` unit on top of an alert the operator is
+already handling. Full operator docs:
+[docs/maintaining.md](../../docs/maintaining.md) -> Disk space.
 
 ## The assignment-run retention pass
 
@@ -100,6 +123,7 @@ assignment runs.
 systemctl list-timers mascope-update.timer mascope-disk-check.timer mascope-assignment-prune.timer
 journalctl -u mascope-update.service
 journalctl -u mascope-disk-check.service         # disk check history
+cat "$MASCOPE_PATH/.runtime/disk-check/history.tsv"  # free-space samples behind the fill rate
 journalctl -u mascope-assignment-prune.service   # retention pass history
 cat "$MASCOPE_PATH/.runtime/update/status.log"   # applied / pending history
 cat "$MASCOPE_PATH/.runtime/update/state.json"   # the current pending update

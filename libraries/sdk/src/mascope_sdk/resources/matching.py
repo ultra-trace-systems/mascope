@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from ._base import BaseResource
+from ._base import BaseResource, Needs
 
 
 class MatchingResource(BaseResource):
@@ -29,6 +29,10 @@ class MatchingResource(BaseResource):
             sample_id="sample-123",
             formulas=["C6H12O6", "C12H22O11"],
         )
+
+        # Run a batch's matching, then save what it found
+        preview = mascope.matching.aggregate_batch("batch-456")
+        mascope.matching.save_batch("batch-456")
     """
 
     def match_compound(
@@ -136,3 +140,195 @@ class MatchingResource(BaseResource):
             body["ion_mechanism_ids"] = ionization_mechanism_ids
 
         return self._post(f"match/aggregate/sample/{sample_id}/compounds", data=body)
+
+    def aggregate_sample(
+        self,
+        sample_id: str,
+        target_ion_id: str | None = None,
+        match_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run the matching of a sample against its batch's collections.
+
+        Nothing is saved: this shows what :meth:`save_sample` would save.
+
+        :param sample_id: The sample.
+        :type sample_id: str
+        :param target_ion_id: Only this target ion.
+        :type target_ion_id: str, optional
+        :param match_params: Filter parameters, as for :meth:`match_compound`.
+        :type match_params: dict[str, Any], optional
+        :return: ``match_ions``, ``match_compounds``, ``match_collections`` and
+            ``match_samples``, each a list of match records; an empty dict
+            when nothing matched.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the guest role on the sample.
+        """
+        return self._write(
+            "POST",
+            f"match/aggregate/sample/{sample_id}",
+            Needs("run matching on", "sample", sample_id, "guest on the sample"),
+            data=_aggregate_body(target_ion_id, match_params),
+        )
+
+    def aggregate_batch(
+        self,
+        batch_id: str,
+        target_ion_id: str | None = None,
+        match_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run the matching of a batch's samples against its collections.
+
+        Nothing is saved: this shows what :meth:`save_batch` would save.
+
+        :param batch_id: The batch.
+        :type batch_id: str
+        :param target_ion_id: Only this target ion.
+        :type target_ion_id: str, optional
+        :param match_params: Filter parameters, as for :meth:`match_compound`.
+        :type match_params: dict[str, Any], optional
+        :return: ``match_ions``, ``match_compounds``, ``match_collections`` and
+            ``match_samples``, each a list of match records; an empty dict
+            when nothing matched.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the guest role on the batch.
+        """
+        return self._write(
+            "POST",
+            f"match/aggregate/batch/{batch_id}",
+            Needs("run matching on", "batch", batch_id, "guest on the batch"),
+            data=_aggregate_body(target_ion_id, match_params),
+        )
+
+    def save_sample(
+        self,
+        sample_id: str,
+        target_ion_id: str | None = None,
+        match_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run the matching of a sample and save the matches it finds.
+
+        Every level is saved: ions, compounds, collections and the sample.
+        Unlike the batch saves, the sample's route takes no flags to leave
+        one out.
+
+        :param sample_id: The sample.
+        :type sample_id: str
+        :param target_ion_id: Only this target ion.
+        :type target_ion_id: str, optional
+        :param match_params: Filter parameters, as for :meth:`match_compound`.
+        :type match_params: dict[str, Any], optional
+        :return: The server's ``status`` and ``message``.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the editor role on the sample.
+        """
+        return self._write(
+            "POST",
+            f"match/aggregate/sample/{sample_id}/save",
+            Needs("save the matches of", "sample", sample_id, "editor on the sample"),
+            data=_aggregate_body(target_ion_id, match_params),
+        )
+
+    def save_batch(
+        self,
+        batch_id: str,
+        target_ion_id: str | None = None,
+        match_params: dict[str, Any] | None = None,
+        *,
+        match_ions: bool | None = None,
+        match_compounds: bool | None = None,
+        match_collections: bool | None = None,
+        match_samples: bool | None = None,
+    ) -> dict[str, Any]:
+        """Run the matching of a batch and save the matches it finds.
+
+        :param batch_id: The batch.
+        :type batch_id: str
+        :param target_ion_id: Only this target ion.
+        :type target_ion_id: str, optional
+        :param match_params: Filter parameters, as for :meth:`match_compound`.
+        :type match_params: dict[str, Any], optional
+        :param match_ions: False to leave out the ion matches; the server
+            saves every level unless told otherwise.
+        :type match_ions: bool, optional
+        :param match_compounds: False to leave out the compound matches.
+        :type match_compounds: bool, optional
+        :param match_collections: False to leave out the collection matches.
+        :type match_collections: bool, optional
+        :param match_samples: False to leave out the sample matches.
+        :type match_samples: bool, optional
+        :return: The server's ``status`` and ``message``.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the editor role on the batch.
+        """
+        return self._write(
+            "POST",
+            f"match/aggregate/batch/{batch_id}/save",
+            Needs("save the matches of", "batch", batch_id, "editor on the batch"),
+            data=_aggregate_body(
+                target_ion_id,
+                match_params,
+                match_ions=match_ions,
+                match_compounds=match_compounds,
+                match_collections=match_collections,
+                match_samples=match_samples,
+            ),
+        )
+
+    def resave_batch(
+        self,
+        batch_id: str,
+        target_ion_id: str | None = None,
+        match_params: dict[str, Any] | None = None,
+        *,
+        match_ions: bool | None = None,
+        match_compounds: bool | None = None,
+        match_collections: bool | None = None,
+        match_samples: bool | None = None,
+    ) -> dict[str, Any]:
+        """Replace a batch's saved matches with a fresh run's.
+
+        The matches saved before are deleted first. This cannot be undone.
+
+        :param batch_id: The batch.
+        :type batch_id: str
+        :param target_ion_id: Only this target ion.
+        :type target_ion_id: str, optional
+        :param match_params: Filter parameters, as for :meth:`match_compound`.
+        :type match_params: dict[str, Any], optional
+        :param match_ions: As for :meth:`save_batch`, and the other levels
+            likewise: ``match_compounds``, ``match_collections``,
+            ``match_samples``.
+        :type match_ions: bool, optional
+        :return: The server's ``status`` and ``message``.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the editor role on the batch.
+        """
+        return self._write(
+            "POST",
+            f"match/aggregate/batch/{batch_id}/resave",
+            Needs("rebuild the matches of", "batch", batch_id, "editor on the batch"),
+            data=_aggregate_body(
+                target_ion_id,
+                match_params,
+                match_ions=match_ions,
+                match_compounds=match_compounds,
+                match_collections=match_collections,
+                match_samples=match_samples,
+            ),
+        )
+
+
+def _aggregate_body(
+    target_ion_id: str | None,
+    match_params: dict[str, Any] | None,
+    **levels: bool | None,
+) -> dict[str, Any]:
+    """The body of an aggregate run or save: only what the caller gave."""
+    body: dict[str, Any] = {
+        level: value for level, value in levels.items() if value is not None
+    }
+    if target_ion_id is not None:
+        body["target_ion_id"] = target_ion_id
+    if match_params is not None:
+        body["match_params"] = match_params
+    return body

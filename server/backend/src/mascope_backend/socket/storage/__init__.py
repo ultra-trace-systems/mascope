@@ -25,8 +25,12 @@ from mascope_backend.socket.storage.services import (
 )
 from mascope_backend.socket.storage.sessions import (
     clear_user_session,
+    forget_user_socket,
     get_session_user,
+    get_user_socket_sids,
     save_user_session,
+    start_session_renewal,
+    stop_session_renewal,
 )
 
 
@@ -36,6 +40,10 @@ __all__ = [
     "save_user_session",
     "clear_user_session",
     "get_session_user",
+    "get_user_socket_sids",
+    "forget_user_socket",
+    "start_session_renewal",
+    "stop_session_renewal",
     "SocketSessionError",
     "register_service",
     "unregister_service",

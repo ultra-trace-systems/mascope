@@ -11,6 +11,8 @@ import { join } from 'node:path'
 //
 //   - mascope_sdk cannot pair (interactive users copy their token), so it must
 //     stay in the dropdown.
+//   - ai-agent is a person's own token for an AI agent working through the
+//     SDK; it does not pair either, so the dropdown is where it is minted.
 //   - file-agent can pair AND its shipped client only accepts a paired
 //     credential, so a hand-minted token would be unusable - it is hidden.
 //   - instrument-agent is that same client inside an instrument control
@@ -74,6 +76,7 @@ describe('agent token services', () => {
 
     expect(hidden).toEqual(['file-agent', 'instrument-agent'])
     expect(offered).toContain('mascope_sdk')
+    expect(offered).toContain('ai-agent')
     // Their clients cannot pair; removing them would leave no way to issue one.
     expect(offered).toContain('tof-agent')
     expect(offered).toContain('export-agent')

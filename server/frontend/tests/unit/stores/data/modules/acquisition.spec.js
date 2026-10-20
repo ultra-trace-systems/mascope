@@ -140,6 +140,135 @@ describe('acquisition store: the look-back of a status filter', () => {
   })
 })
 
+// The list opens on a week unless the deployment says otherwise, and All time
+// is a range of its own: the range route with neither end.
+describe('acquisition store: the time range', () => {
+  it('opens on the last 7 days when the deployment configures nothing', async () => {
+    const store = useAcquisition()
+    expect(store.time.mode).toBe('Last 7 days')
+
+    await store.load()
+
+    const [url, config] = lastRequest()
+    expect(url).toBe('/sample/files/recent')
+    expect(config.params.days).toBe(7)
+  })
+
+  it('opens on the range the deployment configures instead', async () => {
+    const { runtime } = await import('@/lib/runtime')
+    runtime.config.acquisition_filter = 'Last 24 hours'
+    try {
+      const store = useAcquisition()
+      expect(store.time.mode).toBe('Last 24 hours')
+
+      await store.load()
+      expect(lastRequest()[1].params.days).toBe(1)
+    } finally {
+      delete runtime.config.acquisition_filter
+    }
+  })
+
+  // Any `Last N days` reads, not only the five presets: it is what a
+  // deployment may have configured before the presets were fixed.
+  it('reads a configured look-back that is not a preset', async () => {
+    const { runtime } = await import('@/lib/runtime')
+    runtime.config.acquisition_filter = 'Last 14 days'
+    try {
+      const store = useAcquisition()
+      expect(store.time.mode).toBe('Last 14 days')
+
+      await store.load()
+      expect(lastRequest()[0]).toBe('/sample/files/recent')
+      expect(lastRequest()[1].params.days).toBe(14)
+    } finally {
+      delete runtime.config.acquisition_filter
+    }
+  })
+
+  // A string that names no range would send no request at all, or the recent
+  // route's own one-day default under a label that says otherwise.
+  it('falls back to the default on a configured string it cannot read', async () => {
+    const { runtime } = await import('@/lib/runtime')
+    runtime.config.acquisition_filter = 'all time'
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const store = useAcquisition()
+      expect(store.time.mode).toBe('Last 7 days')
+      expect(warn.mock.calls.flat().join(' ')).toContain("'all time'")
+
+      await store.load()
+      expect(lastRequest()[1].params.days).toBe(7)
+    } finally {
+      delete runtime.config.acquisition_filter
+      warn.mockRestore()
+    }
+  })
+
+  it('asks for every file under All time, through the range route with no bounds', async () => {
+    const store = useAcquisition()
+    store.processingStatus = ['done']
+    await nextTick()
+    api.http.get.mockClear()
+
+    store.setTimeMode('All time')
+    await nextTick()
+
+    expect(api.http.get).toHaveBeenCalledTimes(1)
+    const [url, config] = lastRequest()
+    expect(url).toBe('/sample/files')
+    expect(config.params.datetime_min).toBeUndefined()
+    expect(config.params.datetime_max).toBeUndefined()
+    // The other filters still apply.
+    expect(config.params.processing_status).toEqual(['done'])
+    expect(config.params.page).toBe(0)
+  })
+
+  // The pickers go on showing the ends of a date range a preset replaced, and
+  // editing either would bring the range back; a preset chosen through the
+  // store drops both ends with it.
+  it('leaves an explicit date range behind when a preset is chosen', async () => {
+    const store = useAcquisition()
+    store.time.range.min = new Date('2026-09-01T00:00:00Z')
+    store.time.range.max = new Date('2026-09-30T00:00:00Z')
+    await nextTick()
+    expect(store.time.mode).toBe('range')
+    api.http.get.mockClear()
+
+    // Not the default, so that this proves the preset chosen was kept.
+    store.setTimeMode('Last 90 days')
+    await nextTick()
+
+    expect(store.time.mode).toBe('Last 90 days')
+    expect(store.time.range.min).toBeNull()
+    expect(store.time.range.max).toBeNull()
+    expect(api.http.get).toHaveBeenCalledTimes(1)
+    const [url, config] = lastRequest()
+    expect(url).toBe('/sample/files/recent')
+    expect(config.params.days).toBe(90)
+  })
+
+  it('falls back to the default preset when both ends of a range are cleared', async () => {
+    const store = useAcquisition()
+    store.time.range.min = new Date('2026-09-01T00:00:00Z')
+    await nextTick()
+
+    store.time.range.min = null
+    await nextTick()
+
+    expect(store.time.mode).toBe('Last 7 days')
+  })
+
+  it('goes back to the default preset with the other filters', async () => {
+    const store = useAcquisition()
+    store.setTimeMode('All time')
+    await nextTick()
+
+    store.resetFilters()
+
+    expect(store.time.mode).toBe('Last 7 days')
+  })
+})
+
 const handler = (event) => api.socket.on.mock.calls.find(([name]) => name === event)[1]
 const row = (id, status) => ({
   sample_file_id: id,
@@ -147,6 +276,126 @@ const row = (id, status) => ({
   processing_status: status
 })
 const answer = (...rows) => ({ data: { data: rows, results: rows.length } })
+
+// The debounce behind a server-event refresh, with room to spare.
+const RELOAD_WAIT_AND_SOME_MS = 400
+
+// The pane has to tell an empty answer from no answer yet, and from a request
+// that failed: only the first earns the empty state and its offer to widen
+// the range.
+describe('acquisition store: whether the list has an answer', () => {
+  it('starts with none, and is pending while a request is out', async () => {
+    const store = useAcquisition()
+    expect(store.loaded).toBe(false)
+    expect(store.pending).toBe(false)
+    expect(store.loadError).toBeNull()
+
+    let settle
+    api.http.get.mockImplementationOnce(() => new Promise((resolve) => (settle = resolve)))
+    const loading = store.load()
+    expect(store.pending).toBe(true)
+
+    settle(answer(row('sf-1', 'done')))
+    await loading
+    expect(store.pending).toBe(false)
+    expect(store.loaded).toBe(true)
+    expect(store.loadError).toBeNull()
+  })
+
+  it('is not loaded after a first request that failed, until one succeeds', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const store = useAcquisition()
+    api.http.get.mockRejectedValueOnce(new Error('offline'))
+
+    await store.load()
+    expect(store.loaded).toBe(false)
+    expect(store.pending).toBe(false)
+    expect(store.loadError).toBeInstanceOf(Error)
+
+    api.http.get.mockResolvedValueOnce(answer())
+    await store.load()
+    expect(store.loaded).toBe(true)
+    expect(store.loadError).toBeNull()
+    error.mockRestore()
+  })
+
+  it('keeps the list it has and says why when a later request fails', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const store = useAcquisition()
+    api.http.get.mockResolvedValueOnce(answer(row('sf-1', 'done')))
+    await store.load()
+
+    api.http.get.mockRejectedValueOnce(new Error('offline'))
+    await store.load()
+
+    expect(store.loadError).toBeInstanceOf(Error)
+    expect(store.loaded).toBe(true)
+    expect(store.list).toHaveLength(1)
+    error.mockRestore()
+  })
+
+  // The range route fails the same way as the recent one: under All time or a
+  // date range a failure must still end in the error, not in a spinner that
+  // never goes.
+  it('says why a range load failed too', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const store = useAcquisition()
+    store.setTimeMode('All time')
+    await nextTick()
+
+    api.http.get.mockRejectedValueOnce(new Error('offline'))
+    await store.load()
+    expect(lastRequest()[0]).toBe('/sample/files')
+    expect(store.loadError).toBeInstanceOf(Error)
+    expect(store.pending).toBe(false)
+
+    store.time.range.min = new Date('2026-09-01T00:00:00Z')
+    await nextTick()
+    api.http.get.mockRejectedValueOnce(new Error('offline'))
+    await store.load()
+    expect(store.loadError).toBeInstanceOf(Error)
+    error.mockRestore()
+  })
+
+  // A refresh a server event asks for leaves `pending` down: the list stays
+  // on screen as it is until the answer replaces it, where an empty list
+  // would otherwise flicker into a spinner on every file arriving outside
+  // the range.
+  it('is not pending during a refresh a server event asked for', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = useAcquisition()
+      api.http.get.mockResolvedValueOnce(answer())
+      await store.load()
+      expect(store.loaded).toBe(true)
+      api.http.get.mockClear()
+
+      handler('acquisition_created')({ record: { instrument: 'Orbi-1' } })
+      vi.advanceTimersByTime(RELOAD_WAIT_AND_SOME_MS)
+      expect(api.http.get).toHaveBeenCalledTimes(1)
+      expect(store.pending).toBe(false)
+
+      handler('acquisition_deleted')({ record_id: 'sf-gone' })
+      expect(api.http.get).toHaveBeenCalledTimes(2)
+      expect(store.pending).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('is pending during a load the user asked for', async () => {
+    const store = useAcquisition()
+    let settle
+    api.http.get.mockImplementationOnce(() => new Promise((resolve) => (settle = resolve)))
+
+    const loading = store.load()
+    expect(store.pending).toBe(true)
+
+    settle(answer())
+    await loading
+    expect(store.pending).toBe(false)
+  })
+})
 
 describe('acquisition store: loading and live updates', () => {
   it('keeps the answer of the latest request when an earlier one lands last', async () => {

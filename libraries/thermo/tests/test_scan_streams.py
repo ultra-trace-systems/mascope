@@ -565,6 +565,7 @@ def test_what_a_scan_reports_of_itself_sets_no_streams_apart():
         (10, 10.0),
         ("10", 10.0),
         (" 10 ", 10.0),
+        ("10,0", 10.0),
         (1.0, 1.0),
         ("ten", None),
         (None, None),
@@ -575,8 +576,9 @@ def test_what_a_scan_reports_of_itself_sets_no_streams_apart():
 @pytest.mark.parametrize("place", [1, 2])
 def test_a_setting_is_a_number_however_the_reader_reports_it(reported, value, place):
     """One backend reports trailer values as text and the other as typed
-    scalars, and a setting is the same setting either way. What is no number
-    is unknown."""
+    scalars, and a setting is the same setting either way, also in text a
+    server captured in its own regional format before ``load_dotnet``
+    pinned the culture. What is no number is unknown."""
     name = {1: "Micro Scan Count:", 2: "AGC Target:"}[place]
     stream = {"signature_key": "", "acquisition_params": {"constant": {name: reported}}}
 
@@ -867,6 +869,8 @@ def test_a_scans_experiment_is_its_segment_and_event(
 class _ScriptedRaw:
     """The slice of ``opentfraw.RawFile`` ``scan_filters`` reads: one
     ``(segment, event)`` per scan, as the scan index holds them."""
+
+    instrument_model = "Scripted"
 
     def __init__(self, experiments):
         self._experiments = experiments

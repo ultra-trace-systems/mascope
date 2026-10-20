@@ -81,6 +81,11 @@ server as it starts, and offers to pair again when the credential is no
 longer accepted. It makes the same offer if a credential is refused while it
 is running.
 
+**Pair an agent** is for the agents on instrument PCs. An AI agent working
+with your data through the SDK does not pair: it uses a personal **AI Agent**
+token, generated in the same settings tab as a notebook's
+([Generate an API token](../sdk/getting-started.md#generate-an-api-token)).
+
 Under **Paired machines** (Home menu → Settings → API Access Tokens) each
 machine shows the instrument its agent reports watching and the agent release
 it last connected with, next to when it was last seen — so an upgrade across

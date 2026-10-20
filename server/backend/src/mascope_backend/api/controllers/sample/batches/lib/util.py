@@ -144,11 +144,15 @@ async def collect_spectra_per_ionization_mode(
     # --- Infer intensity variable from instrument types of samples --- #
     intensity_variable = _get_intensity_variable_from_samples(samples)
 
-    # --- Load resolution functions for each sample file --- #
+    # --- Load resolution functions for each sample --- #
+    # By file and polarity: a file detected per scan stream reads each peak's
+    # width from the stream it came from, which its polarity's stitch decides
     resolution_functions = dict()
     for sample in samples:
-        _, resolution_func = await read_instrument_functions(sample.filename)
-        resolution_functions[sample.filename] = resolution_func
+        _, resolution_func = await read_instrument_functions(
+            sample.filename, polarity=sample.polarity
+        )
+        resolution_functions[(sample.filename, sample.polarity)] = resolution_func
 
     # Peaks will be grouped and aligned by ionization mode
     ionization_modes = set([sample.ionization_mode_id for sample in samples])
@@ -212,7 +216,8 @@ async def _prepare_spec(
     :type sample: Sample
     :param semaphore: Semaphore to limit concurrent file loading.
     :type semaphore: asyncio.Semaphore
-    :param resolution_functions: Dictionary of resolution functions per filename.
+    :param resolution_functions: Dictionary of resolution functions per
+        filename and polarity.
     :type resolution_functions: dict
     :return: Tuple of ionization mode ID and CentroidedSpectrum object.
     :rtype: tuple[str, CentroidedSpectrum]
@@ -225,7 +230,7 @@ async def _prepare_spec(
         mz, intensity, peak_id = await asyncio.to_thread(
             _sync_load_peak_data, filename, polarity, intensity_variable
         )
-    resolution = resolution_functions[filename](mz)
+    resolution = resolution_functions[(filename, polarity)](mz)
     signal_to_noise = np.ones(mz.size)
 
     # Placeholder S/N values since they are not required for alignment

@@ -78,7 +78,7 @@ async def aggregate_batch_match_isotope_filtered_data_route(
 
 
 @match_aggregate_batch_router.post("/{sample_batch_id}")
-@api_route()
+@api_route(token_access=True)
 async def aggregate_batch_matches_route(
     sample_batch_id: str,
     body: AggregateMatchIsotopeFilteredDataBody,
@@ -121,7 +121,7 @@ async def aggregate_batch_matches_route(
 
 
 @match_aggregate_batch_router.post("/{sample_batch_id}/save")
-@api_route()
+@api_route(token_access=True)
 async def aggregate_and_create_batch_matches_route(
     sample_batch_id: str,
     body: AggregateAndCreateMatchesBody,
@@ -158,7 +158,7 @@ async def aggregate_and_create_batch_matches_route(
 
 
 @match_aggregate_batch_router.post("/{sample_batch_id}/resave")
-@api_route()
+@api_route(token_access=True)
 async def aggregate_and_recreate_matches_route(
     sample_batch_id: str,
     body: AggregateAndCreateMatchesBody,

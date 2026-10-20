@@ -56,7 +56,7 @@ async def get_target_compound_route(
 
 
 @target_compounds_router.post("")
-@api_route(status_code=201)
+@api_route(status_code=201, token_access=True)
 async def create_target_compounds_route(
     target_compounds: List[TargetCompoundBase], user=Depends(editor_user)
 ):
@@ -87,7 +87,7 @@ async def create_target_compounds_route(
 
 
 @target_compounds_router.patch("")
-@api_route()
+@api_route(token_access=True)
 async def update_target_compound_route(
     target_compounds: List[TargetCompoundUpdate],
     user=Depends(editor_user),
@@ -119,7 +119,7 @@ async def update_target_compound_route(
 
 
 @target_compounds_router.delete("/{target_compound_id}")
-@api_route()
+@api_route(token_access=True)
 async def delete_target_compound_route(
     target_compound_id: str, user=Depends(editor_user)
 ):

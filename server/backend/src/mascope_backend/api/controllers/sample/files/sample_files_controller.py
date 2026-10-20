@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import (
     exists,
     func,
@@ -29,6 +30,9 @@ from mascope_backend.api.controllers.sample.files.process.status import (
 )
 from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data import (
     fetch_affected_sample_data,
+)
+from mascope_backend.api.controllers.samples.lib.samples_peaks import (
+    extract_file_peaks,
 )
 from mascope_backend.api.controllers.samples.samples_controller import get_samples
 from mascope_backend.api.lib.api_features import (
@@ -77,6 +81,7 @@ from mascope_backend.socket.records.service import (
 from mascope_backend.socket.storage.services import is_service_connected
 from mascope_file.io import load_peak_data
 from mascope_file.name import (
+    filename_to_datafile_path,
     forget_instrument_type,
     get_instrument_name,
     get_sample_file_type,
@@ -168,6 +173,7 @@ async def _register_file_with_converter(
     source_filename: str | None = None,
     acquisition: dict | None = None,
     sha256: str | None = None,
+    browser_timezone: str | None = None,
 ) -> None:
     """Tell the converter who uploaded a file, before the file is stored.
 
@@ -203,6 +209,9 @@ async def _register_file_with_converter(
     :param sha256: The file's SHA-256, where its uploader reported one and
         the bytes received have it.
     :type sha256: str | None
+    :param browser_timezone: IANA timezone of the browser a web upload came
+        from, a weaker hint than the agent's zone.
+    :type browser_timezone: str | None
     """
     await event_emitter.emit(
         "file-converter.auth",
@@ -214,6 +223,7 @@ async def _register_file_with_converter(
             "access_token": access_token,
             "device_id": device_id,
             "instrument_timezone": instrument_timezone,
+            "browser_timezone": browser_timezone,
             "source_filename": source_filename,
             "acquisition": acquisition,
             "sha256": sha256,
@@ -415,18 +425,27 @@ async def get_sample_files(
                 SampleFile.processing_updated_utc >= processing_updated_min
             )
 
+        # --- Count, before ordering: a count needs no order, and counting an
+        # ordered statement sorts every row it keeps.
+        total = await session.scalar(select(func.count()).select_from(stmt.subquery()))
+
         # --- Apply sorting
-        # Rows without a value last in either direction, so the newest come
-        # first on a descending sort of a column older rows leave NULL; and
-        # the id breaks ties, so pages of rows that share a value neither
-        # repeat nor skip any.
-        stmt = stmt.order_by(
-            order_by_column(SampleFile, sort, order, SampleFileSortColumn).nulls_last(),
-            SampleFile.sample_file_id,
-        )
+        # The id breaks ties in the sort's own direction, so pages of rows
+        # that share a value neither repeat nor skip any. A column older rows
+        # leave NULL sorts them last in either direction, so the newest come
+        # first on a descending sort; a NOT NULL column keeps Postgres' own
+        # order. That is what `ix_sample_file_datetime_utc` and
+        # `ix_sample_file_instrument_datetime_utc` (models.SampleFile) are
+        # declared to serve, read forwards or backwards with no sort: change
+        # this order and those indexes together, as
+        # tests/integration/api/sample/test_sample_file_list_plan.py checks.
+        sort_by = order_by_column(SampleFile, sort, order, SampleFileSortColumn)
+        if SampleFile.__table__.c[sort].nullable:
+            sort_by = sort_by.nulls_last()
+        tiebreak = SampleFile.sample_file_id
+        stmt = stmt.order_by(sort_by, tiebreak.desc() if order == "desc" else tiebreak)
 
         # --- Apply pagination
-        total = await session.scalar(select(func.count()).select_from(stmt))
         if page is not None and limit is not None:
             stmt = stmt.offset(page * limit).limit(limit)
 
@@ -1321,6 +1340,7 @@ async def upload_sample_file(
     source_filename: str | None = None,
     acquisition: dict | None = None,
     sha256: str | None = None,
+    browser_timezone: str | None = None,
 ) -> dict:
     """
     Handles upload of a single sample file from a given file path to the `filestreams` directory.
@@ -1346,6 +1366,9 @@ async def upload_sample_file(
     :param sha256: The file's SHA-256, where its uploader reported one and
         the bytes received have it.
     :type sha256: str | None, optional
+    :param browser_timezone: IANA timezone of the browser a web upload came
+        from, a weaker hint than the agent's zone.
+    :type browser_timezone: str | None, optional
     :return: Dictionary with file upload result.
     :rtype: dict
     """
@@ -1404,6 +1427,7 @@ async def upload_sample_file(
             source_filename=source_filename,
             acquisition=acquisition,
             sha256=sha256,
+            browser_timezone=browser_timezone,
         )
 
         # A cross-filesystem move degrades to a non-atomic copy, which the
@@ -1476,10 +1500,14 @@ def _sync_load_sample_file_peaks(
 ) -> dict:
     """Load a sample file's peaks and materialize them into plain lists.
 
+    Every peak of the file, from its stored sums, as the sample's own peak
+    listing reads them (:func:`extract_file_peaks`): a peak's per-scan
+    timeseries is computed only once something asks for it, so a read of
+    the timeseries gave no value for most peaks of a file.
+
     Kept as one synchronous unit so the caller can hand the whole thing to a
-    worker thread. Splitting it would not help: ``load_peak_data`` returns a
-    dask-backed dataset, so the store reads happen at the ``.tolist()`` calls
-    here rather than at the load.
+    worker thread: ``load_peak_data`` returns a dask-backed dataset, so the
+    store reads happen at the ``.tolist()`` calls rather than at the load.
 
     :param filename: Sample file filename
     :param areas: Include peak areas
@@ -1488,37 +1516,13 @@ def _sync_load_sample_file_peaks(
     :raises FileNotFoundError: No such sample file, or it is unprocessed
     :return: Response payload with mz, and area/height/sparsity as requested
     """
-    sample_file_data = load_peak_data(filename)
-    response_data = {}
-
+    peaks = extract_file_peaks(filename, areas=areas, heights=heights, average=average)
+    response_data = {"mz": peaks.mz_values}
     if areas:
-        peak_areas = get_peaks(sample_file_data, "area")
-        peak_areas = (
-            peak_areas.mean(dim="time") if average else peak_areas.sum(dim="time")
-        )
-        response_data["mz"] = peak_areas.mz.values.tolist()
-        response_data["area"] = peak_areas.values.tolist()
-
+        response_data["area"] = peaks.areas
     if heights:
-        peak_heights = get_peaks(sample_file_data, "height")
-        peak_heights = (
-            peak_heights.mean(dim="time") if average else peak_heights.sum(dim="time")
-        )
-        # If 'mz' was not populated from areas, populate it from heights
-        if "mz" not in response_data:
-            response_data["mz"] = peak_heights.mz.values.tolist()
-        response_data["height"] = peak_heights.values.tolist()
-
-    # Include sparsity aligned to the same mz coordinate as the response
-    if "mz" not in response_data:
-        response_data["mz"] = sample_file_data.mz.values.tolist()
-        response_data["sparsity"] = sample_file_data.sparsity.values.tolist()
-    else:
-        filtered_mz = peak_areas.mz if areas else peak_heights.mz
-        response_data["sparsity"] = sample_file_data.sparsity.sel(
-            mz=filtered_mz
-        ).values.tolist()
-
+        response_data["height"] = peaks.heights
+    response_data["sparsity"] = peaks.sparsity
     return response_data
 
 
@@ -1961,6 +1965,55 @@ async def get_sample_file_metadata(
     return ClosingStreamingResponse(
         _metadata_body(message, head, pieces, filename),
         media_type="application/json",
+    )
+
+
+def _stored_data_file(filename: str) -> str | None:
+    """The path of the source data file a sample file keeps, if it keeps one.
+
+    :param filename: Sample file name.
+    :type filename: str
+    :return: The path of ``data.raw`` or ``data.h5`` in the sample's
+        directory, or None when it keeps neither (only its zarr is left) or
+        its kind cannot be told.
+    :rtype: str | None
+    """
+    try:
+        path = filename_to_datafile_path(filename)
+    except (OSError, ValueError):
+        return None
+    return path if os.path.isfile(path) else None
+
+
+@api_controller()
+async def get_sample_file_raw(sample_file_id: str) -> FileResponse:
+    """
+    The source data file of a sample file as it was uploaded, streamed from
+    the filestore.
+
+    The file is sent from where it is stored, read a piece at a time: nothing
+    is copied, and a file of hundreds of megabytes is never held in memory.
+
+    :param sample_file_id: Unique identifier for the sample file.
+    :type sample_file_id: str
+    :raises NotFoundException: If the sample file is not found, or keeps no
+        source data file.
+    :return: The file, with its length and the name it was uploaded under.
+    :rtype: FileResponse
+    """
+    sample_file_data = await get_sample_file(sample_file_id)
+    filename = sample_file_data.get("data").get("filename")
+
+    path = await asyncio.to_thread(_stored_data_file, filename)
+    if path is None:
+        raise NotFoundException(
+            f"Sample file '{filename}' keeps no source data file to download"
+        )
+    extension = os.path.splitext(path)[1]
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename=f"{filename}{extension}",
     )
 
 

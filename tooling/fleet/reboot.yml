@@ -178,7 +178,22 @@
     - name: Verify with doctor
       ansible.builtin.shell:
         cmd: bash -lc "cd {{ mascope_checkout }} && PYTHONUTF8=1 mascope prod doctor"
+      register: doctor
       changed_when: false
+      # Exit 3 is the doctor's disk-filling warning: the stack is healthy but
+      # a filesystem is projected below its floor within days. That needs an
+      # operator, not a halted roll, so only 0 and 3 pass.
+      failed_when: doctor.rc not in [0, 3]
+
+    - name: Note a disk the doctor projects to fill
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is healthy, but the doctor projects a
+          filesystem below its free-space floor within its horizon (exit 3).
+          The rollout continues; free space or grow the volume soon. Kuma
+          pages for this only if doctor-push.sh has a FILLING_TOKEN monitor;
+          its main monitor stays up.
+      when: doctor.rc == 3
 
     - name: Check the pending-reboot flag cleared
       ansible.builtin.stat:

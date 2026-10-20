@@ -9,7 +9,8 @@ import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 
 import { useApp } from '@/stores'
-import { beautifySnakeCase, messageSeverity } from '@/lib/utils'
+import { toastTitle } from '@/lib/toastTitles'
+import { messageSeverity } from '@/lib/utils'
 
 import { useSidebarMenu } from './state.js'
 import NotificationInbox from './NotificationInbox.vue'
@@ -88,10 +89,13 @@ watch(open, (isOpen) => {
       <InputText v-model="log.query" placeholder="Search" style="width: 100%" />
     </IconField>
     <ScrollPanel>
+      <!-- The raw status stays searchable beside the heading: a mapped
+           heading says "failed" where the status says "error", and a search
+           for "error" should still find every failure. -->
       <Message
         v-for="{ id, type, status, message, timestamp } in app.ui.notification.log.filter(
           ({ type, status, message }) =>
-            `${beautifySnakeCase(type)} ${status} ${message}`.includes(log.query)
+            `${toastTitle(type, status)} ${status} ${message}`.includes(log.query)
         )"
         :key="id"
         :severity="messageSeverity(status)"
@@ -99,7 +103,8 @@ watch(open, (isOpen) => {
       >
         <div class="col" style="gap: 0.5rem">
           <ScrollPanel style="width: 250px">
-            <h4 style="margin: 0.5rem 0">{{ beautifySnakeCase(type) }} {{ status }}</h4>
+            <!-- Headed as its toast was, so the two name one event alike. -->
+            <h4 style="margin: 0.5rem 0">{{ toastTitle(type, status) }}</h4>
             <!-- A batch operation composes its message as one line per item
                  (the samples it could not calibrate, the batches it could not
                  rematch). `pre-line` is what keeps those breaks: without it the

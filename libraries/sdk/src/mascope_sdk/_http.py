@@ -6,6 +6,7 @@ These are internal implementation details and should not be used directly by SDK
 
 import json
 import time
+from collections.abc import Callable
 from typing import Any
 
 import requests
@@ -19,6 +20,7 @@ from .exceptions import (
     MascopeConnectionError,
     MascopeTimeoutError,
     NotFoundError,
+    PermissionDeniedError,
     ServerError,
     ValidationError,
 )
@@ -83,7 +85,15 @@ def _raise_for_status(response: requests.Response, url: str) -> None:
     status_code = response.status_code
     message = _extract_error_message(response)
 
-    if status_code in (401, 403):
+    if status_code == 403:
+        # The token was accepted; its user lacks the role. Checking the token
+        # would not help, so the hint 401 gets is left out here.
+        raise PermissionDeniedError(
+            message=message,
+            status_code=status_code,
+            url=url,
+        )
+    elif status_code == 401:
         raise AuthenticationError(
             message=f"{message}. Please check your API token.",
             status_code=status_code,
@@ -147,6 +157,74 @@ def _is_retryable(exc: Exception) -> bool:
     return False
 
 
+def _send_with_retries(
+    method: str,
+    full_url: str,
+    send: Callable[[], requests.Response],
+    attempts: int,
+) -> requests.Response:
+    """Send a request, retrying what is transient, and map its status.
+
+    :param method: The HTTP method, for the log line of a retry.
+    :type method: str
+    :param full_url: The URL, for the log line and the exceptions.
+    :type full_url: str
+    :param send: Sends the request once and returns the response.
+    :type send: Callable[[], requests.Response]
+    :param attempts: How many times to try a transient failure.
+    :type attempts: int
+    :return: The response of the first attempt that succeeded.
+    :rtype: requests.Response
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            response = send()
+            _raise_for_status(response, full_url)
+            return response
+
+        except Timeout as e:
+            if attempt == attempts:
+                raise MascopeTimeoutError(
+                    f"Request timed out: {e}", url=full_url
+                ) from e
+            exc_for_log: Exception = e
+        except RequestsConnectionError as e:
+            if attempt == attempts:
+                raise MascopeConnectionError(
+                    (
+                        "Could not connect. "
+                        f"Please check the URL and your network connection: {e}"
+                    ),
+                    url=full_url,
+                ) from e
+            exc_for_log = e
+        except RequestException as e:
+            # Non-transient request error (SSL, proxy, invalid URL, …)
+            raise MascopeConnectionError(
+                f"Request failed: {e}",
+                url=full_url,
+            ) from e
+        except Exception as e:
+            if not _is_retryable(e) or attempt == attempts:
+                raise
+            exc_for_log = e
+
+        delay = RETRY_BACKOFF_BASE**attempt
+        # INFO: transient retry that usually succeeds; the final failure raises
+        logger.info(
+            "{} {} failed (attempt {}/{}), retrying in {}s: {}",
+            method,
+            full_url,
+            attempt,
+            attempts,
+            delay,
+            exc_for_log,
+        )
+        time.sleep(delay)
+
+    assert False, "unreachable"  # noqa: B011
+
+
 def http_get(
     url: str,
     path: str,
@@ -196,60 +274,19 @@ def http_get(
         "X-Service-Name": service_name,
     }
 
-    attempts = max_attempts or RETRY_MAX_ATTEMPTS
-    for attempt in range(1, attempts + 1):
-        try:
-            response = requests.get(
-                full_url,
-                params=params,
-                headers=headers,
-                verify=verify_ssl,
-                timeout=timeout,
-                stream=stream,
-            )
-            _raise_for_status(response, full_url)
-            return response
-
-        except Timeout as e:
-            if attempt == attempts:
-                raise MascopeTimeoutError(
-                    f"Request timed out: {e}", url=full_url
-                ) from e
-            exc_for_log: Exception = e
-        except RequestsConnectionError as e:
-            if attempt == attempts:
-                raise MascopeConnectionError(
-                    (
-                        "Could not connect. "
-                        f"Please check the URL and your network connection: {e}"
-                    ),
-                    url=full_url,
-                ) from e
-            exc_for_log = e
-        except RequestException as e:
-            # Non-transient request error (SSL, proxy, invalid URL, …)
-            raise MascopeConnectionError(
-                f"Request failed: {e}",
-                url=full_url,
-            ) from e
-        except Exception as e:
-            if not _is_retryable(e) or attempt == attempts:
-                raise
-            exc_for_log = e
-
-        delay = RETRY_BACKOFF_BASE**attempt
-        # INFO: transient retry that usually succeeds; the final failure raises
-        logger.info(
-            "GET {} failed (attempt {}/{}), retrying in {}s: {}",
+    return _send_with_retries(
+        "GET",
+        full_url,
+        lambda: requests.get(
             full_url,
-            attempt,
-            attempts,
-            delay,
-            exc_for_log,
-        )
-        time.sleep(delay)
-
-    assert False, "unreachable"  # noqa: B011
+            params=params,
+            headers=headers,
+            verify=verify_ssl,
+            timeout=timeout,
+            stream=stream,
+        ),
+        max_attempts or RETRY_MAX_ATTEMPTS,
+    )
 
 
 def http_post(
@@ -293,58 +330,83 @@ def http_post(
         "X-Service-Name": service_name,
     }
 
-    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
-        try:
-            response = requests.post(
-                full_url,
-                json=data,
-                headers=headers,
-                verify=verify_ssl,
-                timeout=timeout,
-            )
-            _raise_for_status(response, full_url)
-            return response
-
-        except Timeout as e:
-            if attempt == RETRY_MAX_ATTEMPTS:
-                raise MascopeTimeoutError(
-                    f"Request timed out: {e}", url=full_url
-                ) from e
-            exc_for_log: Exception = e
-        except RequestsConnectionError as e:
-            if attempt == RETRY_MAX_ATTEMPTS:
-                raise MascopeConnectionError(
-                    (
-                        "Could not connect. "
-                        f"Please check the URL and your network connection: {e}"
-                    ),
-                    url=full_url,
-                ) from e
-            exc_for_log = e
-        except RequestException as e:
-            # Non-transient request error (SSL, proxy, invalid URL, …)
-            raise MascopeConnectionError(
-                f"Request failed: {e}",
-                url=full_url,
-            ) from e
-        except Exception as e:
-            if not _is_retryable(e) or attempt == RETRY_MAX_ATTEMPTS:
-                raise
-            exc_for_log = e
-
-        delay = RETRY_BACKOFF_BASE**attempt
-        # INFO: transient retry that usually succeeds; the final failure raises
-        logger.info(
-            "POST {} failed (attempt {}/{}), retrying in {}s: {}",
+    return _send_with_retries(
+        "POST",
+        full_url,
+        lambda: requests.post(
             full_url,
-            attempt,
-            RETRY_MAX_ATTEMPTS,
-            delay,
-            exc_for_log,
-        )
-        time.sleep(delay)
+            json=data,
+            headers=headers,
+            verify=verify_ssl,
+            timeout=timeout,
+        ),
+        RETRY_MAX_ATTEMPTS,
+    )
 
-    assert False, "unreachable"  # noqa: B011
+
+def http_request(
+    method: str,
+    url: str,
+    path: str,
+    access_token: str,
+    data: Any = None,
+    params: dict[str, Any] | None = None,
+    timeout: int | tuple[int, int] = 30,
+    service_name: str = "mascope_sdk",
+    verify_ssl: bool = False,
+) -> requests.Response:
+    """Send a request of any method, for the writes that are not a POST.
+
+    A PATCH or a DELETE takes the same headers, the same status mapping and
+    the same retries as :func:`http_post`.
+
+    :param method: The HTTP method, such as ``"PATCH"`` or ``"DELETE"``.
+    :type method: str
+    :param url: The base URL of the server.
+    :type url: str
+    :param path: The specific API path to be appended to the base URL.
+    :type path: str
+    :param access_token: Authorization token for API access.
+    :type access_token: str
+    :param data: The JSON body, if the request has one.
+    :type data: Any, optional
+    :param params: Query parameters to include in the request.
+    :type params: dict[str, Any], optional
+    :param timeout: Request timeout in seconds.
+    :type timeout: int | tuple[int, int], optional
+    :param service_name: Service name for request header.
+    :type service_name: str, optional
+    :param verify_ssl: Whether to verify SSL certificates.
+    :type verify_ssl: bool, optional
+    :return: The response object.
+    :rtype: requests.Response
+    :raises PermissionDeniedError: If the token's user lacks the role (403).
+    :raises AuthenticationError: If authentication fails (401).
+    :raises NotFoundError: If resource is not found (404).
+    :raises ValidationError: If request validation fails (4xx).
+    :raises ServerError: If server error occurs (5xx).
+    :raises MascopeConnectionError: If unable to connect.
+    :raises MascopeTimeoutError: If request times out.
+    """
+    full_url = f"{url}/api/{path}"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "X-Service-Name": service_name,
+    }
+    return _send_with_retries(
+        method,
+        full_url,
+        lambda: requests.request(
+            method,
+            full_url,
+            json=data,
+            params=params,
+            headers=headers,
+            verify=verify_ssl,
+            timeout=timeout,
+        ),
+        RETRY_MAX_ATTEMPTS,
+    )
 
 
 def http_post_file(

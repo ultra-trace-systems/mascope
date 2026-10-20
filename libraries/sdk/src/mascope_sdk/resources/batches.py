@@ -2,13 +2,14 @@
 
 import json
 import re
+from collections.abc import Sequence
 from typing import Any
 
 import pandas as pd
 from loguru import logger
 
 from .._resolve import resolve_id
-from ._base import BaseResource, _coerce_datetime_columns
+from ._base import BaseResource, Needs, _coerce_datetime_columns
 
 
 class BatchesResource(BaseResource):
@@ -70,7 +71,8 @@ class BatchesResource(BaseResource):
         """List batches by dataset ID (no name resolution)."""
         cache_key = f"batches:{dataset_id}"
         if cache_key in self._client._cache:
-            return self._client._cache[cache_key]
+            # A copy: a caller editing its listing must not edit the cache
+            return self._client._cache[cache_key].copy()
         logger.info("Fetching batches for dataset '{}'", dataset_id)
         data = self._get("sample/batches", params={"dataset_id": dataset_id})
         if not data:
@@ -78,7 +80,7 @@ class BatchesResource(BaseResource):
         df = _coerce_datetime_columns(pd.DataFrame(data))
         logger.info("Found {} batch(es)", len(df))
         self._client._cache[cache_key] = df
-        return df
+        return df.copy()
 
     def get_data(self, batch_id: str) -> dict[str, Any]:
         """Retrieve detailed data for all samples in a batch.
@@ -140,3 +142,113 @@ class BatchesResource(BaseResource):
             "ions": batch_data.get("data", {}).get("ions", []),
             "isotopes": batch_data.get("data", {}).get("isotopes", []),
         }
+
+    def update(
+        self,
+        batch_id: str,
+        target_collection_ids: Sequence[str],
+        name: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Rename a batch, change its description, and set its collections.
+
+        ``target_collection_ids`` is required, as the route requires it, and
+        *replaces* the batch's target collections: to only rename a batch,
+        send the collections it has now. An empty list detaches them all.
+
+        :param batch_id: The batch.
+        :type batch_id: str
+        :param target_collection_ids: The target collections the batch is to
+            have.
+        :type target_collection_ids: Sequence[str]
+        :param name: Its new name.
+        :type name: str, optional
+        :param description: Its new description.
+        :type description: str, optional
+        :return: The updated batch.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the editor role on the batch,
+            or the global admin role for a locked batch.
+        """
+        body: dict[str, Any] = {"target_collection_ids": list(target_collection_ids)}
+        if name is not None:
+            body["sample_batch_name"] = name
+        if description is not None:
+            body["sample_batch_description"] = description
+        return self._write(
+            "PATCH",
+            f"sample/batches/{batch_id}",
+            Needs(
+                "update",
+                "batch",
+                batch_id,
+                "editor on the batch (a locked batch: the global admin role)",
+            ),
+            data=body,
+        )
+
+    def copy(
+        self,
+        batch_id: str,
+        dataset_id: str,
+        name: str,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Copy a batch, with its samples, into a dataset.
+
+        The copy runs in the background on the server: the call returns when
+        it has started, and the new batch appears in :meth:`list` once done.
+        A locked dataset takes no copy, whatever the caller's role.
+
+        :param batch_id: The batch to copy.
+        :type batch_id: str
+        :param dataset_id: The dataset to copy it into.
+        :type dataset_id: str
+        :param name: The new batch's name.
+        :type name: str
+        :param description: The new batch's description.
+        :type description: str, optional
+        :return: The server's ``message`` and the task's ``process_id``.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the editor role on the batch
+            and on the destination dataset, or if that dataset is locked.
+        """
+        body: dict[str, Any] = {"dataset_id": dataset_id, "sample_batch_name": name}
+        if description is not None:
+            body["sample_batch_description"] = description
+        return self._write(
+            "POST",
+            f"sample/batches/{batch_id}/copy",
+            Needs(
+                "copy",
+                "batch",
+                batch_id,
+                f"editor on the batch and on dataset '{dataset_id}'"
+                " (a locked dataset: none)",
+            ),
+            data=body,
+        )
+
+    def delete(self, batch_id: str) -> dict[str, Any]:
+        """Delete a batch and its samples. This cannot be undone.
+
+        The delete runs in the background on the server: the call returns
+        when it has started.
+
+        :param batch_id: The batch.
+        :type batch_id: str
+        :return: The server's ``message`` and the task's ``process_id``.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the editor role on the batch,
+            or the owner role for a locked batch.
+        """
+        return self._write(
+            "DELETE",
+            f"sample/batches/{batch_id}",
+            Needs(
+                "delete",
+                "batch",
+                batch_id,
+                "editor on the batch (a locked batch: the owner role)",
+            ),
+        )

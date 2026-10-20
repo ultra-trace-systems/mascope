@@ -4,12 +4,21 @@
 #
 # A Mascope host writes to one or more filesystems that grow over time: the
 # Postgres data, the filestore (uploaded raw files) and database dumps under
-# $MASCOPE_PATH/.runtime, plus docker's image store. If any of them fills the
-# disk, Postgres can wedge and the whole stack goes down. This check measures
-# the free space on each and, when one drops below a floor, pings a
-# healthchecks.io-style URL so a human is alerted with lead time to act.
+# $MASCOPE_PATH/.runtime, plus docker's image store. An env's filestore can
+# also be a symlink to a volume of its own, which is then measured on its own.
+# If any of them fills, Postgres can wedge and the whole stack goes down. This
+# check measures the free space on each and, when one drops below a floor,
+# pings a healthchecks.io-style URL so a human is alerted with lead time to act.
 #
-# It is read-only: it never deletes anything. Run it from the systemd timer
+# A floor alone gives a fast-filling disk little lead time, so the check also
+# remembers how much was free on each run, works out how many GiB a day the
+# filesystem has been filling over the last 7 and 30 days, and warns when that
+# pace would reach the floor within MIN_DAYS_TO_FLOOR days - on a check of its
+# own (HEALTHCHECK_FILLING_URL), so the early warning never masks the floor.
+#
+# It never deletes anything it monitors: the only files it writes are its own
+# free-space history ($MASCOPE_PATH/.runtime/disk-check/history.tsv), kept to
+# the last 60 days, and a lock file beside it. Run it from the systemd timer
 # tooling/ubuntu.sh installs (mascope-disk-check.timer), or from cron:
 #   */15 * * * * $MASCOPE_PATH/tooling/disk-check.sh 2>&1 | logger -t mascope-disk
 #
@@ -38,12 +47,179 @@ fi
 # percentage check (useful on very large disks where 10% is still plenty).
 MIN_FREE_GB="${MIN_FREE_GB:-10}"
 MIN_FREE_PCT="${MIN_FREE_PCT:-10}"
+# Alert when the filesystem, at the pace it has been filling, would drop below
+# that floor within this many days. Set 0 to disable the projection alert.
+MIN_DAYS_TO_FLOOR="${MIN_DAYS_TO_FLOOR:-30}"
 # Where docker stores image layers; override if your data-root is elsewhere.
 DOCKER_ROOT="${DOCKER_ROOT:-/var/lib/docker}"
 
+# A threshold must be a plain non-negative number. awk compares anything else
+# as a string, so MIN_DAYS_TO_FLOOR=thirty would warn about every filling
+# disk and 30d about almost none; fall back to the default instead.
+number_or_default() {
+    local name="$1" default="$2"
+    if [[ ! "${!name}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        log "warn: ${name}=${!name} is not a number; using ${default}"
+        printf -v "$name" '%s' "$default"
+    fi
+}
+number_or_default MIN_FREE_GB 10
+number_or_default MIN_FREE_PCT 10
+number_or_default MIN_DAYS_TO_FLOOR 30
+
+# --- History -----------------------------------------------------------------
+#
+# One tab-separated line per filesystem per run: epoch seconds, available
+# bytes, filesystem size in bytes, mount point. `mascope prod doctor` reads the
+# same file for its own projection (tooling/cli/src/mascope_cli/cmd/prod/
+# doctor.py), so change the format in both places or neither.
+
+HISTORY_DIR="${MASCOPE_PATH}/.runtime/disk-check"
+HISTORY="${HISTORY_DIR}/history.tsv"
+# Samples older than this are dropped; the longest rate window is 30 days.
+HISTORY_DAYS=60
+# A rate is only reported once this much history backs it, so one large upload
+# in the first hour after install is not projected forward as a daily pace.
+MIN_HISTORY_DAYS=1
+
+now="$(date +%s)"
+
+# How long to wait for another run's hold on the history (tests shorten it).
+HISTORY_LOCK_WAIT="${HISTORY_LOCK_WAIT:-10}"
+
+history_ok=1
+if ! mkdir -p "$HISTORY_DIR" 2>/dev/null; then
+    log "warn: cannot create ${HISTORY_DIR}; fill rates are unavailable"
+    history_ok=0
+fi
+
+# One run at a time writes the history: a run appending while another trims
+# it would lose its sample to the trim's rename. The lock (flock, util-linux,
+# on every Ubuntu) is held from the first reading to the trim and dropped
+# before the pings. A run that cannot get it in time still measures and
+# alerts; it only leaves the history alone.
+if [[ "$history_ok" -eq 1 ]] && command -v flock >/dev/null 2>&1; then
+    if ! { exec 9>"${HISTORY_DIR}/.lock"; } 2>/dev/null; then
+        log "warn: cannot open ${HISTORY_DIR}/.lock; leaving the history alone"
+        history_ok=0
+    elif ! flock -w "$HISTORY_LOCK_WAIT" 9; then
+        log "warn: another disk check holds the history; leaving it alone this run"
+        history_ok=0
+    fi
+fi
+
+# Append this run's sample for one filesystem. A failed write (a full disk is
+# exactly when it happens) only costs the history, never the check itself.
+record_sample() {
+    local mount="$1" avail="$2" size="$3"
+    [[ "$history_ok" -eq 1 ]] || return 0
+    if ! { printf '%s\t%s\t%s\t%s\n' "$now" "$avail" "$size" "$mount" >>"$HISTORY"; } 2>/dev/null; then
+        log "warn: cannot write ${HISTORY}; fill rates will not update"
+        history_ok=0
+    fi
+}
+
+# Drop samples older than HISTORY_DAYS. The file is only rewritten once its
+# oldest sample is a day past the cutoff, so about once a day, not every run.
+prune_history() {
+    [[ "$history_ok" -eq 1 && -f "$HISTORY" ]] || return 0
+    local cutoff oldest tmp
+    cutoff=$((now - HISTORY_DAYS * 86400))
+    oldest="$(head -n 1 "$HISTORY" | cut -f 1)" || return 0
+    if [[ "$oldest" =~ ^[0-9]+$ ]] && ((oldest >= cutoff - 86400)); then
+        return 0
+    fi
+    if ! tmp="$(mktemp "${HISTORY}.XXXXXX" 2>/dev/null)"; then
+        log "warn: could not trim ${HISTORY}"
+        return 0
+    fi
+    # Keep the history's mode: mktemp creates the file private to this user.
+    chmod --reference="$HISTORY" "$tmp" 2>/dev/null || true
+    if awk -F'\t' -v c="$cutoff" '$1 ~ /^[0-9]+$/ && $1 >= c' "$HISTORY" >"$tmp" 2>/dev/null &&
+        mv -f "$tmp" "$HISTORY" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    log "warn: could not trim ${HISTORY}"
+}
+
+# Fill trend of one filesystem, printed as "<alert>\t<summary>": alert is 1
+# when the floor is projected within MIN_DAYS_TO_FLOOR days, else 0.
+#
+# The rate is the least-squares slope of used space (size - avail, so growing
+# the filesystem does not read as freeing space) against time over the last 7
+# and 30 days of history plus the current reading. A slope over every sample
+# rides out a transient - a dump being written at the moment of a reading -
+# that a first-to-last difference would project forward. The projection takes
+# the faster of the two rates: the 7-day one catches an instrument that has
+# just started a long run, the 30-day one keeps a quiet week from hiding a
+# disk that fills in bursts.
+fill_trend() {
+    local mount="$1" avail="$2" size="$3" floor="$4" src=/dev/null
+    [[ -r "$HISTORY" ]] && src="$HISTORY"
+    awk -F'\t' -v m="$mount" -v now="$now" -v a="$avail" -v s="$size" \
+        -v floor="$floor" -v warn="$MIN_DAYS_TO_FLOOR" -v min_span="$MIN_HISTORY_DAYS" '
+        # t: days relative to now (<= 0); used: GiB.
+        function add(t, used,   i) {
+            for (i = 1; i <= 2; i++) {
+                if (t < -win[i]) continue
+                n[i]++
+                st[i] += t; su[i] += used; stt[i] += t * t; stu[i] += t * used
+                if (n[i] == 1 || t < first[i]) first[i] = t
+            }
+        }
+        function days(d) {
+            if (d < 1) return "<1 day"
+            if (d < 1.5) return "~1 day"
+            if (d > 3650) return ">10 years"
+            return sprintf("~%.0f days", d)
+        }
+        BEGIN { win[1] = 7; win[2] = 30; GiB = 1073741824 }
+        $4 == m && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $1 <= now {
+            add(($1 - now) / 86400, ($3 - $2) / GiB)
+        }
+        END {
+            add(0, (s - a) / GiB)
+            rates = ""; have = 0
+            for (i = 1; i <= 2; i++) {
+                span = 0 - first[i]
+                if (span < min_span) continue
+                # The 30-day window only says something new once the history
+                # reaches a day past the 7-day one.
+                if (i == 2 && span <= win[1] + 1) continue
+                d = n[i] * stt[i] - st[i] * st[i]
+                if (d <= 0) continue
+                r = (n[i] * stu[i] - st[i] * su[i]) / d
+                rates = rates (have ? ", " : "") sprintf("%+.1f GiB/day (%.0fd)", r, span)
+                if (!have || r > rate) rate = r
+                have = 1
+            }
+            if (!have) {
+                printf "0\tno rate yet (%.0fh of history, needs %gd)", (0 - first[1]) * 24, min_span
+                exit
+            }
+            if (rate <= 0) {
+                printf "0\trate %s; not filling", rates
+                exit
+            }
+            full = (a / GiB) / rate
+            if (a < floor) {
+                printf "0\trate %s; full in %s", rates, days(full)
+                exit
+            }
+            to_floor = ((a - floor) / GiB) / rate
+            alert = (warn > 0 && to_floor < warn) ? 1 : 0
+            printf "%d\trate %s; %.1f GiB floor in %s, full in %s", alert, rates, floor / GiB, days(to_floor), days(full)
+        }
+    ' "$src"
+}
+
 # --- Checks ------------------------------------------------------------------
 
-problems=0
+low_count=0
+filling_count=0
+# The FILLING lines, the body of a /log event when there is no filling check.
+filling_report=""
 declare -A seen_mounts
 
 check_path() {
@@ -85,40 +261,90 @@ check_path() {
     free_pct="$(awk -v s="$size" -v a="$avail" \
         'BEGIN{ if (s > 0) printf "%.0f", a*100/s; else printf "0" }')"
 
-    local low=0
-    if awk -v a="$avail" -v g="$MIN_FREE_GB" 'BEGIN{ exit !(a/1073741824 < g) }'; then
-        low=1
-    fi
-    if [[ "${MIN_FREE_PCT}" -gt 0 ]] &&
-        awk -v s="$size" -v a="$avail" -v p="$MIN_FREE_PCT" \
-            'BEGIN{ exit !(s > 0 && a*100/s < p) }'; then
-        low=1
-    fi
+    # The floor in bytes: the higher of the absolute and percentage floors, so
+    # being below it means being below EITHER.
+    local floor
+    floor="$(awk -v s="$size" -v g="$MIN_FREE_GB" -v p="$MIN_FREE_PCT" \
+        'BEGIN{ f = g * 1073741824; if (p > 0 && s * p / 100 > f) f = s * p / 100; printf "%.0f", f }')"
 
-    if [[ "$low" -eq 1 ]]; then
-        log "LOW: ${label} (${mount}) has ${free_gb} GiB / ${free_pct}% free (floor ${MIN_FREE_GB} GiB / ${MIN_FREE_PCT}%)"
-        problems=$((problems + 1))
+    # The trend is read before this run's sample is appended (it adds the
+    # current reading itself), so it holds even when the append fails.
+    local trend alert summary
+    trend="$(fill_trend "$mount" "$avail" "$size" "$floor")" || trend=$'0\tno rate (could not read the history)'
+    alert="${trend%%$'\t'*}"
+    summary="${trend#*$'\t'}"
+    record_sample "$mount" "$avail" "$size"
+
+    if awk -v a="$avail" -v f="$floor" 'BEGIN{ exit !(a < f) }'; then
+        log "LOW: ${label} (${mount}) has ${free_gb} GiB / ${free_pct}% free (floor ${MIN_FREE_GB} GiB / ${MIN_FREE_PCT}%); ${summary}"
+        low_count=$((low_count + 1))
+    elif [[ "$alert" == 1 ]]; then
+        local warning="FILLING: ${label} (${mount}) has ${free_gb} GiB / ${free_pct}% free; ${summary} (warns under ${MIN_DAYS_TO_FLOOR} days)"
+        log "$warning"
+        filling_report+="${warning}"$'\n'
+        filling_count=$((filling_count + 1))
     else
-        log "ok:  ${label} (${mount}) has ${free_gb} GiB / ${free_pct}% free"
+        log "ok:  ${label} (${mount}) has ${free_gb} GiB / ${free_pct}% free; ${summary}"
     fi
 }
 
 check_path "state (.runtime)" "$MASCOPE_PATH"
+# Each env's filestore takes every raw upload and may be a symlink to a volume
+# of its own; on the state filesystem it is skipped as already measured.
+for store in "$MASCOPE_PATH"/.runtime/env/*/filestore; do
+    [[ -e "$store" || -L "$store" ]] || continue
+    # A link whose volume is not mounted resolves as far as its target's
+    # parent exists, so it is measured where its writes would land; one that
+    # does not resolve at all falls back to the link itself.
+    target="$(readlink -f "$store" 2>/dev/null || true)"
+    check_path "filestore ($(basename "$(dirname "$store")"))" "${target:-$store}"
+done
 check_path "docker images" "$DOCKER_ROOT"
+prune_history
+# The pings below can take a while (curl retries); release the history first.
+{ exec 9>&-; } 2>/dev/null || true
 
 # --- Alerting ----------------------------------------------------------------
+#
+# Two checks, two meanings. HEALTHCHECK_URL goes down only while a filesystem
+# is below the floor; HEALTHCHECK_FILLING_URL, a second check, while one is
+# projected to reach it or below it already. healthchecks.io notifies when a
+# check changes state, so a single check already down for the projection would
+# stay silent at the moment the floor is actually crossed - and a filling check
+# that counted only the projection would report "recovered" at that moment,
+# since a filesystem below the floor is LOW, not FILLING. Each check is pinged
+# on every run, so a stalled monitor is noticed on both (healthchecks.io flags
+# a check that stops reporting).
 
-if [[ "$problems" -gt 0 ]]; then
-    log "ALERT: ${problems} filesystem(s) below the free-space floor"
-    if [[ -n "${HEALTHCHECK_URL:-}" ]]; then
-        curl -fsS -m 10 --retry 3 "${HEALTHCHECK_URL}/fail" >/dev/null || true
-    fi
-    exit 1
+ping() { curl -fsS -m 10 --retry 3 "$@" >/dev/null || true; }
+
+if [[ "$low_count" -gt 0 ]]; then
+    log "ALERT: ${low_count} filesystem(s) below the free-space floor"
+fi
+if [[ "$filling_count" -gt 0 ]]; then
+    log "WARNING: ${filling_count} filesystem(s) projected to reach the free-space floor within ${MIN_DAYS_TO_FLOOR} days"
 fi
 
-# All good - ping the success URL so a silently stalled monitor is itself
-# noticed (healthchecks.io flags a check that stops reporting).
 if [[ -n "${HEALTHCHECK_URL:-}" ]]; then
-    curl -fsS -m 10 --retry 3 "$HEALTHCHECK_URL" >/dev/null || true
+    if [[ "$low_count" -gt 0 ]]; then
+        ping "${HEALTHCHECK_URL}/fail"
+    else
+        ping "$HEALTHCHECK_URL"
+    fi
+fi
+if [[ -n "${HEALTHCHECK_FILLING_URL:-}" ]]; then
+    if [[ $((low_count + filling_count)) -gt 0 ]]; then
+        ping "${HEALTHCHECK_FILLING_URL}/fail"
+    else
+        ping "$HEALTHCHECK_FILLING_URL"
+    fi
+elif [[ "$filling_count" -gt 0 && -n "${HEALTHCHECK_URL:-}" ]]; then
+    # No filling check: record the projection in the floor check's event log.
+    # healthchecks.io's /log neither changes the check's state nor notifies.
+    ping --data-raw "$filling_report" "${HEALTHCHECK_URL}/log"
+fi
+
+if [[ $((low_count + filling_count)) -gt 0 ]]; then
+    exit 1
 fi
 log "ok: all monitored filesystems have enough free space"

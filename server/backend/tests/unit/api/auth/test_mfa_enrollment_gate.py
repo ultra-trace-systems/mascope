@@ -7,6 +7,7 @@ session, rather than re-testing the policy arithmetic covered next door.
 
 import pytest
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE, ACCOUNT_TYPE_PERSON
 from mascope_backend.api.new.auth import dependencies as deps
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.exceptions import PasswordChangeRequiredException
@@ -27,17 +28,29 @@ class _Request:
 
 
 class _User:
-    def __init__(self, role_id=ADMIN, mfa_enabled=False, must_change_password=False):
+    def __init__(
+        self,
+        role_id=ADMIN,
+        mfa_enabled=False,
+        must_change_password=False,
+        account_type=ACCOUNT_TYPE_PERSON,
+    ):
         self.id = 7
         self.username = "someone"
         self.role_id = role_id
         self.mfa_enabled = mfa_enabled
         self.must_change_password = must_change_password
+        self.account_type = account_type
 
 
 @pytest.fixture
 def require_admin_mfa(monkeypatch):
     monkeypatch.setattr(policy, "REQUIRED_LEVEL", ADMIN)
+
+
+@pytest.fixture
+def require_editor_mfa(monkeypatch):
+    monkeypatch.setattr(policy, "REQUIRED_LEVEL", EDITOR)
 
 
 @pytest.fixture
@@ -62,6 +75,21 @@ def test_uncovered_account_passes(require_admin_mfa):
 
 def test_nobody_is_refused_while_the_policy_is_off(policy_off):
     user = _User()
+    assert deps._enforce_gates(_Request(), user) is user
+
+
+def test_a_human_editor_without_a_factor_is_held_when_editors_are_covered(
+    require_editor_mfa,
+):
+    with pytest.raises(MfaEnrollmentRequiredException):
+        deps._enforce_gates(_Request(), _User(role_id=EDITOR))
+
+
+def test_a_machine_account_is_not_held_when_editors_are_covered(require_editor_mfa):
+    # Same role and same policy as the editor above; only the kind differs. The
+    # cookie is there so the gate is really consulted, not skipped as for a
+    # bearer token.
+    user = _User(role_id=EDITOR, account_type=ACCOUNT_TYPE_MACHINE)
     assert deps._enforce_gates(_Request(), user) is user
 
 

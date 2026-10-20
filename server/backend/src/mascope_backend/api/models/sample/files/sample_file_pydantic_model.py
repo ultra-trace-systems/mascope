@@ -83,15 +83,17 @@ class SampleFileCreate(SampleFileBase):
     acquisition_timezone: str | None = Field(
         None,
         description=(
-            "IANA timezone of the uploading machine, when the agent "
-            "reported a valid one"
+            "The IANA zone the upload reported, when it was a valid one: "
+            "the agent's for the instrument PC, else the browser's for a "
+            "web upload"
         ),
     )
     utc_offset_source: str | None = Field(
         None,
         description=(
             "What determined the UTC offset applied to datetime_utc: "
-            "'file', 'agent' or 'guess'"
+            "'file', 'agent', 'browser' (a web upload's browser, a weaker "
+            "hint than the agent's zone) or 'guess'"
         ),
     )
     instrument_type: str | None = Field(

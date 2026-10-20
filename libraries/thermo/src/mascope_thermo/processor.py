@@ -17,7 +17,9 @@ from mascope_backend.file_converter.errors import (
     UNFINISHED_ACQUISITION_MESSAGE,
     EmptyAcquisitionError,
 )
+from mascope_signal.instrument_func.fit import ORBI_FIT_DMZ
 from mascope_thermo.backend import open_backend
+from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_thermo.streams import pooled_ms1_streams, scan_streams
 from mascope_thermo.thermo import (
     NoScansFoundError,
@@ -115,10 +117,14 @@ class RawProcessor(BaseFileProcessor):
         Sampled from the per-scan trailer; see
         ``ReaderBackend.acquisition_parameters``. Capturing this must never cost
         us a file, so any reader failure degrades to an empty dict and a
-        warning rather than failing ingestion.
+        warning rather than failing ingestion - except a file whose scan
+        events the reader misread, which is refused: the refusal is the
+        file's, not the census's.
 
         :return: Acquisition parameter summary, or {} if unavailable
         :rtype: dict
+        :raises MisreadScanEventsError: When the file's scan events are
+            misread (:mod:`mascope_thermo.scan_events`).
         """
         try:
             return self.file_handle.acquisition_parameters()
@@ -135,6 +141,12 @@ class RawProcessor(BaseFileProcessor):
                 self.file_to_process,
             )
             return {}
+        except MisreadScanEventsError:
+            # Not degraded like the failures below: this property is read
+            # before the one that would fail the file, so the refusal would
+            # reach error monitoring as a warning traceback first, and the
+            # file would then be refused all the same.
+            raise
         except Exception:
             _log.warning(
                 "Could not read acquisition parameters for %s",
@@ -152,7 +164,8 @@ class RawProcessor(BaseFileProcessor):
 
         See :func:`mascope_thermo.streams.scan_streams`. A census like
         ``acquisition_params``, so it must never cost us a file either: a
-        reader failure degrades to an empty list and a warning.
+        reader failure degrades to an empty list and a warning, and a file
+        whose scan events the reader misread is refused, as there.
 
         Peak detection pools every MS1 scan of a polarity into one peak list,
         so a polarity whose MS1 scans come from more than one stream is logged
@@ -161,9 +174,13 @@ class RawProcessor(BaseFileProcessor):
 
         :return: One dict per stream, or [] if unavailable
         :rtype: list[dict]
+        :raises MisreadScanEventsError: When the file's scan events are
+            misread (:mod:`mascope_thermo.scan_events`).
         """
         try:
             streams = scan_streams(self.file_handle)
+        except MisreadScanEventsError:
+            raise
         except Exception:
             _log.warning(
                 "Could not take the scan stream census of %s",
@@ -343,8 +360,10 @@ class RawProcessor(BaseFileProcessor):
         """Resolve the UTC offset for this file's local timestamp.
 
         Raw files embed no offset of their own, so the order is: the zone
-        the uploading machine reported, evaluated at the file's own
-        timestamp ("agent"); else the converter host's zone at that
+        the uploading agent reported for the instrument PC, evaluated at
+        the file's own timestamp ("agent"); else the zone of the browser a
+        web upload came from ("browser"), a weaker hint, since that machine
+        may stand anywhere; else the converter host's zone at that
         timestamp ("guess") - the legacy fallback, wrong whenever the
         instrument PC and the converter host disagree on timezone or DST.
 
@@ -361,7 +380,7 @@ class RawProcessor(BaseFileProcessor):
         DST anomaly twice for one acquisition. The cache is emptied as each
         file is picked up, so it cannot outlive the file it describes.
 
-        :return: UTC offset [s] and its source ("agent" or "guess")
+        :return: UTC offset [s] and its source ("agent", "browser" or "guess")
         :rtype: tuple[int, str]
         """
         cached = self._per_file_cache.get("utc_offset")
@@ -369,13 +388,13 @@ class RawProcessor(BaseFileProcessor):
             return cached
 
         local_dt = datetime.fromisoformat(self.timestamp)
-        zone = self._context_timezone()
+        zone, source = self._reported_timezone()
         # zone=None reads it in the converter host's own zone, which is what
         # the "guess" fallback means; total_seconds() keeps west-of-UTC
         # offsets negative.
         resolved = (
             self._wall_time_offset(local_dt, zone),
-            "agent" if zone is not None else "guess",
+            source if zone is not None else "guess",
         )
         self._per_file_cache["utc_offset"] = resolved
         return resolved
@@ -391,7 +410,7 @@ class RawProcessor(BaseFileProcessor):
 
     @property
     def utc_offset_source(self) -> str:
-        """What determined utc_offset: "agent" or "guess"
+        """What determined utc_offset: "agent", "browser" or "guess"
 
         :return: Offset source
         :rtype: str
@@ -415,7 +434,9 @@ class RawProcessor(BaseFileProcessor):
         self, sample_file_props: SampleFileProps
     ) -> tuple[any, any, any, any]:
         """Fit instrument functions"""
-        dmz = 0.01
+        # The settings a scan stream's own fit is made at as well
+        # (mascope_signal.instrument_func.streams)
+        dmz = ORBI_FIT_DMZ
         fit_params = InstrumentConfigFitParams()
         (
             peakshape_numpy,

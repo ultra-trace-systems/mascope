@@ -1,16 +1,22 @@
 """
-Tests for the `mascope prod update --check` command wiring.
+Tests for the `mascope prod update` command wiring.
 
 Verifies that the preflight is guarded by a running Postgres container, that
 its classification propagates to the process exit code, and — most importantly
-— that `--check` never touches the running stack (no `docker compose`).
+— that `--check` never touches the running stack (no `docker compose`). Also
+covers what a manual update leaves behind: the deployment checkout aligned to
+the release it deployed, and the pending migration record `--auto` wrote
+settled once that release (or a later one) runs.
 """
 
 import importlib
+import shutil
 import subprocess
 
 import pytest
 import typer
+
+import mascope_cli.cmd.prod.auto_update as au
 
 
 # The prod package re-exports a `main` function that shadows the module of the
@@ -214,3 +220,114 @@ def test_align_checkout_survives_an_unfetchable_tag(release_repo):
     prod_main._align_checkout("v9.9.9", str(release_repo))  # no `origin` remote
 
     assert _head(release_repo) == before
+
+
+# --- a manual update settles the pending migration record --auto left ---
+
+
+def _record_pending(root, version):
+    au.save_pending(
+        str(root),
+        au.PendingUpdate(
+            version=version,
+            alembic_head="abc123def456",
+            first_seen_at="2026-10-16T00:39:31",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("deployed", "pending", "settled"),
+    [
+        ("v1.12.0", "v1.12.0", True),  # the pending release itself
+        ("v1.13.0", "v1.12.0", True),  # a later release carries its migration
+        ("v1.13.0-rc.1", "v1.12.0", True),  # so does a later release's candidate
+        ("v1.11.0", "v1.12.0", False),  # a rollback leaves the update outstanding
+        ("v1.12.0-rc.1", "v1.12.0", False),  # a candidate ranks below its release
+        ("latest", "v1.12.0", False),  # names no release to order against
+        ("v1.12.0", "v1.12", False),  # a recorded tag that is not a release
+    ],
+)
+def test_settle_pending_orders_by_release(tmp_path, deployed, pending, settled):
+    _record_pending(tmp_path, pending)
+
+    prod_main._settle_pending(deployed, str(tmp_path))
+
+    assert (au.load_pending(str(tmp_path)) is None) is settled
+
+
+def test_settle_pending_without_a_record_is_a_noop(tmp_path):
+    prod_main._settle_pending("v1.12.0", str(tmp_path))  # must not raise
+
+    assert au.load_pending(str(tmp_path)) is None
+
+
+@pytest.fixture
+def manual_update(monkeypatch, mascope_home):
+    """`prod update` with every docker and git step stubbed out."""
+    monkeypatch.setattr(prod_main, "check_data_dirs", lambda mode: None)
+    monkeypatch.setattr(prod_main, "_abort_if_low_disk", lambda **k: None)
+    monkeypatch.setattr(prod_main, "_run_compose", lambda *a, **k: None)
+    monkeypatch.setattr(prod_main, "_prune_images", lambda: None)
+    monkeypatch.setattr(prod_main, "_align_checkout", lambda *a: None)
+    monkeypatch.setattr(prod_main, "_warn_if_cli_stale", lambda **k: None)
+    yield monkeypatch
+    shutil.rmtree(au.update_dir(str(mascope_home)), ignore_errors=True)
+
+
+def test_manual_update_settles_the_pending_release(
+    manual_update, cli_runner, mascope_home
+):
+    _record_pending(mascope_home, "v1.12.0")
+
+    result = cli_runner.invoke(prod_main.prod_app, ["update", "--version", "v1.12.0"])
+
+    assert result.exit_code == 0, result.output
+    assert au.load_pending(str(mascope_home)) is None
+    status_log = au.update_dir(str(mascope_home)) / "status.log"
+    last = status_log.read_text(encoding="utf-8").splitlines()[-1]
+    assert "Pending migration update v1.12.0 settled" in last
+
+
+def test_unreadable_pending_record_does_not_fail_the_update(
+    manual_update, cli_runner, mascope_home
+):
+    """A state file that parses but lacks a field is reported, not raised.
+
+    The stack already runs the release by then, so the update succeeds and the
+    checkout is still aligned to it.
+    """
+    state = au.update_dir(str(mascope_home)) / "state.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text('{"pending": {"version": "v1.12.0"}}', encoding="utf-8")
+    aligned = []
+    manual_update.setattr(
+        prod_main, "_align_checkout", lambda target, path: aligned.append(target)
+    )
+    # Captured at the logger: loguru's queued sink writes after CliRunner has
+    # closed its stream, so result.output never shows the warning.
+    warnings = []
+    manual_update.setattr(prod_main.runtime.logger, "warning", warnings.append)
+
+    result = cli_runner.invoke(prod_main.prod_app, ["update", "--version", "v1.12.0"])
+
+    assert result.exit_code == 0, result.output
+    assert aligned == ["v1.12.0"]
+    assert any("state.json" in w for w in warnings), warnings
+
+
+def test_failed_manual_update_keeps_the_pending_record(
+    manual_update, cli_runner, mascope_home
+):
+    _record_pending(mascope_home, "v1.12.0")
+
+    def _compose(args, building=False):
+        if args[0] == "up":
+            raise typer.Exit(1)  # what _run_compose raises when compose fails
+
+    manual_update.setattr(prod_main, "_run_compose", _compose)
+
+    result = cli_runner.invoke(prod_main.prod_app, ["update", "--version", "v1.12.0"])
+
+    assert result.exit_code == 1
+    assert au.load_pending(str(mascope_home)).version == "v1.12.0"

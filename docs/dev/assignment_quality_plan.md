@@ -59,7 +59,7 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.4d - the columns of a tiering still in progress | #2223 | built and merged 2026-09-26 (develop `85162ac4f`), the two calls decided as built, plus *group by formula* from the plan owner's request during the build; read in the browser on the testbed once a batch ledger is rebuilt, pass 11 reads the rest. Built: the listed-as column in both ledgers, the probability hidden while its curve is provisional, the provisional mark on the tier surfaces, and the batch ledger reading a reagent anchor by majority of its members (3.3c's follow-up) |
 | 3.4e - an expected line that is absent | - | planned, from the plan owner's notes of 2026-09-26 reading develop `85162ac4f` on the testbed: a row whose predicted envelope holds a line the spectrum should have shown and does not is capped at candidate, no second channel lifting it; the inspector and the chart show the absent lines; gate G13; three riders from the reference's 0.10 line (an artifact confirms no line and refutes none; the file's own detection curve; the TOF's M+2 form), see the review section |
 | 3.4f - a peak that is not separated | - | planned, from the same notes: a row whose peak the instrument did not separate from a neighbour is capped at candidate unless a separated partner channel commits the neutral; gate G14; the TOF sets; the threshold is the bimodality criterion the reference's 0.10 line corrected, not a flat width count (the review section) |
-| 3.4g - the chart draws each peak in the trace's unit, and a lone M0 | - | planned, from the same notes: the TOF sticks overshoot the trace, and a focused peak with no isotopologue row gets no theoretical position drawn |
+| 3.4g - the chart draws each peak in the trace's unit, and a lone M0 | #2379 | built: the lone M0 (the envelope draws a family of one, its circle at the predicted m/z and height; chart spec), and the envelope in the trace's unit. The testbed check found no TOF sample cut from a longer file and the measured sticks resting on the trace; what overshot was the envelope, drawn from `sample_peak_intensity`, which on a TOF is the peak's area (1.5 to 5.5x its height, growing with m/z). Each member is now drawn at its measured height over its abundance error, a member with no peak in the list at the M0's height per intensity (the plan owner's option A); the engine and the tiers are untouched |
 | 3.4h - the inspector links the other channels, and the listing column folds | - | planned, from the same notes: the corroboration badge links the peaks of the other channels; the listed-as column folds to a mark with a switch for the full column |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
 | 3.5b - the envelope's tolerance, fitted per run | - | planned, from the plan owner's reading of 2026-09-25 and the pass-9 ledgers: the fit allows a clean isotope line 5% of its predicted share, the Orbitrap misses by a median 7% and a tenth of committed envelopes by 27% or more, and a row with three lines, two channels and a list sits below assignability on a fit of 41% |
@@ -74,7 +74,7 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | - | planned; no target until two gates have read them |
 | 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - | planned; before 3.5b, which fits what it finds |
 | 5.4 - the side lobe's signatures: width-scaled offset and narrowness in the sidelobe flag | - | planned; after 3.5b and 3.5 |
-| 5.5 - the TOF signal-to-noise column: verify it tracks height, fix the picker or fall back to counting statistics | - | planned; verify first, before 3.4e and 3.4f read the TOF sets |
+| 5.5 - the TOF signal-to-noise column: verify it tracks height, fix the picker or fall back to counting statistics | #2377 | built: the picker's TOF noise was the standard deviation between one and ten widths of the peak, i.e. its own wings and its unit-mass neighbours; it is now the MAD of the baseline within half a unit with every fitted core cut out (Spearman against height about 0.7 -> 0.92 or above on synthetic TOF spectra, pinned by a library test). The fix is in the picker, so no counting-statistics fallback; the run's `pattern_scoring` records `snr_source` and the column's rank against intensity (`snr_intensity_spearman`, over `snr_peaks`; on a TOF that is area, so the height target is read off the peaks endpoint). TOF m/z calibration's S/N gate of 10 now reads as ten times the baseline noise; `orbi_zarr` samples keep the earlier estimate. To measure: sets E, F and J re-detected on the testbed first (their stored peak lists predate the fix), then Spearman per file, the moved TOF rows read by hand, Orbitrap sets identical |
 | 5.6 - the import contract: a verdict on batch rows, the engine tier where the user looks | - | planned; between rounds |
 | 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - | planned; after 3.5; feeds 4.3 and the axis-fingerprint project's calibration milestone |
 | 5.8 - an identification level in Mascope's own vocabulary | - | planned 2026-10-14 (decision 30 taken); after 3.7, revisited at the stage-4 gate |
@@ -162,11 +162,12 @@ justify.
   touches both is split: the library half first, as its own PR with tests
   in `libraries/tools/tests`, and the engine half after the step it would
   collide with has merged, rebased onto it. The status table of this note
-  is edited by every step and conflicts trivially; CHANGELOG merges by
-  union. The testbed is one deployed build, and the comparison reads the
-  latest completed run of each engine per sample, so deploy, gate re-run
-  and comparison are one critical section per step, done at the end of its
-  PR, one branch at a time, with the build tag named in the PR comment.
+  is edited by every step and conflicts trivially; a changelog entry is a
+  fragment of its own in `changelog.d/` and does not. The testbed is one
+  deployed build, and the comparison reads the latest completed run of
+  each engine per sample, so deploy, gate re-run and comparison are one
+  critical section per step, done at the end of its PR, one branch at a
+  time, with the build tag named in the PR comment.
 - **The gate.** Every step ends by re-running the in-app engine on the fixed
   twelve-sample testbed set (six per instrument, peaky's runs already in the
   store) and running `compare_runs.py`; the numbers go into the status table

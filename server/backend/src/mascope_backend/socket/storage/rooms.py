@@ -11,6 +11,11 @@ Architecture:
 Redis keys:
     mascope:rooms:members:{room_id} - SET of user_ids in room
     mascope:rooms:user:{user_id} - SET of room_ids user is in
+    mascope:sockets:rooms:{sid} - SET of room_ids one web socket is in
+
+The per-socket set exists because the Socket.IO server's own record of a
+socket's rooms lives only in the worker holding the connection: to make another
+worker's socket leave its rooms, something has to say which rooms those are.
 """
 
 import os
@@ -170,6 +175,69 @@ class RoomTracker:
             runtime.logger.exception(
                 f"Room tracker: failed to clean up rooms for user {user_id}: {e} "
                 f"[Worker {worker_pid}]"
+            )
+
+    @staticmethod
+    async def join_socket(sid: str, room_id: str) -> None:
+        """
+        Record that one web socket joined a room.
+
+        :param sid: Socket.IO session ID
+        :type sid: str
+        :param room_id: Room identifier
+        :type room_id: str
+        """
+        client = redis_storage_client.client
+        await client.sadd(storage_config.socket_rooms_key(sid), room_id)
+        await client.expire(
+            storage_config.socket_rooms_key(sid), storage_config.room_ttl
+        )
+
+    @staticmethod
+    async def leave_socket(sid: str, room_id: str) -> None:
+        """
+        Record that one web socket left a room.
+
+        :param sid: Socket.IO session ID
+        :type sid: str
+        :param room_id: Room identifier
+        :type room_id: str
+        """
+        await redis_storage_client.client.srem(
+            storage_config.socket_rooms_key(sid), room_id
+        )
+
+    @staticmethod
+    async def socket_rooms(sid: str) -> set[str]:
+        """
+        The rooms one web socket has joined, whichever worker holds it.
+
+        :param sid: Socket.IO session ID
+        :type sid: str
+        :return: Room identifiers
+        :rtype: set[str]
+        """
+        return set(
+            await redis_storage_client.client.smembers(
+                storage_config.socket_rooms_key(sid)
+            )
+        )
+
+    @staticmethod
+    async def forget_socket(sid: str) -> None:
+        """
+        Drop one web socket's room record (called on disconnect).
+
+        :param sid: Socket.IO session ID
+        :type sid: str
+        """
+        try:
+            await redis_storage_client.client.delete(
+                storage_config.socket_rooms_key(sid)
+            )
+        except Exception as e:
+            runtime.logger.exception(
+                f"Room tracker: failed to forget the rooms of socket {sid}: {e}"
             )
 
 

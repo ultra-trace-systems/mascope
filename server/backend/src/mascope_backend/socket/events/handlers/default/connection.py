@@ -18,6 +18,8 @@ from mascope_backend.socket.storage import (
     clear_user_session,
     get_session_user,
     room_tracker,
+    start_session_renewal,
+    stop_session_renewal,
 )
 
 
@@ -45,6 +47,14 @@ async def connect(sid: str, environ: dict) -> bool:
     :rtype: bool
     """
     worker_pid = os.getpid()
+    # Keeps the session, and what eviction finds the socket by, alive while
+    # the tab only listens (see storage_config.session_renewal_interval).
+    # Started for every connection, not only one authenticated here: the SPA
+    # connects before sign-in, and the login route authenticates the socket
+    # later from its X-SID header, possibly on another worker. The renewal has
+    # to live on the worker holding the connection, and a tick with no
+    # session yet simply finds nothing to refresh.
+    start_session_renewal(sid)
     try:
         # --- Get cookies from environment ---
         cookies = environ.get("HTTP_COOKIE")
@@ -111,5 +121,8 @@ async def disconnect(sid: str) -> None:
         )
 
     finally:
-        # Clear session from Redis storage
+        # Clear session from Redis storage, and the socket's own room record,
+        # once nothing can refresh them any more
+        await stop_session_renewal(sid)
+        await room_tracker.forget_socket(sid)
         await clear_user_session(sid)

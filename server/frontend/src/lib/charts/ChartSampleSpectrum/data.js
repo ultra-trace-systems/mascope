@@ -218,9 +218,18 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
   // Theoretical isotopologue envelope of the focused assignment, for visual
   // verification against the measured peaks. Position and expected height are
   // recovered from the stored errors: theoretical m/z = measured / (1 + ppm/1e6)
-  // and expected height = intensity / (1 + abundance_error) (= M0 intensity x
+  // and expected height = height / (1 + abundance_error) (= M0 height x
   // predicted relative abundance). Named "…Peak" so the intensity-scale toggle
   // scales it like the measured peaks.
+  //
+  // The height is the member's own measured stick from the peak list, not its
+  // `sample_peak_intensity`: on a TOF the engine scores, and stores, a peak's
+  // area, which stands 1.5 to 5.5x above its height (more the heavier the
+  // ion), so an envelope drawn from it overshoots the trace. The abundance
+  // error is a ratio, so it carries over through each peak's own
+  // height/intensity. A member whose peak is not in the list borrows the M0's
+  // height/intensity; with neither, the stored intensity is drawn as it is
+  // (on an Orbitrap it is the height).
   //
   // Part of the peak-centric feature, like the tier colouring above: assignment
   // rows can exist without the flag (written by the CLI, by processing, or by a
@@ -233,10 +242,28 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
     const assignments = app.data.peakAssignment.peak
     const assignment = assignments.forPeak(focused.peak_id)
     if (!assignment) return []
-    const familyMembers = assignments.familyOf(assignment)
-    if (familyMembers.length < 2) return []
 
-    const points = familyMembers
+    // Every member of the family, a lone M0 with no isotopologue row
+    // included: its one circle at the predicted m/z, beside the measured
+    // stick, is what lets its m/z error be judged by eye
+    const family = assignments.familyOf(assignment)
+    // Joined as `forPeak` joins: a row's `sample_peak_id` is the peak's
+    // `peak_id`, stringified
+    const ids = new Set(family.map((iso) => String(iso.sample_peak_id)))
+    const heights = new Map(
+      app.data.peak.list
+        .filter((peak) => ids.has(String(peak.peak_id)))
+        .map((peak) => [String(peak.peak_id), peak.height])
+    )
+    // A row's measured height per unit of its stored intensity, or null
+    const toHeight = (iso) => {
+      const height = heights.get(String(iso.sample_peak_id))
+      return height != null && iso.sample_peak_intensity > 0
+        ? height / iso.sample_peak_intensity
+        : null
+    }
+    const m0ToHeight = toHeight(assignments.m0Of(assignment)) ?? 1
+    const points = family
       .map((iso) => {
         if (iso.sample_peak_intensity == null) return null
         const theoreticalMz =
@@ -245,7 +272,8 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
             : iso.sample_peak_mz
         const denom = 1 + (iso.abundance_error ?? 0)
         if (denom <= 0) return null
-        return { mz: theoreticalMz, height: iso.sample_peak_intensity / denom }
+        const height = iso.sample_peak_intensity * (toHeight(iso) ?? m0ToHeight)
+        return { mz: theoreticalMz, height: height / denom }
       })
       .filter(Boolean)
     if (!points.length) return []

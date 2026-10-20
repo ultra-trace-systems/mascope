@@ -4,6 +4,510 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+Changes merged since the newest release below are described in
+[`changelog.d/`](changelog.d/), one file per pull request, until the next
+release gathers them here.
+
+## [1.13.0] - 2026.10.20
+
+### Added
+
+- **A peak-assignment run records the signal-to-noise it scored on.** The
+  run's `pattern_scoring` snapshot says where the per-peak signal-to-noise
+  came from (`snr_source`: `peak_list`, or `none` for a file that stores no
+  estimate, or a column with no value in it), over how many peaks
+  (`snr_peaks`), and how the column ranks against the intensity scored on
+  (`snr_intensity_spearman`, read over 30 peaks or more; on a TOF the
+  intensity is the peak's area, not its height). Near one is a noise estimate that follows the signal; a
+  TOF file whose peaks were detected before the fix below reads near zero
+  until they are detected again.
+
+- Design note: **a UX review of the dashboard**
+  (`docs/dev/ux_review_2026_10.md`). Twenty-four findings from a walk through
+  the targeted workflow against a running instance, each verified against the
+  code and tied to its file: the location spelled three times, a Match tab
+  that only an icon button enables, empty tables that do not say what would
+  fill them, the best matches drawn in red with no legend, toasts titled from
+  their event name, three dialog grammars, heights tuned by hand. Six quick
+  wins are written as briefs and filed in the Linear project "Dashboard UX
+  improvements"; the medium items and the decisions for the plan owner are
+  listed. A design document only; nothing changes until its issues land.
+
+- **Acquisition times that were guessed as UTC can be repaired.** A file
+  uploaded without a reported timezone has its wall clock read in the
+  converter's own zone, UTC in the production image, so at a site in another
+  zone such a file was stored with a zero offset: its `datetime_utc` is the
+  instrument PC's wall clock labelled UTC, hours off, with
+  `utc_offset_source` `guess` and no `acquisition_timezone`. Any upload that
+  reports no zone does this - the web app before it reported the browser's
+  zone, SDK scripts, File Agents older than zone reporting - so the rows keep
+  arriving until a site's clients all report one. `mascope prod db script run
+  fix_guessed_datetime_utc` repairs the Orbitrap rows stored that way,
+  reading each one's wall clock in the zone the instrument PC's clock is set
+  to (`MASCOPE_FIX_GUESSED_UTC_ZONE`), optionally for one instrument or one
+  window of registration time, and writing what the converter would have
+  stored had the upload reported that zone; the instrument function fitted
+  from the file moves with it. A dry run is the default and reports what
+  would change, with evidence about the zone named: how many rows end after
+  their own registration as stored and after the repair.
+  `MASCOPE_FIX_GUESSED_UTC_APPLY=1` writes, and every apply leaves a ledger
+  of the rows it changed, old and new value, under the environment's
+  `repairs/` folder. Guessed TOF rows are not touched, since their
+  `datetime_utc` is already right; nor are rows that carry a reported zone,
+  or guessed rows stored with another offset, which are counted and left
+  alone. The two source columns of a repaired row are not changed. See
+  `docs/maintaining.md`.
+
+- **The disk monitor warns by how fast a disk is filling, not only by how
+  full it is.** A fixed free-space floor gives a disk that fills fast little
+  lead time: at 19 GiB a day, the 10% floor of a 1 TiB disk is crossed about
+  five days before it is full, and the doctor's 5 GiB floor hours before. The
+  disk-check timer (`tooling/disk-check.sh`) now appends each run's free space
+  to `.runtime/disk-check/history.tsv`, kept to 60 days, fits how many GiB a
+  day each filesystem has been filling over the last 7 and 30 days, and logs
+  the rates, when the floor would be reached and when the disk would be full.
+  It warns when, at the faster of the two rates, the floor is less than
+  `MIN_DAYS_TO_FLOOR` days away (default 30; `0` disables), on a healthcheck
+  of its own (`HEALTHCHECK_FILLING_URL`), so `HEALTHCHECK_URL` still goes down
+  only below the floor and crossing it still notifies; without the second
+  check the warning is journalled and logged to the first. An env's filestore
+  that is a symlink to a volume of its own is now measured as well - before,
+  only the filesystem holding `MASCOPE_PATH` was. A threshold that is not a
+  plain number falls back to its default instead of being compared as text.
+  `mascope prod doctor` reads the same history: its Disk rows, one per
+  filesystem and now including the filestore, show the rates and the days
+  until full, the JSON carries them, and a filesystem projected below the
+  doctor's floor within `MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR` days (default 7) is
+  flagged `FILLING` and makes it exit 3, a warning: the fleet playbooks let a
+  rollout or reboot window carry on past it. The Uptime Kuma push
+  (`doctor-push.sh`) names the filesystem nearest to full, its rate and its
+  days until full in its message, and can report the warning on a second Push
+  monitor of its own (`FILLING_TOKEN`), down while a disk is filling or below
+  its floor, so the first still goes down for any later failure. Rates appear
+  after a day of history (`docs/maintaining.md`, "Disk space").
+
+- **The maintaining guide says how to re-process a site's older files under
+  the composite cut.** A new "The composite cut" section under Feature
+  settings: what the setting changes, that the backend and the converter read
+  it at start, that only a re-process decides again how a file's peaks are
+  detected, and the paced procedure used on the two canary sites - which
+  files, 25 per batch and one batch at a time, what to watch, what changes.
+  The design note's status table records the two runs.
+
+- **A sample file's scan table says which mass calibration it was acquired
+  on.** `GET /api/sample/files/{id}/scans` adds `calibrations` to its
+  `stats_per_file`: per scan stream, the median Conversion Parameters B and
+  C, C/B² with its range, and the scans counted. Both readers fill them
+  with the numbers the file stores, at full precision, whatever the
+  server's regional format.
+  Files whose C/B² agree to within 1e-11 share a calibration. Where the reader gives the instrument's
+  status log, `calibration_status` adds the overdue mass calibrations the
+  first and last scan's record names, with the time each was made.
+
+- **A sample file's source data can be downloaded with an API token.**
+  `GET /api/sample/files/{id}/raw` streams the stored Orbitrap `.raw` or TOF
+  `.h5` straight from the filestore, byte for byte, with its length and the
+  name it was uploaded under, to a guest of the file's workspace signed in
+  either way; a file that keeps no source data answers 404. No temporary
+  copy is made, and each account may start 60 downloads in ten minutes. The
+  SDK's `mascope.sample_files.download_raw(sample_file_id, path)` saves it
+  to disk. The web app's `POST /api/file/download` is unchanged.
+
+- **An API token reads target collections, one dataset, one batch and the
+  aggregate match preview.** `GET /api/target/collections` and
+  `/api/target/collections/{id}`, the collections associated with a batch,
+  `GET /api/sample/batches/{id}`, `GET /api/workspaces/{ws}/datasets/{id}` and
+  the non-saving `POST /api/match/aggregate/sample/{id}` and `/batch/{id}` now
+  answer an SDK token as well as a signed-in browser, with the same workspace
+  permissions; before, a token got 401 there. They are the reads the AI
+  toolkit's planned `find` and `describe` need. The set of routes that take a
+  token is now pinned by a test, so a route gains or loses token access only
+  on purpose.
+
+- **SDK loads say whether they are whole.** A load that could not read every
+  sample still returns what it read, and now says so on the frame:
+  `df.attrs["complete"]` is False and `df.attrs["failures"]` names each
+  sample (or stage, or peak) whose read failed, with the error. That holds
+  for `load_peaks`, `load_assignments`, `load_peaks_by_stage`,
+  `load_peak_timeseries` and `samples.list(batches=...)`; when every read
+  failed they return an empty frame carrying the failures instead of None,
+  and `mascope.concat` keeps the failures of every load it combines. The
+  rows and the failures come in the order the samples were listed, the same
+  on every run, rather than in the order the reads finished. The log warning
+  a notebook shows is unchanged.
+
+- **An AI agent gets an API token of its own.** The settings pane's API
+  Access Tokens offer an *AI Agent* token beside the Jupyter Notebooks one,
+  to anyone signed in (guest or above), for their own account. An AI agent
+  working through the SDK presents it as the `ai-agent` service
+  (`MascopeClient(service_name="ai-agent")`): it opens the same routes a
+  notebook's token opens, with the same person's permissions, and nothing
+  more, but under a name of its own; that includes changing and deleting what
+  the person's role allows. The backend's access log now records the service
+  an API token was minted for on every request that presents it under that
+  name (`service_name`, empty for the web app's session), so an agent's requests
+  are told apart from the person's own. It does not pair; generating it leaves
+  the notebook token working.
+
+- **The SDK can change data, not only read it.** Write methods over the
+  routes an API token may change: `mascope.datasets` create, update, move
+  and delete; `mascope.batches` update, copy and delete; `mascope.samples`
+  update, move and copy; the new `mascope.collections` (create, update,
+  associate with batches, delete) and `mascope.compounds` (add, update,
+  remove); and `mascope.matching` runs a sample's or a batch's matching
+  without saving it, saves it, or rebuilds a batch's saved matches. Each is
+  one call to one route, which checks the fields and the role as it does for
+  the web app. A copy, a move and a batch delete run in the background and
+  return the task's `process_id`; a write clears the client's cache. The
+  SDK is version 2026.10.20.
+
+### Changed
+
+- **Each scan range of a stitched file has an instrument function of its
+  own.** For servers that run `composite_scan_streams`. A file whose
+  polarity is stitched from several scan ranges was fitted one peak shape
+  and one resolution function over all of them, though each range is
+  acquired at its own settings. Each range is now fitted on its own summed
+  signal as well, when its peaks are detected: its peaks' areas are
+  integrated under its own peak shape, and what reads a peak's expected
+  width - the calibration's overlap filter, batch alignment, batch peaks
+  and the peak assignment's mass gate - reads it from the range the peak
+  came from. A range with too few peaks to fit takes the fit of the
+  nearest range of the same resolution setting, else the whole file's.
+  The fits are kept in the file's peak store, and the file's processing
+  detail says each range's resolution at m/z 200 beside the whole file's.
+  Files detected whole, which is every file of a single scan range, are
+  fitted and read as before; a stitched file converted earlier keeps its
+  one function until it is processed again.
+
+- **The dashboard says what to do next where it used to go quiet.** Five
+  small first-run and feedback fixes in the web app, none of which touch the
+  server. The Raw files tab opens on the last 7 days rather than the last
+  24 hours (a deployment's `acquisition_filter` still wins, and may name any
+  `Last N days`), offers **All time** among its ranges, and an empty list
+  names the range in force ("No raw files in the last 7 days") and widens to
+  the next range or to all time in one click; a list the status filter
+  emptied says so and clears it without touching the range, a page the
+  search emptied says the match may be on another page, and the list says
+  when it is still loading or could not load instead of reading as empty.
+  Toasts, and the notification log with them, are headed for the reader -
+  "Share link", "Composition search", "Calibration fit", "Match refresh",
+  "Upload", "Processing" - with "warning" or "failed" after the heading when
+  that is the news, instead of the operation's internal name and status word
+  ("Shared link success", "Match compositions by mz success"); a composition
+  search that finds nothing no longer toasts at all, since the search pane
+  already says "No results found" in place. The Batch, Sample and Match tabs
+  say what enables them when hovered while disabled ("Open a batch with
+  samples", "Select a sample", "Visualize an ion match from the ion table"),
+  and say so to a screen reader as well. The Create dataset, Create batch and
+  Create target collection buttons spell out their label above an empty list
+  and go back to icon-only beside a full one, and are named for a screen
+  reader in both states. The target-collection pane says what it is for
+  while no batch is open, instead of a blank box with a plus in its corner.
+
+- **The Thermo reader writes trailer numbers alike on every server.** For
+  servers that read raw files with the Thermo RawFileReader library
+  (`MASCOPE_THERMO_DLL_DIR`). The library wrote each scan's trailer and
+  status-log values in the server's regional format: a decimal comma where
+  that format has one (fi-FI, de-DE), so `-71050473,7320` where other
+  servers wrote `-71050473.7320`, and where .NET takes its culture data
+  from ICU (sv-SE, nb-NO) the minus sign U+2212 as well. It now writes them
+  in the invariant culture, with a decimal point and an ASCII minus, on
+  every server. On a server whose format writes a decimal comma this
+  changes text Mascope serves and stores: the trailer columns of
+  `GET /api/sample/files/{id}/scans`, which the SDK's `get_scans` returns,
+  read with a point from now on for every file, since they are read from
+  the raw file on each request, and so does the `acquisition_params` a file
+  records when it is converted. A file converted earlier keeps the text it
+  recorded, and Mascope still reads the numbers in it. Servers whose format
+  writes a decimal point see no change.
+
+- **An SDK load above `confirm_above` no longer goes ahead unasked in a
+  script.** With no interactive input to read the confirmation prompt from
+  (stdin closed or at end of file, as in a pipeline or an agent's shell),
+  `load_peaks`, `load_assignments` and `load_peak_timeseries` used to load
+  without asking; they now raise the new `ConfirmationRequiredError`, with
+  the sample count and threshold, before loading anything. Pass
+  `confirm_above=None` to load without asking.
+
+- **The SDK raises `PermissionDeniedError` on a 403.** It was an
+  `AuthenticationError` telling you to check your API token, which a 403
+  never needs: the token was accepted, and its user lacks the role. The new
+  error is a subclass of `AuthenticationError`, so code catching that still
+  catches it, and a write method's error names what the call acted on and
+  the role it needs (`object_type`, `object_id`, `required_role`), which the
+  server's answer does not.
+
+### Performance
+
+- **The Raw files list reads its page off an index, newest or oldest
+  first.** Each page load runs two statements, the page and a count for the
+  paginator, and both scanned every sample file on the server: nothing
+  indexed the acquisition time, the instrument or the processing time they
+  filter on, and the count sorted every row it kept, in the list's order. So
+  the cost grew with the look-back, and for all time with everything the
+  server had acquired. `sample_file` gains three indexes - acquisition time,
+  the same per instrument, and processing time - and the list is ordered so
+  that one index serves it in either direction. The count now has no order.
+  Files that tie on the sorted column follow it in the sort's direction, so
+  on a descending sort they come back in descending id order where they used
+  to come back ascending. Measured on a synthetic year of half a million
+  files from four instruments, page and count: the last 7 days from 46 and
+  42 ms to 0.1 and 3 ms; 30 days from 52 and 58 ms to 0.1 and 6 ms, and the
+  same oldest first; one instrument over 30 days from 50 and 49 ms to 0.1
+  and 3 ms; all time from 124 and 240 ms to 0.1 and 22 ms; 7 days by
+  processing time from 50 and 52 ms to 0.1 and 3 ms. One migration, indexes
+  only; it builds in under two seconds on a table that size.
+
+### Fixed
+
+- **Machine accounts are exempt from the two-factor requirement.** On a
+  deployment whose `mfa_required_min_role` covers editors, every instrument
+  agent's machine account was reported as owing an enrolment it can never
+  complete, since it never signs in at a browser. The policy now exempts
+  machine accounts by their kind, whatever their role: the users API reports
+  them `mfa_exempt: true` and never `mfa_enrollment_required`, and Manage users
+  shows them as exempt rather than pending, so "pending" is the set of people
+  who still owe an enrolment. A person at the same role is covered as before.
+  The second-factor sign-in step now refuses a machine account on its own, as
+  the password step already did (`docs/authorization.md`).
+
+- **A TOF peak's signal-to-noise follows its height.** The noise a TOF
+  peak's `signal_to_noise` divides by was the standard deviation of the
+  summed spectrum between one and ten peak widths of it, which is the peak's
+  own wings and its neighbours at the same unit mass: the noise grew with
+  the heights around the peak, a strong peak beside a stronger one read
+  near zero, and over a file's peak list the column did not track height.
+  The noise is now the spread (MAD) of the baseline within half a unit of
+  mass, with every fitted peak's core cut out. On synthetic TOF spectra
+  the column's rank correlation with height rises from about 0.7 to 0.92
+  or above. The peak-assignment engine and the v2 match score read the
+  column, and so does TOF m/z calibration, which keeps a calibrant
+  candidate at a signal-to-noise of 10 or more: that gate now means ten
+  times the baseline's noise. Each calibrant still anchors on the most
+  intense candidate within its window, so the gate no longer drops a strong
+  calibrant beside a stronger peak, and it lets through weaker but clearly
+  detected peaks it used to drop. A TOF file's stored peak list keeps the
+  old values until its peaks are detected again. Orbitrap files are
+  unchanged: a raw file's signal-to-noise is the instrument's own, and one
+  without its raw file keeps the earlier estimate.
+
+- **The batch charts keep the selected samples highlighted through a
+  reload.** When a sample list or match reload redrew the Batch overview or
+  Batch assignments chart, the new data was drawn with nothing selected and
+  the selection was put back about 50 ms later, so the highlighted samples
+  blinked off and on. The selection is now drawn in the same redraw as the
+  data.
+
+- **A file uploaded from the web app has its acquisition time read in the
+  browser's timezone.** A raw file records its acquisition time as the
+  instrument PC's wall clock, with no offset, and the server can only place
+  it in UTC if the upload says which zone that clock was in. A File Agent
+  reports its machine's zone with every upload; the web app reported none,
+  and the converter then read the wall clock in its own zone, which is UTC
+  in the production image. Every file uploaded from a browser at a site
+  east of UTC was therefore stored hours late - two hours in central
+  European summer time - with `utc_offset_source` `guess` and no
+  `acquisition_timezone`, and its ingest appeared to precede its
+  acquisition. The web app now sends the browser's zone with each upload,
+  read as the upload starts, and the upload dialog says which zone it will
+  report. The converter ranks it below an agent's zone and above its own
+  guess, and records such a file with its `acquisition_timezone` set and
+  `utc_offset_source` `browser`, a new value: the browser is wherever the
+  person uploading sits rather than at the instrument, so a file uploaded
+  from another zone than the instrument's is still read in the browser's,
+  and the value says so. Only a geographic zone is sent; a browser that
+  reports a placeholder such as `UTC`, as fingerprinting-resistant,
+  headless and kiosk browsers do, sends none, and the server falls back as
+  before. Files already stored are not changed.
+
+- **A peak assigned with no isotopologue line shows its predicted position.**
+  Focusing a peak whose assignment has no isotopologue row drew no theoretical
+  envelope on the sample spectrum at all, because the envelope needed at least
+  two family members. It now draws the lone M0 as one circle at its predicted
+  m/z and height beside the measured stick, so its m/z error can be judged by
+  eye like any other row's.
+
+- **The theoretical envelope rests on the trace on a TOF.** The focused
+  assignment's predicted isotopologue sticks were drawn from the stored peak
+  intensity, which on a TOF is the peak's area, so they stood 1.5 to 5.5 times
+  above the measured stick and the trace, more the heavier the ion. Each member
+  is now drawn at its own measured height over its abundance error, in the
+  trace's unit on both instruments; an Orbitrap draws as before.
+
+- **A targeted MS2 file with a named inclusion list reads as what it
+  recorded.** In a version-66 Orbitrap file a targeted MS2 scan stores its
+  inclusion-list entry's name in its scan-event record, so the records of
+  such a file are not all one size, and OpenTFRaw 2.0.0 reads them all at
+  one inferred size. From the second record on it decoded noise: the file
+  was stored with both polarities and parked, most of its MS2 scans read as
+  MS1, and the profile of nearly every scan was drawn on a wrong m/z axis.
+  The OpenTFRaw backend now reads these records itself, each at its own
+  size, and only for a file whose records walk exactly to the end of the
+  stream and differ from what the reader reads; every other file is read as
+  before (`mascope_thermo/v66_scan_events.py`). Such a file logs one
+  warning, and one whose scan events still cannot be right - an analyzer an
+  Orbitrap-only instrument does not have, or one scan event read as two MS
+  orders - is refused with the reason in its status. An interim until the
+  pinned reader reads these records (GitHub #2391); files parked by it need
+  processing again.
+
+- **An Orbitrap file whose scan events the reader misreads is refused
+  instead of processed on noise.** OpenTFRaw derives each scan's analyzer,
+  polarity, MS order, filter and profile calibration from its scan event,
+  and a file whose events it reads from the wrong bytes gets noise in all
+  of them: a public Q Exactive HF-X PRM run read as both polarities and
+  none, MS orders 1 to 8 and five analyzers. On an Exploris or a Q Exactive,
+  a scan read as an analyzer no Orbitrap instrument has, or as none, now
+  refuses the file, whatever made it misread, with the reason and the scans
+  read as each analyzer in its status. An ion-trap scan does not: the model
+  is read from the file's free text, which can name a Q Exactive in a
+  hybrid's file. Opening a file costs what it did, and every scan of the
+  demo bundle's files and of two public Q Exactive Plus runs reads as
+  before. A file converted on misread events before this release is
+  refused by every raw read of it since (GitHub #2394).
+
+- **Editing an SDK listing no longer edits the SDK's cache.** Workspace,
+  dataset, batch, sample and ionization-mechanism listings were handed out
+  as the cached frames themselves, so a caller that changed one changed what
+  every later call, and the SDK's own name resolution, saw. Each call now
+  returns a copy.
+
+- **A sample file's peak read gives every peak its height and area.**
+  `GET /api/sample/files/{id}/peaks` averaged each peak's per-scan
+  timeseries, which is computed only once something asks for it, so every
+  other peak of a raw file came back `null` - on routine files most of them,
+  the strongest ions included, and more or fewer from one day to the next.
+  It now reads each peak's stored sums, as `GET /api/samples/{id}/peaks`
+  does, and gives the same values: a peak averaged over its own polarity's
+  scans in a file that holds both. A file with no source data lists the
+  peaks it used to leave out. The batch peak CSV export, which summed the
+  same timeseries and wrote 0 for those peaks, writes their stored sums.
+
+- **The SDK reads the peaks of a stitched sample again.** Since 1.12.0 the
+  peak listing names a stitched sample's segments beside its peaks, one
+  entry per scan stream, and `samples.get_peaks` put that list into the
+  frame with the per-peak columns, so every read of a stitched sample
+  raised `ValueError: All arrays must be of the same length` - and so did
+  `load_peaks`, `load_peaks_by_stage` and `load_peak_timeseries` over one.
+  The segments are now in `df.attrs["segments"]` (None for a sample that is
+  not stitched) beside the per-peak `segment` column, the loaders carry
+  them per sample, and anything else the server sends beside the per-peak
+  lists goes to `df.attrs` instead of the frame.
+
+- **The Thermo reader summarises the MS2 scans of a file that names the
+  collision energy otherwise.** For servers that read raw files with the
+  Thermo RawFileReader library (`MASCOPE_THERMO_DLL_DIR`). Some instruments
+  label the energy in a scan's trailer `HCD Energy:` or `HCD Energy eV:`,
+  with no `HCD Energy V:`, as a Q Exactive Plus DDA run does. The MS2
+  summary of such a file (`GET /api/samples/{id}/ms2/summary`) failed with
+  `'HCD Energy V:' is not in list`. It now gives its groups no energy, as
+  the default OpenTFRaw reader already did.
+
+- **A migration update installed by hand no longer shows as pending.** When
+  the update timer (`mascope prod update --auto`) has recorded a migration
+  release as pending, and an operator then deploys that release with
+  `mascope prod update`, the record is now cleared. Before, it stayed until the
+  next timer run, so `mascope prod doctor` kept saying a migration was waiting
+  after it had already run. Deploying a later release, or a candidate for one,
+  clears it too. Rolling back to an older release keeps it, because that update
+  is still outstanding, and so does deploying `latest`, which the next timer run
+  sorts out. The clear is written to the updater's status log.
+
+- **The Match tab's time series chart no longer disappears.** The chart
+  held its height in its Plotly layout, and Plotly's responsive resize
+  deletes such a height and fits the chart to its container instead, which
+  had no height of its own: the chart shrank to nothing until a splitter was
+  moved. Plotly 4.1.2, which 1.12.0 ships, runs that resize whenever the
+  chart's own box changes size, not only when the browser window does, so
+  a slightly narrower panel was enough. The chart now fills its panel, as
+  the other charts do, so it also reaches the panel's bottom edge, where it
+  used to stop some 40 px short and, with a long compound name wrapping the
+  heading, could have its time axis cut off.
+
+- **The MS2 summary answers for a file whose MS2 events use different
+  isolation widths.** A targeted method sets the width per event, as one
+  with a wide event and a narrow one does; `GET /api/samples/{id}/ms2/summary`
+  refused such a file with a 400 although its centroids and timeseries
+  answered. Each entry of `groups` now carries its own `isolation_width`,
+  and the top-level `isolation_width` is `null` when the scans do not share
+  one (unchanged when they do). A file none of whose MS2 scans stores a
+  width is still refused, now with a message that ends in one full stop.
+  The MS2 notebook toolkit reads each group's width, and the file's one
+  from an older server. (#2421)
+
+### Security
+
+- **A web session can be ended before it expires.** Until now a signed-in
+  browser stayed signed in for its full seven days whatever happened to the
+  account: a password change, a disable or a forced password change left
+  every open session running, and signing out only cleared the one browser's
+  cookie. The session token now records when it was issued, and a session
+  issued before the account's cutoff is refused with the usual 401. A password
+  change, disabling the account and the owner's "require a new password of
+  everyone" all move the cutoff, and so does the new sign-out-everywhere
+  action: `POST /api/users/me/sign-out-everywhere` for one's own account,
+  `POST /api/users/owner/{id}/sign-out-everywhere` for an owner on any
+  account. A socket whose session has been ended, or whose account was
+  disabled, can no longer join rooms other than its own user room. A session
+  issued in the minute before the cutoff survives it, to allow for clock skew
+  between workers. API access tokens are unaffected. **Upgrading signs most
+  web users out once**: a session issued by an earlier version carries no
+  issue time, so it cannot show it postdates the account's last password
+  write and is refused for every account that has one - any account created,
+  reset or whose password changed since the forced-password-change release
+  (`docs/authorization.md`, "Sessions").
+
+- **An open tab stops receiving live updates as soon as its session ends.**
+  A socket already subscribed to a workspace's room kept receiving its
+  record events after the account was held at a forced password change, had
+  its password changed or reset, was disabled or was signed out everywhere,
+  until the tab disconnected: the gate only refused new subscriptions. Each of
+  those now makes the account's open sockets leave every room but their own
+  user room, on whichever backend worker holds them. The connection stays
+  open, so the tab still hears that its session is over. A session started in
+  the minute before the change, which the cutoff's tolerance keeps, keeps its
+  rooms too. The security suite's RT-03 now checks a socket subscribed before
+  the account is armed as well as one subscribing after.
+
+- **Bearer tokens are stored hashed.** The `access_token` table now holds a
+  SHA-256 digest of each SDK, agent and file-converter token instead of the
+  token itself, so a copy of the database hands out no working credential;
+  the upgrade hashes the stored tokens in place, and every token already
+  issued keeps working. A token still expires 360 days after it is
+  generated, and the SDK guide now says how to rotate one. Device-bound
+  agent tokens keep their 30-day lifetime and renew themselves as before.
+
+  The server can no longer hand out a token it issued earlier, so the file
+  converter's token is minted for each upload or peak request and carried
+  with that work, valid for 30 days; a sign-in, a promotion to editor and a
+  pairing no longer mint one. Downgrading past this revision deletes every
+  access token, since a digest gives no token back.
+
+- **Only the file converter's token can start a sample rematch.**
+  `POST /api/match/rematch/sample/{id}` deletes a sample's matches (all of
+  them with `full_remove`) and recomputes them. It answered every API token,
+  so anyone holding an SDK or agent token could do that to any sample their
+  account may edit. It now answers the `file-converter` token alone, which the
+  converter uses to rematch after a peak recompute; an SDK or agent token gets
+  401, and the web app is unaffected. Each token-driven rematch is logged with
+  the service and the user. A route can now be opened to some services' tokens
+  only, with `api_route(token_access=("file-converter",))`. (#2354)
+
+- **An API token can organise data, on the routes opened for it one by one.**
+  The SDK's coming write methods need nineteen write routes that refused a
+  token with 401, and they now accept one: dataset create, update, move and
+  delete; batch update, copy and delete; sample update, move and copy; target
+  collection create, update (which also associates batches) and delete;
+  target compound add, update and remove; and saving or rebuilding a sample's
+  or batch's aggregate matches. Each keeps its ACL, which a token passes as
+  its user's session does, and each was read before it was opened; the rest
+  of the write API still refuses a token. "What a token may change" in the
+  SDK docs lists them with the role each needs. The pen-test suite's new
+  TOKEN-01 reports any write a deployment opens to tokens beyond the declared
+  list in `security/pentest/token_writes.json`, which the backend's tests keep
+  equal to the routes.
+
 ## [1.12.0] - 2026.10.14
 
 ### Added

@@ -123,6 +123,16 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
                 ),
             )
 
+        # The service the token was minted for, which the header has just been
+        # checked against: the access log names it, so an agent's requests
+        # (ai-agent, the File Agent, ...) are told apart from a notebook's
+        # under the same account. Set before the device policy and the route
+        # check, so a token either of them refuses is attributed as well. The
+        # token row's expiry is checked later, by the access-token strategy,
+        # so an expired or revoked token still in the cache is logged under
+        # its service too, then refused.
+        request.state.token_service_name = token_service_name
+
         # Device policy for agent tokens: refuse unbound ones when the
         # deployment requires paired devices, refuse a device token past its
         # short lifetime, and record when a bound device was last seen. All
@@ -144,8 +154,21 @@ async def get_enabled_backends(request: Request) -> list[AuthenticationBackend]:
         # stray Authorization header stays unattributed.
         request.state.token_device_id = token_device_id
 
-        # Check if the endpoint allows for token access
+        # Check if the endpoint allows for token access, and, where it is
+        # narrowed to some services (api_route's token_access=("...",)), for
+        # this token's service. A route stamped without the narrowing (the tus
+        # upload routes) has no token_services and is open to every service.
+        token_services = getattr(route_func, "token_services", None)
         if hasattr(route_func, "token_access") and route_func.token_access:
+            if token_services is not None and token_service_name not in token_services:
+                runtime.logger.info(
+                    f"This endpoint is not configured for {token_service_name} "
+                    f"access, only for {', '.join(sorted(token_services))}."
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Access denied. Resource is not available, please contact your administrator.",
+                )
             runtime.logger.debug(f"Using {token_service_name} authentication protocol.")
             return [auth_backend_access_token]
         else:

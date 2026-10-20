@@ -5,6 +5,8 @@ a generated client is written from the document alone. So the document has to
 say what the route takes: that an API token is accepted, which filters narrow
 the table, and that ``fields`` repeats. ``/metadata`` gained
 ``include_centroids`` beside it, on by default, and the document says that too.
+The scan table's file statistics name the calibration a file was acquired on,
+and the document says how to compare them across files.
 """
 
 from mascope_backend.app.fast import fast
@@ -72,3 +74,14 @@ def test_metadata_includes_centroids_unless_told_otherwise():
     assert include_centroids["required"] is False
     assert include_centroids["schema"]["type"] == "boolean"
     assert include_centroids["schema"]["default"] is True
+
+
+def test_the_scan_table_names_the_calibration_tolerance():
+    description = fast.openapi()["paths"]["/api/sample/files/{sample_file_id}/scans"][
+        "get"
+    ]["description"]
+
+    assert "`calibrations`" in description
+    assert "`calibration_status`" in description
+    assert "C/B²" in description
+    assert "to within 1e-11" in description

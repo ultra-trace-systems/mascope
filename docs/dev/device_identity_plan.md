@@ -347,10 +347,13 @@ The fix replaces the guess with a fact:
 - The backend carries the zone into the converter's file context, and the
   processors resolve `utc_offset` from it. Precedence: an offset the file
   itself carries (the TOF HDF5 attribute, written by the acquisition
-  software) wins; the agent-supplied zone is next; the host-clock guess
-  remains only as the last resort for old agents and manual uploads.
-- `sample_file` records the zone applied and its source (file, agent, or
-  guess), so every timestamp is auditable and recomputable later. The
+  software) wins; the agent-supplied zone is next; the browser's zone, for
+  a web upload, after that (see below); the host-clock guess remains only
+  as the last resort for old agents and SDK scripts, which send no zone,
+  and for a browser that names no geographic zone.
+- `sample_file` records the zone applied and its source (file, agent,
+  browser, or guess), so every timestamp is auditable and recomputable
+  later. The
   existing fix scripts are the argument for never applying an offset
   without recording where it came from.
 
@@ -368,6 +371,27 @@ can tell how far the campaign has got: when no new file arrives with
 `guess`, or with a null `uploaded_by_device_id`, every agent on it has been
 re-paired. Nothing breaks in the transition, and the campaign (section 6)
 is what retires the guess in practice.
+
+The web app sent nothing at first, so every browser upload stayed on the
+guess - and the guess is UTC on every production server, since the backend
+image is built with `Etc/UTC` and compose passes no zone to the backend or
+converter containers. At a site east of UTC that stored the instrument PC's
+wall clock as UTC, hours late (GitHub issue #2385). The web app now sends
+the browser's zone as a hint of its own, `browser_timezone` in the tus
+metadata, read as each upload starts, and the converter records an offset
+it resolved from it as `browser`: the fourth `utc_offset_source` value the
+open question in section 10 anticipated. It ranks below the agent's zone
+and above the guess, because it is weaker: an agent runs on the instrument
+PC or is configured for it, while the browser is wherever the person
+uploading sits, so a file uploaded from another zone than the instrument's
+is still read in the browser's, and the label says so, which is what lets
+a repair select such rows. Only a geographic zone (`Europe/Vienna`, not
+`UTC` or `Etc/GMT+2`) is sent: browsers with fingerprinting resistance, and
+many headless, VM and kiosk browsers, report a placeholder wherever they
+stand, which stored as a fact would leave the file where the guess did, no
+longer flagged. The upload dialog shows the zone it will report. An
+instrument-level zone, which would make both the agent's and the browser's
+a fallback, stays open on #2385.
 
 ## 5. Build phases
 
@@ -498,10 +522,11 @@ Still open:
 - **Converting the non-personal accounts deployments created as
   workarounds** (4.4). The design assumed the rollout would do it; nothing
   was built, so it is either a manual step in E or a tool in F.
-- Whether the web upload path should pass the browser's timezone as a
-  weaker hint for 4.8, and how its provenance is labeled if so. Nothing was
-  built; the server-side hook is generic enough to accept one, and the
-  `utc_offset_source` vocabulary would need a fourth value.
+- ~~Whether the web upload path should pass the browser's timezone as a
+  weaker hint for 4.8, and how its provenance is labeled if so.~~ Settled
+  (4.8): the web app passes it under a key of its own, `browser_timezone`,
+  and the converter labels an offset resolved from it `browser`, the fourth
+  `utc_offset_source` value. Still open: an instrument-level zone (#2385).
 - Whether to ship a zone-aware backfill tool for historical
   `datetime_utc` rows (the existing fixed-offset admin script, upgraded
   to resolve a zone per timestamp), applied per deployment where the

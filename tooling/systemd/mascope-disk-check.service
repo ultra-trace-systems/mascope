@@ -15,7 +15,7 @@ EnvironmentFile=/etc/environment
 EnvironmentFile=-/etc/mascope/disk-check.env
 ExecStart=/bin/bash @@DISK_CHECK@@
 
-# Exit 1 means "a filesystem is low" - the alert has already been sent and the
-# journal recorded it, so do not spam systemd's failed state for a condition the
-# operator is now handling.
+# Exit 1 means "a filesystem is low, or filling toward its floor" - the alert
+# has already been sent and the journal recorded it, so do not spam systemd's
+# failed state for a condition the operator is now handling.
 SuccessExitStatus=0 1

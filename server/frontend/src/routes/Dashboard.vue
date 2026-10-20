@@ -27,6 +27,25 @@ import { useApp } from '@/stores'
 
 const app = useApp()
 
+// A disabled tab keeps its pointer events (see the style below) so that its
+// tooltip can say what enables it. PrimeVue's Tab would still take the click
+// and the Enter it was never meant to get, so both are stopped on the way in,
+// at the tab list, before they reach it - and the mousedown, which is what
+// would focus the tab. Only the keys that activate a tab are stopped: a tab
+// can hold focus as it becomes disabled, and swallowing Tab there would keep
+// the focus in the tab list.
+const ACTIVATION_KEYS = ['Enter', 'NumpadEnter', 'Space']
+const guardDisabledTab = (event) => {
+  if (event.type === 'keydown' && !ACTIVATION_KEYS.includes(event.code)) return
+  if (event.target?.closest?.('[data-p-disabled="true"]')) {
+    event.stopPropagation()
+    event.preventDefault()
+  }
+}
+
+// `reason` is what a disabled tab says: what would enable it. In a tooltip
+// for the pointer, and as the tab's accessible description for everyone else.
+const reasonId = (tab) => `tab-reason-${(tab.value ?? tab.label).toLowerCase()}`
 const tabs = computed(() => [
   {
     label: 'Raw files',
@@ -47,6 +66,7 @@ const tabs = computed(() => [
     label: 'Batch',
     icon: 'pi pi-hashtag',
     disabled: !app.data.batch.focused || app.data.sample.list.length === 0,
+    reason: 'Open a batch with samples',
     doc: app.ui.help.docUrl('guides/target-collections/#read-the-results'),
     help: `
       <h1>Batch View</h1>
@@ -76,6 +96,7 @@ const tabs = computed(() => [
     label: 'Sample',
     icon: 'pi pi-chart-bar',
     disabled: !app.data.sample.focused,
+    reason: 'Select a sample',
     doc: app.ui.help.docUrl(
       peakAssignmentEnabled ? 'how-it-works/peak-assignment/' : 'how-it-works/peak-detection/'
     ),
@@ -107,6 +128,7 @@ const tabs = computed(() => [
     value: 'match',
     icon: 'pi pi-verified',
     disabled: !app.data.match.visualized.ion,
+    reason: 'Visualize an ion match from the ion table',
     // Card body comes from the shared docs snippet
     // (docs/user/_help/matching.md) rather than inline prose -- the docs
     // are the single source of truth.
@@ -160,19 +182,50 @@ const tabs = computed(() => [
       <SplitterPanel :size="app.ui.split.right" :minSize="10">
         <Panel id="charts">
           <Tabs v-model:value="app.ui.tab.active">
-            <TabList>
+            <TabList
+              @click.capture="guardDisabledTab"
+              @mousedown.capture="guardDisabledTab"
+              @keydown.capture="guardDisabledTab"
+            >
+              <!-- Rendered as a div rather than PrimeVue's default button: a
+                   disabled button gets no hover in every browser, so it could
+                   never show the reason it is disabled. The role and keyboard
+                   handling are PrimeVue's own either way; the disabled state
+                   is not, since Tab only puts it on a button, so it is said
+                   here, and the reason is given after the list as the tab's
+                   description, for a reader the tooltip never reaches. -->
               <Tab
-                v-for="{ icon, label, value, disabled, help, doc, helpKey, title } in tabs"
-                :value="value ?? label.toLowerCase()"
-                :key="label"
-                :disabled="disabled"
-                :pt="app.ui.help.bottom(help ?? { helpKey, title }, doc ? { doc } : undefined)"
+                v-for="tab in tabs"
+                :value="tab.value ?? tab.label.toLowerCase()"
+                :key="tab.label"
+                :disabled="tab.disabled"
+                as="div"
+                :aria-disabled="tab.disabled || undefined"
+                :aria-describedby="tab.disabled ? reasonId(tab) : undefined"
+                v-tooltip.bottom="tab.disabled ? tab.reason : null"
+                :pt="
+                  app.ui.help.bottom(
+                    tab.help ?? { helpKey: tab.helpKey, title: tab.title },
+                    tab.doc ? { doc: tab.doc } : undefined
+                  )
+                "
               >
                 <div class="row">
-                  <span :class="icon" /><span>{{ label }}</span>
+                  <span :class="tab.icon" /><span>{{ tab.label }}</span>
                 </div>
               </Tab>
             </TabList>
+            <!-- What a disabled tab is described by. Outside the tabs: text
+                 inside one joins the tab's accessible name, so the reason
+                 would be read as part of the name and again as the
+                 description. A hidden element still serves aria-describedby. -->
+            <span
+              v-for="tab in tabs.filter((tab) => tab.disabled)"
+              :key="tab.label"
+              :id="reasonId(tab)"
+              hidden
+              >{{ tab.reason }}</span
+            >
             <TabPanels>
               <TabPanel value="raw files">
                 <PaneTabAcquisitions :active="app.ui.tab.active == 'raw files'" />
@@ -229,6 +282,15 @@ article {
 
 #charts :deep(.p-panel-header) {
   display: none;
+}
+
+/* A disabled tab answers a hover with what enables it. PrimeVue's base style
+   turns pointer events off on anything .p-disabled, which would keep that
+   tooltip from ever opening; the click it lets through is stopped in the
+   tab list (guardDisabledTab). */
+#charts :deep(.p-tab.p-disabled) {
+  pointer-events: auto;
+  cursor: not-allowed;
 }
 
 menu {

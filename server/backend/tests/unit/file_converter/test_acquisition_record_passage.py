@@ -46,12 +46,14 @@ async def test_the_event_that_registers_a_file_with_the_converter_carries_them(
         source_filename="run_0042.raw",
         acquisition=RECORD,
         sha256=SHA256,
+        browser_timezone="Europe/Vienna",
     )
 
     event, payload = emitted.await_args.args
     assert event == "file-converter.auth"
     assert payload["acquisition"] == RECORD
     assert payload["sha256"] == SHA256
+    assert payload["browser_timezone"] == "Europe/Vienna"
 
 
 def test_the_converters_context_for_a_file_keeps_them():

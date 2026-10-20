@@ -95,7 +95,7 @@ git clone git@github.com:ultra-trace-systems/mascope.git && cd mascope && .\tool
 
 #### Ubuntu
 
-The only prerequisite is [Bash](https://www.gnu.org/software/bash/), which is available on Ubuntu. The script has been developed against Ubuntu 22.04 LTS, but should work on later versions as well.
+The only prerequisite is [Bash](https://www.gnu.org/software/bash/), which is available on Ubuntu. The script targets Ubuntu 22.04 LTS or later; CI runs on 24.04.
 
 To `install` your Mascope runtime, run:
 
@@ -1304,6 +1304,7 @@ To enable authenticated access for external applications, such as Jupyter server
   - Tokens can be generated and revoked via dedicated routes under `/api/auth/access_token`.
 - **Endpoint compatibility**:
   - Endpoints that support access token authentication are explicitly marked with `token_access=True` in the `api_route` decorator.
+  - `token_access` can instead name the services whose tokens the endpoint takes, e.g. `token_access=("file-converter",)`; a token of any other service is refused with 401. The sample rematch route is opened this way, to the file converter alone.
   - The authentication system dynamically selects the appropriate backend (`auth_backend_access_token`) for such requests.
 - **Use cases**:
   - Jupyter server integration, where tokens are passed via the `Authorization` header (`Bearer <access_token>`).
@@ -2315,7 +2316,7 @@ In order to facilitate ergonomic development with the our standard test dataset,
 acquisition_filter = { min = '2022' }
 ```
 
-You can also set a `max` if necessary, and you can provide any date string parsable by the [Javascript `Date` constructor](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/Date), e.g. `2023-05-23` or `2025-01-27T19:14`.
+You can also set a `max` if necessary, and you can provide any date string parsable by the [Javascript `Date` constructor](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/Date), e.g. `2023-05-23` or `2025-01-27T19:14`. A string value names one of the selector's presets instead (`'Last 7 days'`, `'All time'`); without the setting the list opens on the last 7 days.
 
 ### Frontend Codebase
 
@@ -3108,7 +3109,7 @@ Formulas may use the caret `^` to denote a labelled **custom element** with a no
 
 ### Ubuntu host setup
 
-Mascope expects an Ubuntu 24.04 machine to run on, although in principle it could potentially run on other Debian-based distributions with little to no modifications. To setup a Mascope host, clone the Mascope repo and run `./tooling/ubuntu.sh install`. This will install the `mascope` CLI to Ubuntu.
+Mascope expects an Ubuntu 22.04 LTS (or later) machine to run on, although in principle it could potentially run on other Debian-based distributions with little to no modifications. To setup a Mascope host, clone the Mascope repo and run `./tooling/ubuntu.sh install`. This will install the `mascope` CLI to Ubuntu.
 
 ### GitHub releases
 
@@ -3146,11 +3147,13 @@ Releases use **SemVer** `vMAJOR.MINOR.PATCH`:
 - **MINOR** - backwards-compatible features
 - **PATCH** - backwards-compatible fixes
 
-To cut one, from `master` at the commit you want to release:
+To cut one, in this order:
 
-1. Land the release-prep commit and merge it to `master` so it is part of the released commit: finalize the `CHANGELOG.md` section for `X.Y.Z`, and in the same commit bump [`CITATION.cff`](../../CITATION.cff) - `version:` to the new `X.Y.Z`, `date-released:` to today. One commit on purpose: as a standalone step the citation bump was skipped by every release after v1.0.0. Nothing else in `CITATION.cff` changes per release - its `doi:` is the concept DOI, since a version DOI only exists once Zenodo has archived the published release. **Leave a fresh, empty `## [Unreleased]` above the section you just closed.** Any branch still in flight carries its entries under that heading, and rebasing onto a develop where it no longer exists folds them into the section you have just stamped as released - silently, because `CHANGELOG.md` merges by union and raises no conflict. That is what happened to an epic's entries at v1.9.0, and undoing it took a 1,000-line repair (`659d46cec`).
-2. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`. Tag pushes do **not** trigger the build pipeline, so this won't rebuild images.
-3. On GitHub, **Releases → Draft a new release**, pick the `vX.Y.Z` tag, fill in the title + notes (below), and **Publish**.
+1. **Compile the changelog on `develop`.** In a release-prep pull request into `develop`, run `uv run python tooling/changelog.py compile X.Y.Z`: it writes every fragment in [`changelog.d/`](../../changelog.d/README.md) into `CHANGELOG.md` as `## [X.Y.Z] - <today>` - grouped by section, in the order the commits that added them merged - deletes the fragments, and in the same change bumps [`CITATION.cff`](../../CITATION.cff): `version:` to the new `X.Y.Z`, `date-released:` to today (`--date YYYY-MM-DD` for another day). Read the section it wrote and edit it as the release needs - related entries side by side, say - then commit the two files together. One commit on purpose: as a standalone step the citation bump was skipped by every release after v1.0.0. Nothing else in `CITATION.cff` changes per release - its `doi:` is the concept DOI, since a version DOI only exists once Zenodo has archived the published release. A package that should reach PyPI with the release gets its version bump in the same pull request ([Publish](#publish)). Merge the prep pull request into `develop`.
+2. **Merge `develop` into `master`.** Cut a `release/vX.Y.Z` branch from `develop` after the prep has merged, open a pull request titled `[vX.Y.Z]` from it into `master`, and merge it with a merge commit. The head is a release branch rather than `develop` itself because the repository deletes a pull request's head branch when it merges. The changelog check on a pull request into `master` (`check --release`) fails while any fragment is left: a pull request that merged into `develop` after the prep left a fragment of its own behind, so run `compile X.Y.Z` again on `develop` and cut the release branch again. The second run adds what is new to the same section and keeps its heading. That only works until `vX.Y.Z` is tagged; after that `compile` refuses the version, since its notes are published, and a late entry goes into the next release. A branch still in flight keeps its fragment through all of this and goes into the next release. The merge into `master` runs the [release pipeline](#github-releases), which builds and pushes the per-merge images, and `publish-pypi`.
+3. **Tag the merge commit and push the tag:** `git fetch origin master && git tag vX.Y.Z origin/master && git push origin vX.Y.Z`. Tag pushes do **not** trigger the build pipeline, so this won't rebuild images.
+4. **Draft and publish the GitHub Release.** On GitHub, **Releases → Draft a new release**, pick the `vX.Y.Z` tag, fill in the title + notes (below), and **Publish**.
+
 Publishing then triggers two automations:
 
 - **Zenodo** archives the release and mints a new version DOI; the concept DOI (the README badge and the `doi:` in `CITATION.cff`) keeps resolving to the latest. The sync itself breaks silently (hook removed, the linked account's GitHub authorization lapsed, a repo rename not re-enabled on zenodo.org), so the `verify-zenodo` job in `build-release-images.yaml` polls the Zenodo API and **fails the release run** if the version has not appeared within 20 minutes. When it turns red: re-sync and re-enable the repository at <https://zenodo.org/account/settings/github/> (installs a fresh webhook), then re-fire the archive. A release Zenodo never *received* re-fires by flipping it to draft and publishing it again; one Zenodo lists as *errored* has to be deleted and recreated (same tag, original notes, `--latest=false` unless it is the newest) because Zenodo permanently refuses events for a release id it has already seen. Backfill oldest-first - the concept DOI resolves to the most recently *archived* version, not the highest.
@@ -3187,7 +3190,7 @@ Everything else runs exactly as for a release: `build-release-images` builds and
 
 The tag itself does **not** have to be on `master`. Tagging the candidate on `develop` leaves the rolling `latest` images - what the demo stack, CI and any unpinned deployment follow - on the current release, so the pilot changes nothing for anyone else. Cut the real `vX.Y.Z` afterwards the normal way, from `master`.
 
-Steps 1 and 3 of the release procedure change accordingly. In step 1, leave **both** halves alone: `CITATION.cff` is not bumped (a candidate is not citable) and the `CHANGELOG.md` section stays `[Unreleased]` - renaming it to `[X.Y.Z]` weeks before the release exists means every PR merged in between appends into a section already stamped as released, and because `CHANGELOG.md` merges by union no conflict is raised to tell you. In step 3, title the GitHub Release `vX.Y.Z-rc.N` with notes saying what the pilot is meant to exercise, and tick "Set as a pre-release".
+Steps 1 and 4 of the release procedure change accordingly. In step 1, leave **both** halves alone: `CITATION.cff` is not bumped (a candidate is not citable) and the changelog is not compiled - the fragments stay in `changelog.d/` until the release itself, so whatever merges in between goes into it too. `compile` refuses a pre-release version for that reason. In step 4, title the GitHub Release `vX.Y.Z-rc.N` with notes saying what the pilot is meant to exercise, and tick "Set as a pre-release".
 
 Do not reuse a candidate's number: `v2.0.0-rc.2` supersedes `v2.0.0-rc.1`, and the final `v2.0.0` is its own tag on its own commit.
 
@@ -3201,6 +3204,12 @@ Jupyter lab. To use it, run `mascope dev run ==lab` and navigate to `localhost:8
 ## 📝 Git conventions
 
 To encourage consistency and homogeneously in the Git history across developers, the guidelines presented in the [organization README](https://github.com/ultra-trace-systems) should be followed. For project specific additions to the general guidelines, see below.
+
+#### Changelog entries
+
+A pull request that changes what a user, an operator or a program using Mascope sees adds its changelog entry as a file of its own, `changelog.d/<branch>.<section>.md`, and does not touch `CHANGELOG.md`. When every pull request appended to the `[Unreleased]` section, each merge left every other open one with an entry conflicting on GitHub; files of their own never touch the same lines. [`changelog.d/README.md`](../../changelog.d/README.md) has the format. In short: `<section>` is `added`, `changed`, `deprecated`, `removed`, `performance`, `fixed` or `security`, and the file holds the entry as `CHANGELOG.md` is to show it - a `- **Bold lead.**` bullet with its continuation lines indented two spaces.
+
+The "Lint and format" check runs `tooling/changelog.py check`, which fails a pull request that writes under `[Unreleased]` in `CHANGELOG.md`, adds a fragment that would not compile, or repeats an entry. `uv run python tooling/changelog.py preview` prints the `[Unreleased]` section the fragments add up to. A branch that still writes its entry under `[Unreleased]` moves it into a fragment once, after rebasing onto develop. If the rebase stops on `CHANGELOG.md`, resolve the conflict keeping both sides, since taking develop's side alone drops the branch's entry. The rebase can also go through without a conflict, so ask `check` afterwards. If it flags `[Unreleased]`, `uv run python tooling/changelog.py extract` moves the branch's entry into a fragment named after the branch and leaves out the entries develop already has as fragments. Then fold the result into the commit that added the entry (`git commit --fixup` and an autosquash rebase), so every commit still passes. [`changelog.d/README.md`](../../changelog.d/README.md), "A branch with an entry in `CHANGELOG.md`", has the exact commands. `CHANGELOG.md` itself is written only when a release is cut ([Cutting a citable release](#cutting-a-citable-release)).
 
 #### Commit message _scopes_
 

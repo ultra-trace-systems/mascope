@@ -41,7 +41,8 @@ class WorkspacesResource(BaseResource):
         """
         cache_key = "workspaces"
         if cache_key in self._client._cache:
-            return self._client._cache[cache_key]
+            # A copy: a caller editing its listing must not edit the cache
+            return self._client._cache[cache_key].copy()
         logger.info("Fetching workspaces")
         data = self._get("workspaces")
         if not data:
@@ -49,4 +50,4 @@ class WorkspacesResource(BaseResource):
         df = _coerce_datetime_columns(pd.DataFrame(data))
         logger.info("Found {} workspace(s)", len(df))
         self._client._cache[cache_key] = df
-        return df
+        return df.copy()

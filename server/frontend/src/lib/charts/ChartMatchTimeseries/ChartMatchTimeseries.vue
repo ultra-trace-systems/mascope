@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, toRaw, watch, onMounted } from 'vue'
+import { ref, computed, nextTick, toRaw, watch, onMounted } from 'vue'
 
 import { useApp } from '@/stores'
 
@@ -53,6 +53,32 @@ onMounted(() => {
   scale.value.log = true
 })
 
+// The chart fills its parent, and the layout names no height of its own.
+// Plotly's responsive resize deletes a layout height and autosizes to the
+// container, so a height held only in the layout lasts until the plot div next
+// changes size; after that the chart fills a container with no height of its
+// own and draws nothing. `height` follows the splitter, and is read only to
+// resize the chart when the panel changes height.
+watch(
+  () => props.height,
+  async () => {
+    await nextTick()
+    plot.value?.resize()
+  }
+)
+
+// Drawn while the Match tab was hidden, the chart took no size from its
+// container; it takes one once the tab shows.
+watch(
+  () => app.ui.tab.active,
+  async (tab) => {
+    if (tab === 'match') {
+      await nextTick()
+      plot.value?.resize()
+    }
+  }
+)
+
 const layout = computed(() => ({
   xaxis: {
     title: { text: 'Time [s]' },
@@ -76,17 +102,24 @@ const layout = computed(() => ({
   legend: {
     x: 1,
     y: 1
-  },
-  height: props.height
+  }
 }))
 </script>
 
 <template>
   <figure
     v-if="app.data.match.visualized.isotopes?.length"
-    style="padding: 0; margin: 0; width: 100%; min-width: 0; overflow: hidden; flex-shrink: 1"
+    style="
+      padding: 0;
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      overflow: hidden;
+      flex-shrink: 1;
+    "
   >
-    <div style="width: 100%; min-width: 0; overflow: hidden">
+    <div style="width: 100%; height: 100%; min-width: 0; overflow: hidden">
       <BaseChartPlotly
         id="ChartMatchTimeseries"
         ref="plot"

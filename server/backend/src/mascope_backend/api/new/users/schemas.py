@@ -11,7 +11,7 @@ from pydantic import (
     model_validator,
 )
 
-from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE, ACCOUNT_TYPE_PERSON
+from mascope_backend.accounts import ACCOUNT_TYPE_PERSON
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.mfa import policy
@@ -103,12 +103,25 @@ class UserRead(schemas.BaseUser[int]):
         each of the three places that build this schema - one of which would
         eventually be missed, and the miss would read as "no enrolment owed".
 
-        Always false for a machine account: it never renders an enrolment
-        screen and its credential does not depend on a second factor.
+        Always false for a machine account: the policy exempts it by kind (see
+        ``policy.exempt``), and ``mfa_exempt`` says so rather than leaving it to
+        read like an uncovered role.
         """
-        if self.account_type == ACCOUNT_TYPE_MACHINE:
-            return False
-        return policy.enrollment_required(self.role_id, self.mfa_enabled)
+        return policy.enrollment_required(
+            self.role_id, self.mfa_enabled, account_type=self.account_type
+        )
+
+    @computed_field
+    @property
+    def mfa_exempt(self) -> bool:
+        """
+        Whether the two-factor requirement never applies to this account.
+
+        True for a machine account, at any role and under any policy, so the
+        Manage users view and an audit can tell an account exempt by design from
+        a person still owing an enrolment.
+        """
+        return policy.exempt(self.account_type)
 
 
 class UserPublic(BaseModel):

@@ -7,10 +7,11 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
-from .._concurrent import progress_bar, run_concurrent
+from .._concurrent import failure_record, mark_complete, progress_bar, run_concurrent
 from .._resolve import _match_names, _pattern_text, resolve_id
 from ._base import (
     BaseResource,
+    Needs,
     _coerce_datetime_columns,
     _lists_warnings,
     _log_api_message,
@@ -33,6 +34,31 @@ _EMPTY_RANGE_UNEXPLAINED = (
     "(servers up to 1.10.1 leave the warning off an empty answer). Read the "
     "sample without a time range to see whether it has peaks."
 )
+
+
+def _read_level(data: dict[str, Any]) -> dict[str, Any]:
+    """Take out of a peak listing what is not a per-peak list.
+
+    A peak listing's ``data`` holds one list per column, each as long as
+    ``peak_id``, and a null for a column the read left out (``area`` without
+    areas). Anything else is the server's word on the read as a whole, which
+    a newer server may add to: in the frame it would either raise, being a
+    list of another length, or repeat on every row. It goes to ``attrs``
+    instead, under its own key.
+
+    :param data: The listing's ``data``, taken from in place.
+    :return: What was taken, by key.
+    """
+    peak_ids = data.get("peak_id")
+    if not isinstance(peak_ids, list):
+        return {}
+    taken = {}
+    for key, value in list(data.items()):
+        if value is None or (isinstance(value, list) and len(value) == len(peak_ids)):
+            continue
+        taken[key] = data.pop(key)
+        logger.debug(f"Peak listing: {key!r} is not per peak, kept in attrs")
+    return taken
 
 
 class SamplesResource(BaseResource):
@@ -162,7 +188,10 @@ class SamplesResource(BaseResource):
         :type dataset: str, optional
         :return: A DataFrame containing sample information, or None if no
                  samples found. When ``batches`` is used the result includes
-                 a ``sample_batch_name`` column.
+                 a ``sample_batch_name`` column, ``attrs["complete"]`` is False
+                 when the listing of some batch failed, and
+                 ``attrs["failures"]`` names each such batch and its error
+                 (an empty frame carries them when every listing failed).
         :param drop_columns: Optional list of columns to drop from the final DataFrame.
             If None, a default set of less relevant columns will be dropped.
         :type drop_columns: list[str], optional
@@ -222,33 +251,42 @@ class SamplesResource(BaseResource):
             df.insert(0, "sample_batch_name", id_to_name.get(bid, ""))
             return df
 
-        frames: list[pd.DataFrame] = run_concurrent(
+        frames, failures = run_concurrent(
             _fetch_batch_samples,
             [(bid,) for bid in batch_ids],
             max_workers=min(8, len(batch_ids)),
             desc="Listing samples",
             unit="batch",
         )
+        failed = [
+            failure_record(
+                failure,
+                sample_batch_id=failure.args[0],
+                sample_batch_name=id_to_name.get(failure.args[0], ""),
+            )
+            for failure in failures
+        ]
 
         if not frames:
-            return None
+            return mark_complete(None, failed)
 
         df = pd.concat(frames, ignore_index=True)
         if drop_columns is not None:
             df = df.drop(columns=drop_columns, errors="ignore")
-        return df
+        return mark_complete(df, failed)
 
     def _list_by_id(self, batch_id: str) -> pd.DataFrame | None:
         """List samples by batch ID (no name resolution)."""
         cache_key = f"samples:{batch_id}"
         if cache_key in self._client._cache:
-            return self._client._cache[cache_key]
+            # A copy: a caller editing its listing must not edit the cache
+            return self._client._cache[cache_key].copy()
         data = self._get("samples", params={"sample_batch_id": batch_id})
         if not data:
             return None
         df = _coerce_datetime_columns(pd.DataFrame(data))
         self._client._cache[cache_key] = df
-        return df
+        return df.copy()
 
     def get(self, sample_id: str) -> dict | None:
         """Get details of a specific sample.
@@ -325,7 +363,10 @@ class SamplesResource(BaseResource):
                  - ``signal_to_noise``: the peak's own noise estimate,
                    ``NaN`` throughout for a file that stores none - an
                    absent estimate, never a peak measured to be
-                   noise-free
+                   noise-free. A TOF file's peaks detected before
+                   Mascope measured the noise on the baseline (see the
+                   changelog) carry an estimate that does not follow
+                   the peak's height; detecting them again replaces it
                  - ``match_score_isotope``, ``match_score_ion``,
                    ``match_score_compound``
                  - ``relative_abundance``
@@ -351,6 +392,16 @@ class SamplesResource(BaseResource):
                  warning is also logged. A time-ranged read that every peak
                  was left out of is an empty frame carrying the warning,
                  not None.
+
+                 ``df.attrs["segments"]`` describes the scan streams a
+                 stitched sample's spectrum is made of, one entry each, and
+                 the ``segment`` column names the one each peak came from:
+                 nothing is rescaled where two streams meet, so a peak's
+                 intensity reads against its own segment. It is None for a
+                 sample that is not stitched, and from a server older than
+                 1.12.0, which does not send it. Whatever else the server
+                 sends beside the per-peak columns is kept in ``df.attrs``
+                 under its own key rather than in the frame.
         :rtype: pd.DataFrame | None
         :raises AuthenticationError: If authentication fails.
         :raises NotFoundError: If the sample is not found.
@@ -429,6 +480,14 @@ class SamplesResource(BaseResource):
             # WARNING: an empty answer that may be a whole sample left out
             logger.warning(f"{_EMPTY_RANGE_UNEXPLAINED} {hint}")
             warnings = [_EMPTY_RANGE_UNEXPLAINED]
+
+        # The frame is built from the per-peak lists alone. What the server
+        # says of the read as a whole rides beside them in `data` - a stitched
+        # sample's segments, one per scan stream - and a list of another
+        # length in the frame raises.
+        data = dict(data)
+        segments = data.pop("segments", None)
+        read_level = _read_level(data)
 
         # Convert to DataFrame
         df = pd.DataFrame(data)
@@ -526,6 +585,8 @@ class SamplesResource(BaseResource):
         # Set last: the merges above build new frames. A time-ranged read is
         # short by every peak the server left out, and its rows cannot show
         # it - the warnings are how a script finds out.
+        df.attrs.update(read_level)
+        df.attrs["segments"] = segments
         df.attrs["warnings"] = warnings
         return df
 
@@ -939,3 +1000,94 @@ class SamplesResource(BaseResource):
             complex nested structure of per-scan centroid data.
         """
         return self._get("samples/centroids", params={"sample_item_ids": sample_ids})
+
+    def update(self, sample_id: str, sample_item: dict[str, Any]) -> dict[str, Any]:
+        """Update a sample's fields: its name, type, attributes and the rest.
+
+        The route takes the whole sample, not only what changes, so start
+        from :meth:`get` and change what you mean to; fields the route does
+        not take are ignored::
+
+            sample = mascope.samples.get(sample_id)
+            mascope.samples.update(sample_id, {**sample, "sample_item_name": "Blank 1"})
+
+        An ingested sample's type is ``ACQUISITION``, which only the system
+        sets, and the route refuses a sample that carries it: change
+        ``sample_item_type`` to a user type in the same call.
+
+        :param sample_id: The sample.
+        :type sample_id: str
+        :param sample_item: The sample's fields, as :meth:`get` returns them.
+        :type sample_item: dict[str, Any]
+        :return: The updated sample.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the editor role on the sample,
+            or the owner role for a locked sample.
+        :raises ValidationError: If a required field is missing, or a type
+            only the system sets is given.
+        """
+        return self._write(
+            "PATCH",
+            f"sample/items/{sample_id}",
+            Needs(
+                "update",
+                "sample",
+                sample_id,
+                "editor on the sample (a locked sample: the owner role)",
+            ),
+            data={"sample_item": sample_item},
+        )
+
+    def move(self, sample_ids: Sequence[str], batch_id: str) -> dict[str, Any]:
+        """Move samples into another batch.
+
+        The move runs in the background on the server: the call returns when
+        it has started. A locked sample cannot be moved.
+
+        :param sample_ids: The samples.
+        :type sample_ids: Sequence[str]
+        :param batch_id: The batch to move them into.
+        :type batch_id: str
+        :return: The server's ``message`` and the task's ``process_id``.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the editor role on the samples
+            and on the destination batch.
+        """
+        return self._write(
+            "POST",
+            "sample/items/move",
+            Needs(
+                "move samples into",
+                "batch",
+                batch_id,
+                "editor on the samples and on the batch",
+            ),
+            data={"sample_batch_id": batch_id, "sample_item_ids": list(sample_ids)},
+        )
+
+    def copy(self, sample_ids: Sequence[str], batch_id: str) -> dict[str, Any]:
+        """Copy samples into a batch.
+
+        The copy runs in the background on the server: the call returns when
+        it has started, and the copies appear in :meth:`list` once done.
+
+        :param sample_ids: The samples.
+        :type sample_ids: Sequence[str]
+        :param batch_id: The batch to copy them into.
+        :type batch_id: str
+        :return: The server's ``message`` and the task's ``process_id``.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the guest role on the samples
+            and the editor role on the destination batch.
+        """
+        return self._write(
+            "POST",
+            "sample/items/copy",
+            Needs(
+                "copy samples into",
+                "batch",
+                batch_id,
+                "guest on the samples and editor on the batch",
+            ),
+            data={"sample_batch_id": batch_id, "sample_item_ids": list(sample_ids)},
+        )

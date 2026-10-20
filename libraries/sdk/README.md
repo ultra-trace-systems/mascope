@@ -15,6 +15,7 @@ Python SDK for the Mascope mass spectrometry data analysis platform. Designed fo
 - [Configuration](#configuration)
 - [High-Level Loaders](#high-level-loaders)
 - [Peak Assignments](#peak-assignments)
+- [Changing Data](#changing-data)
 - [Caching](#caching)
 - [API Reference](#api-reference)
 - [Examples](#examples)
@@ -400,6 +401,29 @@ Key columns: `sample_batch_name`, `sample_item_name`, `datetime_utc`, plus all c
 
 `load_peaks`, `load_peak_timeseries`, and `load_assignments` show an interactive confirmation prompt when the number of samples exceeds `confirm_above`. Defaults are 100 for `load_peaks` and `load_assignments`, and 20 for `load_peak_timeseries`. This prevents accidentally launching hundreds of concurrent requests from a notebook cell. Set `confirm_above=None` to disable.
 
+A caller with no interactive input - a script run with stdin closed or redirected from `/dev/null`, a pipeline, an agent's shell - cannot answer the prompt, and is stopped rather than waved through: the loader raises `ConfirmationRequiredError` before loading anything, with the sample count and the threshold on `count` and `threshold`. A script that means to load that many passes `confirm_above=None` (or a higher threshold).
+
+```python
+from mascope_sdk import ConfirmationRequiredError
+
+try:
+    peaks = mascope.load_peaks(dataset="My Dataset")
+except ConfirmationRequiredError as e:
+    print(f"{e.count} samples - narrow the selection, or pass confirm_above=None")
+```
+
+### Partial loads
+
+The loaders read sample by sample, and a sample whose read fails does not stop the others: the load returns what it could read, and logs a warning. So that a script can tell "these samples have little in them" from "some samples failed to load", the frame says which it is:
+
+```python
+peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium")
+peaks.attrs["complete"]  # True when every read succeeded
+peaks.attrs["failures"]  # one dict per failed read, [] when none failed
+```
+
+Each failure names the sample (`sample_batch_name`, `sample_item_id`, `sample_item_name`; `load_peaks_by_stage` the stage, `load_peak_timeseries` also the `peak_id` where a peak's series failed) and the error (`error_type`, `error`). When every read failed the loader returns an empty frame carrying the failures, not None, which would say there was nothing to load. `load_peaks`, `load_assignments`, `load_peaks_by_stage`, `load_peak_timeseries` and `samples.list(batches=...)` (per batch) report this; `mascope.concat` of several loads keeps every load's failures, and is complete only when every load was.
+
 ### Provenance
 
 Every frame a high-level loader returns carries the provenance of the server that served it, on `df.attrs["provenance"]`: the deployment's id, the Mascope version it runs, the match-score and peak-assignment engine versions in force, and when this client first heard from that build. Keep it with what you derive from the frame, and a published figure can name the build its numbers came from.
@@ -562,9 +586,74 @@ import may not write it.
 For cross-sample analysis use the [`load_assignments`](#load_assignments-peak-assignments-across-batches)
 loader; for a guided walk-through see tutorial notebook `10_peak_assignment.ipynb`.
 
+## Changing Data
+
+The SDK can also change what your role lets you change: datasets, batches,
+samples, target collections and compounds, and saved matches. Each write
+method is one call to one API route and does what that route does, no more:
+the server checks the fields and your role, and a refusal comes back as the
+SDK's exceptions.
+
+```python
+dataset = mascope.datasets.create("Spring campaign")
+mascope.batches.copy(batch_id, dataset["dataset_id"], name="Spring copy")
+
+collection = mascope.collections.create(
+    "Organic acids",
+    compounds=[
+        {"target_compound_formula": "C2H4O2", "target_compound_name": "Acetic acid"}
+    ],
+)
+mascope.collections.associate(collection["target_collection_id"], [batch_id])
+
+preview = mascope.matching.aggregate_batch(batch_id)  # what a save would save
+mascope.matching.save_batch(batch_id)
+```
+
+- A method returns the route's data: the dataset, batch, sample or collection
+  as it now is. One whose route answers with a message alone returns that
+  answer as a dict.
+- A **copy**, a **move** and a **batch delete** run in the background on the
+  server: the call returns once the work has started, with its `process_id`,
+  and the result shows in the listings when it is done.
+- Some updates replace rather than add. `batches.update` takes the batch's
+  target collections and sets them to that list, so to only rename a batch
+  send the collections it has now; `collections.associate` sets the batches a
+  collection is associated with, and an empty list detaches it from them all.
+  `collections.update` sets a collection's compounds to the ones it creates
+  (`compounds=`) and names (`compound_ids=`): to add compounds, send the
+  current `compound_ids` too, or the ones left out are taken out.
+  `samples.update` takes the whole sample: start from `samples.get`, and give
+  an ingested sample (type `ACQUISITION`, which only the system sets) a user
+  type in the same call, or the route refuses it.
+- A formula change in `compounds.update` deletes the compound and creates it
+  again under a new ID, with the name and CAS number the item gives: send
+  both with the formula.
+- A write clears the client's cache (see [Caching](#caching)), so the next
+  listing shows the change.
+- Deleting a dataset, a batch, a collection or a compound and
+  `matching.resave_batch` cannot be undone.
+
+A write your role does not allow raises `PermissionDeniedError`. The server
+says only that it refused; the error also names what the call acted on and
+the role it needs:
+
+```python
+from mascope_sdk import PermissionDeniedError
+
+try:
+    mascope.datasets.move(dataset_id, other_workspace_id)
+except PermissionDeniedError as e:
+    print(e.object_type, e.object_id)  # dataset abc123
+    print(e.required_role)  # editor in its workspace and in workspace '...'
+```
+
+The role each write needs is listed in the
+[SDK & API guide](https://github.com/ultra-trace-systems/mascope/blob/master/docs/user/sdk/index.md#what-a-token-may-change).
+
 ## Caching
 
-Dataset, batch, sample, and ionization mechanism listings are cached (in volatile memory) automatically after the first call. This speeds up repeated name resolution and avoids redundant API calls. When data on the server changes (e.g. new batch created), the cache needs to be cleared to reload the data on the next call. The cache is not persisted on disk, so restarting the kernel always clears the cache.
+Dataset, batch, sample, and ionization mechanism listings are cached (in volatile memory) automatically after the first call. This speeds up repeated name resolution and avoids redundant API calls. Each call hands out a copy of the cached listing, so editing what you got leaves the cache, and the next call, as fetched. A write made through the SDK clears it. When data on the server changes otherwise (e.g. a batch created in the web app, or a copy the server finishes in the background), the cache needs to be cleared to reload the data on the next call. The cache is not persisted on disk, so restarting the kernel always clears the cache.
 
 ```python
 # Clear the cache when server data changes
@@ -595,12 +684,21 @@ comes from its flags. For example,
 | Method   | Description                  | Returns             |
 | -------- | ---------------------------- | ------------------- |
 | `list()` | List all accessible datasets | `pd.DataFrame│None` |
+| `create(name, description=, dataset_type=, instrument=, icon=, workspace_id=)` | Create a dataset | `dict` |
+| `update(dataset_id, name=, description=, icon=, workspace_id=)` | Rename it, or change its description or icon | `dict` |
+| `move(dataset_id, target_workspace_id, workspace_id=)` | Move it into another workspace | `dict` |
+| `delete(dataset_id, workspace_id=)` | Delete it and everything in it | `dict` |
+
+The writes act in the client's workspace unless `workspace_id` names another.
 
 #### `mascope.batches`
 
 | Method          | Description                         | Returns             |
 | --------------- | ----------------------------------- | ------------------- |
 | `list(dataset)` | List batches in a dataset (by name) | `pd.DataFrame│None` |
+| `update(batch_id, target_collection_ids, name=, description=)` | Rename it and set its target collections | `dict` |
+| `copy(batch_id, dataset_id, name, description=)` | Copy it into a dataset, in the background | `dict` |
+| `delete(batch_id)` | Delete it and its samples, in the background | `dict` |
 
 #### `mascope.samples`
 
@@ -614,6 +712,9 @@ comes from its flags. For example,
 | `get_spectrum(sample_id, ...)`                  | Get averaged spectrum                                | `pd.DataFrame│None` |
 | `get_spectra(sample_ids, ...)`                  | Get spectra for multiple samples                     | `pd.DataFrame│None` |
 | `get_centroids(sample_ids)`                     | Get centroid data                                    | `dict│None`         |
+| `update(sample_id, sample_item)`                | Update a sample's fields (the whole sample)          | `dict`              |
+| `move(sample_ids, batch_id)`                    | Move samples into a batch, in the background         | `dict`              |
+| `copy(sample_ids, batch_id)`                    | Copy samples into a batch, in the background         | `dict`              |
 
 A `get_peaks` over a time range (`t_min` / `t_max`) leaves out the peaks whose timeseries has not been computed yet; see [Peaks left out of a time range](#peaks-left-out-of-a-time-range).
 
@@ -624,6 +725,7 @@ A `get_peaks` over a time range (`t_min` / `t_max`) leaves out the peaks whose t
 | Method                                                              | Description                                           | Returns             |
 | ------------------------------------------------------------------- | ----------------------------------------------------- | ------------------- |
 | `get_scans(sample_file_id, fields=, first_scan=, last_scan=, ...)`  | A file's scan table: one row per scan, no centroids   | `pd.DataFrame│None` |
+| `download_raw(sample_file_id, path)`                                | The file's source `.raw` / `.h5`, streamed to disk    | `Path`              |
 
 A sample names the file it was cut from in `sample_file_id` (`mascope.samples.get(sample_id)["sample_file_id"]`). `get_scans` returns one row per scan of that file with the scan's statistics (`ScanNumber`, `StartTime` in minutes, `TIC`, `ScanType`, `MsType`) and its trailer under the instrument's own labels, colon included (`"FT Resolution:"`, `"Conversion Parameter B:"`). Scans of every MS order are in it and none is left out; filter on `MsType` for the MS1 scans alone. No peak is read for it, so it stays under a megabyte for a file whose centroids run to hundreds.
 
@@ -644,12 +746,46 @@ scans = mascope.sample_files.get_scans(
 
 `fields` keeps the named columns (`ScanNumber` always comes with them); `first_scan` / `last_scan`, `t_min` / `t_max` (seconds) and `polarity` narrow the scans. The number of scans in the file and the file's own statistics ride on `df.attrs["num_of_scans"]` and `df.attrs["stats_per_file"]`. Only a file whose raw Orbitrap data is stored has a scan table; any other is refused with a `ValidationError`.
 
+`download_raw` saves the file the instrument wrote, byte for byte as the server stores it, streaming it to disk a megabyte at a time. Give it a directory and the file keeps the name it was uploaded with (a path ending in `/` is a directory, made if it does not exist yet); give it a file path and it is written there. A download is not resumed: one cut off part way raises `MascopeConnectionError` and leaves nothing at the destination. The server limits how many files an account may download in a while (60 in ten minutes) and answers 429 past that.
+
+```python
+raw = mascope.sample_files.download_raw(file_id, "downloads/")
+```
+
 #### `mascope.matching`
 
 | Method                                 | Description                  | Returns           |
 | -------------------------------------- | ---------------------------- | ----------------- |
 | `match_compound(sample_id, formula)`   | Match a compound in a sample | `dict│None`       |
 | `match_compounds(sample_id, formulas)` | Match multiple compounds     | `list[dict]│None` |
+| `aggregate_sample(sample_id, target_ion_id=, match_params=)` | Run a sample's matching, saving nothing | `dict` |
+| `aggregate_batch(batch_id, target_ion_id=, match_params=)` | Run a batch's matching, saving nothing | `dict` |
+| `save_sample(sample_id, ...)` | Run a sample's matching and save it | `dict` |
+| `save_batch(batch_id, ...)` | Run a batch's matching and save it | `dict` |
+| `resave_batch(batch_id, ...)` | Replace a batch's saved matches with a fresh run's | `dict` |
+
+The saves take `target_ion_id` and `match_params` as the runs do. The batch saves also take `match_ions=`, `match_compounds=`, `match_collections=`, `match_samples=`: False leaves that level's matches out. `save_sample` always saves every level; its route takes no such flags. A save answers with the server's `status` and `message`.
+
+#### `mascope.collections`
+
+| Method | Description | Returns |
+| ------ | ----------- | ------- |
+| `create(name, description=, collection_type=, compounds=, compound_ids=, batch_ids=, workspace_id=, is_global=)` | Create a target collection | `dict` |
+| `update(collection_id, name=, description=, collection_type=, compounds=, compound_ids=)` | Change it or its compounds | `dict` |
+| `associate(collection_id, batch_ids)` | Set the batches it is associated with | `dict` |
+| `delete(collection_id, delete_orphan_compounds=)` | Delete it | `dict` |
+
+A collection belongs to the client's workspace unless `workspace_id` names another, or to every workspace with `is_global=True`. `associate` needs only the guest role on the collection, and the editor role on each batch it adds or removes.
+
+#### `mascope.compounds`
+
+| Method | Description | Returns |
+| ------ | ----------- | ------- |
+| `add(compounds)` | Add compounds, each `{"target_compound_formula": ..., "target_compound_name": ...}` | `dict` |
+| `update(compounds)` | Update compounds, each with its `target_compound_id` | `dict` |
+| `remove(compound_id)` | Delete a compound, taking it out of every collection | `dict` |
+
+The compound list is shared by every workspace, so these need the global editor role. `add` lists a compound that already exists (the same name and formula, or CAS number) under `existing_compounds` instead of creating it again.
 
 #### `mascope.peak_assignments`
 
@@ -823,6 +959,7 @@ except NotFoundError:
     - `MascopeTimeoutError` — Request timeout
   - `MascopeAPIError` — API errors (includes `status_code`, `message`, `url`)
     - `AuthenticationError` — 401/403 responses
+      - `PermissionDeniedError` — 403: the token is valid, its user lacks the role; a write names its `object_type`, `object_id` and `required_role`
     - `NotFoundError` — 404 responses
     - `ValidationError` — 422 responses
     - `ServerError` — 5xx responses
@@ -857,6 +994,6 @@ mascope_sdk/
 
 - **`client.py`** owns the public API. High-level loaders (`load_peaks`, etc.) are thin wrappers that delegate to `_loaders.py`.
 - **`resources/`** contains one class per API domain. Each resource inherits `BaseResource` which provides `_get()` / `_post()` helpers and automatic datetime column coercion.
-- **`_concurrent.py`** centralises `ThreadPoolExecutor` usage with `run_concurrent()`, which handles progress bars (tqdm), `None`-filtering, future cancellation on error, and the `max_workers <= 8` guard.
+- **`_concurrent.py`** centralises `ThreadPoolExecutor` usage with `run_concurrent()`, which handles progress bars (tqdm), `None`-filtering, future cancellation on error, and the `max_workers <= 8` guard. It returns the failed tasks beside the results; `mark_complete()` turns them into a frame's `attrs["complete"]` / `attrs["failures"]`.
 - **`_resolve.py`** handles name matching (literal substring for strings, regex for compiled patterns) and name -> ID resolution (used by resources and loaders).
 - **Underscore-prefixed modules** (`_http`, `_loaders`, `_concurrent`, `_resolve`, `_agents`) are internal — not part of the public API.

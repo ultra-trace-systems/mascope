@@ -13,9 +13,10 @@ The detail is one or two plain sentences for a person: what the status means
 for this file, and, for a file whose MS1 scans of one polarity come from more
 than one scan stream, that peak detection pools them. A file stitched from
 its streams says more of them: what two scan ranges read where they overlap,
-and which ranges have no fit of their own and run on a neighbour's m/z
-calibration. Its ranges are named as the views name them, by scan range, so
-that what is said of them has room inside the detail's bound.
+which ranges have no fit of their own and run on a neighbour's m/z
+calibration, and how wide each range's peaks are. Its ranges are named as
+the views name them, by scan range, so that what is said of them has room
+inside the detail's bound.
 """
 
 import asyncio
@@ -26,6 +27,7 @@ from datetime import datetime, timezone
 from sqlalchemy import or_, update
 
 import mascope_signal.compute as m_compute
+import mascope_signal.instrument_func.streams as m_stream_functions
 import mascope_signal.mz_factor as m_factor
 import mascope_signal.stitch as m_stitch
 from mascope_backend.api.controllers.samples.lib.samples_segments import (
@@ -175,6 +177,11 @@ class StoreStitch:
     #: What two of those streams read where they overlap, as the store
     #: recorded it at detection (``mascope_signal.stitch.overlap_readings``)
     overlaps: list[dict] = field(default_factory=list)
+    #: The instrument function of each of those streams, and of the file,
+    #: as the store recorded them at detection
+    #: (``mascope_signal.instrument_func.streams``); empty for a store
+    #: detected before its streams were fitted apart
+    instrument_functions: dict = field(default_factory=dict)
 
 
 def _store_stitch(filename: str) -> StoreStitch:
@@ -187,7 +194,9 @@ def _store_stitch(filename: str) -> StoreStitch:
         # is refused as stale, and so is this one
         store.stitch_map()
         return StoreStitch(
-            store.streams, store.attrs.get(m_stitch.STITCH_OVERLAPS_ATTR) or []
+            store.streams,
+            store.attrs.get(m_stitch.STITCH_OVERLAPS_ATTR) or [],
+            store.attrs.get(m_stream_functions.INSTRUMENT_FUNCTIONS_ATTR) or {},
         )
     except Exception:  # noqa: BLE001 - a missing store is not a processing error
         runtime.logger.opt(exception=True).debug(
@@ -228,6 +237,7 @@ async def read_pooled_streams_note(filename: str) -> str | None:
     return compose_detail(
         pooled_streams_note(streams, stitch.keys),
         overlap_readings_note(stitch.keys, stitch.overlaps),
+        stream_widths_note(stitch.keys, stitch.instrument_functions),
     )
 
 
@@ -282,6 +292,77 @@ def overlap_readings_note(keys: list[str], readings: list[dict]) -> str | None:
         )
         or None
     )
+
+
+def _resolution(entry: dict | None) -> str | None:
+    """The resolution at m/z 200 a recorded fit gives, as a person reads it."""
+    resolution = m_stream_functions.resolution_at_reference(
+        (entry or {}).get("resolution_function")
+    )
+    return None if resolution is None else f"{resolution:,.0f}"
+
+
+def stream_widths_note(keys: list[str], record: dict) -> str | None:
+    """How wide the peaks of each scan range of a stitched file are.
+
+    Each range of a stitched file is fitted an instrument function of its
+    own, on its own summed signal, and its peaks are read under it
+    (``mascope_signal.instrument_func.streams``). The width is said as an
+    Orbitrap's resolution is, at m/z 200, for each range and then for the
+    fit over the whole file, which is what the ranges would otherwise all be
+    read by. A range too thin to fit says whose function it takes, quoting
+    the reason its own fit gave.
+
+    Where the ranges are of more than one polarity, each polarity's have a
+    sentence of their own that names it, as :func:`overlap_readings_note`
+    does.
+
+    :param keys: The store's stream keys.
+    :param record: The store's record of the instrument functions.
+    :return: The sentences, or None where the store records no function per
+        range, or no Orbitrap one.
+    """
+    by_key = (record or {}).get("streams") or {}
+    by_polarity: dict[str | None, list[str]] = {}
+    for key in keys:
+        entry = by_key.get(key)
+        resolution = _resolution(entry)
+        if resolution is None:
+            continue
+        label = segment_label(key)
+        source = entry.get("source")
+        if source == m_stream_functions.FITTED:
+            clause = f"{label} reads {resolution}"
+        else:
+            note = (entry.get("note") or "").strip().rstrip(".")
+            reason = f" ({note[0].lower()}{note[1:]})" if note else ""
+            origin = entry.get("origin")
+            taken = (
+                f"that of {segment_label(origin)}"
+                if source == m_stream_functions.SIBLING and origin
+                else "the whole file's"
+            )
+            clause = (
+                f"{label} has no fit of its own{reason} and takes {taken}, {resolution}"
+            )
+        polarity = parse_stream_key(key).scan_filter.polarity
+        by_polarity.setdefault(polarity, []).append(clause)
+    if not by_polarity:
+        return None
+    sentences = [
+        "Peak widths per scan range"
+        + (
+            f" of polarity {polarity}"
+            if len(by_polarity) > 1 and polarity is not None
+            else ""
+        )
+        + f", as the resolution at m/z 200: {'; '.join(clauses)}."
+        for polarity, clauses in by_polarity.items()
+    ]
+    pooled = _resolution(record.get("file"))
+    if pooled is not None:
+        sentences.append(f"The fit over the whole file reads {pooled}.")
+    return " ".join(sentences)
 
 
 def carried_calibration_note(mz_calibration: dict | None) -> str | None:

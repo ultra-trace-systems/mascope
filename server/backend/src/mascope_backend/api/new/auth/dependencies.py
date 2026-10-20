@@ -74,7 +74,9 @@ def _enforce_mfa_enrolment(request: Request, user: User) -> User:
     """
     if not request.cookies.get(auth_settings.COOKIE_NAME):
         return user
-    if policy.enrollment_required(user.role_id, user.mfa_enabled):
+    if policy.enrollment_required(
+        user.role_id, user.mfa_enabled, account_type=user.account_type
+    ):
         raise MfaEnrollmentRequiredException()
     return user
 

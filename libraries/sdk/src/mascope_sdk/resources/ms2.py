@@ -46,9 +46,14 @@ class Ms2Resource(BaseResource):
         isolation width, and scan counts.
 
         ``groups`` holds one record per (parent peak, activation) pair --
-        ``parent_peak_mz``, ``activation``, ``hcd_energy``, ``scan_count``,
-        ``t_min``, ``t_max`` -- so a stepped-energy acquisition is reported step
-        by step, ordered by precursor and then by acquisition.
+        ``parent_peak_mz``, ``activation``, ``hcd_energy``, ``isolation_width``,
+        ``scan_count``, ``t_min``, ``t_max`` -- so a stepped-energy acquisition
+        is reported step by step, ordered by precursor and then by acquisition.
+
+        ``isolation_width`` is the one width every MS2 scan shares, and
+        ``None`` when the events of a targeted method isolate with different
+        widths; each group's own is in ``groups`` (``None`` when its scans
+        disagree). A server before 1.13 reports no per-group width.
 
         ``hcd_energy_map`` lists the energies each precursor was measured at,
         flattened across its steps. A step whose scans carry no trailer energy

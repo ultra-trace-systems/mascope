@@ -290,7 +290,10 @@ def test_the_table_holds_the_metadata_documents_rows(backend, path):  # noqa: AR
     for scan, row in document["stats_per_scan"].items():
         assert table["stats_per_scan"][scan] == row
         assert list(table["stats_per_scan"][scan]) == list(row)
-    assert table["stats_per_file"] == document["stats_per_file"]
+    # The document has the instrument's details; the table adds the
+    # calibration identity (test_calibration_identity.py).
+    assert table["stats_per_file"]["Value"] == document["stats_per_file"]["Value"]
+    assert set(document["stats_per_file"]) == {"Value"}
 
 
 @pytest.mark.parametrize("path", SAMPLE_FILES)

@@ -32,6 +32,12 @@ const props = defineProps({
   data: {
     type: Array
   },
+  // Point indices drawn selected, the same on every trace; null or empty draws
+  // no selection.
+  selectedPoints: {
+    type: Array,
+    default: null
+  },
   config: {
     type: Object
   },
@@ -93,24 +99,66 @@ const dotted = computed((previous) => {
   return same ? previous : next
 })
 
-// The traces as Plotly gets them: `markSamples` is this component's, not a
-// trace attribute Plotly knows.
+// The traces as Plotly gets them, always copies: Plotly writes what the user
+// does on the chart into the traces it is handed (a box select's
+// selectedpoints, a legend click's visible), and the parent's own trace objects
+// are not its to write. `markSamples` is this component's, not a trace
+// attribute Plotly knows.
 const plotData = computed(() =>
   (props.data ?? []).map((trace, index) => {
-    if (!('markSamples' in trace)) return trace
     const drawn = { ...toRaw(trace) }
+    if (!('markSamples' in drawn)) return drawn
     delete drawn.markSamples
     return dotted.value[index] ? withSampleMarkers(drawn) : drawn
   })
 )
 
-const resetSelection = () => {
-  if (plot.value && props.data.length > 0) {
-    // removes the selection
-    Plotly.update(plot.value, {}, { selections: [] })
-    // removes the selection overlay
-    Plotly.restyle(plot.value, { selectedpoints: [null] })
+/** The selection as it goes on a trace: null for none. */
+const selection = () => (props.selectedPoints?.length ? props.selectedPoints : null)
+
+// The `selectedPoints` last drawn, so a selection a redraw already drew is not
+// drawn a second time.
+let drawnSelection = null
+
+/**
+ * The traces for a redraw, carrying the selection. It goes on with the data so
+ * that new data is drawn selected in the same pass: restyled on afterwards, the
+ * data would show unselected until the restyle landed, and the selection would
+ * blink. Written on every redraw, it also replaces what a box select left on
+ * the copies.
+ */
+function selectedData() {
+  const selected = selection()
+  for (const trace of plotData.value) {
+    if (selected) trace.selectedpoints = selected
+    else delete trace.selectedpoints
   }
+  drawnSelection = props.selectedPoints
+  return plotData.value
+}
+
+/**
+ * The layout for a draw. A copy, because Plotly keeps the layout it is handed
+ * and writes a box select's outline into it; and without the outline, because
+ * on every redraw Plotly selects the points under each outline it holds, which
+ * would put an old box's points back over the selection the traces carry.
+ */
+const drawnLayout = () => ({ ...derived.value.layout, selections: [] })
+
+/** Redraw the data, selection included. */
+function draw() {
+  Plotly.react(plot.value, selectedData(), drawnLayout(), derived.value.config)
+}
+
+/**
+ * Draw a new selection over the data Plotly has. An update rather than a
+ * redraw from the traces, so what the user changed on the chart, such as a
+ * trace hidden from the legend, stays. It drops a box select's outline as a
+ * redraw does.
+ */
+function drawSelection() {
+  drawnSelection = props.selectedPoints
+  Plotly.update(plot.value, { selectedpoints: [selection()] }, { selections: [] })
 }
 
 // reset chart zoom to autorange
@@ -123,15 +171,6 @@ const resetZoom = () => {
   }
 }
 
-const selectPoints = (pointIndices) => {
-  if (plot.value && props.data.length > 0) {
-    // Make the selection
-    Plotly.update(plot.value, {}, { selections: pointIndices })
-    // Make the selection overlay
-    Plotly.restyle(plot.value, { selectedpoints: [pointIndices] })
-  }
-}
-
 // Force Plotly to recalculate container dimensions
 const resize = () => {
   if (plot.value) {
@@ -141,9 +180,7 @@ const resize = () => {
 }
 
 defineExpose({
-  resetSelection,
   resetZoom,
-  selectPoints,
   resize
 })
 
@@ -259,7 +296,7 @@ function handleRelayout(data) {
 onMounted(() => {
   console.debug(`📊 [${props.id}] creating chart`)
   // create the plot
-  Plotly.newPlot(plot.value, plotData.value, derived.value.layout, derived.value.config)
+  Plotly.newPlot(plot.value, selectedData(), drawnLayout(), derived.value.config)
   // add the event listener
   plot.value.on('plotly_click', handleClick)
   plot.value.on('plotly_relayout', handleRelayout)
@@ -295,7 +332,7 @@ watch(
     if (ready.value) {
       console.debug(`📊 [${props.id}] redrawing chart with height ${props.height}`)
       // adapt to changes
-      Plotly.react(plot.value, plotData.value, derived.value.layout, derived.value.config)
+      draw()
       // Relayout to autoranges to fix horizontal-only zoom
       Plotly.relayout(plot.value, {
         'xaxis.autorange': derived.value.layout.xaxis.autorange ? true : false,
@@ -312,10 +349,24 @@ watch(
   () => {
     if (ready.value && props.data && plot.value) {
       console.debug(`📊 [${props.id}] updating chart data`)
-      Plotly.react(plot.value, plotData.value, derived.value.layout, derived.value.config)
+      draw()
     }
   },
   { deep: true }
+)
+
+// A new selection over the same data. Watched apart from the data, and
+// shallowly, so selecting a sample does not walk every trace's data the way the
+// deep watcher above does. After it, too: a reload that brings new data and a
+// new selection together has drawn both by then, and draws once.
+watch(
+  () => props.selectedPoints,
+  (selectedPoints) => {
+    if (ready.value && props.data?.length && plot.value && selectedPoints !== drawnSelection) {
+      drawSelection()
+    }
+  },
+  { flush: 'post' }
 )
 
 watch(

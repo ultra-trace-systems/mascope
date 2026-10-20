@@ -27,7 +27,7 @@ Everything below assumes an Ubuntu host provisioned with
 | **Clear a lost second factor (2FA)** | Manage users in the app, or `mascope prod mfa reset <email>` |
 | What a raw file measured (its scan streams) | `mascope file scans <file.raw>` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
-| Disk monitor history | `journalctl -u mascope-disk-check.service` |
+| Disk monitor history | `journalctl -u mascope-disk-check.service` (fill rate and projection on each line) |
 | Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
 | Assignment-run retention history | `journalctl -u mascope-assignment-prune.service` |
 
@@ -41,8 +41,9 @@ or to poll:
 $ mascope prod doctor
 [OK]
 Stack    backend healthy · frontend healthy · postgres healthy · redis healthy · file_converter running
-Version  v1.6.1
-Disk     state 142 GiB / 61% free   ·   docker 38 GiB / 40% free
+Version  vX.Y.Z
+Disk     state, docker 142 GiB / 61% free · +0.4 GiB/day (7d), +0.3 GiB/day (30d) · full in ~355 days
+         filestore 610 GiB / 31% free · +2.1 GiB/day (7d), +1.8 GiB/day (30d) · full in ~290 days
 Updates  no pending migration recorded
 Backups  5 local dump(s) · newest 8h ago
 Images   11 images · 6.2GB (2.1GB reclaimable)
@@ -51,14 +52,29 @@ Images   11 images · 6.2GB (2.1GB reclaimable)
 It exits `0` when the stack is healthy, the running images match the release
 this deployment would deploy, and every filesystem is above the free-space
 floor (`MASCOPE_UPDATE_MIN_FREE_GB`); `1` otherwise - so it doubles as a
-monitoring probe. `--json` emits the same data for scripting.
+monitoring probe. It exits `3`, under a `[WARNING]` header, when all of that
+holds but a filesystem is filling fast enough to reach the floor within
+`MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR` days (default 7, `0` disables): the Kuma
+push keeps its monitor up and reports the warning on a second, optional one
+(`FILLING_TOKEN`), while the fleet playbooks let a rollout carry on
+past it. `--json` emits the same data for scripting.
+
+**Disk** has one row per filesystem, naming every monitored path on it - the
+state (`.runtime`), the filestore (which may be a volume of its own) and
+docker's image store - with its fill rate over the last 7 and 30 days and, at
+the faster of the two, when it would be full; a filesystem projected below
+the floor within the horizon is flagged `FILLING`. The doctor keeps no history
+of its own: it reads the samples the [disk monitor](#the-monitor-early-warning)
+records every 15 minutes, so the rates appear once that timer has a day of
+history, and the label in brackets is how much history a rate rests on when
+that is less than its window.
 
 **Version** compares the tag the containers are actually running against the
 one this deployment would deploy right now (the `MASCOPE_VERSION` pin, else the
 release tag checked out, else `latest`). A mismatch is reported as drift:
 
 ```
-Version  backend latest · frontend latest  DRIFT (this checkout deploys v1.6.1)
+Version  backend latest · frontend latest  DRIFT (this checkout deploys vX.Y.Z)
 ```
 
 Drift means the next `mascope prod up` - a restart, or a reboot - moves the
@@ -277,6 +293,9 @@ Each run:
 - **Migration update** -> recorded and reported (exit 30), then applied at the
   next window once its grace period elapses (`MASCOPE_UPDATE_GRACE_DAYS`,
   default 7 days) **or** you confirm it - unless it has been snoozed.
+  Deploying that release (or a later one) yourself with `mascope prod update`
+  settles the record as well, so `prod doctor` stops reporting it as pending;
+  rolling back to an older release keeps it.
 
 An applied update also moves the deployment checkout to the release it
 deployed, so a reboot redeploys that same release and `mascope prod doctor`
@@ -480,10 +499,35 @@ filesystem runs short.
 ### The monitor (early warning)
 
 `tooling/ubuntu.sh` installs and **enables** `mascope-disk-check.timer`, which
-runs [`tooling/disk-check.sh`](../tooling/disk-check.sh) every 15 minutes. It is
-read-only - it only measures free space on the `.runtime` and docker
-filesystems and reports to the journal. When a filesystem drops below the floor
-it pings a healthchecks.io-style URL so you are alerted with lead time.
+runs [`tooling/disk-check.sh`](../tooling/disk-check.sh) every 15 minutes. It
+never deletes anything - it measures free space on the `.runtime` filesystem,
+each env's filestore when that is a symlink to a volume of its own, and the
+docker filesystem, and reports to the journal. When a filesystem drops below
+the floor it pings a healthchecks.io-style URL so you are alerted with lead
+time; when one is filling fast enough to reach the floor soon, it pings a
+second one.
+
+A floor alone gives a disk that fills fast little warning: at 19 GiB a day, a
+10% floor on a 1 TiB disk is crossed about five days before the disk is full.
+So each run also appends the free space to
+`$MASCOPE_PATH/.runtime/disk-check/history.tsv` (the only file it writes besides
+a lock beside it, kept to the last 60 days), fits how many GiB a day the
+filesystem has been filling
+over the last 7 and 30 days, and projects when it reaches the floor and when
+it is full, at the faster of the two rates - the 7-day rate catches an
+instrument that has just started a long run, the 30-day rate keeps a quiet
+week from hiding a disk that fills in bursts. Every journal line carries it:
+
+```
+[disk-check] ok:  state (.runtime) (/) has 647.3 GiB / 37% free; rate +2.1 GiB/day (7d), +1.8 GiB/day (30d); 174.9 GiB floor in ~225 days, full in ~308 days
+```
+
+The rate is a least-squares fit of *used* space over every sample in the
+window, so growing the filesystem does not read as freeing space and one
+reading taken while a dump is being written is not projected forward. Freeing
+space does lower the rate for as long as the cleanup stays inside the window,
+so after a large cleanup the projection is optimistic for a while - the floor
+still applies. Rates appear after a day of history.
 
 Configure it in `/etc/mascope/disk-check.env` (chmod 600, template
 [`tooling/disk-check.env.example`](../tooling/disk-check.env.example)):
@@ -491,9 +535,23 @@ Configure it in `/etc/mascope/disk-check.env` (chmod 600, template
 - `MIN_FREE_GB` (default 10) - absolute floor; the "about to crash" signal.
 - `MIN_FREE_PCT` (default 10) - percentage floor; an earlier warning. Set to
   `0` on a very large disk to avoid paging while tens of GiB are still free.
-- `HEALTHCHECK_URL` - **set this to actually get alerted.** On every OK run it
-  pings the URL (so a stalled monitor is itself flagged); when low it pings
-  `<url>/fail`. Use a check separate from the backup one.
+- `MIN_DAYS_TO_FLOOR` (default 30) - warn when the filesystem is projected
+  to drop below the floor within this many days. `0` disables the warning; the
+  rates are still logged. An env file seeded before this setting existed does
+  not list it, and the default applies. A threshold that is not a plain number
+  is logged and replaced by its default.
+- `HEALTHCHECK_URL` - **set this to actually get alerted.** Every run pings
+  the URL while no filesystem is below the floor (so a stalled monitor is
+  itself flagged) and `<url>/fail` while one is. Use a check separate from the
+  backup one.
+- `HEALTHCHECK_FILLING_URL` - a **second** check, for the fill-rate warning:
+  `<url>/fail` while a filesystem is projected to reach the floor within
+  `MIN_DAYS_TO_FLOOR` days, or is below it, and `<url>` otherwise - so it does
+  not report "recovered" at the moment the floor is crossed. It is kept apart
+  because healthchecks.io notifies on a change of state: one check already
+  down for the warning would say nothing when the floor is actually crossed.
+  Without it, the warning is journalled and recorded as a `/log` event on
+  `HEALTHCHECK_URL`, which notifies no one.
 
 ```sh
 sudo systemctl start mascope-disk-check.service   # run it now
@@ -575,9 +633,10 @@ instead.
 
 ### Effect on API access tokens
 
-When a user changes their password, that user's access tokens are revoked. The
-file-converter token is reissued automatically, but **SDK and notebook tokens are
-not** - their holders must regenerate them.
+When a user changes their password, that user's access tokens are revoked.
+New uploads are unaffected, since each upload is given a file-converter token of
+its own, but **SDK and notebook tokens are not reissued** - their holders must
+regenerate them.
 
 A **paired instrument agent is not affected**: its credential belongs to the
 machine account the pairing created, not to the person who approved it, so no
@@ -915,6 +974,70 @@ Deleting rows returns space to Postgres for reuse but not to the filesystem;
 `VACUUM FULL peak_assignment` (or `pg_repack`) afterwards does that, and takes
 an exclusive lock while it runs.
 
+### The composite cut
+
+**The composite cut** (`composite_scan_streams` in the server's `[backend]`
+config) detects the peaks of a file whose acquisition method measures more
+than one m/z range in a polarity per range, and stitches the ranges into one
+spectrum per polarity: each m/z is read from the range that owns it, averaged
+over that range's own scans, so an ion a short range measures no longer reads
+low for being divided by every range's scans. The 1.11.0 and 1.12.0 release
+notes describe it, and [the design note](dev/ingest_routing_and_splitting.md)
+(section 4.5) the design. It ships **off**; two sites run it as canaries.
+The backend and the file converter read the setting when they start, so after
+changing it restart both:
+
+```sh
+mascope prod restart backend
+mascope prod restart file_converter
+```
+
+Switching it on changes only files converted from then on. Whether a file's
+peaks are detected per range is decided at its first conversion and recorded
+with the file, and every later rebuild of its peak store goes by that record;
+a file converted pooled stays pooled. The one run that decides again is a
+**re-process** - *Re-process* in Raw files, or `POST /api/sample/files/reprocess`
+from a signed-in web session (the route does not accept API tokens yet) - which
+detects the file's peaks under the setting as it is at that moment, then
+calibrates and matches as a first processing does. With the setting off, a
+re-process leaves a pooled file alone.
+
+#### Re-processing a site's older files under the cut
+
+Done on both canary sites in October 2026, with the site acquiring throughout.
+What to expect and how to pace it:
+
+- **Which files.** The files acquired before the switch whose method measures
+  several ranges in a polarity. The scan-stream census in each file's `.props`
+  says which; by the database, they are the files of the methods whose files
+  since the switch carry a composite stream row (`acquisition_stream` with no
+  `signature_key`) that have no such row themselves. Files parked without a
+  chemistry have no samples to re-process and are left as they are until a
+  chemistry binds them; a re-process then stitches them too.
+- **Batch size and pace.** 25 files per re-process, one batch at a time, the
+  next only once every file of the last has reached a terminal status (`done`,
+  `calibration_failed`, `failed` or `needs_chemistry`) with a processing time
+  after the submission. Inside a batch each file took 2.5 to 3 s on a 32-core
+  server - the detection per range, the calibration and the matching - so a
+  batch is about a minute; with a minute's pause between batches, 7,300 files
+  took ten hours. Hold while the site's own ingest has more than about twenty
+  fresh files still processing; at 80 to 110 files an hour the live ingest
+  never queued behind the re-processing, and the load stayed under 1.
+- **What to watch.** Every file of a batch ends `done` and carries a composite
+  stream row; the fresh files keep ending `done`; error tracking shows only
+  the drift warning a re-calibrated file raises anyway, one per file, so that
+  count climbs by the number of files re-processed. A re-process takes no
+  database dump, so the backups directory is untouched. Keep a list of what
+  was submitted, so an interrupted run resumes where it stopped rather than
+  re-submitting.
+- **What it changes.** A pooled file becomes stitched: one reading of each
+  m/z from the range that owns it, averaged over that range's scans, so ions a
+  short range measures read higher than they did, and a batch mixing
+  re-processed and untouched files shows a step at the boundary until every
+  file is done. A file already stitched by 1.11.0 gains, when re-processed
+  under 1.12.0, a calibration factor per range and the overlap readings in its
+  processing detail.
+
 ### Loading reference chemistry data
 
 Peak assignment can additionally match against a mirror of public chemistry
@@ -1213,7 +1336,8 @@ grace period, or a confirm, and never applies while snoozed. Run
 `mascope prod update --check` to see the classification and
 `cat "$(mascope path)/.runtime/update/state.json"` for its `first_seen_at` /
 `snooze_until` / `confirmed` state. `mascope prod update --confirm` applies it at
-the next window.
+the next window. To take it now instead, deploy it by hand (check out the tag,
+reinstall the CLI, `mascope prod update`), which also clears the record.
 
 **`mascope prod db script` cannot find a mascope Python / lists no scripts.**
 The scripts are discovered and run inside the backend container, so the stack
@@ -1233,6 +1357,54 @@ polarity with more than one MS1 stream is pooled into one peak list by
 processing, and the command says so. It
 reads a copy of the file on this machine, inside the backend container, so the
 stack must be up.
+
+**Acquisition times are hours off for files that were uploaded without a
+timezone**, and their ingest appears to precede their acquisition. A raw file
+records its acquisition time as the instrument PC's wall clock, with no
+offset, and the server can only place it in UTC if the upload says which
+zone that clock was in. An upload that reports none - the web app before it
+reported the browser's zone, an SDK script, a File Agent older than zone
+reporting - has the wall clock read in the converter's own zone, which is UTC
+in the backend image. Such a file is stored with `utc_offset_source =
+'guess'`, no `acquisition_timezone`, and a `datetime_utc` that is the wall
+clock labelled UTC - two hours late in central European summer time. Such
+rows keep arriving until every client of the site reports a zone; the rows
+already stored are repaired by reading each wall clock in the zone the
+instrument PC's clock is *set to* (its Windows time zone), which is not
+always the zone the site is in - a PC whose clock is set to UTC needs no
+repair, and naming the site's zone for it would shift every one of its rows:
+
+```sh
+# report what would change, without changing anything
+MASCOPE_FIX_GUESSED_UTC_ZONE=Europe/Vienna mascope prod db script run fix_guessed_datetime_utc --skip-backup
+
+# repair, with the pre-script backup
+MASCOPE_FIX_GUESSED_UTC_ZONE=Europe/Vienna MASCOPE_FIX_GUESSED_UTC_APPLY=1 mascope prod db script run fix_guessed_datetime_utc
+```
+
+Read the dry run's evidence line before applying: it counts the rows that end
+after their own registration time, as stored and as they would be after the
+repair. A wall clock stored as UTC east of UTC shows as rows that end after
+they were registered, which the repair clears; rows that are already right
+show none, and a repair that creates such rows is in the wrong zone.
+`MASCOPE_FIX_GUESSED_UTC_INSTRUMENT` narrows the run to one instrument, for a
+server whose instruments' clocks are set to different zones, and
+`MASCOPE_FIX_GUESSED_UTC_CREATED_MIN` / `_CREATED_MAX` (ISO instants) to a
+window of registration time - rows that have no registration time (registered
+before the column existed) fall outside any window and are counted as such.
+The script repairs Orbitrap rows only: a guessed TOF row's `datetime_utc` is
+already right, since its local time is the acquisition's UTC instant plus the
+guessed offset, and it is that local column that is off. It touches only rows
+guessed with a zero offset; a guessed row stored with another offset was
+guessed in a real zone, or repaired by an earlier run, and is counted and left
+alone, as is a row that carries a reported zone. A row already right in the
+named zone, as a British winter file is, is not written. The instrument
+function fitted from a repaired file is moved with it. Every apply writes a
+ledger of the rows it changed, old and new value, to
+`.runtime/env/<env>/repairs/` under the Mascope home, so a repair made in the
+wrong zone can be found and undone row by row without restoring a dump. The
+repair follows the converter's rule for the hour the clocks repeat or skip,
+and names the rows that fall in one.
 
 **Backend unhealthy after an update.** The updater stops and leaves the stack in
 place (no automatic rollback). Investigate with `mascope prod logs backend`. To

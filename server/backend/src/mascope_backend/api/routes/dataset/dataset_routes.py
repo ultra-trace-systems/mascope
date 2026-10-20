@@ -61,7 +61,7 @@ async def get_datasets_route(
 
 
 @dataset_router.get("/{dataset_id}")
-@api_route()
+@api_route(token_access=True)
 async def get_dataset_route(
     dataset_id: str,
     workspace_id: str = Path(...),
@@ -82,7 +82,7 @@ async def get_dataset_route(
 
 
 @dataset_router.patch("/{dataset_id}")
-@api_route()
+@api_route(token_access=True)
 async def update_dataset_route(
     dataset_id: str,
     dataset_update: DatasetUpdate,
@@ -122,7 +122,7 @@ async def update_dataset_route(
 
 
 @dataset_router.post("")
-@api_route(status_code=201)
+@api_route(status_code=201, token_access=True)
 async def create_dataset_route(
     dataset: DatasetCreate,
     workspace_id: str = Path(...),
@@ -145,7 +145,7 @@ async def create_dataset_route(
 
 
 @dataset_router.delete("/{dataset_id}")
-@api_route()
+@api_route(token_access=True)
 async def delete_dataset_route(
     dataset_id: str,
     workspace_id: str = Path(...),
@@ -181,7 +181,7 @@ async def delete_dataset_route(
 
 
 @dataset_router.post("/{dataset_id}/move")
-@api_route()
+@api_route(token_access=True)
 async def move_dataset_route(
     body: DatasetMoveBody,
     dataset_id: str,

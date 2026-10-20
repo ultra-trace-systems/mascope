@@ -20,7 +20,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from mascope_thermo.backend import open_backend
+from mascope_thermo.backend import _common_isolation_width, open_backend
+from mascope_thermo.calibration import calibration_identity
 from mascope_thermo.lib import load_dotnet
 from mascope_thermo.runtime import runtime
 
@@ -1071,6 +1072,15 @@ def get_ms2_summary_metadata(
     it does not index against ``groups``; read ``groups`` when the step a given
     energy belongs to matters.
 
+    Each group carries the ``isolation_width`` its scans were isolated with:
+    a targeted method sets the width per event or per inclusion-list entry,
+    so one file's groups may differ. The top-level ``isolation_width`` is the
+    one width every MS2 scan that stores one shares, and ``None`` when they
+    do not. A group's is ``None`` when its own scans store more than one, or
+    none. A file none of whose MS2 scans stores a width has no summary: that
+    stays a :class:`ValueError`, as the width is what a client reads the
+    isolation window off.
+
     :param datafile_path: Path to the Thermo Fisher raw file (.raw).
     :type datafile_path: str
     :param t_min: Minimum time [s], optional.
@@ -1115,8 +1125,8 @@ def get_ms2_summary_metadata(
         # Isolation width + (calibrated) HCD energy per MS2 scan. Thermo reads
         # these from the trailer ("MS2 Isolation Width:" / "HCD Energy V:");
         # backends that lack the calibrated HCD energy raise NotImplementedError.
-        isolation_width, scan_idx_to_hcd = backend.ms2_acquisition_info(
-            polarity, t_min, t_max
+        isolation_width, scan_idx_to_width, scan_idx_to_hcd = (
+            backend.ms2_acquisition_info(polarity, t_min, t_max)
         )
 
         # Scan times, so each group can report the span it was acquired over.
@@ -1140,7 +1150,9 @@ def get_ms2_summary_metadata(
             # instrument actually used. A value may itself be comma-separated
             # when the instrument stepped the energy *within* one scan, which
             # is a different thing from the per-scan stepping the group key
-            # separates - each comma-separated step keeps its own entry.
+            # separates - each comma-separated step keeps its own entry. The
+            # Thermo library writes the value in the invariant culture
+            # (load_dotnet), so no comma here is a decimal mark.
             raw_values = [
                 scan_idx_to_hcd[idx] for idx in scan_indices if idx in scan_idx_to_hcd
             ]
@@ -1168,6 +1180,11 @@ def get_ms2_summary_metadata(
                     "parent_peak_mz": pp,
                     "activation": activation,
                     "hcd_energy": energies,
+                    "isolation_width": _common_isolation_width(
+                        scan_idx_to_width[idx]
+                        for idx in scan_indices
+                        if idx in scan_idx_to_width
+                    ),
                     "scan_count": len(scan_indices),
                     "t_min": min(group_times) if group_times else None,
                     "t_max": max(group_times) if group_times else None,
@@ -1395,13 +1412,22 @@ def get_scan_table(
     :return: ``{"num_of_scans", "stats_per_scan", "stats_per_file"}``.
         ``num_of_scans`` counts the scans of the file, whatever was asked for;
         ``stats_per_scan`` is keyed by scan number, and empty when no scan
-        matches. A float JSON cannot represent is None.
+        matches. ``stats_per_file`` holds the instrument's details under
+        ``Value`` and, for every scan of the file whatever was asked for,
+        the conversion parameters per stream under ``calibrations``
+        (:func:`mascope_thermo.calibration.stream_calibrations`) and, where
+        the reader gives a status log, ``calibration_status``
+        (:func:`mascope_thermo.calibration.calibration_status`). A float JSON
+        cannot represent is None.
     :rtype: dict
     """
     with open_backend(datafile_path) as backend:
         num_of_scans = backend.num_scans()
         rows = backend.scan_rows(polarity, t_min, t_max, first_scan, last_scan)
-        instrument_details = backend.instrument_details()
+        stats_per_file = {
+            "Value": backend.instrument_details(),
+            **calibration_identity(backend),
+        }
 
     if fields is not None:
         # A dict rather than a set: the entries keep the order asked for.
@@ -1415,7 +1441,7 @@ def get_scan_table(
         {
             "num_of_scans": num_of_scans,
             "stats_per_scan": rows,
-            "stats_per_file": {"Value": instrument_details},
+            "stats_per_file": stats_per_file,
         }
     )
 

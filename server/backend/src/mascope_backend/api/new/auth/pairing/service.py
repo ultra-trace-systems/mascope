@@ -19,10 +19,7 @@ import secrets
 
 from sqlalchemy import delete
 
-from mascope_backend.api.new.auth.access_token.service import (
-    create_access_token,
-    regenerate_access_token,
-)
+from mascope_backend.api.new.auth.access_token.service import create_access_token
 from mascope_backend.api.new.auth.devices.machine_account import create_machine_account
 from mascope_backend.api.new.auth.pairing.config import pairing_settings
 from mascope_backend.api.new.auth.pairing.exceptions import (
@@ -210,11 +207,6 @@ async def approve_pairing(user: User, user_code: str) -> dict:
     # device holding no credential: the code is still pending, so approving
     # again yields a clean device instead of a second dead one.
     try:
-        # Uploads resolve the machine account's file-converter token
-        # server-side; mint it now (regenerate is create-if-absent here) so the
-        # first upload works.
-        await regenerate_access_token(user=machine_user, service_name="file-converter")
-
         token = await create_access_token(
             user=machine_user,
             service_name=record["service_name"],

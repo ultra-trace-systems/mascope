@@ -46,14 +46,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
+from collections.abc import Iterable
 from typing import NamedTuple
 
 import numpy as np
 
-from mascope_thermo.backend import ReaderBackend, _sample_evenly, open_backend
+from mascope_thermo.backend import (
+    ReaderBackend,
+    _sample_evenly,
+    open_backend,
+    trailer_float,
+)
 from mascope_thermo.scan_filter import ScanFilter, parse_scan_filter
 
 
@@ -161,12 +166,36 @@ def scan_stream_keys(backend: ReaderBackend) -> list[str]:
     return [scan.key for scan in _keyed_scans(backend)]
 
 
+def scan_stream_numbers(
+    backend: ReaderBackend, labels: Iterable[str]
+) -> list[tuple[dict, str, dict[str, float]]]:
+    """Every scan's stream key, with the numbers its trailer stores under
+    ``labels``.
+
+    :func:`scan_stream_keys` for a caller that computes with trailer values
+    beside the keys, in the same pass over the file's scans. The numbers
+    are as stored (``ReaderBackend.trailer_numbers``), not read from the
+    trailer's text, which under the Thermo library is rounded.
+
+    :param backend: An open reader backend.
+    :param labels: Trailer labels, spelled as the trailer spells them.
+    :return: ``(row, key, {label: number})`` per scan, the row as
+        ``ReaderBackend.scan_filters`` gives it and in its order. A label
+        under which the scan's trailer stores no number is left out of its
+        numbers.
+    """
+    return [
+        (scan.row, scan.key, scan.numbers) for scan in _keyed_scans(backend, labels)
+    ]
+
+
 class _KeyedScan(NamedTuple):
     """One scan, with the stream it belongs to.
 
     ``segment`` and ``event`` are the experiment the scan is grouped by:
     ``None`` for a survey scan that records none, and for every
-    fragmentation scan, which is not grouped by it.
+    fragmentation scan, which is not grouped by it. ``numbers`` are the
+    trailer numbers its caller asked :func:`_keyed_scans` for.
     """
 
     row: dict
@@ -176,13 +205,19 @@ class _KeyedScan(NamedTuple):
     signature_key: str
     segment: int | None
     event: int | None
+    numbers: dict[str, float]
 
 
-def _keyed_scans(backend: ReaderBackend) -> list[_KeyedScan]:
+def _keyed_scans(
+    backend: ReaderBackend, labels: Iterable[str] = ()
+) -> list[_KeyedScan]:
     """Every scan of the file with its stream key, in acquisition order.
 
     The one place that decides which stream a scan belongs to, so that the
     census and anything that later selects a stream's scans cannot disagree.
+    Each scan also keeps the numbers its trailer stores under ``labels``,
+    where it stores them, so that nothing passes over the scans a second
+    time.
 
     A survey scan belongs to its experiment: its signature together with
     its segment and scan event. The experiment closes the key only where one
@@ -193,12 +228,17 @@ def _keyed_scans(backend: ReaderBackend) -> list[_KeyedScan]:
     scans of that signature that do record one. A fragmentation scan is
     keyed by its signature whatever it records (see the module docstring).
     """
+    labels = tuple(labels)
     scans = []
     # signature key -> the experiments its survey scans come from
     experiments: dict[str, set[tuple[int | None, int | None]]] = {}
     for row in backend.scan_filters():
         parsed = parse_scan_filter(row["filter"])
-        resolution = _resolution(backend.scan_trailer(row["scan"]))
+        trailer = backend.scan_trailer(row["scan"])
+        resolution = _resolution(trailer)
+        numbers = (
+            backend.trailer_numbers(row["scan"], labels, trailer) if labels else {}
+        )
         experiment = (None, None)
         if parsed.ms_order == 1 and row.get("event") is not None:
             # An event with no segment is in the method's first, as the
@@ -206,7 +246,7 @@ def _keyed_scans(backend: ReaderBackend) -> list[_KeyedScan]:
             experiment = (row.get("segment") or 1, row["event"])
         signature_key = parsed.stream_key(resolution)
         experiments.setdefault(signature_key, set()).add(experiment)
-        scans.append((row, parsed, resolution, experiment, signature_key))
+        scans.append((row, parsed, resolution, experiment, signature_key, numbers))
     return [
         _KeyedScan(
             row,
@@ -222,8 +262,9 @@ def _keyed_scans(backend: ReaderBackend) -> list[_KeyedScan]:
             signature_key,
             segment,
             event,
+            numbers,
         )
-        for row, parsed, resolution, (segment, event), signature_key in scans
+        for row, parsed, resolution, (segment, event), signature_key, numbers in scans
     ]
 
 
@@ -305,15 +346,13 @@ def _setting(stream: dict, name: str) -> float | None:
 
     The value the stream's sampled scans agree on (``acquisition_params``).
     A reader reports it as a number or as text, by backend, and it is a
-    number here either way. A setting that varied among the scans sampled is
-    listed by name only, and reads as unknown like one no trailer carried.
+    number here either way, also in text a server captured in its own
+    regional format (:func:`~mascope_thermo.backend.trailer_float`). A
+    setting that varied among the scans sampled is listed by name only, and
+    reads as unknown like one no trailer carried.
     """
     constant = (stream.get("acquisition_params") or {}).get("constant") or {}
-    try:
-        value = float(constant.get(name))
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) else None
+    return trailer_float(constant.get(name))
 
 
 def microscans(stream: dict) -> float | None:

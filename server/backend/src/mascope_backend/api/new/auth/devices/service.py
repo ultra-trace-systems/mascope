@@ -31,7 +31,7 @@ from mascope_backend.runtime import runtime
 def _device_rows_stmt():
     """Devices with sponsor username and live-token count, newest first."""
     return (
-        select(AgentDevice, User.username, func.count(AccessToken.token))
+        select(AgentDevice, User.username, func.count(AccessToken.token_hash))
         .outerjoin(User, AgentDevice.sponsor_user_id == User.id)
         .outerjoin(AccessToken, AccessToken.device_id == AgentDevice.device_id)
         .group_by(AgentDevice.device_id, User.username)
@@ -194,7 +194,7 @@ async def rename_device(user: User, device_id: int, name: str) -> dict:
         await session.refresh(device)
         tokens = (
             await session.execute(
-                select(func.count(AccessToken.token)).where(
+                select(func.count(AccessToken.token_hash)).where(
                     AccessToken.device_id == device_id
                 )
             )
@@ -372,7 +372,7 @@ async def renew_device_token(machine_user: User, device_id: int | None) -> dict:
         keep_tokens = (
             (
                 await session.execute(
-                    select(AccessToken.token)
+                    select(AccessToken.token_hash)
                     .where(AccessToken.device_id == device.device_id)
                     .order_by(AccessToken.created_at.desc())
                     .limit(keep)
@@ -384,7 +384,7 @@ async def renew_device_token(machine_user: User, device_id: int | None) -> dict:
         reaped = await session.execute(
             delete(AccessToken)
             .where(AccessToken.device_id == device.device_id)
-            .where(AccessToken.token.notin_(keep_tokens))
+            .where(AccessToken.token_hash.notin_(keep_tokens))
         )
         await session.commit()
 

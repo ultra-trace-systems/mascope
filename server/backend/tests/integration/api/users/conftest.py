@@ -27,14 +27,18 @@ from mascope_backend.socket.storage import redis_storage_client
 
 class InMemoryRedis:
     """
-    The handful of Redis commands the rate limiter uses, over a plain dict.
+    The handful of Redis commands the rate limiter and the socket session
+    store use, over plain dicts.
 
-    Counters never expire: every test gets a fresh instance, and the window
-    semantics under test are the counting and the clears, not the TTL.
+    Nothing expires: every test gets a fresh instance, and the window semantics
+    under test are the counting and the clears, not the TTL. The socket session
+    store is here because every password write and disable evicts the account's
+    sockets, which reads the session index (``socket.eviction``).
     """
 
     def __init__(self):
-        self.values: dict[str, int] = {}
+        self.values: dict[str, int | str] = {}
+        self.sets: dict[str, set[str]] = {}
 
     async def incr(self, key: str) -> int:
         self.values[key] = self.values.get(key, 0) + 1
@@ -53,7 +57,32 @@ class InMemoryRedis:
     async def delete(self, *keys: str) -> int:
         for key in keys:
             self.values.pop(key, None)
+            self.sets.pop(key, None)
         return len(keys)
+
+    async def get(self, key: str):
+        return self.values.get(key)
+
+    async def setex(self, key: str, seconds: int, value: str) -> bool:
+        self.values[key] = value
+        return True
+
+    async def sadd(self, key: str, *members: str) -> int:
+        before = len(self.sets.setdefault(key, set()))
+        self.sets[key].update(members)
+        return len(self.sets[key]) - before
+
+    async def srem(self, key: str, *members: str) -> int:
+        current = self.sets.get(key, set())
+        removed = len(current & set(members))
+        current.difference_update(members)
+        return removed
+
+    async def smembers(self, key: str) -> set[str]:
+        return set(self.sets.get(key, set()))
+
+    async def sismember(self, key: str, member: str) -> bool:
+        return member in self.sets.get(key, set())
 
 
 @pytest.fixture(autouse=True)

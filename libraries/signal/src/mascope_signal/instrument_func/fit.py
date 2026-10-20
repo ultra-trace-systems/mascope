@@ -37,6 +37,13 @@ NOISE_THRESHOLD_FACTOR = 5
 AMBIENT_SNR_THRESHOLD = 100
 AMBIENT_R_SQ_THRESHOLD = 0.85
 
+#: The m/z window a raw Orbitrap file's peaks are fitted in, and the R-squared
+#: a fit has to reach, as its converter fits the file
+#: (``mascope_thermo.processor``). A scan stream's own fit is made at the same
+#: settings (``mascope_signal.instrument_func.streams``).
+ORBI_FIT_DMZ = 0.01
+FIT_R_SQ_THRESHOLD = 0.95
+
 
 def r_tof(mz: float | np.ndarray, a: float, b: float):
     """Calculate TOF resolution function
@@ -69,7 +76,49 @@ def r_orbi(
     return a / np.sqrt(mz)
 
 
-def fit_instrument_functions(filename: str, dmz=0.5, r_sq_thres=0.95) -> tuple:
+def resolution_coefficients(resolution_function) -> list[float] | None:
+    """The coefficients a resolution function is stored by.
+
+    ``[a]`` for an Orbitrap's (:func:`r_orbi`), ``[a, b]`` for a TOF's
+    (:func:`r_tof`), as an instrument function row holds them and
+    :func:`resolution_function_of` reads them back.
+
+    :param resolution_function: A resolution function as a fit returns it
+    :return: The coefficients, or None for a function that is neither
+    :rtype: list[float] | None
+    """
+    keywords = getattr(resolution_function, "keywords", None) or {}
+    func = getattr(resolution_function, "func", None)
+    if func is r_orbi and "a" in keywords:
+        return [float(keywords["a"])]
+    if func is r_tof and {"a", "b"} <= keywords.keys():
+        return [float(keywords["a"]), float(keywords["b"])]
+    return None
+
+
+def resolution_function_of(coefficients: list[float]):
+    """The resolution function stored coefficients describe.
+
+    :param coefficients: ``[a]`` for an Orbitrap, ``[a, b]`` for a TOF, or
+        the three coefficients of a second-order polynomial, an older
+        Orbitrap form
+    :type coefficients: list[float]
+    :raises ValueError: For any other number of coefficients
+    :return: Resolution as a function of m/z
+    :rtype: Callable
+    """
+    if len(coefficients) == 1:
+        return partial(r_orbi, a=coefficients[0])
+    if len(coefficients) == 2:
+        return partial(r_tof, a=coefficients[0], b=coefficients[1])
+    if len(coefficients) == 3:
+        return np.poly1d(coefficients)
+    raise ValueError(f"Not a resolution function's coefficients: {coefficients}")
+
+
+def fit_instrument_functions(
+    filename: str, dmz=0.5, r_sq_thres=FIT_R_SQ_THRESHOLD, sum_signal=None
+) -> tuple:
     """Calculate instrument functions
 
     Compute the median peak shape from the normalized peak shapes (p_ys).
@@ -89,13 +138,18 @@ def fit_instrument_functions(filename: str, dmz=0.5, r_sq_thres=0.95) -> tuple:
     :type dmz: float, optional
     :param r_sq_thres: R-squared threshold for peak fitting, defaults to 0.95
     :type r_sq_thres: float, optional
+    :param sum_signal: The summed signal to fit on, for a fit of part of the
+        file - one scan stream's; None fits the file's whole, as its cached
+        sum signal reads
+    :type sum_signal: xr.DataArray, optional
     :raises ValueError: Not enough peaks for instrument function estimation
     :return: Tuple containing the peak shape as dict, resolution function as partial, statistics as dict
     :rtype: tuple
     """
     instrument_type = get_instrument_type(filename)
 
-    sum_signal = get_sum_signal(filename)
+    if sum_signal is None:
+        sum_signal = get_sum_signal(filename)
     spec = sum_signal.values
     mz = sum_signal.mz.values
 

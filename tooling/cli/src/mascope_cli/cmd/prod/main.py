@@ -238,6 +238,39 @@ def _align_checkout(target: str, mascope_path: Optional[str]) -> None:
         )
 
 
+def _settle_pending(target: str, mascope_path: Optional[str]) -> None:
+    """
+    Drop the recorded pending migration update once a manual update deployed it.
+
+    `--auto` clears the record when it applies the update itself. A release
+    deployed by hand (`prod update`, `--version`) has to clear it here, or
+    `mascope prod doctor` keeps reporting a migration that has already run
+    until the next timer tick classifies the stack as up to date.
+
+    Only a release at or past the pending one settles it: rolling back to an
+    older release leaves that update outstanding. ``latest`` names no release
+    to order against, so it leaves the record for `--auto`, whose preflight
+    compares what actually runs.
+
+    :param target: The image tag just deployed.
+    :param mascope_path: The deployment checkout, or None when unset.
+    """
+    if not mascope_path or not is_release_tag(target):
+        return
+    pending = auto_update.load_pending(mascope_path)
+    if pending is None or not is_release_tag(pending.version):
+        return
+    if release_sort_key(target) < release_sort_key(pending.version):
+        return
+    auto_update.clear_pending(mascope_path)
+    message = (
+        f"Pending migration update {pending.version} settled: {target} was "
+        "deployed by hand."
+    )
+    runtime.logger.info(message)
+    auto_update.record_status(mascope_path, message)
+
+
 def _compose_env(building: bool = False) -> dict[str, str]:
     """
     Build the environment variable dict injected into every docker compose call.
@@ -1101,6 +1134,19 @@ def update(
     # Keep the checkout naming the release that runs, so a reboot redeploys
     # this release and doctor stays clean (no-op when already checked out).
     _align_checkout(target, os.environ.get("MASCOPE_PATH"))
+    # Only reached when compose succeeded: a failed pull or up exits above, and
+    # the update it was recording is then still outstanding. Best-effort, after
+    # the alignment: the stack already runs the release, so a state file that
+    # cannot be read or cleared is reported, never turned into a failed update.
+    try:
+        _settle_pending(target, os.environ.get("MASCOPE_PATH"))
+    except Exception as e:
+        runtime.logger.warning(
+            f"The stack runs {target} but the updater's pending record could not "
+            f"be settled ({type(e).__name__}: {e}). Check "
+            "'.runtime/update/state.json' in the deployment checkout - "
+            "`mascope prod doctor` reads the same file."
+        )
     # Last, so it is the final thing the operator sees: the images moved but the
     # CLI tool did not - warn if it now trails the checkout.
     _warn_if_cli_stale(auto=False)
@@ -1178,15 +1224,20 @@ def doctor(
     """
     One-glance operational status of the deployment.
 
-    Gathers container health, the deployed version, free disk on the state and
-    docker filesystems, the recorded pending update, local backup freshness,
-    and the docker image footprint. Read-only and network-free - safe to run
-    anytime or to poll.
+    Gathers container health, the deployed version, free disk on the state,
+    filestore and docker filesystems with how fast each is filling (from the
+    disk-check timer's history), the recorded pending update, local backup
+    freshness, and the docker image footprint. Read-only and network-free -
+    safe to run anytime or to poll.
 
     Exits 0 when everything looks healthy, 1 when a container is not running,
     the running images do not match the release this deployment would deploy,
     or a filesystem is below the free-space floor (MASCOPE_UPDATE_MIN_FREE_GB),
-    so it can double as a monitoring probe.
+    so it can double as a monitoring probe. Exits 3 when the stack is otherwise
+    healthy but a filesystem is filling fast enough to reach that floor within
+    MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR days (default 7) - a warning, which the
+    fleet playbooks let a rollout pass and doctor-push.sh reports on its
+    optional disk monitor, keeping the main one up.
 
     \b
     Examples:
@@ -1217,8 +1268,12 @@ def doctor(
         for label, name in container_specs
         if label in ("backend", "frontend", "file_converter")
     ]
+    # The filestore takes every raw upload and may be its own volume (a
+    # symlink or an absolute `filestore` path), so it is measured on its own;
+    # on a shared filesystem it folds into the state row.
     disk_specs = [
         ("state", Path(mascope_path) / ".runtime"),
+        ("filestore", Path(runtime.meta.filestore)),
         ("docker", auto_update.docker_root()),
     ]
 
@@ -1230,13 +1285,15 @@ def doctor(
         disk_specs=disk_specs,
         backups_dir=db_cfg.get_backups_dir(mode=_MODE),
         min_free_gb=auto_update.min_free_gb(),
+        disk_history=Path(mascope_path) / prod_doctor.DISK_HISTORY,
+        min_days_to_floor=prod_doctor.min_days_to_floor(),
     )
 
     if as_json:
         typer.echo(json.dumps(report.to_dict(), indent=2))
     else:
         typer.echo(prod_doctor.format_text(report))
-    raise typer.Exit(0 if report.ok else 1)
+    raise typer.Exit(report.exit_code)
 
 
 @prod_app.command(

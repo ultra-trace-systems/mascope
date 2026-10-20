@@ -407,13 +407,16 @@ class H5Processor(BaseFileProcessor):
         """Resolve the UTC offset, preferring what the file itself declares.
 
         Order: the LocalTimeOffsetToUTC attribute the acquisition software
-        wrote ("file"); else the zone the uploading machine reported,
-        evaluated at the acquisition instant ("agent"); else the converter
+        wrote ("file"); else the zone the uploading agent reported for the
+        instrument PC, evaluated at the acquisition instant ("agent"); else
+        the zone of the browser a web upload came from ("browser"), a weaker
+        hint, since that machine may stand anywhere; else the converter
         host's zone at that instant ("guess") - the legacy fallback, wrong
         whenever the instrument PC and the converter host disagree on
         timezone or DST. Requires an open file handle.
 
-        :return: UTC offset [s] and its source ("file", "agent" or "guess")
+        :return: UTC offset [s] and its source ("file", "agent", "browser"
+            or "guess")
         :rtype: tuple[float, str]
         """
         try:
@@ -430,10 +433,10 @@ class H5Processor(BaseFileProcessor):
             pass
 
         acquired_utc = self._acquisition_instant_utc()
-        zone = self._context_timezone()
+        zone, source = self._reported_timezone()
         if zone is not None:
             offset = acquired_utc.astimezone(zone).utcoffset()
-            return offset.total_seconds(), "agent"
+            return offset.total_seconds(), source
         # astimezone() with no argument attaches the host's zone at that
         # instant; total_seconds() keeps west-of-UTC offsets negative.
         offset = acquired_utc.astimezone().utcoffset()
@@ -452,7 +455,7 @@ class H5Processor(BaseFileProcessor):
     @property
     @with_file_context
     def utc_offset_source(self) -> str:
-        """What determined utc_offset: "file", "agent" or "guess"
+        """What determined utc_offset: "file", "agent", "browser" or "guess"
 
         :return: Offset source
         :rtype: str

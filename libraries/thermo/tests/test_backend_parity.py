@@ -455,9 +455,11 @@ def test_scan_statistics_match_thermo(monkeypatch, path):
             assert o[name] == t[name] and type(o[name]) is type(t[name]), name
 
 
-# A trailer value as the Thermo library renders a number: digits, the machine's
-# decimal separator ("." or ","), an optional exponent.
-_TRAILER_NUMBER = re.compile(r"[+-]?(\d*)(?:[.,](\d*))?(?:[eE]([+-]?\d+))?")
+# A trailer value as the Thermo library renders a number: digits, a decimal
+# point, an optional exponent. load_dotnet pins the invariant culture, so it
+# writes no decimal comma and no U+2212 minus on any machine; one that did is
+# no number here, and fails the comparison.
+_TRAILER_NUMBER = re.compile(r"[+-]?(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?")
 
 # The Thermo library's text for a switch OpenTFRaw reads as a bool.
 _TRAILER_SWITCH = {True: {"On", "Yes", "True"}, False: {"Off", "No", "False"}}
@@ -480,7 +482,7 @@ def _trailer_number(value) -> tuple[float, float] | None:
     if not match or not (match.group(1) or match.group(2)):
         return None
     last_digit = int(match.group(3) or 0) - len(match.group(2) or "")
-    return float(text.replace(",", ".")), 0.5 * 10.0**last_digit
+    return float(text), 0.5 * 10.0**last_digit
 
 
 def _same_trailer_value(ours, theirs) -> bool:
@@ -505,12 +507,12 @@ def test_scan_acquisition_settings_match_thermo(monkeypatch, path):
     every MS order.
 
     The backends type the values differently (``scan_trailer``). The Thermo
-    library gives text in the machine's number format, rounded to the digits
-    it displays, where OpenTFRaw gives the stored number, so a value both read
-    as a number must agree to half a unit in the last digit displayed. A
-    switch the Thermo library writes On/Off or Yes/No is True/False in
-    OpenTFRaw, a section heading's empty text is None, and any other text must
-    be identical.
+    library gives text in the invariant culture's number format, rounded to
+    the digits it displays, where OpenTFRaw gives the stored number, so a
+    value both read as a number must agree to half a unit in the last digit
+    displayed. A switch the Thermo library writes On/Off or Yes/No is
+    True/False in OpenTFRaw, a section heading's empty text is None, and any
+    other text must be identical.
     """
     path = str(path)
 
@@ -536,6 +538,36 @@ def test_scan_acquisition_settings_match_thermo(monkeypatch, path):
             assert _same_trailer_value(o, t), (
                 f"scan {scan_number}, {label!r}: OpenTFRaw {o!r} vs Thermo {t!r}"
             )
+
+
+def _trailer_numbers(path):
+    """Every scan's trailer numbers, under every label of its trailer."""
+    with open_backend(path) as backend:
+        return {
+            row["scan"]: backend.trailer_numbers(
+                row["scan"], list(backend.scan_trailer(row["scan"]))
+            )
+            for row in backend.scan_filters()
+        }
+
+
+@pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_trailer_numbers_match_thermo(monkeypatch, path):
+    """The numbers a trailer stores are the same under both backends, to the
+    last bit, on every scan and under every label: the Thermo library's
+    typed accessor gives what OpenTFRaw reads, where its text rounds it.
+    """
+    path = str(path)
+
+    th = _run_under(monkeypatch, "thermo", _trailer_numbers, path)
+    ot = _run_under(monkeypatch, "opentfraw", _trailer_numbers, path)
+
+    assert set(ot) == set(th), "scan set differs"
+    for scan_number, numbers in th.items():
+        # A trailer stores numbers beside its text, switches and headings.
+        assert numbers, f"scan {scan_number} stores no number"
+        assert ot[scan_number] == numbers, f"scan {scan_number}"
 
 
 def _stats_per_scan(path):
@@ -585,9 +617,7 @@ def test_scan_rows_keys_match_thermo(monkeypatch, path):
 
 def _hcd_tuple(value):
     return tuple(
-        round(float(part.replace(",", ".")), 2)
-        for part in str(value).split(",")
-        if part.strip()
+        round(float(part), 2) for part in str(value).split(",") if part.strip()
     )
 
 
@@ -595,22 +625,24 @@ def _hcd_tuple(value):
 def test_ms2_acquisition_info_matches_thermo(monkeypatch, path):
     """OpenTFRaw's MS2 isolation width + calibrated HCD energy (read from the
     decoded trailer) must match Thermo's "MS2 Isolation Width:" / "HCD Energy
-    V:". Skips files without MS2 scans.
+    V:". Both read the width as stored, so it is the same number. Skips files
+    without MS2 scans.
     """
     path = str(path)
 
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
     try:
         with open_backend(path) as backend:
-            th_width, th_hcd = backend.ms2_acquisition_info()
+            th_width, th_widths, th_hcd = backend.ms2_acquisition_info()
     except m_thermo.NoScansFoundError:
         pytest.skip("no MS2 scans")
 
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
     with open_backend(path) as backend:
-        ot_width, ot_hcd = backend.ms2_acquisition_info()
+        ot_width, ot_widths, ot_hcd = backend.ms2_acquisition_info()
 
-    assert ot_width == pytest.approx(th_width, abs=1e-3), "isolation width differs"
+    assert ot_width == th_width, "isolation width differs"
+    assert ot_widths == th_widths, "per-scan isolation widths differ"
     assert set(ot_hcd) == set(th_hcd), "MS2 scan set differs"
     for scan_number, hcd in th_hcd.items():
         assert _hcd_tuple(ot_hcd[scan_number]) == _hcd_tuple(hcd), (

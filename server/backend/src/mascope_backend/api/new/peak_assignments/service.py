@@ -1992,7 +1992,9 @@ async def _resolution_of(sample) -> Callable[[float], float] | None:
     :return: The resolution function, or None.
     """
     try:
-        _, resolution = await read_instrument_functions(sample.filename)
+        _, resolution = await read_instrument_functions(
+            sample.filename, polarity=sample.polarity
+        )
     except Exception as exc:  # noqa: BLE001 - the lines are read without it
         runtime.logger.info(
             f"No resolution function for sample '{sample.sample_item_name}' "
@@ -2986,7 +2988,9 @@ async def _run_sample_assignment(
                     for column in ("mz", "intensity", "signal_to_noise")
                     if column in search_peaks_df.columns
                 ]
-                scoring_snapshot = pattern_scoring_snapshot(scoring, mass_accuracy)
+                scoring_snapshot = pattern_scoring_snapshot(
+                    scoring, mass_accuracy, search_peaks_df[search_columns]
+                )
                 runtime.logger.info(
                     f"Untargeted stage for sample '{sample.sample_item_name}' scores "
                     f"at {scoring.sigma_ppm:.3f} ppm "

@@ -55,6 +55,15 @@ const SERVICE_CONFIGS = [
     minRole: 100 // guest role_id
   },
   {
+    id: 'ai-agent',
+    // An AI agent acting for this person through the SDK: the routes a
+    // notebook's token opens, writes included, with this person's role, under
+    // a name of its own so the backend log tells its requests apart. A
+    // personal token, like the notebook's; it does not pair.
+    label: 'AI Agent',
+    minRole: 100 // guest role_id
+  },
+  {
     id: 'tof-agent', // Different delimiter styles (_ vs -) are used in id (packages/libraries use _, services/agents use -).
     label: 'TOF Agent',
     minRole: 200 // editor role_id
@@ -297,7 +306,8 @@ const vHelpLayer = app.ui.help.directive(layer)
       <p>
         API tokens are used for authentication when accessing Mascope programmatically,
         e.g., from Jupyter Notebooks or the instrument agents. Here you can generate
-        tokens for specific services; each token is shown only once.
+        tokens for specific services; each token is shown only once, and it expires
+        360 days after it is generated. Regenerate it before then to keep access.
       </p>
       <p>
         The File Agent uploads data files from an instrument PC automatically — its

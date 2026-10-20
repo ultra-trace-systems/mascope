@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 // Which files the browser lets through to the upload. A name must start with
@@ -163,5 +163,164 @@ describe('upload store: the note about names without a token', () => {
     store.get().addFiles(files('Orbi-1_a.raw'))
 
     expect(state.push).not.toHaveBeenCalled()
+  })
+})
+
+describe('upload store: the zone an acquisition time is read in', () => {
+  // A raw file records its acquisition time as the instrument PC's wall
+  // clock, with no offset. The server reads it in the zone the upload
+  // reports: an agent's for the instrument PC, else the browser's, which it
+  // ranks below and records under its own name, since the browser is
+  // wherever the person uploading sits. With none reported it reads it in
+  // its own zone, UTC in production, and a file uploaded from a browser east
+  // of UTC was stored hours late.
+  //
+  // What matters is what reaches the server, so these tests read the tus
+  // request itself, through a request stack of their own: the metadata
+  // travels base64-encoded in the Upload-Metadata header of the POST that
+  // creates the upload.
+  let zone
+  let requests
+
+  const stack = {
+    getName: () => 'test',
+    createRequest(method, url) {
+      const headers = {}
+      return {
+        getMethod: () => method,
+        getURL: () => url,
+        setHeader: (name, value) => {
+          headers[name] = value
+        },
+        getHeader: (name) => headers[name],
+        setProgressHandler() {},
+        send() {
+          requests.push({ method, url, headers })
+          return new Promise(() => {}) // the request is read, never answered
+        },
+        abort: () => Promise.resolve(),
+        getUnderlyingObject: () => null
+      }
+    }
+  }
+
+  const decode = (request) =>
+    Object.fromEntries(
+      request.headers['Upload-Metadata'].split(',').map((pair) => {
+        const [key, value] = pair.split(' ')
+        return [key, value ? atob(value) : '']
+      })
+    )
+
+  // The POSTs that create uploads, in order; a cancelled upload may send
+  // other requests through the same stack.
+  const creations = () => requests.filter((request) => request.method === 'POST')
+
+  const metadataSent = async () => {
+    await vi.waitFor(() => expect(creations()).toHaveLength(1))
+    return decode(creations()[0])
+  }
+
+  // Under Vitest the tus client is its Node build, whose file reader takes
+  // a Buffer, not a Blob; a reader of the test's own keeps the files as the
+  // other tests make them. The request is read before any byte is sent.
+  const fileReader = {
+    openFile: async (input) => ({
+      size: input.size,
+      slice: async () => ({ value: null, done: true }),
+      close() {}
+    })
+  }
+
+  const storeOnTestStack = () => {
+    const store = useUppy()
+    store.get().getPlugin('Tus').setOptions({ httpStack: stack, fileReader })
+    return store
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    state.tokenless = true
+    state.pending = false
+    requests = []
+    zone = vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions')
+    zone.mockReturnValue({ timeZone: 'Europe/Vienna' })
+  })
+
+  afterEach(() => {
+    zone.mockRestore()
+  })
+
+  it('sends the browser zone under its own name, next to the instrument the dialog reports', async () => {
+    const store = storeOnTestStack()
+    store.addFromDialog([
+      {
+        name: 'Nowhere_2026.09.21_NO3_001.raw',
+        data: new Blob(['x']),
+        meta: { instrument: 'Lab-2' }
+      }
+    ])
+
+    store.get().upload()
+
+    expect(await metadataSent()).toMatchObject({
+      filename: 'Nowhere_2026.09.21_NO3_001.raw',
+      instrument: 'Lab-2',
+      browser_timezone: 'Europe/Vienna'
+    })
+    // Not as the agent's zone: the server ranks and labels the two apart.
+    expect(requests[0].headers['Upload-Metadata']).not.toMatch(/(^|,)timezone /)
+  })
+
+  it('reads the zone as the upload starts, not when the app did', async () => {
+    const store = storeOnTestStack()
+    zone.mockReturnValue({ timeZone: 'America/Denver' })
+    add(store, 'Orbi-1_2026.09.21_NO3_001.raw')
+
+    store.get().upload()
+
+    expect((await metadataSent()).browser_timezone).toBe('America/Denver')
+  })
+
+  it('sends no zone when the browser names only a placeholder', async () => {
+    const store = storeOnTestStack()
+    zone.mockReturnValue({ timeZone: 'UTC' })
+    add(store, 'Orbi-1_2026.09.21_NO3_001.raw')
+
+    store.get().upload()
+
+    const metadata = await metadataSent()
+    expect(metadata.filename).toBe('Orbi-1_2026.09.21_NO3_001.raw')
+    expect(metadata).not.toHaveProperty('browser_timezone')
+  })
+
+  it('stops sending a zone the browser stopped naming', async () => {
+    // Set on each file as its upload starts, never in the global meta: a
+    // zone sent once must not ride on every later file of the session.
+    const store = storeOnTestStack()
+    add(store, 'Orbi-1_2026.09.21_NO3_001.raw')
+    store.get().upload()
+    expect((await metadataSent()).browser_timezone).toBe('Europe/Vienna')
+
+    store.get().cancelAll()
+    zone.mockReturnValue({ timeZone: 'UTC' })
+    add(store, 'Orbi-1_2026.09.21_NO3_002.raw')
+    store.get().upload()
+
+    await vi.waitFor(() => expect(creations()).toHaveLength(2))
+    const metadata = decode(creations()[1])
+    expect(metadata.filename).toBe('Orbi-1_2026.09.21_NO3_002.raw')
+    expect(metadata).not.toHaveProperty('browser_timezone')
+    expect(store.get().getState().meta).not.toHaveProperty('browser_timezone')
+  })
+
+  it('lets every meta field a file carries through to the server', () => {
+    // The default, pinned: a list of names would send each name whether the
+    // file carries it or not, an absent one as the string "undefined", and
+    // the server reads a reported instrument off that field.
+    const store = useUppy()
+
+    expect(store.get().getPlugin('Tus').opts.allowedMetaFields).toBe(true)
   })
 })

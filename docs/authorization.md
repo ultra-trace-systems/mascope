@@ -43,6 +43,17 @@ covers admins and owners, `guest` covers everyone); unset, the default, requires
 it of nobody. An account covered by the requirement is held at an enrolment
 screen after signing in until it sets a factor up, and cannot turn it off again.
 
+Machine accounts - the identity a paired instrument agent uploads as - are
+exempt, at any role and under any setting. They never sign in at a browser:
+the login route refuses them, and so does the second-factor step, so there is
+no session for a factor to protect and no screen to enrol at. Counted as
+covered, every one of them would read as owing an enrolment it can never
+complete, and a deployment whose policy covers editors (the role machine
+accounts hold) could never show as compliant. The exemption follows the account
+kind, not the role: a person at editor is covered exactly as before. The users
+API reports it as `mfa_exempt`, and an exempt account is never
+`mfa_enrollment_required`.
+
 Two actions ask for a current code even in an open session: generating an API
 access token, and approving an agent pairing. Both hand out credentials valid
 for a year that are not tied to the browser session, so a session on its own is
@@ -138,7 +149,42 @@ Passwords must be at least **12 characters**. There are no character-class rules
 
 A password an administrator issues is **temporary**. Resetting another user's password, and creating a new account, both leave that account required to choose its own password the next time it signs in — so only its holder ever knows the password in use. The account signs in with the issued password as normal and is then held at a password screen until it sets a new one.
 
-An owner can require the same of **every** account at once, from **Manage users**. It puts every account through the current policy, whatever the reason for asking — a tightened rule, a periodic refresh, or a concern about credentials. It is not a lockout: everyone keeps signing in with their existing password until they replace it. See [maintaining.md](maintaining.md#user-accounts) for the operator's view, including how to undo it.
+An owner can require the same of **every** account at once, from **Manage users**. It puts every account through the current policy, whatever the reason for asking — a tightened rule, a periodic refresh, or a concern about credentials. It is not a lockout: every open session is signed out, but everyone keeps signing in with their existing password until they replace it. See [maintaining.md](maintaining.md#user-accounts) for the operator's view, including how to undo it.
+
+## Sessions
+
+Signing in to the web app starts a **session** that lasts seven days. It ends
+early when any of these happens, and the browser is sent back to the sign-in
+screen on its next request:
+
+- **Signing out** in that browser.
+- **A password change**, by the account holder or by an administrator's reset.
+  Every session the account had is ended, not just the others.
+- **Disabling the account.** Enabling it again does not bring old sessions
+  back.
+- **An owner requiring a new password of every account** (see Passwords).
+  Everyone signs in again with their existing password and is then held at the
+  password screen. An account that already owed a password change keeps its
+  sessions, which that requirement already holds at the password screen.
+- **Signing out everywhere.** Anyone can do this for their own account
+  (`POST /api/users/me/sign-out-everywhere`), and an owner for any account
+  (`POST /api/users/owner/{id}/sign-out-everywhere`) - for a session left open
+  on a machine someone else now uses, or one that may have been stolen. The
+  account can sign in again straight away; to keep someone out, disable the
+  account as well.
+
+A session started in the minute before one of these may survive it: the
+servers allow that much for their clocks to disagree.
+
+The same holds for the live updates an open tab receives. When a session ends,
+or its account is held at the password screen, that tab's live connection
+stops receiving updates about workspaces and their data straight away, before
+its next request: the connection stays open only to hear that the session is
+over.
+
+None of this touches **access tokens** (below), which are separate credentials
+with their own revocation - except a password change, which also revokes the
+account's tokens.
 
 ## Access tokens
 

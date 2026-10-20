@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi_users.authentication import Strategy
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.lib.rate_limit import (
     clear_login_rate_limit,
@@ -93,6 +94,12 @@ async def verify_route(
         # The account changed under the half-finished sign-in (disabled,
         # deleted, factor removed). Nothing to complete.
         raise InvalidPendingTokenException()
+    if user.account_type == ACCOUNT_TYPE_MACHINE:
+        # The second of the two places a session is minted, so it states the
+        # login route's rule again rather than trusting that no pending token
+        # for a machine account can exist: the two-factor policy exempts these
+        # accounts only because they never hold an interactive session.
+        raise InvalidPendingTokenException()
 
     verified = await service.verify_totp_for_user(user, body.code)
     if not verified:
@@ -144,7 +151,9 @@ async def status_route(user: User = Depends(mfa_gate_exempt_guest_user)):
         "data": MfaStatusResponse(
             enabled=user.mfa_enabled,
             available=service.mfa_available(),
-            required=policy.required_for_role(user.role_id),
+            required=policy.required_for_role(
+                user.role_id, account_type=user.account_type
+            ),
             policy_min_role=policy.required_min_role_name(),
             confirmed_at=(
                 user.mfa_confirmed_at.isoformat() if user.mfa_confirmed_at else None
@@ -280,7 +289,7 @@ async def disable_route(
 
     # Refused before the code is checked, so a correct code cannot be spent on
     # an action that was never going to be allowed.
-    if policy.required_for_role(user.role_id):
+    if policy.required_for_role(user.role_id, account_type=user.account_type):
         raise MfaRequiredByPolicyException()
 
     verified = await service.verify_totp_for_user(user, body.code)

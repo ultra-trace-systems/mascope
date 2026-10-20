@@ -40,6 +40,7 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     StreamItemCreate,
 )
 from mascope_signal.compute import PartialPeakStoreError, StalePeakStoreError
+from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_thermo.thermo import NoScansFoundError
 
 
@@ -408,6 +409,17 @@ async def test_a_file_with_no_scan_of_the_polarity_is_refused_as_that():
             sample_tic=NoScansFoundError("none of it"),
             wider_tic=NoScansFoundError("none of any type"),
         )
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_scan_events_are_misread_is_refused_as_that():
+    """A file the reader refuses holds scans: the refusal is the reason it
+    gives, which no file without scans of the polarity would say."""
+    plain = SampleItemCreate(sample_item_name="x", sample_item_type="UNKNOWN", **COMMON)
+    refusal = MisreadScanEventsError("The scan events of this file cannot be read")
+
+    with pytest.raises(MisreadScanEventsError, match="cannot be read"):
+        await _created([plain], sample_tic=refusal)
 
 
 @pytest.mark.asyncio

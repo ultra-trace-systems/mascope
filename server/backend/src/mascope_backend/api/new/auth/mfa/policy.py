@@ -5,13 +5,14 @@ One setting, ``backend.mfa_required_min_role`` in the config TOML, naming the
 lowest role the requirement applies to. Unset means nobody is required to
 enroll, which is the default and what every existing deployment gets.
 
-Imports the role table, the runtime, and ``mfa.secrets`` (which itself imports
-only the runtime), so it stays usable from the user schemas without pulling the
-rest of the auth package in behind it.
+Imports the role table, the account kinds, the runtime, and ``mfa.secrets``
+(which itself imports only the runtime), so it stays usable from the user
+schemas without pulling the rest of the auth package in behind it.
 """
 
 from typing import Optional, cast
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.new.auth.mfa.secrets import mfa_configured
 from mascope_backend.roles import ROLE_ACCESS_LEVELS
 from mascope_backend.runtime import runtime
@@ -126,27 +127,51 @@ def required_min_role_name() -> Optional[str]:
     )
 
 
-def required_for_role(role_id: Optional[int]) -> bool:
+def exempt(account_type: str) -> bool:
+    """
+    Whether an account is outside the requirement by its kind, whatever its role.
+
+    A machine account (an instrument agent's identity) never signs in
+    interactively - the login path refuses it - so it has no browser to show an
+    enrolment screen in and no person to hold the phone. Counting it as covered
+    would report it as owing an enrolment it can never complete, and a
+    deployment whose policy covers editors could never look compliant. Keyed on
+    the account kind rather than on role or an address pattern: a machine
+    account sits at editor, the same role as the people the policy is there for.
+
+    :param account_type: The account's kind (``mascope_backend.accounts``).
+    :return: ``True`` when the requirement never applies to the account.
+    """
+    return account_type == ACCOUNT_TYPE_MACHINE
+
+
+def required_for_role(role_id: Optional[int], *, account_type: str) -> bool:
     """
     Whether an account at this role must hold a second factor.
 
     An account with no role is treated as not covered: it cannot use the
     application either way, and the role checks refuse it before this matters.
+    An account exempt by its kind is never covered.
 
     :param role_id: The account's access level.
+    :param account_type: The account's kind, required so no caller can leave
+        the exemption out.
     :return: ``True`` when the requirement applies.
     """
-    if REQUIRED_LEVEL is None or role_id is None:
+    if REQUIRED_LEVEL is None or role_id is None or exempt(account_type):
         return False
     return role_id >= REQUIRED_LEVEL
 
 
-def enrollment_required(role_id: Optional[int], mfa_enabled: bool) -> bool:
+def enrollment_required(
+    role_id: Optional[int], mfa_enabled: bool, *, account_type: str
+) -> bool:
     """
     Whether this account is being held out of the application until it enrolls.
 
     :param role_id: The account's access level.
     :param mfa_enabled: Whether a confirmed factor already exists.
+    :param account_type: The account's kind.
     :return: ``True`` when the account owes an enrollment.
     """
-    return not mfa_enabled and required_for_role(role_id)
+    return not mfa_enabled and required_for_role(role_id, account_type=account_type)

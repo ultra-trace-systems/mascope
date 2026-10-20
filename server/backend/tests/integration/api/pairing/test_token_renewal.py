@@ -14,6 +14,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select, update
+from test_utils import captured_logs
 
 from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.new.auth.access_token import cache as token_cache
@@ -24,7 +25,7 @@ from mascope_backend.api.new.auth.access_token.service import (
 )
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.app.fast import fast
-from mascope_backend.db import AccessToken, AgentDevice, User
+from mascope_backend.db import AccessToken, AgentDevice, User, hash_access_token
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -79,9 +80,9 @@ async def test_unbound_machine_token_cannot_renew(
 ):
     """Renewal follows the presented token's device binding, not its subject.
 
-    A machine account also holds a file-converter token, which is unbound and
-    therefore exempt from both the strict-mode gate and the 30-day device
-    lifetime. Were the subject enough, that long-lived credential could mint
+    A machine account also holds file-converter tokens, which are unbound and
+    therefore exempt from both the strict-mode gate and the device token's
+    renewal. Were the subject enough, that long-lived credential could mint
     device tokens forever and the short lifetime would bound nothing.
     """
     device_id, machine, _token = await provision_device(test_users["editor"].id)
@@ -101,7 +102,7 @@ async def test_unbound_machine_token_cannot_renew(
     async with async_session_factory() as session:
         count = (
             await session.execute(
-                select(func.count(AccessToken.token)).where(
+                select(func.count(AccessToken.token_hash)).where(
                     AccessToken.device_id == device_id
                 )
             )
@@ -126,7 +127,7 @@ async def test_renewal_reaps_to_two_tokens(
     async with async_session_factory() as session:
         count = (
             await session.execute(
-                select(func.count(AccessToken.token)).where(
+                select(func.count(AccessToken.token_hash)).where(
                     AccessToken.device_id == device_id
                 )
             )
@@ -150,7 +151,7 @@ async def test_device_token_past_its_lifetime_is_refused(
     async with async_session_factory() as session:
         await session.execute(
             update(AccessToken)
-            .where(AccessToken.token == token)
+            .where(AccessToken.token_hash == hash_access_token(token))
             .values(created_at=dt.now(timezone.utc) - timedelta(seconds=lifetime + 60))
         )
         await session.commit()
@@ -190,16 +191,6 @@ async def test_machine_account_converter_token_minted_on_demand(
     async_session_factory, test_users, provision_device
 ):
     _device_id, machine, _token = await provision_device(test_users["editor"].id)
-    # Simulate a lapsed/absent converter token by removing any that exist.
-    async with async_session_factory() as session:
-        await session.execute(
-            delete(AccessToken).where(
-                AccessToken.user_id == machine.id,
-                AccessToken.service_name == "file-converter",
-            )
-        )
-        await session.commit()
-
     # get_access_token mints one on demand for a machine account rather than
     # refusing, so the converter can always write back the upload's results.
     minted = await get_access_token(user=machine, service_name="file-converter")
@@ -208,57 +199,13 @@ async def test_machine_account_converter_token_minted_on_demand(
     async with async_session_factory() as session:
         count = (
             await session.execute(
-                select(func.count(AccessToken.token)).where(
+                select(func.count(AccessToken.token_hash)).where(
                     AccessToken.user_id == machine.id,
                     AccessToken.service_name == "file-converter",
                 )
             )
         ).scalar_one()
     assert count == 1
-
-
-@pytest.mark.asyncio
-async def test_machine_account_converter_token_renewed_near_its_end(
-    async_session_factory, test_users, provision_device
-):
-    """Within the renewal window an upload mints a new converter token beside
-    the old one, as a sign-in does for a person. Nothing signs in for a
-    machine account, so this is where its token stops lapsing once a year:
-    the uploads queued under the old one keep validating, new ones take the
-    newest."""
-    _device_id, machine, _token = await provision_device(test_users["editor"].id)
-    settings = auth_settings.access_token
-    held = await get_access_token(user=machine, service_name="file-converter")
-    async with async_session_factory() as session:
-        await session.execute(
-            update(AccessToken)
-            .where(AccessToken.token == held)
-            .values(
-                created_at=dt.now(timezone.utc)
-                - timedelta(
-                    seconds=settings.ACCESS_TOKEN_EXPIRATION_SECONDS
-                    - settings.FILE_CONVERTER_TOKEN_RENEWAL_SECONDS
-                    + 60
-                )
-            )
-        )
-        await session.commit()
-    token_cache.clear()
-
-    renewed = await get_access_token(user=machine, service_name="file-converter")
-    assert renewed != held
-    async with async_session_factory() as session:
-        tokens = set(
-            (
-                await session.execute(
-                    select(AccessToken.token).where(
-                        AccessToken.user_id == machine.id,
-                        AccessToken.service_name == "file-converter",
-                    )
-                )
-            ).scalars()
-        )
-    assert tokens == {held, renewed}
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +269,34 @@ async def test_strict_mode_refuses_an_unbound_agent_token_over_http(
         strict = await client.get("/api/sample/files", params={"page": 0, "limit": 1})
     assert strict.status_code == 401, strict.text
     assert "paired agent credentials" in strict.text
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_refusal_is_logged_under_the_token_service(
+    test_users, strict_mode
+):
+    """The access log names the service of a token the device policy refuses.
+
+    The name is recorded once the token and its header agree, before the
+    device policy runs, so an unpaired agent refused in strict mode is still
+    told apart in the log from a notebook or a web session.
+    """
+    unbound = await create_access_token(
+        user=test_users["editor"], service_name="file-agent"
+    )
+
+    strict_mode(True)
+    with captured_logs("INFO") as records:
+        async with _bearer_client(unbound) as client:
+            resp = await client.get("/api/sample/files", params={"page": 0, "limit": 1})
+    assert resp.status_code == 401, resp.text
+    logged = [
+        r["extra"]["service_name"]
+        for r in records
+        if r["message"] == "/api/sample/files"
+        and r["extra"].get("path") == "/api/sample/files"
+    ]
+    assert logged == ["file-agent"]
 
 
 @pytest.mark.asyncio

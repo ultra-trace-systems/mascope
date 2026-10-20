@@ -46,6 +46,24 @@ def load_dotnet(*refs):
 
         load("coreclr")
         import clr
+        from System.Globalization import CultureInfo
+
+        # The library writes trailer and status-log values as text in the
+        # current culture, which starts as the server's regional format: a
+        # decimal comma under fi-FI or de-DE, and where .NET takes its culture
+        # data from ICU (sv-SE, nb-NO) the minus sign U+2212 too. That text is
+        # stored as captured (acquisition_params) and served as read (the scan
+        # table), so pin the invariant culture to write it alike everywhere.
+        # The default covers every thread whose culture was never set, the
+        # backend's worker threads among them; the current one covers this
+        # thread even if its culture was.
+        # DOTNET_SYSTEM_GLOBALIZATION_INVARIANT would do it too, but would
+        # also make every string comparison in the library ordinal, and leave
+        # no named culture to create: the text a comma-locale server captured
+        # before this, which backend.trailer_float still reads, could then no
+        # longer be produced to test that it does.
+        CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture
 
         for ref in refs:
             clr.AddReference(ref)

@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mascope_backend.api.new.auth.access_token import cache as token_cache
 from mascope_backend.api.new.auth.access_token.config import AccessTokenConfig
 from mascope_backend.api.new.auth.exceptions import InvalidTokenException
-from mascope_backend.db import AccessToken, async_session
+from mascope_backend.db import AccessToken, async_session, hash_access_token
 
 
 def _token_auth_context_query(token: str):
@@ -14,7 +14,7 @@ def _token_auth_context_query(token: str):
         AccessToken.service_name,
         AccessToken.device_id,
         AccessToken.created_at,
-    ).where(AccessToken.token == token)
+    ).where(AccessToken.token_hash == hash_access_token(token))
 
 
 async def get_token_auth_context(

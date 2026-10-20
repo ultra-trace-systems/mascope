@@ -9,7 +9,7 @@ import { useToast } from 'primevue/usetoast'
 
 import { api } from '@/api'
 import { runtime } from '@/lib/runtime.js'
-import { beautifySnakeCase, messageSeverity } from '@/lib/utils'
+import { toastFor } from '@/lib/toastTitles'
 import { BaseBrandLogo, BaseLegalFooter } from '@/lib/base'
 import BaseUpdateBanner from '@/lib/base/BaseUpdateBanner.vue'
 import { useApp } from '@/stores'
@@ -38,18 +38,10 @@ useUpdate().start()
 // toaster; lives as long as the app
 app.ui.notification.on('*', (notification) => {
   if (notification === null) return
-  const { status, type, message, data, error } = notification
+  const { status, data, error } = notification
   if (status !== 'pending') {
-    const severity = messageSeverity(status)
-
-    const duration = status === 'error' ? 10000 : status === 'warning' ? 7000 : 3000
-
-    toaster.show({
-      severity,
-      summary: `${beautifySnakeCase(type)} ${status}`,
-      detail: message,
-      life: duration
-    })
+    const toast = toastFor(notification)
+    if (toast) toaster.show(toast)
 
     const download = data?.download ?? error?.detail?.data?.download
 

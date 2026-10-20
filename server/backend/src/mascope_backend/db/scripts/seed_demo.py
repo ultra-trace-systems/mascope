@@ -8,10 +8,10 @@ and use the SDK with zero setup. Idempotent: safe to run repeatedly. It
 - upserts a demo user with a fixed email/username/password (owner + superuser,
   active + verified), resetting the password each run so it always matches -
   being an owner also satisfies the app's "first owner" registration gate,
-- (re)creates fixed service access tokens (mascope_sdk, file-converter,
-  file-agent) with a fresh ``created_at`` so they never show up expired
-  regardless of how old the restored snapshot is. The file-converter token is
-  required by the upload route; file-agent is the File Agent's bearer token.
+- (re)creates fixed service access tokens (mascope_sdk, file-agent) with a
+  fresh ``created_at`` so they never show up expired regardless of how old
+  the restored snapshot is. file-agent is the File Agent's bearer token. No
+  file-converter token is seeded: each upload mints its own.
 
 The demo user is a superuser, so it bypasses workspace-membership checks and
 sees all demo data without extra wiring.
@@ -42,6 +42,7 @@ from mascope_backend.db import (
     User,
     async_session,
     configure_database_engine,
+    hash_access_token,
 )
 from mascope_backend.runtime import runtime
 
@@ -56,14 +57,11 @@ DEMO_PASSWORD = "mascope-demo"
 # first-owner signup page until an owner-role user exists) and can do anything
 # in the local demo without a separate signup step.
 DEMO_ROLE = "owner"
-# Fixed access tokens per service (each <= 43 chars - AccessToken.token column).
+# Fixed access tokens per service, stored as their digests like any token.
 # - mascope_sdk: notebook/SDK access (MASCOPE_ACCESS_TOKEN)
-# - file-converter: required internally by the upload route (get_access_token)
-#   and used by the converter for its API/socket callbacks
 # - file-agent: bearer token for the File Agent uploader (if used)
 DEMO_TOKENS = {
     "mascope_sdk": "mascope_demo_sdk_token",
-    "file-converter": "mascope_demo_file_converter_token",
     "file-agent": "mascope_demo_file_agent_token",
 }
 # Back-compat alias for the SDK token (referenced by docs / CLI output).
@@ -144,17 +142,20 @@ async def _refresh_demo_tokens(session, user: User) -> None:
     now = datetime.now(timezone.utc)
     for service, token in DEMO_TOKENS.items():
         # Drop any prior token for this user+service, and any holder of the
-        # fixed token string (the PK) from a previous run.
+        # fixed token's digest (the PK) from a previous run.
         await session.execute(
             delete(AccessToken).where(
                 AccessToken.user_id == user.id,
                 AccessToken.service_name == service,
             )
         )
-        await session.execute(delete(AccessToken).where(AccessToken.token == token))
+        token_hash = hash_access_token(token)
+        await session.execute(
+            delete(AccessToken).where(AccessToken.token_hash == token_hash)
+        )
         session.add(
             AccessToken(
-                token=token,
+                token_hash=token_hash,
                 user_id=user.id,
                 service_name=service,
                 created_at=now,
