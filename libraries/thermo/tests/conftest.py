@@ -36,12 +36,15 @@ def backend(request, monkeypatch):
 def dotnet_culture(monkeypatch):
     """Format the Thermo library's text in a .NET culture the test names.
 
-    The library writes trailer values as text in the current culture, so
-    without this a test sees only the regional format of the machine it runs
-    on: a decimal comma on one, a point on another. Yields a function taking
-    a culture name (``""`` for the invariant culture), and puts back the
-    culture the test found. Selects the Thermo backend, and skips without
-    its DLLs.
+    The library writes trailer values as text in the current culture, which
+    ``load_dotnet`` pins to the invariant one, so without this a test sees
+    only invariant text. With it the library writes as it did on a server
+    in that culture before the pin, and so the text such a server captured:
+    a decimal comma under de-DE, and under sv-SE the minus sign U+2212 too.
+    Yields a function taking a culture name (``""`` for the invariant
+    culture), which sets it as the current culture and as the default for
+    every other thread, as the pin does, and puts back the cultures the test
+    found. Selects the Thermo backend, and skips without its DLLs.
     """
     if not thermo_available():
         pytest.skip(
@@ -54,10 +57,12 @@ def dotnet_culture(monkeypatch):
     from System.Globalization import CultureInfo
 
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
-    original = CultureInfo.CurrentCulture
+    original = CultureInfo.CurrentCulture, CultureInfo.DefaultThreadCurrentCulture
 
     def use(name: str) -> None:
-        CultureInfo.CurrentCulture = CultureInfo(name)
+        culture = CultureInfo(name)
+        CultureInfo.DefaultThreadCurrentCulture = culture
+        CultureInfo.CurrentCulture = culture
 
     yield use
-    CultureInfo.CurrentCulture = original
+    CultureInfo.CurrentCulture, CultureInfo.DefaultThreadCurrentCulture = original

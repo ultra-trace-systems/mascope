@@ -1141,7 +1141,9 @@ def get_ms2_summary_metadata(
             # instrument actually used. A value may itself be comma-separated
             # when the instrument stepped the energy *within* one scan, which
             # is a different thing from the per-scan stepping the group key
-            # separates - each comma-separated step keeps its own entry.
+            # separates - each comma-separated step keeps its own entry. The
+            # Thermo library writes the value in the invariant culture
+            # (load_dotnet), so no comma here is a decimal mark.
             raw_values = [
                 scan_idx_to_hcd[idx] for idx in scan_indices if idx in scan_idx_to_hcd
             ]
