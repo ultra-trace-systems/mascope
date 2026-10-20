@@ -25,9 +25,11 @@ import DialogDatasetOp from '@/lib/dialogs/DialogDatasetOp.vue'
 
 // Only the dialog's own logic is under test; PrimeVue's pieces are reduced to
 // passthroughs that still render their default slot and forward clicks.
+// The metadata section is stubbed the same way: its own spec covers it, and
+// here it only has to hand the dialog a form.
 const PRIMEVUE = ['Dialog', 'FloatLabel', 'InputText', 'Textarea', 'Button']
 const stubs = Object.fromEntries(
-  PRIMEVUE.map((name) => [
+  [...PRIMEVUE, 'DatasetMetadataSection'].map((name) => [
     name,
     {
       name,
@@ -41,8 +43,15 @@ const stubs = Object.fromEntries(
 const DATASET = {
   dataset_id: 'ds-1',
   dataset_name: 'Winter run',
-  dataset_description: 'Original description'
+  dataset_description: 'Original description',
+  license: 'CC-BY-4.0',
+  authors: [{ name: 'Author One', orcid: null, affiliation: 'Lab A' }],
+  keywords: ['aerosol'],
+  related_identifiers: null,
+  funding: null
 }
+
+const section = (wrapper) => wrapper.findComponent({ name: 'DatasetMetadataSection' })
 
 async function openEditDialog() {
   const wrapper = mount(DialogDatasetOp, {
@@ -65,6 +74,7 @@ const closed = (wrapper) =>
 describe('DialogDatasetOp', () => {
   beforeEach(() => {
     dataset.update.mockReset()
+    dataset.create.mockReset()
   })
 
   it('stays open when the rename is refused', async () => {
@@ -116,5 +126,75 @@ describe('DialogDatasetOp', () => {
     )
     expect(dataset.focusWhenPresent).toHaveBeenCalledWith({ dataset_id: 'ds-new' })
     expect(closed(wrapper)).toBe(true)
+  })
+
+  it('saves the metadata as it stands, clearing what was emptied', async () => {
+    dataset.update.mockResolvedValue({ data: DATASET })
+    const wrapper = await openEditDialog()
+
+    const form = section(wrapper).props('modelValue')
+    expect(form.license).toBe('CC-BY-4.0')
+    await section(wrapper).vm.$emit('update:modelValue', {
+      ...form,
+      license: '',
+      keywords: [...form.keywords, 'CI-MS']
+    })
+    await saveButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(dataset.update).toHaveBeenCalledWith({
+      dataset_id: 'ds-1',
+      dataset_name: 'Winter run',
+      dataset_description: 'Original description',
+      license: null,
+      authors: [{ name: 'Author One', orcid: null, affiliation: 'Lab A' }],
+      keywords: ['aerosol', 'CI-MS'],
+      related_identifiers: null,
+      funding: null
+    })
+  })
+
+  it('holds the save back while an ORCID is malformed', async () => {
+    const wrapper = await openEditDialog()
+    const form = section(wrapper).props('modelValue')
+
+    await section(wrapper).vm.$emit('update:modelValue', {
+      ...form,
+      authors: [{ name: 'Author One', orcid: '1234', affiliation: '' }]
+    })
+    expect(saveButton(wrapper).props('disabled')).toBe(true)
+  })
+
+  it('creates a dataset with the metadata filled in', async () => {
+    dataset.create.mockResolvedValue({ data: { dataset_id: 'ds-new' } })
+    const wrapper = mount(DialogDatasetOp, {
+      props: { action: null },
+      global: { plugins: [PrimeVue], stubs }
+    })
+    await wrapper.setProps({ action: 'create' })
+    await flushPromises()
+    await wrapper
+      .findAllComponents({ name: 'InputText' })[0]
+      .vm.$emit('update:modelValue', 'Spring run')
+    await section(wrapper).vm.$emit('update:modelValue', {
+      ...section(wrapper).props('modelValue'),
+      license: 'CC0-1.0',
+      funding: [{ funder: 'Funder A', award: '' }]
+    })
+
+    const create = wrapper
+      .findAllComponents({ name: 'Button' })
+      .find((c) => c.props('label') === 'Create')
+    await create.trigger('click')
+    await flushPromises()
+
+    expect(dataset.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dataset_name: 'Spring run',
+        license: 'CC0-1.0',
+        authors: null,
+        funding: [{ funder: 'Funder A', award: null }]
+      })
+    )
   })
 })
