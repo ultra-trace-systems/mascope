@@ -122,4 +122,21 @@ describe('NotificationPane', () => {
     expect(wrapper.findAll('.entry')).toHaveLength(1)
     expect(wrapper.get('h4').text()).toBe('Upload failed')
   })
+
+  // An empty log says what will fill it, instead of a search field over
+  // nothing; the first entry replaces the explanation.
+  it('explains an empty log, and gives way to the first entry', async () => {
+    const wrapper = mountPane()
+
+    expect(wrapper.get('.empty-state .title').text()).toBe('Nothing yet')
+    expect(wrapper.get('.empty-state .hint').text()).toMatch(
+      /Results and warnings of what you run appear here and stay until you clear them/
+    )
+
+    notification.log = [entry('a')]
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.empty-state').exists()).toBe(false)
+    expect(wrapper.findAll('.entry')).toHaveLength(1)
+  })
 })
