@@ -69,5 +69,38 @@ server runs and names that version in its `info.version`.
   with the `APIToken` scheme; the rest of the API answers only to the web app's
   signed-in session.
 
+### What a token may change
+
+A token acts as you: it can do what your role allows, and no more. Most of
+the API it reaches only reads, but these writes accept a token too, each with
+the role it needs in the web app:
+
+| Change | Operations | Role needed |
+|---|---|---|
+| Datasets: create, rename or describe, move to another workspace, delete | `POST /api/workspaces/{ws}/datasets`, `PATCH` and `DELETE /api/workspaces/{ws}/datasets/{id}`, `POST .../{id}/move` | editor in the workspace (a move: in both); a locked dataset needs the global admin role |
+| Batches: update, copy, delete | `PATCH` and `DELETE /api/sample/batches/{id}`, `POST /api/sample/batches/{id}/copy` | editor on the batch, and for a copy on the destination dataset; a locked batch needs the global admin role to update and the owner role to delete. An update sets the batch's target collections to the list it sends, so send the current list to keep them; an empty one detaches them all |
+| Samples: update, move, copy | `PATCH /api/sample/items/{id}`, `POST /api/sample/items/move`, `POST /api/sample/items/copy` | editor on the samples (a copy: guest is enough) and on the destination batch; a locked sample needs the owner role to update and cannot be moved |
+| Target collections: create, update, associate with batches, delete | `POST /api/target/collections`, `PATCH` and `DELETE /api/target/collections/{id}` | editor in the collection's workspace (a global collection: global admin); to only associate batches, guest on the collection and editor on the batches |
+| Target compounds: add, update, remove | `POST` and `PATCH /api/target/compounds`, `DELETE /api/target/compounds/{id}` | the global editor role; the compound list is shared by every workspace. Deleting a collection with `delete_orphan_compounds=true` also removes the compounds no other collection uses, with the collection's role alone |
+| Matches: save a sample's or a batch's, or rebuild a batch's | `POST /api/match/aggregate/sample/{id}/save`, `POST /api/match/aggregate/batch/{id}/save`, `POST /api/match/aggregate/batch/{id}/resave` | editor on the sample or batch |
+
+Besides these, a token can:
+
+- upload raw files, and delete the raw files no sample uses
+  (`POST /api/sample/files/delete`, admin in the instrument's workspace);
+- add an instrument function (`POST /api/instrument_configs`, the global
+  editor role);
+- run and review peak assignments and the batch peak ledger, and refit an
+  instrument's peak-assignment confidence calibration (a superuser).
+
+Everything else, such as workspaces and their members, m/z calibration,
+ionization modes, and rematching or removing matches, needs the web app.
+
+!!! warning
+    Deleting a dataset, a batch, a collection or raw files, removing a
+    compound and rebuilding a batch's matches cannot be undone. Keep your token as secret
+    as your password: anyone holding it can make these changes as you.
+    Generating a new token replaces the old one.
+
 <!-- TODO Phase 3: publish the SDK README content into this section as the single
 source, or keep this page thin and deep-link. See the roadmap. -->
