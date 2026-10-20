@@ -13,10 +13,11 @@ first model name it finds in the file's first 64 KB, the sequence row's
 sample name, comment and paths included, and only where none is found, the
 instrument's own InstID record. A hybrid's file whose free text names a
 Q Exactive is therefore read as a Q Exactive's, and its ion-trap scans are
-what a hybrid records. So only an analyzer no Orbitrap instrument of any
-kind has refuses a file: anything but the Orbitrap and the ion trap, and a
-scan whose analyzer OpenTFRaw cannot name. A misread that lands only on the
-Orbitrap's and the ion trap's codes goes unseen.
+what a hybrid records. So a file is refused only for a scan read as an
+analyzer other than the Orbitrap and the ion trap, or as one OpenTFRaw
+cannot name. A misread that lands only on the Orbitrap's and the ion trap's
+codes goes unseen. The Orbitrap Astral is the exception to that set, and is
+kept from the check otherwise (``_ORBITRAP_INSTRUMENT_ANALYZERS``).
 
 A leaf module, imported by both ``mascope_thermo.backend``, which judges
 every file it reads, and the interim ``mascope_thermo.v66_scan_events``,
@@ -33,8 +34,13 @@ from collections.abc import Sequence
 # them: the Exploris family and the Q Exactive family.
 _ORBITRAP_ONLY_MODELS = ("Exploris", "Exactive")
 
-# What an Orbitrap instrument of any kind records a scan with: the Orbitrap,
-# and on a hybrid the ion trap.
+# What an Orbitrap instrument records a scan with: the Orbitrap, and on a
+# hybrid the ion trap. Not the Orbitrap Astral's own analyzer, ASTMS, which
+# OpenTFRaw 2.0.0 does not name (it names codes 0 to 5), so an Astral scan
+# reads as none. What keeps an Astral file from being refused is the order of
+# OpenTFRaw's registry instead: "Orbitrap Astral" is its first entry, so a
+# file that names it anywhere in its first 64 KB is never read as an Exploris
+# or a Q Exactive. ASTMS belongs here once the reader names it.
 _ORBITRAP_INSTRUMENT_ANALYZERS = frozenset({"FTMS", "ITMS"})
 
 
