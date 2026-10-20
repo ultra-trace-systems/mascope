@@ -270,9 +270,17 @@ A **Scope** names what a digest is about, in Mascope's own terms plus a time
 range:
 
 ```python
-Scope(dataset=None, batches=None, instrument=None,
-      start=None, end=None, polarity=None, mode=None,
-      collection=None, tz="instrument")
+Scope(
+    dataset=None,
+    batches=None,
+    instrument=None,
+    start=None,
+    end=None,
+    polarity=None,
+    mode=None,
+    collection=None,
+    tz="instrument",
+)
 ```
 
 Resolution goes through the SDK listings (`find`-style literal matching, the
