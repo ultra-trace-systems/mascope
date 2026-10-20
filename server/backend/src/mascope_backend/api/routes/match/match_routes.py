@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from fastapi.params import Query
 
 from mascope_backend.api.controllers.dataset.dataset_controller import get_dataset
@@ -31,6 +31,7 @@ from mascope_backend.api.new.workspaces.dependencies import (
 )
 from mascope_backend.db import User
 from mascope_backend.db.id import gen_id
+from mascope_backend.runtime import runtime
 
 
 match_router = APIRouter(prefix="/api/match", tags=["Match Management"])
@@ -331,10 +332,16 @@ async def match_remove_batch_route(
     }
 
 
+# Token access for the file converter alone: its peak-recompute worker posts
+# here (file_converter.api.rematch_sample) after every peak recompute. A
+# rematch with full_remove deletes the sample's match rows before recomputing,
+# so the SDK's and the agents' tokens are refused; the web app reaches the
+# route with its session, which this does not affect.
 @match_router.post("/rematch/sample/{sample_item_id}")
-@api_route(status_code=202, token_access=True)
+@api_route(status_code=202, token_access=("file-converter",))
 async def rematch_sample_route(
     sample_item_id: str,
+    request: Request,
     background_tasks: BackgroundTasks,
     full_remove: Annotated[
         bool,
@@ -364,6 +371,17 @@ async def rematch_sample_route(
 
     # Get data for notifications
     process_id = gen_id(8)
+
+    # A token-driven rematch is a destructive recompute no person clicked, so
+    # each one is recorded: which service, for whom, on what. Set by
+    # get_enabled_backends on the bearer path only; a session request has none.
+    token_service_name = getattr(request.state, "token_service_name", None)
+    if token_service_name is not None:
+        runtime.logger.info(
+            f"Rematch of sample {sample_item_id} requested by the "
+            f"{token_service_name} token of user {user.id} "
+            f"(full_remove={full_remove}, process {process_id})."
+        )
 
     background_tasks.add_task(
         rematch_sample,
