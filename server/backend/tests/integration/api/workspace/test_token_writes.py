@@ -21,6 +21,7 @@ Fixtures used:
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import pytest
@@ -30,13 +31,14 @@ from sqlalchemy import delete
 
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.app.fast import fast
-from mascope_backend.db import AccessToken, Dataset, hash_access_token
+from mascope_backend.db import AccessToken, Dataset, SampleBatch, hash_access_token
 from mascope_backend.db.id import gen_id
 
 
 _DATASETS = "mascope_backend.api.routes.dataset.dataset_routes"
 _BATCHES = "mascope_backend.api.routes.sample.batches.sample_batches_routes"
 _SAMPLES = "mascope_backend.api.routes.sample.items.sample_items_routes"
+_COLLECTIONS = "mascope_backend.api.routes.target.collections.target_collections_routes"
 
 
 @dataclass(frozen=True)
@@ -56,9 +58,12 @@ class Write:
     result: Any = None
     #: Guarded by the user's global role alone, with no workspace to refuse.
     global_role: bool = False
+    #: Tells two cases of one route apart.
+    variant: str = ""
 
     def __str__(self) -> str:
-        return f"{self.method} {self.path}"
+        name = f"{self.method} {self.path}"
+        return f"{name} ({self.variant})" if self.variant else name
 
 
 WRITES = [
@@ -142,6 +147,37 @@ WRITES = [
         "copy_sample_items",
         202,
     ),
+    Write(
+        "POST",
+        "/api/target/collections",
+        lambda ids: {
+            "target_collection_name": "Token collection",
+            "workspace_id": ids["ws"],
+            "sample_batch_ids": [ids["batch"]],
+        },
+        _COLLECTIONS,
+        "create_target_collection",
+        201,
+    ),
+    Write(
+        "PATCH",
+        "/api/target/collections/{collection}",
+        lambda ids: {"target_collection_description": "Written with a token"},
+        _COLLECTIONS,
+        "update_target_collection",
+        200,
+    ),
+    # A batches-only update needs only guest on the collection; the editor
+    # role it needs is on the batches whose association changes.
+    Write(
+        "PATCH",
+        "/api/target/collections/{collection}",
+        lambda ids: {"sample_batch_ids": [ids["unlinked_batch"]]},
+        _COLLECTIONS,
+        "update_target_collection",
+        200,
+        variant="batches only",
+    ),
 ]
 
 #: The writes whose ACL is a workspace's.
@@ -159,6 +195,38 @@ def _ids(workspace, dataset, batch, item, collection, compound) -> dict[str, str
     }
 
 
+@pytest_asyncio.fixture
+async def unlinked_batches(async_session_factory, alpha_dataset, beta_dataset):
+    """A batch in each workspace that no collection is associated with.
+
+    Associating it is always a change, which needs the editor role on it. The
+    session's ``alpha_batch`` may already be associated with the collection
+    by an earlier test, and a batches-only update that changes nothing needs
+    no more than guest on the collection.
+    """
+    batch_ids = {"alpha": gen_id(), "beta": gen_id()}
+    datasets = {"alpha": alpha_dataset, "beta": beta_dataset}
+    async with async_session_factory() as session:
+        for key, batch_id in batch_ids.items():
+            session.add(
+                SampleBatch(
+                    sample_batch_id=batch_id,
+                    dataset_id=datasets[key],
+                    sample_batch_name="Unlinked Batch",
+                    sample_batch_utc_created=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                )
+            )
+        await session.commit()
+    yield batch_ids
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleBatch).where(
+                SampleBatch.sample_batch_id.in_(list(batch_ids.values()))
+            )
+        )
+        await session.commit()
+
+
 @pytest.fixture
 def alpha_ids(
     ws_alpha,
@@ -167,8 +235,9 @@ def alpha_ids(
     alpha_item,
     alpha_target_collection,
     test_compound,
+    unlinked_batches,
 ):
-    return _ids(
+    ids = _ids(
         ws_alpha,
         alpha_dataset,
         alpha_batch,
@@ -176,13 +245,20 @@ def alpha_ids(
         alpha_target_collection,
         test_compound,
     )
+    return {**ids, "unlinked_batch": unlinked_batches["alpha"]}
 
 
 @pytest.fixture
 def beta_ids(
-    ws_beta, beta_dataset, beta_batch, beta_item, beta_target_collection, test_compound
+    ws_beta,
+    beta_dataset,
+    beta_batch,
+    beta_item,
+    beta_target_collection,
+    test_compound,
+    unlinked_batches,
 ):
-    return _ids(
+    ids = _ids(
         ws_beta,
         beta_dataset,
         beta_batch,
@@ -190,6 +266,7 @@ def beta_ids(
         beta_target_collection,
         test_compound,
     )
+    return {**ids, "unlinked_batch": unlinked_batches["beta"]}
 
 
 @pytest_asyncio.fixture

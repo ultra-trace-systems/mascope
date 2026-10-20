@@ -68,7 +68,7 @@ async def get_target_collection_route(
 
 
 @target_collections_router.post("")
-@api_route(status_code=201)
+@api_route(status_code=201, token_access=True)
 async def create_target_collection_route(
     body: TargetCollectionCreate,
     user=Depends(current_active_user),
@@ -102,7 +102,7 @@ async def create_target_collection_route(
 
 
 @target_collections_router.patch("/{target_collection_id}")
-@api_route()
+@api_route(token_access=True)
 async def update_target_collection_route(
     target_collection_id: str,
     body: TargetCollectionUpdate,
