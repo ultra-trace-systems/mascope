@@ -111,6 +111,11 @@ SDK_WRITES = {
     ("PATCH", "/api/sample/items/{sample_item_id}"): "samples.update",
     ("POST", "/api/sample/items/move"): "samples.move",
     ("POST", "/api/sample/items/copy"): "samples.copy",
+    # collections, and their association with batches (a batches-only update)
+    ("POST", "/api/target/collections"): "collections.create",
+    ("PATCH", "/api/target/collections/{target_collection_id}"): (
+        "collections.update, collections.associate"
+    ),
 }
 
 #: Every other route that answers a token, by the client that needs it.
