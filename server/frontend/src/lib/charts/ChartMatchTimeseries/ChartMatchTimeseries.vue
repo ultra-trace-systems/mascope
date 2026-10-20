@@ -53,13 +53,12 @@ onMounted(() => {
   scale.value.log = true
 })
 
-// The chart is as tall as its container, which takes `height`, and the layout
-// names no height of its own. Plotly's responsive resize deletes a layout
-// height and autosizes to the container, so a height held only in the layout
-// lasts until the plot div next changes size; after that the chart fills a
-// container with no height of its own and draws nothing.
-const containerStyle = computed(() => (props.height ? { height: `${props.height}px` } : null))
-
+// The chart fills its parent, and the layout names no height of its own.
+// Plotly's responsive resize deletes a layout height and autosizes to the
+// container, so a height held only in the layout lasts until the plot div next
+// changes size; after that the chart fills a container with no height of its
+// own and draws nothing. `height` follows the splitter, and is read only to
+// resize the chart when the panel changes height.
 watch(
   () => props.height,
   async () => {
@@ -110,9 +109,17 @@ const layout = computed(() => ({
 <template>
   <figure
     v-if="app.data.match.visualized.isotopes?.length"
-    style="padding: 0; margin: 0; width: 100%; min-width: 0; overflow: hidden; flex-shrink: 1"
+    style="
+      padding: 0;
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      overflow: hidden;
+      flex-shrink: 1;
+    "
   >
-    <div style="width: 100%; min-width: 0; overflow: hidden" :style="containerStyle">
+    <div style="width: 100%; height: 100%; min-width: 0; overflow: hidden">
       <BaseChartPlotly
         id="ChartMatchTimeseries"
         ref="plot"
