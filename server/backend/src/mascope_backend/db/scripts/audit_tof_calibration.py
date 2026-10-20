@@ -282,6 +282,17 @@ def read_config(today: date | None = None) -> Config:
             raise ValueError("TOF_AUDIT_BANDS must rise.")
 
     families_raw = _env("TOF_AUDIT_FAMILIES")
+    families = (
+        None
+        if families_raw is None
+        else tuple(part.strip() for part in families_raw.split(","))
+    )
+    for text in families or ():
+        # The polarity is the mechanism's last character
+        if not text.endswith(("+", "-")):
+            raise ValueError(
+                f"TOF_AUDIT_FAMILIES: '{text}' must end in its charge, + or -."
+            )
     return Config(
         instrument=instrument,
         first_day=first_day,
@@ -291,11 +302,7 @@ def read_config(today: date | None = None) -> Config:
         sets=_check_sets(_json_env("TOF_AUDIT_SETS", {})),
         models=models,
         band_edges=band_edges,
-        families=(
-            None
-            if families_raw is None
-            else tuple(part.strip() for part in families_raw.split(","))
-        ),
+        families=families,
         series=_check_series(
             _json_env("TOF_AUDIT_SERIES", audit.DEFAULT_CLUSTER_SERIES)
             if _env("TOF_AUDIT_SERIES") != "none"
@@ -552,8 +559,12 @@ class FileAudit:
     retained: dict[str, frozenset]
     #: Set name to the ion labels it matched in the file.
     matched: dict[str, frozenset]
-    #: Ion label to (exact m/z, TOF of the matched peak).
+    #: Ion label to (exact m/z, TOF of the matched peak): the first set's
+    #: peak, or the series' for an ion no set matched.
     readings: dict[str, tuple[float, float]]
+    #: Set name to its own readings, which its fits are scored at: another
+    #: set's candidates can leave the same label on a different peak.
+    set_readings: dict[str, dict[str, tuple[float, float]]]
     #: Kept peaks of the polarity at the family's S/N, by TOF.
     strong_tofs: np.ndarray
     estimated: int
@@ -590,26 +601,34 @@ async def audit_file(row: FileRow, mode_audit: ModeAudit, config: Config) -> Fil
     retained: dict[str, frozenset] = {}
     matched: dict[str, frozenset] = {}
     readings: dict[str, tuple[float, float]] = {}
+    set_readings: dict[str, dict[str, tuple[float, float]]] = {}
+    refits: dict[str, audit.Refit] = {}
 
     if isinstance(record, dict) and "mode" in record and "par" in record:
         fits[STORED] = {"mode": record["mode"], "par": record["par"]}
         warnings[STORED] = None
 
-    def take(frame: pd.DataFrame) -> None:
-        for label, mz, tof in zip(frame.ion_label, frame.mz, frame.sample_peak_tof):
-            readings.setdefault(label, (float(mz), float(tof)))
+    def take(frame: pd.DataFrame) -> dict[str, tuple[float, float]]:
+        own = {
+            label: (float(mz), float(tof))
+            for label, mz, tof in zip(frame.ion_label, frame.mz, frame.sample_peak_tof)
+        }
+        for label, reading in own.items():
+            readings.setdefault(label, reading)
+        return own
 
     for set_name, isotopes in mode_audit.sets.items():
         for model in config.models:
             name = f"{set_name}/mode{model}"
-            result = await audit.refit(
+            result = await _refit(
                 stored, mode_audit.params, isotopes, resolution, model=model
             )
+            refits[name] = result
             fits[name] = result.fit
             warnings[name] = result.error or result.warning
             retained[name] = result.retained
             matched[set_name] = frozenset(result.readings.ion_label)
-            take(result.readings)
+            set_readings[set_name] = take(result.readings)
 
     if not mode_audit.series.empty:
         take(
@@ -623,16 +642,20 @@ async def audit_file(row: FileRow, mode_audit: ModeAudit, config: Config) -> Fil
         quality = record["quality"]
         params = mode_audit.params.model_copy(
             update={
-                "mz_error_tolerance": quality.get(
-                    "mz_error_tolerance", mode_audit.params.mz_error_tolerance
-                ),
+                # ``fit_quality`` stores None for a setting it was not given
+                "mz_error_tolerance": quality.get("mz_error_tolerance")
+                or mode_audit.params.mz_error_tolerance,
                 "refine_window": int(
-                    quality.get("refine_window", mode_audit.params.refine_window)
+                    quality.get("refine_window") or mode_audit.params.refine_window
                 ),
             }
         )
         isotopes = mode_audit.sets[COLLECTION]
-        result = await audit.refit(stored, params, isotopes, resolution)
+        # The usual record was fitted with the mode's own settings: then the
+        # collection's mode-0 refit above is this refit already
+        result = refits.get(f"{COLLECTION}/mode0")
+        if result is None or params != mode_audit.params:
+            result = await _refit(stored, params, isotopes, resolution)
         reproduction = reproduce(result, record, isotopes, params)
 
     peaks = stored.peaks
@@ -646,10 +669,38 @@ async def audit_file(row: FileRow, mode_audit: ModeAudit, config: Config) -> Fil
         retained=retained,
         matched=matched,
         readings=readings,
+        set_readings=set_readings,
         strong_tofs=np.asarray(peaks.tof.values[strong], dtype=np.float64),
         estimated=len(stored.estimated),
         reproduction=reproduction,
     )
+
+
+async def _refit(
+    stored: audit.StoredPeaks,
+    params: CalibrationFitParams,
+    isotopes: pd.DataFrame,
+    resolution,
+    model: int = 0,
+) -> audit.Refit:
+    """One refit, or a failed fit with the reason when the refit raises.
+
+    A least-squares failure under one set must not cost the file its other
+    fits, or the comparison would drop exactly the files a set does worst on.
+    """
+    try:
+        return await audit.refit(stored, params, isotopes, resolution, model=model)
+    except Exception as error:  # noqa: BLE001 - recorded as this fit's failure
+        runtime.logger.opt(exception=True).debug(f"Refit of {stored.filename} raised")
+        return audit.Refit(
+            fit=None,
+            warning=None,
+            error=f"the refit raised {type(error).__name__}",
+            readings=pd.DataFrame(
+                columns=["ion_label", "mz", "sample_peak_tof", "sample_peak_mz"]
+            ),
+            retained=frozenset(),
+        )
 
 
 def reproduce(
@@ -739,6 +790,11 @@ class ModeSummary:
     reproduction: list = field(default_factory=list)
 
 
+def _set_of(fit_name: str) -> str:
+    """The set a fit was made under: its name less the model, ``/modeN``."""
+    return fit_name.rsplit("/", 1)[0]
+
+
 def summarise_file(
     summary: ModeSummary, file: FileAudit, mode_audit: ModeAudit, config: Config
 ) -> None:
@@ -762,11 +818,6 @@ def summarise_file(
         for label in isotopes.ion_label:
             summary.ion_sets[label].add(set_name)
 
-    labels = list(file.readings)
-    exact = np.array([file.readings[label][0] for label in labels], dtype=np.float64)
-    tofs = np.array([file.readings[label][1] for label in labels], dtype=np.float64)
-    ion_bands = audit.band_of(exact, config.band_edges)
-
     for name in summary.fit_names:
         fit = file.fits.get(name)
         if fit is None:
@@ -775,10 +826,20 @@ def summarise_file(
                 summary.failed[name][file.warnings.get(name) or "no fit"] += 1
             continue
         summary.fitted[name] += 1
+        # A set's fits are read at the peaks that set matched; the stored
+        # record, which no set stands for, at the first set's
+        readings = {
+            **file.readings,
+            **file.set_readings.get(_set_of(name), {}),
+        }
+        labels = list(readings)
+        exact = np.array([readings[label][0] for label in labels], dtype=np.float64)
+        tofs = np.array([readings[label][1] for label in labels], dtype=np.float64)
+        ion_bands = audit.band_of(exact, config.band_edges)
         used_labels = file.retained.get(name)
         if used_labels is not None:
             summary.points[name].append(len(used_labels))
-            kept_mz = [file.readings[label][0] for label in used_labels]
+            kept_mz = [readings[label][0] for label in used_labels]
             if kept_mz:
                 summary.spans[name].append((min(kept_mz), max(kept_mz)))
             for label in used_labels:
@@ -833,7 +894,7 @@ def summary_dict(summary: ModeSummary) -> dict:
             errors = summary.ion_errors.get((name, label))
             if errors is None:
                 continue
-            set_name = name.split("/")[0]
+            set_name = _set_of(name)
             in_set = set_name in summary.ion_sets.get(label, set())
             fits[name]["ions"].append(
                 {

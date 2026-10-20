@@ -1,7 +1,7 @@
-- **An audit of a TOF instrument's m/z calibration**: `db script run
-  audit_tof_calibration`. For one instrument over a date range
+- **A read-only audit of a TOF instrument's m/z calibration.** `db script run
+  audit_tof_calibration`, for one instrument over a date range
   (`TOF_AUDIT_INSTRUMENT`, `TOF_AUDIT_FROM`, `TOF_AUDIT_TO`; every file, or
-  `TOF_AUDIT_PER_DAY` of each day), it refits each file's stored peaks with
+  `TOF_AUDIT_PER_DAY` of each day), refits each file's stored peaks with
   the calibration node's own matching, selection and fit, under the mode's
   calibration collection and any calibrant sets named in `TOF_AUDIT_SETS`,
   and reports per ion and per mass band how far each fit reads: the error
