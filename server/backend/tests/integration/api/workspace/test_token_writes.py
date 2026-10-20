@@ -39,6 +39,12 @@ _DATASETS = "mascope_backend.api.routes.dataset.dataset_routes"
 _BATCHES = "mascope_backend.api.routes.sample.batches.sample_batches_routes"
 _COMPOUNDS = "mascope_backend.api.routes.target.compounds.target_compounds_routes"
 _SAMPLES = "mascope_backend.api.routes.sample.items.sample_items_routes"
+_SAVE_SAMPLE = (
+    "mascope_backend.api.routes.match.aggregate.sample.match_aggregate_sample_routes"
+)
+_SAVE_BATCH = (
+    "mascope_backend.api.routes.match.aggregate.batch.match_aggregate_batch_routes"
+)
 _COLLECTIONS = "mascope_backend.api.routes.target.collections.target_collections_routes"
 
 
@@ -242,6 +248,30 @@ WRITES = [
         "delete_target_compound",
         200,
         global_role=True,
+    ),
+    Write(
+        "POST",
+        "/api/match/aggregate/sample/{item}/save",
+        lambda ids: {},
+        _SAVE_SAMPLE,
+        "aggregate_and_create_matches",
+        201,
+    ),
+    Write(
+        "POST",
+        "/api/match/aggregate/batch/{batch}/save",
+        lambda ids: {},
+        _SAVE_BATCH,
+        "aggregate_and_create_matches",
+        200,
+    ),
+    Write(
+        "POST",
+        "/api/match/aggregate/batch/{batch}/resave",
+        lambda ids: {},
+        _SAVE_BATCH,
+        "aggregate_and_recreate_matches",
+        200,
     ),
 ]
 

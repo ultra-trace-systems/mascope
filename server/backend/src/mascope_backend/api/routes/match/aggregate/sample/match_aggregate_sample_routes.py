@@ -218,7 +218,7 @@ async def aggregate_sample_matches_route(
 
 
 @match_aggregate_sample_router.post("/{sample_item_id}/save")
-@api_route(status_code=201)
+@api_route(status_code=201, token_access=True)
 async def aggregate_and_create_sample_matches_route(
     sample_item_id: str,
     body: AggregateAndCreateMatchesBody,
