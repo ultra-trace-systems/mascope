@@ -88,7 +88,9 @@ async function execute() {
       case 'edit': {
         await app.data.dataset.update({
           dataset_id: original.value.dataset_id,
-          dataset_name: info.name,
+          // The server names acquisition datasets and refuses any update
+          // carrying a name for one, unchanged or not
+          ...(systemNamed.value ? {} : { dataset_name: info.name }),
           dataset_description: info.desc,
           ...metadataPayload(info.metadata)
         })
@@ -125,6 +127,12 @@ function init() {
   ;((info.message = null), (info.initial = original.value))
 }
 
+// Acquisition datasets are named by the server; their other fields, the
+// descriptive metadata included, are edited like any dataset's.
+const systemNamed = computed(
+  () => action.value == 'edit' && original.value?.dataset_type == 'ACQUISITION'
+)
+
 const invalid = computed(
   () =>
     (action.value == 'create' && (info.name?.trim().length ?? 0) == 0) ||
@@ -137,7 +145,12 @@ const invalid = computed(
     <section>
       <template v-if="action !== 'delete'">
         <FloatLabel>
-          <InputText id="dataset-name" v-model="info.name" style="width: 100%" />
+          <InputText
+            id="dataset-name"
+            v-model="info.name"
+            :disabled="systemNamed"
+            style="width: 100%"
+          />
           <label for="dataset-name">Name</label>
         </FloatLabel>
         <FloatLabel>
