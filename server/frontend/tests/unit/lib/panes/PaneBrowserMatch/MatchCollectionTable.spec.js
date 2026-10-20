@@ -140,6 +140,20 @@ describe('an open batch with no target collections', () => {
     await empty.get('button').trigger('click')
     expect(mocks.menu.dialog.op).toBe('create')
   })
+
+  // The first opening of a batch starts with [] while its collections load:
+  // that is not "none yet".
+  it('says nothing while the list loads', async () => {
+    mocks.app = makeApp({ batch: BATCH })
+    mocks.app.data.match.collection.pending = true
+    const wrapper = mountTable()
+
+    expect(wrapper.find('.datatable .empty-state').exists()).toBe(false)
+
+    mocks.app.data.match.collection.pending = false
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('.datatable .empty-state .title').text()).toBe('No target collections yet')
+  })
 })
 
 describe('the Create target collection button', () => {

@@ -146,8 +146,10 @@ const breadcrumb = computed(() => {
       sortField="match.match_score"
       :sortOrder="-1"
     >
+      <!-- Not while the list loads: an empty list then says nothing yet. -->
       <template #empty>
         <BaseEmptyState
+          v-if="!app.data.match.collection.pending"
           icon="pi ph ph-crosshair"
           title="No target collections yet"
           hint="A target collection lists the compounds to match in this batch."

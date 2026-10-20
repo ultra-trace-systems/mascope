@@ -137,8 +137,9 @@ const hasDatasets = computed(() => (app.data.dataset.list?.length ?? 0) > 0)
       :scrollHeight="`${tableHeight}px`"
       :virtualScrollerOptions="{ itemSize: 35.74 }"
     >
-      <!-- The table also renders this when the search hides every row; a
-           workspace with datasets is not told it has none. -->
+      <!-- The table also renders this when the search hides every row, and
+           while the list loads; in neither case is a workspace with datasets
+           told it has none. -->
       <template #empty>
         <BaseEmptyState
           v-if="hasDatasets"
@@ -146,7 +147,7 @@ const hasDatasets = computed(() => (app.data.dataset.list?.length ?? 0) > 0)
           title="No datasets match the search"
         />
         <BaseEmptyState
-          v-else
+          v-else-if="!app.data.dataset.pending"
           icon="pi ph ph-folders"
           title="No datasets yet"
           hint="A dataset groups the batches of one study or campaign."
