@@ -1,9 +1,12 @@
 """
-Tests for the `mascope prod update --check` command wiring.
+Tests for the `mascope prod update` command wiring.
 
 Verifies that the preflight is guarded by a running Postgres container, that
 its classification propagates to the process exit code, and — most importantly
-— that `--check` never touches the running stack (no `docker compose`).
+— that `--check` never touches the running stack (no `docker compose`). Also
+covers what a manual update leaves behind: the deployment checkout aligned to
+the release it deployed, and the pending migration record `--auto` wrote
+settled once that release (or a later one) runs.
 """
 
 import importlib
@@ -242,6 +245,7 @@ def _record_pending(root, version):
         ("v1.11.0", "v1.12.0", False),  # a rollback leaves the update outstanding
         ("v1.12.0-rc.1", "v1.12.0", False),  # a candidate ranks below its release
         ("latest", "v1.12.0", False),  # names no release to order against
+        ("v1.12.0", "v1.12", False),  # a recorded tag that is not a release
     ],
 )
 def test_settle_pending_orders_by_release(tmp_path, deployed, pending, settled):
@@ -280,6 +284,31 @@ def test_manual_update_settles_the_pending_release(
 
     assert result.exit_code == 0, result.output
     assert au.load_pending(str(mascope_home)) is None
+    status_log = au.update_dir(str(mascope_home)) / "status.log"
+    last = status_log.read_text(encoding="utf-8").splitlines()[-1]
+    assert "Pending migration update v1.12.0 settled" in last
+
+
+def test_unreadable_pending_record_does_not_fail_the_update(
+    manual_update, cli_runner, mascope_home
+):
+    """A state file that parses but lacks a field is reported, not raised.
+
+    The stack already runs the release by then, so the update succeeds and the
+    checkout is still aligned to it.
+    """
+    state = au.update_dir(str(mascope_home)) / "state.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text('{"pending": {"version": "v1.12.0"}}', encoding="utf-8")
+    aligned = []
+    manual_update.setattr(
+        prod_main, "_align_checkout", lambda target, path: aligned.append(target)
+    )
+
+    result = cli_runner.invoke(prod_main.prod_app, ["update", "--version", "v1.12.0"])
+
+    assert result.exit_code == 0, result.output
+    assert aligned == ["v1.12.0"]
 
 
 def test_failed_manual_update_keeps_the_pending_record(

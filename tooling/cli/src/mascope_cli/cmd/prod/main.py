@@ -1131,12 +1131,22 @@ def update(
     _prune_images()  # reclaim the superseded release's images
     _run_compose(["ps"])
     runtime.logger.success(f"Production stack updated to '{target}'")
-    # Only reached when compose succeeded: a failed pull or up exits above, and
-    # the update it was recording is then still outstanding.
-    _settle_pending(target, os.environ.get("MASCOPE_PATH"))
     # Keep the checkout naming the release that runs, so a reboot redeploys
     # this release and doctor stays clean (no-op when already checked out).
     _align_checkout(target, os.environ.get("MASCOPE_PATH"))
+    # Only reached when compose succeeded: a failed pull or up exits above, and
+    # the update it was recording is then still outstanding. Best-effort, after
+    # the alignment: the stack already runs the release, so a state file that
+    # cannot be read or cleared is reported, never turned into a failed update.
+    try:
+        _settle_pending(target, os.environ.get("MASCOPE_PATH"))
+    except Exception as e:
+        runtime.logger.warning(
+            f"The stack runs {target} but the updater's pending record could not "
+            f"be settled ({type(e).__name__}: {e}). Check "
+            "'.runtime/update/state.json' in the deployment checkout - "
+            "`mascope prod doctor` reads the same file."
+        )
     # Last, so it is the final thing the operator sees: the images moved but the
     # CLI tool did not - warn if it now trails the checkout.
     _warn_if_cli_stale(auto=False)
