@@ -984,6 +984,7 @@ class TestWriteContract:
         _eventually(scratch.client, lambda: samples._list_by_id(source) is None)
 
     def test_collection_create_update_associate_delete(self, scratch):
+        _skip_unless_attr(scratch.client, "collections")
         collections = scratch.client.collections
         batch_id = _scratch_batch(scratch, "collection")
 
@@ -1015,6 +1016,7 @@ class TestWriteContract:
         ]
 
     def test_compound_add_update_remove(self, scratch):
+        _skip_unless_attr(scratch.client, "compounds")
         compounds = scratch.client.compounds
         name = f"{SCRATCH_PREFIX}{scratch.tag}-compound"
 
