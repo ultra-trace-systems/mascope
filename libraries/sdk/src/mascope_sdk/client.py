@@ -622,6 +622,11 @@ class MascopeClient:
             sample failed, and ``df.attrs["failures"]`` names each
             one and its error ([] when none did). When every read
             failed the result is an empty frame carrying them.
+
+            ``df.attrs["segments"]`` maps each sample read, by
+            ``sample_item_id``, to its ``attrs["segments"]`` from
+            ``get_peaks``: the scan streams of a stitched sample, None for
+            one that is not stitched.
         :rtype: pd.DataFrame | None
         :raises ValueError: If the dataset or batches cannot be resolved.
         :raises KeyboardInterrupt: If the user declines the confirmation prompt.
@@ -832,6 +837,10 @@ class MascopeClient:
                  stage failed, and ``df.attrs["failures"]`` names each
                  one and its error ([] when none did). When every read
                  failed the result is an empty frame carrying them.
+
+                 ``df.attrs["segments"]`` is the sample's, as ``get_peaks``
+                 gives it: the scan streams of a stitched sample, None for
+                 one that is not stitched.
         :rtype: pd.DataFrame | None
 
         .. note::

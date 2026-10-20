@@ -35,6 +35,31 @@ _EMPTY_RANGE_UNEXPLAINED = (
 )
 
 
+def _read_level(data: dict[str, Any]) -> dict[str, Any]:
+    """Take out of a peak listing what is not a per-peak list.
+
+    A peak listing's ``data`` holds one list per column, each as long as
+    ``peak_id``, and a null for a column the read left out (``area`` without
+    areas). Anything else is the server's word on the read as a whole, which
+    a newer server may add to: in the frame it would either raise, being a
+    list of another length, or repeat on every row. It goes to ``attrs``
+    instead, under its own key.
+
+    :param data: The listing's ``data``, taken from in place.
+    :return: What was taken, by key.
+    """
+    peak_ids = data.get("peak_id")
+    if not isinstance(peak_ids, list):
+        return {}
+    taken = {}
+    for key, value in list(data.items()):
+        if value is None or (isinstance(value, list) and len(value) == len(peak_ids)):
+            continue
+        taken[key] = data.pop(key)
+        logger.debug(f"Peak listing: {key!r} is not per peak, kept in attrs")
+    return taken
+
+
 class SamplesResource(BaseResource):
     """Resource for sample operations.
 
@@ -366,6 +391,16 @@ class SamplesResource(BaseResource):
                  warning is also logged. A time-ranged read that every peak
                  was left out of is an empty frame carrying the warning,
                  not None.
+
+                 ``df.attrs["segments"]`` describes the scan streams a
+                 stitched sample's spectrum is made of, one entry each, and
+                 the ``segment`` column names the one each peak came from:
+                 nothing is rescaled where two streams meet, so a peak's
+                 intensity reads against its own segment. It is None for a
+                 sample that is not stitched, and from a server older than
+                 1.12.0, which does not send it. Whatever else the server
+                 sends beside the per-peak columns is kept in ``df.attrs``
+                 under its own key rather than in the frame.
         :rtype: pd.DataFrame | None
         :raises AuthenticationError: If authentication fails.
         :raises NotFoundError: If the sample is not found.
@@ -444,6 +479,14 @@ class SamplesResource(BaseResource):
             # WARNING: an empty answer that may be a whole sample left out
             logger.warning(f"{_EMPTY_RANGE_UNEXPLAINED} {hint}")
             warnings = [_EMPTY_RANGE_UNEXPLAINED]
+
+        # The frame is built from the per-peak lists alone. What the server
+        # says of the read as a whole rides beside them in `data` - a stitched
+        # sample's segments, one per scan stream - and a list of another
+        # length in the frame raises.
+        data = dict(data)
+        segments = data.pop("segments", None)
+        read_level = _read_level(data)
 
         # Convert to DataFrame
         df = pd.DataFrame(data)
@@ -541,6 +584,8 @@ class SamplesResource(BaseResource):
         # Set last: the merges above build new frames. A time-ranged read is
         # short by every peak the server left out, and its rows cannot show
         # it - the warnings are how a script finds out.
+        df.attrs.update(read_level)
+        df.attrs["segments"] = segments
         df.attrs["warnings"] = warnings
         return df
 
