@@ -1,4 +1,3 @@
-import hmac
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -48,14 +47,9 @@ class HashedAccessTokenDatabase(SQLAlchemyAccessTokenDatabase[AccessToken]):
         statement = select(AccessToken).where(AccessToken.token_hash == digest)
         if max_age is not None:
             statement = statement.where(AccessToken.created_at >= max_age)
-        access_token = (await self.session.execute(statement)).scalar_one_or_none()
-        # The index found the row by equality; the digests are compared again
-        # in constant time so no answer depends on how much of one matched.
-        if access_token is None or not hmac.compare_digest(
-            access_token.token_hash, digest
-        ):
-            return None
-        return access_token
+        # The lookup compares digests, not the token: how much of a presented
+        # token matches a stored one says nothing about the digest it hashes to.
+        return (await self.session.execute(statement)).scalar_one_or_none()
 
 
 class HashedDatabaseStrategy(DatabaseStrategy[User, int, AccessToken]):
@@ -69,14 +63,17 @@ class HashedDatabaseStrategy(DatabaseStrategy[User, int, AccessToken]):
     fastapi-users refuses any expired token.
     """
 
+    def __init__(self, database: AccessTokenDatabase[AccessToken]):
+        # No strategy-wide lifetime: read_token holds each token to its
+        # service's, so the base class's lifetime_seconds is left unset.
+        super().__init__(database, lifetime_seconds=None)
+
     async def read_token(
         self, token: Optional[str], user_manager: BaseUserManager[User, int]
     ) -> Optional[User]:
         if token is None:
             return None
 
-        # The age is checked against the row's own service rather than the
-        # strategy's lifetime_seconds, which is the longest any service has.
         access_token = await self.database.get_by_token(token)
         if access_token is None:
             return None
@@ -127,14 +124,9 @@ def get_database_strategy(
     Returns a DatabaseStrategy for access token authentication.
 
     This strategy validates access token stored in the database, associating each key with a user ID.
-    Tokens expire after their own service's lifetime (``read_token``); the
-    ``lifetime_seconds`` passed here is what the base class requires, and
-    no check reads it.
+    Tokens expire after their own service's lifetime (``read_token``).
     """
-    return HashedDatabaseStrategy(
-        access_token_db,
-        lifetime_seconds=auth_settings.access_token.ACCESS_TOKEN_EXPIRATION_SECONDS,
-    )
+    return HashedDatabaseStrategy(access_token_db)
 
 
 @asynccontextmanager
@@ -185,8 +177,4 @@ async def get_database_strategy_context(session: AsyncSession | None = None):
     :rtype: HashedDatabaseStrategy
     """
     async with get_access_token_db_context(session) as access_token_db:
-        strategy = HashedDatabaseStrategy(
-            access_token_db,
-            lifetime_seconds=auth_settings.access_token.ACCESS_TOKEN_EXPIRATION_SECONDS,
-        )
-        yield strategy
+        yield HashedDatabaseStrategy(access_token_db)
