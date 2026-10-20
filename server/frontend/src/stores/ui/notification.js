@@ -2,10 +2,16 @@ import { reactive, watch, computed, getCurrentScope, onScopeDispose } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from '@/api'
 import { genId } from '@/lib/utils'
+import { notificationSeverity } from '@/lib/toastTitles'
 
 // The live notification types of auto-processing's own outcomes: the pipeline
 // run and its calibration summary. The inbox store keeps and counts them.
 const KEPT_ELSEWHERE = new Set(['auto_process_sample_file', 'mz_calibration'])
+
+// Claims outstanding at once. A claim is released by its process's outcome;
+// one whose outcome never arrives (a dropped socket, a server restart) would
+// otherwise stay for the life of the tab, so the oldest goes first.
+const MAX_CLAIMS = 100
 
 export const useNotification = defineStore('app.ui.notification', () => {
   const retentionLimit = 250
@@ -17,6 +23,10 @@ export const useNotification = defineStore('app.ui.notification', () => {
     recentWarnings: 0, // Track the number of recent warnings
     recentErrors: 0 // Track the number of recent errors
   })
+
+  // Process ids whose outcome a pane renders where the user is looking: see
+  // `claim`. Not reactive: read and released as each notification arrives.
+  const claims = new Set()
 
   // Socket listener for incoming notifications
   api.socket.on('user_notification', handleNotification)
@@ -32,6 +42,15 @@ export const useNotification = defineStore('app.ui.notification', () => {
       id,
       timestamp: new Date(),
       ...notification
+    }
+
+    // A claim covers its process's outcome, once: the notification carries it
+    // as `claimed` for the toaster to read, and the claim is released here,
+    // since nothing follows an outcome. Progress reports leave it standing.
+    const processId = notification.process_id
+    if (processId && claims.has(processId)) {
+      newNotification.claimed = true
+      if (notification.status !== 'pending') claims.delete(processId)
     }
 
     // A `silent` packet carries nothing for the user to read: the server
@@ -163,8 +182,12 @@ export const useNotification = defineStore('app.ui.notification', () => {
    * @param {Object} notification - The notification to project
    * @returns {Object} - The entry to retain
    */
-  function toLogEntry({ id, timestamp, type, status, message, process_id, parent_id }) {
-    return { id, timestamp, type, status, message, process_id, parent_id }
+  function toLogEntry(notification) {
+    const { id, timestamp, type, status, message, process_id, parent_id } = notification
+    // The severity is read off the full notification here, while its payload
+    // is still at hand: an empty search is an info, not a success.
+    const severity = notificationSeverity(notification)
+    return { id, timestamp, type, status, severity, message, process_id, parent_id }
   }
 
   /**
@@ -241,6 +264,28 @@ export const useNotification = defineStore('app.ui.notification', () => {
   }
 
   /**
+   * Claims the outcome of a process for the pane that launched it.
+   *
+   * A pane that renders a process's result where the user is looking - the
+   * composition search's table, the calibration dialog's preview fit - claims
+   * its process id once the launch has been acknowledged. The outcome is then
+   * logged as any other but not toasted, since the pane already shows it; an
+   * error is toasted regardless (`toastWanted`). The claim covers that one
+   * outcome and is released with it.
+   *
+   * @param {string} processId - The id of the process, from the launch's
+   *   `Process-ID` response header. Nothing is claimed for an empty one.
+   */
+  function claim(processId) {
+    if (!processId) return
+    claims.delete(processId)
+    claims.add(processId)
+    if (claims.size > MAX_CLAIMS) {
+      claims.delete(claims.values().next().value)
+    }
+  }
+
+  /**
    * Registers a watcher for notifications.
    * The callback will be triggered for the specified notification type(s).
    *
@@ -289,6 +334,7 @@ export const useNotification = defineStore('app.ui.notification', () => {
   return {
     on,
     push: handleNotification,
+    claim,
     clearLatest,
     clearLog,
     clearRecentBadge,

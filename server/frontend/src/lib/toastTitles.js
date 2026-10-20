@@ -1,6 +1,6 @@
 /**
- * What a notification is headed, as a toast and in the log, and which
- * notifications earn a toast at all.
+ * What a notification is headed, with which severity, as a toast and in the
+ * log, and which notifications earn a toast at all.
  *
  * A notification's `type` names the operation it reports, in the snake case
  * the API knows it by: `shared_link`, `match_compositions_by_mz`,
@@ -74,22 +74,52 @@ export function toastTitle(type, status) {
   return word ? `${title} ${word}` : title
 }
 
+// Severity by notification type, where the status alone says too much. A hook
+// returns the severity for the notification it is handed, or nothing to keep
+// the status's own.
+const SEVERITY_HOOKS = {
+  // A composition search that found nothing completes as a success with no
+  // results: nothing went wrong, but nothing is there to be pleased about.
+  match_compositions_by_mz: ({ status, data }) =>
+    status === 'success' && data?.results === 0 ? 'info' : undefined
+}
+
+/**
+ * The severity a notification is shown with, as a toast and in the log.
+ *
+ * @param {object} notification The notification, as the store hands it on.
+ * @returns {string} A PrimeVue severity: success, info, warn or error.
+ */
+export function notificationSeverity(notification) {
+  const { type, status } = notification ?? {}
+  return SEVERITY_HOOKS[type]?.(notification) ?? messageSeverity(status)
+}
+
 /**
  * Whether a notification earns a toast at all.
  *
- * A composition search that found nothing is reported as a success with no
- * results. The search pane says "No results found" where the results would
- * be, so a toast on top of that says the same thing twice; the notification
- * is still logged. Anything else is shown.
+ * A pane that launched the process and renders its result where the user is
+ * looking claims it (`claim` in the notification store), which stamps the
+ * notification `claimed`: a toast on top of the result says the same thing
+ * twice. The notification is still logged. A failure is toasted whoever
+ * claimed it, so it is never missed.
+ *
+ * A composition search that found nothing is left out even unclaimed. The
+ * search pane claims its search once the launch is acknowledged, and an empty
+ * search can finish before that: the pane says "No results found" all the
+ * same, and an info toast on top of it would be the same news twice.
+ *
+ * Anything else is shown.
  *
  * @param {object} notification The notification, as the store hands it on.
  * @returns {boolean}
  */
-export function toastWanted({ type, status, data } = {}) {
+export function toastWanted({ type, status, data, claimed } = {}) {
+  if (status === 'error') return true
   if (type === 'match_compositions_by_mz' && status === 'success' && data?.results === 0) {
     return false
   }
-  return true
+  return !claimed
 }
 
 /**
@@ -104,7 +134,7 @@ export function toastFor(notification) {
   const { type, status, message } = notification ?? {}
   if (!status || status === 'pending' || !toastWanted(notification)) return null
   return {
-    severity: messageSeverity(status),
+    severity: notificationSeverity(notification),
     summary: toastTitle(type, status),
     detail: message,
     life: LIFE_MS[status] ?? DEFAULT_LIFE_MS

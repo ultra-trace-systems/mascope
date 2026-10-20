@@ -419,6 +419,9 @@ watchDebounced(
       // A later search may have started while this one was being acknowledged,
       // and then this one is already moved on from.
       const processId = response?.headers?.['process-id'] ?? null
+      // Its outcome is rendered here - the rows, or "No results found" - so it
+      // is not toasted as well; a failure still is.
+      app.ui.notification.claim(processId)
       if (request === searchRequest) pendingProcessId.value = processId
       else if (processId) superseded.add(processId)
     } catch {

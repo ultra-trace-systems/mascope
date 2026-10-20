@@ -92,13 +92,15 @@ watch(open, (isOpen) => {
       <!-- The raw status stays searchable beside the heading: a mapped
            heading says "failed" where the status says "error", and a search
            for "error" should still find every failure. -->
+      <!-- Coloured as its toast was: the store reads the severity off the full
+           notification, so an empty search is an info here too. -->
       <Message
-        v-for="{ id, type, status, message, timestamp } in app.ui.notification.log.filter(
+        v-for="{ id, type, status, severity, message, timestamp } in app.ui.notification.log.filter(
           ({ type, status, message }) =>
             `${toastTitle(type, status)} ${status} ${message}`.includes(log.query)
         )"
         :key="id"
-        :severity="messageSeverity(status)"
+        :severity="severity ?? messageSeverity(status)"
         :closable="false"
       >
         <div class="col" style="gap: 0.5rem">

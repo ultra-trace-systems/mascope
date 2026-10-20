@@ -78,6 +78,20 @@ describe('NotificationPane', () => {
     expect(wrapper.get('h4').text()).toBe('Match refresh warning')
   })
 
+  // Coloured as its toast was: the store reads the severity off the full
+  // notification, which the log entry no longer carries.
+  it('colours an entry by the severity the store read', () => {
+    notification.log = [
+      { ...entry('nothing'), type: 'match_compositions_by_mz', severity: 'info' },
+      { ...entry('older'), type: 'rematch_batches', status: 'warning' }
+    ]
+    const wrapper = mountPane()
+    const [empty, older] = wrapper.findAll('.entry')
+
+    expect(empty.attributes('severity')).toBe('info')
+    expect(older.attributes('severity')).toBe('warn')
+  })
+
   it('finds an entry by that heading', async () => {
     notification.log = [
       { ...entry('one'), type: 'rematch_batches', status: 'warning' },
