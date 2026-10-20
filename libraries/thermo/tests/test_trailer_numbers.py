@@ -20,7 +20,7 @@ from mascope_thermo.backend import (
     MS2_ISOLATION_WIDTH,
     OpenTFRawBackend,
     ThermoBackend,
-    _one_isolation_width,
+    _common_isolation_width,
     trailer_float,
 )
 
@@ -197,19 +197,20 @@ def test_opentfraw_gives_no_numbers_for_a_scan_without_a_trailer():
 
 def test_widths_stored_alike_are_one_width():
     # A 32-bit float's 64-bit copy carries noise below the sixth decimal.
-    assert _one_isolation_width([float(np.float32(1.6)), 1.6, 1.6]) == 1.6
+    assert _common_isolation_width([float(np.float32(1.6)), 1.6, 1.6]) == 1.6
 
 
 @pytest.mark.parametrize(
-    ("widths", "message"),
+    "widths",
     [
-        pytest.param([1.6, 2.0], "Multiple isolation widths", id="two"),
-        pytest.param([], "No MS2 scan stores an isolation width", id="none"),
+        # A targeted method sets the width per event: a valid acquisition,
+        # with no one width to give.
+        pytest.param([150.0, 2.0], id="two"),
+        pytest.param([], id="none"),
     ],
 )
-def test_anything_but_one_width_is_refused_saying_which(widths, message):
-    with pytest.raises(ValueError, match=message):
-        _one_isolation_width(widths)
+def test_anything_but_one_width_is_no_common_width(widths):
+    assert _common_isolation_width(widths) is None
 
 
 def _thermo_ms2(trailers):
@@ -272,7 +273,42 @@ def test_each_scans_energy_is_the_text_its_trailer_holds(ms2_reader):
         ]
     )
 
-    assert reader.ms2_acquisition_info() == (2.0, {3: "25", 4: "25,30", 5: ""})
+    assert reader.ms2_acquisition_info() == (
+        2.0,
+        {3: 2.0, 4: 2.0, 5: 2.0},
+        {3: "25", 4: "25,30", 5: ""},
+    )
+
+
+def test_events_isolated_otherwise_give_no_one_width_but_each_scans_own(ms2_reader):
+    # A targeted run: one wide event fragmenting everything near one mass,
+    # one narrow event isolating one ion. Both are valid; the file has no
+    # one width, and each scan keeps the one it stores.
+    reader = ms2_reader(
+        [
+            {MS2_ISOLATION_WIDTH: 150.0, MS2_HCD_ENERGY: "25"},
+            {MS2_ISOLATION_WIDTH: 2.0, MS2_HCD_ENERGY: "30"},
+            {MS2_ISOLATION_WIDTH: 150.0, MS2_HCD_ENERGY: "25"},
+        ]
+    )
+
+    assert reader.ms2_acquisition_info() == (
+        None,
+        {3: 150.0, 4: 2.0, 5: 150.0},
+        {3: "25", 4: "30", 5: "25"},
+    )
+
+
+def test_a_scan_storing_no_width_has_none_of_its_own(ms2_reader):
+    # The width the others share stays the file's.
+    reader = ms2_reader(
+        [
+            {MS2_ISOLATION_WIDTH: 2.0, MS2_HCD_ENERGY: "25"},
+            {MS2_ISOLATION_WIDTH: "n/a", MS2_HCD_ENERGY: "25"},
+        ]
+    )
+
+    assert reader.ms2_acquisition_info() == (2.0, {3: 2.0}, {3: "25", 4: "25"})
 
 
 def test_a_trailer_that_names_the_energy_otherwise_gives_none(ms2_reader):
@@ -282,7 +318,7 @@ def test_a_trailer_that_names_the_energy_otherwise_gives_none(ms2_reader):
         [{MS2_ISOLATION_WIDTH: 2.0, "HCD Energy:": "27", "HCD Energy eV:": "27.0"}] * 2
     )
 
-    assert reader.ms2_acquisition_info() == (2.0, {3: "", 4: ""})
+    assert reader.ms2_acquisition_info() == (2.0, {3: 2.0, 4: 2.0}, {3: "", 4: ""})
 
 
 def test_thermo_gives_the_isolation_width_it_stores_and_the_energy_it_wrote():
@@ -296,7 +332,11 @@ def test_thermo_gives_the_isolation_width_it_stores_and_the_energy_it_wrote():
         "settings": {3: ["1.23", "25"], 4: ["1.23", "25,30"]},
     }
 
-    assert reader.ms2_acquisition_info() == (1.234567, {3: "25", 4: "25,30"})
+    assert reader.ms2_acquisition_info() == (
+        1.234567,
+        {3: 1.234567, 4: 1.234567},
+        {3: "25", 4: "25,30"},
+    )
 
 
 # ---- text a reader already gave ----
