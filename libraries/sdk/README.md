@@ -691,8 +691,15 @@ comes from its flags. For example,
 | `update(dataset_id, name=, description=, icon=, workspace_id=)` | Rename it, or change its description or icon | `dict` |
 | `move(dataset_id, target_workspace_id, workspace_id=)` | Move it into another workspace | `dict` |
 | `delete(dataset_id, workspace_id=)` | Delete it and everything in it | `dict` |
+| `tombstones()` | What deleted datasets were, newest delete first | `list[dict]` |
 
 The writes act in the client's workspace unless `workspace_id` names another.
+
+A deleted dataset leaves a tombstone: its name, description, descriptive
+metadata, how many batches, samples and files it held, who deleted it and
+when, and whether alone or with its workspace. `tombstones()` returns those of
+every workspace you are a member of (a global admin's: all of them), across
+workspaces, not only the client's.
 
 #### `mascope.batches`
 
