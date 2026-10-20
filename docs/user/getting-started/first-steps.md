@@ -88,7 +88,11 @@ organised as workspace → dataset → batch → samples — the
 [data hierarchy](../concepts/index.md#the-data-hierarchy) explains each level.
 
 1. Click **Create dataset** (the plus button at the top of the *Datasets*
-   pane), name it after your study or campaign, and click **Create**.
+   pane), name it after your study or campaign, and click **Create**. The
+   same dialog takes the dataset's licence, authors, keywords, related
+   publications and funding; all of them are optional and can be added later
+   by editing the dataset, and the batch spreadsheet export lists them on its
+   *Batch* sheet.
 2. Click the new dataset to open it, then click **Create batch** (the plus
    button in the *Batches* pane), name it, and click **Save**. A batch holds
    the samples you will analyse and compare together.
