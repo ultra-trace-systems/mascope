@@ -37,6 +37,7 @@ from mascope_backend.db.id import gen_id
 
 _DATASETS = "mascope_backend.api.routes.dataset.dataset_routes"
 _BATCHES = "mascope_backend.api.routes.sample.batches.sample_batches_routes"
+_COMPOUNDS = "mascope_backend.api.routes.target.compounds.target_compounds_routes"
 _SAMPLES = "mascope_backend.api.routes.sample.items.sample_items_routes"
 _COLLECTIONS = "mascope_backend.api.routes.target.collections.target_collections_routes"
 
@@ -201,6 +202,46 @@ WRITES = [
         _COLLECTIONS,
         "delete_target_collection",
         200,
+    ),
+    Write(
+        "POST",
+        "/api/target/compounds",
+        lambda ids: [{"target_compound_formula": "C2H6O"}],
+        _COMPOUNDS,
+        "create_target_compound",
+        201,
+        result={"created_compounds": [], "existing_compounds": [], "message_logs": {}},
+        global_role=True,
+    ),
+    Write(
+        "PATCH",
+        "/api/target/compounds",
+        lambda ids: [
+            {
+                "target_compound_id": ids["compound"],
+                "target_compound_name": "Written with a token",
+            }
+        ],
+        _COMPOUNDS,
+        "update_target_compound",
+        200,
+        result={
+            "not_changed_compounds": [],
+            "updated_compounds": [],
+            "not_updated_compounds": [],
+            "existing_compounds": [],
+            "message_logs": {},
+        },
+        global_role=True,
+    ),
+    Write(
+        "DELETE",
+        "/api/target/compounds/{compound}",
+        None,
+        _COMPOUNDS,
+        "delete_target_compound",
+        200,
+        global_role=True,
     ),
 ]
 
