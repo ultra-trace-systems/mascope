@@ -9,6 +9,9 @@ import Button from 'primevue/button'
 
 import { useApp } from '@/stores'
 
+import DatasetMetadataSection from './DatasetMetadataSection.vue'
+import { metadataForm, metadataInvalid, metadataPayload } from './datasetMetadata.js'
+
 const app = useApp()
 
 const action = defineModel('action')
@@ -31,7 +34,8 @@ const info = reactive({
   name: null,
   desc: null,
   message: null,
-  initial: null
+  initial: null,
+  metadata: metadataForm(null)
 })
 
 // dialog visibility reactivity
@@ -73,7 +77,8 @@ async function execute() {
       case 'create': {
         const response = await app.data.dataset.create({
           dataset_name: info.name,
-          dataset_description: info.desc
+          dataset_description: info.desc,
+          ...metadataPayload(info.metadata)
         })
         app.data.dataset.focusWhenPresent({
           dataset_id: response.data.dataset_id
@@ -84,7 +89,8 @@ async function execute() {
         await app.data.dataset.update({
           dataset_id: original.value.dataset_id,
           dataset_name: info.name,
-          dataset_description: info.desc
+          dataset_description: info.desc,
+          ...metadataPayload(info.metadata)
         })
         break
       }
@@ -115,11 +121,14 @@ watch(action, init)
 function init() {
   info.name = original.value?.dataset_name
   info.desc = original.value?.dataset_description
+  info.metadata = metadataForm(original.value)
   ;((info.message = null), (info.initial = original.value))
 }
 
-const invalid = computed(() =>
-  action.value == 'create' ? (info.name?.trim().length ?? 0) == 0 : false
+const invalid = computed(
+  () =>
+    (action.value == 'create' && (info.name?.trim().length ?? 0) == 0) ||
+    (action.value != 'delete' && metadataInvalid(info.metadata))
 )
 </script>
 
@@ -135,6 +144,7 @@ const invalid = computed(() =>
           <Textarea id="dataset-desc" v-model="info.desc" rows="4" style="width: 100%" />
           <label for="dataset-desc">Description</label>
         </FloatLabel>
+        <DatasetMetadataSection v-model="info.metadata" />
       </template>
       <template v-else>
         <p v-if="info.message">{{ info.message }}</p>
