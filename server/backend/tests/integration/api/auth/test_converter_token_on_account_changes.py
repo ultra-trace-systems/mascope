@@ -124,3 +124,6 @@ async def test_the_demo_seeder_stores_its_tokens_as_digests(
         service: hash_access_token(token)
         for service, token in seed_demo.DEMO_TOKENS.items()
     }
+    # Each upload mints the converter's token; a fixed one would be a
+    # credential nothing uses.
+    assert SERVICE not in stored

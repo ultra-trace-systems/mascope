@@ -147,9 +147,9 @@ regardless of how old the restored snapshot is.
 | Role      | `owner`, superuser                  |
 
 The demo user is an **owner** (satisfies the app's "first owner" registration
-gate). The seed also creates `file-converter` and `file-agent` service tokens.
-The upload route needs the former, the rebuild uploader uses the latter. Tokens
-are seeded at demo time (not baked into the snapshot) so they never expire.
+gate). The seed also creates a `file-agent` service token, which the rebuild
+uploader uses; the upload route mints the converter's token for each upload
+itself. Tokens are seeded at demo time (not baked into the snapshot) so they never expire.
 These credentials are **public and for local demo use only**, never seed them
 into a real deployment.
 
