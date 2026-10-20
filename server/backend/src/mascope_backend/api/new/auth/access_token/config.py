@@ -29,8 +29,11 @@ class AccessTokenConfig(BaseModel):
     # How long a bearer token (SDK, agent, converter) authenticates after it
     # is minted. Its holder regenerates it from the profile dialog, or the
     # agent renews or re-pairs; the services below with a shorter life of
-    # their own are held to that one too (see lifetime_for).
-    ACCESS_TOKEN_EXPIRATION_SECONDS: int = 90 * 24 * 60 * 60  # 90 days
+    # their own are held to that one too (see lifetime_for). An agent token
+    # bound to no device - a TOF or export agent's, a File Agent's that was
+    # not paired - does not renew itself, so this is also how often one is
+    # replaced by hand on its instrument PC.
+    ACCESS_TOKEN_EXPIRATION_SECONDS: int = 360 * 24 * 60 * 60  # 360 days
 
     # How long a successful service-token validation is reused before the
     # database is consulted again. A resumable upload revalidates the same
@@ -54,9 +57,9 @@ class AccessTokenConfig(BaseModel):
     SERVICE_TOKEN_CACHE_TTL_SECONDS: float = Field(5.0, le=60.0)
 
     # Device-bound agent tokens live on shared instrument PCs in plaintext, so
-    # they expire far sooner than the 90-day default above and the agent
+    # they expire far sooner than the 360-day default above and the agent
     # renews them automatically. Enforced only for tokens bound to a device
-    # (see validation.ensure_device_token_fresh); the 90-day database-strategy
+    # (see validation.ensure_device_token_fresh); the 360-day database-strategy
     # cap still applies on top. A token past this is refused, not deleted, so
     # renewal (which issues a fresh one) or re-pairing is the way back.
     DEVICE_TOKEN_LIFETIME_SECONDS: int = 30 * 24 * 60 * 60  # 30 days

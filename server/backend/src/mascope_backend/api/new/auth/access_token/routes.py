@@ -39,7 +39,7 @@ async def access_token_regenerate_route(
     - any other service: refused
 
     An account with a second factor must have presented a code recently. The
-    token this returns is valid for 90 days and is not bound to the session that
+    token this returns is valid for 360 days and is not bound to the session that
     asked for it, so a session alone must not be enough to obtain one - that
     would let a single stolen session outlast the factor permanently.
     """

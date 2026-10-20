@@ -67,7 +67,7 @@ async def pairing_approve_route(
     user and the pairing's service, without revoking existing tokens.
     Requires the editor role or higher.
 
-    Like the regenerate route, this mints a 90-day credential, so an account
+    Like the regenerate route, this mints a 360-day credential, so an account
     with a second factor must have presented a code recently. Approving is the
     one step in pairing that a person performs from a session, which makes it
     the step where that check belongs.
