@@ -129,7 +129,8 @@ Four facts shape the data layer:
   data from `/members` (paged at 5,000) and per-sample calls. Opening them,
   route by route as the AI layer's audit did
   ([ai_layer.md, appendix](ai_layer.md)), is the single backend change this
-  design needs (phase 0). Both are guest reads that write nothing.
+  design needs (phase 0). Both are guest reads that write nothing. Done
+  2026-10-21 (MAS-219): both answer a token now; appendix A has the audit.
 - **Time is the file's start.** `datetime_utc` is stamped from the sample
   file ([models.py:907-929](../../server/backend/src/mascope_backend/db/models.py));
   several samples cut from one file share it, and `t0`/`t1` give each one's
@@ -547,7 +548,8 @@ agent with review.
   [test_token_access_coverage.py](../../server/backend/tests/unit/api/routes/test_token_access_coverage.py).
   Both are guest reads that compute and write nothing; the first has no size
   cap and the second's cap is `min_n_present`. Measure a full-batch call on a
-  1,440-sample batch and record the number here. S.
+  1,440-sample batch and record the number here. S. Done 2026-10-21
+  (MAS-219): the audit is in appendix A, the measurement in section 5.
 - **SDK wrappers**: `batches.ion_series(batch, collection=None, ions=None)`
   and `batch_peaks.series(batch, tier=None, min_n_present=2)` returning long
   frames with `sample_item_id`, `series_key`, `intensity` and the category or
@@ -660,9 +662,35 @@ notebooks and `mascope_ai` their figure library.
   minutes not hours; after that it is incremental.
 - **Route cost.** The compact routes have no size cap; a 1,440-sample batch
   with thousands of batch peaks is what the app already draws, but 365 of
-  them in a row is a load the server has not seen from one client. Phase 0
-  measures; the store's sync is sequential with a pause between batches by
-  default.
+  them in a row is a load the server has not seen from one client. The
+  store's sync is sequential with a pause between batches by default.
+  Measured in phase 0 on the testbed (a de-identified copy of a production
+  server, on the agent host, `develop` of 2026-10-16), a full-batch call
+  each, three runs, wall time at the client, payload as the backend serves
+  it (it does not compress; a proxy in front may):
+
+  | Route | Batch | Records | Points | Wall time | Payload |
+  |---|---|---|---|---|---|
+  | ion series | 1,413 samples, a 5,754-ion collection | 5,754 | 21,195 | 0.44-0.61 s | 2.7 MB |
+  | ion series | 1,491 samples, a 321-ion collection | 321 | 35,784 | 0.16-0.30 s | 1.4 MB |
+  | ion series | 2,088 samples, a 270-ion collection | 270 | 41,760 | 0.18-0.32 s | 1.4 MB |
+  | batch-peak series, `min_n_present=2` | 547 samples | 2,470 | 828,102 | 5.0-5.3 s | 62 MB |
+  | batch-peak series, `min_n_present=2` | 546 samples | 1,848 | 646,124 | 4.0-4.1 s | 48 MB |
+  | batch-peak series, `min_n_present=2` | 546 samples | 7,359 | 267,506 | 2.4-2.6 s | 24 MB |
+
+  A point is one (series, sample) value. The ion series is cheap: it carries
+  stored match rows only, a few per sample, and every ion of the collection
+  whether matched or not, so a large collection's metadata outweighs its
+  points. The batch-peak series is the heavy one, at 6 to 9 us and 75 to
+  90 bytes a point, linear in points. No batch of the copy with a ledger has more
+  than 595 samples, so the 1,440-sample number is an extrapolation at the
+  densest ledger measured (about 1,500 points a sample): about 2.2M points,
+  13 s and 160 MB a call, and a year of daily batches about 60 GB on the
+  first sync. `min_n_present` bounds little: at 2 it dropped 0.01 to 0.4 % of
+  the points above, since a singleton has one point. The store's sync should
+  therefore ask for the tiers or the peaks a digest draws rather than the
+  whole ledger, and keep its pause; a measurement on a real 1,440-sample
+  ledger replaces the extrapolation when one exists.
 - **Identity drift.** An assigned formula can change between engine runs.
   The store records the run per batch, the scope summary lists the runs, and
   `assignment_health` marks the changes; the package never silently joins
@@ -754,13 +782,31 @@ issue for the owner in the Linear project.
 | Chart | Route | SDK method | Token today | Cost unit |
 |---|---|---|---|---|
 | `coverage` | `GET /api/sample/files` (range, instrument), `GET /api/samples` (per batch) | `sample_files.list`, `samples.list(batches=)` | yes, yes | one call per page, one per batch |
-| `instrument_signal` | `GET /api/samples` (`tic`), `POST /api/match/records/ion/series` (reagent ions) | `samples.list`, `batches.ion_series` (phase 0) | yes, **no** (phase 0 opens it) | one per batch |
-| `species_series`, `diurnal`, `period_boxes`, `weekly_cycle`, `top_species`, `episodes`, `comparison`, `species_scatter` | the two series routes | `batches.ion_series`, `batch_peaks.series` (phase 0) | **no** (phase 0) | one per batch |
-| `spectrogram`, `period_spectrum`, `mass_defect` | `POST /api/batch-peaks/records/series` with `min_n_present=1` | `batch_peaks.series` | **no** (phase 0) | one per batch |
-| `van_krevelen`, `oxidation_state`, `class_series`, `assignment_health` | `GET /api/batch-peaks/batch/{id}` (species) and the series route | `batch_peaks.list`, `batch_peaks.series` | yes, **no** | one per batch |
+| `instrument_signal` | `GET /api/samples` (`tic`), `POST /api/match/records/ion/series` (reagent ions) | `samples.list`, `batches.ion_series` (phase 0) | yes, yes (opened in phase 0) | one per batch |
+| `species_series`, `diurnal`, `period_boxes`, `weekly_cycle`, `top_species`, `episodes`, `comparison`, `species_scatter` | the two series routes | `batches.ion_series`, `batch_peaks.series` (phase 0) | yes (opened in phase 0) | one per batch |
+| `spectrogram`, `period_spectrum`, `mass_defect` | `POST /api/batch-peaks/records/series` with `min_n_present=1` | `batch_peaks.series` | yes (opened in phase 0) | one per batch |
+| `van_krevelen`, `oxidation_state`, `class_series`, `assignment_health` | `GET /api/batch-peaks/batch/{id}` (species) and the series route | `batch_peaks.list`, `batch_peaks.series` | yes, yes (opened in phase 0) | one per batch |
 | `mass_accuracy` | `GET /api/batch-peaks/batch/{id}/members` (ppm per member) | `batch_peaks.members` | yes | pages of 5,000 per batch |
 | `scope_summary` | the listings and `GET /api/provenance` | `datasets.list`, `batches.list`, `samples.list` | yes | cached |
 | `aux_overlay` | none (a local CSV) | - | - | - |
+
+### Token access audit of the two series routes (phase 0)
+
+Audited 2026-10-21 against `develop`, as the AI layer's audit was
+([ai_layer.md, appendix](ai_layer.md)). Both handlers are now
+`api_route(token_access=True)` and pinned in
+[test_token_access_coverage.py](../../server/backend/tests/unit/api/routes/test_token_access_coverage.py)
+(`SERIES_READS`); being POSTs, both are also declared in
+[token_writes.json](../../security/pentest/token_writes.json), which lists
+every token POST whether it writes or not.
+[test_series_token_reads.py](../../server/backend/tests/integration/api/workspace/test_series_token_reads.py)
+sends a real SDK token through each. A token carries its user's rights and no
+more: the ACL below is the same for a session and a token.
+
+| Route | ACL | Cap | Cost | Writes |
+|---|---|---|---|---|
+| `POST /api/match/records/ion/series` ([routes.py](../../server/backend/src/mascope_backend/api/new/match/records/routes.py), [ion/service.py](../../server/backend/src/mascope_backend/api/new/match/records/ion/service.py)) | guest of the batch (`sample_batch_id`), or of every sample named (`sample_item_ids`). The ion scope, `target_collection_id` or `target_ion_ids` (one is required), is not checked against the caller: any collection's or ion's metadata comes back, its match values only from the caller's batch or samples ([#2455](https://github.com/ultra-trace-systems/mascope/issues/2455)) | none: one record per ion in scope, matched or not, and one point per stored match row | two queries (the ions, then their match rows in the batch); see section 5 | none |
+| `POST /api/batch-peaks/records/series` ([batch_peaks_routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_routes.py), [batch_peaks_records.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_records.py)) | guest of the batch, or of every sample named; exactly one scope. `batch_peak_ids` narrow inside the scope; a `batch_peak_run_id` must be a run of the named batch, and on a sample scope yields only those samples' points | `min_n_present` (default 2) on the full-batch load only; `tier` filters | two queries (the batch peaks, then every occurrence of them), or the run's snapshot for an earlier run; linear in points, see section 5 | none |
 
 ## Appendix B: the Linear project, as proposed
 
