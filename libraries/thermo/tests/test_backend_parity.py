@@ -455,9 +455,11 @@ def test_scan_statistics_match_thermo(monkeypatch, path):
             assert o[name] == t[name] and type(o[name]) is type(t[name]), name
 
 
-# A trailer value as the Thermo library renders a number: digits, the machine's
-# decimal separator ("." or ","), an optional exponent.
-_TRAILER_NUMBER = re.compile(r"[+-]?(\d*)(?:[.,](\d*))?(?:[eE]([+-]?\d+))?")
+# A trailer value as the Thermo library renders a number: digits, a decimal
+# point, an optional exponent. load_dotnet pins the invariant culture, so it
+# writes no decimal comma and no U+2212 minus on any machine; one that did is
+# no number here, and fails the comparison.
+_TRAILER_NUMBER = re.compile(r"[+-]?(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?")
 
 # The Thermo library's text for a switch OpenTFRaw reads as a bool.
 _TRAILER_SWITCH = {True: {"On", "Yes", "True"}, False: {"Off", "No", "False"}}
@@ -480,7 +482,7 @@ def _trailer_number(value) -> tuple[float, float] | None:
     if not match or not (match.group(1) or match.group(2)):
         return None
     last_digit = int(match.group(3) or 0) - len(match.group(2) or "")
-    return float(text.replace(",", ".")), 0.5 * 10.0**last_digit
+    return float(text), 0.5 * 10.0**last_digit
 
 
 def _same_trailer_value(ours, theirs) -> bool:
@@ -505,12 +507,12 @@ def test_scan_acquisition_settings_match_thermo(monkeypatch, path):
     every MS order.
 
     The backends type the values differently (``scan_trailer``). The Thermo
-    library gives text in the machine's number format, rounded to the digits
-    it displays, where OpenTFRaw gives the stored number, so a value both read
-    as a number must agree to half a unit in the last digit displayed. A
-    switch the Thermo library writes On/Off or Yes/No is True/False in
-    OpenTFRaw, a section heading's empty text is None, and any other text must
-    be identical.
+    library gives text in the invariant culture's number format, rounded to
+    the digits it displays, where OpenTFRaw gives the stored number, so a
+    value both read as a number must agree to half a unit in the last digit
+    displayed. A switch the Thermo library writes On/Off or Yes/No is
+    True/False in OpenTFRaw, a section heading's empty text is None, and any
+    other text must be identical.
     """
     path = str(path)
 
@@ -585,9 +587,7 @@ def test_scan_rows_keys_match_thermo(monkeypatch, path):
 
 def _hcd_tuple(value):
     return tuple(
-        round(float(part.replace(",", ".")), 2)
-        for part in str(value).split(",")
-        if part.strip()
+        round(float(part), 2) for part in str(value).split(",") if part.strip()
     )
 
 

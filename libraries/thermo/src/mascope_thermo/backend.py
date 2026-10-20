@@ -559,12 +559,14 @@ def trailer_float(value) -> float | None:
     """A trailer value as a finite float, or None where it reads as none.
 
     OpenTFRaw gives trailer values as numbers, the Thermo library as text
-    formatted in the server's culture. That text may write a decimal comma
-    (``"-71050473,7320"``) and, where the culture's data comes from ICU (sv-SE,
-    nb-NO and others), the minus sign U+2212 rather than ``-``, in an
-    exponent too. It writes no group separators, so a comma is always the
-    decimal mark. A flag, empty or other text, and a non-finite number read
-    as none.
+    formatted in the current .NET culture. ``load_dotnet`` pins that to the
+    invariant culture (``"-71050473.7320"``), but text captured before the
+    pin is formatted in the culture of the server that read it, and is
+    still read here: it may write a decimal comma (``"-71050473,7320"``)
+    and, where the culture's data comes from ICU (sv-SE, nb-NO and others),
+    the minus sign U+2212 rather than ``-``, in an exponent too. It writes
+    no group separators, so a comma is always the decimal mark. A flag,
+    empty or other text, and a non-finite number read as none.
 
     :param value: One trailer value, as either reader gives it.
     :return: The number, or None.
@@ -681,6 +683,9 @@ def _summarize_acquisition_parameters(source: str, per_scan: list[dict]) -> dict
     scalars. Normalising them here would mean deciding the type of 70+
     heterogeneous instrument fields, which is the schema call this capture
     exists to defer -- hence ``source``, so a reader can normalise per backend.
+    Thermo's text is in the invariant culture (``load_dotnet``), but a capture
+    made before that was pinned holds the format of the server that read it;
+    :func:`trailer_float` reads a number from either.
 
     :param source: Backend that produced the trailers ("opentfraw"/"thermo").
     :param per_scan: Trailer dicts, one per sampled scan.
