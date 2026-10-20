@@ -101,8 +101,10 @@ modified, matches may be out of date"*.
   collections the colouring is alarm-style — a confident detection shows
   **red**, not green.
 - Click a collection to open its **ion table**: every target ion with its
-  score, formula, compound, and ionization mechanism. Click an ion's expander
-  (*Visualize ion match*) to open the **Match** tab for it.
+  score, formula, compound, and ionization mechanism. With a sample selected,
+  open an ion's match in the **Match** tab with its expander (*Open match*),
+  with Enter on its row, or with *Open match* in its right-click menu. Clicking
+  a row only selects it, for the Batch tab's chart.
 - **Match tab** — one ion in detail: the matched isotopes with their *m/z* and
   relative abundances, the spectrum around each isotope, and the timeseries of
   matched peaks across the batch. It opens on the ion's monoisotopic isotope —
@@ -120,7 +122,7 @@ modified, matches may be out of date"*.
     [Peak assignment](../how-it-works/peak-assignment.md) is off by default;
     switched on, it adds its views to the Sample tab, but it takes nothing
     away here. The
-    Match tab, the *Visualize ion match* expander, the batch chart's
+    Match tab, the *Open match* action, the batch chart's
     click-through, the match-parameter drawer and *Rate Match* all work the
     same whether assignment is on or off. The two answer different questions:
     Match reads one *target* ion across the batch, the Sample tab reads every

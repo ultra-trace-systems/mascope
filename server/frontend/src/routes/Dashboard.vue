@@ -128,7 +128,7 @@ const tabs = computed(() => [
     value: 'match',
     icon: 'pi pi-verified',
     disabled: !app.data.match.visualized.ion,
-    reason: 'Visualize an ion match from the ion table',
+    reason: 'Open a match from the ion table',
     // Card body comes from the shared docs snippet
     // (docs/user/_help/matching.md) rather than inline prose -- the docs
     // are the single source of truth.

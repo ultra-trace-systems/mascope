@@ -151,20 +151,12 @@ const filterOptions = computed(() => ({
 }))
 
 // --- Row Expansion for match ion visualization and isotopes ---
-const focusMatchIon = async (ionId) => {
-  if (!app.data.sample.focusedId) return
-  await app.data.match.visualized.set({
-    sampleId: app.data.sample.focusedId,
-    ionId: ionId,
-    collectionId: app.data.match.collection.focusedId
-  })
-}
-
 const unfocusMatchIon = async () => {
   await app.data.match.visualized.clear()
 }
 
-function toggleRowExpansion(ionId) {
+function toggleRowExpansion(ion) {
+  const ionId = ion.target_ion_id
   if (expandedRows.value[ionId]) {
     // Collapse
     expandedRows.value = {}
@@ -174,8 +166,7 @@ function toggleRowExpansion(ionId) {
     // Expand (and collapse others)
     expandedRows.value = { [ionId]: true }
     expandedIonId.value = ionId
-    focusMatchIon(ionId)
-    app.ui.tab.active = 'match'
+    ionContextMenu.openMatch(ion)
   }
 }
 
@@ -207,6 +198,25 @@ const onKeyDown = (event) => {
     const filteredRows = ionTable.value?.processedData ?? app.data.match.ion.list
     app.data.match.ion.selected = [...filteredRows]
   }
+}
+
+// Enter on a focused row opens its match, as the context menu's "Open match"
+// does. Caught on the way down: PrimeVue's own Enter on a row selects it,
+// and a changed selection closes the open match (the watcher below), so the
+// table must never see it. Space still selects. Without a focused sample there
+// is no match to open, and Enter is left to the table.
+const onRowEnter = (event) => {
+  if (event.code !== 'Enter' && event.code !== 'NumpadEnter') return
+  if (!app.data.sample.focusedId) return
+  const row = event.target?.closest?.('tr[data-p-index]')
+  // The row itself, not a control inside it (a filter, the expander button).
+  if (!row || row !== event.target) return
+  // data-p-index is the row's place in the sorted, filtered rows the table shows.
+  const ion = ionTable.value?.processedData?.[Number(row.dataset.pIndex)]
+  if (!ion) return
+  event.preventDefault()
+  event.stopPropagation()
+  ionContextMenu.openMatch(ion)
 }
 
 // --- Watchers ---
@@ -331,9 +341,9 @@ watch(
         </p>
         <p>
         If a single sample is selected, shows match scores for each ion based on the sample data.
-        Click on
-        the match icon <span class='pi ph ph-seal-question'></span> on a row to visualize the match in Match View,
-        and see the individual isotope matches.
+        To open an ion's match in Match View and see its individual isotope matches, click
+        the match icon <span class='pi ph ph-seal-question'></span> on its row, press Enter on the row,
+        or right click it and choose <b>Open match</b>. Clicking a row only selects it, for the Batch View.
         </p>
         <p>
         If multiple samples are selected, shows the top match score of all batch samples for each ion.
@@ -372,6 +382,7 @@ watch(
         }
       "
       @keydown="onKeyDown"
+      @keydown.capture="onRowEnter"
       :expandedRowIcon="expanderIcon"
       :collapsedRowIcon="expanderIcon"
       filterDisplay="menu"
@@ -402,13 +413,15 @@ watch(
             :severity="expandedIonId === data.target_ion_id ? 'info' : 'secondary'"
             v-tooltip.top="
               app.data.sample.focusedId
-                ? 'Visualize ion match'
+                ? expandedIonId === data.target_ion_id
+                  ? 'Close match'
+                  : 'Open match'
                 : 'Click to select sample with the best match'
             "
             @click="
               async () => {
                 if (app.data.sample.focusedId) {
-                  toggleRowExpansion(data.target_ion_id)
+                  toggleRowExpansion(data)
                 } else {
                   focusSampleWithBestMatch(data.match.sample_item_id)
                 }
