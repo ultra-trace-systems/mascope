@@ -128,6 +128,12 @@ SDK_WRITES = {
     ("POST", "/api/target/compounds"): "compounds.add",
     ("PATCH", "/api/target/compounds"): "compounds.update",
     ("DELETE", "/api/target/compounds/{target_compound_id}"): "compounds.remove",
+    # saving matches, last: save upserts the aggregate, resave rebuilds it
+    ("POST", "/api/match/aggregate/sample/{sample_item_id}/save"): "matching.save",
+    ("POST", "/api/match/aggregate/batch/{sample_batch_id}/save"): "matching.save",
+    ("POST", "/api/match/aggregate/batch/{sample_batch_id}/resave"): (
+        "matching.save(rebuild=True)"
+    ),
 }
 
 #: Every other route that answers a token, by the client that needs it.
