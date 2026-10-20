@@ -780,6 +780,8 @@ The saves take `target_ion_id` and `match_params` as the runs do. The batch save
 
 | Method | Description | Returns |
 | ------ | ----------- | ------- |
+| `list(batch_id=, workspace_id=, all_workspaces=)` | List the workspace's collections and the global ones, or those of one batch | `pd.DataFrame│None` |
+| `get(collection_id)` | One collection, with its compounds and batches | `dict` |
 | `create(name, description=, collection_type=, compounds=, compound_ids=, batch_ids=, workspace_id=, is_global=)` | Create a target collection | `dict` |
 | `update(collection_id, name=, description=, collection_type=, compounds=, compound_ids=)` | Change it or its compounds | `dict` |
 | `associate(collection_id, batch_ids)` | Set the batches it is associated with | `dict` |

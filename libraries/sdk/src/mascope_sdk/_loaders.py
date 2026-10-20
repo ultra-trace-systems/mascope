@@ -2,7 +2,7 @@
 
 import copy
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import pandas as pd
@@ -462,6 +462,46 @@ def load_peaks(
     if confirm_above is not None and len(sample_tasks) > confirm_above:
         _confirm_sample_count(len(sample_tasks), confirm_above)
 
+    return load_sample_peaks(
+        client,
+        sample_tasks,
+        matches=matches,
+        areas=areas,
+        heights=heights,
+        average=average,
+        max_workers=max_workers,
+    )
+
+
+def load_sample_peaks(
+    client: MascopeClient,
+    sample_tasks: list[tuple[Any, str]],
+    *,
+    matches: bool = True,
+    areas: bool = True,
+    heights: bool = True,
+    average: bool = True,
+    max_workers: int = 8,
+    on_result: Callable[[tuple[Any, ...], pd.DataFrame], None] | None = None,
+) -> pd.DataFrame | None:
+    """Load the peaks of samples already chosen, as :func:`load_peaks` does.
+
+    The half of :func:`load_peaks` after the samples are resolved, for a
+    caller that resolves them itself (the ``mascope_ai`` toolkit, by ID): it
+    never prompts, and returns what :func:`load_peaks` returns - the enriched
+    rows, ``attrs["complete"]``, ``attrs["failures"]``, ``attrs["warnings"]``
+    and ``attrs["segments"]`` - without the provenance stamp, which the
+    client's methods add.
+
+    :param client: The MascopeClient instance.
+    :param sample_tasks: ``(sample_row, batch_name)`` per sample, the row as
+        the sample listing gives it (``sample_item_id``,
+        ``sample_item_name`` and, if known, ``datetime_utc``).
+    :param on_result: Called with each sample's task and its enriched peaks
+        as they arrive (see :func:`run_concurrent`); whatever it raises stops
+        the load and propagates.
+    :return: As :func:`load_peaks`.
+    """
     warned: list[str] = []
     # Each sample's own: the samples of a load need not be stitched alike
     segments: dict[str, list[dict] | None] = {}
@@ -502,6 +542,7 @@ def load_peaks(
         max_workers=max_workers,
         desc="Loading peaks",
         unit="sample",
+        on_result=on_result,
     )
 
     result = mark_complete(_stack(frames, warned), _sample_failures(failures))
@@ -688,6 +729,7 @@ def load_peaks_by_stage(
     areas: bool = True,
     heights: bool = True,
     max_workers: int = 8,
+    on_result: Callable[[tuple[Any, ...], pd.DataFrame], None] | None = None,
 ) -> pd.DataFrame | None:
     """Load averaged peaks for each time-range stage of a single sample.
 
@@ -716,6 +758,12 @@ def load_peaks_by_stage(
     :type heights: bool
     :param max_workers: Maximum number of concurrent requests. Defaults to 8.
     :type max_workers: int
+    :param on_result: Called with each stage's task, ``(stage, t_min, t_max,
+        name)``, and its peaks as they arrive (see :func:`run_concurrent`);
+        whatever it raises stops the load and propagates. Not offered by
+        :meth:`MascopeClient.load_peaks_by_stage`; the ``mascope_ai`` toolkit
+        counts rows against its cap with it.
+    :type on_result: Callable, optional
     :return: A DataFrame containing peaks with columns:
 
              - ``stage``: 0-based stage index
@@ -831,6 +879,7 @@ def load_peaks_by_stage(
         max_workers=max_workers,
         desc="Loading stages",
         unit="stage",
+        on_result=on_result,
     )
     failed = [
         failure_record(
@@ -982,12 +1031,10 @@ def load_peak_timeseries(
             f"Got: {list(provided.keys()) or 'none'}"
         )
     formula_level, formula_raw = next(iter(provided.items()))
-    formula_column = _FORMULA_COLUMNS[formula_level]
     # Normalise to a list of values
     formula_values: list[str] = (
         formula_raw if isinstance(formula_raw, list) else [formula_raw]
     )
-    formula_set = set(formula_values)
 
     # --- Discover samples across batches ---
     sample_tasks, _ = _collect_sample_tasks(
@@ -999,6 +1046,52 @@ def load_peak_timeseries(
 
     if confirm_above is not None and len(sample_tasks) > confirm_above:
         _confirm_sample_count(len(sample_tasks), confirm_above)
+
+    return load_sample_timeseries(
+        client,
+        sample_tasks,
+        formula_level,
+        formula_values,
+        max_workers=max_workers,
+    )
+
+
+def load_sample_timeseries(
+    client: MascopeClient,
+    sample_tasks: list[tuple[Any, str]],
+    formula_level: str,
+    formula_values: list[str],
+    *,
+    max_workers: int = 8,
+    on_result: Callable[[tuple[Any, ...], pd.DataFrame], None] | None = None,
+) -> pd.DataFrame | None:
+    """Load the peak time series of samples already chosen.
+
+    The half of :func:`load_peak_timeseries` after the samples are resolved,
+    for a caller that resolves them itself (the ``mascope_ai`` toolkit): it
+    never prompts, and returns what :func:`load_peak_timeseries` returns,
+    ``attrs["complete"]`` and ``attrs["failures"]`` included, without the
+    provenance stamp.
+
+    :param client: The MascopeClient instance.
+    :param sample_tasks: ``(sample_row, batch_name)`` per sample, as for
+        :func:`load_sample_peaks`.
+    :param formula_level: ``"compound"``, ``"ion"`` or ``"isotope"``.
+    :param formula_values: The formulas (or, for compounds, names) to load.
+    :param on_result: Called with each peak's task - ``(sample_row,
+        batch_name, peak_id, ...)`` - and its time series as they arrive (see
+        :func:`run_concurrent`); whatever it raises stops the load and
+        propagates. The discovery reads are not passed to it.
+    :return: As :func:`load_peak_timeseries`.
+    :raises ValueError: On an unknown *formula_level*.
+    """
+    if formula_level not in _FORMULA_COLUMNS:
+        raise ValueError(
+            f"formula_level must be one of {sorted(_FORMULA_COLUMNS)}, "
+            f"not {formula_level!r}"
+        )
+    formula_column = _FORMULA_COLUMNS[formula_level]
+    formula_set = set(formula_values)
 
     # --- Load peaks with matches for each sample (concurrent) ---
     # to discover which peak_ids match the formula
@@ -1104,6 +1197,7 @@ def load_peak_timeseries(
         max_workers=max_workers,
         desc="Loading timeseries",
         unit="peak",
+        on_result=on_result,
     )
     failed += _sample_failures(timeseries_failures, peak=True)
 
