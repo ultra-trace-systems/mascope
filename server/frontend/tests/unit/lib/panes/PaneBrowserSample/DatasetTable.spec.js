@@ -143,4 +143,17 @@ describe('the empty dataset list', () => {
     expect(empty.get('.title').text()).toBe('No datasets match the search')
     expect(empty.find('button').exists()).toBe(false)
   })
+
+  // The list is still [] while the first load runs: that is not "none yet".
+  it('says nothing while the list loads', async () => {
+    mocks.app = makeApp([])
+    mocks.app.data.dataset.pending = true
+    const wrapper = mountTable()
+
+    expect(wrapper.find('.empty-state').exists()).toBe(false)
+
+    mocks.app.data.dataset.pending = false
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('.empty-state .title').text()).toBe('No datasets yet')
+  })
 })

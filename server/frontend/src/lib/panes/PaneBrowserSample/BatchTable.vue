@@ -155,12 +155,13 @@ const onStatusAction = (batch) => {
       :scrollHeight="`${tableHeight}px`"
       :virtualScrollerOptions="{ itemSize: 35.74 }"
     >
-      <!-- The table also renders this when the search hides every row; a
-           dataset with batches is not told it has none. -->
+      <!-- The table also renders this when the search hides every row, and
+           while the list loads; in neither case is a dataset with batches
+           told it has none. -->
       <template #empty>
         <BaseEmptyState v-if="hasBatches" icon="pi pi-search" title="No batches match the search" />
         <BaseEmptyState
-          v-else
+          v-else-if="!app.data.batch.pending"
           icon="pi pi-folder-open"
           title="No batches yet"
           hint="A batch holds the samples you analyse and compare together."

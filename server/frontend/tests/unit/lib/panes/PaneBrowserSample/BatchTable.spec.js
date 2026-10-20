@@ -138,4 +138,18 @@ describe('the empty batch list', () => {
     expect(empty.get('.title').text()).toBe('No batches match the search')
     expect(empty.find('button').exists()).toBe(false)
   })
+
+  // A dataset opened from the list starts with [] while its batches load:
+  // that is not "none yet".
+  it('says nothing while the list loads', async () => {
+    mocks.app = makeApp([])
+    mocks.app.data.batch.pending = true
+    const wrapper = mountTable()
+
+    expect(wrapper.find('.empty-state').exists()).toBe(false)
+
+    mocks.app.data.batch.pending = false
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('.empty-state .title').text()).toBe('No batches yet')
+  })
 })
