@@ -3,11 +3,12 @@
 The library formats trailer values in the current .NET culture, which starts
 as the server's regional format. ``load_dotnet`` pins the invariant culture,
 so a trailer reads alike whichever server read the file. Needs the Thermo
-RawFileReader DLLs (``MASCOPE_THERMO_DLL_DIR``).
+RawFileReader DLLs (``MASCOPE_THERMO_DLL_DIR``); the ``dotnet_culture``
+fixture skips without them.
 """
 
+import concurrent.futures
 import sys
-import threading
 
 import pytest
 from thermo_test_support import NEG_ORBI_FILE_PATH
@@ -17,11 +18,6 @@ from mascope_thermo.backend import ThermoBackend
 from mascope_thermo.calibration import CONVERSION_C
 from mascope_thermo.thermo import _ensure_dotnet
 
-
-pytestmark = pytest.mark.skipif(
-    not m_lib.thermo_available(),
-    reason="Thermo backend unavailable (set MASCOPE_THERMO_DLL_DIR)",
-)
 
 # The negative-mode sample file's C, as the invariant culture writes it.
 NEG_C = "-71050473.7320"
@@ -33,11 +29,8 @@ def _conversion_c() -> str:
 
 
 def _conversion_c_on_another_thread() -> str:
-    read = {}
-    thread = threading.Thread(target=lambda: read.setdefault("c", _conversion_c()))
-    thread.start()
-    thread.join()
-    return read["c"]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_conversion_c).result()
 
 
 @pytest.mark.parametrize("culture", ["fi-FI", "de-DE", "sv-SE"])
