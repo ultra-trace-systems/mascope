@@ -304,11 +304,16 @@ def test_unreadable_pending_record_does_not_fail_the_update(
     manual_update.setattr(
         prod_main, "_align_checkout", lambda target, path: aligned.append(target)
     )
+    # Captured at the logger: loguru's queued sink writes after CliRunner has
+    # closed its stream, so result.output never shows the warning.
+    warnings = []
+    manual_update.setattr(prod_main.runtime.logger, "warning", warnings.append)
 
     result = cli_runner.invoke(prod_main.prod_app, ["update", "--version", "v1.12.0"])
 
     assert result.exit_code == 0, result.output
     assert aligned == ["v1.12.0"]
+    assert any("state.json" in w for w in warnings), warnings
 
 
 def test_failed_manual_update_keeps_the_pending_record(
