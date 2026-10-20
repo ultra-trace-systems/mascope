@@ -116,6 +116,14 @@ SDK_WRITES = {
     ("PATCH", "/api/target/collections/{target_collection_id}"): (
         "collections.update, collections.associate"
     ),
+    # the deletes, destructive: each removes the object and what it holds
+    ("DELETE", "/api/workspaces/{workspace_id}/datasets/{dataset_id}"): (
+        "datasets.delete"
+    ),
+    ("DELETE", "/api/sample/batches/{sample_batch_id}"): "batches.delete",
+    ("DELETE", "/api/target/collections/{target_collection_id}"): (
+        "collections.delete"
+    ),
 }
 
 #: Every other route that answers a token, by the client that needs it.
