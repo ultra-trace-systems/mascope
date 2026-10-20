@@ -211,7 +211,13 @@ tool, and accuracy is quoted in ppm per mass band, not as one RMS.
   sets and models, and reports per ion and per mass band the median and IQR error, held-out
   accuracy, each calibrant's presence rate, the composition-free family offset for the mode's
   reagent (CHO·C3H10N+, CHO·NO3−, CHO·Br−, bare CHO) and known cluster series. Its mode-0 refit
-  must equal the node's stored fit to 0.01 ppm (MAS-174).
+  must equal the node's stored fit to 0.01 ppm (MAS-174). It is the maintenance script
+  `audit_tof_calibration` (`mascope prod db script run audit_tof_calibration`, configured through
+  `TOF_AUDIT_*` variables listed in its docstring): a subclass of `TofCalibrationHandler` that
+  swaps only what the handler reads for reads that write nothing, so the matching, selection and
+  fit are the node's own. The family offset reads strong peaks (S/N ≥ 20) against CcHhOo neutrals
+  of up to three double bonds and rings under each mechanism of the mode, where members of one
+  nominal mass are 36.4 mDa apart; with four or more, two members can sit 15.3 mDa apart.
 - **This note** (MAS-173).
 - **The fleet baseline**: the audit tool on every instrument × mode, a sample per day over 60 days
   plus one complete day, in bands 40–100, 100–150, 150–200, 200–300, 300–500 Th and above where

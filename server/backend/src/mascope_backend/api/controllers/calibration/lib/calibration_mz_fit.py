@@ -944,6 +944,16 @@ class TofCalibrationHandler(BaseCalibrationHandler):
             "post_dmz": 1e6 * (calibrated_mzs - target_mzs) / target_mzs,
         }
 
+    def _total_ion_current(self) -> float:
+        """The file's total ion current, which calibrant shares are taken of.
+
+        A method of its own so that a refit that only reads
+        (``tof_calibration_audit``) can leave it out: on a Tofwerk file it
+        reads every scan, and nothing in the fit depends on it.
+        """
+        _, tic_per_scan = m_compute.get_tic_per_scan(self.filename)
+        return np.sum(tic_per_scan)
+
     @api_controller()
     async def fit(self):
         """Fit the m/z calibration for a TOF instrument."""
@@ -959,10 +969,7 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         if target_isotopes_df is None:
             return
 
-        _, tic_per_scan = await asyncio.to_thread(
-            m_compute.get_tic_per_scan, self.filename
-        )
-        tic = np.sum(tic_per_scan)
+        tic = await asyncio.to_thread(self._total_ion_current)
 
         await self._send_progress(0.35)
 
