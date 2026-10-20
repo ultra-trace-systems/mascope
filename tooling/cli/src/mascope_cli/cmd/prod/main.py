@@ -238,6 +238,39 @@ def _align_checkout(target: str, mascope_path: Optional[str]) -> None:
         )
 
 
+def _settle_pending(target: str, mascope_path: Optional[str]) -> None:
+    """
+    Drop the recorded pending migration update once a manual update deployed it.
+
+    `--auto` clears the record when it applies the update itself. A release
+    deployed by hand (`prod update`, `--version`) has to clear it here, or
+    `mascope prod doctor` keeps reporting a migration that has already run
+    until the next timer tick classifies the stack as up to date.
+
+    Only a release at or past the pending one settles it: rolling back to an
+    older release leaves that update outstanding. ``latest`` names no release
+    to order against, so it leaves the record for `--auto`, whose preflight
+    compares what actually runs.
+
+    :param target: The image tag just deployed.
+    :param mascope_path: The deployment checkout, or None when unset.
+    """
+    if not mascope_path or not is_release_tag(target):
+        return
+    pending = auto_update.load_pending(mascope_path)
+    if pending is None or not is_release_tag(pending.version):
+        return
+    if release_sort_key(target) < release_sort_key(pending.version):
+        return
+    auto_update.clear_pending(mascope_path)
+    message = (
+        f"Pending migration update {pending.version} settled: {target} was "
+        "deployed by hand."
+    )
+    runtime.logger.info(message)
+    auto_update.record_status(mascope_path, message)
+
+
 def _compose_env(building: bool = False) -> dict[str, str]:
     """
     Build the environment variable dict injected into every docker compose call.
@@ -1098,6 +1131,9 @@ def update(
     _prune_images()  # reclaim the superseded release's images
     _run_compose(["ps"])
     runtime.logger.success(f"Production stack updated to '{target}'")
+    # Only reached when compose succeeded: a failed pull or up exits above, and
+    # the update it was recording is then still outstanding.
+    _settle_pending(target, os.environ.get("MASCOPE_PATH"))
     # Keep the checkout naming the release that runs, so a reboot redeploys
     # this release and doctor stays clean (no-op when already checked out).
     _align_checkout(target, os.environ.get("MASCOPE_PATH"))
