@@ -293,6 +293,9 @@ Each run:
 - **Migration update** -> recorded and reported (exit 30), then applied at the
   next window once its grace period elapses (`MASCOPE_UPDATE_GRACE_DAYS`,
   default 7 days) **or** you confirm it - unless it has been snoozed.
+  Deploying that release (or a later one) yourself with `mascope prod update`
+  settles the record as well, so `prod doctor` stops reporting it as pending;
+  rolling back to an older release keeps it.
 
 An applied update also moves the deployment checkout to the release it
 deployed, so a reboot redeploys that same release and `mascope prod doctor`
@@ -1333,7 +1336,8 @@ grace period, or a confirm, and never applies while snoozed. Run
 `mascope prod update --check` to see the classification and
 `cat "$(mascope path)/.runtime/update/state.json"` for its `first_seen_at` /
 `snooze_until` / `confirmed` state. `mascope prod update --confirm` applies it at
-the next window.
+the next window. To take it now instead, deploy it by hand (check out the tag,
+reinstall the CLI, `mascope prod update`), which also clears the record.
 
 **`mascope prod db script` cannot find a mascope Python / lists no scripts.**
 The scripts are discovered and run inside the backend container, so the stack
