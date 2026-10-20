@@ -495,6 +495,98 @@ async def test_a_token_writes_nothing_outside_its_users_workspaces(
     assert not calls
 
 
+#: The writes that also reach a destination or other batches, sent from
+#: ws_alpha, where the editor may write, into ws_beta, where they may not.
+#: The ``dest_*`` ids are ws_beta's.
+DESTINATION_WRITES = [
+    Write(
+        "POST",
+        "/api/workspaces/{ws}/datasets/{dataset}/move",
+        lambda ids: {"target_workspace_id": ids["dest_ws"]},
+        _DATASETS,
+        "move_dataset",
+        200,
+    ),
+    Write(
+        "POST",
+        "/api/sample/batches/{batch}/copy",
+        lambda ids: {
+            "dataset_id": ids["dest_dataset"],
+            "sample_batch_name": "Token copy",
+        },
+        _BATCHES,
+        "copy_sample_batch",
+        202,
+    ),
+    Write(
+        "POST",
+        "/api/sample/items/move",
+        lambda ids: {
+            "sample_batch_id": ids["dest_batch"],
+            "sample_item_ids": [ids["item"]],
+        },
+        _SAMPLES,
+        "move_sample_items",
+        202,
+    ),
+    Write(
+        "POST",
+        "/api/sample/items/copy",
+        lambda ids: {
+            "sample_batch_id": ids["dest_batch"],
+            "sample_item_ids": [ids["item"]],
+        },
+        _SAMPLES,
+        "copy_sample_items",
+        202,
+    ),
+    Write(
+        "POST",
+        "/api/target/collections",
+        lambda ids: {
+            "target_collection_name": "Token collection",
+            "workspace_id": ids["ws"],
+            "sample_batch_ids": [ids["dest_unlinked_batch"]],
+        },
+        _COLLECTIONS,
+        "create_target_collection",
+        201,
+    ),
+    Write(
+        "PATCH",
+        "/api/target/collections/{collection}",
+        lambda ids: {"sample_batch_ids": [ids["dest_unlinked_batch"]]},
+        _COLLECTIONS,
+        "update_target_collection",
+        200,
+        variant="batches only",
+    ),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write", DESTINATION_WRITES, ids=str)
+async def test_a_token_writes_nothing_into_a_workspace_of_another(
+    write, alpha_ids, beta_ids, test_users, token_client, session_client, stubbed
+):
+    """The source is the editor's to change, the destination is not.
+
+    In the cross-workspace case above the source's check refuses first; here
+    only the destination's can. For a sample copy, whose source needs only
+    guest, it is the one guard there is.
+    """
+    calls = stubbed(write)
+    editor = test_users["editor"]
+    ids = {**alpha_ids, **{f"dest_{key}": value for key, value in beta_ids.items()}}
+
+    by_token = await _send(await token_client(editor), write, ids)
+    by_session = await _send(session_client(editor), write, ids)
+
+    assert by_token.status_code == 403, by_token.text
+    assert by_session.status_code == 403, by_session.text
+    assert not calls
+
+
 @pytest_asyncio.fixture
 async def locked_dataset(async_session_factory, ws_alpha):
     """A locked dataset in ws_alpha: only a global admin may change it."""
