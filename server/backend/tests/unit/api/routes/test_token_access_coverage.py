@@ -15,7 +15,9 @@ says so.
 and oracle calls need (the note's section 3.2 and 3.3, and its appendix for
 what each one is). Every one of them is a read: a GET, or a POST that computes
 an answer without writing (a peak's time series, the aggregate match preview,
-the m/z query). ``SDK_WRITES`` are the data-organisation writes opened for the
+the m/z query). ``SERIES_READS`` are the two compact per-batch series the
+visual digests chart from (``docs/dev/visual_digest.md``, phase 0 and
+appendix A), POSTs that compute and write nothing. ``SDK_WRITES`` are the data-organisation writes opened for the
 SDK's write wrappers (phase 3 of the note), each after reading its ACL and its
 side effects; the destructive ones are marked. Every other route is in
 ``OTHER_TOKEN_ROUTES``, by the client that needs it.
@@ -30,10 +32,12 @@ so a write opened to tokens is declared to the assessment in the same change.
 
 Structural, like ``test_api_route_coverage.py``: it walks whatever routes the
 app registers. That a real SDK token reaches the toolkit's reads end to end is
-``integration/api/workspace/test_toolkit_token_reads.py``.
+``integration/api/workspace/test_toolkit_token_reads.py``, and the series reads
+``integration/api/workspace/test_series_token_reads.py``.
 """
 
 import json
+from itertools import combinations
 from pathlib import Path
 
 from fastapi.routing import APIRoute, iter_route_contexts
@@ -91,6 +95,13 @@ TOOLKIT_READS = {
     ("POST", "/api/match/aggregate/batch/{sample_batch_id}"): (
         "describe(batch) match status, plan_match(save=False)"
     ),
+}
+
+#: (method, path) -> the SDK wrapper that reads it: one call per batch for the
+#: per-sample series the app's two batch charts draw, instead of one per sample.
+SERIES_READS = {
+    ("POST", "/api/match/records/ion/series"): "batches.ion_series",
+    ("POST", "/api/batch-peaks/records/series"): "batch_peaks.series",
 }
 
 #: (method, path) -> the SDK write wrapper that calls it. Each keeps its own
@@ -246,9 +257,9 @@ def _token_routes() -> set[tuple[str, str]]:
 
 
 def test_the_lists_do_not_overlap():
-    assert not TOOLKIT_READS.keys() & OTHER_TOKEN_ROUTES
-    assert not TOOLKIT_READS.keys() & SDK_WRITES.keys()
-    assert not SDK_WRITES.keys() & OTHER_TOKEN_ROUTES
+    lists = (TOOLKIT_READS, SERIES_READS, SDK_WRITES, OTHER_TOKEN_ROUTES)
+    for one, other in combinations(lists, 2):
+        assert not set(one) & set(other)
 
 
 def test_every_toolkit_read_answers_a_token():
@@ -261,8 +272,20 @@ def test_every_toolkit_read_answers_a_token():
     )
 
 
+def test_every_series_read_answers_a_token():
+    missing = sorted(set(SERIES_READS) - _token_routes())
+
+    assert not missing, "\n".join(
+        f"{method} {path} is not token_access, so {SERIES_READS[method, path]} "
+        "answers 401 for every SDK caller"
+        for method, path in missing
+    )
+
+
 def test_only_the_known_routes_answer_a_token():
-    assert _token_routes() == set(TOOLKIT_READS) | set(SDK_WRITES) | OTHER_TOKEN_ROUTES
+    assert _token_routes() == (
+        set(TOOLKIT_READS) | set(SERIES_READS) | set(SDK_WRITES) | OTHER_TOKEN_ROUTES
+    )
 
 
 def _narrowed_routes() -> dict[tuple[str, str], frozenset[str]]:
