@@ -429,7 +429,7 @@ Each failure names the sample (`sample_batch_name`, `sample_item_id`, `sample_it
 
 ### Provenance
 
-Every frame a high-level loader returns carries the provenance of the server that served it, on `df.attrs["provenance"]`: the deployment's id, the Mascope version it runs, the match-score and peak-assignment engine versions in force, and when this client first heard from that build. Keep it with what you derive from the frame, and a published figure can name the build its numbers came from.
+Every frame a high-level loader returns, and those of `batches.ion_series`, `batch_peaks.series` and `sample_files.list`, carries the provenance of the server that served it, on `df.attrs["provenance"]`: the deployment's id, the Mascope version it runs, the match-score and peak-assignment engine versions in force, and when this client first heard from that build. Keep it with what you derive from the frame, and a published figure can name the build its numbers came from.
 
 ```python
 peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium")
@@ -709,6 +709,9 @@ workspaces, not only the client's.
 | `update(batch_id, target_collection_ids, name=, description=)` | Rename it and set its target collections | `dict` |
 | `copy(batch_id, dataset_id, name, description=)` | Copy it into a dataset, in the background | `dict` |
 | `delete(batch_id)` | Delete it and its samples, in the background | `dict` |
+| `ion_series(batch_id, collection=, ions=)` | Each sample's matched intensity of each target ion, one request per batch | `pd.DataFrame` |
+
+`ion_series` returns one row per matched (sample, target ion): `sample_item_id`, `target_ion_id`, `target_compound_name`, `target_compound_formula`, `ion_formula`, `ionization_mechanism`, `intensity` and `match_category`. It reads the ions of `collection` (an ID), or the `ions` named by ID, or else those of every target collection the batch has. Join `samples.list(batch=...)` on `sample_item_id` for each sample's time.
 
 #### `mascope.samples`
 
@@ -736,6 +739,9 @@ A `get_peaks` over a time range (`t_min` / `t_max`) leaves out the peaks whose t
 | ------------------------------------------------------------------- | ----------------------------------------------------- | ------------------- |
 | `get_scans(sample_file_id, fields=, first_scan=, last_scan=, ...)`  | A file's scan table: one row per scan, no centroids   | `pd.DataFrame│None` |
 | `download_raw(sample_file_id, path)`                                | The file's source `.raw` / `.h5`, streamed to disk    | `Path`              |
+| `list(datetime_min=, datetime_max=, instrument=, page=, limit=)`   | The files acquired in a time range, in a batch or not | `pd.DataFrame`      |
+
+`list` pages through the whole range unless `page` is given (pages count from 0, `limit` files each, 1000 by default), oldest file first. `datetime_utc` is the acquisition's start in tz-aware UTC; `datetime` is the same moment in the instrument's local time, and `acquisition_timezone` names that zone where it is known. A time given without a zone is taken as UTC.
 
 A sample names the file it was cut from in `sample_file_id` (`mascope.samples.get(sample_id)["sample_file_id"]`). `get_scans` returns one row per scan of that file with the scan's statistics (`ScanNumber`, `StartTime` in minutes, `TIC`, `ScanType`, `MsType`) and its trailer under the instrument's own labels, colon included (`"FT Resolution:"`, `"Conversion Parameter B:"`). Scans of every MS order are in it and none is left out; filter on `MsType` for the MS1 scans alone. No peak is read for it, so it stays under a megabyte for a file whose centroids run to hundreds.
 
@@ -808,6 +814,19 @@ The compound list is shared by every workspace, so these need the global editor 
 | `detail(sample_id, peak_assignment_id)` | One assignment in full (`alternatives`, `provenance`)          | `dict│None`         |
 
 `get` reads the latest completed run unless `run_id` is given, and pages through the API internally — the whole run comes back as one DataFrame. See [Peak Assignments](#peak-assignments).
+
+#### `mascope.batch_peaks`
+
+| Method                                           | Description                                                    | Returns             |
+| ------------------------------------------------ | -------------------------------------------------------------- | ------------------- |
+| `list(batch_id, tier=, min_n_present=, run_id=)` | The batch's species table, one row per batch peak              | `pd.DataFrame│None` |
+| `members(batch_id, sample_id=)`                  | The whole ledger, one row per member                           | `pd.DataFrame│None` |
+| `series(batch_id, tier=, min_n_present=2, run_id=)` | Each sample's intensity of each batch peak, one request per batch | `pd.DataFrame` |
+| `verdicts(batch_id)`                             | The batch-level verdicts on its species                        | `pd.DataFrame│None` |
+| `runs(batch_id)`                                 | The batch runs that rewrote its ledger, newest first           | `pd.DataFrame│None` |
+| `import_run(batch_id, rows, engine=, engine_version=)` | Land an external engine's batch-level result as a run    | `dict│None`         |
+
+`series` is the slim counterpart of `members`: one row per (sample, batch peak) with the member's `sample_item_id`, `sample_peak_id`, `intensity` and `tier` beside its batch peak's `batch_peak_id`, `batch_mz`, `consensus_formula`, `consensus_ion_formula` and `consensus_tier`. `min_n_present=2` leaves out the batch peaks only one sample saw. `df.attrs["run_id"]` names the run the rows are from: `run_id` when given, else the batch's current run. See [`load_batch_ledger`](#load_batch_ledger-the-batch-ledger).
 
 #### `mascope.ionization`
 
