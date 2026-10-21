@@ -1299,7 +1299,7 @@ file is repaired, moved aside (the next start generates a new id), or
 `deployment_id` is set.
 
 The deployment id is also the namespace of the global ids an export gives its
-records. Beside each record id it names - `inputs.dataset_id`,
+records. Beside the dataset and batch ids it names - `inputs.dataset_id`,
 `inputs.sample_batch_id` - the provenance carries `inputs.dataset_global_id`,
 `inputs.sample_batch_global_id`, in the form
 
@@ -1313,7 +1313,9 @@ where `<entity>` is the record's table (`dataset`, `sample_batch`,
 id nor an entity can hold a `:`, so a global id splits back into its three
 parts. The format is stable: it is part of the provenance contract, and a
 change to it would change the provenance version. A deployment with no id
-gives no global ids rather than inventing a namespace.
+gives no global ids rather than inventing a namespace. Only a key that holds
+one id gains a global id: a list of ids, such as
+`inputs.target_collection_ids`, has none.
 
 A global id is only as unique as the deployment id in it. Two deployments
 configured with the same `deployment_id` mint global ids that can name

@@ -199,3 +199,22 @@ def test_an_unknown_entity_has_no_global_id(filestore, monkeypatch):
 
     with pytest.raises(ValueError, match="sample"):
         deployment.global_id("sample", "s1")
+
+
+def test_an_unknown_entity_is_refused_without_a_deployment_id(filestore):
+    """The refusal does not wait for a namespace: a caller asking for an
+    entity with no global id is wrong on every deployment."""
+    with pytest.raises(ValueError, match="sample"):
+        deployment.global_id("sample", "s1")
+
+
+def test_a_global_id_composes_in_a_namespace_already_read():
+    assert (
+        deployment.compose_global_id("example-lab", "target_ion", "t1")
+        == "example-lab:target_ion:t1"
+    )
+
+
+def test_composing_refuses_an_unknown_entity():
+    with pytest.raises(ValueError, match="workspace"):
+        deployment.compose_global_id("example-lab", "workspace", "w1")
