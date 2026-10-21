@@ -34,19 +34,19 @@ const existingCompoundName = ref(null)
 
 const input = reactive({
   target_compound_formula: props.formula ?? '',
-  target_compound_name: existingCompoundName.value ?? null,
-  cas_number: null
+  target_compound_name: existingCompoundName.value ?? null
 })
 
 const targetCollection = computed(() => app.data.target.collection.detailed ?? props.collection)
 const targetCompounds = computed(() => app.data.target.collection.detailed?.target_compounds ?? [])
 
-// Check for existing compound based on input
+// Check for existing compound based on input. The quick path asks for a
+// formula and a name only; the CAS number and the structure are set in
+// Edit compound.
 const existingCompound = computed(() =>
   findExistingCompound(app.data.target.compound.list, {
     target_compound_formula: input.target_compound_formula,
-    target_compound_name: input.target_compound_name,
-    cas_number: input.cas_number
+    target_compound_name: input.target_compound_name
   })
 )
 
@@ -137,8 +137,7 @@ const addCompound = async () => {
       target_compounds_create: [
         {
           target_compound_formula: input.target_compound_formula.trim(),
-          target_compound_name: input.target_compound_name?.trim(),
-          cas_number: input.cas_number?.trim()
+          target_compound_name: input.target_compound_name?.trim()
         }
       ]
     })
@@ -150,8 +149,7 @@ const addCompound = async () => {
   // Clear form
   Object.assign(input, {
     target_compound_formula: '',
-    target_compound_name: null,
-    cas_number: null
+    target_compound_name: null
   })
 
   popover.value.hide()
@@ -252,14 +250,6 @@ const addButtonDisabled = computed(
           :disabled="Boolean(existingCompound)"
         />
         <label for="add-compound-name"> Name </label>
-      </FloatLabel>
-      <FloatLabel style="margin: 1rem 0">
-        <InputText
-          id="add-compound-cas"
-          v-model="input.cas_number"
-          :disabled="Boolean(existingCompound)"
-        />
-        <label for="add-compound-cas"> CAS </label>
       </FloatLabel>
       <Button
         :label="buttonConfig?.label ?? 'Add'"
