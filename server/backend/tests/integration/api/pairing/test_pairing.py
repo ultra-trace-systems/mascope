@@ -561,6 +561,24 @@ async def test_start_and_approval_are_logged_for_audit_without_the_code(
 
 
 @pytest.mark.asyncio
+async def test_a_forged_address_header_is_not_logged_as_the_origin(
+    fake_redis, public_client, pairing_log
+):
+    # Reached without nginx, X-Real-IP is whatever the client sends; the audit
+    # log records the peer address instead of a string that is not one.
+    resp = await public_client.post(
+        "/api/auth/pairing/start",
+        json={"service_name": "file-agent", "machine_name": "ORBI-PC"},
+        headers={"X-Real-IP": "approved by admin"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    (start_line,) = pairing_log()
+    assert "approved by admin" not in start_line
+    assert start_line.endswith(" from 127.0.0.1")
+
+
+@pytest.mark.asyncio
 async def test_start_never_writes_over_a_code_another_pairing_holds(
     fake_redis, public_client, monkeypatch
 ):
