@@ -83,7 +83,7 @@ async def _check_referenced_collections(
 
 
 @ionization_mode_router.get("/{ionization_mode_id}")
-@api_route()
+@api_route(token_access=True)
 async def get_ionization_mode_route(
     ionization_mode_id: str,
     user: User = Depends(guest_user),
@@ -95,7 +95,7 @@ async def get_ionization_mode_route(
 
 
 @ionization_mode_router.get("")
-@api_route()
+@api_route(token_access=True)
 async def get_ionization_modes_route(
     query_params: GetIonizationModesQueryParams = Depends(),
     user=Depends(guest_user),
