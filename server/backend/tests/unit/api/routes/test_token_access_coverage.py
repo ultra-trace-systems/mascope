@@ -169,6 +169,10 @@ OTHER_TOKEN_ROUTES = {
     ("GET", "/api/version"),
     # The SDK's datasets.tombstones(): what deleted datasets were.
     ("GET", "/api/datasets/tombstones"),
+    # The SDK's ionization.modes(), and one mode by its ID: the modes a
+    # sample's ionization_mode_id names, so a script can find one by its name.
+    ("GET", "/api/ionization/modes"),
+    ("GET", "/api/ionization/modes/{ionization_mode_id}"),
     # The file converter's peak-recompute worker, after every recompute: a
     # destructive recompute, so its token alone (NARROWED below).
     ("POST", "/api/match/rematch/sample/{sample_item_id}"),
