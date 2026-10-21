@@ -68,8 +68,9 @@ jobs:
           branch: main
           path-to-signatures: signatures/v1/cla.json
           # Ultra Trace's developers (their work is the company's already) and
-          # the bots, which cannot sign. Keep in step with Peaky's list.
-          allowlist: kausiala,alekseishcherbinin,kluuppo,oskarsari,dependabot[bot],renovate[bot],github-actions[bot]
+          # the bots, which cannot sign. Keep in step with Peaky's list, but
+          # for the agent loop's two GitHub Apps, which do not work on Peaky.
+          allowlist: kausiala,alekseishcherbinin,kluuppo,oskarsari,dependabot[bot],renovate[bot],github-actions[bot],ultra-trace-tonttu[bot],ultra-trace-pukki[bot]
           # `$you` becomes "you" or "you all"; the action appends the exact
           # comment to post and, for several authors, who still has to sign.
           custom-notsigned-prcomment: >-
