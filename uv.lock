@@ -1967,6 +1967,7 @@ name = "mascope-viz"
 version = "2026.10.21"
 source = { editable = "libraries/viz" }
 dependencies = [
+    { name = "mascope-sdk" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyarrow" },
@@ -1974,6 +1975,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "mascope-sdk", editable = "libraries/sdk" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "pyarrow", specifier = ">=14.0.0" },
