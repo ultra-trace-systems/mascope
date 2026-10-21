@@ -181,7 +181,9 @@ class Verdict:
     :ivar ions: Each ion Mascope scored, the best first.
     :ivar peak_ids: The peaks attributed to the candidate: those of its
         ions that matched (``possible`` or better). Empty when none did.
-    :ivar intensity: The summed intensity of the peaks its ions matched.
+    :ivar intensity: Mascope's summed intensity of the peaks found at the
+        isotopologues of all its ions, the unmatched ions' included: more
+        than the peaks of ``peak_ids`` when an ion did not match.
     """
 
     formula: str

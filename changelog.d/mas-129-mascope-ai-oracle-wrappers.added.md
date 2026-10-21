@@ -11,6 +11,6 @@
   touched, the versions and the server's provenance block. It also records
   each `answer()`, with its code and its values split into those Mascope
   returned, those the SDK computed client-side (a peak load's ion and
-  compound scores), unscored candidates and the model's own statements.
-  `derive()` keeps a table computed from Frames as a Frame whose sources are
-  theirs.
+  compound scores), those code in the session computed, unscored candidates
+  and the model's own statements. `derive()` keeps a table computed from
+  Frames as a Frame whose sources are theirs.

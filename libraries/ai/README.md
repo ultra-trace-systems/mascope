@@ -103,7 +103,9 @@ use the instrument's defaults and the sample's mechanisms, as the app's
 matches do. The model's own candidates go in `suggested` and are scored the
 same way; every verdict says where its candidate came from (`given`,
 `mass_query` or `model`). A formula Mascope refuses, or returns nothing for,
-is listed in `unscored` with the reason, and the rest are scored. The tree,
+is listed in `unscored` with the reason, and the rest are scored: a numeric
+mass or a `[13C]`-labelled formula too, which Mascope refuses without
+naming it. The tree,
 tens of thousands of rows for a sample's worth of candidates, is a `Frame`
 and never a result. Nothing is saved: this is Mascope's matching preview.
 
@@ -115,18 +117,22 @@ Each session keeps `manifest.jsonl`, one JSON record a line:
   and the workspace, once per toolkit opened on the session;
 - `call`: each call, with its parameters, the objects it touched, the Frame
   it made, the server's provenance block, and the values it returned split
-  into those Mascope returned and those the SDK computed client-side. The
-  ion and compound scores of a peak load are the SDK's own
-  (`Frame.client_columns`);
+  into those Mascope returned, those the SDK computed client-side and those
+  code in the session computed. The ion and compound scores of a peak load
+  are the SDK's own (`Frame.client_columns`); the new columns of a derived
+  Frame are the code's (`Frame.computed_columns`);
 - `answer`: each `kit.answer(...)`, with the code that produced it, the calls
   since the answer before, every object they touched, and the values split
-  into `mascope`, `client`, `unscored` (candidates Mascope did not score)
-  and `inferred` (the model's own statements).
+  into `mascope`, `client`, `computed` (columns a `derive` computed),
+  `unscored` (candidates Mascope did not score) and `inferred` (the model's
+  own statements).
 
 `session.manifest.touched()` lists every object the session touched. A table
 computed in Python is kept with `kit.derive(df, [frames])`, and its
 `source_refs` are those of the Frames it came from. So an answer built on it
-still names every object behind it.
+still names every object behind it. Its columns that no input has are
+recorded as computed by its code; `computed=[...]` names more, such as a mean
+that kept its input column's name.
 
 ## Sessions
 

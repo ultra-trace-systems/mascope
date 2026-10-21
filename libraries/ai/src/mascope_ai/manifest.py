@@ -11,14 +11,16 @@ a line, appended to and never rewritten:
     One per call of the toolkit (``find``, ``describe``, a loader, the
     oracle, ``derive``): the operation and its parameters, the Mascope
     objects it touched (``refs``), the Frame it made, the server's
-    provenance block, which values in it Mascope returned and which the
-    SDK computed client-side, and how it ended (``ok``, or the error).
+    provenance block, which values in it Mascope returned, which the SDK
+    computed client-side and which code in the session computed (a derived
+    Frame's), and how it ended (``ok``, or the error).
 ``answer``
     One per :meth:`~mascope_ai.toolkit.Toolkit.answer`: the answer's text,
     the code that produced it, the calls since the answer before it, every
     object those touched, and the split between values Mascope returned,
-    values the SDK computed client-side, candidates Mascope did not score,
-    and statements the model inferred.
+    values the SDK computed client-side, values code in the session
+    computed, candidates Mascope did not score, and statements the model
+    inferred.
 
 A record's ``seq`` counts the lines of the file, so a session reopened by
 another toolkit numbers on. The manifest is a record, not a source of truth
@@ -151,11 +153,18 @@ def toolkit_record(client: Any, session_id: str) -> dict[str, Any]:
     }
 
 
+#: How a derived Frame's :attr:`~mascope_ai.frame.Frame.computed_columns`
+#: were computed.
+COMPUTED = "computed in Python by the code recorded with the Frame (derive)"
+
+
 def frame_values(frame: Any) -> dict[str, Any]:
-    """Which of a Frame's columns Mascope returned and which the SDK
-    computed client-side, and how."""
-    client = set(frame.client_columns)
+    """Which of a Frame's columns Mascope returned, which the SDK computed
+    client-side and which code in the session computed (a derived Frame's),
+    and how."""
+    others = {*frame.client_columns, *frame.computed_columns}
     return {
-        "mascope": [column for column in frame.columns if column not in client],
+        "mascope": [column for column in frame.columns if column not in others],
         "client": {column: CLIENT_COMPUTED[column] for column in frame.client_columns},
+        "computed": {column: COMPUTED for column in frame.computed_columns},
     }
