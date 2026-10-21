@@ -10,6 +10,7 @@ answered (conftest.py).
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -23,6 +24,7 @@ from mascope_ai import (
     Ref,
 )
 from mascope_ai.oracle import NOT_IN_ANSWER, REPR_VERDICTS, condense, tree_rows
+from mascope_sdk.exceptions import ValidationError
 
 
 #: The recorded sample's peaks the recorded tree finds CH2O2's [M+Br]- ion
@@ -34,6 +36,8 @@ CH2O2_PEAKS = (
     "b32cXmd4UqA2iICsVaJ6",
     "ut3VpxyU3YwqkhqrGXbD",
 )
+#: A refusal of the match route that names no formula, as a numeric mass's.
+UNNAMED = "Value error, Mass-based target compounds are no longer supported"
 BROMIDE = "4Qcgr7rPeNL"  # [M+Br]-
 DEPROTONATED = "5ni6bQ49IbX"  # [M-H]-
 
@@ -110,6 +114,10 @@ class TestQueryByMz:
         with pytest.raises(InvalidRequest):
             kit.query_by_mz(**args)
         assert not api.requests_to("cheminfo/mz/query", "POST")
+
+    def test_a_bad_limit_is_named(self, kit):
+        with pytest.raises(InvalidRequest, match="^limit must be"):
+            kit.query_by_mz(179.0, ["[M-H]-"], limit=0)
 
 
 class TestMatchCompounds:
@@ -194,6 +202,90 @@ class TestMatchCompounds:
         assert first["target_compound_formulas"] == ["CH2O2", "Qq2", "HNO3"]
         assert second["target_compound_formulas"] == ["CH2O2", "HNO3"]
         assert "'Qq2': Mascope refused it" in result.tree.warnings[0]
+
+    @pytest.mark.parametrize(
+        "refused, reason",
+        [
+            ("[13C]H2O2", "Explicit isotope notation is not allowed"),
+            ("124.9244", "Mass-based target compounds are no longer supported"),
+        ],
+    )
+    def test_a_refusal_naming_no_formula_is_found_by_sending_each_alone(
+        self, kit, api, refused, reason
+    ):
+        result = kit.match_compounds("s21", ["CH2O2"], suggested=[refused, "HNO3"])
+
+        assert {v.formula for v in result.verdicts} == {"CH2O2", "HNO3"}
+        (unscored,) = result.unscored
+        assert (unscored.formula, unscored.origin) == (refused, "model")
+        assert unscored.reason.startswith(f"Mascope refused it: {reason}")
+        assert [b["target_compound_formulas"] for b in _match_bodies(api)] == [
+            ["CH2O2", refused, "HNO3"],
+            ["CH2O2"],
+            [refused],
+            ["HNO3"],
+            ["CH2O2", "HNO3"],
+        ]
+
+    def test_a_lone_formula_refused_unnamed_is_unscored(self, kit, api):
+        result = kit.match_compounds("s21", ["124.9244"])
+
+        assert result.verdicts == ()
+        assert [u.formula for u in result.unscored] == ["124.9244"]
+        assert len(_match_bodies(api)) == 1
+
+    def test_every_kind_of_refusal_at_once(self, kit):
+        result = kit.match_compounds(
+            "s21", ["CH2O2", "Qq1", "124.9244", "[13C]H2O2", "N[15]O3"]
+        )
+
+        assert [v.formula for v in result.verdicts] == ["CH2O2"]
+        assert {u.formula for u in result.unscored} == {
+            "Qq1",
+            "124.9244",
+            "[13C]H2O2",
+            "N[15]O3",
+        }
+
+    def test_a_refusal_unnamed_that_no_formula_alone_meets_is_raised(
+        self, kit, monkeypatch
+    ):
+        # Only the request of them all is refused: none can be set aside
+        def match(sample_id, formulas, **kwargs):
+            if len(formulas) > 1:
+                raise ValidationError(UNNAMED, status_code=422)
+            return []
+
+        monkeypatch.setattr(kit.client.matching, "match_compounds", match)
+
+        with pytest.raises(InvalidRequest, match="Mass-based"):
+            kit.match_compounds("s21", ["CH2O2", "HNO3"])
+
+    def test_another_refusal_of_a_formula_alone_is_raised(self, kit, monkeypatch):
+        def match(sample_id, formulas, **kwargs):
+            if len(formulas) > 1:
+                raise ValidationError(UNNAMED, status_code=422)
+            raise ValidationError("match_params: Field required", status_code=422)
+
+        monkeypatch.setattr(kit.client.matching, "match_compounds", match)
+
+        with pytest.raises(InvalidRequest, match="Field required"):
+            kit.match_compounds("s21", ["CH2O2", "HNO3"])
+
+    @pytest.mark.parametrize(
+        "formulas",
+        [
+            np.array(["CH2O2", "HNO3"]),
+            pd.Series(["CH2O2", "HNO3"]),
+            (f for f in ["CH2O2", "HNO3"]),
+        ],
+        ids=["array", "series", "generator"],
+    )
+    def test_any_iterable_of_formulas(self, kit, formulas):
+        result = kit.match_compounds("s21", formulas, suggested=np.array(["C6H12O6"]))
+
+        assert {v.formula for v in result.verdicts} == {"CH2O2", "HNO3", "C6H12O6"}
+        assert result.verdict("C6H12O6").origin == "model"
 
     def test_a_formula_mascope_returns_nothing_for_is_unscored(self, kit):
         result = kit.match_compounds("s21", ["CH2O2", "C9H9N"])

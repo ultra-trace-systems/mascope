@@ -100,6 +100,13 @@ _OPS = (
 #: The formula a refusal of the match route names: its 422 says which.
 _REFUSED_FORMULA = re.compile(r"Formula '(.*?)' ")
 
+#: The match route's refusals of a formula that do not say which: a numeric
+#: mass, and bracket isotope notation such as ``[13C]``.
+_UNNAMED_REFUSALS = (
+    "Mass-based target compounds are no longer supported",
+    "Explicit isotope notation is not allowed",
+)
+
 #: A string that can be an object ID: worth one direct read before listing.
 _ID_LIKE = re.compile(r"[A-Za-z0-9_-]+")
 
@@ -148,11 +155,16 @@ class Found(list):
 
 
 def _as_list(value: Any) -> list[Any]:
+    """*value* as a list: the items of any iterable but a string, a mapping
+    or a table (a NumPy array or a Series of names, a generator), else
+    *value* alone."""
     if value is None:
         return []
-    if isinstance(value, (list, tuple, set)):
-        return list(value)
-    return [value]
+    if isinstance(value, (str, bytes, dict, pd.DataFrame)) or not isinstance(
+        value, Iterable
+    ):
+        return [value]
+    return list(value)
 
 
 def _modified(value: Any) -> Any:
@@ -252,9 +264,9 @@ class _RowCap:
             )
 
 
-def _check_cap(max_rows: Any) -> int:
+def _check_cap(max_rows: Any, name: str = "max_rows") -> int:
     if isinstance(max_rows, bool) or not isinstance(max_rows, int) or max_rows < 1:
-        raise InvalidRequest(f"max_rows must be a positive int, not {max_rows!r}")
+        raise InvalidRequest(f"{name} must be a positive int, not {max_rows!r}")
     return max_rows
 
 
@@ -1380,12 +1392,7 @@ class Toolkit:
                 "Name at least one ionization mechanism, e.g. '[M+H]+'"
             )
         with self._errors("list the ionization mechanisms"):
-            rows = self.client.ionization.list()
-        known = (
-            dict(zip(rows["ionization_mechanism_id"], rows["ionization_mechanism"]))
-            if rows is not None and not rows.empty
-            else {}
-        )
+            known = self._mechanism_names()
         by_name = {name: mechanism_id for mechanism_id, name in known.items()}
         found = []
         for value in wanted:
@@ -1442,7 +1449,7 @@ class Toolkit:
             raise InvalidRequest(
                 f"tolerance_ppm is a positive number, not {tolerance_ppm!r}"
             )
-        limit = _check_cap(limit)
+        limit = _check_cap(limit, "limit")
         ids = [mechanism_id for mechanism_id, _ in self._mechanisms(mechanisms)]
         options = {"formula_ranges": formula_ranges} if formula_ranges else {}
         with self._errors("query the formulas of an m/z"):
@@ -1560,33 +1567,57 @@ class Toolkit:
         """Mascope's tree for the candidates, as rows (:func:`tree_rows`).
 
         The route refuses the whole request over one formula it cannot
-        read, and says which: that one is set aside, with the server's
-        reason, and the rest sent again.
+        read. When it says which, that one is set aside, with the server's
+        reason, and the rest sent again; when it does not (a numeric mass,
+        bracket isotope notation), each is sent alone to find the refused.
         """
         origins = {formula_key(f): (f, o) for f, o in candidates}
         pending = [f for f, _ in candidates]
         refused: dict[str, str] = {}
         compounds: list[dict[str, Any]] = []
+
+        def score(formulas: list[str]) -> list[dict[str, Any]]:
+            return (
+                self.client.matching.match_compounds(
+                    sample.id,
+                    formulas,
+                    match_params=params,
+                    ionization_mechanism_ids=mechanisms,
+                )
+                or []
+            )
+
+        def refuse(formula: str, message: str) -> None:
+            reason = message.split("Value error, ", 1)[-1]
+            refused[formula_key(formula)] = f"Mascope refused it: {reason}"
+            pending.remove(formula)
+
         with self._errors("score candidates in", sample):
             while pending:
                 try:
-                    compounds = (
-                        self.client.matching.match_compounds(
-                            sample.id,
-                            list(pending),
-                            match_params=params,
-                            ionization_mechanism_ids=mechanisms,
-                        )
-                        or []
-                    )
+                    compounds = score(list(pending))
                     break
                 except ValidationError as e:
                     named = _refused(e.message, pending)
-                    if named is None:
+                    if named is not None:
+                        refuse(named, e.message)
+                    elif not _refuses_unnamed(e.message):
                         raise
-                    reason = e.message.split("Value error, ", 1)[-1]
-                    refused[formula_key(named)] = f"Mascope refused it: {reason}"
-                    pending.remove(named)
+                    elif len(pending) == 1:
+                        refuse(pending[0], e.message)
+                    else:
+                        before = len(pending)
+                        for formula in list(pending):
+                            try:
+                                score([formula])
+                            except ValidationError as alone:
+                                if _refused(
+                                    alone.message, [formula]
+                                ) is None and not _refuses_unnamed(alone.message):
+                                    raise
+                                refuse(formula, alone.message)
+                        if len(pending) == before:
+                            raise
             names = self._mechanism_names()
         df = tree_rows(compounds, origins, names)
         df.attrs.update(
@@ -1600,6 +1631,7 @@ class Toolkit:
         return df, [sample]
 
     def _mechanism_names(self) -> dict[str, str]:
+        """Every ionization mechanism Mascope has, by ID: its name."""
         rows = self.client.ionization.list()
         if rows is None or rows.empty:
             return {}
@@ -1614,6 +1646,7 @@ class Toolkit:
         inputs: "Frame | Iterable[Frame]",
         *,
         code: str | None = None,
+        computed: "str | Iterable[str]" = (),
     ) -> Frame:
         """Keep a table computed in Python from Frames as a Frame of its own.
 
@@ -1623,10 +1656,21 @@ class Toolkit:
         completeness and its failures are theirs too. Its rows are the
         session's only copy: it cannot be loaded again from a query.
 
+        The manifest records its columns by who produced them. A column no
+        input has, or one an input computed in Python, was computed by
+        *code*; so was one named in *computed*, such as an aggregate that
+        kept its input column's name. Any other column is its input's: by
+        name, so a column the SDK computes in one input (a peak load's
+        ``match_score_ion``) counts as the SDK's even where another input,
+        Mascope's match tree, has a column of that name from Mascope.
+
         :param df: The table, e.g. ``peaks.df.groupby(...).mean()``.
         :param inputs: The Frames it was computed from.
         :param code: The code that computed it.
-        :raises InvalidRequest: Without a DataFrame or an input Frame.
+        :param computed: Columns of *df* that keep an input column's name
+            but were computed anew by *code*.
+        :raises InvalidRequest: Without a DataFrame or an input Frame, or
+            with a *computed* column *df* does not have.
         """
         if not isinstance(df, pd.DataFrame):
             raise InvalidRequest(f"derive() keeps a DataFrame, not {type(df).__name__}")
@@ -1636,7 +1680,17 @@ class Toolkit:
         sources: list[Ref] = []
         for frame in frames:
             sources += [ref for ref in frame.source_refs if ref not in sources]
-        client = [c for f in frames for c in f.client_columns]
+        recomputed = [computed] if isinstance(computed, str) else list(computed)
+        columns = [str(column) for column in df.columns]
+        if not all(isinstance(c, str) and c in columns for c in recomputed):
+            raise InvalidRequest(
+                f"computed names columns of the table, not {recomputed!r}"
+            )
+        loaded = {c for f in frames for c in f.columns}
+        new = [c for c in columns if c not in loaded]
+        new += [c for f in frames for c in f.computed_columns]
+        new = list(dict.fromkeys([*new, *recomputed]))
+        client = [c for f in frames for c in f.client_columns if c not in new]
         rows = df.copy()
         rows.attrs = {
             "complete": all(f.complete for f in frames),
@@ -1655,6 +1709,7 @@ class Toolkit:
             },
             session=self.session,
             client_columns=tuple(dict.fromkeys(client)),
+            computed_columns=tuple(new),
         )
         self.session.save(frame, rows)
         return frame
@@ -1675,8 +1730,9 @@ class Toolkit:
         The record lists them, every Mascope object they touched, and the
         values the answer rests on, split by who produced them: Mascope
         (``mascope``), the SDK on the client (``client``: the ion and
-        compound scores of a peak load), nobody (``unscored``: candidates
-        Mascope did not score) and the model (``inferred``).
+        compound scores of a peak load), code in the session (``computed``:
+        the columns a :meth:`derive` computed), nobody (``unscored``:
+        candidates Mascope did not score) and the model (``inferred``).
 
         :param text: The answer, as given to the user.
         :param code: The code that produced it.
@@ -1700,30 +1756,28 @@ class Toolkit:
                 cited.append(frame)
 
         refs: list[dict[str, Any]] = []
-        mascope, client, unscored = [], [], []
+        split: dict[str, list[dict[str, Any]]] = {
+            "mascope": [],
+            "client": [],
+            "computed": [],
+        }
+        unscored = []
+
+        def add(source: str, op: str | None, values: dict[str, Any]) -> None:
+            for kind, entries in split.items():
+                if kind == "mascope" or values.get(kind):
+                    entries.append({"source": source, "op": op, "fields": values[kind]})
+
         for call in calls:
             refs += [r for r in call.get("refs", ()) if r not in refs]
             values = call.get("values")
             if call.get("outcome") != "ok" or not values:
                 continue
-            source = call.get("frame") or f"call {call['seq']}"
-            mascope.append(
-                {"source": source, "op": call["op"], "fields": values["mascope"]}
-            )
-            if values.get("client"):
-                client.append(
-                    {"source": source, "op": call["op"], "fields": values["client"]}
-                )
+            add(call.get("frame") or f"call {call['seq']}", call["op"], values)
             unscored += values.get("unscored", [])
         for frame in cited:
             refs += [r for r in ref_list(frame.source_refs) if r not in refs]
-            values = frame_values(frame)
-            op = frame.query.get("op")
-            mascope.append({"source": frame.id, "op": op, "fields": values["mascope"]})
-            if values["client"]:
-                client.append(
-                    {"source": frame.id, "op": op, "fields": values["client"]}
-                )
+            add(frame.id, frame.query.get("op"), frame_values(frame))
         return self._write(
             {
                 "type": "answer",
@@ -1733,8 +1787,7 @@ class Toolkit:
                 "frames": [*made, *(frame.id for frame in cited)],
                 "refs": refs,
                 "values": {
-                    "mascope": mascope,
-                    "client": client,
+                    **split,
                     "unscored": unscored,
                     "inferred": statements,
                 },
@@ -1749,3 +1802,8 @@ def _refused(message: str, pending: list[str]) -> str | None:
         return None
     named = formula_key(match.group(1))
     return next((f for f in pending if formula_key(f) == named), None)
+
+
+def _refuses_unnamed(message: str) -> bool:
+    """Whether a refusal of the match route is of a formula it does not name."""
+    return any(text in (message or "") for text in _UNNAMED_REFUSALS)

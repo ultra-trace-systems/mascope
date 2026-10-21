@@ -21,7 +21,7 @@ from mascope_ai import (
     Session,
     Toolkit,
 )
-from mascope_ai.manifest import CLIENT_COMPUTED
+from mascope_ai.manifest import CLIENT_COMPUTED, COMPUTED
 
 
 def _calls(kit):
@@ -206,6 +206,47 @@ class TestDerive:
         assert kept.client_columns == ("match_score_compound",)
         assert dropped.client_columns == ()
 
+    def test_columns_computed_in_python_are_the_codes(self, kit):
+        peaks = kit.load_peaks(samples="s21")
+        df = (
+            peaks.df.groupby("target_compound_formula")["height"]
+            .mean()
+            .rename("mean_height")
+            .reset_index()
+        )
+
+        derived = kit.derive(df, peaks, code="groupby(...).mean()")
+
+        assert derived.computed_columns == ("mean_height",)
+        values = _calls(kit)[-1]["values"]
+        assert values["mascope"] == ["target_compound_formula"]
+        assert values["computed"] == {"mean_height": COMPUTED}
+        assert values["client"] == {}
+
+    def test_a_column_that_kept_its_name_is_the_codes_when_named(self, kit):
+        peaks = kit.load_peaks(samples="s21")
+        df = peaks.df.groupby("peak_id", as_index=False)[
+            ["height", "match_score_ion"]
+        ].mean()
+
+        derived = kit.derive(df, peaks, computed=["height", "match_score_ion"])
+
+        assert derived.computed_columns == ("height", "match_score_ion")
+        # Recomputed, the SDK's score is the code's now
+        assert derived.client_columns == ()
+        assert _calls(kit)[-1]["values"]["mascope"] == ["peak_id"]
+
+    def test_computed_columns_carry_over(self, kit):
+        peaks = kit.load_peaks(samples="s21")
+        first = kit.derive(peaks.df[["peak_id"]].assign(twice=2.0), peaks)
+
+        second = kit.derive(first.df.head(2), first)
+        without = kit.derive(first.df[["peak_id"]], first)
+
+        assert second.computed_columns == ("twice",)
+        assert kit.session.frame(second.id).computed_columns == ("twice",)
+        assert without.computed_columns == ()
+
     def test_completeness_and_failures_carry_over(self, kit, api):
         api.fail("GET", r"samples/s22/peaks", 500)
         partial = kit.load_peaks(batches="Spring 2026")
@@ -240,6 +281,13 @@ class TestDerive:
     def test_bad_arguments(self, kit, args):
         with pytest.raises(InvalidRequest):
             kit.derive(*args)
+
+    @pytest.mark.parametrize("computed", ["nope", [1]])
+    def test_computed_names_columns_of_the_table(self, kit, computed):
+        peaks = kit.load_peaks(samples="s21")
+
+        with pytest.raises(InvalidRequest, match="computed names columns"):
+            kit.derive(peaks.df.head(2), peaks, computed=computed)
 
 
 class TestAnswers:
@@ -290,6 +338,37 @@ class TestAnswers:
         assert record["frames"] == [peaks.id]
         assert record["refs"][0]["name"] == "Spring 2026"
         assert record["values"]["client"][0]["source"] == peaks.id
+
+    def test_a_frame_made_since_is_listed_once(self, kit):
+        peaks = kit.load_peaks(samples="s21")
+
+        record = kit.answer("one", frames=[peaks, peaks.id])
+
+        assert record["frames"] == [peaks.id]
+        assert [v["source"] for v in record["values"]["mascope"]] == [peaks.id]
+
+    def test_an_answer_on_a_derived_frame_says_what_the_code_computed(self, kit):
+        peaks = kit.load_peaks(samples="s21")
+        kit.answer("first")
+        derived = kit.derive(
+            peaks.df.groupby("peak_id", as_index=False)["height"].max(),
+            peaks,
+            computed="height",
+        )
+        kit.answer("second")
+        named = kit.derive(peaks.df[["peak_id"]].assign(n=1), peaks)
+
+        record = kit.answer("third", frames=[derived])
+
+        assert record["frames"] == [named.id, derived.id]
+        assert record["values"]["computed"] == [
+            {"source": named.id, "op": "derive", "fields": {"n": COMPUTED}},
+            {"source": derived.id, "op": "derive", "fields": {"height": COMPUTED}},
+        ]
+        assert [v["fields"] for v in record["values"]["mascope"]] == [
+            ["peak_id"],
+            ["peak_id"],
+        ]
 
     def test_a_failed_call_counts_but_adds_no_values(self, kit):
         with pytest.raises(AmbiguousName):

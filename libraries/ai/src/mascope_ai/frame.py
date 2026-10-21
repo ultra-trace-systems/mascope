@@ -154,6 +154,9 @@ class Frame:
     :ivar client_columns: The columns whose values the SDK computed
         client-side rather than read from Mascope (the ion and compound
         scores of a peak load; :data:`~mascope_ai.manifest.CLIENT_COMPUTED`).
+    :ivar computed_columns: The columns computed in Python by the code that
+        made a derived Frame (:meth:`~mascope_ai.toolkit.Toolkit.derive`),
+        neither read from Mascope nor computed by the SDK.
     """
 
     id: str
@@ -168,6 +171,7 @@ class Frame:
     warnings: tuple[str, ...] = ()
     provenance: dict[str, Any] | None = None
     client_columns: tuple[str, ...] = ()
+    computed_columns: tuple[str, ...] = ()
     _rows: pd.DataFrame | None = field(default=None, compare=False)
     _session: "Session | None" = field(default=None, compare=False)
 
@@ -181,6 +185,7 @@ class Frame:
         session: "Session | None" = None,
         frame_id: str | None = None,
         client_columns: "tuple[str, ...] | list[str]" = (),
+        computed_columns: "tuple[str, ...] | list[str]" = (),
     ) -> "Frame":
         """The Frame of a loaded table.
 
@@ -190,6 +195,8 @@ class Frame:
 
         :param client_columns: The columns the SDK computed client-side;
             those *df* lacks are left out.
+        :param computed_columns: The columns computed in Python by the code
+            that made the table; those *df* lacks are left out.
         """
         attrs = df.attrs
         columns = tuple(str(column) for column in df.columns)
@@ -213,6 +220,7 @@ class Frame:
             if isinstance(attrs.get("provenance"), dict)
             else None,
             client_columns=tuple(c for c in client_columns if c in columns),
+            computed_columns=tuple(c for c in computed_columns if c in columns),
             _rows=df,
             _session=session,
         )
@@ -324,6 +332,7 @@ class Frame:
             "warnings": list(self.warnings),
             "provenance": self.provenance,
             "client_columns": list(self.client_columns),
+            "computed_columns": list(self.computed_columns),
         }
 
     @classmethod
@@ -346,5 +355,6 @@ class Frame:
             warnings=tuple(data.get("warnings", ())),
             provenance=data.get("provenance"),
             client_columns=tuple(data.get("client_columns", ())),
+            computed_columns=tuple(data.get("computed_columns", ())),
             _session=session,
         )

@@ -19,8 +19,9 @@ builds a small workspace whose names are chosen to test matching::
 
 Every sample answers the match route with the recorded tree of CH2O2,
 HNO3 and C6H12O6 (the formulas asked for of those three), refuses a
-formula of the elements in :data:`UNREADABLE` as the server does, and
-answers any other formula with nothing; the mass query answers with its
+formula of the elements in :data:`UNREADABLE`, a numeric mass and bracket
+isotope notation as the server does (only the first by name), and answers
+any other formula with nothing; the mass query answers with its
 recorded candidates whatever is asked.
 """
 
@@ -59,6 +60,19 @@ SAMPLES = {
 UNMATCHED = {"s23"}
 #: Text no formula has: the match route refuses a formula containing it.
 UNREADABLE = "Qq"
+#: The server's refusals that name no formula (validate_compound_formula).
+NUMERIC_MASS = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
+BRACKET_ISOTOPE = re.compile(r"\[\d+[A-Za-z]|[A-Za-z]\[\d+\]")
+MASS_REFUSED = (
+    "Mass-based target compounds are no longer supported; provide a "
+    "chemical formula (e.g. 'C6H12O6'), not a numeric mass."
+)
+ISOTOPE_REFUSED = (
+    "Explicit isotope notation is not allowed for target compounds; "
+    "isotopes are generated from the formula. Give the unlabelled "
+    "composition (e.g. 'C6H12O6'), or use a caret isotope such as "
+    "'^N' when the compound really is a labelled reagent."
+)
 COLLECTIONS = {
     "c1": ("ws1", "Organic acids", ["b1", "b2"]),
     "c2": (None, "Calibrants", ["b4"]),
@@ -240,16 +254,24 @@ class FakeAPI:
             return 403, {"error": "Forbidden"}
         formulas = body["target_compound_formulas"]
         for formula in formulas:
-            if UNREADABLE in formula:
-                return 422, {
-                    "error": (
-                        f"Validation error on route POST /api/match/aggregate/"
-                        f"sample/{sample_id}/compounds. Value error, Formula "
-                        f"'{formula}' contains an unknown element or is not a "
-                        "valid chemical formula."
-                    ),
-                    "detail": {"error_id": "e1"},
-                }
+            if NUMERIC_MASS.fullmatch(formula.strip()):
+                reason = MASS_REFUSED
+            elif BRACKET_ISOTOPE.search(formula):
+                reason = ISOTOPE_REFUSED
+            elif UNREADABLE in formula:
+                reason = (
+                    f"Formula '{formula}' contains an unknown element or is "
+                    "not a valid chemical formula."
+                )
+            else:
+                continue
+            return 422, {
+                "error": (
+                    f"Validation error on route POST /api/match/aggregate/"
+                    f"sample/{sample_id}/compounds. Value error, {reason}"
+                ),
+                "detail": {"error_id": "e1"},
+            }
         wanted = [" ".join(formula.split()) for formula in formulas]
         recorded = {
             compound["target_compound_formula"]: compound
