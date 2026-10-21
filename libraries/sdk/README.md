@@ -656,7 +656,7 @@ The role each write needs is listed in the
 
 ## Caching
 
-Dataset, batch, sample, and ionization mechanism listings are cached (in volatile memory) automatically after the first call. This speeds up repeated name resolution and avoids redundant API calls. Each call hands out a copy of the cached listing, so editing what you got leaves the cache, and the next call, as fetched. A write made through the SDK clears it. When data on the server changes otherwise (e.g. a batch created in the web app, or a copy the server finishes in the background), the cache needs to be cleared to reload the data on the next call. The cache is not persisted on disk, so restarting the kernel always clears the cache.
+Dataset, batch, sample, ionization mechanism and ionization mode listings are cached (in volatile memory) automatically after the first call. This speeds up repeated name resolution and avoids redundant API calls. Each call hands out a copy of the cached listing, so editing what you got leaves the cache, and the next call, as fetched. A write made through the SDK clears it. When data on the server changes otherwise (e.g. a batch created in the web app, or a copy the server finishes in the background), the cache needs to be cleared to reload the data on the next call. The cache is not persisted on disk, so restarting the kernel always clears the cache.
 
 ```python
 # Clear the cache when server data changes
@@ -830,11 +830,14 @@ The compound list is shared by every workspace, so these need the global editor 
 
 #### `mascope.ionization`
 
-| Method   | Description                          | Returns             |
-| -------- | ------------------------------------ | ------------------- |
-| `list()` | List available ionization mechanisms | `pd.DataFrame│None` |
+| Method                        | Description                          | Returns             |
+| ----------------------------- | ------------------------------------ | ------------------- |
+| `list()`                      | List available ionization mechanisms | `pd.DataFrame│None` |
+| `modes(include_system=False)` | List the ionization modes            | `pd.DataFrame│None` |
 
-Columns: `ionization_mechanism_id`, `ionization_mechanism` (the mechanism in the standard adduct notation: `[M+H]+`, `[M-H]-`, `[M+Br]-`, `[M]+.` for electron transfer), `ionization_mechanism_polarity`, `shipped` (whether Mascope ships the mechanism, so that every server holds it from its first start).
+`list()` columns: `ionization_mechanism_id`, `ionization_mechanism` (the mechanism in the standard adduct notation: `[M+H]+`, `[M-H]-`, `[M+Br]-`, `[M]+.` for electron transfer), `ionization_mechanism_polarity`, `shipped` (whether Mascope ships the mechanism, so that every server holds it from its first start).
+
+`modes()` gives the chemistries samples are acquired under, one row per mode: `ionization_mode_id`, `ionization_mode_name`, `ionization_mode_polarity`, `ionization_mode_token` (the file-name token that routes a file to it), `instrument` (the one instrument it routes files for, or empty for every instrument), `ionization_mechanism_ids`, `system_key` (set on a mode Mascope ships), `calibration_collection_id` and `diagnostic_collection_id`. A sample names its mode by `ionization_mode_id` alone; join on it for the name. `include_system=True` adds the modes Mascope ships that the server has not adopted, which no sample is processed under.
 
 #### `mascope.cheminfo`
 

@@ -507,6 +507,17 @@ class TestReferenceDataContract:
             "ionization_mechanism_polarity",
         } <= set(df.columns)
 
+    def test_ionization_modes_shape(self, mascope):
+        df = mascope.ionization.modes()
+
+        # The demo's samples are processed, so a mode is there to name them.
+        assert df is not None and not df.empty
+        assert {
+            "ionization_mode_id",
+            "ionization_mode_name",
+            "ionization_mode_polarity",
+        } <= set(df.columns)
+
     def test_collections_listing_and_one_collection(self, mascope):
         _skip_unless_attr(mascope, "collections")
         _skip_unless_attr(mascope.collections, "list")

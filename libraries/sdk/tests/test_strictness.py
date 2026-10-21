@@ -467,6 +467,7 @@ class TestTheListingCacheHandsOutCopies:
             (WorkspacesResource, lambda r: r.list(), "workspace_name"),
             (DatasetsResource, lambda r: r.list(), "dataset_name"),
             (IonizationResource, lambda r: r.list(), "ionization_mechanism"),
+            (IonizationResource, lambda r: r.modes(), "ionization_mode_name"),
             (BatchesResource, lambda r: r._list_by_id("d"), "sample_batch_name"),
             (SamplesResource, lambda r: r._list_by_id("b"), "sample_item_name"),
         ],
