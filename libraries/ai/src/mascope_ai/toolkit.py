@@ -16,8 +16,18 @@ Example::
     peaks = kit.load_peaks(batches="spring 2026", max_rows=200_000)
     peaks                                     # schema, size, completeness, head
     peaks.df.groupby("target_compound_formula")["height"].mean()   # in Python
+
+    hits = kit.query_by_mz(124.9244, ["[M+Br]-"])   # Mascope's candidates
+    result = kit.match_compounds("Sample 1", hits, suggested=["CH2O3"])
+    result                                    # verdicts, never the tree
+    kit.answer("CH2O2 is probable at m/z 124.924", code=..., inferred=[...])
+
+Every call is written to the session's provenance manifest
+(:mod:`mascope_ai.manifest`); :meth:`Toolkit.answer` closes an answer there.
 """
 
+import functools
+import inspect
 import re
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -25,6 +35,7 @@ from typing import Any
 import pandas as pd
 
 from mascope_sdk import MascopeClient, _loaders
+from mascope_sdk.exceptions import ValidationError
 
 from .errors import (
     LISTED,
@@ -33,10 +44,29 @@ from .errors import (
     InvalidRequest,
     NotFound,
     RowCapExceeded,
+    ToolkitError,
     Unavailable,
     sdk_errors,
 )
 from .frame import Frame, jsonable
+from .manifest import (
+    CLIENT_COMPUTED,
+    CLIENT_OPS,
+    frame_values,
+    ref_list,
+    toolkit_record,
+)
+from .oracle import (
+    NOT_IN_ANSWER,
+    ORIGINS,
+    Candidate,
+    Candidates,
+    MatchResult,
+    Unscored,
+    condense,
+    formula_key,
+    tree_rows,
+)
 from .refs import KINDS, Ref
 from .session import Session
 
@@ -59,7 +89,16 @@ _KIND_ORDER = {kind: index for index, kind in enumerate(KINDS)}
 _INSIDE = {"dataset": ("batch", "sample"), "batch": ("sample", "collection")}
 
 #: The loaders whose queries a Frame records, and the session runs again.
-_OPS = ("load_peaks", "load_timeseries", "load_spectrum", "load_peaks_by_stage")
+_OPS = (
+    "load_peaks",
+    "load_timeseries",
+    "load_spectrum",
+    "load_peaks_by_stage",
+    "match_compounds",
+)
+
+#: The formula a refusal of the match route names: its 422 says which.
+_REFUSED_FORMULA = re.compile(r"Formula '(.*?)' ")
 
 #: A string that can be an object ID: worth one direct read before listing.
 _ID_LIKE = re.compile(r"[A-Za-z0-9_-]+")
@@ -240,6 +279,112 @@ def _decode(value: Any) -> Any:
     return value
 
 
+def _param(value: Any) -> Any:
+    """A call's argument as the manifest records it: plain JSON, a table by
+    its size, never its rows."""
+    if isinstance(value, Ref):
+        return value.to_dict()
+    if isinstance(value, Frame):
+        return {"$frame": value.id}
+    if isinstance(value, Candidate):
+        return value.to_dict()
+    if isinstance(value, re.Pattern):
+        return {"$regex": value.pattern}
+    if isinstance(value, pd.DataFrame):
+        return {"$dataframe": {"rows": len(value), "columns": len(value.columns)}}
+    if isinstance(value, (list, tuple)):
+        return [_param(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _param(item) for key, item in value.items()}
+    return jsonable(value)
+
+
+def _outcome(error: Exception) -> dict[str, Any]:
+    if isinstance(error, ToolkitError):
+        return error.to_dict()
+    return {"error": type(error).__name__, "message": str(error)[:500]}
+
+
+def _result(record: dict[str, Any], result: Any) -> None:
+    """What a call's *result* touched and returned, into its *record*."""
+    if isinstance(result, Frame):
+        record["refs"] = ref_list(result.source_refs)
+        record["frame"] = result.id
+        record["values"] = frame_values(result)
+        record["provenance"] = result.provenance
+    elif isinstance(result, MatchResult):
+        record["refs"] = ref_list([result.sample])
+        record["frame"] = result.tree.id
+        record["values"] = {
+            "mascope": [
+                "verdict score and status (Mascope's compound score and match "
+                "category)",
+                "ion scores and statuses",
+                "attributed peak ids",
+                *result.tree.columns,
+            ],
+            "client": {},
+            "unscored": [unscored.to_dict() for unscored in result.unscored],
+        }
+        record["provenance"] = result.provenance
+    elif isinstance(result, Candidates):
+        record["refs"] = []
+        record["values"] = {
+            "mascope": ["candidate formula, mechanism, m/z and ppm error"],
+            "client": {},
+        }
+    elif isinstance(result, Found):
+        record["refs"] = ref_list(result)
+    elif isinstance(result, Ref):
+        record["refs"] = ref_list([result])
+    elif isinstance(result, dict) and isinstance(result.get("ref"), dict):
+        record["refs"] = [result["ref"]]
+        record["values"] = {"mascope": sorted(result), "client": {}}
+
+
+def _recorded(op: str):
+    """Write each call of the method into the session's manifest.
+
+    Only the outermost call is written: a loader's own ``resolve`` is part
+    of the load, not a call of its own.
+    """
+
+    def wrap(method):
+        signature = inspect.signature(method)
+
+        @functools.wraps(method)
+        def recorded(self: "Toolkit", *args, **kwargs):
+            if self._recording:
+                return method(self, *args, **kwargs)
+            bound = signature.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            record: dict[str, Any] = {
+                "type": "call",
+                "op": op,
+                "params": {
+                    name: _param(value)
+                    for name, value in list(bound.arguments.items())[1:]
+                },
+            }
+            self._recording = True
+            try:
+                result = method(self, *args, **kwargs)
+            except Exception as e:
+                record["outcome"] = _outcome(e)
+                self._write(record)
+                raise
+            finally:
+                self._recording = False
+            _result(record, result)
+            record["outcome"] = "ok"
+            self._write(record)
+            return result
+
+        return recorded
+
+    return wrap
+
+
 class Toolkit:
     """Mascope's data for an agent: find, describe, load - as handles.
 
@@ -278,12 +423,25 @@ class Toolkit:
         self.session = session if session is not None else Session()
         self.session.reloader = self._rerun
         self.max_workers = max_workers
+        self._recording = False
+        self._opened = False
 
     def __repr__(self) -> str:
         return (
             f"Toolkit(workspace={self.client.workspace_name!r}, "
             f"session={self.session.id!r})"
         )
+
+    # --- the manifest --------------------------------------------------------
+
+    def _write(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Append *record* to the session's manifest, after this toolkit's
+        own record the first time."""
+        manifest = self.session.manifest
+        if not self._opened:
+            manifest.append(toolkit_record(self.client, self.session.id))
+            self._opened = True
+        return manifest.append(record)
 
     # --- errors --------------------------------------------------------------
 
@@ -462,6 +620,7 @@ class Toolkit:
         )
         return ranked, failures
 
+    @_recorded("find")
     def find(
         self,
         query: "str | re.Pattern",
@@ -524,6 +683,7 @@ class Toolkit:
             modified=_modified(record.get("sample_item_utc_modified")),
         )
 
+    @_recorded("resolve")
     def resolve(
         self, value: "Ref | str | re.Pattern", kind: str, *, within: Ref | None = None
     ) -> Ref:
@@ -577,6 +737,7 @@ class Toolkit:
 
     # --- describe ------------------------------------------------------------
 
+    @_recorded("describe")
     def describe(self, ref: "Ref | str", kind: str | None = None) -> dict[str, Any]:
         """Everything about one object that fits in a few lines.
 
@@ -790,6 +951,16 @@ class Toolkit:
     def _run(self, op: str, params: dict[str, Any]) -> Frame:
         """Run loader *op* and keep what it returns as a Frame."""
         df, sources = self._load(op, params)
+        return self._keep(op, params, df, sources)
+
+    def _keep(
+        self,
+        op: str,
+        params: dict[str, Any],
+        df: pd.DataFrame | None,
+        sources: list[Ref],
+    ) -> Frame:
+        """Keep what loader *op* returned as a Frame of the session."""
         if df is None:
             df = pd.DataFrame()
             df.attrs.update(complete=True, failures=[])
@@ -801,6 +972,7 @@ class Toolkit:
             source_refs=sources,
             query={"op": op, "params": _encode(params)},
             session=self.session,
+            client_columns=tuple(CLIENT_COMPUTED) if op in CLIENT_OPS else (),
         )
         self.session.save(frame, df)
         return frame
@@ -808,6 +980,13 @@ class Toolkit:
     def _rerun(self, query: dict[str, Any]) -> pd.DataFrame:
         """A recorded query's rows, loaded again (the session's reloader)."""
         op = query["op"]
+        if op == "derive":
+            raise InvalidRequest(
+                "A Frame derived in Python (from "
+                f"{', '.join(query['params'].get('from', [])) or 'other Frames'}) "
+                "cannot be loaded again: its rows were the session's only copy. "
+                "Derive it again from its sources."
+            )
         if op not in _OPS:
             raise InvalidRequest(f"Not a query the toolkit recorded: {op!r}")
         df, _ = self._load(op, _decode(query["params"]))
@@ -892,6 +1071,7 @@ class Toolkit:
             "samples": sample_refs or None,
         }
 
+    @_recorded("load_peaks")
     def load_peaks(
         self,
         dataset: "Ref | str | None" = None,
@@ -974,6 +1154,7 @@ class Toolkit:
             )
         return df, sources
 
+    @_recorded("load_timeseries")
     def load_timeseries(
         self,
         compound: "str | list[str] | None" = None,
@@ -1051,6 +1232,7 @@ class Toolkit:
             )
         return df, sources
 
+    @_recorded("load_spectrum")
     def load_spectrum(
         self,
         sample: "Ref | str",
@@ -1103,6 +1285,7 @@ class Toolkit:
             df.attrs.update(complete=True, failures=[])
         return df, [sample]
 
+    @_recorded("load_peaks_by_stage")
     def load_peaks_by_stage(
         self,
         sample: "Ref | str",
@@ -1185,3 +1368,384 @@ class Toolkit:
                     "It may have been deleted, or never been visible to this user.",
                 ) from e
         return df, [sample]
+
+    # --- the oracle ----------------------------------------------------------
+
+    def _mechanisms(self, values: "str | list[str]") -> list[tuple[str, str]]:
+        """The ionization mechanisms *values* name, by name or ID, as
+        ``(id, name)``."""
+        wanted = [str(v) for v in _as_list(values)]
+        if not wanted:
+            raise InvalidRequest(
+                "Name at least one ionization mechanism, e.g. '[M+H]+'"
+            )
+        with self._errors("list the ionization mechanisms"):
+            rows = self.client.ionization.list()
+        known = (
+            dict(zip(rows["ionization_mechanism_id"], rows["ionization_mechanism"]))
+            if rows is not None and not rows.empty
+            else {}
+        )
+        by_name = {name: mechanism_id for mechanism_id, name in known.items()}
+        found = []
+        for value in wanted:
+            if value in known:
+                found.append((value, known[value]))
+            elif value in by_name:
+                found.append((by_name[value], value))
+            else:
+                raise NotFound(
+                    value,
+                    "ionization mechanism",
+                    f"Mascope has {len(known)}: "
+                    f"{', '.join(sorted(by_name)[:LISTED])}"
+                    f"{' ...' if len(by_name) > LISTED else ''}.",
+                )
+        return found
+
+    @_recorded("query_by_mz")
+    def query_by_mz(
+        self,
+        mz: float,
+        mechanisms: "str | list[str]",
+        tolerance_ppm: float = 5.0,
+        *,
+        formula_ranges: str | None = None,
+        limit: int = 20,
+    ) -> Candidates:
+        """The formulas Mascope's mass query proposes for an m/z.
+
+        Candidates, not verdicts: :meth:`match_compounds` scores them in a
+        sample. *mz* may be any line of a candidate's ion above Mascope's
+        floor, not only its monoisotopic one, as a peak's m/z may be a 13C
+        or 81Br line: a candidate's ``mz`` and ``error_ppm`` are taken
+        against the line it was read at.
+
+        :param mz: The m/z, e.g. a peak's.
+        :param mechanisms: The ionization mechanisms to consider, by name
+            (``"[M+Br]-"``) or ID.
+        :param tolerance_ppm: The window around *mz*, in ppm.
+        :param formula_ranges: The elements and counts allowed, e.g.
+            ``"C0-20 H0-40 O0-10 N0-5"``; the SDK's C, H, O and N ranges
+            when None.
+        :param limit: How many to return at most, the closest first;
+            ``total`` says how many Mascope found.
+        :raises NotFound: On a mechanism Mascope does not have.
+        """
+        if isinstance(mz, bool) or not isinstance(mz, (int, float)) or mz <= 0:
+            raise InvalidRequest(f"mz is a positive number, not {mz!r}")
+        if (
+            isinstance(tolerance_ppm, bool)
+            or not isinstance(tolerance_ppm, (int, float))
+            or tolerance_ppm <= 0
+        ):
+            raise InvalidRequest(
+                f"tolerance_ppm is a positive number, not {tolerance_ppm!r}"
+            )
+        limit = _check_cap(limit)
+        ids = [mechanism_id for mechanism_id, _ in self._mechanisms(mechanisms)]
+        options = {"formula_ranges": formula_ranges} if formula_ranges else {}
+        with self._errors("query the formulas of an m/z"):
+            records = self.client.cheminfo.query_by_mz(
+                float(mz),
+                ids,
+                mz_tolerance=float(tolerance_ppm),
+                limit=limit,
+                **options,
+            )
+        candidates = sorted(
+            (
+                Candidate.from_record(record)
+                for record in records or []
+                if record.get("target_compound_formula")
+            ),
+            key=lambda c: (
+                abs(c.error_ppm) if c.error_ppm is not None else float("inf"),
+                c.formula,
+                c.mechanism or "",
+            ),
+        )
+        return Candidates(
+            candidates[:limit],
+            mz=float(mz),
+            tolerance_ppm=float(tolerance_ppm),
+            total=len(candidates),
+        )
+
+    @_recorded("match_compounds")
+    def match_compounds(
+        self,
+        sample: "Ref | str",
+        formulas: "Iterable[str | Candidate]",
+        params: dict[str, Any] | None = None,
+        *,
+        suggested: "Iterable[str]" = (),
+        mechanisms: "str | list[str] | None" = None,
+    ) -> MatchResult:
+        """Mascope's scores for candidate formulas in a sample, condensed.
+
+        Each candidate becomes a :class:`~mascope_ai.oracle.Verdict`:
+        Mascope's compound score and match category, its ions' scores, and
+        the peaks attributed to it. The model's own suggestions go in
+        *suggested* and are scored the same way; every verdict says where
+        its candidate came from. A candidate Mascope does not score - a
+        formula it refuses, or one it returns nothing for - is
+        :attr:`~mascope_ai.oracle.MatchResult.unscored`: speculation, not a
+        verdict. Mascope's whole tree is the result's ``tree``, a Frame.
+
+        Nothing is saved: this is Mascope's matching preview.
+
+        :param sample: The sample: its Ref, ID or name.
+        :param formulas: Candidates from the caller (formulas) or from
+            :meth:`query_by_mz` (Candidates).
+        :param params: Match parameters (``mz_tolerance``,
+            ``isotope_ratio_tolerance``, ``peak_min_intensity``,
+            ``isotope_abundance_threshold``, ``possible_match_threshold``,
+            ``probable_match_threshold``), all of them; None for the
+            instrument's defaults, which the app's matches use.
+        :param suggested: The model's own candidates, by formula.
+        :param mechanisms: The ionization mechanisms, by name or ID; None
+            for the sample's own, as the app matches with.
+        :raises InvalidRequest: If no candidate is given, or the server
+            refuses the parameters.
+        """
+        sample_ref = self.resolve(sample, "sample")
+        asked: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for candidate, origin in [
+            *((c, "given") for c in _as_list(formulas)),
+            *((c, "model") for c in _as_list(suggested)),
+        ]:
+            if isinstance(candidate, Candidate):
+                candidate, origin = candidate.formula, candidate.origin
+            if not isinstance(candidate, str) or not formula_key(candidate):
+                raise InvalidRequest(
+                    f"A candidate is a formula or a Candidate, not {candidate!r}"
+                )
+            if formula_key(candidate) not in seen:
+                seen.add(formula_key(candidate))
+                asked.append((candidate, origin if origin in ORIGINS else "given"))
+        if not asked:
+            raise InvalidRequest("Give at least one formula to score")
+        if params is not None and not isinstance(params, dict):
+            raise InvalidRequest(f"params is a dict or None, not {params!r}")
+        query = {
+            "sample": sample_ref,
+            "candidates": [list(pair) for pair in asked],
+            "params": params,
+            "mechanisms": [
+                mechanism_id for mechanism_id, _ in self._mechanisms(mechanisms)
+            ]
+            if mechanisms is not None
+            else None,
+        }
+        df, sources = self._load("match_compounds", query)
+        refused: dict[str, str] = dict(df.attrs.get("refused", {}))
+        tree = self._keep("match_compounds", query, df, sources)
+        verdicts, missing = condense(df, asked)
+        origin = {formula_key(f): (f, o) for f, o in asked}
+        unscored = tuple(
+            Unscored(origin[key][0], origin[key][1], refused.get(key, NOT_IN_ANSWER))
+            for key in missing
+        )
+        return MatchResult(sample_ref, verdicts, unscored, tree, params)
+
+    def _match_compounds(
+        self,
+        sample: Ref,
+        candidates: list[list[str]],
+        params: dict[str, Any] | None,
+        mechanisms: list[str] | None,
+    ) -> tuple[pd.DataFrame, list[Ref]]:
+        """Mascope's tree for the candidates, as rows (:func:`tree_rows`).
+
+        The route refuses the whole request over one formula it cannot
+        read, and says which: that one is set aside, with the server's
+        reason, and the rest sent again.
+        """
+        origins = {formula_key(f): (f, o) for f, o in candidates}
+        pending = [f for f, _ in candidates]
+        refused: dict[str, str] = {}
+        compounds: list[dict[str, Any]] = []
+        with self._errors("score candidates in", sample):
+            while pending:
+                try:
+                    compounds = (
+                        self.client.matching.match_compounds(
+                            sample.id,
+                            list(pending),
+                            match_params=params,
+                            ionization_mechanism_ids=mechanisms,
+                        )
+                        or []
+                    )
+                    break
+                except ValidationError as e:
+                    named = _refused(e.message, pending)
+                    if named is None:
+                        raise
+                    reason = e.message.split("Value error, ", 1)[-1]
+                    refused[formula_key(named)] = f"Mascope refused it: {reason}"
+                    pending.remove(named)
+            names = self._mechanism_names()
+        df = tree_rows(compounds, origins, names)
+        df.attrs.update(
+            complete=True,
+            failures=[],
+            warnings=[
+                f"{origins[key][0]!r}: {reason}" for key, reason in refused.items()
+            ],
+            refused=refused,
+        )
+        return df, [sample]
+
+    def _mechanism_names(self) -> dict[str, str]:
+        rows = self.client.ionization.list()
+        if rows is None or rows.empty:
+            return {}
+        return dict(zip(rows["ionization_mechanism_id"], rows["ionization_mechanism"]))
+
+    # --- derived Frames ------------------------------------------------------
+
+    @_recorded("derive")
+    def derive(
+        self,
+        df: pd.DataFrame,
+        inputs: "Frame | Iterable[Frame]",
+        *,
+        code: str | None = None,
+    ) -> Frame:
+        """Keep a table computed in Python from Frames as a Frame of its own.
+
+        What the inputs were loaded from carries over: the new Frame's
+        ``source_refs`` are theirs, so an answer built on it still names
+        every Mascope object behind it, and its client-side columns, its
+        completeness and its failures are theirs too. Its rows are the
+        session's only copy: it cannot be loaded again from a query.
+
+        :param df: The table, e.g. ``peaks.df.groupby(...).mean()``.
+        :param inputs: The Frames it was computed from.
+        :param code: The code that computed it.
+        :raises InvalidRequest: Without a DataFrame or an input Frame.
+        """
+        if not isinstance(df, pd.DataFrame):
+            raise InvalidRequest(f"derive() keeps a DataFrame, not {type(df).__name__}")
+        frames = [inputs] if isinstance(inputs, Frame) else list(inputs)
+        if not frames or not all(isinstance(f, Frame) for f in frames):
+            raise InvalidRequest("derive() needs the Frames the table came from")
+        sources: list[Ref] = []
+        for frame in frames:
+            sources += [ref for ref in frame.source_refs if ref not in sources]
+        client = [c for f in frames for c in f.client_columns]
+        rows = df.copy()
+        rows.attrs = {
+            "complete": all(f.complete for f in frames),
+            "failures": [note.to_dict() for f in frames for note in f.failures],
+            "warnings": list(dict.fromkeys(w for f in frames for w in f.warnings)),
+        }
+        provenance = next((f.provenance for f in frames if f.provenance), None)
+        if provenance is not None:
+            rows.attrs["provenance"] = provenance
+        frame = Frame.from_df(
+            rows,
+            source_refs=sources,
+            query={
+                "op": "derive",
+                "params": {"from": [f.id for f in frames], "code": code},
+            },
+            session=self.session,
+            client_columns=tuple(dict.fromkeys(client)),
+        )
+        self.session.save(frame, rows)
+        return frame
+
+    # --- answers -------------------------------------------------------------
+
+    def answer(
+        self,
+        text: str,
+        *,
+        code: str | None = None,
+        inferred: "str | Iterable[str]" = (),
+        frames: "Iterable[Frame | str]" = (),
+    ) -> dict[str, Any]:
+        """Record an answer in the session's manifest, and what it rests on.
+
+        The answer covers the toolkit's calls since the answer before it.
+        The record lists them, every Mascope object they touched, and the
+        values the answer rests on, split by who produced them: Mascope
+        (``mascope``), the SDK on the client (``client``: the ion and
+        compound scores of a peak load), nobody (``unscored``: candidates
+        Mascope did not score) and the model (``inferred``).
+
+        :param text: The answer, as given to the user.
+        :param code: The code that produced it.
+        :param inferred: The answer's statements that no value backs: the
+            model's own reading, said as such.
+        :param frames: Frames made before the previous answer that this one
+            rests on too, or their IDs.
+        :return: The record, as written.
+        """
+        if not isinstance(text, str):
+            raise InvalidRequest("text is the answer, as a string")
+        statements = [inferred] if isinstance(inferred, str) else list(inferred)
+        if not all(isinstance(s, str) for s in statements):
+            raise InvalidRequest("inferred is a statement or a list of statements")
+        calls = self.session.manifest.since_last_answer()
+        made = {call["frame"]: call for call in calls if call.get("frame")}
+        cited = []
+        for frame in frames:
+            frame = frame if isinstance(frame, Frame) else self.session.frame(frame)
+            if frame.id not in made:
+                cited.append(frame)
+
+        refs: list[dict[str, Any]] = []
+        mascope, client, unscored = [], [], []
+        for call in calls:
+            refs += [r for r in call.get("refs", ()) if r not in refs]
+            values = call.get("values")
+            if call.get("outcome") != "ok" or not values:
+                continue
+            source = call.get("frame") or f"call {call['seq']}"
+            mascope.append(
+                {"source": source, "op": call["op"], "fields": values["mascope"]}
+            )
+            if values.get("client"):
+                client.append(
+                    {"source": source, "op": call["op"], "fields": values["client"]}
+                )
+            unscored += values.get("unscored", [])
+        for frame in cited:
+            refs += [r for r in ref_list(frame.source_refs) if r not in refs]
+            values = frame_values(frame)
+            op = frame.query.get("op")
+            mascope.append({"source": frame.id, "op": op, "fields": values["mascope"]})
+            if values["client"]:
+                client.append(
+                    {"source": frame.id, "op": op, "fields": values["client"]}
+                )
+        return self._write(
+            {
+                "type": "answer",
+                "text": text,
+                "code": code,
+                "calls": [call["seq"] for call in calls],
+                "frames": [*made, *(frame.id for frame in cited)],
+                "refs": refs,
+                "values": {
+                    "mascope": mascope,
+                    "client": client,
+                    "unscored": unscored,
+                    "inferred": statements,
+                },
+            }
+        )
+
+
+def _refused(message: str, pending: list[str]) -> str | None:
+    """The pending formula a refusal of the match route names, if any."""
+    match = _REFUSED_FORMULA.search(message or "")
+    if match is None:
+        return None
+    named = formula_key(match.group(1))
+    return next((f for f in pending if formula_key(f) == named), None)

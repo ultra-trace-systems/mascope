@@ -191,3 +191,89 @@ class TestLoaders:
         frame.evict()
 
         assert len(frame.df) == frame.n_rows
+
+
+@pytest.fixture(scope="module")
+def best_match(peaks):
+    """The stored match the demo is surest of: the matched peak whose
+    compound scores highest, monoisotopic where one is."""
+    df = peaks.df
+    matched = df[
+        df["target_compound_formula"].notna() & df["match_score_isotope"].gt(0)
+    ]
+    if matched.empty:
+        pytest.skip("demo data carries no matched peak")
+    mono = matched[matched["target_isotope_formula"] == matched["target_ion_formula"]]
+    pool = mono if not mono.empty else matched
+    return pool.loc[pool["match_score_compound"].idxmax()]
+
+
+class TestOracle:
+    def test_a_verdict_matches_the_apps_match_of_a_peak(self, kit, peaks, best_match):
+        sample = best_match["sample_item_id"]
+
+        result = kit.match_compounds(sample, [best_match["target_compound_formula"]])
+
+        (verdict,) = result.verdicts
+        ions = {ion.formula: ion for ion in verdict.ions}
+        ion = ions[best_match["target_ion_formula"]]
+        assert ion.mechanism == best_match["ionization_mechanism"]
+        assert best_match["peak_id"] in ion.peak_ids
+        assert verdict.status != "unmatched"
+        assert best_match["peak_id"] in verdict.peak_ids
+        # The SDK sums a peak load's ion scores itself, as Mascope's first
+        # scoring does; a server on another scoring scores otherwise
+        if (peaks.provenance or {}).get("produced_with", {}).get(
+            "match_score_version"
+        ) == 1:
+            assert verdict.score == pytest.approx(best_match["match_score_compound"])
+        assert result.tree.n_rows > 0
+        assert not result.unscored
+
+    def test_a_suggestion_mascope_cannot_read_is_unscored(self, kit, best_match):
+        result = kit.match_compounds(
+            best_match["sample_item_id"],
+            [best_match["target_compound_formula"]],
+            suggested=["Qq2"],
+        )
+
+        assert len(result.verdicts) == 1
+        (unscored,) = result.unscored
+        assert (unscored.formula, unscored.origin) == ("Qq2", "model")
+        assert unscored.reason.startswith("Mascope refused it")
+
+    def test_the_mass_query_proposes_a_matched_peaks_formula(self, kit, peaks):
+        df = peaks.df
+        chon = df[
+            df["target_compound_formula"].fillna("").str.fullmatch(r"[CHON0-9]+")
+            & (df["target_isotope_formula"] == df["target_ion_formula"])
+        ]
+        if chon.empty:
+            pytest.skip("demo data carries no monoisotopic CHON match")
+        peak = chon.loc[chon["height"].idxmax()]
+
+        found = kit.query_by_mz(
+            float(peak["mz"]), [peak["ionization_mechanism"]], tolerance_ppm=30
+        )
+
+        assert peak["target_compound_formula"] in {c.formula for c in found}
+        assert all(abs(c.error_ppm) <= 30 for c in found)
+
+
+class TestManifest:
+    def test_it_lists_every_object_a_session_touched(self, kit, best_match, tmp_path):
+        own = Toolkit(kit.client, session=Session(root=tmp_path))
+        sample = own.resolve(best_match["sample_item_id"], "sample")
+        batch = own.resolve(sample.parent, "batch")
+
+        own.load_peaks(batches=batch, max_rows=10_000_000)
+        own.match_compounds(sample, [best_match["target_compound_formula"]])
+        record = own.answer("a verdict", code="...")
+
+        touched = own.session.manifest.touched()
+        assert [(ref.kind, ref.id) for ref in touched] == [
+            ("sample", sample.id),
+            ("batch", batch.id),
+        ]
+        assert {ref["id"] for ref in record["refs"]} == {batch.id, sample.id}
+        assert record["values"]["client"][0]["op"] == "load_peaks"

@@ -5,6 +5,7 @@ root::
 
     <root>/<session id>/frames/<frame id>.parquet   the rows
     <root>/<session id>/frames/<frame id>.json      the Frame without them
+    <root>/<session id>/manifest.jsonl              what each answer rests on
 
 Nothing in it is a source of truth. A Frame's rows are a cache of what its
 recorded query returned: evict them and the next :attr:`Frame.df` loads them
@@ -31,6 +32,7 @@ from loguru import logger
 
 from .errors import StaleFrame
 from .frame import Frame
+from .manifest import Manifest
 
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -91,6 +93,11 @@ class Session:
 
     def __repr__(self) -> str:
         return f"Session({self.id!r}, path={str(self.path)!r})"
+
+    @property
+    def manifest(self) -> Manifest:
+        """The session's provenance manifest (:mod:`mascope_ai.manifest`)."""
+        return Manifest(self.path / "manifest.jsonl")
 
     def _file(self, frame_id: str, suffix: str) -> Path:
         if not _FRAME_ID.fullmatch(frame_id):

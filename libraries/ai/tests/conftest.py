@@ -16,6 +16,12 @@ builds a small workspace whose names are chosen to test matching::
         Batch "Calibration"          Cal_1
     Collections: "Organic acids" (Workspace A; Blank (A), Spring 2026),
                  "Calibrants" (global; Calibration)
+
+Every sample answers the match route with the recorded tree of CH2O2,
+HNO3 and C6H12O6 (the formulas asked for of those three), refuses a
+formula of the elements in :data:`UNREADABLE` as the server does, and
+answers any other formula with nothing; the mass query answers with its
+recorded candidates whatever is asked.
 """
 
 import copy
@@ -51,6 +57,8 @@ SAMPLES = {
 }
 #: Samples whose matching has not run.
 UNMATCHED = {"s23"}
+#: Text no formula has: the match route refuses a formula containing it.
+UNREADABLE = "Qq"
 COLLECTIONS = {
     "c1": ("ws1", "Organic acids", ["b1", "b2"]),
     "c2": (None, "Calibrants", ["b4"]),
@@ -129,6 +137,10 @@ class FakeAPI:
         if method == "POST":
             if re.fullmatch(r"samples/\w+/peaks/timeseries", path):
                 return 200, self._timeseries(parts[1], body)
+            if re.fullmatch(r"match/aggregate/sample/\w+/compounds", path):
+                return self._match(parts[3], body)
+            if path == "cheminfo/mz/query":
+                return 200, RECORDED["mz_query"]
             return 404, {"error": "no route"}
         if path == "workspaces":
             return 200, RECORDED["workspaces"]
@@ -222,6 +234,29 @@ class FakeAPI:
                     copies += copy.deepcopy(value)
             data[key] = copies
         return {**RECORDED["peaks"], "results": len(data["peak_id"]), "data": data}
+
+    def _match(self, sample_id: str, body: dict[str, Any]) -> tuple[int, Any]:
+        if sample_id not in SAMPLES:
+            return 403, {"error": "Forbidden"}
+        formulas = body["target_compound_formulas"]
+        for formula in formulas:
+            if UNREADABLE in formula:
+                return 422, {
+                    "error": (
+                        f"Validation error on route POST /api/match/aggregate/"
+                        f"sample/{sample_id}/compounds. Value error, Formula "
+                        f"'{formula}' contains an unknown element or is not a "
+                        "valid chemical formula."
+                    ),
+                    "detail": {"error_id": "e1"},
+                }
+        wanted = [" ".join(formula.split()) for formula in formulas]
+        recorded = {
+            compound["target_compound_formula"]: compound
+            for compound in RECORDED["match_compounds"]["data"]
+        }
+        data = [copy.deepcopy(recorded[f]) for f in wanted if f in recorded]
+        return 200, {**RECORDED["match_compounds"], "data": data}
 
     def _timeseries(self, sample_id: str, body: dict[str, Any]) -> dict[str, Any]:
         return {
