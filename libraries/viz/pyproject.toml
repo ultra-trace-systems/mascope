@@ -1,0 +1,36 @@
+[project]
+name = "mascope_viz"
+version = "2026.10.21"
+description = "Visual digests of Mascope data: charts, dashboards and reports over the SDK."
+classifiers = [
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+authors = [
+    { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
+    ]
+maintainers = [
+    { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
+    ]
+license.text = "Apache-2.0"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # The campaign store's tables are pandas frames kept as parquet. The SDK,
+    # matplotlib and plotly join as the data layer and the renderers land
+    # (docs/dev/visual_digest.md, section 2.1).
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "pyarrow>=14.0.0",
+]
+
+[project.urls]
+homepage = "https://ultratrace.eu/"
+repository = "https://github.com/ultra-trace-systems/mascope"
+documentation = "https://github.com/ultra-trace-systems/mascope/blob/develop/docs/dev/visual_digest.md"
+"Bug Tracker" = "https://github.com/ultra-trace-systems/mascope/issues"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.14"]
+build-backend = "uv_build"
