@@ -391,3 +391,188 @@ def test_download_raw_of_an_unknown_length_keeps_what_arrived(downloads, tmp_pat
     written = downloads.download_raw(FILE_ID, tmp_path / "out.raw")
 
     assert written.read_bytes() == RAW
+
+
+def _file(i: int) -> dict[str, Any]:
+    """A listed file as ``SampleFile.to_dict`` gives it, hour ``i`` of a day."""
+    return {
+        "sample_file_id": f"sf-{i}",
+        "filename": f"run_{i:03d}.raw",
+        "instrument": "instrument-x",
+        "instrument_type": "orbitrap",
+        "datetime": f"2026-09-01T{i:02d}:00:00",
+        "datetime_utc": f"2026-09-01T{i:02d}:00:00+00:00",
+        "acquisition_timezone": "Europe/Helsinki" if i % 2 else None,
+        "length": 600.0,
+        "polarity": "-",
+        "sample_file_utc_created": "2026-09-02T00:00:00+00:00",
+    }
+
+
+def _is_utc(column: pd.Series) -> bool:
+    """Whether a column holds tz-aware UTC times, at whatever resolution."""
+    return isinstance(column.dtype, pd.DatetimeTZDtype) and str(column.dt.tz) == "UTC"
+
+
+class _Listing:
+    """``GET /api/sample/files`` behind the envelope seam, paged as the
+    server pages it: ``page`` from 0, ``results`` the total."""
+
+    def __init__(self, files: list[dict[str, Any]]):
+        self.files = files
+        self.requests: list[dict[str, Any]] = []
+
+    def __call__(self, path: str, params: dict[str, Any] | None = None):
+        assert path == "sample/files"
+        params = dict(params or {})
+        self.requests.append(params)
+        page, limit = params["page"], params["limit"]
+        return {
+            "message": "Sample files retrieved successfully.",
+            "results": len(self.files),
+            "data": self.files[page * limit : (page + 1) * limit],
+        }
+
+
+class _StampingClient:
+    def _with_provenance(self, frame):
+        frame.attrs["provenance"] = {"deployment_id": "example-lab"}
+        return frame
+
+
+@pytest.fixture
+def listing(monkeypatch) -> tuple[SampleFilesResource, _Listing]:
+    resource = SampleFilesResource(client=_StampingClient())
+    server = _Listing([_file(i) for i in range(5)])
+    monkeypatch.setattr(resource, "_get_envelope", server)
+    return resource, server
+
+
+def test_the_listing_pages_through_the_whole_range(listing):
+    resource, server = listing
+
+    files = resource.list(limit=2)
+
+    assert files["sample_file_id"].tolist() == [f"sf-{i}" for i in range(5)]
+    assert [r["page"] for r in server.requests] == [0, 1, 2]
+    assert {r["limit"] for r in server.requests} == {2}
+
+
+def test_a_listing_that_ends_on_a_page_boundary_asks_no_more(listing):
+    resource, server = listing
+    server.files = server.files[:4]
+
+    files = resource.list(limit=2)
+
+    assert len(files) == 4
+    assert [r["page"] for r in server.requests] == [0, 1]
+
+
+def test_a_short_answer_ends_the_listing(listing):
+    """A server whose total runs ahead of its rows - files deleted while the
+    listing is paged - answers an empty page, which ends it."""
+    resource, server = listing
+    server.files = server.files[:3]
+
+    def overcounting(path, params=None):
+        answer = _Listing.__call__(server, path, params)
+        return {**answer, "results": 10}
+
+    resource._get_envelope = overcounting
+
+    files = resource.list(limit=2)
+
+    assert len(files) == 3
+    assert [r["page"] for r in server.requests] == [0, 1, 2]
+
+
+def test_a_page_asked_for_is_that_page_alone(listing):
+    resource, server = listing
+
+    files = resource.list(page=1, limit=2)
+
+    assert files["sample_file_id"].tolist() == ["sf-2", "sf-3"]
+    assert [r["page"] for r in server.requests] == [1]
+
+
+def test_pages_default_to_a_thousand_files(listing):
+    resource, server = listing
+
+    resource.list()
+
+    assert server.requests == [{"limit": 1000, "page": 0}]
+
+
+def test_the_range_and_instrument_reach_the_request(listing):
+    resource, server = listing
+
+    resource.list(
+        datetime_min="2026-09-01",
+        datetime_max=pd.Timestamp("2026-09-02T03:00:00+03:00"),
+        instrument="instrument-x",
+    )
+
+    (request,) = server.requests
+    # A time without a zone is UTC; one with a zone keeps it.
+    assert request["datetime_min"] == "2026-09-01T00:00:00+00:00"
+    assert request["datetime_max"] == "2026-09-02T03:00:00+03:00"
+    assert request["instrument"] == "instrument-x"
+
+
+def test_times_are_utc_aware_and_the_zone_is_kept(listing):
+    resource, _ = listing
+
+    files = resource.list()
+
+    assert _is_utc(files["datetime_utc"])
+    assert files["datetime_utc"].iloc[3] == pd.Timestamp("2026-09-01T03:00Z")
+    # The instrument's local time stays naive, beside the zone it is in
+    assert files["datetime"].dt.tz is None
+    assert pd.isna(files["acquisition_timezone"].iloc[0])
+    assert files["acquisition_timezone"].iloc[1] == "Europe/Helsinki"
+    assert _is_utc(files["sample_file_utc_created"])
+
+
+def test_a_file_seen_on_two_pages_is_one_row(listing):
+    """A file registered while the listing is paged shifts the later pages
+    by one, which shows the last file of a page again on the next."""
+    resource, server = listing
+    pages = iter(
+        [
+            [_file(0), _file(1)],
+            [_file(1), _file(2)],
+            [_file(3)],
+        ]
+    )
+
+    def shifting(path, params=None):
+        server.requests.append(dict(params))
+        return {"results": 5, "data": next(pages)}
+
+    resource._get_envelope = shifting
+
+    files = resource.list(limit=2)
+
+    assert files["sample_file_id"].tolist() == ["sf-0", "sf-1", "sf-2", "sf-3"]
+
+
+def test_an_empty_range_is_an_empty_frame_with_the_columns(listing):
+    resource, server = listing
+    server.files = []
+
+    files = resource.list(datetime_min="2030-01-01")
+
+    assert files.empty
+    assert {"sample_file_id", "datetime_utc", "acquisition_timezone"} <= set(
+        files.columns
+    )
+    assert _is_utc(files["datetime_utc"])
+    assert files.attrs["provenance"] == {"deployment_id": "example-lab"}
+
+
+def test_the_listing_is_stamped_like_a_loaders_frame(listing):
+    resource, _ = listing
+
+    files = resource.list()
+
+    assert files.attrs["provenance"] == {"deployment_id": "example-lab"}

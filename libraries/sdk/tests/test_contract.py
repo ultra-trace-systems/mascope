@@ -808,6 +808,140 @@ class TestSampleFileContract:
         assert mascope.sample_files.get_scans(sample_file_id, first_scan=10**9) is None
 
 
+@requires_stack
+class TestSeriesContract:
+    """The per-batch series and the files listing, over the compact routes a
+    campaign store fills itself from (`/api/match/records/ion/series`,
+    `/api/batch-peaks/records/series`, `GET /api/sample/files`).
+
+    Each is checked against the slower read it stands in for: the ion series
+    against `load_peaks`, the batch-peak series against the ledger's
+    members, the files listing against the files the batches' samples name.
+    """
+
+    def test_ion_series_is_the_peaks_heights_summed_per_sample_and_ion(self, mascope):
+        import numpy as np
+        import pandas as pd
+
+        _skip_unless_attr(mascope.batches, "ion_series")
+        dataset, batches = _first_dataset_and_batches(mascope)
+        batch = batches.iloc[0]
+
+        series = mascope.batches.ion_series(batch["sample_batch_id"])
+
+        assert not series.empty, "expected matched ions in the demo batch"
+        assert {
+            "sample_item_id",
+            "target_ion_id",
+            "target_compound_name",
+            "target_compound_formula",
+            "ion_formula",
+            "ionization_mechanism",
+            "intensity",
+            "match_category",
+        } <= set(series.columns)
+        key = ["sample_item_id", "target_ion_id"]
+        assert not series.duplicated(key).any()
+        assert series.attrs["provenance"]["deployment_id"]
+
+        peaks = mascope.load_peaks(
+            dataset=dataset["dataset_id"],
+            batches=batch["sample_batch_name"],
+            exact=True,
+            confirm_above=None,
+        )
+        heights = peaks.dropna(subset=["target_ion_id"]).groupby(key)["height"].sum()
+        intensity = series.set_index(key)["intensity"]
+        # Every matched peak's pair is a series row. A pair matched with no
+        # peak (category 0) is a row of intensity 0, and no peak row.
+        assert set(heights.index) <= set(intensity.index)
+        both = pd.concat([heights.rename("height"), intensity], axis=1).fillna(0.0)
+        np.testing.assert_allclose(both["intensity"], both["height"], rtol=1e-9)
+
+    def test_batch_peak_series_are_the_ledgers_members(self, mascope):
+        _skip_unless_attr(mascope.batch_peaks, "series")
+        _, batches = _first_dataset_and_batches(mascope)
+
+        for batch_id in batches["sample_batch_id"]:
+            series = mascope.batch_peaks.series(batch_id, min_n_present=1)
+
+            assert {
+                "sample_item_id",
+                "batch_peak_id",
+                "sample_peak_id",
+                "batch_mz",
+                "consensus_formula",
+                "consensus_ion_formula",
+                "consensus_tier",
+                "intensity",
+                "tier",
+            } <= set(series.columns)
+            key = ["sample_item_id", "batch_peak_id"]
+            assert not series.duplicated(key).any()
+            runs = mascope.batch_peaks.runs(batch_id)
+            current = (
+                None
+                if runs is None
+                else runs.loc[runs["current"], "batch_peak_run_id"].iloc[0]
+            )
+            assert series.attrs["run_id"] == current
+            assert series.attrs["provenance"]["deployment_id"]
+
+            # Every point joins to its sample, with no loss.
+            samples = mascope.samples.list(batch_id)
+            joined = series.merge(
+                samples[["sample_item_id", "datetime_utc"]],
+                on="sample_item_id",
+                validate="many_to_one",
+            )
+            assert len(joined) == len(series)
+
+            # And the points are the members, as the paged ledger read has them.
+            members = mascope.batch_peaks.members(batch_id)
+            if members is None:
+                assert series.empty
+                continue
+            expected = members.set_index(key)["intensity"].sort_index()
+            assert series.set_index(key)["intensity"].sort_index().equals(expected)
+
+    def test_the_files_listing_is_the_files_the_batches_hold(self, mascope):
+        _skip_unless_attr(mascope.sample_files, "list")
+        held = {}
+        for _, dataset in mascope.datasets.list().iterrows():
+            batches = mascope.batches.list(dataset["dataset_id"])
+            if batches is None:
+                continue
+            for batch_id in batches["sample_batch_id"]:
+                samples = mascope.samples.list(batch_id)
+                if samples is not None:
+                    held.update(zip(samples["sample_file_id"], samples["datetime_utc"]))
+        assert held, "expected samples in the demo batches"
+
+        files = mascope.sample_files.list(
+            datetime_min=min(held.values()), datetime_max=max(held.values())
+        )
+
+        assert set(files["sample_file_id"]) == set(held)
+        assert not files["sample_file_id"].duplicated().any()
+        assert str(files["datetime_utc"].dt.tz) == "UTC"
+        assert "acquisition_timezone" in files.columns
+        assert files["datetime_utc"].is_monotonic_increasing
+        assert files.attrs["provenance"]["deployment_id"]
+
+    def test_the_files_listing_pages_through_the_server_pages(self, mascope):
+        _skip_unless_attr(mascope.sample_files, "list")
+        whole = mascope.sample_files.list()
+        assert len(whole) > 7, "expected more demo files than a page holds"
+
+        paged = mascope.sample_files.list(limit=7)
+        second = mascope.sample_files.list(page=1, limit=7)
+
+        assert paged["sample_file_id"].tolist() == whole["sample_file_id"].tolist()
+        assert (
+            second["sample_file_id"].tolist() == whole["sample_file_id"][7:14].tolist()
+        )
+
+
 @pytest.fixture(scope="module")
 def scratch(mascope):
     """Two scratch workspaces and a client on the first; removed afterwards.

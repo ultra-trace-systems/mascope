@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from mascope_sdk._loaders import load_batch_ledger
-from mascope_sdk.resources.batch_peaks import BatchPeaksResource
+from mascope_sdk.resources.batch_peaks import SERIES_COLUMNS, BatchPeaksResource
 
 
 BATCH_ID = "batch-1"
@@ -171,6 +171,10 @@ class _StubClient:
     _timeout = (1, 5)
     _verify_ssl = False
     _service_name = "mascope_sdk"
+
+    def _with_provenance(self, frame):
+        frame.attrs["provenance"] = {"deployment_id": "example-lab"}
+        return frame
 
 
 @pytest.fixture()
@@ -422,3 +426,171 @@ class TestImportRun:
         )
         assert run["status"] == "running"
         assert posting["n"] == 0
+
+
+#: The series route's answer: per batch peak, the consensus once and the
+#: members as parallel arrays. bp-2 is in one sample, bp-3 in none.
+SERIES = [
+    {
+        **ANCHORS[0],
+        "consensus_ion_formula": "C6H11O6-",
+        "peak_series": {
+            "sample_item_ids": ["s0", "s1"],
+            "sample_peak_ids": ["p0", "p1"],
+            "intensities": [1000.0, 2500],
+            "tiers": ["assigned", "candidate"],
+        },
+    },
+    {
+        **ANCHORS[1],
+        "consensus_ion_formula": None,
+        "peak_series": {
+            "sample_item_ids": ["s1"],
+            "sample_peak_ids": ["p7"],
+            "intensities": [40.0],
+            "tiers": ["unassigned"],
+        },
+    },
+    {
+        **ANCHORS[1],
+        "batch_peak_id": "bp-3",
+        "mz": 300.5,
+        "consensus_ion_formula": None,
+        "peak_series": {
+            "sample_item_ids": [],
+            "sample_peak_ids": [],
+            "intensities": [],
+            "tiers": [],
+        },
+    },
+]
+
+
+class TestSeries:
+    @pytest.fixture()
+    def posts(self, monkeypatch):
+        """The series route behind the POST seam: what it was sent, and
+        ``answer``, what it answers."""
+
+        class Posts(list):
+            answer = SERIES
+
+        sent = Posts()
+
+        def fake_post(url, path, access_token, data, **kwargs):
+            sent.append((path, dict(data)))
+            return _FakeResponse({"status": "success", "data": sent.answer})
+
+        monkeypatch.setattr("mascope_sdk.resources._base.http_post", fake_post)
+        return sent
+
+    def test_one_row_per_sample_and_batch_peak(self, resource, posts):
+        series = resource.series(BATCH_ID)
+
+        assert list(series.columns) == SERIES_COLUMNS
+        assert list(zip(series["sample_item_id"], series["batch_peak_id"])) == [
+            ("s0", "bp-1"),
+            ("s1", "bp-1"),
+            ("s1", "bp-2"),
+        ]
+        assert series["sample_peak_id"].tolist() == ["p0", "p1", "p7"]
+        assert series["intensity"].tolist() == [1000.0, 2500.0, 40.0]
+        assert series["intensity"].dtype == "float64"
+        assert series["tier"].tolist() == ["assigned", "candidate", "unassigned"]
+
+    def test_each_row_carries_its_own_batch_peaks_consensus(self, resource, posts):
+        series = resource.series(BATCH_ID).set_index("sample_peak_id")
+
+        assert series.loc["p1", "batch_mz"] == 181.0707
+        assert series.loc["p1", "consensus_formula"] == "C6H12O6"
+        assert series.loc["p1", "consensus_ion_formula"] == "C6H11O6-"
+        assert series.loc["p1", "consensus_tier"] == "assigned"
+        assert series.loc["p7", "batch_mz"] == 200.1234
+        assert pd.isna(series.loc["p7", "consensus_formula"])
+        assert series.loc["p7", "consensus_tier"] == "unassigned"
+
+    def test_the_live_ledger_is_read_as_the_current_run(self, server, resource, posts):
+        series = resource.series(BATCH_ID)
+
+        # The current run is named in the request, so the series are that
+        # run's even if another run lands before the server reads them.
+        assert posts == [
+            (
+                "batch-peaks/records/series",
+                {
+                    "sample_batch_id": BATCH_ID,
+                    "min_n_present": 2,
+                    "batch_peak_run_id": "run-2",
+                },
+            )
+        ]
+        assert series.attrs["run_id"] == "run-2"
+
+    def test_the_current_run_is_found_wherever_it_is_listed(
+        self, server, resource, posts
+    ):
+        server.runs = list(reversed(server.runs))
+
+        series = resource.series(BATCH_ID)
+
+        assert posts[-1][1]["batch_peak_run_id"] == "run-2"
+        assert series.attrs["run_id"] == "run-2"
+
+    def test_the_filters_and_a_named_run_reach_the_request(
+        self, server, resource, posts
+    ):
+        series = resource.series(
+            BATCH_ID, tier="assigned", min_n_present=1, run_id="run-1"
+        )
+
+        assert posts[-1][1] == {
+            "sample_batch_id": BATCH_ID,
+            "min_n_present": 1,
+            "tier": "assigned",
+            "batch_peak_run_id": "run-1",
+        }
+        assert series.attrs["run_id"] == "run-1"
+
+    def test_a_batch_without_runs_has_no_run_id(self, server, resource, posts):
+        server.runs = []
+
+        series = resource.series(BATCH_ID)
+
+        assert "batch_peak_run_id" not in posts[-1][1]
+        assert series.attrs["run_id"] is None
+
+    def test_a_batch_without_a_ledger_is_an_empty_frame(self, server, resource, posts):
+        server.runs = []
+        posts.answer = []
+
+        series = resource.series(BATCH_ID)
+
+        assert series.empty
+        assert list(series.columns) == SERIES_COLUMNS
+        assert series["batch_mz"].dtype == "float64"
+        assert series["intensity"].dtype == "float64"
+        assert series.attrs["provenance"] == {"deployment_id": "example-lab"}
+
+    def test_integral_numbers_on_the_wire_are_still_floats(self, resource, posts):
+        """JSON does not say float: a whole m/z or intensity can come as an
+        integer, and an empty answer has no numbers at all. The columns are
+        floats whatever pandas would infer."""
+        posts.answer = [
+            {
+                **SERIES[1],
+                "mz": 300,
+                "peak_series": {**SERIES[1]["peak_series"], "intensities": [40]},
+            }
+        ]
+
+        series = resource.series(BATCH_ID)
+
+        assert series["batch_mz"].dtype == "float64"
+        assert series["intensity"].dtype == "float64"
+
+    def test_the_frame_is_stamped_like_a_loaders(self, resource, posts):
+        series = resource.series(BATCH_ID)
+
+        assert series.attrs["provenance"] == {"deployment_id": "example-lab"}
+        # The stamp sits beside the run id, it does not replace it.
+        assert series.attrs["run_id"] == "run-2"
