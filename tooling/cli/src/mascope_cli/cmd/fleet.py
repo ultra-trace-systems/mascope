@@ -83,9 +83,10 @@ def _load_inventory() -> tuple[dict, dict, Path] | None:
         return None
     try:
         import yaml
-    except ImportError as error:  # pragma: no cover - dev extra ships pyyaml
+    except ImportError as error:  # pragma: no cover - a checkout ships pyyaml
         raise ImportError(
-            "Reading the fleet inventory requires pyyaml - install mascope_cli[dev]"
+            "Reading the fleet inventory requires pyyaml - run `uv sync` in the "
+            "source checkout"
         ) from error
     with open(path, encoding="utf-8") as file:
         data = yaml.safe_load(file) or {}

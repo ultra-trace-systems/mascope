@@ -6,9 +6,17 @@ authors = [{ name = "Ultra Trace Systems Oy", email = "support@ultratrace.eu" }]
 requires-python = ">=3.12,<3.13"
 license.text = "Apache-2.0"
 dependencies = [
-    # The monorepo needs the CLI's developer commands and demo tooling; a
-    # standalone (wheel) install of mascope_cli gets the operator surface only.
-    "mascope_cli[dev,demo]",
+    # The monorepo needs the CLI's demo tooling; a standalone (wheel) install
+    # of mascope_cli gets the operator surface only.
+    "mascope_cli[demo]",
+    # The CLI's developer commands (`mascope dev migrate`, `mascope dev db`,
+    # `mascope fleet`, `mascope reference`), registered only in a checkout.
+    # Not a mascope_cli extra: mascope_reference is not on PyPI, so a
+    # published extra naming it could never be installed.
+    "alembic>=1.19.1",
+    "sqlalchemy~=2.0",
+    "psycopg2-binary>=2.9.12",
+    "pyyaml>=6,<7",
     "mascope_backend",
     # libraries
     "mascope_ai",

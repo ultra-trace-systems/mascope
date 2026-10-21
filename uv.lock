@@ -1450,10 +1450,11 @@ name = "mascope"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "alembic" },
     { name = "mascope-ai" },
     { name = "mascope-backend" },
     { name = "mascope-chem" },
-    { name = "mascope-cli", extra = ["demo", "dev"] },
+    { name = "mascope-cli", extra = ["demo"] },
     { name = "mascope-match" },
     { name = "mascope-reference" },
     { name = "mascope-runtime" },
@@ -1463,6 +1464,9 @@ dependencies = [
     { name = "mascope-tofwerk" },
     { name = "mascope-tools" },
     { name = "mascope-viz" },
+    { name = "psycopg2-binary" },
+    { name = "pyyaml" },
+    { name = "sqlalchemy" },
 ]
 
 [package.dev-dependencies]
@@ -1489,10 +1493,11 @@ lint = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic", specifier = ">=1.19.1" },
     { name = "mascope-ai", editable = "libraries/ai" },
     { name = "mascope-backend", editable = "server/backend" },
     { name = "mascope-chem", editable = "libraries/chem" },
-    { name = "mascope-cli", extras = ["dev", "demo"], editable = "tooling/cli" },
+    { name = "mascope-cli", extras = ["demo"], editable = "tooling/cli" },
     { name = "mascope-match", editable = "libraries/match" },
     { name = "mascope-reference", editable = "libraries/reference" },
     { name = "mascope-runtime", editable = "libraries/runtime" },
@@ -1502,6 +1507,9 @@ requires-dist = [
     { name = "mascope-tofwerk", editable = "libraries/tofwerk" },
     { name = "mascope-tools", editable = "libraries/tools" },
     { name = "mascope-viz", editable = "libraries/viz" },
+    { name = "psycopg2-binary", specifier = ">=2.9.12" },
+    { name = "pyyaml", specifier = ">=6,<7" },
+    { name = "sqlalchemy", specifier = "~=2.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -1672,28 +1680,16 @@ demo = [
     { name = "pandas" },
     { name = "requests" },
 ]
-dev = [
-    { name = "alembic" },
-    { name = "mascope-reference" },
-    { name = "psycopg2-binary" },
-    { name = "pyyaml" },
-    { name = "sqlalchemy" },
-]
 
 [package.metadata]
 requires-dist = [
-    { name = "alembic", marker = "extra == 'dev'", specifier = ">=1.19.1" },
-    { name = "mascope-reference", marker = "extra == 'dev'", editable = "libraries/reference" },
     { name = "mascope-runtime", extras = ["logs"], editable = "libraries/runtime" },
     { name = "pandas", marker = "extra == 'demo'", specifier = ">=2.0.0" },
-    { name = "psycopg2-binary", marker = "extra == 'dev'", specifier = ">=2.9.12" },
-    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6,<7" },
     { name = "requests", marker = "extra == 'demo'", specifier = ">=2.32.0,<3" },
     { name = "rich", specifier = ">=15.0.0,<16" },
-    { name = "sqlalchemy", marker = "extra == 'dev'", specifier = "~=2.0" },
     { name = "typer", specifier = ">=0.27.1,<0.28" },
 ]
-provides-extras = ["dev", "demo"]
+provides-extras = ["demo"]
 
 [[package]]
 name = "mascope-file"
@@ -2431,7 +2427,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess" },
+    { name = "ptyprocess", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [

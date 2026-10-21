@@ -14,7 +14,8 @@ license.text = "Apache-2.0"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 # Operator surface only (init, prod, env, demo, logs, cert). Developer
-# commands live behind the `dev` extra and a source-checkout gate in main.py.
+# commands are registered only in a source checkout (main.py), and their
+# packages come from the root pyproject.toml, which only a checkout installs.
 dependencies = [
     # >=2026.9.15: the prod commands import is_release_tag and
     # release_sort_key, which no earlier published runtime has, and an earlier
@@ -29,16 +30,6 @@ dependencies = [
 mascope = "mascope_cli.main:app"
 
 [project.optional-dependencies]
-# `mascope dev migrate` / `mascope dev db` / `mascope fleet` / `mascope reference`
-# — monorepo
-# development only.
-dev = [
-    "alembic>=1.19.1",
-    "sqlalchemy~=2.0",
-    "psycopg2-binary>=2.9.12",
-    "pyyaml>=6,<7",
-    "mascope_reference",
-]
 # `mascope demo build-bundle` / `verify` peak comparison (imported lazily).
 demo = [
     "pandas>=2.0.0",
@@ -53,3 +44,40 @@ repository = "https://github.com/ultra-trace-systems/mascope"
 [build-system]
 requires = ["uv_build>=0.12.5,<0.14"]
 build-backend = "uv_build"
+
+# `deptry src`, run from this directory by CI's `cli` job, checks that every
+# import of the package is declared above, so the published metadata covers
+# what a wheel install runs. The modules listed here are known exceptions:
+[tool.deptry.per_rule_ignores]
+DEP001 = [
+    # Imported only by commands a source checkout registers, or behind a
+    # fallback a wheel install takes without them. The checkout installs
+    # them through the root pyproject.toml, not through an extra here:
+    # mascope_reference and mascope_backend are not on PyPI.
+    "alembic",          # cmd/dev/migrate.py, cmd/prod/release_manifest.py
+    "sqlalchemy",       # cmd/dev/migrate.py, cmd/reference
+    "psycopg2",         # cmd/dev/db
+    "yaml",             # cmd/fleet.py
+    "mascope_reference", # cmd/reference
+    "mascope_backend",  # cmd/demo (seeding, snapshot)
+    "mascope_sdk",      # cmd/demo/_rebuild.py
+    "mascope_thermo",   # cmd/file.py, which falls back to a subprocess
+    "numpy",            # cmd/demo/verify.py, with pandas from the demo extra
+]
+DEP003 = [
+    # The checkout-only imports above, which a checkout's environment has
+    # installed and deptry so reports as transitive rather than missing.
+    "alembic",
+    "sqlalchemy",
+    "psycopg2",
+    "yaml",
+    "mascope_reference",
+    "mascope_backend",
+    "mascope_sdk",
+    "mascope_thermo",
+    "numpy",
+    # Arrive with declared dependencies: loguru with mascope_runtime,
+    # typing_extensions with pydantic, which mascope_runtime requires.
+    "loguru",
+    "typing_extensions",
+]
