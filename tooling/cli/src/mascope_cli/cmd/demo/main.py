@@ -6,6 +6,11 @@ database snapshot) or rebuilds it from raw through the real pipeline, then
 launches the app. Always operates on the `demo` env in `dev` mode so it never
 disturbs a developer's working environment.
 
+Seeding, `snapshot` and `verify` drive the source tree (the dev stack, the
+backend package), so they are only registered when the CLI runs from a
+checkout. A wheel install keeps `fetch` and `info`, and the bare command points
+the operator at the demo compose file `mascope init` writes instead.
+
 See `docs/demo_dataset.md` for the full design.
 """
 
@@ -15,6 +20,7 @@ from typing import Annotated, Optional
 
 import typer
 
+from mascope_cli.checkout import source_checkout
 from mascope_cli.cmd.demo import _fetch, _rebuild, _seed, bundles
 from mascope_cli.cmd.demo import verify as verify_mod
 from mascope_cli.cmd.demo._seed import DEMO_ENV, env_dir
@@ -30,7 +36,9 @@ _MODE = "dev"
 # backend's startup (e.g. filestore GC) lists these, so they must exist.
 _ENV_SUBDIRS = ("filestore", "filestreams", "temp", "logs", "agents")
 
-demo_app = typer.Typer()
+# The operator's demo: the self-contained stack `mascope init` writes into the
+# runtime home (tooling/cli/README.md).
+_DEMO_COMPOSE = "docker-compose.demo.yaml"
 
 
 def _ensure_demo_env() -> None:
@@ -48,7 +56,6 @@ def _ensure_demo_env() -> None:
         (env_dir() / sub).mkdir(parents=True, exist_ok=True)
 
 
-@demo_app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
     rebuild: Annotated[
@@ -401,7 +408,6 @@ def _print_access() -> None:
     runtime.logger.info("  SDK token: mascope_demo_sdk_token  (MASCOPE_ACCESS_TOKEN)")
 
 
-@demo_app.command()
 def fetch(
     bundle_version: Annotated[
         Optional[str],
@@ -420,7 +426,6 @@ def fetch(
     _fetch.fetch(bundle_version, force=force)
 
 
-@demo_app.command()
 def verify(
     actual: Annotated[
         Optional[Path],
@@ -502,7 +507,6 @@ def verify(
     runtime.logger.success("Reproducibility check passed - outputs match goldens")
 
 
-@demo_app.command()
 def snapshot(
     out: Annotated[
         Path,
@@ -571,7 +575,6 @@ def snapshot(
         raise typer.Exit(1)
 
 
-@demo_app.command()
 def info(
     bundle_version: Annotated[
         Optional[str],
@@ -588,3 +591,56 @@ def info(
         problems = bundles.verify_manifest(bundle_version)
         status = "intact" if not problems else f"{len(problems)} issue(s)"
         runtime.logger.info(f"Integrity: {status}")
+
+
+def operator_main(ctx: typer.Context) -> None:
+    """
+    Fetch or inspect the demo bundle.
+
+    The local demo that `mascope demo` seeds and launches drives the source
+    tree, so it needs a Mascope checkout. On this install, run the
+    self-contained demo stack that `mascope init` wrote into the runtime home.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    home = os.environ.get("MASCOPE_PATH", "")
+    runtime.logger.error(
+        "'mascope demo' seeds and launches the demo from a Mascope source "
+        "checkout, and this install is not one."
+    )
+    runtime.logger.info(
+        f"The demo stack is in the runtime home {home} ('mascope path' prints it)."
+    )
+    runtime.logger.info(f"Start it there: docker compose -f {_DEMO_COMPOSE} up -d")
+    runtime.logger.info(
+        "Then open http://localhost:8080 (login demo@mascope.app / mascope-demo)."
+    )
+    raise typer.Exit(1)
+
+
+def make_demo_app() -> typer.Typer:
+    """
+    Build the `mascope demo` group for the install the CLI runs from.
+
+    In a checkout every subcommand is registered and the bare command seeds and
+    launches the demo. A wheel install gets only `fetch` and `info`: the rest
+    imports the dev extra and the backend package, which it does not have.
+
+    :return: The demo command group.
+    :rtype: typer.Typer
+    """
+    app = typer.Typer()
+    checkout = source_checkout() is not None
+    if checkout:
+        app.callback(invoke_without_command=True)(main)
+    else:
+        app.callback(invoke_without_command=True)(operator_main)
+    app.command()(fetch)
+    if checkout:
+        app.command()(verify)
+        app.command()(snapshot)
+    app.command()(info)
+    return app
+
+
+demo_app = make_demo_app()
