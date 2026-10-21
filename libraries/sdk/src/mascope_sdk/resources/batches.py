@@ -12,6 +12,19 @@ from .._resolve import resolve_id
 from ._base import BaseResource, Needs, _coerce_datetime_columns
 
 
+#: The columns of :meth:`BatchesResource.ion_series`, in order.
+ION_SERIES_COLUMNS = [
+    "sample_item_id",
+    "target_ion_id",
+    "target_compound_name",
+    "target_compound_formula",
+    "ion_formula",
+    "ionization_mechanism",
+    "intensity",
+    "match_category",
+]
+
+
 class BatchesResource(BaseResource):
     """Resource for sample batch operations.
 
@@ -142,6 +155,97 @@ class BatchesResource(BaseResource):
             "ions": batch_data.get("data", {}).get("ions", []),
             "isotopes": batch_data.get("data", {}).get("isotopes", []),
         }
+
+    def ion_series(
+        self,
+        batch_id: str,
+        *,
+        collection: str | None = None,
+        ions: "Sequence[str] | None" = None,
+    ) -> pd.DataFrame:
+        """The matched intensity of target ions in every sample of a batch,
+        one row per (sample, target ion).
+
+        One request per batch, over the compact series route the app's batch
+        chart draws from, rather than one per sample as :meth:`~mascope_sdk.client.MascopeClient.load_peaks`
+        makes. Only matched pairs are rows: an ion a sample did not match has
+        no row for that sample.
+
+        The ions are those of ``collection``, or ``ions``, or - when neither
+        is given - those of every target collection the batch has, read with
+        one request per collection. An ion two of them share is one row per
+        sample.
+
+        :param batch_id: The ID of the sample batch.
+        :type batch_id: str
+        :param collection: The ID of a target collection whose ions to read.
+        :type collection: str, optional
+        :param ions: The IDs of the target ions to read.
+        :type ions: Sequence[str], optional
+        :return: A DataFrame with ``sample_item_id``, ``target_ion_id``,
+                 ``target_compound_name``, ``target_compound_formula``,
+                 ``ion_formula``, ``ionization_mechanism``, ``intensity`` (the
+                 match's summed peak intensity) and ``match_category``; empty,
+                 with those columns, when nothing matched. Stamped with the
+                 server's ``attrs["provenance"]`` as the loaders' frames are.
+                 Join ``samples.list(batch=...)`` on ``sample_item_id`` for
+                 each sample's time.
+        :rtype: pd.DataFrame
+        :raises ValueError: If both ``collection`` and ``ions`` are given.
+        :raises PermissionDeniedError: Without the guest role on the batch.
+
+        Example::
+
+            series = mascope.batches.ion_series("batch-123")
+            wide = series.pivot(
+                index="sample_item_id", columns="target_ion_id", values="intensity"
+            )
+        """
+        if collection is not None and ions is not None:
+            raise ValueError("Give collection or ions, not both")
+        if ions is not None:
+            ion_ids = [ions] if isinstance(ions, str) else [*ions]
+            scopes = [{"target_ion_ids": ion_ids}] if ion_ids else []
+        elif collection is not None:
+            scopes = [{"target_collection_id": collection}]
+        else:
+            listed = self._client.collections.list(
+                batch_id=batch_id, all_workspaces=True
+            )
+            collection_ids = [] if listed is None else listed["target_collection_id"]
+            scopes = [{"target_collection_id": c} for c in collection_ids]
+            if not scopes:
+                logger.info("Batch '{}' has no target collections", batch_id)
+
+        columns: dict[str, list[Any]] = {name: [] for name in ION_SERIES_COLUMNS}
+        for scope in scopes:
+            body = {"sample_batch_id": batch_id, **scope}
+            for ion in self._post("match/records/ion/series", body) or []:
+                series = ion["match_series"]
+                n = len(series["sample_item_ids"])
+                columns["sample_item_id"].extend(series["sample_item_ids"])
+                columns["intensity"].extend(series["sample_peak_intensity_sums"])
+                columns["match_category"].extend(series["match_categories"])
+                columns["target_ion_id"].extend([ion["target_ion_id"]] * n)
+                columns["target_compound_name"].extend(
+                    [ion["target_compound_name"]] * n
+                )
+                columns["target_compound_formula"].extend(
+                    [ion["target_compound_formula"]] * n
+                )
+                columns["ion_formula"].extend([ion["target_ion_formula"]] * n)
+                columns["ionization_mechanism"].extend(
+                    [ion["ionization_mechanism"]] * n
+                )
+        frame = (
+            pd.DataFrame(columns)
+            .astype({"intensity": "float64"})
+            .drop_duplicates(["sample_item_id", "target_ion_id"], ignore_index=True)
+        )
+        logger.info(
+            "Read {} matched (sample, ion) pair(s) of batch '{}'", len(frame), batch_id
+        )
+        return self._client._with_provenance(frame)
 
     def update(
         self,

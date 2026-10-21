@@ -24,6 +24,37 @@ from ._base import BaseResource, _coerce_utc_columns
 #: comes in as few round trips as it allows.
 PAGE_LIMIT = 5000
 
+#: The columns of :meth:`BatchPeaksResource.series`, in order: the member's
+#: own, and the consensus of its batch peak beside them.
+SERIES_COLUMNS = [
+    "sample_item_id",
+    "batch_peak_id",
+    "sample_peak_id",
+    "batch_mz",
+    "consensus_formula",
+    "consensus_ion_formula",
+    "consensus_tier",
+    "intensity",
+    "tier",
+]
+
+#: Per batch peak, the consensus field each anchor column of the series is.
+_SERIES_ANCHOR = {
+    "batch_peak_id": "batch_peak_id",
+    "batch_mz": "mz",
+    "consensus_formula": "consensus_formula",
+    "consensus_ion_formula": "consensus_ion_formula",
+    "consensus_tier": "consensus_tier",
+}
+
+#: Per batch peak, the ``peak_series`` array each member column is.
+_SERIES_MEMBER = {
+    "sample_item_id": "sample_item_ids",
+    "sample_peak_id": "sample_peak_ids",
+    "intensity": "intensities",
+    "tier": "tiers",
+}
+
 
 class BatchPeaksResource(BaseResource):
     """Resource for reading a batch's batch ledger.
@@ -156,6 +187,88 @@ class BatchPeaksResource(BaseResource):
             "Read {} ledger member(s) of batch '{}'", len(rows), sample_batch_id
         )
         return pd.DataFrame(rows)
+
+    def series(
+        self,
+        sample_batch_id: str,
+        *,
+        tier: str | None = None,
+        min_n_present: int = 2,
+        run_id: str | None = None,
+    ) -> pd.DataFrame:
+        """Every sample's intensity of every batch peak of a batch, one row
+        per (sample, batch peak).
+
+        One request per batch, over the compact series route the app's batch
+        overview draws from: the slim counterpart of :meth:`members`, with no
+        paging.
+
+        :param sample_batch_id: The ID of the sample batch.
+        :type sample_batch_id: str
+        :param tier: Only the batch peaks of this consensus tier:
+                     ``assigned`` | ``candidate`` | ``below_assignability`` |
+                     ``unassigned``.
+        :type tier: str, optional
+        :param min_n_present: Only the batch peaks seen in at least this many
+                              samples. Defaults to 2, the route's own, which
+                              leaves out the peaks one sample alone saw; 1
+                              keeps every one.
+        :type min_n_present: int
+        :param run_id: Read the series as this batch run left them (see
+                       :meth:`runs`); the live ledger when omitted.
+        :type run_id: str, optional
+        :return: A DataFrame with the member's ``sample_item_id``,
+                 ``sample_peak_id``, ``intensity`` (in the unit the batch
+                 peak's ``intensity_variable`` in :meth:`list` names) and
+                 ``tier``, beside its batch peak's ``batch_peak_id``,
+                 ``batch_mz``, ``consensus_formula``,
+                 ``consensus_ion_formula`` and ``consensus_tier``; empty, with
+                 those columns, when the batch has no ledger.
+                 ``attrs["run_id"]`` is the run read: ``run_id`` when given,
+                 else the run current when the read began, or None for a batch
+                 with no runs. Stamped with the server's
+                 ``attrs["provenance"]`` as the loaders' frames are. Join
+                 ``samples.list(batch=...)`` on ``sample_item_id`` for each
+                 sample's time.
+        :rtype: pd.DataFrame
+        :raises PermissionDeniedError: Without the guest role on the batch.
+        :raises NotFoundError: If ``run_id`` is no run of the batch.
+
+        Example::
+
+            series = mascope.batch_peaks.series("batch-123", tier="assigned")
+            series.attrs["run_id"]  # which run's formulas these are
+        """
+        if run_id is None:
+            runs = self._get(f"batch-peaks/batch/{sample_batch_id}/runs") or []
+            run_id = next(
+                (r["batch_peak_run_id"] for r in runs if r.get("current")), None
+            )
+        body: dict[str, Any] = {
+            "sample_batch_id": sample_batch_id,
+            "min_n_present": min_n_present,
+        }
+        if tier is not None:
+            body["tier"] = tier
+        if run_id is not None:
+            body["batch_peak_run_id"] = run_id
+
+        columns: dict[str, list[Any]] = {name: [] for name in SERIES_COLUMNS}
+        for peak in self._post("batch-peaks/records/series", body) or []:
+            series = peak["peak_series"]
+            n = len(series["sample_item_ids"])
+            for column, key in _SERIES_MEMBER.items():
+                columns[column].extend(series[key])
+            for column, key in _SERIES_ANCHOR.items():
+                columns[column].extend([peak[key]] * n)
+        frame = pd.DataFrame(columns).astype(
+            {"batch_mz": "float64", "intensity": "float64"}
+        )
+        frame.attrs["run_id"] = run_id
+        logger.info(
+            "Read {} batch-peak point(s) of batch '{}'", len(frame), sample_batch_id
+        )
+        return self._client._with_provenance(frame)
 
     def verdicts(self, sample_batch_id: str) -> pd.DataFrame | None:
         """The batch-level verdicts recorded on a batch's species, newest
