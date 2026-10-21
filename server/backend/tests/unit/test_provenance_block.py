@@ -178,6 +178,19 @@ def test_the_block_is_json():
     assert json.loads(json.dumps(block)) == block
 
 
+def test_the_global_ids_use_the_namespace_the_block_names(monkeypatch):
+    """One read of the deployment id per block: the global ids are formed in
+    the ``deployment_id`` the block reports, not in a second read."""
+    from mascope_backend import deployment
+
+    monkeypatch.setattr(deployment, "deployment_id", lambda: "a-second-read")
+
+    block = build_provenance(inputs={"dataset_id": "d1"})
+
+    assert block["deployment_id"] == "example-lab"
+    assert block["inputs"]["dataset_global_id"] == "example-lab:dataset:d1"
+
+
 def test_flattening_joins_nested_keys_and_lists_in_order(monkeypatch):
     monkeypatch.setattr(runtime, "_version", "v9.9.9-test", raising=False)
     block = build_provenance(

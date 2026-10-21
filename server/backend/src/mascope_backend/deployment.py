@@ -142,12 +142,31 @@ def global_id(entity: str, local_id: str) -> str | None:
     :rtype: str | None
     :raises ValueError: If ``entity`` is not one of :data:`GLOBAL_ID_ENTITIES`.
     """
-    if entity not in GLOBAL_ID_ENTITIES:
-        raise ValueError(f"No global id for the entity {entity!r}")
+    _check_entity(entity)
     namespace = deployment_id()
     if namespace is None:
         return None
+    return compose_global_id(namespace, entity, local_id)
+
+
+def compose_global_id(namespace: str, entity: str, local_id: str) -> str:
+    """
+    The global id of a record, in a deployment id the caller already holds.
+
+    :param namespace: The deployment id, as :func:`deployment_id` gives it.
+    :param entity: The record's table, one of :data:`GLOBAL_ID_ENTITIES`.
+    :param local_id: The record's id in that table.
+    :return: ``<namespace>:<entity>:<local_id>``.
+    :rtype: str
+    :raises ValueError: If ``entity`` is not one of :data:`GLOBAL_ID_ENTITIES`.
+    """
+    _check_entity(entity)
     return f"{namespace}:{entity}:{local_id}"
+
+
+def _check_entity(entity: str) -> None:
+    if entity not in GLOBAL_ID_ENTITIES:
+        raise ValueError(f"No global id for the entity {entity!r}")
 
 
 def ensure_deployment_id() -> str | None:

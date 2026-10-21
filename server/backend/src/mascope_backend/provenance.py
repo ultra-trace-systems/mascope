@@ -68,7 +68,11 @@ from mascope_backend.api.controllers.match.lib.match_score_v2 import (
 from mascope_backend.api.new.peak_assignments.config import (
     PEAK_ASSIGNMENT_ENGINE_VERSION,
 )
-from mascope_backend.deployment import GLOBAL_ID_ENTITIES, deployment_id, global_id
+from mascope_backend.deployment import (
+    GLOBAL_ID_ENTITIES,
+    compose_global_id,
+    deployment_id,
+)
 from mascope_backend.runtime import runtime
 
 
@@ -123,7 +127,7 @@ def _with_global_ids(inputs: Mapping[str, Any], namespace: str | None) -> dict:
             and entity in GLOBAL_ID_ENTITIES
             and value is not None
         ):
-            derived[f"{entity}_global_id"] = global_id(entity, value)
+            derived[f"{entity}_global_id"] = compose_global_id(namespace, entity, value)
     return derived
 
 
