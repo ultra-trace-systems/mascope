@@ -7,13 +7,9 @@ import ProgressSpinner from 'primevue/progressspinner'
 import Button from 'primevue/button'
 import Popover from 'primevue/popover'
 
-import { useWindowSize } from '@vueuse/core'
-
 import { useApp } from '@/stores'
 
 import { samplesShown, withSampleMarkers } from './samples.js'
-
-const win = useWindowSize()
 
 const app = useApp()
 
@@ -394,7 +390,7 @@ watch(
       :id="id"
       class="plot"
       style="width: 100%; height: 100%; min-width: 0"
-      :key="`${win.width}-${win.height}-${height}`"
+      :key="height"
       @contextmenu="
         (e) => {
           e.preventDefault()
