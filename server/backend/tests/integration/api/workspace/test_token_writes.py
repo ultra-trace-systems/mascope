@@ -73,6 +73,22 @@ class Write:
         return f"{name} ({self.variant})" if self.variant else name
 
 
+def _sample_item(ids: dict, batch: str | None = None, file: str | None = None):
+    """A whole sample body, as the SDK sends one: on its own batch and file."""
+    return {
+        "sample_batch_id": batch or ids["batch"],
+        "sample_file_id": file or ids["file"],
+        "sample_item_name": "Written with a token",
+        "sample_item_type": "SAMPLE",
+        "sample_item_attributes": {},
+        "tic": 1000.0,
+        "polarity": "+",
+        "ionization_mode_id": "mode",
+        "t0": 0.0,
+        "t1": 60.0,
+    }
+
+
 WRITES = [
     Write(
         "POST",
@@ -120,20 +136,7 @@ WRITES = [
     Write(
         "PATCH",
         "/api/sample/items/{item}",
-        lambda ids: {
-            "sample_item": {
-                "sample_batch_id": ids["batch"],
-                "sample_file_id": "file",
-                "sample_item_name": "Written with a token",
-                "sample_item_type": "SAMPLE",
-                "sample_item_attributes": {},
-                "tic": 1000.0,
-                "polarity": "+",
-                "ionization_mode_id": "mode",
-                "t0": 0.0,
-                "t1": 60.0,
-            }
-        },
+        lambda ids: {"sample_item": _sample_item(ids)},
         _SAMPLES,
         "update_sample_item",
         200,
@@ -279,12 +282,13 @@ WRITES = [
 WORKSPACE_WRITES = [write for write in WRITES if not write.global_role]
 
 
-def _ids(workspace, dataset, batch, item, collection, compound) -> dict[str, str]:
+def _ids(workspace, dataset, batch, item, file, collection, compound) -> dict[str, str]:
     return {
         "ws": workspace["workspace_id"],
         "dataset": dataset,
         "batch": batch,
         "item": item,
+        "file": file,
         "collection": collection,
         "compound": compound,
     }
@@ -328,6 +332,7 @@ def alpha_ids(
     alpha_dataset,
     alpha_batch,
     alpha_item,
+    sample_file,
     alpha_target_collection,
     test_compound,
     unlinked_batches,
@@ -337,6 +342,7 @@ def alpha_ids(
         alpha_dataset,
         alpha_batch,
         alpha_item,
+        sample_file,
         alpha_target_collection,
         test_compound,
     )
@@ -349,6 +355,7 @@ def beta_ids(
     beta_dataset,
     beta_batch,
     beta_item,
+    beta_sample_file,
     beta_target_collection,
     test_compound,
     unlinked_batches,
@@ -358,6 +365,7 @@ def beta_ids(
         beta_dataset,
         beta_batch,
         beta_item,
+        beta_sample_file,
         beta_target_collection,
         test_compound,
     )
@@ -528,6 +536,24 @@ DESTINATION_WRITES = [
         _SAMPLES,
         "move_sample_items",
         202,
+    ),
+    Write(
+        "PATCH",
+        "/api/sample/items/{item}",
+        lambda ids: {"sample_item": _sample_item(ids, batch=ids["dest_batch"])},
+        _SAMPLES,
+        "update_sample_item",
+        200,
+        variant="into another batch",
+    ),
+    Write(
+        "PATCH",
+        "/api/sample/items/{item}",
+        lambda ids: {"sample_item": _sample_item(ids, file=ids["dest_file"])},
+        _SAMPLES,
+        "update_sample_item",
+        200,
+        variant="onto another file",
     ),
     Write(
         "POST",
