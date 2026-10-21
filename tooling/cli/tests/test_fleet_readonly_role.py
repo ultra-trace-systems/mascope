@@ -290,6 +290,56 @@ def test_public_create_is_not_looked_past_in_check_mode(monkeypatch, capsys):
     assert code == 1 and cluster.sql == [] and out["changed"] is False
 
 
+def test_a_role_that_cannot_log_in_is_not_changed_again(monkeypatch, capsys):
+    """A second run while PUBLIC still holds CREATE fails, and changes nothing."""
+    no_login = converged_role()
+    no_login.attributes["rolcanlogin"] = False
+    cluster = Cluster(monkeypatch, [no_login], [public_create()])
+    code, out = cluster.run(capsys)
+    assert code == 1 and "through PUBLIC" in out["failed"]
+    assert cluster.sql == [] and out["changed"] is False and out["changes"] == []
+
+
+def test_create_held_directly_and_through_public_loses_login_after_the_revoke(
+    monkeypatch, capsys
+):
+    """
+    PUBLIC's share shows only once the direct grant is gone, so the check after
+    the changes catches it. The run reads the databases three times: before
+    anything changes, for the plan, and back after the changes.
+    """
+    both = converged_database()
+    both.schemas[0].create = "role"
+    cluster = Cluster(monkeypatch, [converged_role()], [both, both, public_create()])
+    code, out = cluster.run(capsys)
+    assert code == 1 and "through PUBLIC" in out["failed"]
+    assert cluster.sql == [
+        'REVOKE CREATE ON SCHEMA "public" FROM "mascope_readonly";',
+        'ALTER ROLE "mascope_readonly" NOLOGIN;',
+    ]
+    assert out["changes"] == [
+        "mascope_site.public: take CREATE on the schema from the role",
+        "take LOGIN from the role",
+    ]
+
+
+def test_a_failed_check_reports_nothing_done(monkeypatch, capsys):
+    """A --check that fails after planning the password file made no file."""
+    cluster = Cluster(monkeypatch, [rr.RoleState(False)], [converged_database()])
+    monkeypatch.setattr(
+        rr,
+        "prepare_file",
+        lambda path, owner, check: ["create the role's password file"],
+    )
+
+    def empty(path):
+        raise rr.Failed("is empty")
+
+    monkeypatch.setattr(rr, "read_password", empty)
+    code, out = cluster.run(capsys, "--check")
+    assert code == 1 and out["changed"] is False and out["changes"] == []
+
+
 def test_a_failure_reports_what_the_run_changed_before_it(monkeypatch, capsys):
     cluster = Cluster(
         monkeypatch,
