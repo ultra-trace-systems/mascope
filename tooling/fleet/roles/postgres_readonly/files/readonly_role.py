@@ -16,11 +16,13 @@ way, so a run where nothing drifted changes nothing.
     readonly_role.py --file PATH --file-owner USER [--check] [options]
 
 Prints one JSON object, {"changed": ..., "changes": [...], "verified": ...};
-with --check it changes nothing and lists what would change. Before changing
-anything it fails if the role would hold a write privilege through PUBLIC,
-which revoking from the role cannot remove: such a role is not made, and one
-that exists already is left unable to log in. After applying, it reads
-everything back and fails if the role still differs. A failure prints
+with --check it changes nothing and lists what would change. It fails if the
+role would hold a write privilege through PUBLIC, which revoking from the role
+cannot remove, before it changes anything, or, when the role also holds that
+privilege directly, once it has taken the direct grant back: such a role is
+not made, and one that exists already is left unable to log in. After
+applying, it reads everything back and fails if the role still differs. A
+failure prints
 {"changed": ..., "changes": [...], "failed": ...}, the changes being what the
 run did make before it failed. Last, unless the backend container is down, it
 connects as the role from that container the way a prod job does and checks
@@ -589,9 +591,13 @@ def apply(args, changes, done):
         done.append(what)
 
 
-def refuse_public_writes(args, problems, role_exists, done):
-    """Fail on a write privilege the role would hold through PUBLIC, first taking LOGIN from it."""
-    if role_exists and not args.check:
+def refuse_public_writes(args, problems, role, done):
+    """Fail on a write privilege the role would hold through PUBLIC, first taking LOGIN from it.
+
+    A role that cannot log in already is left as it is, so a run while PUBLIC
+    still holds the privilege fails without calling that a change.
+    """
+    if role.exists and role.attributes.get("rolcanlogin") and not args.check:
         nologin = "ALTER ROLE {} NOLOGIN".format(ident(args.role))
         apply(args, [("take LOGIN from the role", "postgres", [nologin])], done)
     raise Failed(
@@ -668,7 +674,7 @@ def converge(args, done):
     # PUBLIC is not made, and one that exists already cannot log in any more.
     problems = unfixable(read_databases(args, role.exists))
     if problems:
-        refuse_public_writes(args, problems, role.exists, done)
+        refuse_public_writes(args, problems, role, done)
 
     report = prepare_file(args.file, args.file_owner, args.check)
     if not args.check:
@@ -703,7 +709,7 @@ def converge(args, done):
     # shows as PUBLIC's only once the direct grant has been taken back.
     problems = unfixable(databases)
     if problems:
-        refuse_public_writes(args, problems, role.exists, done)
+        refuse_public_writes(args, problems, role, done)
     if not databases:
         report.append("note: no database named {}* yet".format(args.database_prefix))
 
@@ -772,9 +778,8 @@ def main(argv=None):
         if args.connection_limit < 1:
             raise Failed("the connection limit must be at least 1")
         result = converge(args, done)
-    except (
-        Exception
-    ) as exc:  # every exit prints the JSON, with what this run did change
+    # Every exit prints the JSON, with what this run did change.
+    except Exception as exc:
         reason = (
             str(exc)
             if isinstance(exc, Failed)

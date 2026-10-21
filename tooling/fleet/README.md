@@ -149,10 +149,11 @@ on sequences, CREATE on a schema or database, other default privileges. What
 PUBLIC holds by default (CONNECT and TEMPORARY on a database, EXECUTE on
 functions) it keeps. A write privilege it would hold through PUBLIC, such as
 CREATE on the `public` schema in a cluster first initialised before
-PostgreSQL 15, fails the run before it changes anything: the role is not made
-there, and a role that exists already loses LOGIN, which a later run gives
-back once PUBLIC no longer holds the privilege. Revoking that from PUBLIC is an
-operator's call.
+PostgreSQL 15, fails the run before it changes anything, or, when the role also
+holds the privilege directly, once it has taken that direct grant back: the
+role is not made there, and a role that exists already loses LOGIN, which a
+later run gives back once PUBLIC no longer holds the privilege. Revoking that
+from PUBLIC is an operator's call.
 
 The role is kept to the app databases' own tables. PostgreSQL's predefined
 `pg_read_all_data` would also read them, and would survive the restores below
