@@ -2,9 +2,9 @@
 
 Mascope's toolkit for AI agents: a plain Python library over
 [`mascope_sdk`](../sdk/README.md) that finds, describes and loads Mascope's
-data as **handles, not tables**. It is the first part of the AI layer
-designed in [`docs/dev/ai_layer.md`](../../docs/dev/ai_layer.md) (sections
-3.1, 3.2, 3.5 and 3.6); the MCP server and the oracle calls build on it.
+data as **handles, not tables**. It is the AI layer's library, designed in
+[`docs/dev/ai_layer.md`](../../docs/dev/ai_layer.md) (sections 3.1 to 3.6);
+the MCP server builds on it.
 
 The backbone is one invariant: tables never pass through a model's context.
 A loader returns a `Frame`, whose repr prints the schema, the row count,
@@ -49,6 +49,10 @@ global collections).
 | `load_timeseries(compound= / ion= / isotope=, dataset=, batches=, samples=, max_rows=)` | `Frame` |
 | `load_spectrum(sample, mz_range=, t_range=, max_rows=)` | `Frame` |
 | `load_peaks_by_stage(sample, stages, max_rows=)` | `Frame` |
+| `query_by_mz(mz, mechanisms, tolerance_ppm=5.0, formula_ranges=, limit=20)` | `Candidates`: Mascope's formulas for an m/z, the closest first |
+| `match_compounds(sample, formulas, params=None, suggested=, mechanisms=)` | `MatchResult`: one verdict per candidate, the tree as a `Frame` |
+| `derive(df, inputs, code=)` | `Frame` of a table computed from Frames, their sources kept |
+| `answer(text, code=, inferred=, frames=)` | the manifest record of an answer |
 
 **Names.** A string matches a name as a case-insensitive literal substring
 (`"Sample (A)"` means those characters, not a regex); pass a compiled
@@ -76,14 +80,63 @@ needs and the role the user has), `NotAuthenticated`, `InvalidRequest`,
 `Unavailable`, `StaleFrame`. Transient failures were already retried by the SDK; the
 toolkit adds no retry.
 
+## The oracle
+
+The toolkit computes no mass, score or isotope ratio, so a model using it
+cannot make up an assignment. Mascope proposes candidates and scores them,
+and the model narrates.
+
+```python
+hits = kit.query_by_mz(124.9244, ["[M+Br]-"])  # Candidates, closest first
+result = kit.match_compounds("Sample 1", hits, suggested=["CH2O3"])
+result  # one line per verdict: status, score, best ion, peaks
+result.verdict("CH2O2").peak_ids  # the peaks Mascope found it at
+result.unscored  # candidates Mascope gave no score: speculation
+result.tree.df  # the compound -> ion -> isotopologue tree, in Python
+```
+
+A `Verdict` holds Mascope's compound score and status (`probable`,
+`possible` or `unmatched`, from its match category), each ion's score, and
+the peaks attributed to the candidate: the peaks of its matched ions where an
+isotopologue was found (score above 0). `params=None` and `mechanisms=None`
+use the instrument's defaults and the sample's mechanisms, as the app's
+matches do. The model's own candidates go in `suggested` and are scored the
+same way; every verdict says where its candidate came from (`given`,
+`mass_query` or `model`). A formula Mascope refuses, or returns nothing for,
+is listed in `unscored` with the reason, and the rest are scored. The tree,
+tens of thousands of rows for a sample's worth of candidates, is a `Frame`
+and never a result. Nothing is saved: this is Mascope's matching preview.
+
+## The provenance manifest
+
+Each session keeps `manifest.jsonl`, one JSON record a line:
+
+- `toolkit`: the `mascope_ai`, `mascope_sdk` and Python versions, the server
+  and the workspace, once per toolkit opened on the session;
+- `call`: each call, with its parameters, the objects it touched, the Frame
+  it made, the server's provenance block, and the values it returned split
+  into those Mascope returned and those the SDK computed client-side. The
+  ion and compound scores of a peak load are the SDK's own
+  (`Frame.client_columns`);
+- `answer`: each `kit.answer(...)`, with the code that produced it, the calls
+  since the answer before, every object they touched, and the values split
+  into `mascope`, `client`, `unscored` (candidates Mascope did not score)
+  and `inferred` (the model's own statements).
+
+`session.manifest.touched()` lists every object the session touched. A table
+computed in Python is kept with `kit.derive(df, [frames])`, and its
+`source_refs` are those of the Frames it came from. So an answer built on it
+still names every object behind it.
+
 ## Sessions
 
 A `Session` is one conversation's directory under the scratch root
 (`$MASCOPE_AI_SCRATCH`, else `~/.cache/mascope_ai/sessions`): each Frame as
-parquet beside a JSON file of its summary and the query that made it.
-`session.frame(id)` reopens a Frame, `session.evict(id)` drops its rows
-(the next `.df` loads them again through its query, and raises
-`StaleFrame` if the rows it gets are not the Frame's), and
+parquet beside a JSON file of its summary and the query that made it, and
+the provenance manifest. `session.frame(id)` reopens a Frame,
+`session.evict(id)` drops its rows (the next `.df` loads them again through
+its query, and raises `StaleFrame` if the rows it gets are not the Frame's;
+a derived Frame cannot be loaded again), and
 `session.discard()` deletes the session. Nothing in it is a source of
 truth.
 

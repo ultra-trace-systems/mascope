@@ -151,6 +151,9 @@ class Frame:
         time-ranged read left out, say), each warning once.
     :ivar provenance: The server's provenance block - the deployment and the
         software that produced the rows - or None from a server without one.
+    :ivar client_columns: The columns whose values the SDK computed
+        client-side rather than read from Mascope (the ion and compound
+        scores of a peak load; :data:`~mascope_ai.manifest.CLIENT_COMPUTED`).
     """
 
     id: str
@@ -164,6 +167,7 @@ class Frame:
     failures: tuple[FailureNote, ...]
     warnings: tuple[str, ...] = ()
     provenance: dict[str, Any] | None = None
+    client_columns: tuple[str, ...] = ()
     _rows: pd.DataFrame | None = field(default=None, compare=False)
     _session: "Session | None" = field(default=None, compare=False)
 
@@ -176,18 +180,23 @@ class Frame:
         query: dict[str, Any],
         session: "Session | None" = None,
         frame_id: str | None = None,
+        client_columns: "tuple[str, ...] | list[str]" = (),
     ) -> "Frame":
         """The Frame of a loaded table.
 
         Completeness, failures, warnings and provenance are read off
         ``df.attrs``, where the SDK's loaders put them; a table without
         them is complete.
+
+        :param client_columns: The columns the SDK computed client-side;
+            those *df* lacks are left out.
         """
         attrs = df.attrs
+        columns = tuple(str(column) for column in df.columns)
         return cls(
             id=frame_id or new_frame_id(),
             n_rows=len(df),
-            columns=tuple(str(column) for column in df.columns),
+            columns=columns,
             dtypes=tuple(str(dtype) for dtype in df.dtypes),
             head5=tuple(
                 {str(column): _cell(value) for column, value in row.items()}
@@ -203,6 +212,7 @@ class Frame:
             provenance=jsonable(attrs["provenance"])
             if isinstance(attrs.get("provenance"), dict)
             else None,
+            client_columns=tuple(c for c in client_columns if c in columns),
             _rows=df,
             _session=session,
         )
@@ -313,6 +323,7 @@ class Frame:
             "failures": [note.to_dict() for note in self.failures],
             "warnings": list(self.warnings),
             "provenance": self.provenance,
+            "client_columns": list(self.client_columns),
         }
 
     @classmethod
@@ -334,5 +345,6 @@ class Frame:
             ),
             warnings=tuple(data.get("warnings", ())),
             provenance=data.get("provenance"),
+            client_columns=tuple(data.get("client_columns", ())),
             _session=session,
         )
