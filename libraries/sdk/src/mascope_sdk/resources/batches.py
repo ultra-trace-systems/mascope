@@ -166,15 +166,20 @@ class BatchesResource(BaseResource):
         """The matched intensity of target ions in every sample of a batch,
         one row per (sample, target ion).
 
-        One request per batch, over the compact series route the app's batch
+        One request per scope, over the compact series route the app's batch
         chart draws from, rather than one per sample as :meth:`~mascope_sdk.client.MascopeClient.load_peaks`
-        makes. Only matched pairs are rows: an ion a sample did not match has
-        no row for that sample.
+        makes. A row is a (sample, ion) pair the server holds a match record
+        for, matched or not: ``match_category`` 0 is no match, at intensity
+        0. Filter on ``match_category > 0`` for the detections alone, or
+        counts and means per ion take the misses in.
 
         The ions are those of ``collection``, or ``ions``, or - when neither
         is given - those of every target collection the batch has, read with
-        one request per collection. An ion two of them share is one row per
-        sample.
+        one request per collection. Those collections come from
+        :meth:`~mascope_sdk.resources.collections.CollectionsResource.list`,
+        whose answer the client caches: after attaching a collection to the
+        batch in the same session, call ``clear_cache()`` first. An ion two
+        of them share is one row per sample.
 
         :param batch_id: The ID of the sample batch.
         :type batch_id: str
@@ -185,8 +190,9 @@ class BatchesResource(BaseResource):
         :return: A DataFrame with ``sample_item_id``, ``target_ion_id``,
                  ``target_compound_name``, ``target_compound_formula``,
                  ``ion_formula``, ``ionization_mechanism``, ``intensity`` (the
-                 match's summed peak intensity) and ``match_category``; empty,
-                 with those columns, when nothing matched. Stamped with the
+                 match's summed peak intensity, 0 for no match) and
+                 ``match_category``; empty, with those columns, when the batch
+                 has no match records for the ions. Stamped with the
                  server's ``attrs["provenance"]`` as the loaders' frames are.
                  Join ``samples.list(batch=...)`` on ``sample_item_id`` for
                  each sample's time.
@@ -243,7 +249,7 @@ class BatchesResource(BaseResource):
             .drop_duplicates(["sample_item_id", "target_ion_id"], ignore_index=True)
         )
         logger.info(
-            "Read {} matched (sample, ion) pair(s) of batch '{}'", len(frame), batch_id
+            "Read {} (sample, ion) record(s) of batch '{}'", len(frame), batch_id
         )
         return self._client._with_provenance(frame)
 

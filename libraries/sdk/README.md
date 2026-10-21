@@ -709,9 +709,9 @@ workspaces, not only the client's.
 | `update(batch_id, target_collection_ids, name=, description=)` | Rename it and set its target collections | `dict` |
 | `copy(batch_id, dataset_id, name, description=)` | Copy it into a dataset, in the background | `dict` |
 | `delete(batch_id)` | Delete it and its samples, in the background | `dict` |
-| `ion_series(batch_id, collection=, ions=)` | Each sample's matched intensity of each target ion, one request per batch | `pd.DataFrame` |
+| `ion_series(batch_id, collection=, ions=)` | Each sample's matched intensity of each target ion, one request per collection | `pd.DataFrame` |
 
-`ion_series` returns one row per matched (sample, target ion): `sample_item_id`, `target_ion_id`, `target_compound_name`, `target_compound_formula`, `ion_formula`, `ionization_mechanism`, `intensity` and `match_category`. It reads the ions of `collection` (an ID), or the `ions` named by ID, or else those of every target collection the batch has. Join `samples.list(batch=...)` on `sample_item_id` for each sample's time.
+`ion_series` returns one row per (sample, target ion) the server holds a match record for: `sample_item_id`, `target_ion_id`, `target_compound_name`, `target_compound_formula`, `ion_formula`, `ionization_mechanism`, `intensity` and `match_category`. The misses are rows too: `match_category` 0 is no match, at intensity 0, so filter on `match_category > 0` before counting detections or averaging. It reads the ions of `collection` (an ID), or the `ions` named by ID, or else those of every target collection the batch has, with one request each; that last list is the client's cached `collections.list`, so call `clear_cache()` after attaching a collection in the same session. Join `samples.list(batch=...)` on `sample_item_id` for each sample's time.
 
 #### `mascope.samples`
 
@@ -821,12 +821,12 @@ The compound list is shared by every workspace, so these need the global editor 
 | ------------------------------------------------ | -------------------------------------------------------------- | ------------------- |
 | `list(batch_id, tier=, min_n_present=, run_id=)` | The batch's species table, one row per batch peak              | `pd.DataFrame│None` |
 | `members(batch_id, sample_id=)`                  | The whole ledger, one row per member                           | `pd.DataFrame│None` |
-| `series(batch_id, tier=, min_n_present=2, run_id=)` | Each sample's intensity of each batch peak, one request per batch | `pd.DataFrame` |
+| `series(batch_id, tier=, min_n_present=2, run_id=)` | Each sample's intensity of each batch peak, in one read per batch | `pd.DataFrame` |
 | `verdicts(batch_id)`                             | The batch-level verdicts on its species                        | `pd.DataFrame│None` |
 | `runs(batch_id)`                                 | The batch runs that rewrote its ledger, newest first           | `pd.DataFrame│None` |
 | `import_run(batch_id, rows, engine=, engine_version=)` | Land an external engine's batch-level result as a run    | `dict│None`         |
 
-`series` is the slim counterpart of `members`: one row per (sample, batch peak) with the member's `sample_item_id`, `sample_peak_id`, `intensity` and `tier` beside its batch peak's `batch_peak_id`, `batch_mz`, `consensus_formula`, `consensus_ion_formula` and `consensus_tier`. `min_n_present=2` leaves out the batch peaks only one sample saw. `df.attrs["run_id"]` names the run the rows are from: `run_id` when given, else the batch's current run. See [`load_batch_ledger`](#load_batch_ledger-the-batch-ledger).
+`series` is the slim counterpart of `members`: one row per (sample, batch peak) with the member's `sample_item_id`, `sample_peak_id`, `intensity` and `tier` beside its batch peak's `batch_peak_id`, `batch_mz`, `consensus_formula`, `consensus_ion_formula` and `consensus_tier`. `min_n_present=2` leaves out the batch peaks only one sample saw. `df.attrs["run_id"]` names the run the rows are from: `run_id` when given, else the batch's current run. While a rebuild or search is running, the previous run is still the current one but the live ledger is being rewritten, so the rows may be half of each; `series` logs a warning then, and a read after the run finishes is the reliable one. See [`load_batch_ledger`](#load_batch_ledger-the-batch-ledger).
 
 #### `mascope.ionization`
 
