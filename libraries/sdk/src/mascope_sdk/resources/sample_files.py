@@ -306,7 +306,7 @@ class SampleFilesResource(BaseResource):
         :type instrument: str, optional
         :param page: Only this page of the listing, counted from 0.
         :type page: int, optional
-        :param limit: Files per page. Defaults to 1000.
+        :param limit: Files per page, at least 1. Defaults to 1000.
         :type limit: int, optional
         :return: A DataFrame with one row per file: ``sample_file_id``,
                  ``filename``, ``instrument``, ``instrument_type``,
@@ -314,13 +314,17 @@ class SampleFilesResource(BaseResource):
                  ``datetime`` (the same in the instrument's local time,
                  naive), ``acquisition_timezone`` (the zone that local time
                  is in, where known), ``length`` [s], ``polarity`` and the
-                 file's other fields; empty when no file is in the range.
+                 file's other fields; empty when no file is in the range,
+                 with the columns named here alone.
                  Stamped with the server's ``attrs["provenance"]`` as the
                  loaders' frames are.
         :rtype: pd.DataFrame
+        :raises ValueError: If ``limit`` is below 1.
         :raises AuthenticationError: If authentication fails.
         :raises MascopeAPIError: If the API request fails.
         """
+        if limit is not None and limit < 1:
+            raise ValueError(f"limit must be at least 1, not {limit}")
         page_size = limit or LIST_PAGE_LIMIT
         params: dict[str, Any] = {"limit": page_size}
         for name, value in (

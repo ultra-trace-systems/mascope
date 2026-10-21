@@ -526,6 +526,34 @@ class TestSeries:
         ]
         assert series.attrs["run_id"] == "run-2"
 
+    def test_a_run_in_flight_is_warned_about(self, server, resource, posts):
+        from loguru import logger
+
+        seen: list[str] = []
+        handler = logger.add(
+            lambda m: seen.append(m.record["message"]), level="WARNING"
+        )
+        try:
+            resource.series(BATCH_ID)
+            assert seen == []
+
+            server.runs = [
+                {
+                    **server.runs[0],
+                    "batch_peak_run_id": "run-3",
+                    "status": "running",
+                    "current": False,
+                },
+                *server.runs,
+            ]
+            series = resource.series(BATCH_ID)
+        finally:
+            logger.remove(handler)
+
+        assert len(seen) == 1 and "in flight" in seen[0]
+        # The current run is still the one named: the warning is the caveat.
+        assert series.attrs["run_id"] == "run-2"
+
     def test_the_current_run_is_found_wherever_it_is_listed(
         self, server, resource, posts
     ):
