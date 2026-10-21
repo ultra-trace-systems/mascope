@@ -106,13 +106,6 @@ const heights = computed(() => [
   width: 100%;
 }
 
-.match-splitter :deep(.p-splitterpanel-content) {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-}
-
 .match-splitter .row {
   display: flex;
   flex: 1;

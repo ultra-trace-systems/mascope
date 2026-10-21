@@ -299,3 +299,30 @@ describe('BaseChartPlotly selection', () => {
     })
   })
 })
+
+// The plot div is keyed on the height a pane hands in: a new height gives a
+// new div, which the redraw then fills. A window resize keeps the div, since
+// nothing would redraw an empty one; Plotly's own responsive resize follows
+// the window instead.
+describe('BaseChartPlotly plot div', () => {
+  it('replaces the plot div for a new height', async () => {
+    const wrapper = await mountChart([peak()], { height: 300 })
+    const before = wrapper.find('.plot').element
+
+    await wrapper.setProps({ height: 400 })
+
+    expect(wrapper.find('.plot').element).not.toBe(before)
+  })
+
+  it('keeps the plot div through a window resize', async () => {
+    const wrapper = await mountChart([peak()], { height: 300 })
+    const before = wrapper.find('.plot').element
+
+    window.innerWidth += 200
+    window.innerHeight += 100
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+
+    expect(wrapper.find('.plot').element).toBe(before)
+  })
+})
