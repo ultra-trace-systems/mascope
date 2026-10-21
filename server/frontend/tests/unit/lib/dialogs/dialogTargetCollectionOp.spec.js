@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
@@ -20,15 +20,26 @@ import PrimeVue from 'primevue/config'
 
 vi.mock('@/api', () => ({ api: { http: { get: vi.fn().mockResolvedValue([]) } } }))
 
-vi.mock('primevue/useconfirm', () => ({ useConfirm: () => ({ require: vi.fn() }) }))
+// The confirmation a create asks for, and the collection calls a save makes.
+const { confirmRequire, collectionApi } = vi.hoisted(() => ({
+  confirmRequire: vi.fn(),
+  collectionApi: { create: vi.fn(), update: vi.fn() }
+}))
+vi.mock('primevue/useconfirm', () => ({ useConfirm: () => ({ require: confirmRequire }) }))
 
-// The paste context drags in the whole base barrel; pasting is not what this
-// test is about, only that it keeps wrapping the panel's changes table.
+// The paste context drags in the whole base barrel. Its stub keeps wrapping
+// the panel's changes table; a test pastes by emitting its `validated` event
+// with what the real parser makes of the clipboard.
 vi.mock('@/lib/base', () => ({
-  BaseClipboardContext: { template: '<div><slot /></div>' }
+  BaseClipboardContext: { name: 'BaseClipboardContext', template: '<div><slot /></div>' }
 }))
 
 const noPt = () => ({})
+// The stored compounds the "All compounds" source lists; empty unless a test
+// fills it.
+const { compoundList } = vi.hoisted(() => ({ compoundList: [] }))
+// The collection an update opens on; none unless a test sets one.
+const { opened } = vi.hoisted(() => ({ opened: { collection: null } }))
 vi.mock('@/stores', () => ({
   useApp: () => ({
     auth: { user: { role_id: 100 } },
@@ -50,20 +61,23 @@ vi.mock('@/stores', () => ({
       },
       target: {
         collection: {
-          detailed: null,
+          get detailed() {
+            return opened.collection
+          },
           list: [],
           read: vi.fn(),
-          create: vi.fn(),
-          update: vi.fn(),
+          create: collectionApi.create,
+          update: collectionApi.update,
           delete: vi.fn()
         },
-        compound: { list: [] }
+        compound: { list: compoundList }
       }
     }
   })
 }))
 
 import DialogTargetCollectionOp from '@/lib/dialogs/DialogTargetCollectionOp.vue'
+import { parseCompoundPaste } from '@/lib/chem'
 
 // The defect is in the dialog's own slot content, so every other PrimeVue piece
 // is reduced to a passthrough that still renders its default slot.
@@ -142,5 +156,400 @@ describe('DialogTargetCollectionOp add-compounds panel', () => {
     // Filtered rather than asserting no warnings at all - the stubs declare a
     // trimmed prop surface and may warn about unrelated things.
     expect(warnings.filter((message) => /Duplicate keys/.test(message))).toEqual([])
+  })
+})
+
+const METHANE = {
+  cas: '74-82-8',
+  inchikey: 'VNWKTOKETHGBQD-UHFFFAOYSA-N',
+  inchi: 'InChI=1S/CH4/h1H4',
+  smiles: 'C'
+}
+
+// The changes table: the one whose dataKey is a function of the row.
+const changesTable = (wrapper) =>
+  wrapper
+    .findAllComponents({ name: 'DataTable' })
+    .find((table) => typeof table.props('dataKey') === 'function')
+
+const saveButton = (wrapper) =>
+  wrapper
+    .findAllComponents({ name: 'Button' })
+    .find((button) => button.attributes('label') === 'Save')
+
+// Saves a new collection and returns what it sends to the API.
+async function saveCreated(wrapper) {
+  saveButton(wrapper).vm.$emit('click')
+  await nextTick()
+  const [[{ accept }]] = confirmRequire.mock.calls
+  accept()
+  const [[sent]] = collectionApi.create.mock.calls
+  return sent
+}
+
+describe('DialogTargetCollectionOp manual compound input', () => {
+  afterEach(() => {
+    compoundList.splice(0)
+    confirmRequire.mockReset()
+    collectionApi.create.mockReset()
+  })
+
+  const field = (wrapper, id) =>
+    wrapper.findAllComponents({ name: 'InputText' }).find((input) => input.attributes('id') === id)
+
+  async function openOnInput() {
+    const wrapper = mount(DialogTargetCollectionOp, {
+      props: { action: null },
+      global: { plugins: [PrimeVue], stubs, directives: { tooltip: {} } }
+    })
+    await wrapper.setProps({ action: 'create' })
+    await flushPromises()
+    wrapper
+      .findAllComponents({ name: 'SelectButton' })
+      .find((c) => (c.props('options') ?? []).some((o) => o.value === 'input'))
+      .vm.$emit('update:modelValue', 'input')
+    await nextTick()
+    return wrapper
+  }
+
+  const type = async (wrapper, id, value) => {
+    field(wrapper, id).vm.$emit('update:modelValue', value)
+    await nextTick()
+  }
+
+  const typeStructure = async (wrapper, structure) => {
+    for (const [name, value] of Object.entries(structure)) {
+      await type(wrapper, `create-compound-${name}`, value)
+    }
+  }
+
+  const addButton = (wrapper) =>
+    wrapper
+      .findAllComponents({ name: 'Button' })
+      .find((button) => /compound$/.test(button.attributes('label') ?? ''))
+
+  const structureGroup = (wrapper) =>
+    wrapper
+      .findAllComponents({ name: 'Panel' })
+      .find((panel) => panel.props('header') === 'Structure')
+
+  it('has a collapsed Structure group with CAS, InChIKey, InChI and SMILES', async () => {
+    const wrapper = await openOnInput()
+
+    expect(structureGroup(wrapper).props('collapsed')).toBe(true)
+    for (const id of [
+      'add-compound-formula',
+      'add-compound-name',
+      'create-compound-cas',
+      'create-compound-inchikey',
+      'create-compound-inchi',
+      'create-compound-smiles'
+    ]) {
+      expect(field(wrapper, id), id).toBeDefined()
+    }
+  })
+
+  it('creates the compound from its formula and name', async () => {
+    const wrapper = await openOnInput()
+    await type(wrapper, 'add-compound-formula', 'CH4')
+    await type(wrapper, 'add-compound-name', 'Methane')
+
+    addButton(wrapper).vm.$emit('click')
+    await nextTick()
+
+    expect(changesTable(wrapper).props('value')).toEqual([
+      expect.objectContaining({
+        target_compound_formula: 'CH4',
+        target_compound_name: 'Methane',
+        status: '1 create'
+      })
+    ])
+  })
+
+  it('finds a stored compound by the CAS number entered', async () => {
+    compoundList.push({
+      target_compound_id: 'tc1',
+      target_compound_formula: 'CH4',
+      target_compound_name: 'Methane',
+      cas_number: METHANE.cas
+    })
+    const wrapper = await openOnInput()
+    await type(wrapper, 'add-compound-formula', 'CH3D')
+    expect(addButton(wrapper).attributes('label')).toBe('Create compound')
+
+    await typeStructure(wrapper, { cas: METHANE.cas })
+    expect(addButton(wrapper).attributes('label')).toBe('Add compound')
+    expect(addButton(wrapper).attributes('severity')).toBe('info')
+  })
+
+  it('will not add a CAS number already in the selection twice', async () => {
+    const wrapper = await openOnInput()
+    await type(wrapper, 'add-compound-formula', 'CH4')
+    await typeStructure(wrapper, { cas: METHANE.cas })
+    addButton(wrapper).vm.$emit('click')
+    await nextTick()
+
+    await type(wrapper, 'add-compound-formula', 'CH3D')
+    await typeStructure(wrapper, { cas: METHANE.cas })
+    expect(addButton(wrapper).attributes('disabled')).toBe('true')
+  })
+
+  it('sends the structure entered with the created compound', async () => {
+    const wrapper = await openOnInput()
+    await type(wrapper, 'add-compound-formula', 'CH4')
+    await type(wrapper, 'add-compound-name', 'Methane')
+    await typeStructure(wrapper, METHANE)
+    addButton(wrapper).vm.$emit('click')
+    await nextTick()
+    await type(wrapper, 'add-compound-formula', 'C2H6')
+    await typeStructure(wrapper, { inchikey: 'OTMSDBZUPAUEDD-UHFFFAOYSA-N', smiles: '  ' })
+    addButton(wrapper).vm.$emit('click')
+    await nextTick()
+
+    const { target_compounds_create } = await saveCreated(wrapper)
+    expect(target_compounds_create).toEqual([
+      {
+        target_compound_formula: 'CH4',
+        target_compound_name: 'Methane',
+        cas_number: METHANE.cas,
+        inchikey: METHANE.inchikey,
+        inchi: METHANE.inchi,
+        smiles: METHANE.smiles
+      },
+      {
+        target_compound_formula: 'C2H6',
+        target_compound_name: '',
+        cas_number: '',
+        inchikey: 'OTMSDBZUPAUEDD-UHFFFAOYSA-N',
+        inchi: null,
+        // a blank input is no SMILES: the API refuses an empty one
+        smiles: null
+      }
+    ])
+  })
+
+  it('empties the form and collapses its Structure group after adding', async () => {
+    const wrapper = await openOnInput()
+    structureGroup(wrapper).vm.$emit('update:collapsed', false)
+    await type(wrapper, 'add-compound-formula', 'CH4')
+    await typeStructure(wrapper, METHANE)
+
+    addButton(wrapper).vm.$emit('click')
+    await nextTick()
+
+    expect(structureGroup(wrapper).props('collapsed')).toBe(true)
+    for (const name of Object.keys(METHANE)) {
+      expect(field(wrapper, `create-compound-${name}`).props('modelValue'), name).toBe('')
+    }
+  })
+
+  it.each([
+    ['InChIKey', { inchikey: 'VNWKTOKETHGBQD' }, /InChIKey reads like/],
+    ['InChI', { inchi: '1S/CH4/h1H4' }, /InChI starts with InChI=/]
+  ])('will not add a malformed %s, by the button or by Enter', async (_, structure, tooltip) => {
+    const wrapper = await openOnInput()
+    await type(wrapper, 'add-compound-formula', 'CH4')
+    await typeStructure(wrapper, structure)
+
+    expect(addButton(wrapper).attributes('disabled')).toBe('true')
+    expect(
+      field(wrapper, `create-compound-${Object.keys(structure)[0]}`).attributes('invalid')
+    ).toBe('true')
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Enter' }))
+    await nextTick()
+    expect(changesTable(wrapper)).toBeUndefined()
+
+    // the tooltip says why; the directive stub keeps its binding off the DOM,
+    // so read the reason the button is given
+    expect(wrapper.vm.$.setupState.addCompoundButtonConfig.tooltip).toMatch(tooltip)
+  })
+})
+
+describe('DialogTargetCollectionOp spreadsheet paste', () => {
+  afterEach(() => {
+    compoundList.splice(0)
+    confirmRequire.mockReset()
+    collectionApi.create.mockReset()
+  })
+
+  // The changes table's rows, rendered: the table stub hands each row to the
+  // body slot of every column, so the status column's markup is on screen.
+  const RowTable = {
+    name: 'DataTable',
+    props: ['value', 'dataKey', 'selection'],
+    provide() {
+      return { table: this }
+    },
+    template: '<div><slot /></div>'
+  }
+  const RowColumn = {
+    name: 'Column',
+    props: ['field', 'header'],
+    inject: ['table'],
+    template:
+      '<div><div v-for="(row, i) in table.value ?? []" :key="i" class="cell"><slot name="body" :data="row" /></div></div>'
+  }
+
+  async function open(action = 'create') {
+    const wrapper = mount(DialogTargetCollectionOp, {
+      props: { action: null },
+      global: {
+        plugins: [PrimeVue],
+        stubs: { ...stubs, DataTable: RowTable, Column: RowColumn },
+        directives: { tooltip: {} }
+      }
+    })
+    await wrapper.setProps({ action })
+    await flushPromises()
+    return wrapper
+  }
+
+  const paste = async (wrapper, text) => {
+    wrapper
+      .findComponent({ name: 'BaseClipboardContext' })
+      .vm.$emit('validated', { data: parseCompoundPaste(text) })
+    await nextTick()
+  }
+
+  const methaneRow = `Methane\tCH4\t${METHANE.cas}\t${METHANE.inchikey}\t${METHANE.inchi}\t${METHANE.smiles}`
+
+  it('sends the pasted structure with each created compound, a blank cell as none', async () => {
+    const wrapper = await open()
+    await paste(wrapper, `${methaneRow}\nWater\tH2O\t\t\t\tO`)
+
+    const { target_compounds_create } = await saveCreated(wrapper)
+    expect(target_compounds_create).toEqual([
+      {
+        target_compound_name: 'Methane',
+        target_compound_formula: 'CH4',
+        cas_number: METHANE.cas,
+        inchikey: METHANE.inchikey,
+        inchi: METHANE.inchi,
+        smiles: METHANE.smiles
+      },
+      {
+        target_compound_name: 'Water',
+        target_compound_formula: 'H2O',
+        cas_number: '',
+        inchikey: null,
+        inchi: null,
+        smiles: 'O'
+      }
+    ])
+  })
+
+  it('does not apply a pasted structure to a stored compound, and says so on its row', async () => {
+    compoundList.push(
+      {
+        target_compound_id: 'tc1',
+        target_compound_formula: 'CH4',
+        target_compound_name: 'Methane'
+      },
+      { target_compound_id: 'tc2', target_compound_formula: 'H2O', target_compound_name: 'Water' }
+    )
+    const wrapper = await open()
+    await paste(wrapper, `${methaneRow}\nWater\tH2O\t\t\t\t\nEthane\tC2H6\t\t\t\tCC`)
+
+    const rows = Object.fromEntries(
+      changesTable(wrapper)
+        .props('value')
+        .map((row) => [row.target_compound_formula, row])
+    )
+    expect(rows.CH4).toMatchObject({ status: '2 add', structureNotApplied: true })
+    // a reused row without a structure, and a created one, have nothing to say
+    expect(rows.H2O).toMatchObject({ status: '2 add', structureNotApplied: false })
+    expect(rows.C2H6).toMatchObject({ status: '1 create', structureNotApplied: false })
+    expect(wrapper.findAll('.structure-not-applied')).toHaveLength(1)
+
+    // nothing of the structure is sent for the stored compound
+    const sent = await saveCreated(wrapper)
+    expect(sent.target_compound_ids).toEqual(['tc1', 'tc2'])
+    expect(sent.target_compounds_create.map((c) => c.target_compound_formula)).toEqual(['C2H6'])
+  })
+
+  it('says so on a kept row too', async () => {
+    const methane = {
+      target_compound_id: 'tc1',
+      target_compound_formula: 'CH4',
+      target_compound_name: 'Methane'
+    }
+    compoundList.push(methane)
+    opened.collection = {
+      target_collection_id: 'c1',
+      target_collection_name: 'Gases',
+      target_collection_type: 'TARGETS',
+      workspace_id: 'w1',
+      target_compounds: [methane]
+    }
+    try {
+      const wrapper = await open('update')
+      await paste(wrapper, methaneRow)
+
+      expect(changesTable(wrapper).props('value')).toEqual([
+        expect.objectContaining({ status: '3 keep', structureNotApplied: true })
+      ])
+      expect(wrapper.findAll('.structure-not-applied')).toHaveLength(1)
+    } finally {
+      opened.collection = null
+    }
+  })
+
+  it('forgets which rows had a structure not applied when the dialog opens again', async () => {
+    compoundList.push({
+      target_compound_id: 'tc1',
+      target_compound_formula: 'CH4',
+      target_compound_name: 'Methane'
+    })
+    const wrapper = await open()
+    await paste(wrapper, methaneRow)
+    expect(wrapper.findAll('.structure-not-applied')).toHaveLength(1)
+
+    await wrapper.setProps({ action: null })
+    await wrapper.setProps({ action: 'create' })
+    await flushPromises()
+    await paste(wrapper, 'Methane\tCH4')
+
+    expect(changesTable(wrapper).props('value')).toEqual([
+      expect.objectContaining({ target_compound_id: 'tc1', structureNotApplied: false })
+    ])
+  })
+})
+
+describe('DialogTargetCollectionOp InChIKey', () => {
+  afterEach(() => compoundList.splice(0))
+
+  it('is no column of the compound tables, but can be searched for', async () => {
+    compoundList.push(
+      {
+        target_compound_id: 'tc1',
+        target_compound_formula: 'CH4',
+        target_compound_name: 'Methane',
+        inchikey: 'VNWKTOKETHGBQD-UHFFFAOYSA-N'
+      },
+      { target_compound_id: 'tc2', target_compound_formula: 'C2H6', target_compound_name: 'Ethane' }
+    )
+    const wrapper = mount(DialogTargetCollectionOp, {
+      props: { action: null },
+      global: { plugins: [PrimeVue], stubs, directives: { tooltip: {} } }
+    })
+    await wrapper.setProps({ action: 'create' })
+    await flushPromises()
+
+    const fields = wrapper
+      .findAllComponents({ name: 'Column' })
+      .map((column) => column.attributes('field'))
+    expect(fields).toContain('cas_number')
+    expect(fields).not.toContain('inchikey')
+
+    wrapper
+      .findAllComponents({ name: 'InputText' })
+      .find((input) => input.attributes('placeholder') === 'Search compounds')
+      .vm.$emit('update:modelValue', 'vnwktoket')
+    await nextTick()
+
+    const [table] = compoundTables(wrapper)
+    expect(table.props('value').map(({ target_compound_id }) => target_compound_id)).toEqual([
+      'tc1'
+    ])
   })
 })

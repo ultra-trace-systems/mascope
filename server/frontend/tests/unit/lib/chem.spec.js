@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest'
 
 import {
+  compoundIdentity,
+  identityChanges,
+  isValidInchi,
+  isValidInchikey,
   isValidChemicalFormula,
   isSameCompound,
   findExistingCompound,
@@ -113,6 +117,43 @@ describe('parseCompoundPaste', () => {
       { target_compound_name: 'Water', target_compound_formula: 'H2O', cas_number: '7732-18-5' }
     ])
   })
+
+  it('maps a fourth column to the InChIKey', () => {
+    expect(parseCompoundPaste('Methane\tCH4\t74-82-8\tVNWKTOKETHGBQD-UHFFFAOYSA-N')).toEqual([
+      {
+        target_compound_name: 'Methane',
+        target_compound_formula: 'CH4',
+        cas_number: '74-82-8',
+        inchikey: 'VNWKTOKETHGBQD-UHFFFAOYSA-N'
+      }
+    ])
+  })
+
+  it('maps six columns to name, formula, CAS number, InChIKey, InChI and SMILES', () => {
+    expect(
+      parseCompoundPaste(
+        'Methane\tCH4\t74-82-8\tVNWKTOKETHGBQD-UHFFFAOYSA-N\tInChI=1S/CH4/h1H4\tC\n' +
+          'Water\tH2O\t\t\t\tO'
+      )
+    ).toEqual([
+      {
+        target_compound_name: 'Methane',
+        target_compound_formula: 'CH4',
+        cas_number: '74-82-8',
+        inchikey: 'VNWKTOKETHGBQD-UHFFFAOYSA-N',
+        inchi: 'InChI=1S/CH4/h1H4',
+        smiles: 'C'
+      },
+      {
+        target_compound_name: 'Water',
+        target_compound_formula: 'H2O',
+        cas_number: '',
+        inchikey: '',
+        inchi: '',
+        smiles: 'O'
+      }
+    ])
+  })
 })
 
 describe('validateCompoundPaste', () => {
@@ -162,12 +203,37 @@ describe('validateCompoundPaste', () => {
     expect(result.message).toBe('Some rows are missing a formula, which is required')
   })
 
-  it('rejects more than three columns', () => {
-    const result = validateCompoundPaste([
-      { a: '1', b: '2', c: '3', d: '4' } // 4 columns
-    ])
+  it('accepts six columns, blank structure cells included', () => {
+    const result = validateCompoundPaste(
+      parseCompoundPaste(
+        'Methane\tCH4\t74-82-8\tVNWKTOKETHGBQD-UHFFFAOYSA-N\tInChI=1S/CH4/h1H4\tC\n' +
+          'Water\tH2O\t\t\t\t'
+      )
+    )
+    expect(result.valid).toBe(true)
+    expect(result.message).toBe('Pasted 2 compounds')
+  })
+
+  it('rejects more than six columns', () => {
+    const result = validateCompoundPaste(parseCompoundPaste('a\tCH4\tc\td\te\tf\tg'))
     expect(result.valid).toBe(false)
-    expect(result.message).toContain('1 to 3 are expected')
+    expect(result.message).toBe('You pasted 7 columns but 1 to 6 are expected')
+  })
+
+  it('names a malformed InChIKey', () => {
+    const result = validateCompoundPaste(
+      parseCompoundPaste(
+        'Methane\tCH4\t\tVNWKTOKETHGBQD-UHFFFAOYSA-N\nWater\tH2O\t\tXLYOFNOQVPJJNP'
+      )
+    )
+    expect(result.valid).toBe(false)
+    expect(result.message).toContain("'XLYOFNOQVPJJNP' is not an InChIKey")
+  })
+
+  it('names a malformed InChI', () => {
+    const result = validateCompoundPaste(parseCompoundPaste('Methane\tCH4\t\t\t1S/CH4/h1H4\tC'))
+    expect(result.valid).toBe(false)
+    expect(result.message).toContain("'1S/CH4/h1H4' is not an InChI")
   })
 })
 
@@ -453,5 +519,60 @@ describe('monoisotopicIsotope', () => {
   it('has no answer without rows', () => {
     expect(monoisotopicIsotope([], 'C9H16O7^N-')).toBeUndefined()
     expect(monoisotopicIsotope(null, 'C9H16O7^N-')).toBeUndefined()
+  })
+})
+
+describe('compoundIdentity', () => {
+  it('trims each field and reads a blank one as none', () => {
+    expect(
+      compoundIdentity({ inchikey: ' VNWKTOKETHGBQD-UHFFFAOYSA-N ', inchi: '  ', smiles: 'C' })
+    ).toEqual({ inchikey: 'VNWKTOKETHGBQD-UHFFFAOYSA-N', inchi: null, smiles: 'C' })
+  })
+
+  it('answers no identity for no source', () => {
+    expect(compoundIdentity(null)).toEqual({ inchikey: null, inchi: null, smiles: null })
+  })
+})
+
+describe('identityChanges', () => {
+  const stored = { inchikey: 'VNWKTOKETHGBQD-UHFFFAOYSA-N', inchi: 'InChI=1S/CH4/h1H4' }
+
+  it('sends nothing for an identity left as it was', () => {
+    expect(identityChanges(stored, { ...stored, inchikey: ` ${stored.inchikey}` })).toEqual({})
+  })
+
+  it('sends a field the edit changes, and only that one', () => {
+    expect(identityChanges(stored, { ...stored, smiles: 'C' })).toEqual({ smiles: 'C' })
+  })
+
+  it('sends an emptied field as null, which clears it', () => {
+    expect(identityChanges(stored, { ...stored, inchi: '' })).toEqual({ inchi: null })
+  })
+})
+
+describe('isValidInchikey', () => {
+  it.each(['', null, '  ', 'VNWKTOKETHGBQD-UHFFFAOYSA-N', ' VNWKTOKETHGBQD-UHFFFAOYSA-N '])(
+    'accepts %s',
+    (value) => {
+      expect(isValidInchikey(value)).toBe(true)
+    }
+  )
+
+  it.each([
+    'vnwktoketHGBQD-UHFFFAOYSA-N',
+    'VNWKTOKETHGBQD-UHFFFAOYSA',
+    'VNWKTOKETHGBQDUHFFFAOYSAN'
+  ])('rejects %s', (value) => {
+    expect(isValidInchikey(value)).toBe(false)
+  })
+})
+
+describe('isValidInchi', () => {
+  it.each(['', null, 'InChI=1S/CH4/h1H4'])('accepts %s', (value) => {
+    expect(isValidInchi(value)).toBe(true)
+  })
+
+  it.each(['1S/CH4/h1H4', 'inchi=1S/CH4/h1H4'])('rejects %s', (value) => {
+    expect(isValidInchi(value)).toBe(false)
   })
 })

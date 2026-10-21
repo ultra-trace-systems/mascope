@@ -99,6 +99,83 @@ export function findExistingCompound(compoundList, searchCompound) {
   return compoundList.find((comp) => isSameCompound(comp, searchCompound))
 }
 
+/** The structure identity a target compound may carry, all optional. */
+export const IDENTITY_FIELDS = ['inchikey', 'inchi', 'smiles']
+
+const INCHIKEY = /^[A-Z]{14}-[A-Z]{10}-[A-Z]$/
+
+/**
+ * A compound's structure identity as the API takes it: each field trimmed, a
+ * blank one null. The API refuses an empty string, and an emptied input means
+ * "none".
+ *
+ * @param {Object} source - an object with `inchikey`, `inchi`, `smiles`
+ * @returns {{inchikey: ?string, inchi: ?string, smiles: ?string}}
+ */
+export function compoundIdentity(source) {
+  return Object.fromEntries(
+    IDENTITY_FIELDS.map((field) => {
+      const value = source?.[field]
+      return [field, typeof value === 'string' ? value.trim() || null : null]
+    })
+  )
+}
+
+/**
+ * The identity fields an edit changes, and only those. An update sends no
+ * field it does not change: a field sent empty would clear the stored value,
+ * so an edit opened on a record that lacks the identity must not send it.
+ *
+ * @param {Object} initial - the identity the edit started from
+ * @param {Object} edited - the identity as edited
+ * @returns {Object} the changed fields, normalised by `compoundIdentity`
+ */
+export function identityChanges(initial, edited) {
+  const before = compoundIdentity(initial)
+  const after = compoundIdentity(edited)
+  return Object.fromEntries(
+    IDENTITY_FIELDS.filter((field) => before[field] !== after[field]).map((field) => [
+      field,
+      after[field]
+    ])
+  )
+}
+
+/**
+ * Whether an InChIKey input can be sent: blank, or shaped like a key
+ * (`WQZGKKKJIJFFOK-GASJEMHNSA-N`). The shape is all the API checks too.
+ *
+ * @param {?string} value
+ * @returns {boolean}
+ */
+export function isValidInchikey(value) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  return !text || INCHIKEY.test(text)
+}
+
+/**
+ * Whether an InChI input can be sent: blank, or starting `InChI=`. Whether it
+ * describes the compound's formula is the API's to check.
+ *
+ * @param {?string} value
+ * @returns {boolean}
+ */
+export function isValidInchi(value) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  return !text || text.startsWith('InChI=')
+}
+
+/**
+ * The columns of a compound paste of more than one column, in order. A paste
+ * of n columns takes the first n; a single column is a formula.
+ */
+const PASTE_COLUMNS = [
+  'target_compound_name',
+  'target_compound_formula',
+  'cas_number',
+  ...IDENTITY_FIELDS
+]
+
 /**
  * Parses spreadsheet cells pasted as target compounds.
  *
@@ -106,6 +183,7 @@ export function findExistingCompound(compoundList, searchCompound) {
  * - 1 column:  formula
  * - 2 columns: name, formula
  * - 3 columns: name, formula, CAS number
+ * - 4 to 6 columns: the same, then InChIKey, InChI and SMILES in that order
  *
  * A single-column paste may start with a header cell (e.g. "Formula"); it is
  * dropped when it is not a valid formula but the row below it is.
@@ -116,10 +194,7 @@ export function findExistingCompound(compoundList, searchCompound) {
 export function parseCompoundPaste(text) {
   const lines = text.split('\n').filter((line) => line.trim().length)
   const cols = lines[0] ? lines[0].split('\t').length : 0
-  const fields =
-    cols === 1
-      ? ['target_compound_formula']
-      : ['target_compound_name', 'target_compound_formula', 'cas_number']
+  const fields = cols === 1 ? ['target_compound_formula'] : PASTE_COLUMNS
   const { rows } = fromSpreadsheet(text, fields)
   if (
     cols === 1 &&
@@ -137,7 +212,9 @@ export function parseCompoundPaste(text) {
  *
  * Every row needs a formula. Single-column pastes are additionally checked
  * against isValidChemicalFormula, so that pasting a name-only column is
- * rejected instead of imported as bogus formulas.
+ * rejected instead of imported as bogus formulas. A pasted InChIKey or InChI
+ * must have the shape the API takes, so one bad cell is named here rather
+ * than failing the whole save.
  *
  * @param {Array<Object>} data - Rows from parseCompoundPaste
  * @returns {{valid: boolean, severity: string, message: string}}
@@ -147,11 +224,11 @@ export function validateCompoundPaste(data) {
     return { valid: false, severity: 'error', message: 'No valid data found in paste' }
   }
   const cols = Object.keys(data[0]).length
-  if (cols > 3) {
+  if (cols > PASTE_COLUMNS.length) {
     return {
       valid: false,
       severity: 'warn',
-      message: `You pasted ${cols} columns but 1 to 3 are expected`
+      message: `You pasted ${cols} columns but 1 to ${PASTE_COLUMNS.length} are expected`
     }
   }
   if (data.some((row) => !row?.target_compound_formula?.length)) {
@@ -169,6 +246,22 @@ export function validateCompoundPaste(data) {
         severity: 'warn',
         message: `'${invalid.target_compound_formula}' is not a valid chemical formula`
       }
+    }
+  }
+  const badInchikey = data.find((row) => !isValidInchikey(row.inchikey))
+  if (badInchikey) {
+    return {
+      valid: false,
+      severity: 'warn',
+      message: `'${badInchikey.inchikey}' is not an InChIKey (it reads like WQZGKKKJIJFFOK-GASJEMHNSA-N)`
+    }
+  }
+  const badInchi = data.find((row) => !isValidInchi(row.inchi))
+  if (badInchi) {
+    return {
+      valid: false,
+      severity: 'warn',
+      message: `'${badInchi.inchi}' is not an InChI (it starts with InChI=)`
     }
   }
   return {
