@@ -323,7 +323,14 @@ Setup:
 1. On the target, create an unprivileged account (`pentest` by default) that is
    **not** in `sudo`, and deploy `security/pentest/` plus its venv into
    `SUITE_DIR`. A release does not update this copy — it is a copy, not a
-   checkout, so sync it and verify by hashing against the tag.
+   checkout, so sync it and verify by hashing against the tag. Sync it to the
+   tag the target runs, not ahead of it: `baseline.json` accepts findings a
+   given release produces, and an acceptance whose control passes fails the
+   run as stale. The `IDENT-02` acceptance, for one, matches only a target
+   that trusts the Docker gateway. On a release from before that trust, or on
+   a target running `MASCOPE_TRUST_DOCKER_GATEWAY=off`, `IDENT-02` passes: a
+   copy synced ahead of the target goes red until the target catches up, and
+   an `off` target's copy needs the entry removed.
 2. Give the monitoring box a dedicated key for that account. Use `restrict` in
    the target's `authorized_keys`, server-side, rather than relying on the
    client's `ForwardAgent no`.
