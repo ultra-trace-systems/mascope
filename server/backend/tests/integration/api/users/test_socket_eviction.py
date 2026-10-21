@@ -30,6 +30,7 @@ from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken, User
 from mascope_backend.db.id import gen_id
+from mascope_backend.db.scripts import require_password_change as sweep_script
 from mascope_backend.socket.events.handlers.default.connection import (
     connect,
     disconnect,
@@ -226,6 +227,70 @@ async def test_an_owner_signing_an_account_out_evicts(owner_client, person, sio)
     assert resp.status_code == 200, resp.text
 
     await _assert_evicted(sio, "sid-a", person)
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_account_evicts(owner_client, person, sio):
+    """The row is gone before eviction reads it; no account may read nothing."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+
+    resp = await owner_client.delete(f"/api/users/owner/{person.id}")
+    assert resp.status_code == 200, resp.text
+
+    await _assert_evicted(sio, "sid-a", person)
+
+
+@pytest.fixture
+def script_redis(monkeypatch):
+    """
+    The maintenance script's Redis connection, kept on this package's stub.
+
+    The script connects the session store itself, as a process of its own must;
+    here the stub is already in place, and the database engine is the test's.
+    """
+    connect = AsyncMock()
+    disconnect = AsyncMock()
+    monkeypatch.setattr(redis_storage_client, "connect", connect)
+    monkeypatch.setattr(redis_storage_client, "disconnect", disconnect)
+    monkeypatch.setattr(sweep_script, "configure_database_engine", AsyncMock())
+    monkeypatch.delenv("MASCOPE_REQUIRE_PASSWORD_CHANGE_DRY_RUN", raising=False)
+    return connect, disconnect
+
+
+@pytest.mark.asyncio
+async def test_the_maintenance_script_evicts(person, sio, script_redis):
+    """
+    The script serves no sockets, but its ``leave_room`` reaches the worker.
+
+    Under the Redis manager a ``leave_room`` for a socket this process does not
+    hold is published to the workers, so the mocked server's call is the same
+    boundary the route's eviction is checked at.
+    """
+    connect, disconnect = script_redis
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+
+    await sweep_script.run_require_password_change()
+
+    await _assert_evicted(sio, "sid-a", person)
+    connect.assert_awaited_once()
+    disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_maintenance_script_survives_an_unreachable_redis(
+    person, sio, script_redis, async_session_factory
+):
+    """The requirement already stands; the sockets are left as they were."""
+    connect, disconnect = script_redis
+    connect.side_effect = ConnectionError("Redis connection failed")
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+
+    await sweep_script.run_require_password_change()
+
+    sio.leave_room.assert_not_awaited()
+    disconnect.assert_not_awaited()
+    async with async_session_factory() as session:
+        assert (await session.get(User, person.id)).must_change_password
 
 
 # --- Only the sockets subscribe would now refuse ---

@@ -40,7 +40,8 @@ def socket_hold_reason(user, issued_at: Optional[int]) -> Optional[str]:
     """
     Why a socket of this account may hear nothing but its own room.
 
-    :param user: The account the socket is signed in as.
+    :param user: The account the socket is signed in as, or ``None`` when the
+        account no longer exists.
     :param issued_at: The ``iat`` the socket's session recorded.
     :return: The reason, worded to follow "user <id>", or ``None`` when the
         socket may join the rooms its access allows.
@@ -49,6 +50,8 @@ def socket_hold_reason(user, issued_at: Optional[int]) -> Optional[str]:
     # socket storage this module sits beside.
     from mascope_backend.api.new.auth.sessions import session_revoked
 
+    if user is None:
+        return "has been deleted"
     if user.must_change_password:
         return "owes a password change"
     if not user.is_active or session_revoked(user, issued_at):
@@ -61,14 +64,17 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
     Make every socket of an account that may no longer read leave its rooms.
 
     Called by everything that moves the account's session cutoff or holds it at
-    the password screen - the forced-password-change sweep, a password change,
-    an account disable, sign-out-everywhere - after the change is committed.
+    the password screen - the forced-password-change sweep (the owner's route
+    and the maintenance script), a password change, an account disable,
+    sign-out-everywhere, an account deletion - after the change is committed.
+    An account the database no longer has may read nothing, so every one of
+    its sockets is evicted.
     Never raises: the change it follows already stands, and a failure here
     leaves the sockets no worse off than before eviction existed.
 
     :param user_id: The account.
     :param user: The account as just committed, if the caller has it; read
-        from the database otherwise.
+        from the database otherwise. A deleted account's caller passes none.
     :return: How many sockets were evicted.
     """
     worker_pid = os.getpid()
@@ -81,8 +87,6 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
 
             async with async_session() as db:
                 user = await db.get(User, user_id)
-            if user is None:
-                return 0
 
         own_room = f"user-{user_id}"
         left: set[str] = set()

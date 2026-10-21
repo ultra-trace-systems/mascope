@@ -489,4 +489,7 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
 
         :param user: The deleted user
         """
+        # Its open sockets would keep their rooms until they disconnect. The
+        # row is gone, so eviction reads no account and evicts every socket.
+        await evict_ended_sessions(user.id)
         await emit_record_deleted(record_type="user", record_id=str(user.id))
