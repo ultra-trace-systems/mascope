@@ -31,14 +31,21 @@
     executable: /usr/bin/python3
   check_mode: false
   register: mascope_readonly_run
-  changed_when: (mascope_readonly_run.stdout | from_json).changed
+  # The script's JSON is its last line: over ssh the module runs it under a
+  # pty, which puts anything sudo says on stderr into stdout ahead of it. A run
+  # that printed no JSON (argparse's exit 2) is failed by failed_when, not by
+  # this parse. A failure's JSON lists what the run changed before it failed.
+  changed_when: >-
+    mascope_readonly_run.rc in [0, 1]
+    and mascope_readonly_run.stdout_lines | length > 0
+    and (mascope_readonly_run.stdout_lines | last | from_json).changed
   failed_when: mascope_readonly_run.rc != 0
 
 - name: The read-only role's changes
   ansible.builtin.debug:
-    msg: "{{ (mascope_readonly_run.stdout | from_json).changes }}"
-  when: (mascope_readonly_run.stdout | from_json).changes | length > 0
+    msg: "{{ (mascope_readonly_run.stdout_lines | last | from_json).changes }}"
+  when: (mascope_readonly_run.stdout_lines | last | from_json).changes | length > 0
 
 - name: The read-only role's connection check
   ansible.builtin.debug:
-    msg: "{{ (mascope_readonly_run.stdout | from_json).verified }}"
+    msg: "{{ (mascope_readonly_run.stdout_lines | last | from_json).verified }}"

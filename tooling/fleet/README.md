@@ -149,11 +149,25 @@ on sequences, CREATE on a schema or database, other default privileges. What
 PUBLIC holds by default (CONNECT and TEMPORARY on a database, EXECUTE on
 functions) it keeps. A write privilege it would hold through PUBLIC, such as
 CREATE on the `public` schema in a cluster first initialised before
-PostgreSQL 15, makes the role fail on that server rather than leave it
-writable: revoking that from PUBLIC is an operator's call.
+PostgreSQL 15, fails the run before it changes anything: the role is not made
+there, and a role that exists already loses LOGIN, which a later run gives
+back once PUBLIC no longer holds the privilege. Revoking that from PUBLIC is an
+operator's call.
+
+The role is kept to the app databases' own tables. PostgreSQL's predefined
+`pg_read_all_data` would also read them, and would survive the restores below
+since its membership is cluster-wide, but it reads every database of the
+cluster and every schema whoever made it.
 
 `default_transaction_read_only` is a default a session can turn off; the
-privileges are what make the role read-only.
+privileges are what make the role read-only. Once a session has turned it off,
+they still let it make two things: temporary tables (TEMPORARY on a database is
+PUBLIC's by default; they go with the session) and large objects (`lo_create`
+and `lo_from_bytea` are PUBLIC's to run and check nothing else; a large object
+stays in the database). `NOTIFY` goes through even in a read-only session;
+nothing in the app listens. None of these is a write a mistaken read-only
+script makes. Taking EXECUTE on the large-object functions from PUBLIC is,
+like PUBLIC's CREATE, an operator's call.
 
 **The password** is `.runtime/secrets/postgres_readonly_password.txt` in the
 deployment checkout, mode 0600 and the deploy user's, made on the first run.
@@ -195,7 +209,10 @@ ansible-playbook site.yml --ask-vault-pass --limit <canary-host>
 In check mode the role lists what it would change. Once there is nothing to
 change, check and apply runs both end by connecting as the role from
 `mascope_prod_backend`, as a job does, and checking the session is read-only;
-a stopped backend skips that check with a note.
+a stopped backend skips that check with a note. Everything else goes through
+`mascope_prod_postgres`, so on a server whose stack is stopped the role fails,
+`--check` included. A failed run's output lists what it changed before it
+failed.
 
 **After a restore.** `mascope prod db restore` restores without privileges
 (`pg_restore --no-acl`), and a new env starts a new database: either leaves the

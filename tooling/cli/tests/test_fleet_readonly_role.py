@@ -11,9 +11,11 @@ is never imported, as in test_fleet_playbooks.py.
 import ast
 import base64
 import importlib.util
+import itertools
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -169,7 +171,8 @@ def test_other_role_settings_are_left_alone():
 # --- the databases ----------------------------------------------------------------------------
 
 
-def test_a_fresh_database_gets_select_usage_and_default_privileges():
+def test_a_fresh_database_gets_default_privileges_then_select_and_usage():
+    """The defaults first: a table made between them and the bulk grant is covered."""
     db = rr.DatabaseState(
         "mascope_site",
         connect=True,
@@ -180,11 +183,11 @@ def test_a_fresh_database_gets_select_usage_and_default_privileges():
     )
     sql = statements(rr.database_changes(db, Args))
     assert sql == [
+        'ALTER DEFAULT PRIVILEGES FOR ROLE "mascope_user" GRANT SELECT ON TABLES TO "mascope_readonly"',
+        'ALTER DEFAULT PRIVILEGES FOR ROLE "mascope_user" GRANT USAGE ON SCHEMAS TO "mascope_readonly"',
         'GRANT SELECT ON ALL TABLES IN SCHEMA "public" TO "mascope_readonly"',
         'GRANT USAGE ON SCHEMA "extra" TO "mascope_readonly"',
         'GRANT SELECT ON ALL TABLES IN SCHEMA "extra" TO "mascope_readonly"',
-        'ALTER DEFAULT PRIVILEGES FOR ROLE "mascope_user" GRANT SELECT ON TABLES TO "mascope_readonly"',
-        'ALTER DEFAULT PRIVILEGES FOR ROLE "mascope_user" GRANT USAGE ON SCHEMAS TO "mascope_readonly"',
     ]
 
 
@@ -219,6 +222,103 @@ def test_create_held_through_public_is_reported_not_revoked():
     assert rr.unfixable([db]) == [
         "mascope_site.public: PUBLIC may CREATE in the schema"
     ]
+
+
+class Cluster:
+    """What read_role and read_databases report, in turn, and the SQL a run sends."""
+
+    def __init__(self, monkeypatch, roles, databases):
+        # Each read_databases call reports every app database: here, one.
+        self.roles, self.sql = list(roles), []
+        self.databases = [[db] for db in databases]
+        self.file_prepared = False
+        monkeypatch.setattr(rr, "read_role", lambda args: self._next(self.roles))
+        monkeypatch.setattr(
+            rr, "read_databases", lambda args, exists: self._next(self.databases)
+        )
+        monkeypatch.setattr(
+            rr, "psql", lambda args, sql, database: self.sql.append(sql.strip()) or []
+        )
+        monkeypatch.setattr(rr, "prepare_file", self._prepare)
+        monkeypatch.setattr(rr, "read_password", lambda path: "pw")
+
+    def _next(self, states):
+        return states.pop(0) if len(states) > 1 else states[0]
+
+    def _prepare(self, path, owner, check):
+        self.file_prepared = True
+        return []
+
+    def run(self, capsys, *argv):
+        code = rr.main(
+            ["--file", "f", "--file-owner", "o", "--verify-container", "", *argv]
+        )
+        return code, json.loads(capsys.readouterr().out)
+
+
+def public_create():
+    db = converged_database()
+    db.schemas[0].create = "public"
+    return db
+
+
+def test_public_create_on_a_new_server_makes_no_role(monkeypatch, capsys):
+    cluster = Cluster(monkeypatch, [rr.RoleState(False)], [public_create()])
+    code, out = cluster.run(capsys)
+    assert code == 1 and "through PUBLIC" in out["failed"]
+    assert out["changed"] is False and out["changes"] == []
+    assert cluster.sql == [] and not cluster.file_prepared
+
+
+def test_public_create_on_a_converged_server_takes_login_away(monkeypatch, capsys):
+    cluster = Cluster(monkeypatch, [converged_role()], [public_create()])
+    code, out = cluster.run(capsys)
+    assert code == 1 and "through PUBLIC" in out["failed"]
+    assert cluster.sql == ['ALTER ROLE "mascope_readonly" NOLOGIN;']
+    assert out["changed"] is True and out["changes"] == ["take LOGIN from the role"]
+    # Once PUBLIC no longer holds it, the next run gives LOGIN back.
+    no_login = converged_role()
+    no_login.attributes["rolcanlogin"] = False
+    cluster = Cluster(monkeypatch, [no_login, converged_role()], [converged_database()])
+    code, out = cluster.run(capsys)
+    assert code == 0 and out["changes"] == ["set the role's attributes (canlogin)"]
+
+
+def test_public_create_is_not_looked_past_in_check_mode(monkeypatch, capsys):
+    cluster = Cluster(monkeypatch, [converged_role()], [public_create()])
+    code, out = cluster.run(capsys, "--check")
+    assert code == 1 and cluster.sql == [] and out["changed"] is False
+
+
+def test_a_failure_reports_what_the_run_changed_before_it(monkeypatch, capsys):
+    cluster = Cluster(
+        monkeypatch,
+        [rr.RoleState(False), converged_role()],
+        [converged_database()],
+    )
+
+    def no_session(args, password):
+        raise rr.Failed("did not give a read-only session")
+
+    monkeypatch.setattr(rr, "verify_connection", no_session)
+    code, out = cluster.run(capsys, "--verify-container", "backend")
+    assert code == 1 and out["failed"] == "did not give a read-only session"
+    assert out["changed"] is True
+    assert out["changes"] == ["create the role mascope_readonly, read-only by default"]
+
+
+def test_an_unexpected_error_still_prints_the_json(monkeypatch, capsys):
+    def broken(args):
+        raise KeyError("rolconnlimit")
+
+    monkeypatch.setattr(rr, "read_role", broken)
+    assert rr.main(["--file", "f", "--file-owner", "o"]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out == {
+        "changed": False,
+        "changes": [],
+        "failed": "KeyError: 'rolconnlimit'",
+    }
 
 
 def test_names_are_quoted():
@@ -312,16 +412,51 @@ def test_check_mode_reaches_the_script_and_the_script_changes_nothing_then():
     assert "readonly_role.py" in task["ansible.builtin.script"]["cmd"]
 
 
-def test_every_flag_the_task_passes_is_one_the_script_takes(capsys):
-    """A flag renamed on one side only would fail the role on every server."""
-    task = yaml.safe_load((ROLE / "tasks" / "main.yml").read_text(encoding="utf-8"))[0]
-    flags = set(
-        re.findall(r"(?<![\w-])--[a-z][a-z-]*", task["ansible.builtin.script"]["cmd"])
-    )
+def test_a_prefix_of_an_option_is_no_option(monkeypatch, capsys):
+    """Else the task's --file would read as --file-owner once --file was renamed."""
+    monkeypatch.setattr(rr, "converge", lambda args, done: {"changed": False})
     with pytest.raises(SystemExit):
-        rr.main(["--help"])
-    usage = capsys.readouterr().out
-    assert flags and {flag for flag in flags if flag not in usage} == set()
+        rr.main(["--file", "f", "--file-own", "o"])
+    assert "--file-own" in capsys.readouterr().err
+
+
+def test_the_task_parses_the_last_line_and_only_from_a_run_that_printed_json():
+    """Under ssh's pty, sudo's stderr comes ahead of the JSON in stdout."""
+    tasks = yaml.safe_load((ROLE / "tasks" / "main.yml").read_text(encoding="utf-8"))
+    changed_when = tasks[0]["changed_when"]
+    assert changed_when.startswith("mascope_readonly_run.rc in [0, 1]")
+    assert "mascope_readonly_run.stdout_lines | length > 0" in changed_when
+    for task in tasks:
+        text = json.dumps(task)
+        assert "stdout | from_json" not in text
+        assert "from_json" not in text or "stdout_lines | last | from_json" in text
+
+
+def test_the_task_command_line_is_one_the_script_accepts(monkeypatch):
+    """
+    The task's command line, rendered with stand-in values, as argparse in the
+    script reads it: a flag renamed on one side only would fail the role on
+    every server, or quietly mean another option.
+    """
+    cmd = yaml.safe_load((ROLE / "tasks" / "main.yml").read_text(encoding="utf-8"))[0][
+        "ansible.builtin.script"
+    ]["cmd"]
+    n = itertools.count()
+    cmd = re.sub(r"\{\{[^}]*\|\s*int\s*\}\}", "4", cmd)
+    cmd = re.sub(
+        r"\{\{[^}]*\}\}",
+        lambda m: (
+            "--check" if "ansible_check_mode" in m.group(0) else "v{}".format(next(n))
+        ),
+        cmd,
+    )
+    seen = []
+    monkeypatch.setattr(
+        rr, "converge", lambda args, done: seen.append(args) or {"changed": False}
+    )
+    assert rr.main(shlex.split(cmd)[1:]) == 0
+    (args,) = seen
+    assert args.file == "v0" and args.file_owner == "v1" and args.check
 
 
 def _compose_default(text, variable):
