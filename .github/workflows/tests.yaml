@@ -421,6 +421,13 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
+      - name: Check the CLI's declared dependencies (deptry)
+        # Every import of mascope_cli must be declared in its pyproject.toml,
+        # which is what a wheel install gets. The checkout-only imports are
+        # listed there under [tool.deptry]; any other undeclared import fails.
+        working-directory: tooling/cli
+        run: uv run deptry src
+
       - name: Run CLI tests
         # Hermetic: the suite's conftest builds its own MASCOPE_PATH home,
         # so no environment setup is needed here.
