@@ -6,13 +6,23 @@ so drift becomes a weekly diff instead of a months-later incident:
 | Role | Owns |
 |---|---|
 | `sshd_hardening` | `/etc/ssh/sshd_config.d/00-tailnet-hardening.conf` (key-only SSH, no root passwords) |
-| `firewall` | ufw policies, tailnet SSH rule, Cloudflare-only 443, the canonical `MASCOPE NAT` masquerade block |
+| `firewall` | ufw policies, tailnet SSH rule, 443 from Cloudflare's ranges (ufw only, see below), the canonical `MASCOPE NAT` masquerade block |
 | `docker_daemon` | `/etc/docker/daemon.json` with `iptables: false` (load-bearing: with stock Docker, published ports bypass ufw) |
 | `unattended_upgrades` | unattended security updates enabled |
 | `deploy_env` | `MASCOPE_PATH` in `/etc/environment` (load-bearing: it is how the CLI finds the checkout, and so which release a unit starts) |
 
 The monitoring box is deliberately **not** in the fleet group — it
 runs a different network model (stock Docker + `DOCKER-USER` rules).
+
+**The tailnet bypasses ufw.** Tailscale installs its own netfilter chain,
+`ts-input`, jumped from the top of `INPUT`, and it accepts everything arriving
+on `tailscale0` ahead of ufw's rules. So ufw's "443 from Cloudflare only" holds
+for the internet, but every tailnet peer the Tailscale ACL lets through reaches
+443, and every other port, whatever ufw says: a request from a tailnet peer
+to a fleet server's 443 is answered. This matters to the frontend, which trusts
+`CF-Connecting-IP` relayed through the Docker gateway (the `cloudflare-realip`
+block in `server/frontend/nginx.conf`): a tailnet peer can send that header and
+choose its own rate-limit bucket. The Tailscale ACL, not ufw, decides who can.
 
 ## One-time setup (WSL on the admin workstation)
 

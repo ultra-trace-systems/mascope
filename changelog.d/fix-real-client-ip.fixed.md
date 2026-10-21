@@ -8,4 +8,8 @@
   misbehaving client could throttle everyone, and the access logs recorded the
   gateway instead of the client. The HTTPS config now trusts
   `CF-Connecting-IP` from the gateway as well, which the container works out
-  from its own default route at start.
+  from its own default route at start. A client that reaches the published
+  port directly, not through Cloudflare, can then name its own address in
+  that header, so the firewall should admit only Cloudflare to the port. A
+  deployment with no Cloudflare in front should set
+  `MASCOPE_TRUST_DOCKER_GATEWAY=off` (`docs/hosting.md` has the details).

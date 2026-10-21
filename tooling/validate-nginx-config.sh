@@ -26,6 +26,7 @@ validate() {
     -e NEED_CERTS="${need_certs}" \
     -v "${frontend_dir}/${conf}:/etc/nginx/conf.d/nginx.conf:ro" \
     -v "${frontend_dir}/ratelimit_key.js:/etc/nginx/njs/ratelimit_key.js:ro" \
+    -v "${frontend_dir}/realip-gateway.sh:/realip-gateway.sh:ro" \
     "${image}" sh -eu -c '
       # Load njs in the main context, exactly as the Dockerfile does.
       sed -i "1i load_module /etc/nginx/modules/ngx_http_js_module.so;" /etc/nginx/nginx.conf
@@ -39,10 +40,17 @@ validate() {
         openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=ci \
           -keyout /run/secrets/ssl_secret_key \
           -out /run/secrets/ssl_certificate >/dev/null 2>&1
-        # nginx.conf includes the gateway trust line docker-entrypoint.sh
-        # writes at start; stand in a line of the same shape.
+        # nginx.conf includes the gateway trust line the entrypoint writes at
+        # start. Run the real detection: `docker run` puts this container on
+        # the default bridge, so there is always a gateway to find, and an
+        # empty include here means the detection broke - which at start-up
+        # would fall back silently to one shared rate-limit bucket.
         mkdir -p /etc/nginx/mascope
-        echo "set_real_ip_from 172.18.0.1;" > /etc/nginx/mascope/realip-gateway.conf
+        sh /realip-gateway.sh
+        grep -qx "set_real_ip_from [0-9.]*;" /etc/nginx/mascope/realip-gateway.conf || {
+          echo "the gateway detection wrote no trust line" >&2
+          exit 1
+        }
       fi
       nginx -t
     '
