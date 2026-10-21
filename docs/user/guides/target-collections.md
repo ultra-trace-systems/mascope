@@ -30,23 +30,38 @@ first — this guide assumes them.
 
 ### Add compounds
 
-You only provide the neutral molecule — a **formula**, plus an optional name
-and CAS number. Mascope generates the target ions (one per configured
-ionization mechanism) and their isotopic patterns automatically; at match time
-it uses the ions that fit each sample's ionization mode.
+You only provide the neutral molecule — a **formula**, plus an optional name.
+Mascope generates the target ions (one per configured ionization mechanism) and
+their isotopic patterns automatically; at match time it uses the ions that fit
+each sample's ionization mode.
 
 Three ways to fill the **Compounds** tab, mix and match freely:
 
 - **Paste from a spreadsheet.** Copy cells and paste them onto the left-hand
   *Collection* panel: one column is read as formulas; two columns as name +
-  formula; three columns as name + formula + CAS number.
+  formula; three columns as name + formula + CAS number. Up to three more
+  columns give the structure, in this order: InChIKey, InChI and SMILES. A
+  paste with a malformed InChIKey or InChI is refused and names the cell.
 - **Import existing.** In the *Add compounds* panel, pick a source — another
   collection, or *All compounds* — search, and tick the compounds you want.
   Compounds are shared reference data, so reusing beats recreating.
 - **Create new.** Switch the toggle to *Create new* and enter a **Formula**
-  (required), **Name**, and **CAS Number**, then click **Create compound**. If
+  (required) and a **Name**. Open the *Structure* group to give the CAS
+  number, InChIKey, InChI and SMILES too. Then click **Create compound**. If
   the compound already exists in Mascope, the button reads **Add compound**
   and reuses it.
+
+A row that reuses a compound already in Mascope keeps that compound's
+structure. A pasted or entered InChIKey, InChI or SMILES is not applied to it,
+and an info icon beside the row's status says so. The structure of a stored
+compound is changed in *Edit compound*: right-click one of the compound's ions
+in the collection's ion table, and open the dialog's *Structure* group. The
+structure says what the target stands for; a match on its formula does not
+confirm it. An InChI has to describe the compound's
+formula: Mascope refuses one that names another formula, since a wrong
+structure is worse than none. Changing a compound's formula makes it another
+substance, so its InChIKey, InChI and SMILES are cleared unless you give them
+again.
 
 Each row in the collection list gets a status badge — *Create*, *Add*, *Keep*,
 or *Remove* — so you always see what saving will change.

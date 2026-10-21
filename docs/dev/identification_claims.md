@@ -43,6 +43,14 @@ decision the owner took on 2026-10-22 while reviewing PR #2475:
 > structure live in the edit dialog's *Structure* group. An identification is
 > a separate, evidenced claim that carries a level.
 
+Revised by the owner later the same day, in the PR's review: the collection
+dialog's *Create new* form gets the same collapsed *Structure* group, and a
+spreadsheet paste takes InChIKey, InChI and SMILES as columns 4 to 6. The
+add-compound popover opened from a peak still asks for a formula and a name.
+A pasted or entered structure is not applied to a compound that already
+exists; the row says so, and *Edit compound* stays the place that changes a
+stored compound's structure.
+
 ## 2. What exists
 
 ### 2.1 Two records of identity
@@ -165,8 +173,9 @@ field gains the same reading for the target. A claim-less target match reads
 
 ### 4.3 The compound editor
 
-The quick paths, the add-compound popover opened from a peak and the
-collection dialog's *Create new* form, ask for a formula and a name. The
+The add-compound popover opened from a peak asks for a formula and a name.
+The collection dialog's *Create new* form and its spreadsheet paste take the
+structure too, for a compound they create (section 1, the revision). The
 *Edit compound* dialog gets a collapsed *Structure* group holding the CAS
 number, InChIKey, InChI and SMILES, and a *Find structure* action: the active
 reference rows whose Hill formula equals the compound's, CAS and name matches
@@ -331,10 +340,12 @@ columns.
 
 Changed before merge:
 
-- The three identity inputs leave the add-compound popover and the collection
-  dialog's *Create new* form. They go to the *Edit compound* dialog, in a
-  collapsed *Structure* group, and the CAS number moves there with them. The
-  quick paths ask for a formula and a name.
+- The three identity inputs leave the add-compound popover. They go to the
+  *Edit compound* dialog, in a collapsed *Structure* group, and the CAS
+  number moves there with them. The popover asks for a formula and a name.
+  The collection dialog's *Create new* form has the same collapsed group, and
+  its spreadsheet paste takes the three as columns 4 to 6 (section 1, the
+  revision).
 - The InChIKey column leaves the collection dialog's tables; the search by
   InChIKey stays.
 - The user docs say a structure is what the target stands for, and that a
