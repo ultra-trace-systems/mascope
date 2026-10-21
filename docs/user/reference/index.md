@@ -16,7 +16,7 @@ links to the section that explains it in depth.
 | **Analysis dataset / batch** | The editable datasets and batches you create to do science. See [acquisition and analysis](../concepts/index.md#acquisition-and-analysis). |
 | **Workspace role** | What a member can do inside one workspace: guest, editor, admin, or owner. See [workspaces and sharing](../concepts/index.md#workspaces-and-sharing). |
 | **Target collection** | A named list of compounds attached to a batch for analysis; typed as targets, calibrants, or diagnostics. See [targeted analysis](../concepts/index.md#targeted-analysis). |
-| **Target compound** | A molecule (formula, optional name and CAS) in a collection; shared reference data. See [targeted analysis](../concepts/index.md#targeted-analysis). |
+| **Target compound** | A molecule (formula; optional name, CAS number, InChIKey, InChI and SMILES) in a collection; shared reference data. See [targeted analysis](../concepts/index.md#targeted-analysis). |
 | **Target ion** | A compound combined with one ionization mechanism — the form that actually appears in a spectrum. See [targeted analysis](../concepts/index.md#targeted-analysis). |
 | **Target isotope** | One line of an ion's theoretical isotopic pattern, with exact *m/z* and relative abundance. See [targeted analysis](../concepts/index.md#targeted-analysis). |
 | **Ionization mechanism** | A single charge-forming reaction (protonation, adduct formation, ...). See [ionization](../concepts/index.md#ionization-modes-and-mechanisms). |
