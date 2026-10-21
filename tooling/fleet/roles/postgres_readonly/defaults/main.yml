@@ -8,6 +8,8 @@ mascope_readonly_role: mascope_readonly
 # migrations create, whose default privileges make new tables readable.
 mascope_readonly_app_role: mascope_user
 
+# Every read and change goes through this container, so it must be running: on
+# a server whose stack is stopped the role fails, --check included.
 mascope_readonly_postgres_container: mascope_prod_postgres
 # The connection check at the end runs from here, as a prod job does. A server
 # whose backend is down gets the role all the same, with the check skipped.

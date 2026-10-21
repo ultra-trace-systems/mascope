@@ -16,11 +16,15 @@ way, so a run where nothing drifted changes nothing.
     readonly_role.py --file PATH --file-owner USER [--check] [options]
 
 Prints one JSON object, {"changed": ..., "changes": [...], "verified": ...};
-with --check it changes nothing and lists what would change. After applying,
-it reads everything back and fails if the role still differs, which is how a
-privilege only PUBLIC holds (and revoking from the role cannot remove) shows
-up. Last, unless the backend container is down, it connects as the role from
-that container the way a prod job does and checks the session is read-only.
+with --check it changes nothing and lists what would change. Before changing
+anything it fails if the role would hold a write privilege through PUBLIC,
+which revoking from the role cannot remove: such a role is not made, and one
+that exists already is left unable to log in. After applying, it reads
+everything back and fails if the role still differs. A failure prints
+{"changed": ..., "changes": [...], "failed": ...}, the changes being what the
+run did make before it failed. Last, unless the backend container is down, it
+connects as the role from that container the way a prod job does and checks
+the session is read-only.
 
 Python 3.8 or later, standard library only: it runs with the server's python3.
 """
@@ -124,7 +128,10 @@ def prepare_file(path, owner, check):
         raise Failed(
             "{} does not exist: is this the deployment checkout?".format(directory)
         )
-    user = pwd.getpwnam(owner)
+    try:
+        user = pwd.getpwnam(owner)
+    except KeyError:
+        raise Failed("no local user {} to own the password file".format(owner))
     if not os.path.exists(path):
         if not check:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -428,6 +435,36 @@ def role_changes(state, args, password):
 
 def database_changes(db, args):
     role, owner, out = ident(args.role), ident(args.app_role), []
+    # The default privileges go in first: a table the app creates after them is
+    # theirs, one created before is the bulk grant's, and none falls between.
+    if (args.app_role, "", "r", "SELECT") not in db.defaults:
+        out.append(
+            (
+                "{}: make tables {} creates later readable".format(
+                    db.name, args.app_role
+                ),
+                db.name,
+                [
+                    "ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT ON TABLES TO {}".format(
+                        owner, role
+                    )
+                ],
+            )
+        )
+    if (args.app_role, "", "n", "USAGE") not in db.defaults:
+        out.append(
+            (
+                "{}: grant USAGE on schemas {} creates later".format(
+                    db.name, args.app_role
+                ),
+                db.name,
+                [
+                    "ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE ON SCHEMAS TO {}".format(
+                        owner, role
+                    )
+                ],
+            )
+        )
     if not db.connect:
         out.append(
             (
@@ -509,34 +546,6 @@ def database_changes(db, args):
         (args.app_role, "", objtype, privilege)
         for objtype, privilege in WANTED_DEFAULTS
     }
-    if (args.app_role, "", "r", "SELECT") not in db.defaults:
-        out.append(
-            (
-                "{}: make tables {} creates later readable".format(
-                    db.name, args.app_role
-                ),
-                db.name,
-                [
-                    "ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT ON TABLES TO {}".format(
-                        owner, role
-                    )
-                ],
-            )
-        )
-    if (args.app_role, "", "n", "USAGE") not in db.defaults:
-        out.append(
-            (
-                "{}: grant USAGE on schemas {} creates later".format(
-                    db.name, args.app_role
-                ),
-                db.name,
-                [
-                    "ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE ON SCHEMAS TO {}".format(
-                        owner, role
-                    )
-                ],
-            )
-        )
     for grantor, schema, objtype, privilege in sorted(db.defaults - wanted):
         scope = " IN SCHEMA {}".format(ident(schema)) if schema else ""
         out.append(
@@ -573,9 +582,21 @@ def unfixable(databases):
     return out
 
 
-def apply(args, changes):
-    for _, database, statements in changes:
+def apply(args, changes, done):
+    """Run each change in turn, adding it to done once it has gone in."""
+    for what, database, statements in changes:
         psql(args, "".join(statement + ";\n" for statement in statements), database)
+        done.append(what)
+
+
+def refuse_public_writes(args, problems, role_exists, done):
+    """Fail on a write privilege the role would hold through PUBLIC, first taking LOGIN from it."""
+    if role_exists and not args.check:
+        nologin = "ALTER ROLE {} NOLOGIN".format(ident(args.role))
+        apply(args, [("take LOGIN from the role", "postgres", [nologin])], done)
+    raise Failed(
+        "the role would inherit write privileges through PUBLIC: " + "; ".join(problems)
+    )
 
 
 # --- the check from the backend container ------------------------------------------------------------
@@ -636,15 +657,28 @@ def verify_connection(args, password):
 # --- the run ---------------------------------------------------------------------------------------------------
 
 
-def converge(args):
+def converge(args, done):
+    """Bring the role to what it should be; done collects each change as it goes in.
+
+    A failure part-way leaves done holding what this run did change, which main
+    reports with the failure.
+    """
+    role = read_role(args)
+    # Before anything changes: a role that would hold a write privilege through
+    # PUBLIC is not made, and one that exists already cannot log in any more.
+    problems = unfixable(read_databases(args, role.exists))
+    if problems:
+        refuse_public_writes(args, problems, role.exists, done)
+
     report = prepare_file(args.file, args.file_owner, args.check)
+    if not args.check:
+        done += report
     password = read_password(args.file)
 
-    role = read_role(args)
     planned = role_changes(role, args, password)
     report += [what for what, _, _ in planned]
     if planned and not args.check:
-        apply(args, planned)
+        apply(args, planned, done)
         role = read_role(args)
         left = role_changes(role, args, password)
         if left:
@@ -657,7 +691,7 @@ def converge(args):
     planned = [change for db in databases for change in database_changes(db, args)]
     report += [what for what, _, _ in planned]
     if planned and not args.check:
-        apply(args, planned)
+        apply(args, planned, done)
         databases = read_databases(args, True)
         left = [change for db in databases for change in database_changes(db, args)]
         if left:
@@ -665,12 +699,11 @@ def converge(args):
                 "still differs after the changes: "
                 + "; ".join(what for what, _, _ in left)
             )
+    # Again after the changes: CREATE held both directly and through PUBLIC
+    # shows as PUBLIC's only once the direct grant has been taken back.
     problems = unfixable(databases)
     if problems:
-        raise Failed(
-            "the role would inherit write privileges through PUBLIC: "
-            + "; ".join(problems)
-        )
+        refuse_public_writes(args, problems, role.exists, done)
     if not databases:
         report.append("note: no database named {}* yet".format(args.database_prefix))
 
@@ -685,8 +718,11 @@ def converge(args):
 
 
 def main(argv=None):
+    # No abbreviations: a prefix the task passes must not quietly mean another option.
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--file",
@@ -726,6 +762,7 @@ def main(argv=None):
         "--check", action="store_true", help="change nothing; list what would change"
     )
     args = parser.parse_args(argv)
+    done = []
     try:
         for name in (args.role, args.app_role):
             if not ROLE_NAME.fullmatch(name):
@@ -734,9 +771,20 @@ def main(argv=None):
             raise Failed("the read-only role cannot be the app's role")
         if args.connection_limit < 1:
             raise Failed("the connection limit must be at least 1")
-        result = converge(args)
-    except (Failed, OSError, subprocess.SubprocessError) as exc:
-        print(json.dumps({"changed": False, "changes": [], "failed": str(exc)}))
+        result = converge(args, done)
+    except (
+        Exception
+    ) as exc:  # every exit prints the JSON, with what this run did change
+        reason = (
+            str(exc)
+            if isinstance(exc, Failed)
+            else "{}: {}".format(type(exc).__name__, exc)
+        )
+        print(
+            json.dumps(
+                {"changed": bool(done), "changes": done, "failed": redact(reason)}
+            )
+        )
         return 1
     print(json.dumps(result))
     return 0
