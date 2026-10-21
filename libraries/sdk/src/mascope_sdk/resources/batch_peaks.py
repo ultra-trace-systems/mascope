@@ -199,9 +199,15 @@ class BatchPeaksResource(BaseResource):
         """Every sample's intensity of every batch peak of a batch, one row
         per (sample, batch peak).
 
-        One request per batch, over the compact series route the app's batch
+        One read per batch, over the compact series route the app's batch
         overview draws from: the slim counterpart of :meth:`members`, with no
-        paging.
+        paging. With no ``run_id`` the batch's runs are listed first, to name
+        the current one.
+
+        While a rebuild or search run is in flight, the previous run is still
+        the current one but the live ledger is being rewritten: the rows can
+        then be half of each, whatever ``attrs["run_id"]`` says. A warning is
+        logged when the runs show one running; read again once it finishes.
 
         :param sample_batch_id: The ID of the sample batch.
         :type sample_batch_id: str
@@ -244,6 +250,13 @@ class BatchPeaksResource(BaseResource):
             run_id = next(
                 (r["batch_peak_run_id"] for r in runs if r.get("current")), None
             )
+            if any(r.get("status") == "running" for r in runs):
+                logger.warning(
+                    "A batch run of batch '{}' is in flight: its ledger is being "
+                    "rewritten, so these series can mix the current run and the "
+                    "new one. Read them again once it finishes.",
+                    sample_batch_id,
+                )
         body: dict[str, Any] = {
             "sample_batch_id": sample_batch_id,
             "min_n_present": min_n_present,

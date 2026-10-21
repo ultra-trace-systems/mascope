@@ -503,6 +503,15 @@ def test_pages_default_to_a_thousand_files(listing):
     assert server.requests == [{"limit": 1000, "page": 0}]
 
 
+@pytest.mark.parametrize("limit", [0, -5])
+def test_a_page_size_below_one_is_refused(listing, limit):
+    resource, server = listing
+
+    with pytest.raises(ValueError, match="at least 1"):
+        resource.list(limit=limit)
+    assert server.requests == []
+
+
 def test_the_range_and_instrument_reach_the_request(listing):
     resource, server = listing
 

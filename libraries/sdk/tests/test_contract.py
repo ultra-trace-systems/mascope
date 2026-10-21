@@ -906,7 +906,7 @@ class TestSeriesContract:
 
     def test_the_files_listing_is_the_files_the_batches_hold(self, mascope):
         _skip_unless_attr(mascope.sample_files, "list")
-        held = {}
+        held = set()
         for _, dataset in mascope.datasets.list().iterrows():
             batches = mascope.batches.list(dataset["dataset_id"])
             if batches is None:
@@ -914,14 +914,19 @@ class TestSeriesContract:
             for batch_id in batches["sample_batch_id"]:
                 samples = mascope.samples.list(batch_id)
                 if samples is not None:
-                    held.update(zip(samples["sample_file_id"], samples["datetime_utc"]))
+                    held.update(samples["sample_file_id"])
         assert held, "expected samples in the demo batches"
+        # The range is bounded by the files' own start times, which a
+        # sample cut from later in its file does not share.
+        everything = mascope.sample_files.list()
+        starts = everything.loc[everything["sample_file_id"].isin(held), "datetime_utc"]
+        assert len(starts) == len(held), "a held file is missing from the listing"
 
         files = mascope.sample_files.list(
-            datetime_min=min(held.values()), datetime_max=max(held.values())
+            datetime_min=starts.min(), datetime_max=starts.max()
         )
 
-        assert set(files["sample_file_id"]) == set(held)
+        assert set(files["sample_file_id"]) == held
         assert not files["sample_file_id"].duplicated().any()
         assert str(files["datetime_utc"].dt.tz) == "UTC"
         assert "acquisition_timezone" in files.columns
