@@ -7,9 +7,11 @@ credentials. The requirement is soft: accounts keep signing in with their
 existing password and are held at a mandatory password screen until they replace
 it. Nobody is excluded, including deactivated accounts and whoever runs this.
 
-Emits no live notification - there is no socket server in this process - so
-sessions that are already open transition when their next request is refused.
-The owner-facing action in the web interface does notify.
+Emits no live notification, so sessions that are already open transition when
+their next request is refused; the owner-facing action in the web interface does
+notify. Their open sockets are evicted from their rooms all the same: this
+process serves no sockets, but the Socket.IO server's Redis manager publishes
+each ``leave_room`` to the worker that holds the socket.
 
 Set MASCOPE_REQUIRE_PASSWORD_CHANGE_DRY_RUN=1 to report what would change
 without changing it.
@@ -138,6 +140,7 @@ async def run_require_password_change() -> None:
     runtime.logger.info("Requiring a password change...")
     result = await require_password_change_for_all_users()
     data = result["data"]
+    await evict_sockets(data["user_ids"])
 
     runtime.logger.info("=" * 80)
     runtime.logger.info("PASSWORD CHANGE REQUIRED")
@@ -155,6 +158,40 @@ async def run_require_password_change() -> None:
         "revoked with that person's tokens."
     )
     runtime.logger.info("=" * 80)
+
+
+async def evict_sockets(user_ids: list[int]) -> None:
+    """
+    Make the open sockets of the accounts just armed leave their rooms.
+
+    Without it a socket subscribed before the sweep keeps hearing record-sync
+    events until it reconnects. A Redis that cannot be reached is reported, not
+    raised: the requirement already stands, and those sockets are no worse off.
+
+    :param user_ids: The accounts the sweep armed.
+    """
+    if not user_ids:
+        return
+    # Imported here, not at the top: importing the socket package builds the
+    # Socket.IO server from the Redis configuration, and the CLI imports this
+    # script on the host to list it, where that configuration may be absent.
+    from mascope_backend.socket.eviction import evict_ended_sessions
+    from mascope_backend.socket.storage import redis_storage_client
+
+    try:
+        await redis_storage_client.connect()
+    except Exception:
+        runtime.logger.exception(
+            "Could not reach Redis: open sockets keep their rooms until they reconnect"
+        )
+        return
+    try:
+        evicted = 0
+        for user_id in user_ids:
+            evicted += await evict_ended_sessions(user_id)
+    finally:
+        await redis_storage_client.disconnect()
+    runtime.logger.info(f"Open sockets evicted from their rooms: {evicted}")
 
 
 def main() -> None:
