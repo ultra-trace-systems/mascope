@@ -226,6 +226,10 @@ services:
       # it a deployment whose config layers are its own would render a UI the
       # backend refuses. See server/frontend/docker-entrypoint.sh.
       - MASCOPE_RUNTIME
+      # Unset means on: nginx trusts CF-Connecting-IP relayed through the
+      # Docker gateway. A deployment with no Cloudflare in front sets it to
+      # `off` (docs/hosting.md).
+      - MASCOPE_TRUST_DOCKER_GATEWAY
     secrets:
       - ssl_certificate
       - ssl_secret_key

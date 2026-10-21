@@ -123,6 +123,9 @@ COPY server/frontend/nginx.conf /etc/nginx/mascope/nginx.conf
 COPY server/frontend/nginx.http.conf /etc/nginx/mascope/nginx.http.conf
 COPY server/frontend/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
+# The entrypoint runs this to trust the Docker gateway's CF-Connecting-IP;
+# tooling/validate-nginx-config.sh runs the same file in CI.
+COPY server/frontend/realip-gateway.sh /realip-gateway.sh
 
 # Load the njs module (bundled in the image) and stage the rate-limit key
 # script. nginx.conf keys the per-client limit zones on a /64-masked client

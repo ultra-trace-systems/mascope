@@ -130,6 +130,16 @@ and the checkout.
    firewall admit only Cloudflare to the port if the per-client limits matter
    to you.
 
+   **With no Cloudflare in front, turn that trust off:** set
+   `MASCOPE_TRUST_DOCKER_GATEWAY=off` in the environment `mascope prod up`
+   runs in, and restart the stack. The trust is on by default, and it applies
+   to every HTTPS deployment, not only those behind Cloudflare. Without
+   Cloudflare there is no address for it to restore, and every client the
+   gateway relays could send the header to pick a fresh budget for itself. On a
+   host running Docker with `iptables: false` that is every client; under
+   Docker's default rules, it is the host's own connections and IPv6 clients
+   of the stack's IPv4-only network.
+
    A front proxy must also keep the browser-visible origin intact: pass the
    browser's `Host` header through unchanged (nginx: `proxy_set_header Host
    $host;`, Apache: `ProxyPreserveHost On`) - or forward it in

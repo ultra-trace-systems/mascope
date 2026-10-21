@@ -45,22 +45,16 @@ else
   cp /etc/nginx/mascope/nginx.conf /etc/nginx/conf.d/nginx.conf
 
   # Trust the Docker bridge gateway as a relay for CF-Connecting-IP (see the
-  # cloudflare-realip block in nginx.conf for why). The gateway is the
-  # container's IPv4 default route. Anything that is not a plain dotted quad
-  # leaves the include empty, which keeps nginx valid and the trust list at
-  # Cloudflare's ranges alone.
-  realip_conf=/etc/nginx/mascope/realip-gateway.conf
-  gateway="$(ip -4 route show default 2>/dev/null | awk '{ print $3; exit }')"
-  case "${gateway}" in
-    '' | *[!0-9.]*)
-      : > "${realip_conf}"
-      echo "No Docker gateway found -> trusting CF-Connecting-IP from Cloudflare's ranges only"
-      ;;
-    *)
-      printf 'set_real_ip_from %s;\n' "${gateway}" > "${realip_conf}"
-      echo "Trusting CF-Connecting-IP relayed through the Docker gateway ${gateway}"
-      ;;
-  esac
+  # cloudflare-realip block in nginx.conf for why). On by default, so a
+  # Cloudflare-fronted host needs no setting; a deployment with no Cloudflare
+  # in front sets MASCOPE_TRUST_DOCKER_GATEWAY=off, since there the gateway
+  # relays clients that came straight to the port (docs/hosting.md).
+  if [ "${MASCOPE_TRUST_DOCKER_GATEWAY:-on}" = "off" ]; then
+    : > /etc/nginx/mascope/realip-gateway.conf
+    echo "MASCOPE_TRUST_DOCKER_GATEWAY=off -> trusting CF-Connecting-IP from Cloudflare's ranges only"
+  else
+    sh /realip-gateway.sh
+  fi
 fi
 
 exec nginx -g 'daemon off;'
