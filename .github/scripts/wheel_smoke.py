@@ -17,6 +17,10 @@ developer commands or dependencies, and the fresh-machine flow
 """
 
 import importlib.util
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -52,4 +56,34 @@ modules = runner.invoke(app, ["modules"])
 assert modules.exit_code == 0, modules.output
 assert "backend" in modules.output
 
-print("wheel smoke OK: operator surface only, dev deps absent, init flow works")
+# `demo` keeps only what works without the source tree: `fetch` and `info`.
+# Seeding, `snapshot` and `verify` import the dev extra and the backend.
+demo_help = runner.invoke(app, ["demo", "--help"])
+assert demo_help.exit_code == 0, demo_help.output
+for command in ("fetch", "info"):
+    assert command in demo_help.output, f"demo {command} missing"
+for command in ("verify", "snapshot"):
+    probe = runner.invoke(app, ["demo", command, "--help"])
+    assert probe.exit_code != 0, f"demo {command} is registered"
+for option in ("--rebuild", "--fresh", "--no-launch"):
+    probe = runner.invoke(app, ["demo", option])
+    assert probe.exit_code == 2, f"demo {option} is registered: {probe.output}"
+
+# The bare command points at the compose demo and exits non-zero, rather than
+# failing on an import (psycopg2) the operator install does not have. Run the
+# console script itself: the runtime's log sink writes the message to the real
+# terminal streams, which CliRunner swaps out and closes.
+mascope = Path(sys.executable).parent / (
+    "mascope.exe" if os.name == "nt" else "mascope"
+)
+assert mascope.is_file(), f"console script missing: {mascope}"
+demo = subprocess.run([str(mascope), "demo"], capture_output=True, text=True)
+demo_output = demo.stdout + demo.stderr
+assert demo.returncode == 1, (demo.returncode, demo_output)
+assert "Traceback" not in demo_output, demo_output
+assert "docker compose -f docker-compose.demo.yaml up -d" in demo_output, demo_output
+
+print(
+    "wheel smoke OK: operator surface only, dev deps absent, init flow works, "
+    "demo points at the compose stack"
+)

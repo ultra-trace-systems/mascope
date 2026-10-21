@@ -4,7 +4,8 @@ Monorepo source-checkout detection.
 The CLI has two audiences: developers running it editable from the monorepo,
 and operators running it from a wheel. Developer commands (`dev`, `test`,
 `agent`, `backend`) drive the source tree itself and are only registered when
-the CLI actually runs from a checkout.
+the CLI actually runs from a checkout, as are the parts of `demo` that seed the
+demo env or build and verify a bundle.
 """
 
 import os
