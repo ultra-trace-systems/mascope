@@ -7,9 +7,9 @@ in the Linear project
 [TOF mass calibration](https://linear.app/ultra-trace/project/tof-mass-calibration-8271ef05d142);
 this note is its record.*
 
-**Status.** Milestone 0 (measure) is under way: the assessment that started the project is done,
-and one instrument's calibrant set has been corrected (milestone 1). The audit tool, the fleet
-baseline and every code change are still to come. Sites are named by letter and instruments by
+**Status.** Milestone 0 (measure) is done: the assessment that started the project, the audit
+tool and the fleet baseline (section 2). One instrument's calibrant set has been corrected
+(milestone 1). Every code change is still to come. Sites are named by letter and instruments by
 neutral labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this repository.
 
 ## 1. The problem
@@ -84,8 +84,221 @@ A census of the stored records by kind (the input to re-calibration, section 6):
 | A | 3,677 | 3,649 | 27 | 1 |
 | internal | 2,167 | 0 | 2,167 | 0 |
 
-The per-instrument, per-mode baseline from the audit tool (milestone 0) and the re-calibration
-readiness inventory (milestone 4) are added here when they are run.
+The re-calibration readiness inventory (milestone 4) is added here when it is run.
+
+### The baseline on 2026-10-21
+
+The audit tool on every TOF instrument and ionization mode of sites A and B (MAS-175). It ran
+read-only on the sites, through the database's read-only role, with the audit code of develop at
+`5bd66b2d1`. Per mode it read two runs: one file a day over the 60 days 2026-08-22 to 2026-10-20
+(*sampled*), and every file of one recent day (*day*). That is 901 files.
+
+- Errors are in ppm of the exact m/z, positive where the axis reads high. A cell gives the
+  sampled run's median, then the day run's in parentheses.
+- The fit read is the stored one: the axis the files carry.
+- Modes are named by their reagent. The run names no modes, so B2's two ambient/zero modes are
+  told apart only by order, and TOF M has a second nitrate mode of five files on one day.
+- *Strong peaks* have S/N ≥ 20 and the mode's polarity. A band has them when the median file has
+  five or more there.
+
+**Each instrument and mode.** *Calibrant span*: the lowest and highest calibrant the node's refit
+under the mode's collection kept (median file). *Raw axis*: the converter's axis before any fit,
+read on the collection's and the cluster series' lines from 40 to 200 Th, as a range over the bands
+and both runs. *Node fit error*: the stored record's mean absolute post-fit error, sampled / day.
+*Refit = node fit*: the files whose refit lands within 0.01 ppm of the stored fit.
+
+| Site | Instrument, mode | Files | Audited | Calibrant span | Axis to | Strong peaks to | Raw axis, 40–200 Th | Node fit error | Refit = node fit |
+| -- | -- | --: | --: | -- | --: | -- | --: | --: | --: |
+| A | TOF H, propylamine (+) | 1,186 | 10 / 142 | 41–228 | 628 | 200–300 | +5 to +20 | 3.8 / 3.4 | 3/10 / 138/140 |
+| A | TOF M, bromide/nitrate | 1,469 | 23 / 48 | 62–241 | 998 | 700–1,000 | −81 to −77 | 0.6 / 0.5 | 23/23 / 48/48 |
+| A | TOF M, nitrate | 1,022 | 9 / 111 | 46–188 | 998 | 700–1,000 | −71 to −63 | 2.3 / 2.9 | 9/9 / 110/111 |
+| A | TOF M, nitrate, second mode | 5 | 1 / 5 | 62–176 | 998 | 200–300 | −78 to −73 | 0.6 / 1.0 | 1/1 / 5/5 |
+| B | B1, nitrate | 2,702 | 58 / 48 | 62–125 | 950 | 300–500 | +60 to +91 | 3.5 / 3.4 | 56/58 / 48/48 |
+| B | B1, bromide | 2,682 | 59 / 24 | 79–241 | 950 | 300–500 | +58 to +89 | 3.2 / 3.7 | 6/59 / 23/24 |
+| B | B1, ambient | 2,679 | 1 / 0 | none | 950 | – | – | – / – | – / – |
+| B | B2, nitrate | 1,984 | 60 / 34 | 62–188 | 1,099 | 500–700 | +99 to +134 | 0.7 / 0.8 | 59/59 / 34/34 |
+| B | B2, bromide | 1,976 | 60 / 33 | 62–241 | 1,099 | 500–700 | +101 to +128 | 1.6 / 1.6 | 43/60 / 21/33 |
+| B | B2, ambient/zero, first | 1,985 | 57 / 33 | none | 1,099 | 700–1,000 | +77 to +93 | – / – | – / – |
+| B | B2, ambient/zero, second | 1,985 | 1 / 0 | none | 1,099 | 700–1,000 | – | – / – | – / – |
+| B | B3, nitrate | 1,437 | 60 / 24 | 62–188 | 1,381 | 300–500 | −62 to −8 | 1.7 / 1.9 | 60/60 / 24/24 |
+
+- B1's ambient mode and B2's second ambient/zero mode could not be read: the audit failed on every
+  file but one with `ValueError` ([#2463](https://github.com/ultra-trace-systems/mascope/issues/2463)).
+- The three ambient/zero modes have no fit. The audit reads their converter record as one, so it
+  has no per-band error for them ([#2462](https://github.com/ultra-trace-systems/mascope/issues/2462)).
+  Their raw axis is the axis they carry.
+- Where the refit misses the node's fit, it kept another number of points, 1–3 ppm apart over the
+  calibrants (median). On TOF H the misses are 17 ppm apart: its set changed on 2026-10-17, inside
+  the sampled window.
+
+**Error per band on the calibrant and cluster lines.** The stored fit on every line the audit
+matched: the mode's calibrants and the cluster series HSO4−·(H2SO4)n, NO3−·(HNO3)n and
+Br−·(H2O)n, n = 0–4. Bands run up to the highest with strong peaks. ‡ marks lines above the top
+calibrant that are a neighbour, not the ion (below).
+
+| Instrument, mode | 40–100 | 100–150 | 150–200 | 200–300 | 300–500 | 500–700 | 700–1,000 |
+| -- | --: | --: | --: | --: | --: | --: | --: |
+| A TOF H, propylamine (+) | +0.6 (−6.0) | −2.7 (+3.6) | – (−2.0) | −15.1 (−2.4) |  |  |  |
+| A TOF M, bromide/nitrate | −0.5 (−0.5) | −0.8 (−0.6) | −0.7 (−0.4) | +0.2 (+0.2) | +66.4‡ (–) | – | – |
+| A TOF M, nitrate | −1.4 (−2.1) | +1.9 (+3.9) | −0.4 (−0.4) | – | – | – | – |
+| A TOF M, nitrate, second mode | −0.1 (−0.5) | −0.3 (+0.4) | +0.6 (−1.2) | – |  |  |  |
+| B B1, nitrate | +1.6 (−0.2) | +1.3 (+1.3) | +3.6 (–) | – | – |  |  |
+| B B1, bromide | +2.0 (+3.4) | −6.9 (−6.8) | −3.0 (−4.3) | +3.9 (+2.3) | +95.2‡ (+95.7‡) |  |  |
+| B B1, ambient | no fit |  |  |  |  |  |  |
+| B B2, nitrate | +0.7 (+0.7) | −1.0 (−1.2) | +0.5 (+0.6) | – (+0.7) | – (+1.7) | – |  |
+| B B2, bromide | +0.2 (+0.2) | −0.2 (−0.2) | +0.6 (+0.8) | +0.6 (+0.5) | +93.3‡ (+91.7‡) | – |  |
+| B B2, ambient/zero, first | no fit |  |  |  |  |  |  |
+| B B2, ambient/zero, second | no fit |  |  |  |  |  |  |
+| B B3, nitrate | −1.5 (−1.7) | +2.5 (+2.8) | −1.2 (−1.3) | – | – |  |  |
+
+**The family check.** The offset of strong peaks from the nearest CcHhOo member under the
+reagent's mechanism, median [IQR], within ±30 ppm of a member. A flat distribution over that
+window has an IQR of 30 ppm and says nothing.
+
+| Instrument, mode | Family | 40–100 | 100–150 | 150–200 | 200–300 | 300–500 | 500–700 | 700–1,000 |
+| -- | -- | --: | --: | --: | --: | --: | --: | --: |
+| A TOF H, propylamine (+) | [M+C3H7NH3]+ | −3.1 [6] (+1.2 [9]) | −4.5 [16] (+2.1 [14]) | −2.7 [19] (−0.2 [20]) | −6.8 [25] (−2.3 [23]) |  |  |  |
+| A TOF M, bromide/nitrate | [M+Br]- | – | +23.8 [23] (+17.9 [27]) | +11.8 [14] (+12.7 [33]) | +18.6 [25] (−1.8 [45]) | −3.5 [27] (−1.1 [28]) | −0.8 [17] (−1.2 [16]) | −0.2 [11] (+1.0 [13]) |
+| A TOF M, nitrate | [M+NO3]- | – | −2.2 [2] (−1.9 [2]) | −3.5 [2] (−2.8 [2]) | −2.8 [2] (−1.7 [4]) | +0.5 [13] (+1.7 [20]) | +10.7 [28] (+5.8 [29]) | +19.4 [8] (+15.5 [27]) |
+| A TOF M, nitrate, second mode | [M+NO3]- | – | – | – | −8.5 [21] (−9.0 [23]) |  |  |  |
+| B B1, nitrate | [M+NO3]- | – | +2.0 [9] (+2.1 [11]) | +10.4 [8] (+9.9 [8]) | +16.2 [19] (+14.4 [35]) | −3.3 [19] (−5.4 [9]) |  |  |
+| B B1, bromide | [M+Br]- | – | +17.1 [13] (+13.3 [23]) | +8.4 [13] (+9.0 [10]) | +15.7 [31] (+18.3 [27]) | −1.4 [26] (−1.5 [30]) |  |  |
+| B B2, nitrate | [M+NO3]- | +7.0 [6] (+2.0 [9]) | +4.1 [8] (+3.0 [7]) | +1.2 [4] (+1.9 [7]) | +1.8 [5] (+0.8 [11]) | −2.1 [25] (−1.0 [29]) | −4.1 [14] (−4.4 [17]) |  |
+| B B2, bromide | [M+Br]- | – | −10.4 [11] (−0.3 [12]) | +0.4 [7] (+0.1 [10]) | +1.4 [15] (−1.3 [23]) | −5.1 [17] (−2.1 [23]) | −4.9 [11] (−1.8 [15]) |  |
+| B B3, nitrate | [M+NO3]- | – | +7.9 [7] (–) | +1.3 [12] (−2.4 [6]) | +7.9 [13] (+8.5 [18]) | +0.3 [30] (+2.3 [23]) |  |  |
+
+**Each calibrant.** *Present*: the share of files whose refit matched it. *Kept*: the share of
+fitted files whose fit kept it. *Residual*: its median error under the refit, or held out (\*)
+where the fit never kept it. Sampled run, day run in parentheses.
+
+<details><summary>Calibrants per instrument and mode</summary>
+
+| Instrument, mode | Calibrant | Present | Kept | Residual |
+| -- | -- | --: | --: | --: |
+| A TOF H, propylamine (+) | C3H5+ 41.0 | 100% (99%) | 100% (88%) | −7.6 (−7.0) |
+|  | C3H10N+ 60.1 | 100% (99%) | 100% (100%) | +1.3 (+0.5) |
+|  | C6H14N+ 100.1 | 100% (99%) | 100% (100%) | +3.0 (+3.6) |
+|  | C6H19N2+ 119.2 | 90% (99%) | 90% (96%) | +4.4 (+3.6) |
+|  | C9H28N3+ 178.2 | – (4%) | – (2%) | – (−2.8) |
+|  | C13H26NO2+ 228.2 | 100% (99%) | 100% (92%) | −2.5 (−2.4) |
+|  | C16H35N2O2+ 287.3 | 10% (17%) | 10% (4%) | −4.7 (−10.0) |
+|  | C16H35N2O2+ 288.3 | – (15%) | – (5%) | – (−1.4) |
+| A TOF M, bromide/nitrate | NO3- 62.0 | 100% (100%) | 100% (100%) | +1.5 (+1.4) |
+|  | Br- 78.9 | 100% (100%) | 100% (100%) | −0.6 (−0.5) |
+|  | Br- 80.9 | 100% (100%) | 100% (100%) | −0.6 (−0.6) |
+|  | BrNO3- 140.9 | 9% (–) | 0% (–) | +89.8* (–) |
+|  | BrNO3- 142.9 | 17% (46%) | 0% (0%) | +85.5* (+53.5*) |
+|  | Br2- 157.8 | 70% (100%) | 70% (100%) | +0.0 (−0.1) |
+|  | Br2- 159.8 | 87% (98%) | 87% (98%) | −0.3 (−0.1) |
+|  | Br2- 161.8 | 70% (48%) | 70% (48%) | −0.3 (−0.2) |
+|  | Br3- 238.8 | 100% (100%) | 100% (100%) | +0.1 (+0.1) |
+|  | Br3- 240.8 | 100% (100%) | 100% (100%) | +0.2 (+0.1) |
+| A TOF M, nitrate | NO2- 46.0 | 100% (94%) | 100% (94%) | −0.6 (−0.8) |
+|  | NO3- 62.0 | 100% (93%) | 100% (93%) | −1.9 (−2.8) |
+|  | HN2O5- 109.0 | 44% (16%) | 0% (1%) | +36.2* (+9.2) |
+|  | C2F3O2- 113.0 | 100% (98%) | 100% (98%) | +6.8 (+8.1) |
+|  | HN2O6- 125.0 | 100% (100%) | 100% (99%) | −2.6 (−2.3) |
+|  | C2HF3NO5- 176.0 | 100% (100%) | 100% (100%) | +0.2 (+0.5) |
+|  | H2N3O9- 188.0 | 100% (95%) | 100% (95%) | −1.7 (−2.0) |
+| A TOF M, nitrate, second mode | NO3- 62.0 | 100% (100%) | 100% (100%) | −1.0 (−1.5) |
+|  | O3^N- 63.0 | 100% (100%) | 100% (100%) | +0.9 (+0.3) |
+|  | C2F3O2- 113.0 | 100% (100%) | 100% (100%) | −0.3 (+1.5) |
+|  | HNO6^N- 126.0 | 100% (100%) | 100% (100%) | +0.7 (+0.8) |
+|  | C2HF3NO5- 176.0 | 100% (100%) | 100% (100%) | −0.2 (−1.1) |
+| B B1, nitrate | NO3- 62.0 | 100% (100%) | 100% (100%) | +4.0 (+3.8) |
+|  | H2NO4- 80.0 | 100% (100%) | 100% (100%) | −5.2 (−5.1) |
+|  | HN2O6- 125.0 | 100% (100%) | 100% (100%) | +1.3 (+1.3) |
+|  | H2N3O9- 188.0 | 9% (–) | 9% (–) | +3.6 (–) |
+| B B1, bromide | Br- 78.9 | 100% (100%) | 100% (100%) | +4.9 (+4.2) |
+|  | Br- 80.9 | 100% (100%) | 100% (100%) | +3.8 (+4.0) |
+|  | BrH2O- 96.9 | 100% (100%) | 100% (100%) | −3.4 (−3.1) |
+|  | BrH2O- 98.9 | 100% (100%) | 100% (100%) | −3.8 (−3.3) |
+|  | Br2- 157.8 | 88% (79%) | 88% (79%) | −1.6 (−1.0) |
+|  | Br2- 159.8 | 83% (75%) | 83% (75%) | −1.7 (−2.9) |
+|  | Br2- 161.8 | 81% (96%) | 78% (96%) | −1.7 (−1.9) |
+|  | Br3- 238.8 | 66% (83%) | 66% (83%) | +1.9 (+0.9) |
+|  | Br3- 240.8 | 66% (88%) | 66% (88%) | +2.0 (+1.9) |
+| B B2, nitrate | NO3- 62.0 | 98% (100%) | 100% (100%) | +0.6 (+0.7) |
+|  | HN2O6- 125.0 | 98% (100%) | 100% (100%) | −1.0 (−1.2) |
+|  | H2N3O9- 188.0 | 98% (100%) | 100% (100%) | +0.5 (+0.6) |
+| B B2, bromide | NO3- 62.0 | 100% (100%) | 100% (100%) | +5.1 (+5.0) |
+|  | Br- 78.9 | 100% (100%) | 100% (100%) | −1.8 (−2.0) |
+|  | Br- 80.9 | 100% (100%) | 100% (100%) | −1.9 (−1.9) |
+|  | BrHNO3- 141.9 | 100% (100%) | 100% (100%) | −0.9 (−0.7) |
+|  | BrHNO3- 143.9 | 98% (100%) | 98% (100%) | −0.5 (−0.4) |
+|  | Br2- 157.8 | 10% (12%) | 10% (12%) | −0.9 (−2.2) |
+|  | Br2- 159.8 | 28% (33%) | 28% (33%) | −0.9 (−1.1) |
+|  | Br2- 161.8 | 57% (45%) | 57% (45%) | −0.4 (−1.6) |
+|  | Br3- 238.8 | 97% (100%) | 97% (100%) | +0.5 (+0.5) |
+|  | Br3- 240.8 | 98% (100%) | 98% (100%) | +0.6 (+0.5) |
+| B B3, nitrate | NO3- 62.0 | 100% (100%) | 100% (100%) | −1.5 (−1.7) |
+|  | HN2O6- 125.0 | 100% (100%) | 100% (100%) | +2.5 (+2.8) |
+|  | H2N3O9- 188.0 | 100% (100%) | 100% (100%) | −1.2 (−1.3) |
+
+</details>
+
+**What it shows.**
+
+- **Inside its calibrant span every axis holds.** TOF M, B2 and B3 read within ±3 ppm on their
+  calibrant and cluster lines, but for two calibrants listed below. B1 holds within ±8 ppm. Its
+  bromide fit keeps Br− at +4 to +5 ppm and leaves Br−·(H2O)2–4 at −6 to −8 ppm: a bow like
+  TOF H's. TOF H keeps the bow of section 1: 41 Th at −7 ppm, 100–119 Th at +3 to +4.
+- **Every set stops at 125–241 Th; the strong peaks do not.** The axes reach 628–1,381 Th. Strong
+  peaks reach the 200–300 Th band on TOF H, 300–500 on B1 and B3, 500–700 on B2 and 700–1,000 on
+  TOF M. B1's nitrate set stops at 125 Th in practice: its 188 Th trimer is matched in 9% of the
+  sampled files and in none of the day's.
+- **Above the top calibrant, no matched line measures the axis.** In the bromide modes the cluster
+  lines matched there read +67 to +95 ppm, with an IQR of a few ppm. They are neighbours.
+  (HNO3)3·NO3− at 251 Th reads +67, +71 and +71 ppm in the bromide modes of TOF M, B1 and B2,
+  whose raw axes and calibrants differ. It reads +0.7 ppm in B2's nitrate mode, where it is the
+  ion (six files). HSO4−·H2SO4 at 195 Th reads −90 ppm on TOF M, between calibrants (Br2−, Br3−)
+  that sit within 0.3 ppm.
+- **The family check reads the axis to about 300 Th in the nitrate modes.** TOF M's nitrate axis
+  holds at −1.7 to −3.5 ppm over 100–300 Th (IQR 2–4). B2's holds at +0.8 to +1.9 ppm over
+  150–300 Th (IQR 4–11). B1's nitrate axis drifts above its 125 Th top calibrant: +10 ppm at
+  150–200 Th (IQR 8) on both runs, +14 to +16 at 200–300 (IQR 19–35). B3 reads +8 ppm at
+  200–300 Th on both runs (IQR 13–18). In the bromide modes the check disagrees with the
+  calibrants below 300 Th: TOF M's [M+Br]− family reads +12 to +24 ppm where its calibrants read
+  within 1 ppm. There it measures peaks that are not CHO·Br−.
+- **Above 300 Th the family check is a hint at most.** Members of one nominal mass are 36.4 mDa
+  apart, 36–120 ppm over 300–1,000 Th. An offset of a whole spacing reads as none, and the offsets
+  spread widely (IQR 8–30 ppm). With that caveat: at 500–1,000 Th TOF M reads −1 to +1 ppm in its
+  bromide/nitrate mode, whose set reaches 241 Th (IQR 11–17), and +6 to +19 ppm in its nitrate
+  mode, whose set stops at 188 Th. Elsewhere above 300 Th the medians sit within ±6 ppm, with
+  IQRs of 9–30 ppm.
+- **The raw axes are far off and move.** Before the fit: TOF M −63 to −81 ppm, TOF H +5 to +20,
+  B1 +58 to +91, B2 +99 to +134, B3 −8 to −62. Each is flat over 40–200 Th within a run. B1, B2
+  and B3 read 24–30 ppm lower on the day than over the 60 days. B2's first ambient/zero mode has
+  no fit, so its files carry the raw axis: +77 to +93 ppm.
+- **Calibrants that do not work** (milestone 1):
+  - BrNO3− in TOF M's bromide/nitrate set: matched in 9–46% of files, never kept, +54 to +90 ppm
+    where matched.
+  - HN2O5− (109 Th) in TOF M's nitrate set: matched in 16–44%, held out at +36 ppm.
+  - TFA (C2F3O2−, 113 Th) in the same set: kept at +7 to +8 ppm while its neighbours sit within
+    ±3 ppm. In TOF M's second nitrate mode it reads within ±1.5.
+  - NO3− in B2's bromide set: kept at +5 ppm. Br2− there is matched in 10–57% of files.
+  - (C3H9N)3H+ (178 Th) and C16H35N2O2+ (287 Th) in TOF H's set: matched in 4–17% of files.
+
+**Against the brief's check.**
+
+- *A reading in every band from 40 Th to the top band with strong peaks*: 9 of the 12 rows. The
+  exceptions are the three ambient/zero modes. Above the top calibrant the reading is the family
+  offset, which is ambiguous above 300 Th.
+- *The day run within 1 ppm of the sampled run, per band*: on the calibrant and cluster lines, 20
+  of 29 band cells. Every cell of TOF M's bromide/nitrate mode, B2 and B3 agrees. The misses:
+  - TOF H in all three bands, by 6–13 ppm: the sampled run straddles the set change of
+    2026-10-17.
+  - B1 in four cells, by 1.3–1.9 ppm.
+  - TOF M's nitrate modes in two cells, by 1.8–2.0 ppm.
+
+  The family offsets agree in 14 of 39. With an IQR of 10–45 ppm their median moves by a few ppm
+  between runs. Where it moves by 10–20 ppm (TOF M bromide/nitrate at 200–300 Th, B2 bromide at
+  100–150), what changed is which peaks are there.
+
+**Not measured.** An unambiguous reading of the axis above 300 Th on any instrument, where TOF M
+and B2 have most of their strong peaks
+([#2464](https://github.com/ultra-trace-systems/mascope/issues/2464)). The axes of B1's ambient
+mode and of B2's second ambient/zero mode (#2463).
 
 ## 3. How TOF calibration works today
 
@@ -221,7 +434,8 @@ tool, and accuracy is quoted in ppm per mass band, not as one RMS.
 - **This note** (MAS-173).
 - **The fleet baseline**: the audit tool on every instrument × mode, a sample per day over 60 days
   plus one complete day, in bands 40–100, 100–150, 150–200, 200–300, 300–500 Th and above where
-  strong peaks exist. The table goes into section 2 (MAS-175).
+  strong peaks exist. Done: section 2 (MAS-175). It has no unambiguous reading above 300 Th
+  ([#2464](https://github.com/ultra-trace-systems/mascope/issues/2464)).
 
 ### 1 · Calibrant sets per instrument
 
