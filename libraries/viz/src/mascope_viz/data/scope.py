@@ -312,15 +312,20 @@ class ResolvedScope:
     :ivar files: One row per file acquired in the range, oldest first,
         whether or not a batch holds a sample of it, with the columns of
         ``client.sample_files.list`` and ``in_batch``: whether a sample of
-        it is in one of :attr:`batches`. Without a time range the range is
-        that of the batches' samples.
+        it is in one of the scope's batches. That is before the scope's
+        polarity and mode: a file whose samples those leave out is still
+        ``in_batch``, though no row of :attr:`batches` counts it. Without a
+        time range the range is that of the batches' samples.
     :ivar collections: One row per target collection associated with some
         of :attr:`batches`: ``target_collection_id``,
         ``target_collection_name``, ``target_collection_type``,
         ``workspace_id`` (None for a global one) and ``sample_batch_ids``.
     :ivar collection: The ID of the collection the scope names, if it does.
     :ivar timezone: The instrument's acquisition time zone, as its files in
-        range record it; None when they do not.
+        range record it; None when they do not. A scope that spans
+        instruments in different zones (a time range alone, say) gets the
+        zone most of their files record, and a bound without a zone is read
+        in that one: give such a scope its bounds with a zone, or ``tz=``.
     :ivar display_tz: The zone to show times in: the scope's ``tz``, or
         :attr:`timezone` for ``"instrument"`` (UTC when that is unknown).
     :ivar start_utc: The range's start in UTC, if it has one.
@@ -440,9 +445,7 @@ def _batches(client: "MascopeClient", datasets: pd.DataFrame) -> pd.DataFrame:
                 "sample_batch_utc_modified",
             ]
         )
-    return pd.concat(frames, ignore_index=True).drop_duplicates(
-        "sample_batch_id", ignore_index=True
-    )
+    return pd.concat(frames, ignore_index=True)
 
 
 def _samples(client: "MascopeClient", batches: pd.DataFrame) -> pd.DataFrame:
@@ -490,11 +493,9 @@ def _files(
         if column not in frame:
             frame[column] = None
     frame["datetime_utc"] = pd.to_datetime(frame["datetime_utc"], utc=True)
-    return (
-        frame.drop_duplicates("sample_file_id")
-        .sort_values(["datetime_utc", "sample_file_id"], kind="stable")
-        .reset_index(drop=True)
-    )
+    return frame.sort_values(
+        ["datetime_utc", "sample_file_id"], kind="stable"
+    ).reset_index(drop=True)
 
 
 def _zone_of(files: pd.DataFrame) -> str | None:
@@ -741,7 +742,15 @@ def resolve(client: "MascopeClient", scope: Scope) -> ResolvedScope:
     if start_utc is not None or end_utc is not None:
         files = files[_in_range(files["datetime_utc"], start_utc, end_utc)]
     if scope.polarity is not None:
-        files = files[files["polarity"] == scope.polarity]
+        # A polarity-switching file lists as "+-" or "-+": a sample of
+        # either polarity can be in it
+        files = files[
+            files["polarity"].map(
+                lambda polarity: (
+                    isinstance(polarity, str) and scope.polarity in polarity
+                )
+            )
+        ]
     files = files.assign(in_batch=files["sample_file_id"].isin(of_batches))
     files = files.reset_index(drop=True)
 

@@ -475,6 +475,16 @@ class TestATimeRange:
 
         assert resolved.timezone == ZONE
 
+    def test_a_blank_zone_is_no_zone(self, client, api):
+        first_day = set(_files_of("b1"))
+        for row in api.files:
+            if row["sample_file_id"] not in first_day:
+                row["acquisition_timezone"] = ""
+
+        resolved = resolve(client, Scope(dataset="Campaign 2026"))
+
+        assert resolved.timezone == ZONE
+
     def test_the_zone_is_found_around_the_range_west_of_utc_too(self, client, api):
         """Read as UTC, 09:00 at UTC-3 would end the search for the
         instrument's files three hours early, before the noon sample."""
@@ -578,8 +588,15 @@ class TestAmbiguity:
         resolved = resolve(client, Scope(dataset="Campaign 2026", collection="organic"))
 
         assert {c.id for c in resolved.candidates["collection"]} == {"c1", "c2"}
-        # The rest resolved
+        # The rest resolved, the collection kept as it was asked for
         assert len(resolved.batches) == 5
+        assert resolved.scope.collection == "organic"
+
+    def test_an_ambiguous_scope_shows_times_in_the_zone_it_names(self, client):
+        resolved = resolve(client, Scope(batches="Calibr", tz="Asia/Tokyo"))
+
+        assert resolved.ambiguous
+        assert resolved.display_tz == "Asia/Tokyo"
 
     def test_a_candidate_is_plain_json(self):
         candidate = Candidate("batch", "b7", "Calibration", "d3")
@@ -621,6 +638,37 @@ class TestNarrowing:
         assert resolved.batches["n_samples"].tolist() == [1]
         assert _ids(resolved.files, "sample_file_id") == ["f-s-b2-pos"]
         assert resolved.scope.polarity == "+"
+
+    @pytest.mark.parametrize("switching", ["+-", "-+"])
+    @pytest.mark.parametrize("polarity", ["+", "-"])
+    def test_a_polarity_switching_file_is_in_either_polarity(
+        self, client, api, switching, polarity
+    ):
+        for row in api.files:
+            if row["sample_file_id"] == "f-s-b2-pos":
+                row["polarity"] = switching
+
+        resolved = resolve(
+            client,
+            Scope(
+                dataset="Campaign 2026",
+                start=f"{DAYS[1]} 10:00",
+                end=f"{DAYS[1]} 14:00",
+                polarity=polarity,
+            ),
+        )
+
+        assert _ids(resolved.files, "sample_file_id") == ["f-s-b2-pos"]
+
+    def test_a_file_of_no_polarity_is_in_none(self, client, api):
+        for row in api.files:
+            row["polarity"] = None
+
+        resolved = resolve(
+            client, Scope(dataset="Campaign 2026", start=DAYS[1], polarity="-")
+        )
+
+        assert resolved.files.empty
 
     def test_a_mode_selects_its_samples(self, client):
         resolved = resolve(client, Scope(dataset="Campaign 2026", mode="im-h"))
