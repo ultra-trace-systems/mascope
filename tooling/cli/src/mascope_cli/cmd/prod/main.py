@@ -176,6 +176,34 @@ def _deploy_version() -> str:
     return "latest"
 
 
+def _warn_if_pin_lapses(version: Optional[str], mascope_path: Optional[str]) -> None:
+    """
+    Say that an update's ``--version`` does not outlive it on a wheel install.
+
+    A checkout install keeps the release an update deployed: the checkout
+    moves to its tag (`_align_checkout`), and the next boot or `prod up` reads
+    it from there. A wheel install has no checkout, and ``--version`` pins
+    ``MASCOPE_VERSION`` for this process only - so the next `prod up` falls
+    back to `latest` unless the operator pins the release where the stack is
+    started from.
+
+    :param version: The ``--version`` the update was given, or None.
+    :param mascope_path: The runtime home, or None when unset.
+    """
+    # `latest` is what a later `prod up` falls back to anyway.
+    if version is None or version == "latest":
+        return
+    if runtime.parse_version(cwd=mascope_path) != "unknown-version":
+        return  # a checkout: _align_checkout keeps the release
+    runtime.logger.warning(
+        f"No git checkout at '{mascope_path}', so the {version} pin lasts only "
+        "for this command: the next 'mascope prod up' deploys the rolling "
+        "'latest' images again. To stay on this release, set "
+        f"MASCOPE_VERSION={version} in the environment the stack is started "
+        "from."
+    )
+
+
 def _align_checkout(target: str, mascope_path: Optional[str]) -> None:
     """
     Move the deployment checkout to the release tag that is now running.
@@ -1147,6 +1175,8 @@ def update(
             "'.runtime/update/state.json' in the deployment checkout - "
             "`mascope prod doctor` reads the same file."
         )
+    # Off a checkout nothing keeps --version once this process exits.
+    _warn_if_pin_lapses(version, os.environ.get("MASCOPE_PATH"))
     # Last, so it is the final thing the operator sees: the images moved but the
     # CLI tool did not - warn if it now trails the checkout.
     _warn_if_cli_stale(auto=False)

@@ -55,6 +55,25 @@ pre-migration dump). Move to a specific release with
 commands with `MASCOPE_VERSION`; without a pin the stack follows the
 `latest` release images.
 
+## Limits of a wheel install
+
+A runtime home made by `pip install mascope-cli` and `mascope init` starts a
+stack, but does not yet carry one across releases the way a server's source
+checkout does:
+
+- **It records no deployed release.** `mascope prod update --version v1.2.0`
+  pins the release for that command only, and says so. The next
+  `mascope prod up` deploys `latest` again. To stay on a release, set
+  `MASCOPE_VERSION=v1.2.0` in the environment the stack is started from.
+- **The compose file and config layers are the CLI's own.** `mascope init`
+  writes the copies this CLI version ships, and `prod update` never refreshes
+  them. `mascope init --force` overwrites the base and mode layers wholesale.
+- **There are no boot or update units.** Nothing starts the stack at boot or
+  runs the unattended update, backup retention or disk check. A checkout
+  install gets these as systemd units from `tooling/ubuntu.sh`.
+- **A CLI behind the release goes unnoticed.** There is no checkout to
+  compare it with; upgrade it with `pip install -U mascope-cli`.
+
 ## Development
 
 The Mascope source checkout exposes additional developer commands (`dev`,
