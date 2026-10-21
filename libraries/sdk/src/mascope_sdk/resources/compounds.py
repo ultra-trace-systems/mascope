@@ -37,11 +37,14 @@ class CompoundsResource(BaseResource):
         """Add compounds.
 
         :param compounds: Each a dict with ``target_compound_formula`` and,
-            optionally, ``target_compound_name`` and ``cas_number``.
+            optionally, ``target_compound_name``, ``cas_number`` and the
+            structure identity: ``inchikey``, ``inchi``, ``smiles``. An InChI
+            must describe the formula, or the call is refused.
         :type compounds: Sequence[dict[str, Any]]
         :return: ``{"created_compounds": [...], "existing_compounds": [...]}``:
             a compound that already exists is not created again but listed
-            under ``existing_compounds``.
+            under ``existing_compounds``; it takes the identity sent only when
+            it has none.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the global editor role.
         :raises ValidationError: If a formula is not one.
@@ -60,13 +63,16 @@ class CompoundsResource(BaseResource):
         """Update compounds.
 
         A formula change makes the server delete the compound and create it
-        again under a new ID, with the name and the CAS number the item
-        gives: send both with a new formula, or the name comes back empty
-        and the CAS number unset. The answer names the new ID.
+        again under a new ID, with the name, the CAS number and the structure
+        identity the item gives: send them with a new formula, or the name
+        comes back empty and the rest unset. The answer names the new ID.
 
         :param compounds: Each a dict with its ``target_compound_id`` and the
             fields to change: ``target_compound_name``,
-            ``target_compound_formula``, ``cas_number``.
+            ``target_compound_formula``, ``cas_number``, ``inchikey``,
+            ``inchi``, ``smiles``. An InChI must describe the formula the
+            compound will have - the stored one when the item sends none - or
+            the call is refused.
         :type compounds: Sequence[dict[str, Any]]
         :return: The updated compounds, as the route reports them.
         :rtype: Any
