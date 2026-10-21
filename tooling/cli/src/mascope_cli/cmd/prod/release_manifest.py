@@ -20,7 +20,7 @@ from typing import Optional
 
 
 # NOTE: alembic is imported lazily inside read_alembic_head(), not at module
-# level. It lives in mascope-cli's `dev` extra (monorepo/CI only), while this
+# level. Only a source checkout installs it (the root pyproject.toml), while this
 # module is pulled in by the always-loaded `prod` command group. A top-level
 # import would break `import mascope_cli` on a standalone operator install that
 # has no alembic. Only manifest *generation* (a release-build step) needs it.
@@ -56,8 +56,8 @@ def read_alembic_head(backend_path: Path) -> str:
         from alembic.script import ScriptDirectory
     except ModuleNotFoundError as e:
         raise ManifestError(
-            "Manifest generation requires alembic (mascope-cli's 'dev' extra); "
-            "it runs at release build time, not on an operator install."
+            "Manifest generation requires alembic, which a source checkout "
+            "installs; it runs at release build time, not on an operator install."
         ) from e
 
     ini = backend_path / "alembic.ini"

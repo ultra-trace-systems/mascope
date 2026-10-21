@@ -1,13 +1,14 @@
 """
 Hermetic test environment for the Mascope CLI suite.
 
-``mascope_cli`` initializes its Runtime singleton at import time: it requires
+``mascope_cli`` creates its Runtime singleton on first use, not at import
+(``mascope_cli.runtime``): the first command or fixture that touches it reads
 ``MASCOPE_PATH``, loads the ``*.mascope.toml`` layers from that path, and
 persists mode/env state to ``.runtime/state.json``. To keep this suite
 hermetic — runnable without a configured shell, and without clobbering a
 developer's real ``.runtime/state.json`` — this conftest builds a throwaway
 runtime home from the repo's real config layers and points ``MASCOPE_PATH``
-at it *before* any test module imports ``mascope_cli``.
+at it before anything can create the Runtime.
 
 The suite needs no Docker, Postgres, or network; commands that shell out are
 tested against a mocked ``lib.run`` / ``subprocess.run``.
