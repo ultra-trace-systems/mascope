@@ -580,6 +580,33 @@ class TestReferenceDataContract:
             )
             assert error_ppm <= 31, candidate
 
+    def test_cheminfo_query_reads_an_isotopologue_line(self, mascope):
+        # 126.9223 is the 81Br line of CH2BrO2-, formic acid's bromide
+        # adduct: 2 Da above its monoisotopic line, so only a query that may
+        # read the m/z at another line of the ion (the default) finds the
+        # formula.
+        _skip_unless_param(mascope.cheminfo.query_by_mz, "isotopologues")
+        mechanisms = mascope.ionization.list()
+        bromide = mechanisms[mechanisms["ionization_mechanism"] == "[M+Br]-"]
+        if bromide.empty:
+            pytest.skip("the stack carries no [M+Br]- mechanism")
+        mech_ids = list(bromide["ionization_mechanism_id"])
+        mz = 126.9223
+
+        def formulas(**flags):
+            results = mascope.cheminfo.query_by_mz(
+                mz, ionization_mechanism_ids=mech_ids, mz_tolerance=5.0, **flags
+            )
+            return {r["target_compound_formula"]: r for r in results}
+
+        assert "CH2O2" not in formulas(isotopologues=False)
+        # The default call reads every isotopologue line.
+        found = formulas()
+        assert "CH2O2" in found
+        # The candidate's m/z is the line it was read at, not its
+        # monoisotopic line, and its error is against that line.
+        assert abs(found["CH2O2"]["target_isotope_mz"] - mz) / mz * 1e6 <= 5
+
 
 @requires_stack
 class TestLoaderContract:

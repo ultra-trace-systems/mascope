@@ -842,6 +842,8 @@ Columns: `ionization_mechanism_id`, `ionization_mechanism` (the mechanism in the
 | ------------------------------------- | ----------------------------------------- | ------------ |
 | `query_by_mz(mz, mechanism_ids, ...)` | Query potential formulas for an m/z value | `list[dict]` |
 
+By default the m/z may be any line of a candidate's ion, not only its monoisotopic one: a 13C or 81Br line, a dibromide's brighter 79Br81Br line, as a peak's m/z often is. A candidate read at another line has that line's m/z as its `target_isotope_mz`. `isotopologues=False` searches the monoisotopic line only. `known_only=True` keeps only formulas of a known reference compound. Both are keyword-only; a server that predates them ignores them, and then searches the monoisotopic line only. The server does not honour `limit`: it returns every composition it finds, in no ranked order.
+
 ## Examples
 
 ### Load peaks and plot by compound
