@@ -47,8 +47,8 @@ The old record looked healthy throughout: 6 points, a post-fit residual of 3–5
 Nothing in the record or the UI could show that the fit covered 41–148 Th of a file whose strong
 peaks reached ~450 Th.
 
-The same shape is likely on every TOF in the fleet (next section): calibrant sets end at
-188–241 Th on axes that reach 950–1,385 Th.
+The same shape is on every TOF in the fleet (next section): calibrant sets end at 125–241 Th on
+axes that reach 628–1,381 Th.
 
 **Goal.** Every TOF file carries a calibration that holds across the mass range it is analysed
 over; its record says what it was fitted on and how good it is; and existing data is re-calibrated
@@ -127,9 +127,12 @@ and both runs. *Node fit error*: the stored record's mean absolute post-fit erro
 - The three ambient/zero modes have no fit. The audit reads their converter record as one, so it
   has no per-band error for them ([#2462](https://github.com/ultra-trace-systems/mascope/issues/2462)).
   Their raw axis is the axis they carry.
-- Where the refit misses the node's fit, it kept another number of points, 1–3 ppm apart over the
-  calibrants (median). On TOF H the misses are 17 ppm apart: its set changed on 2026-10-17, inside
-  the sampled window.
+- Where the refit misses the node's fit, it mostly kept other points. Most misses are in the
+  bromide modes of B1 and B2, 0.7–3.0 ppm apart over the calibrants (median per run). The rest
+  are further apart: TOF H's sampled run by 17 ppm, as its set changed on 2026-10-17, inside the
+  sampled window; two B1 nitrate files by 8 ppm; one TOF H file of the day by 9; one TOF M
+  nitrate file by 35. Four misses are not another choice of points: the refit found other peaks
+  in two B1 bromide files and one TOF H file, and did not fit one TOF H file of the day.
 
 **Error per band on the calibrant and cluster lines.** The stored fit on every line the audit
 matched: the mode's calibrants and the cluster series HSO4−·(H2SO4)n, NO3−·(HNO3)n and
@@ -248,9 +251,9 @@ where the fit never kept it. Sampled run, day run in parentheses.
   TOF M. B1's nitrate set stops at 125 Th in practice: its 188 Th trimer is matched in 9% of the
   sampled files and in none of the day's.
 - **Above the top calibrant, no matched line measures the axis.** In the bromide modes the cluster
-  lines matched there read +67 to +95 ppm, with an IQR of a few ppm. They are neighbours.
+  lines matched there read +67 to +95 ppm. They are neighbours.
   (HNO3)3·NO3− at 251 Th reads +67, +71 and +71 ppm in the bromide modes of TOF M, B1 and B2,
-  whose raw axes and calibrants differ. It reads +0.7 ppm in B2's nitrate mode, where it is the
+  whose raw axes and calibrants differ. Its IQR is 2–4 ppm on TOF M and B2, 15–18 on B1. It reads +0.7 ppm in B2's nitrate mode, where it is the
   ion (six files). HSO4−·H2SO4 at 195 Th reads −90 ppm on TOF M, between calibrants (Br2−, Br3−)
   that sit within 0.3 ppm.
 - **The family check reads the axis to about 300 Th in the nitrate modes.** TOF M's nitrate axis
@@ -267,9 +270,30 @@ where the fit never kept it. Sampled run, day run in parentheses.
   mode, whose set stops at 188 Th. Elsewhere above 300 Th the medians sit within ±6 ppm, with
   IQRs of 9–30 ppm.
 - **The raw axes are far off and move.** Before the fit: TOF M −63 to −81 ppm, TOF H +5 to +20,
-  B1 +58 to +91, B2 +99 to +134, B3 −8 to −62. Each is flat over 40–200 Th within a run. B1, B2
-  and B3 read 24–30 ppm lower on the day than over the 60 days. B2's first ambient/zero mode has
-  no fit, so its files carry the raw axis: +77 to +93 ppm.
+  B1 +58 to +91, B2 +99 to +134, B3 −8 to −62 (the table below).
+  - Within a run, TOF M's axis is flat to within 6 ppm over 40–200 Th. TOF H, B1 and B2 vary by
+    4–14 ppm across the three bands, with no shape in common.
+  - B3's axis slopes: it rises by 28–32 ppm from 40–100 to 150–200 Th, in both runs. Its range
+    above is that slope plus a day shift, not one offset.
+  - B1, B2 and B3 read 22–30 ppm lower on the day than over the 60 days, in every band but one:
+    B2's bromide mode at 150–200 Th reads 11 ppm lower.
+  - B2's first ambient/zero mode has no fit, so its files carry the raw axis: +77 to +93 ppm.
+
+  The raw axis per band, sampled run, day run in parentheses, in ppm. *Range within the run*: the
+  highest band minus the lowest. A band needs five matched lines.
+
+  | Instrument, mode | 40–100 | 100–150 | 150–200 | Range within the run |
+  | -- | --: | --: | --: | --: |
+  | A TOF H, propylamine (+) | +5 (+15) | +15 (+20) | – (+6) | 10 (14) |
+  | A TOF M, bromide/nitrate | −79 (−77) | −80 (−79) | −81 (−80) | 2 (2) |
+  | A TOF M, nitrate | −69 (−67) | −67 (−63) | −71 (−69) | 4 (6) |
+  | A TOF M, nitrate, second mode | – (−73) | – (−76) | – (−78) | – (5) |
+  | B B1, nitrate | +91 (+67) | +82 (+60) | +81 (–) | 10 (6) |
+  | B B1, bromide | +89 (+62) | +83 (+58) | +85 (+61) | 6 (4) |
+  | B B2, nitrate | +134 (+105) | +127 (+99) | +125 (+100) | 9 (6) |
+  | B B2, bromide | +128 (+101) | +124 (+101) | +121 (+110) | 7 (10) |
+  | B B2, ambient/zero, first | +87 (+77) | +93 (+83) | – (+81) | 6 (5) |
+  | B B3, nitrate | −37 (−62) | −13 (−36) | −8 (−30) | 28 (32) |
 - **Calibrants that do not work** (milestone 1):
   - BrNO3− in TOF M's bromide/nitrate set: matched in 9–46% of files, never kept, +54 to +90 ppm
     where matched.
