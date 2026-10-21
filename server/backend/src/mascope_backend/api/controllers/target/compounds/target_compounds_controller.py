@@ -8,6 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mascope_backend.api.controllers.sample.batches.status.service import (
     update_sample_batch_status,
 )
+from mascope_backend.api.controllers.target.compounds.target_compound_identity import (
+    check_inchi_formula,
+    formula_composition,
+)
 from mascope_backend.api.controllers.target.ions.target_ions_controller import (
     create_target_ions,
 )
@@ -34,6 +38,11 @@ from mascope_backend.db import (
 from mascope_backend.db.id import gen_id
 from mascope_backend.socket.records.service import emit_record_reload
 from mascope_file.string import norm
+
+
+# The structure identity of a compound (FAIR I3): written together, cleared
+# together when a formula change makes the row another substance.
+_IDENTITY_FIELDS = ("inchikey", "inchi", "smiles")
 
 
 # TODO_target_compound_management refactor to use same strucutre as other controllers
@@ -223,6 +232,10 @@ async def create_target_compound(
               AND existing record is missing CAS number
               AND new record has CAS number
               THEN update the record with CAS number
+            - If the existing record carries no structure identity (InChIKey,
+              InChI, SMILES) AND the new record does AND has the existing
+              record's formula AND its InChI agrees with that formula
+              THEN fill the identity in from the new record
             - No need to create new record, continue to next compound
         - If > 1 matching records exist
             - Check for actual duplicates in the database (similar name+formula+CAS number)
@@ -241,6 +254,8 @@ async def create_target_compound(
     :type independent_transaction: bool, optional
     :param session: Database session, must be given if not an independent transaction, defaults to None
     :type session: SQLAlchemy.AsyncSession, optional
+    :raises HTTPException: 422 when a compound's InChI does not describe its
+        formula (``check_inchi_formula``)
     :raises RuntimeError: Database is malformed
     :return: Return created target compounds, skipped compounds (already existing) and message log
     :rtype: dict
@@ -263,6 +278,11 @@ async def create_target_compound(
                 "status_code": 0,
                 "messages": [],
             }
+            # Refuse an identity that is not this formula's before anything is
+            # written: the whole call is one transaction and rolls back.
+            check_inchi_formula(
+                target_compound.inchi, target_compound.target_compound_formula
+            )
             # STEP 1: check if the compound record is already in the database (similar name and formula or CAS number)
             existing_compounds = await session.execute(
                 select(TargetCompound).filter(
@@ -304,6 +324,9 @@ async def create_target_compound(
                         if target_compound.cas_number
                         else None
                     ),
+                    inchikey=target_compound.inchikey,
+                    inchi=target_compound.inchi,
+                    smiles=target_compound.smiles,
                 )
 
                 target_compounds_to_create.append(target_compound)
@@ -325,6 +348,9 @@ async def create_target_compound(
                     await update_target_compound(
                         [TargetCompoundUpdate(**target_compound_old.to_dict())]
                     )
+                identity_message = _fill_identity(target_compound_old, target_compound)
+                if identity_message:
+                    message_log[i + 1]["messages"].append(identity_message)
                 target_compound = target_compound_old
                 target_compound_ids.append(target_compound.target_compound_id)
 
@@ -403,6 +429,51 @@ async def create_target_compound(
         }
 
 
+def _fill_identity(
+    existing: TargetCompound, incoming: TargetCompoundBase
+) -> str | None:
+    """Give a stored compound with no structure identity the one a create sends.
+
+    A create that names a compound already stored uses the stored row. Its
+    identity is filled in only when the row has none at all, so one already
+    given is never replaced, and only when the formula sent is the stored one:
+    a match by CAS number alone can resolve to a row of another formula, and
+    the identity sent is that other formula's, InChI or not. An InChI sent
+    must also agree with it.
+
+    :param existing: The stored compound the create resolved to.
+    :param incoming: The compound the create sent.
+    :return: A line for the message log when an identity was sent but not
+        used, else None.
+    """
+    if not any(getattr(incoming, field) for field in _IDENTITY_FIELDS):
+        return None
+    if any(getattr(existing, field) for field in _IDENTITY_FIELDS):
+        return (
+            f"Existing target compound {existing.target_compound_id} already "
+            "has a structure identity; the one sent was not used"
+        )
+    if formula_composition(incoming.target_compound_formula) != formula_composition(
+        existing.target_compound_formula
+    ):
+        return (
+            f"Structure identity not added to existing target compound "
+            f"{existing.target_compound_id}: it was sent for the formula "
+            f"'{incoming.target_compound_formula}', and the stored compound's "
+            f"is '{existing.target_compound_formula}'"
+        )
+    try:
+        check_inchi_formula(incoming.inchi, existing.target_compound_formula)
+    except HTTPException as exc:
+        return (
+            f"Structure identity not added to existing target compound "
+            f"{existing.target_compound_id}: {exc.detail}"
+        )
+    for field in _IDENTITY_FIELDS:
+        setattr(existing, field, getattr(incoming, field))
+    return None
+
+
 @api_controller()
 async def update_target_compound(
     target_compounds: list[TargetCompoundUpdate],
@@ -417,7 +488,10 @@ async def update_target_compound(
     Steps:
     - Validate each compound exists
     - Check if changes were made
-    - For formula changes: delete old, create new, re-associate collections
+    - Refuse (422) an InChI that does not describe the formula the row will
+      have: the new formula when it changes, the stored one otherwise
+    - For formula changes: delete old, create new, re-associate collections;
+      the new compound has only the structure identity the update gives
     - For other changes: update fields directly
     - Track affected target collections
     - Emit reload events to update UI
@@ -454,6 +528,16 @@ async def update_target_compound(
                     f"Target compound not found. ID: {target_compound.target_compound_id}, Name: {target_compound.target_compound_name}"
                 )
                 continue
+
+            # An InChI sent must describe the formula the row will have: the
+            # new one when the formula changes, the stored one otherwise.
+            # Raising here leaves the whole request uncommitted.
+            if target_compound.inchi is not None:
+                check_inchi_formula(
+                    target_compound.inchi,
+                    target_compound.target_compound_formula
+                    or existing_compound.target_compound_formula,
+                )
 
             # Check if target compound was actually edited
             update_data = target_compound.model_dump(exclude_unset=True)
@@ -509,7 +593,10 @@ async def update_target_compound(
                     )
                     continue  # Skip this compound update, proceed to the next
 
-                # If compound formula has changed, delete the compound and recreate it with new formula
+                # If compound formula has changed, delete the compound and recreate it with new formula.
+                # A different formula is a different substance: the new row
+                # takes the structure identity this update gives, if any,
+                # never the old row's.
                 await delete_target_compound(
                     target_compound_id=target_compound.target_compound_id,
                     independent_transaction=False,

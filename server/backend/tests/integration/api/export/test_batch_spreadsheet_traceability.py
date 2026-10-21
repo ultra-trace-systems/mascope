@@ -73,6 +73,9 @@ LEGACY_COMPOUND_COLUMNS = [
     "Total peak intensity (cps)",
     "Match score",
 ]
+#: Glucose's CAS number and InChIKey, which the matched compound carries.
+GLUCOSE_CAS = "50-99-7"
+GLUCOSE_INCHIKEY = "WQZGKKKJIJFFOK-GASJEMHNSA-N"
 LEGACY_ION_COLUMNS = [
     "Sample name",
     "Filename",
@@ -298,6 +301,8 @@ async def batch(async_session_factory):
                 target_compound_id=ids.compound,
                 target_compound_name="Glucose",
                 target_compound_formula="C6H12O6",
+                cas_number=GLUCOSE_CAS,
+                inchikey=GLUCOSE_INCHIKEY,
             )
         )
         session.add(
@@ -571,6 +576,22 @@ async def test_every_match_row_names_its_sample_and_target(workbook, batch):
     assert ion["Sample item ID"] == batch.matched_item
     assert ion["Target compound ID"] == batch.compound
     assert ion["Target ion ID"] == batch.ion
+
+
+@pytest.mark.asyncio
+async def test_a_compound_row_ends_with_its_cas_number_and_inchikey(workbook):
+    """FAIR Phase 1 appends the compound's identifiers after the ids Phase 0
+    added, so a reader of either earlier export finds its columns in place."""
+    compounds = workbook.compounds
+    assert list(compounds.columns) == [
+        *LEGACY_COMPOUND_COLUMNS,
+        "Sample item ID",
+        "Target compound ID",
+        "CAS number",
+        "InChIKey",
+    ]
+    assert compounds.iloc[0]["CAS number"] == GLUCOSE_CAS
+    assert compounds.iloc[0]["InChIKey"] == GLUCOSE_INCHIKEY
 
 
 @pytest.mark.asyncio

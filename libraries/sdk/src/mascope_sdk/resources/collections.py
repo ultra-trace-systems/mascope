@@ -133,7 +133,8 @@ class CollectionsResource(BaseResource):
         :type collection_type: str, optional
         :param compounds: Compounds to create and add, each a dict with
             ``target_compound_formula`` and, optionally,
-            ``target_compound_name`` and ``cas_number``.
+            ``target_compound_name``, ``cas_number``, ``inchikey``, ``inchi``
+            and ``smiles``.
         :type compounds: Sequence[dict[str, Any]], optional
         :param compound_ids: Existing compounds to add.
         :type compound_ids: Sequence[str], optional

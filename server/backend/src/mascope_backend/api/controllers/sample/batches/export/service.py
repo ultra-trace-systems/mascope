@@ -206,6 +206,8 @@ async def sample_batch_export_spreadsheet(
                 "Match score": compound.get("match_score"),
                 "Sample item ID": sample_id,
                 "Target compound ID": compound.get("target_compound_id"),
+                "CAS number": compound.get("cas_number"),
+                "InChIKey": compound.get("inchikey"),
             }
         )
     compounds_df = pd.DataFrame(compounds_data) if compounds_data else pd.DataFrame()
