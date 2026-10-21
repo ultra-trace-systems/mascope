@@ -151,6 +151,7 @@ const hasDatasets = computed(() => (app.data.dataset.list?.length ?? 0) > 0)
           icon="pi ph ph-folders"
           title="No datasets yet"
           hint="A dataset groups the batches of one study or campaign."
+          note="Or right-click here to paste a copied batch or samples, or a cut dataset."
         >
           <template #actions>
             <Button

@@ -19,6 +19,12 @@ defineProps({
     type: String,
     required: false,
     default: null
+  },
+  // A second way forward, under the actions ("or paste one in").
+  note: {
+    type: String,
+    required: false,
+    default: null
   }
 })
 </script>
@@ -32,6 +38,7 @@ defineProps({
       <div v-if="$slots.actions" class="actions">
         <slot name="actions" />
       </div>
+      <span v-if="note" class="note">{{ note }}</span>
     </div>
   </div>
 </template>
@@ -42,6 +49,7 @@ defineProps({
   place-items: center;
   padding: 1.5rem 1rem;
   height: 100%;
+  white-space: normal;
   color: var(--p-text-muted-color);
 }
 
@@ -58,7 +66,8 @@ defineProps({
   opacity: 0.6;
 }
 
-.hint {
+.hint,
+.note {
   font-size: 0.9rem;
   line-height: 1.4;
 }
