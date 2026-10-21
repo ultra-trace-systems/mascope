@@ -16,6 +16,14 @@ describe('BaseEmptyState', () => {
     expect(wrapper.get('.hint').text()).toBe('A dataset groups batches.')
   })
 
+  it('renders its note', () => {
+    const wrapper = mount(BaseEmptyState, {
+      props: { title: 'No batches yet', note: 'Or paste one in.' }
+    })
+
+    expect(wrapper.get('.note').text()).toBe('Or paste one in.')
+  })
+
   it('renders its icon', () => {
     const wrapper = mount(BaseEmptyState, {
       props: { title: 'Nothing yet', icon: 'pi ph ph-bell' }
@@ -35,12 +43,13 @@ describe('BaseEmptyState', () => {
     expect(wrapper.get('.actions button').text()).toBe('Create batch')
   })
 
-  // A title alone (a search that matched nothing) leaves no empty hint line,
-  // icon or action row behind.
+  // A title alone (a search that matched nothing) leaves no empty hint or note
+  // line, icon or action row behind.
   it('leaves out what it was not given', () => {
     const wrapper = mount(BaseEmptyState, { props: { title: 'No match' } })
 
     expect(wrapper.find('.hint').exists()).toBe(false)
+    expect(wrapper.find('.note').exists()).toBe(false)
     expect(wrapper.find('.empty-icon').exists()).toBe(false)
     expect(wrapper.find('.actions').exists()).toBe(false)
   })

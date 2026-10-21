@@ -14,9 +14,9 @@ vi.mock('@/stores', () => ({ useApp: () => mocks.app }))
 
 vi.mock('@/lib/base', () => ({
   BaseEmptyState: {
-    props: ['icon', 'title', 'hint'],
+    props: ['icon', 'title', 'hint', 'note'],
     template:
-      '<div class="empty-state"><strong class="title">{{ title }}</strong><span class="hint">{{ hint }}</span><slot name="actions" /></div>'
+      '<div class="empty-state"><strong class="title">{{ title }}</strong><span class="hint">{{ hint }}</span><slot name="actions" /><span class="note">{{ note }}</span></div>'
   },
   BaseTabbedPanel: { template: '<div class="panel"><slot name="menu" /><slot /></div>' },
   BaseCopyableField: true,
@@ -129,6 +129,15 @@ describe('the empty batch list', () => {
 
     await empty.get('button').trigger('click')
     expect(mocks.menu.dialog.op).toBe('create')
+  })
+
+  // What the batch list's own menu pastes on empty space.
+  it('says a batch or samples can be pasted in', () => {
+    mocks.app = makeApp([])
+    const note = mountTable().get('.empty-state .note').text()
+
+    expect(note).toMatch(/right-click here to paste/)
+    expect(note).toMatch(/a copied batch, or copied or cut samples/)
   })
 
   it('says the search hid the rows when there are batches', () => {
