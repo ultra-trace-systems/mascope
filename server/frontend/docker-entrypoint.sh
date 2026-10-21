@@ -48,13 +48,22 @@ else
   # cloudflare-realip block in nginx.conf for why). On by default, so a
   # Cloudflare-fronted host needs no setting; a deployment with no Cloudflare
   # in front sets MASCOPE_TRUST_DOCKER_GATEWAY=off, since there the gateway
-  # relays clients that came straight to the port (docs/hosting.md).
-  if [ "${MASCOPE_TRUST_DOCKER_GATEWAY:-on}" = "off" ]; then
-    : > /etc/nginx/mascope/realip-gateway.conf
-    echo "MASCOPE_TRUST_DOCKER_GATEWAY=off -> trusting CF-Connecting-IP from Cloudflare's ranges only"
-  else
-    sh /realip-gateway.sh
-  fi
+  # relays clients that came straight to the port (docs/hosting.md). Any
+  # other value refuses to start: a typo would otherwise leave the trust on,
+  # the side the operator who set the variable was trying to leave.
+  case "${MASCOPE_TRUST_DOCKER_GATEWAY:-on}" in
+    off)
+      : > /etc/nginx/mascope/realip-gateway.conf
+      echo "MASCOPE_TRUST_DOCKER_GATEWAY=off -> trusting CF-Connecting-IP from Cloudflare's ranges only"
+      ;;
+    on)
+      sh /realip-gateway.sh
+      ;;
+    *)
+      echo "ERROR: MASCOPE_TRUST_DOCKER_GATEWAY must be 'on' or 'off', not '${MASCOPE_TRUST_DOCKER_GATEWAY}'." >&2
+      exit 1
+      ;;
+  esac
 fi
 
 exec nginx -g 'daemon off;'
