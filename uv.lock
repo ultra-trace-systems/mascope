@@ -23,6 +23,7 @@ members = [
     "mascope-thermo",
     "mascope-tofwerk",
     "mascope-tools",
+    "mascope-viz",
 ]
 
 [[package]]
@@ -1461,6 +1462,7 @@ dependencies = [
     { name = "mascope-thermo" },
     { name = "mascope-tofwerk" },
     { name = "mascope-tools" },
+    { name = "mascope-viz" },
 ]
 
 [package.dev-dependencies]
@@ -1499,6 +1501,7 @@ requires-dist = [
     { name = "mascope-thermo", editable = "libraries/thermo" },
     { name = "mascope-tofwerk", editable = "libraries/tofwerk" },
     { name = "mascope-tools", editable = "libraries/tools" },
+    { name = "mascope-viz", editable = "libraries/viz" },
 ]
 
 [package.metadata.requires-dev]
@@ -1962,6 +1965,23 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.1.1" }]
+
+[[package]]
+name = "mascope-viz"
+version = "2026.10.21"
+source = { editable = "libraries/viz" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=1.24.0" },
+    { name = "pandas", specifier = ">=2.0.0" },
+    { name = "pyarrow", specifier = ">=14.0.0" },
+]
 
 [[package]]
 name = "matplotlib"
