@@ -19,7 +19,9 @@ from signal_test_support import SIGNAL_TEST_FILENAME
 
 import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
+from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_thermo.thermo import UnknownStreamError
+from mascope_thermo.v66_scan_events import UnreadableScanEventsError
 
 
 STREAM = "FTMS - p NSI Full ms [40.0000-160.0000] R=120000 event=2"
@@ -213,6 +215,43 @@ def test_a_reader_fault_is_still_answered_with_an_empty_signal(
     monkeypatch.setattr(m_compute.m_thermo, "get_signal", fails)
 
     signal = m_compute.load_signal(SIGNAL_TEST_FILENAME, stream=STREAM)
+
+    assert signal.signal.shape == (0, 0)
+
+
+@pytest.mark.parametrize("stream", [None, STREAM])
+@pytest.mark.parametrize("refusal", [MisreadScanEventsError, UnreadableScanEventsError])
+def test_a_file_refused_as_misread_is_not_answered_with_an_empty_signal(
+    raw_orbitrap, monkeypatch, refusal, stream
+):
+    """The reader refuses a file whose scan events it has misread (GitHub
+    issue #2394), and the refusal is a ``ValueError``, the class
+    ``load_signal`` answers an empty range with. Answered with an empty
+    signal, the file would show "no data" and not why; let through, its text
+    reaches the person who asked for the signal."""
+    reason = "The scan events of this file cannot be read"
+
+    def refuses(datafile_path, *args, **kwargs):
+        raise refusal(reason)
+
+    monkeypatch.setattr(m_compute.m_thermo, "get_signal", refuses)
+
+    with pytest.raises(refusal, match=reason):
+        m_compute.load_signal(SIGNAL_TEST_FILENAME, stream=stream)
+
+
+def test_an_empty_range_is_still_answered_with_an_empty_signal(
+    raw_orbitrap, monkeypatch
+):
+    """Only the misread refusal among the ``ValueError``s is let through: the
+    reader's other ones are a selection that holds no data."""
+
+    def empty(datafile_path, *args, **kwargs):
+        raise ValueError("No scans in the range asked for")
+
+    monkeypatch.setattr(m_compute.m_thermo, "get_signal", empty)
+
+    signal = m_compute.load_signal(SIGNAL_TEST_FILENAME)
 
     assert signal.signal.shape == (0, 0)
 
