@@ -23,6 +23,7 @@ import mascope_tofwerk.tofwerk as m_tofwerk
 from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.runtime import runtime
 from mascope_thermo.backend import averaged_profile_signature
+from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_tools.alignment.calibration import CentroidedSpectrum, MassAligner, Spectra
 
 
@@ -1278,6 +1279,8 @@ def load_signal(
     :raises ValueError: If a stream is asked of a type that has none
     :raises mascope_thermo.thermo.UnknownStreamError: If the file holds no
         stream under the key asked for
+    :raises mascope_thermo.scan_events.MisreadScanEventsError: If the reader
+        refuses a raw Orbitrap file's scan events as misread
     :return: The signal with m/z and time coordinates
     :rtype: xr.Dataset
     """
@@ -1354,10 +1357,12 @@ def load_signal(
                 return signal_ds_sliced.chunk(dict(mz=-1))
             case _:
                 raise NotImplementedError(f"Unsupported sample type: {sample_type}")
-    except m_thermo.UnknownStreamError:
+    except (m_thermo.UnknownStreamError, MisreadScanEventsError):
         # Not an empty range either. The file holds no stream under the key
         # asked for, and answered with an empty signal the caller would read
-        # "no data" of a stream that is not there.
+        # "no data" of a stream that is not there. Or the reader refuses the
+        # file's scan events as misread: a ValueError, but its text is the
+        # one reason the file shows no signal, and the caller answers it.
         raise
     except Exception as e:
         # Both paths return an empty dataset (callers render "no data"), but
