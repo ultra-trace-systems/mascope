@@ -1039,19 +1039,31 @@ def scratch_matched(mascope, scratch):
 
     Copied over the session, so the matching tests do not hang on the SDK's
     own copy, and saved to only there: the demo data is never written to.
+
+    Returned once the copy has finished. Its batch reads ``ready`` from the
+    start, and its samples are listed before their matches are copied, one
+    level and one sample at a time, for several seconds. A save sent before
+    then races the copy, and can find every row it would write already
+    stored by it, so it answers ``skipped``. The sample level is copied last
+    for each sample, so the copy is done when it holds as many of those rows
+    as the demo batch does.
     """
-    demo_batch = _first_batches(mascope).iloc[0]
+    demo_batch_id = _first_batches(mascope).iloc[0]["sample_batch_id"]
+    demo_matches = len(_stored_match_samples(scratch, demo_batch_id))
+    assert demo_matches, "the demo batch carries its matches"
     scratch.session.post(
-        f"{BASE_URL}/api/sample/batches/{demo_batch['sample_batch_id']}/copy",
+        f"{BASE_URL}/api/sample/batches/{demo_batch_id}/copy",
         json={"dataset_id": scratch.dataset_id, "sample_batch_name": "matched"},
         timeout=60,
     ).raise_for_status()
     copy = _eventually(scratch.client, lambda: _ready_batch(scratch, "matched"))
-    samples = _eventually(
+    batch_id = copy["sample_batch_id"]
+    _eventually(
         scratch.client,
-        lambda: scratch.client.samples._list_by_id(copy["sample_batch_id"]),
+        lambda: len(_stored_match_samples(scratch, batch_id)) == demo_matches,
     )
-    return copy["sample_batch_id"], samples.iloc[0]["sample_item_id"]
+    samples = scratch.client.samples._list_by_id(batch_id)
+    return batch_id, samples.iloc[0]["sample_item_id"]
 
 
 @pytest.fixture(scope="module")
@@ -1265,14 +1277,19 @@ class TestWriteContract:
             assert set(ran) == levels
             assert ran["match_samples"], "the copied batch carries its matches"
 
-        for saved in (
-            matching.save_sample(sample_id),
-            matching.save_batch(batch_id),
-            matching.resave_batch(batch_id, match_ions=False),
+        for name, save in (
+            ("save_sample", lambda: matching.save_sample(sample_id)),
+            ("save_batch", lambda: matching.save_batch(batch_id)),
+            (
+                "resave_batch",
+                lambda: matching.resave_batch(batch_id, match_ions=False),
+            ),
         ):
-            # A level some of whose rows were refused is "partial".
-            assert saved["status"] in ("success", "partial")
-            assert "created or updated" in saved["message"]
+            # Each save clears the sample level and writes it again, so it is
+            # never "skipped"; it is "partial" when other levels are unchanged.
+            saved = save()
+            assert saved["status"] in ("success", "partial"), (name, saved)
+            assert "created or updated" in saved["message"], (name, saved)
 
     def test_an_unauthorised_write_names_the_object_and_the_role(self, scratch, guest):
         """The server's 403 names neither; the SDK's error does."""
@@ -1342,6 +1359,16 @@ def _scratch_batch(scratch, name: str) -> str:
 def _batch_ids(scratch) -> list[str]:
     batches = scratch.client.batches._list_by_id(scratch.dataset_id)
     return [] if batches is None else batches["sample_batch_id"].tolist()
+
+
+def _stored_match_samples(scratch, batch_id: str) -> list:
+    """The sample-level match rows stored for batch *batch_id*."""
+    return _api(
+        scratch.session,
+        "GET",
+        "match/samples",
+        params={"sample_batch_id": batch_id},
+    )
 
 
 def _ready_batch(scratch, name: str):
