@@ -23,6 +23,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Enable unattended updates | edit `/etc/mascope/update.env`, then `sudo systemctl enable --now mascope-update.timer` |
 | Update history | `cat "$(mascope path)/.runtime/update/status.log"` |
 | Back up now | `mascope prod db backup create` |
+| Copy an environment from another host | `mascope env sync user@host:<env> prod <env> prod` |
 | **Require a new password from every user** | Manage users in the app, or `mascope prod db script run require_password_change` |
 | **Clear a lost second factor (2FA)** | Manage users in the app, or `mascope prod mfa reset <email>` |
 | What a raw file measured (its scan streams) | `mascope file scans <file.raw>` |
@@ -442,9 +443,20 @@ restart-window issues in the error tracker so a recurrence stands out.
 ## Backups
 
 [`tooling/backup-cron.sh`](../tooling/backup-cron.sh) runs a two-layer nightly
-backup: a local database dump (`mascope prod db backup create`, pruned by
-`LOCAL_RETENTION_DAYS`) plus an encrypted off-site copy of the dumps and
-filestore via [restic](https://restic.net/).
+backup from cron:
+
+1. **Local dumps** — `mascope prod db backup create` writes a compressed `.dump`
+   file (PostgreSQL custom format, `pg_dump -Fc`) of the **active environment's
+   database** to `.runtime/database/backups/prod/`, then prunes dumps older than
+   `LOCAL_RETENTION_DAYS` (default 7). These give fast same-host restores.
+2. **Encrypted off-site copy** — [restic](https://restic.net/) pushes the dump
+   directory **and the filestore** (uploaded raw files) to an encrypted remote
+   repository, then applies the `KEEP_DAILY`/`KEEP_WEEKLY`/`KEEP_MONTHLY`
+   retention policy (defaults 7/4/6). These survive host loss.
+
+Off-site backups are encrypted client-side by restic, so the storage provider
+never sees plaintext — this is what lets the privacy notice claim encrypted
+backups (GDPR Art. 32).
 
 Neither layer includes `.runtime/secrets/` - deliberately, so no backup medium
 holds both the database and the keys that make its secrets usable. The flip
@@ -453,28 +465,286 @@ a copy of the secrets files wherever the deployment's other credentials live -
 the [two-factor encryption key](#two-factor-authentication) in particular
 cannot be regenerated, only lost.
 
-Set it up:
+### Prerequisites
 
-1. Copy the template and fill it in (restic repo + password, retention):
+```bash
+which mascope   # /home/<user>/.local/bin/mascope
+which docker    # /usr/bin/docker
+which restic    # /usr/bin/restic (installed by tooling/ubuntu.sh)
+echo $MASCOPE_PATH   # e.g. /home/<deploy-user>/mascope (from /etc/environment)
+```
 
-   ```sh
-   cp tooling/backup.env.example "$(mascope path)/.runtime/secrets/backup.env"
-   sudoedit "$(mascope path)/.runtime/secrets/backup.env"
+### Setup
+
+1. **Create the off-site repository.** Any restic-supported backend works:
+   - *Hetzner Storage Box* — enable SSH support in the Storage Box settings and
+     install the host's SSH key (`ssh-copy-id -p 23 u123456@u123456.your-storagebox.de`).
+   - *S3-compatible object storage* (e.g. Contabo Object Storage) — create a
+     bucket and an access key pair.
+   - *Own backup server* — see below.
+
+   Prefer the **other** hosting provider than the one the server runs on, so a
+   provider-level incident cannot take out both the service and its backups.
+
+   #### Using your own backup server
+
+   A machine with large disks (e.g. an office server) can serve as the backup
+   target over plain SFTP. Do not expose its SSH port to the internet — connect
+   the VPSes and the backup server through a VPN overlay instead
+   ([Tailscale](https://tailscale.com/) is the quickest: install on both ends,
+   no inbound router ports needed).
+
+   Give **every backed-up server an account of its own** on the backup server,
+   one that can do nothing but SFTP into its own directory. The obvious setup,
+   one shared account with an ordinary shell, hands every server a key that can
+   delete or overwrite every other server's backups, open a shell on the backup
+   server and tunnel through it into the rest of the network: one compromised
+   server would cost you all of them. The commands below use a group
+   `site-backup`, an account `backup-<server>` per backed-up server, a chroot
+   per account under `/srv/site-backups` (put it on the big disk) and the keys
+   in `/etc/ssh/site-backup-keys`; any names work. `<server>.pub` is the public
+   half of the key that server's backup cron uses (made further down), and
+   `203.0.113.10` stands for that server's VPN address (`tailscale ip -4`).
+
+   On the backup server, once — the group, two root-owned directories, and an
+   sshd drop-in that applies to every member of the group:
+
+   ```bash
+   sudo groupadd --system site-backup
+   sudo install -d -o root -g root -m 755 /srv/site-backups /etc/ssh/site-backup-keys
+   sudoedit /etc/ssh/sshd_config.d/30-site-backups.conf
    ```
 
-2. Add a crontab entry (the header must export `MASCOPE_PATH`):
+   ```
+   # Backups: one sftp-only account per backed-up server (group site-backup).
+   # Each sees only its own chroot, its repository at /repo; no shell, no
+   # terminal, no tunnels. Its keys sit in a root-owned file named after it.
+   Match Group site-backup
+       ChrootDirectory /srv/site-backups/%u
+       ForceCommand internal-sftp
+       AuthorizedKeysFile /etc/ssh/site-backup-keys/%u
+       DisableForwarding yes
+       PermitTTY no
+   Match all
+   ```
 
-   ```cron
-   MASCOPE_PATH=/path/to/mascope
+   The closing `Match all` is load-bearing. A `Match` block runs until the
+   next `Match` line or the end of the file, so without it a line added to
+   this file later — or the block pasted into the middle of `sshd_config` —
+   would quietly apply to the backup accounts alone. `Match all` ends the
+   block; whatever follows it is global again.
+
+   Then for each backed-up server — an account with no password and no shell,
+   its chroot, and its key:
+
+   ```bash
+   sudo useradd --system --user-group --groups site-backup --no-create-home \
+     --home-dir /nonexistent --shell /usr/sbin/nologin backup-<server>
+   # sshd refuses a chroot that is not root's or that anyone else can write;
+   # the account cannot create its repository directory there, so make it
+   sudo install -d -o root -g root -m 755 /srv/site-backups/backup-<server>
+   sudo install -d -o backup-<server> -g backup-<server> -m 700 \
+     /srv/site-backups/backup-<server>/repo
+   printf 'restrict,command="internal-sftp",from="%s" %s\n' \
+     203.0.113.10 "$(cat <server>.pub)" \
+     | sudo tee /etc/ssh/site-backup-keys/backup-<server>
+   sudo chmod 644 /etc/ssh/site-backup-keys/backup-<server>
+   ```
+
+   In the key line, `restrict` turns off forwarding, the terminal and
+   `~/.ssh/rc`; `command="internal-sftp"` keeps the key to SFTP even without
+   the drop-in; `from=` refuses it from any address but that server's own, so
+   a copy of the key is no use anywhere else (it takes a comma-separated list
+   if the server may also connect over IPv6). Adding a server later needs no
+   reload: sshd reads the account and its key file at login.
+
+   Check the drop-in before reloading sshd, and keep an automatic revert armed
+   while you test, so a mistake cannot lock you out of the backup server:
+
+   ```bash
+   sudo sshd -t     # syntax; prints nothing when the config is valid
+   # a backup account: expect its chroot, internal-sftp, its key file,
+   # "disableforwarding yes" and "permittty no"
+   sudo sshd -T -C user=backup-<server>,host=<server>,addr=203.0.113.10 \
+     | grep -E '^(chrootdirectory|forcecommand|authorizedkeysfile|disableforwarding|permittty) '
+   # your own account: chrootdirectory and forcecommand must still be "none"
+   sudo sshd -T -C user="$USER",host=<your-machine>,addr=<your-address> \
+     | grep -E '^(chrootdirectory|forcecommand) '
+   # takes the drop-in out again in 15 minutes unless stopped
+   sudo systemd-run --on-active=15min --unit=site-backup-revert \
+     /bin/sh -c 'rm -f /etc/ssh/sshd_config.d/30-site-backups.conf && systemctl reload ssh'
+   sudo systemctl reload ssh   # the unit is `ssh` on Debian/Ubuntu, often `sshd` elsewhere
+   ```
+
+   Keep your current session open, test a fresh login of your own and the
+   backed-up server (below), then `sudo systemctl stop site-backup-revert.timer`.
+   The revert fails closed: without the drop-in, sshd looks for the backup
+   accounts' keys in their (nonexistent) home and refuses them.
+
+   On each backed-up server, as the user that runs the backup cron, make the
+   key (no passphrase: cron cannot type one), copy its `.pub` to the backup
+   server as `<server>.pub` for the step above, and give the backup server an
+   ssh alias that names the account and the key:
+
+   ```bash
+   ssh-keygen -t ed25519 -N "" -C "backup@$(hostname)" -f ~/.ssh/id_ed25519_backup
+   ```
+
+   ```
+   # ~/.ssh/config
+   Host <backup-host>
+       HostName 203.0.113.20        # the backup server's VPN address
+       User backup-<server>
+       IdentityFile ~/.ssh/id_ed25519_backup
+       IdentitiesOnly yes
+   ```
+
+   Connect once by hand to accept the backup server's host key (cron cannot
+   answer that prompt; compare the fingerprint with
+   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` there), and check what
+   the account can do:
+
+   ```bash
+   sftp <backup-host>       # accept the host key; `ls /` then shows only /repo
+   ssh <backup-host> true   # refused: "This service allows sftp connections only."
+   ```
+
+   In `backup.env` the repository is then the alias and the path the account
+   sees inside its chroot — the same `/repo` on every server:
+
+   ```bash
+   RESTIC_REPOSITORY=sftp:<backup-host>:/repo
+   ```
+
+   Moving from one shared account: take one server at a time, while its
+   backup is not running (its repository's `locks/` directory is empty). Set
+   up its account as above, but instead of creating an empty `repo/`,
+   `sudo mv` its repository there (on the same filesystem that is a rename)
+   and hand it over (`sudo chown -R backup-<server>:backup-<server>`,
+   `sudo chmod 700`); move its key line
+   out of the shared account's `authorized_keys` into the new key file; then
+   change `User` in the server's alias and its `RESTIC_REPOSITORY` to
+   `sftp:<backup-host>:/repo`. Once the shared account holds no keys, give it
+   `/usr/sbin/nologin` (`sudo usermod -s /usr/sbin/nologin <account>`).
+
+   This contains a compromised server; it does not protect that server's own
+   backups from it. restic over SFTP cannot be append-only: every server
+   prunes its own repository (`tooling/backup-cron.sh` runs
+   `restic forget --prune` after each push), so its account must be able to
+   delete, and an attacker who holds the server can delete its history — but
+   no longer anyone else's. The alternative is restic's
+   [rest-server](https://github.com/restic/rest-server) with `--append-only`
+   (and `--private-repos`, so each user reaches only its own repository), with
+   the pruning moved to the backup server, which then needs every
+   repository's password. `backup-cron.sh` always prunes, so that route needs
+   the script changed as well.
+
+   Caveats: the backup server needs disk redundancy (RAID/ZFS) and monitoring
+   like any other piece of infrastructure, and its location is a
+   data-processing location (Art. 30 record / DPA). Keep the drop-in and
+   `/etc/ssh/site-backup-keys` in the backup server's own configuration
+   backup — a rebuilt box without them refuses every server.
+   Migrating to a hosted target later is just a `RESTIC_REPOSITORY` change
+   (`restic init` on the new target, or `restic copy` to carry snapshots over).
+
+2. **Configure the host:**
+
+   ```bash
+   cp tooling/backup.env.example "$MASCOPE_PATH/.runtime/secrets/backup.env"
+   chmod 600 "$MASCOPE_PATH/.runtime/secrets/backup.env"
+   # then edit: repository, encryption password, FILESTORE_PATH, retention
+
+   # the backend image runs as UID 1000, so new dumps land owned by the
+   # deploy user — but dumps created by releases older than that (or by the
+   # docker daemon creating the mount dir) may still be root-owned. Hand
+   # them to the user that runs the cron job once, or pruning fails:
+   sudo chown -R "$(whoami)" "$MASCOPE_PATH/.runtime/database/backups"
+   ```
+
+   ⚠️ Store the `RESTIC_PASSWORD` in the company password manager **before the
+   first run** — without it the backups are unrecoverable, by design.
+
+3. **Test manually** before relying on cron:
+
+   ```bash
+   MASCOPE_PATH=$MASCOPE_PATH bash tooling/backup-cron.sh
+   restic snapshots   # with backup.env sourced — should list the new snapshot
+   ```
+
+4. **Install the cron job** (`crontab -e`). Cron does **not** load
+   `/etc/environment` or shell profiles, so the header must set the environment
+   explicitly:
+
+   ```
+   SHELL=/usr/bin/bash
+   PATH=/home/<deploy-user>/.local/bin:/usr/bin:/usr/local/bin
+   MASCOPE_PATH=/home/<deploy-user>/mascope
+
+   # Nightly backup at 4 AM: local dump + prune + encrypted off-site push
    0 4 * * * $MASCOPE_PATH/tooling/backup-cron.sh 2>&1 | logger -t mascope-backup
    ```
 
-Restore a dump into the active environment:
+   Output goes to syslog: `grep mascope-backup /var/log/syslog | tail -20`.
 
-```sh
+   The backend image runs as UID 1000 (override with the `MASCOPE_UID` /
+   `MASCOPE_GID` build args), so filestore files are owned by the deploy user.
+   Files written by releases that still ran as root need a one-time
+   `sudo chown -R "$(whoami)" <filestore>` — until then a user-level cron
+   cannot read them.
+
+5. **Monitoring (recommended):** set `HEALTHCHECK_URL` in `backup.env` to a
+   [healthchecks.io](https://healthchecks.io) ping URL. The script pings it on
+   success and `<url>/fail` on failure, so a silently broken cron job (the
+   classic backup failure mode) still raises an email alert.
+
+### Restoring
+
+```bash
+# Same-host restore from a local dump (list, then restore):
 mascope prod db backup list
-mascope prod db restore <dump-file> --yes    # or omit the file for the latest
+mascope prod db restore
+
+# Disaster recovery from off-site (new host):
+set -a; source "$MASCOPE_PATH/.runtime/secrets/backup.env"; set +a
+restic snapshots                                  # pick a snapshot
+restic restore latest --target /tmp/mascope-restore
+# then: mascope prod db restore from the recovered .dump file, and copy the
+# recovered filestore back to the MASCOPE_FILESTORE path.
 ```
+
+Do a **restore drill** (restore latest snapshot to a scratch directory and
+`pg_restore --list` the dump) after first setup and then periodically — an
+untested backup is not a backup.
+
+### Notes
+
+- All `mascope prod db backup` commands operate on the **active environment's
+  database only**; deletion never touches other environments' dumps.
+- `pg_dump` for large databases (tens of GB) can take several minutes — the
+  dump file grows incrementally while in progress. restic uploads are
+  incremental/deduplicated, so nightly pushes are much smaller than the first.
+- **Large databases: dump uncompressed.** `pg_dump -Fc` compresses with
+  single-core gzip, which is both the dump-time bottleneck and the reason
+  restic cannot deduplicate consecutive dumps (each night re-uploads the full
+  dump). Set in the env's `prod.mascope.toml`:
+
+  ```toml
+  [backend.database]
+  dump_compression = "0"
+  ```
+
+  This speeds up nightly dumps *and* the pre-migration dump during upgrades
+  (shorter downtime window), and lets restic deduplicate and zstd-compress
+  dump generations off-site. Uncompressed dumps take 2–4× more local disk —
+  lower `LOCAL_RETENTION_DAYS` in `backup.env` to compensate. One-off
+  override: `mascope prod db backup create --compress 0`.
+- Backup filenames embed a timestamp and the `cron` label, e.g.
+  `mascope_test_env_20260313_040001_cron.dump`.
+- The script chains dump create and prune sequentially to avoid simultaneous
+  writes to `state.json`.
+- Pre-migration dumps created by `tooling/db-init.sh` land in the same
+  `.runtime/database/backups/prod/` directory, so they are pushed off-site and
+  pruned locally by the same run. Use https://crontab.guru to adjust schedules.
 
 ### Pre-migration dumps
 
@@ -485,6 +755,74 @@ cron, `db_init` keeps only the most recent `MASCOPE_PREMIGRATION_KEEP` of them
 (default 5) and prunes older ones - it only ever touches `*_pre-migration.dump`
 files, never the cron/manual dumps. Raise the count (or set up the backup cron
 above) if you want a longer local history.
+
+## Copying an environment
+
+`mascope env sync` copies a runtime environment - its filestore and its database - to another env, on the same host or to or from a remote one: the way to stand a test server up on a copy of a site's data, or to move a deployment to a new host. It transfers both the filestore (via [rsync](https://linux.die.net/man/1/rsync)) and the PostgreSQL database (via `pg_dump`/`pg_restore`
+staged through .runtime/database/transfer/). Both source and target require an explicit mode (dev or prod) to identify which PostgreSQL server to use.
+
+> [!IMPORTANT]
+> Both PostgreSQL containers must be running on source and target machines before executing `env sync`.
+
+Usage examples:
+
+```bash
+# local → local
+mascope env sync default dev foo dev
+
+# local → remote
+mascope env sync foo prod user@192.168.1.100:bar prod
+
+# remote → local, database only
+mascope env sync user@192.168.1.100:bar prod baz prod --skip-filestore
+
+# local → local, filestore only
+mascope env sync foo dev bar dev --skip-db
+```
+
+The `sync` command follows symbolic links on Linux filesystem both ways - syncing into and from a symlinked directory.
+
+If the target environment does not exist, you will be prompted to create it. Pass `--yes` to skip the prompt.
+
+On transfer failure the staged dump is preserved in `.runtime/database/transfer/` for manual recovery. On success it is deleted and 7-day retention pruning runs automatically.
+
+### Syncing only part of the filestore
+
+A full filestore can be far larger than the link between the two machines. `--from` and `--to` (both `YYYY-MM-DD`, both inclusive, either one optional) narrow the transfer to a window of acquisition dates:
+
+```bash
+# everything acquired since the start of the year
+mascope env sync user@192.168.1.100:bar prod baz prod --from 2026-01-01
+
+# one quarter, filestore only
+mascope env sync user@192.168.1.100:bar prod baz prod --from 2026-01-01 --to 2026-03-31 --skip-db
+```
+
+The filter is a path filter, not a database query: the filestore stores samples as `filestore/<instrument>/<YYYY.MM.DD>/<sample_name>/`, where the date directory comes from the acquisition timestamp in the sample filename. So the window selects on **acquisition date**, not on when a file was uploaded, reprocessed or last modified. The batch cache under `filestore/sample_batches/` has no date in its path and is always transferred; it is rebuildable, so dropping it would only cost recomputation.
+
+> [!IMPORTANT]
+> `--from` / `--to` filter the filestore only - **the database is never filtered**. A date-limited sync that also syncs the database leaves the target holding sample rows whose files were not transferred, and those samples fail to load. The command warns when you do this; add `--skip-db` to sync only the files.
+
+If no filestore data falls inside the window the sync fails rather than silently transferring nothing. When the source is on a **remote** host it also fails if the filestore cannot be listed in full - a mistyped env name, a missing filestore, an unreadable directory - rather than filtering against a partial listing and reporting success on an incomplete transfer.
+
+> [!NOTE]
+> Two cases still read as an empty window rather than as a failure. `find -L` skips a dangling symlink silently and exits 0, so a filestore whose data volume is not mounted looks empty; and a local source is listed with a glob that cannot report an error at all, so an unreadable directory there narrows the transfer without a word. Check the target after a sync that reports fewer dates than you expected.
+
+### Ownership and permissions after sync
+
+rsync is run without `-o`/`-g`, so ownership is not carried across: every file lands owned by whoever runs the **receiving** side - the SSH login user for a push, the invoking user for a pull or a local sync. Mascope's containers run as the deployment's own uid (1000 by default; see `MASCOPE_UID` in `server/backend/Dockerfile`), so if those two differ the app cannot read or write what was just synced.
+
+The sync detects this by comparing the receiving uid against the owner of the target env directory, and prints the exact command to fix it:
+
+```
+sudo chown -R 1000:1000 /srv/mascope/.runtime/env/default
+```
+
+Pass `--chown` to have the sync attempt that itself. It uses `sudo -n` (non-interactive) on the receiving machine and falls back to printing the command when passwordless sudo is not available - the sync is not failed either way.
+
+If the filestore is a symlink to a data volume (see [The filestore on a data volume](#the-filestore-on-a-data-volume)), chown its target too: `chown -R` does not follow symlinks. `--chown` resolves the link and covers both paths.
+
+File modes are forced to `755` for directories and `644` for files - the same bits the backend writes under the default umask, so a synced tree is indistinguishable from a natively written one. Note that this also applies on a **re-sync**: modes hand-tightened on an existing target filestore are reset to `755`/`644`.
 
 ## Disk space
 
@@ -575,6 +913,171 @@ and the old ones are otherwise left behind, accumulating gigabytes over time -
 especially with unattended updates). The running stack's images are referenced
 and kept; a manual rollback re-pulls the previous release (guarded by the disk
 guard above), the same as the documented rollback flow.
+
+## PostgreSQL tuning
+
+Settings live in `[backend.database]` in `.mascope.toml` layer files.
+Postgres tuning parameters are passed as `-c` flags via Docker Compose command override.
+`shm_size` is a Docker field - applied via `shm_size:` in compose, never passed to postgres.
+
+**References:**
+
+- [PostgreSQL Parameter Tuning Best Practices - mydbops](https://www.mydbops.com/blog/postgresql-parameter-tuning-best-practices)
+- [How to Tune Database Parameters - EnterpriseDB](https://www.enterprisedb.com/postgres-tutorials/comprehensive-guide-how-tune-database-parameters-and-configuration-postgresql)
+- [PostgreSQL Resource Consumption Docs](https://www.postgresql.org/docs/current/runtime-config-resource.html)
+
+### Recommended Values
+
+| Setting                        | PG Default | Base (dev, ~16 GB SSD) | Prod (64 GB NVMe) |
+| ------------------------------ | ---------- | ---------------------- | ----------------- |
+| `max_connections`              | 100        | 100                    | 200               |
+| `shared_buffers`               | 128MB      | 512MB                  | 16GB              |
+| `effective_cache_size`         | 4GB        | 4GB                    | 48GB              |
+| `work_mem`                     | 4MB        | 32MB                   | 64MB              |
+| `maintenance_work_mem`         | 64MB       | 512MB                  | 4GB               |
+| `autovacuum_work_mem`          | -1         | -1                     | 2GB               |
+| `wal_buffers`                  | auto ~16MB | 16MB                   | 16MB              |
+| `min_wal_size`                 | 80MB       | 512MB                  | 1GB               |
+| `max_wal_size`                 | 1GB        | 2GB                    | 4GB               |
+| `checkpoint_completion_target` | 0.9        | 0.9                    | 0.9               |
+| `wal_compression`              | off        | on                     | on                |
+| `random_page_cost`             | 4.0        | 1.1                    | 1.1               |
+| `effective_io_concurrency`     | 1          | 200                    | 200               |
+| `default_statistics_target`    | 100        | 100                    | 100               |
+| `jit`                          | on         | off                    | off               |
+| `autovacuum_max_workers`       | 3          | 3                      | 4                 |
+| `shm_size` (Docker)            | 64m        | 1g                     | 20g               |
+
+### Connections
+
+- **`max_connections`** — Server-side cap on concurrent connections. Size it from the app:
+  `workers × (pool_size + max_overflow)` plus ~10 headroom (`superuser_reserved_connections`
+  defaults to 3, plus `db_init`, backup dumps, and interactive psql). Each idle connection
+  costs only a few MB, so a generous cap is cheap — but every *active* connection can
+  allocate `work_mem` per operation, so check the `work_mem` formula below when raising it.
+  Requires a postgres container restart.
+
+### Memory
+
+- **`shared_buffers`** — PostgreSQL's dedicated data page cache. The single largest performance
+  lever - pages cached here cost zero I/O on repeated reads. Rule: **25% of RAM**. Above ~40%
+  competes with the OS page cache and yields diminishing returns. PostgreSQL's 128MB default is
+  a historical artifact.
+
+- **`effective_cache_size`** — Planner hint only, **no memory is allocated**. Tells the planner
+  how much total cache (shared_buffers + OS page cache) is available. Too low causes the planner
+  to prefer sequential scans over index scans on large tables. Set to **75% of RAM**.
+
+- **`work_mem`** — Per-operation memory for sorts, hash joins, hash aggregates, window functions.
+  **Allocated per operation per connection** - a query with three sort nodes uses 3× work_mem.
+  Too low causes disk spills (10–100× slower). Worst-case formula:
+
+  ```
+  workers × (pool_size + max_overflow) × ops_per_query × work_mem
+  # Prod: 12 × 10 × 3 × 64MB = ~22.5GB theoretical worst case - acceptable on
+  # 64GB next to shared_buffers=16GB (assumes every connection running 3 sorts
+  # at once, which real workloads never reach)
+  ```
+
+  Diagnostic: set `log_temp_files = 0` and watch for spill entries in logs.
+
+- **`maintenance_work_mem`** — Memory for `VACUUM`, `CREATE INDEX`, `ALTER TABLE`, `pg_restore`.
+  Only a few maintenance ops run concurrently so this can be set high safely.
+
+- **`autovacuum_work_mem`** — Memory per autovacuum worker. `-1` inherits `maintenance_work_mem`.
+  Set explicitly in prod so background autovacuum workers don't consume the full
+  `maintenance_work_mem` allocation.
+
+- **`wal_buffers`** — Shared memory buffer for WAL records before flush to disk. Auto-tunes to
+  1/32 of `shared_buffers`, capped at 16MB. Set explicitly so it's visible in config.
+  **Requires container restart** (shared memory allocation).
+
+### Checkpoints and WAL
+
+- **`min_wal_size` / `max_wal_size`** — WAL files below `min_wal_size` are recycled rather than
+  deleted. `max_wal_size` is the ceiling before a checkpoint is forced. Too small causes I/O
+  spikes from forced checkpoints. Scale with `shared_buffers` - a larger buffer pool accumulates
+  more dirty data between checkpoints.
+
+- **`checkpoint_completion_target`** — Fraction of the checkpoint interval over which dirty page
+  writes are spread. At `0.9`, writes are distributed evenly - no I/O spike at checkpoint
+  boundary. Default since PG14 but set explicitly for visibility.
+
+- **`wal_compression`** — Compresses WAL records before writing. Reduces WAL volume and disk
+  usage at minor CPU cost. `on` uses zlib - available in standard `postgres:16-alpine`.
+  `lz4` requires PostgreSQL compiled with `--with-lz4` (**not in the standard image**).
+
+### Planner
+
+- **`random_page_cost`** — Cost of a random page fetch relative to sequential (always 1.0).
+  Default 4.0 assumes spinning disk - causes the planner to avoid index scans and prefer
+  sequential scans even when an index would be faster. Set to **1.1 for SSD/NVMe** where random
+  reads are nearly as fast as sequential. Getting this wrong causes full table scans on large
+  tables that have usable indexes.
+
+- **`effective_io_concurrency`** — Concurrent I/O requests for bitmap heap scans. Default 1
+  assumes a single spinning disk. Set to **200 for SSD/NVMe**. No effect on sequential scans.
+
+- **`default_statistics_target`** — Histogram depth per column collected during `ANALYZE`. Higher
+  values give the planner more accurate row estimates for skewed data. PostgreSQL default 100 is
+  adequate as a baseline. For heavily skewed columns (isotope counts, intensity values), set
+  per-column:
+
+  ```sql
+  ALTER TABLE match_isotopes ALTER COLUMN intensity SET STATISTICS 500;
+  ANALYZE match_isotopes;
+  ```
+
+- **`jit`** — JIT compilation benefits long analytical queries but adds overhead on short
+  transactional ones. Disabled for Mascope's mixed workload - re-evaluate with profiling data
+  if specific long queries would benefit.
+
+### Autovacuum
+
+- **`autovacuum_max_workers`** — Parallel autovacuum workers. Each consumes `autovacuum_work_mem`.
+  Default 3 is fine for dev; 4 in prod with many large tables prevents dead tuple accumulation.
+
+  The global `autovacuum_vacuum_scale_factor` default of 0.2 means vacuum triggers after 20% of
+  the table is modified - on a 450M-row table that's 90M dead tuples before cleanup. For large
+  tables, override per-table:
+
+  ```sql
+  ALTER TABLE match_isotopes SET (
+      autovacuum_vacuum_scale_factor = 0.01,
+      autovacuum_analyze_scale_factor = 0.005
+  );
+  ```
+
+### Docker: shm_size
+
+`/dev/shm` tmpfs inside the postgres container. PostgreSQL uses it for shared_buffers, WAL
+buffers, lock tables, and IPC. Docker default 64MB causes crashes with any real shared_buffers:
+
+```
+ERROR: could not resize shared memory segment: No space left on device
+```
+
+Rule: `shm_size >= shared_buffers + 2GB overhead (WAL buffers, lock tables, IPC)`
+
+> **Uses Docker byte format: `m` / `g` - not PostgreSQL format `MB` / `GB`.**
+> The Pydantic validator rejects PostgreSQL format values for this field.
+
+### Verifying Settings
+
+```bash
+# Confirm settings applied
+mascope prod db cli -p
+postgres=# SHOW shared_buffers;
+postgres=# SHOW work_mem;
+postgres=# SHOW random_page_cost;
+
+# Check /dev/shm allocation and usage
+docker exec mascope_prod_postgres df -h /dev/shm
+
+# Check postgres shared memory segments
+docker exec mascope_prod_postgres psql -U mascope_user \
+  -c "SELECT name, size FROM pg_shmem_allocations ORDER BY size DESC LIMIT 10;"
+```
 
 ## User accounts
 
