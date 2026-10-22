@@ -4,8 +4,9 @@ Tests: the batch spreadsheet export can be traced back to what produced it.
 An exported spreadsheet names the dataset, batch and target collections it was
 built from, gives every row the id of the record behind it, carries each
 sample's acquisition context - instrument, method, polarity, m/z range, UTC
-time, ionization mode, instrument function, calibration verdict - and ends
-with a Provenance sheet naming the build that wrote it.
+time, ionization mode, instrument function, calibration verdict, and the
+instrument and polarity again as PSI-MS terms - and ends with a Provenance
+sheet naming the build that wrote it.
 
 All of it is appended: the sheets, columns and rows a reader of an earlier
 export knows keep their names and their places, which these tests pin as
@@ -82,6 +83,19 @@ LEGACY_ION_COLUMNS = [
     "Ion formula",
     "Total peak intensity (cps)",
     "Match score",
+]
+#: The PSI-MS columns, the last of the Samples sheet, in their order.
+PSI_MS_SAMPLE_COLUMNS = [
+    "Instrument model",
+    "Instrument model accession",
+    "Ion source",
+    "Ion source accession",
+    "Mass analyser",
+    "Mass analyser accession",
+    "Detector",
+    "Detector accession",
+    "Scan polarity",
+    "Scan polarity accession",
 ]
 LEGACY_BATCH_LABELS = [
     "Name",
@@ -334,7 +348,11 @@ async def batch(async_session_factory):
 
 @pytest_asyncio.fixture
 async def workbook(batch, tmp_path, monkeypatch, test_users):
-    """Export the batch and read every sheet back."""
+    """Export the batch and read every sheet back.
+
+    The test filestore holds no raw files, so the reader the export takes an
+    Orbitrap file's model from is stood in for, and records what it opened.
+    """
     # The directory, not user_temp_path: that helper is what keeps a file
     # name inside the user's directory, and the export's naming goes with it.
     monkeypatch.setattr(
@@ -342,6 +360,14 @@ async def workbook(batch, tmp_path, monkeypatch, test_users):
         lambda user_id, create=True: str(tmp_path),
     )
     monkeypatch.setattr(runtime, "_version", "v9.9.9-test", raising=False)
+    opened = []
+
+    def metadata_factory(filename):
+        opened.append(filename)
+        return SimpleNamespace(instrument_details={"Model": "Orbitrap Exploris 120"})
+
+    monkeypatch.setattr(service, "get_sample_file_type", lambda filename: "orbi_raw")
+    monkeypatch.setattr(service.m_metadata, "metadata_factory", metadata_factory)
 
     result = await _export(
         batch.batch, user_id=test_users["editor"].id, process_id="export-test"
@@ -357,6 +383,7 @@ async def workbook(batch, tmp_path, monkeypatch, test_users):
             provenance=dict(
                 _key_values(pd.read_excel(book, "Provenance", header=None))
             ),
+            raw_files_opened=opened,
         )
 
 
@@ -469,6 +496,41 @@ async def test_a_sample_row_names_its_acquisition_and_its_files_hash(workbook, b
         "File SHA-256",
     ):
         assert pd.isna(bare[column]), column
+
+
+@pytest.mark.asyncio
+async def test_a_sample_row_names_its_acquisition_in_psi_ms_terms(workbook, batch):
+    """The instrument and polarity as PSI-MS terms, appended after every
+    column an earlier export had: the model read from the raw file, the
+    rest from the instrument class and the sample's polarity."""
+    samples = workbook.samples
+    assert list(samples.columns[-len(PSI_MS_SAMPLE_COLUMNS) :]) == (
+        PSI_MS_SAMPLE_COLUMNS
+    )
+    assert list(samples.columns).index("File SHA-256") < list(samples.columns).index(
+        "Instrument model"
+    )
+
+    rows = samples.set_index("Sample item ID")
+    orbitrap = rows.loc[batch.matched_item]
+    assert orbitrap["Instrument model"] == "Orbitrap Exploris 120"
+    assert orbitrap["Instrument model accession"] == "MS:1003095"
+    assert orbitrap["Ion source accession"] == "MS:1000071"
+    assert orbitrap["Mass analyser"] == "orbitrap"
+    assert orbitrap["Mass analyser accession"] == "MS:1000484"
+    assert orbitrap["Detector accession"] == "MS:1000624"
+    assert orbitrap["Scan polarity"] == "negative scan"
+    assert orbitrap["Scan polarity accession"] == "MS:1000129"
+
+    # A TOF file is not opened: the ontology has no Tofwerk model to name
+    tof = rows.loc[batch.bare_item]
+    assert pd.isna(tof["Instrument model"])
+    assert pd.isna(tof["Instrument model accession"])
+    assert tof["Ion source accession"] == "MS:1000071"
+    assert tof["Mass analyser accession"] == "MS:1000084"
+    assert tof["Detector accession"] == "MS:1000114"
+    assert tof["Scan polarity accession"] == "MS:1000129"
+    assert workbook.raw_files_opened == [f"instrument-x_{batch.calibrated_file}.raw"]
 
 
 @pytest.mark.asyncio

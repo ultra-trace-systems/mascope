@@ -272,6 +272,19 @@ the reasoning.
     polarity, carried on `Instrument` (from the ionization plan's Phase 1) and
     emitted in exports. The 91 accessions embedded in `opentfraw` cover the
     Thermo side; Tofwerk needs a small hand-authored mapping.
+    *Built without the entity (MAS-29):* the `Instrument` table had not
+    landed, so the terms are a code module, `mascope_backend.vocabulary`, and
+    the batch spreadsheet's Samples sheet carries them per sample; the
+    `Instrument` row is to take its term from the same module. Two findings
+    changed the plan as written. The model is not recorded in the database,
+    only in the raw file, so the export reads it from there. And
+    `opentfraw`'s table is not all PSI-MS: it gives the Orbitrap Exploris 120
+    `MS:1003199`, which the ontology names "change log" (the right term is
+    `MS:1003095`), and several of its other accessions are not instrument
+    models either. The module follows the ontology (release 4.2.6), and item
+    11 has to take the instrument's terms from it rather than from
+    `to_mzml`. The ontology has no Tofwerk models, so a TOF sample has a
+    source, analyser and detector term but no model term.
 11. **mzML export route** for raw and time-windowed sample data, over
     `to_mzml`. Requires an A/B against the current reader path before it is
     trusted - the same numeric check the retired `ionization_method_config.md`
