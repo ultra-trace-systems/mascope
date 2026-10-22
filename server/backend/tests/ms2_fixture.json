@@ -1,0 +1,341 @@
+{
+  "about": [
+    "The known answers of the hermetic MS2 fixture (server/backend/tests/ms2_fixture.py).",
+    "Each shape is the committed MS1 file read through a patched OpenTFRaw backend: its survey scans are the file's own, its fragment scans synthetic. Change the fixture here and nowhere else.",
+    "Every shape is positive: no shape records the negative polarity or switches polarity, on purpose."
+  ],
+  "definitions": {
+    "mz": "Exact monoisotopic m/z of the singly charged ion: the formula's mass less one electron.",
+    "isolation_mz": "The precursor m/z the scan filter names, at four decimals, as the instrument writes it. The summary's parent_peak_mz.",
+    "survival": "Precursor intensity over the precursor and its named fragments together; the co-isolate, the ghost and the unexplained centroid are not counted.",
+    "loss": "The neutral formula between the precursor and a fragment.",
+    "volts": "The trailer's HCD Energy V: of a step, nce times isolation_mz over 500 for a singly charged ion, at two decimals.",
+    "co_isolate": "Another ion inside every isolation window the precursor is taken with; it is not a sub-formula of the precursor and does not fragment.",
+    "harmonic_ghost": "The precursor's second harmonic: twice its frequency, so a quarter of its m/z, at ghost_ratio of its intensity, under the 0.5 % the design note's rule reads such a ghost by.",
+    "e50": "Per precursor of a shape that steps its energy: linear interpolation at the first downward crossing of survival 0.5, on NCE and on the volts the trailer records (docs/dev/ms2_analysis.md, survival and E50).",
+    "unexplained": "A centroid no sub-formula of the precursor or the co-isolate explains.",
+    "centroid_labels": "Every fragment scan of a step carries its spectrum's centroids exactly, with noise as the noise of each and resolution its scan's FT resolution times sqrt(200 / mz), rounded.",
+    "times": "Scan n is acquired at n times scan_interval_min minutes."
+  },
+  "noise": 1.0,
+  "ghost_ratio": 0.004,
+  "scan_interval_min": 0.02,
+  "precursors": {
+    "A": {
+      "formula": "C8H11N4O2+",
+      "mz": 195.087652,
+      "isolation_mz": 195.0877,
+      "charge": 1,
+      "fragments": [
+        {"formula": "C6H8N3O+", "mz": 138.066188, "loss": "C2H3NO"},
+        {"formula": "C5H8N3+", "mz": 110.071274, "loss": "C3H3NO2"},
+        {"formula": "C4H7N2+", "mz": 83.060375, "loss": "C4H4N2O2"}
+      ],
+      "co_isolate": {"formula": "C10H11O4+", "mz": 195.065185},
+      "harmonic_ghost": {"harmonic": 2, "mz": 48.771913},
+      "unexplained": {"mz": 97.5293}
+    },
+    "B": {
+      "formula": "C10H15N2+",
+      "mz": 163.122975,
+      "isolation_mz": 163.123,
+      "charge": 1,
+      "fragments": [
+        {"formula": "C9H10N+", "mz": 132.080776, "loss": "CH5N"},
+        {"formula": "C9H8N+", "mz": 130.065126, "loss": "CH7N"},
+        {"formula": "C7H8N+", "mz": 106.065126, "loss": "C3H7N"}
+      ],
+      "co_isolate": {"formula": "C10H11O2+", "mz": 163.075356},
+      "harmonic_ghost": {"harmonic": 2, "mz": 40.780744},
+      "unexplained": {"mz": 89.5501}
+    }
+  },
+  "spectra": {
+    "A@10": {
+      "precursor": "A",
+      "nce": 10,
+      "activation": "hcd10.00",
+      "volts": 3.9,
+      "survival": 0.9,
+      "centroids": [
+        {"mz": 48.771913, "intensity": 360.0, "role": "harmonic_ghost", "of": "C8H11N4O2+", "harmonic": 2},
+        {"mz": 83.060375, "intensity": 500.0, "role": "fragment", "formula": "C4H7N2+", "loss": "C4H4N2O2"},
+        {"mz": 97.5293, "intensity": 1500.0, "role": "unexplained"},
+        {"mz": 110.071274, "intensity": 1500.0, "role": "fragment", "formula": "C5H8N3+", "loss": "C3H3NO2"},
+        {"mz": 138.066188, "intensity": 8000.0, "role": "fragment", "formula": "C6H8N3O+", "loss": "C2H3NO"},
+        {"mz": 195.065185, "intensity": 4000.0, "role": "co_isolate", "formula": "C10H11O4+"},
+        {"mz": 195.087652, "intensity": 90000.0, "role": "precursor", "formula": "C8H11N4O2+"}
+      ]
+    },
+    "A@20": {
+      "precursor": "A",
+      "nce": 20,
+      "activation": "hcd20.00",
+      "volts": 7.8,
+      "survival": 0.6,
+      "centroids": [
+        {"mz": 48.771913, "intensity": 240.0, "role": "harmonic_ghost", "of": "C8H11N4O2+", "harmonic": 2},
+        {"mz": 83.060375, "intensity": 4000.0, "role": "fragment", "formula": "C4H7N2+", "loss": "C4H4N2O2"},
+        {"mz": 97.5293, "intensity": 1500.0, "role": "unexplained"},
+        {"mz": 110.071274, "intensity": 8000.0, "role": "fragment", "formula": "C5H8N3+", "loss": "C3H3NO2"},
+        {"mz": 138.066188, "intensity": 28000.0, "role": "fragment", "formula": "C6H8N3O+", "loss": "C2H3NO"},
+        {"mz": 195.065185, "intensity": 4000.0, "role": "co_isolate", "formula": "C10H11O4+"},
+        {"mz": 195.087652, "intensity": 60000.0, "role": "precursor", "formula": "C8H11N4O2+"}
+      ]
+    },
+    "A@30": {
+      "precursor": "A",
+      "nce": 30,
+      "activation": "hcd30.00",
+      "volts": 11.71,
+      "survival": 0.4,
+      "centroids": [
+        {"mz": 48.771913, "intensity": 160.0, "role": "harmonic_ghost", "of": "C8H11N4O2+", "harmonic": 2},
+        {"mz": 83.060375, "intensity": 9000.0, "role": "fragment", "formula": "C4H7N2+", "loss": "C4H4N2O2"},
+        {"mz": 97.5293, "intensity": 1500.0, "role": "unexplained"},
+        {"mz": 110.071274, "intensity": 18000.0, "role": "fragment", "formula": "C5H8N3+", "loss": "C3H3NO2"},
+        {"mz": 138.066188, "intensity": 33000.0, "role": "fragment", "formula": "C6H8N3O+", "loss": "C2H3NO"},
+        {"mz": 195.065185, "intensity": 4000.0, "role": "co_isolate", "formula": "C10H11O4+"},
+        {"mz": 195.087652, "intensity": 40000.0, "role": "precursor", "formula": "C8H11N4O2+"}
+      ]
+    },
+    "A@40": {
+      "precursor": "A",
+      "nce": 40,
+      "activation": "hcd40.00",
+      "volts": 15.61,
+      "survival": 0.2,
+      "centroids": [
+        {"mz": 48.771913, "intensity": 80.0, "role": "harmonic_ghost", "of": "C8H11N4O2+", "harmonic": 2},
+        {"mz": 83.060375, "intensity": 16000.0, "role": "fragment", "formula": "C4H7N2+", "loss": "C4H4N2O2"},
+        {"mz": 97.5293, "intensity": 1500.0, "role": "unexplained"},
+        {"mz": 110.071274, "intensity": 32000.0, "role": "fragment", "formula": "C5H8N3+", "loss": "C3H3NO2"},
+        {"mz": 138.066188, "intensity": 32000.0, "role": "fragment", "formula": "C6H8N3O+", "loss": "C2H3NO"},
+        {"mz": 195.065185, "intensity": 4000.0, "role": "co_isolate", "formula": "C10H11O4+"},
+        {"mz": 195.087652, "intensity": 20000.0, "role": "precursor", "formula": "C8H11N4O2+"}
+      ]
+    },
+    "A@60": {
+      "precursor": "A",
+      "nce": 60,
+      "activation": "hcd60.00",
+      "volts": 23.41,
+      "survival": 0.05,
+      "centroids": [
+        {"mz": 48.771913, "intensity": 20.0, "role": "harmonic_ghost", "of": "C8H11N4O2+", "harmonic": 2},
+        {"mz": 83.060375, "intensity": 33250.0, "role": "fragment", "formula": "C4H7N2+", "loss": "C4H4N2O2"},
+        {"mz": 97.5293, "intensity": 1500.0, "role": "unexplained"},
+        {"mz": 110.071274, "intensity": 42750.0, "role": "fragment", "formula": "C5H8N3+", "loss": "C3H3NO2"},
+        {"mz": 138.066188, "intensity": 19000.0, "role": "fragment", "formula": "C6H8N3O+", "loss": "C2H3NO"},
+        {"mz": 195.065185, "intensity": 4000.0, "role": "co_isolate", "formula": "C10H11O4+"},
+        {"mz": 195.087652, "intensity": 5000.0, "role": "precursor", "formula": "C8H11N4O2+"}
+      ]
+    },
+    "B@30": {
+      "precursor": "B",
+      "nce": 30,
+      "activation": "hcd30.00",
+      "volts": 9.79,
+      "survival": 0.3,
+      "centroids": [
+        {"mz": 40.780744, "intensity": 120.0, "role": "harmonic_ghost", "of": "C10H15N2+", "harmonic": 2},
+        {"mz": 89.5501, "intensity": 1200.0, "role": "unexplained"},
+        {"mz": 106.065126, "intensity": 17500.0, "role": "fragment", "formula": "C7H8N+", "loss": "C3H7N"},
+        {"mz": 130.065126, "intensity": 10500.0, "role": "fragment", "formula": "C9H8N+", "loss": "CH7N"},
+        {"mz": 132.080776, "intensity": 42000.0, "role": "fragment", "formula": "C9H10N+", "loss": "CH5N"},
+        {"mz": 163.075356, "intensity": 3000.0, "role": "co_isolate", "formula": "C10H11O2+"},
+        {"mz": 163.122975, "intensity": 30000.0, "role": "precursor", "formula": "C10H15N2+"}
+      ]
+    }
+  },
+  "shapes": {
+    "manual": {
+      "about": "Fragmentation by hand with no method loaded: the MS1 block, then the fragment scans of one precursor as a block of their own. No scan records a method event or a master scan.",
+      "dependent": false,
+      "fragment_trailer": {"FT Resolution:": 30000, "Ion Injection Time (ms):": 100.0, "Max. Ion Time (ms):": 100.0, "AGC Target:": 50000},
+      "scan_ranges": {"A": [40.0, 210.0]},
+      "scans": [
+        {"ms1": 1},
+        {"ms1": 2},
+        {"precursor": "A", "nce": 20, "width": 1.0},
+        {"precursor": "A", "nce": 20, "width": 1.0},
+        {"precursor": "A", "nce": 20, "width": 1.0},
+        {"precursor": "A", "nce": 20, "width": 1.0},
+        {"precursor": "A", "nce": 20, "width": 1.0},
+        {"precursor": "A", "nce": 20, "width": 1.0}
+      ],
+      "answers": {
+        "scans": 8,
+        "ms1_scan_count": 2,
+        "ms2_scan_count": 6,
+        "polarities": ["+"],
+        "isolation_width": 1.0,
+        "groups": [
+          {
+            "parent_peak_mz": 195.0877,
+            "activation": "hcd20.00",
+            "hcd_energy": [7.8],
+            "isolation_width": 1.0,
+            "isolation_widths": [1.0],
+            "scan_count": 6,
+            "scans": [3, 4, 5, 6, 7, 8],
+            "spectrum": "A@20"
+          }
+        ],
+        "streams": [
+          {"key": "FTMS + p NSI Full ms [40.0000-500.0000] R=120000", "ms_order": 1, "scans": 2, "blocks": 1, "scan_event": null, "filters": 1},
+          {"key": "FTMS + c NSI Full ms2 195.0877@hcd20.00 [40.0000-210.0000] R=30000", "ms_order": 2, "scans": 6, "blocks": 1, "filters": 1}
+        ]
+      }
+    },
+    "interleaved": {
+      "about": "A data-dependent method: each cycle is one survey scan and two dependent scans, the order of the precursors varying from cycle to cycle. Precursor B is isolated at two widths in turn, so its group stores two.",
+      "dependent": true,
+      "fragment_trailer": {"FT Resolution:": 15000, "Ion Injection Time (ms):": 22.0, "Max. Ion Time (ms):": 22.0, "AGC Target:": 100000},
+      "scan_ranges": {"A": [45.0, 205.0], "B": [40.0, 175.0]},
+      "scans": [
+        {"ms1": 1, "event": 1},
+        {"precursor": "A", "nce": 30, "width": 1.0, "event": 2, "master": 1},
+        {"precursor": "B", "nce": 30, "width": 1.0, "event": 3, "master": 1},
+        {"ms1": 2, "event": 1},
+        {"precursor": "B", "nce": 30, "width": 2.0, "event": 2, "master": 4},
+        {"precursor": "A", "nce": 30, "width": 1.0, "event": 3, "master": 4},
+        {"ms1": 1, "event": 1},
+        {"precursor": "A", "nce": 30, "width": 1.0, "event": 2, "master": 7},
+        {"precursor": "B", "nce": 30, "width": 1.0, "event": 3, "master": 7},
+        {"ms1": 2, "event": 1},
+        {"precursor": "B", "nce": 30, "width": 2.0, "event": 2, "master": 10},
+        {"precursor": "A", "nce": 30, "width": 1.0, "event": 3, "master": 10}
+      ],
+      "answers": {
+        "scans": 12,
+        "ms1_scan_count": 4,
+        "ms2_scan_count": 8,
+        "polarities": ["+"],
+        "isolation_width": null,
+        "groups": [
+          {
+            "parent_peak_mz": 163.123,
+            "activation": "hcd30.00",
+            "hcd_energy": [9.79],
+            "isolation_width": null,
+            "isolation_widths": [1.0, 2.0],
+            "scan_count": 4,
+            "scans": [3, 5, 9, 11],
+            "spectrum": "B@30"
+          },
+          {
+            "parent_peak_mz": 195.0877,
+            "activation": "hcd30.00",
+            "hcd_energy": [11.71],
+            "isolation_width": 1.0,
+            "isolation_widths": [1.0],
+            "scan_count": 4,
+            "scans": [2, 6, 8, 12],
+            "spectrum": "A@30"
+          }
+        ],
+        "streams": [
+          {"key": "FTMS + p NSI Full ms [40.0000-500.0000] R=120000", "ms_order": 1, "scans": 4, "blocks": 1, "scan_event": 1, "filters": 1},
+          {"key": "FTMS + c NSI d Full ms2 *@hcd30.00 R=15000", "ms_order": 2, "scans": 8, "blocks": 1, "filters": 2}
+        ]
+      }
+    },
+    "stepped": {
+      "about": "A targeted stepped-energy method: each cycle is one survey scan, then precursor A at four collision energies and precursor B at one, each step a scan event of its own.",
+      "dependent": false,
+      "fragment_trailer": {"FT Resolution:": 60000, "Ion Injection Time (ms):": 54.0, "Max. Ion Time (ms):": 54.0, "AGC Target:": 50000},
+      "scan_ranges": {"A": [40.0, 210.0], "B": [40.0, 210.0]},
+      "scans": [
+        {"ms1": 1, "event": 1},
+        {"precursor": "A", "nce": 10, "width": 1.2, "event": 2},
+        {"precursor": "A", "nce": 20, "width": 1.2, "event": 3},
+        {"precursor": "A", "nce": 40, "width": 1.2, "event": 4},
+        {"precursor": "A", "nce": 60, "width": 1.2, "event": 5},
+        {"precursor": "B", "nce": 30, "width": 1.2, "event": 6},
+        {"ms1": 2, "event": 1},
+        {"precursor": "A", "nce": 10, "width": 1.2, "event": 2},
+        {"precursor": "A", "nce": 20, "width": 1.2, "event": 3},
+        {"precursor": "A", "nce": 40, "width": 1.2, "event": 4},
+        {"precursor": "A", "nce": 60, "width": 1.2, "event": 5},
+        {"precursor": "B", "nce": 30, "width": 1.2, "event": 6},
+        {"ms1": 1, "event": 1},
+        {"precursor": "A", "nce": 10, "width": 1.2, "event": 2},
+        {"precursor": "A", "nce": 20, "width": 1.2, "event": 3},
+        {"precursor": "A", "nce": 40, "width": 1.2, "event": 4},
+        {"precursor": "A", "nce": 60, "width": 1.2, "event": 5},
+        {"precursor": "B", "nce": 30, "width": 1.2, "event": 6}
+      ],
+      "answers": {
+        "scans": 18,
+        "ms1_scan_count": 3,
+        "ms2_scan_count": 15,
+        "polarities": ["+"],
+        "isolation_width": 1.2,
+        "groups": [
+          {
+            "parent_peak_mz": 163.123,
+            "activation": "hcd30.00",
+            "hcd_energy": [9.79],
+            "isolation_width": 1.2,
+            "isolation_widths": [1.2],
+            "scan_count": 3,
+            "scans": [6, 12, 18],
+            "spectrum": "B@30"
+          },
+          {
+            "parent_peak_mz": 195.0877,
+            "activation": "hcd10.00",
+            "hcd_energy": [3.9],
+            "isolation_width": 1.2,
+            "isolation_widths": [1.2],
+            "scan_count": 3,
+            "scans": [2, 8, 14],
+            "spectrum": "A@10"
+          },
+          {
+            "parent_peak_mz": 195.0877,
+            "activation": "hcd20.00",
+            "hcd_energy": [7.8],
+            "isolation_width": 1.2,
+            "isolation_widths": [1.2],
+            "scan_count": 3,
+            "scans": [3, 9, 15],
+            "spectrum": "A@20"
+          },
+          {
+            "parent_peak_mz": 195.0877,
+            "activation": "hcd40.00",
+            "hcd_energy": [15.61],
+            "isolation_width": 1.2,
+            "isolation_widths": [1.2],
+            "scan_count": 3,
+            "scans": [4, 10, 16],
+            "spectrum": "A@40"
+          },
+          {
+            "parent_peak_mz": 195.0877,
+            "activation": "hcd60.00",
+            "hcd_energy": [23.41],
+            "isolation_width": 1.2,
+            "isolation_widths": [1.2],
+            "scan_count": 3,
+            "scans": [5, 11, 17],
+            "spectrum": "A@60"
+          }
+        ],
+        "streams": [
+          {"key": "FTMS + p NSI Full ms [40.0000-500.0000] R=120000", "ms_order": 1, "scans": 3, "blocks": 1, "scan_event": 1, "filters": 1},
+          {"key": "FTMS + c NSI Full ms2 195.0877@hcd10.00 [40.0000-210.0000] R=60000", "ms_order": 2, "scans": 3, "blocks": 3, "filters": 1},
+          {"key": "FTMS + c NSI Full ms2 195.0877@hcd20.00 [40.0000-210.0000] R=60000", "ms_order": 2, "scans": 3, "blocks": 3, "filters": 1},
+          {"key": "FTMS + c NSI Full ms2 195.0877@hcd40.00 [40.0000-210.0000] R=60000", "ms_order": 2, "scans": 3, "blocks": 3, "filters": 1},
+          {"key": "FTMS + c NSI Full ms2 195.0877@hcd60.00 [40.0000-210.0000] R=60000", "ms_order": 2, "scans": 3, "blocks": 3, "filters": 1},
+          {"key": "FTMS + c NSI Full ms2 163.1230@hcd30.00 [40.0000-210.0000] R=60000", "ms_order": 2, "scans": 3, "blocks": 3, "filters": 1}
+        ],
+        "e50": {
+          "A": {"nce": 25.0, "volts": 9.7525}
+        }
+      }
+    }
+  }
+}
