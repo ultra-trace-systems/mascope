@@ -1574,9 +1574,10 @@ What to expect and how to pace it:
   never queued behind the re-processing, and the load stayed under 1.
 - **What to watch.** Every file of a batch ends `done` and carries a composite
   stream row; the fresh files keep ending `done`; error tracking shows only
-  the drift warning a re-calibrated file raises anyway, one per file, so that
-  count climbs by the number of files re-processed. A re-process takes no
-  database dump, so the backups directory is untouched. Keep a list of what
+  the drift warning a drifting instrument raises anyway, at most once a day
+  per instrument and threshold, so that count stays flat however many files
+  are re-processed (each file's drift is in the logs at INFO). A re-process
+  takes no database dump, so the backups directory is untouched. Keep a list of what
   was submitted, so an interrupted run resumes where it stopped rather than
   re-submitting.
 - **What it changes.** A pooled file becomes stitched: one reading of each

@@ -74,6 +74,7 @@ from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
 )
+from mascope_backend.socket.storage import redis_storage_client
 from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.compute import get_sum_signal
 from mascope_signal.mz_factor import STREAM_FACTORS
@@ -83,12 +84,30 @@ from mascope_signal.mz_factor import STREAM_FACTORS
 # keyed by the (instrument, threshold) pair the warning is about rather than
 # by its rendered text: the two happen to correspond today, but keying on the
 # display string means rewording the message silently resets every window.
-# Per-process, and the backend runs several uvicorn workers, so an instrument
-# can still produce up to one warning per worker per window. That turns a
-# flood of hundreds a day into a handful, which is all this needs to do;
-# making it exact would mean a Redis round trip on a logging path, where a
-# blip must never be able to disturb a calibration.
+# Per-process: the window the uvicorn workers share lives in Redis (see
+# :func:`_drift_warning_claimed`), and this one decides only when Redis cannot
+# answer.
 _drift_warned_at: dict[tuple[str, float], float] = {}
+
+#: Redis key prefix of the shared suppression window, one key per
+#: (instrument, threshold) pair.
+DRIFT_WARNING_KEY_PREFIX = "mascope:calibration:drift-warning:"
+
+#: How long a drift observation waits for Redis before deciding alone. The
+#: warning is a side note to a calibration that has already been applied, so
+#: a slow Redis may cost it a duplicate warning but never a stalled file.
+DRIFT_WARNING_REDIS_TIMEOUT_S = 1.0
+
+
+def _drift_warning_key(key: tuple[str, float]) -> str:
+    """
+    Redis key of the shared suppression window for one warning.
+
+    :param key: The (instrument, threshold-ppm) pair being suppressed.
+    :return: The key, threshold rendered as the warning text renders it.
+    """
+    instrument, limit = key
+    return f"{DRIFT_WARNING_KEY_PREFIX}{limit:g}:{instrument}"
 
 
 def _drift_warning_due(key: tuple[str, float], now: float) -> bool:
@@ -109,7 +128,43 @@ def _drift_warning_due(key: tuple[str, float], now: float) -> bool:
     return True
 
 
-def clear_drift_suppression(instrument: str | None) -> None:
+async def _drift_warning_claimed(key: tuple[str, float]) -> bool:
+    """
+    Whether this worker may emit the warning for ``key``, claiming it if so.
+
+    The backend runs one uvicorn worker per two CPU cores, and a window kept
+    per process let every one of them warn once a day: dozens of warnings a
+    day for one instrument on a large server. The window is one Redis key
+    with the interval as its expiry, set only if absent, so of all the
+    workers that observe the drift within a day exactly one warns.
+
+    When Redis does not answer within :data:`DRIFT_WARNING_REDIS_TIMEOUT_S`,
+    or fails, the worker's own window decides instead: the warning may repeat
+    once per worker, as it did before the window was shared, but a Redis
+    fault never disturbs the calibration it follows nor silences the warning.
+
+    :param key: The (instrument, threshold-ppm) pair being suppressed.
+    :return: True when the warning should be emitted.
+    """
+    interval_s = calibration_config.ACQUISITION_DRIFT_WARNING_INTERVAL_S
+    try:
+        claimed = await asyncio.wait_for(
+            redis_storage_client.client.set(
+                _drift_warning_key(key),
+                "1",
+                ex=max(1, int(interval_s)),
+                nx=True,
+            ),
+            timeout=DRIFT_WARNING_REDIS_TIMEOUT_S,
+        )
+    except Exception:
+        # No log line: it would land in monitoring as one more warning per
+        # file, exactly the repetition this window exists to stop.
+        return _drift_warning_due(key, time.monotonic())
+    return bool(claimed)
+
+
+async def clear_drift_suppression(instrument: str | None) -> None:
     """
     Forget every suppression window recorded for one instrument.
 
@@ -117,15 +172,13 @@ def clear_drift_suppression(instrument: str | None) -> None:
     :func:`carry_acquisition_drift`): the warning that opened the window
     described the fit the operator has just overruled, so leaving the entry in
     place would let a genuine drift on the same instrument go unreported for
-    the rest of the day. Every threshold recorded for the instrument is
-    dropped, because the class limit a stale entry was keyed under is not
-    necessarily the one the next observation will use.
+    the rest of the day. Every threshold is dropped, because the class limit
+    a stale entry was keyed under is not necessarily the one the next
+    observation will use.
 
-    Per-process like the window itself, so it clears the entry in the worker
-    that handled the recalibration and not in its siblings. That is the same
-    approximation :func:`_drift_warning_due` already makes, and it errs
-    towards reporting: the worst outcome is that a sibling stays quiet until
-    its own window elapses.
+    Both windows are cleared: the shared one in Redis, for every worker, and
+    this worker's own, which decides when Redis cannot answer. A sibling's
+    own window is left as it is; it only decides while Redis is failing.
 
     :param instrument: Instrument the recalibrated file was acquired on.
         A missing name is never recorded as a window, so nothing to clear.
@@ -134,6 +187,21 @@ def clear_drift_suppression(instrument: str | None) -> None:
         return
     for key in [key for key in _drift_warned_at if key[0] == instrument]:
         del _drift_warned_at[key]
+    limits = {
+        calibration_config.ACQUISITION_DRIFT_WARNING_PPM,
+        calibration_config.TOF_ACQUISITION_DRIFT_WARNING_PPM,
+    }
+    try:
+        await asyncio.wait_for(
+            redis_storage_client.client.delete(
+                *(_drift_warning_key((instrument, limit)) for limit in limits)
+            ),
+            timeout=DRIFT_WARNING_REDIS_TIMEOUT_S,
+        )
+    except Exception:
+        # The shared window then runs out by itself within a day; the
+        # recalibration it follows has been applied either way.
+        pass
 
 
 def acquisition_drift_limit_ppm(filename: str) -> float:
@@ -172,7 +240,7 @@ def acquisition_drift_ppm(fit: dict | None, limit_ppm: float) -> float | None:
     return pre_fit
 
 
-def warn_on_acquisition_drift(
+async def warn_on_acquisition_drift(
     fit: dict | None, instrument: str | None, filename: str
 ) -> None:
     """
@@ -199,7 +267,8 @@ def warn_on_acquisition_drift(
     per-file magnitude follows at INFO.
 
     Each (instrument, threshold) pair warns at most once per
-    ``ACQUISITION_DRIFT_WARNING_INTERVAL_S`` (see :func:`_drift_warning_due`).
+    ``ACQUISITION_DRIFT_WARNING_INTERVAL_S`` across all backend workers (see
+    :func:`_drift_warning_claimed`).
     Drift persists until someone retunes the instrument, so warning per
     affected file says nothing the first one did not and buries unrelated
     errors under hundreds of repeats a day. A warning that cannot name its
@@ -227,7 +296,7 @@ def warn_on_acquisition_drift(
     # every such warning shares one key, so collapsing them would let the
     # first drifting instrument hide every other one for a full day - the
     # opposite of what the window is for.
-    if not instrument or _drift_warning_due((instrument, limit), time.monotonic()):
+    if not instrument or await _drift_warning_claimed((instrument, limit)):
         fingerprint = f"acquisition-drift:{instrument or 'unknown'}:{limit:g}"
         runtime.logger.bind(**{SENTRY_FINGERPRINT: [fingerprint]}).warning(message)
     # The per-file detail is unconditional: it never reaches monitoring, and
@@ -1046,7 +1115,7 @@ async def calibration_mz_apply(
         manual=manual,
         cleared_by=user_id,
     ):
-        clear_drift_suppression(sample_file.instrument)
+        await clear_drift_suppression(sample_file.instrument)
 
     await send_progress_user_notification(notification, 0.3)
 
@@ -1242,7 +1311,7 @@ async def calibration_mz_calibrate_sample(
     # to retune the instrument over it - and burning the once-a-day warning
     # slot on it - would blame the instrument for the previous fit.
     if fit and fit.get("acquisition_drift"):
-        warn_on_acquisition_drift(fit, sample.instrument, sample.filename)
+        await warn_on_acquisition_drift(fit, sample.instrument, sample.filename)
     await send_progress_user_notification(notification, 0.95)
 
     # ``fit`` carries the verdict ``calibration_mz_apply`` stamped on it; the
