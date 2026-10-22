@@ -2,7 +2,7 @@
 
 - **Status:** built
 - **As of:** 2026-10-22
-- **Tracked in:** closed; the open decisions 10.4 and 10.5 have no issue
+- **Tracked in:** closed; decisions 10.4 and 10.5 are carried inside MAS-321 and MAS-322 ([Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) milestone 4)
 - **Supersedes:** `peak_assignment_batch.md` (section 12), `peak_assignment_copy.md` and `peak_assignment_continuity.md` (sections 6.3 and 6.4); all three retired 2026-10-22
 
 *Ingest-time assignment writes a per-sample ledger for every processed sample, and the
@@ -617,7 +617,9 @@ aggregates" (§12.1). The per-sample
   the anchor-scoped verdicts §6.3 records as shipped. Its unbuilt half, ratio stability as
   display-only evidence on the anchor, is the subject of the assignment quality plan's step
   4.2 (MAS-62), which takes a different stance on the signal and on whether it touches
-  tiers; the two must be reconciled before that step starts.
+  tiers; the two must be reconciled before that step starts. Filed 2026-10-22: the
+  ratio-stability pass as MAS-323 (the MAS-62 reconciliation inside it, the owner's call),
+  the column, badge and overlay as MAS-346, the ceiling-scale measurement as MAS-347.
 - [`sdk_peak_assignment.md`](sdk_peak_assignment.md) — the import contract that stays.
 - [`maintaining.md`](../maintaining.md) — the operator view of the cost and the two ingest
   settings.
@@ -637,7 +639,8 @@ run precedes the fold, read §5.1. Blend splitting shipped as an `is_ambiguous` 
 the `sample_batch_peak_created` event was never built (the coarse `peak_assignment_reload`
 is used); the occurrence no longer carries formula and tier strings (§4.2). Its items still
 open - seeding anchors from a target list, splitting blends, refusing or segregating
-mixed-instrument batches at fold, and the fold-in and series benchmarks - have no issue.*
+mixed-instrument batches at fold, and the fold-in and series benchmarks - are MAS-319,
+MAS-320, MAS-321 and MAS-322 in the assignment quality plan's milestone 4 (filed 2026-10-22).*
 
 ### 12.1 The core idea
 

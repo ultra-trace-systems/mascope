@@ -4,7 +4,7 @@
 
 - **Status:** building
 - **As of:** 2026-10-22
-- **Tracked in:** none; phase 4 (MS/MS) and the phase 5 wrapper have no issue
+- **Tracked in:** none; phase 4 (MS/MS) needs a project of its own and the phase 5 wrapper a home, both owner calls left open by the 2026-10-22 import
 - **Supersedes:** `reference_peak_assignment_convergence.md` (retired 2026-10-22; Phase 3 records it)
 
 ## Purpose

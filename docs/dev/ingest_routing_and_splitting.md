@@ -14,7 +14,9 @@ calibrated and fitted an instrument function of its own, and the files
 acquired before the switch were re-processed on the two sites that acquire
 composites; what phases 3 and 4 still owe is step 9's overlap-drift warning
 and layout override, the per-stream stale rebuild (step 6) and MS2 routes
-taking the stream; phase 8, the profiles, is unbuilt and has no issue;
+taking the stream; phase 8, the profiles, is unbuilt and filed as
+milestone 9 of the Linear project (MAS-300, MAS-312, MAS-313, MAS-337,
+MAS-344);
 detection deferred** (2026-10-22). Written for issue #2098 ("Split files into
 samples by scan attributes"), which carries the checklist of pull
 requests. Decisions 1 to 5, 7, 9, 11 to 16 and 18 in section 12 are settled;
@@ -2916,8 +2918,10 @@ unchanged.
 and acquisition-method redesign of 2026-07, when that note was retired. Of its five rows,
 `AcquisitionMethod` and `MethodBinding` have their first concrete pieces in
 `acquisition_stream` and `method_binding` (phase 2; section 13), with the routing order of
-4.5 revised by 2.4 and 5.7; `Instrument`, `IonizationSetup` and `Adduct` are unbuilt and
-have no issue (MAS-255 is the decision that found this). The notation of 4.4 shipped as the
+4.5 revised by 2.4 and 5.7; `Instrument` and `IonizationSetup` are unbuilt and filed as
+MAS-300 in milestone 9 (blocked by the Decisions MAS-350, setup scope, and MAS-351,
+migration; MAS-255 is the decision that found the gap), and the structured `Adduct` as
+MAS-318 in the assignment quality plan. The notation of 4.4 shipped as the
 assignment plan's step 3.3b. The text is the proposal as written.*
 
 ##### 4.1 `Instrument` - promote to a first-class row
@@ -3755,7 +3759,7 @@ through a short-lived stacked branch, merged as one unit.
 |---|---|
 | #749 chunk model (one `sample_file` per part) | Not adopted (3.4). Parts are streams and items. |
 | `multi_sample_items_per_file.md` | Its phase 1 is phase 3 here. Its segment API and chromatogram UI are phase 6. m/z-range splitting is covered by streams, because the scan range is in the signature. |
-| `ionization_method_config.md` (retired 2026-10-22) | Its Phase 0 items 3 (`method_file`, #2155) and 4 (the delete fan-out, #2156) are done. Its routing order (4.5) is revised by 2.4 and 5.7: a confirmed method identity above the token, a learned one below it, and no instrument-plus-polarity default. `acquisition_stream` and `method_binding` are the first concrete pieces of its `AcquisitionMethod` and `MethodBinding`. Its target model (section 4: `Instrument`, `AcquisitionMethod`, `IonizationSetup`, `Adduct`, `MethodBinding`) is carried into phase 8 here; its section 5 notation shipped as the assignment plan's step 3.3b; its section 7 was superseded by `fair_roadmap.md`; its Phase 1 (`Instrument`, `IonizationSetup`, `Adduct`) is unbuilt and unfiled (MAS-255). |
+| `ionization_method_config.md` (retired 2026-10-22) | Its Phase 0 items 3 (`method_file`, #2155) and 4 (the delete fan-out, #2156) are done. Its routing order (4.5) is revised by 2.4 and 5.7: a confirmed method identity above the token, a learned one below it, and no instrument-plus-polarity default. `acquisition_stream` and `method_binding` are the first concrete pieces of its `AcquisitionMethod` and `MethodBinding`. Its target model (section 4: `Instrument`, `AcquisitionMethod`, `IonizationSetup`, `Adduct`, `MethodBinding`) is carried into phase 8 here; its section 5 notation shipped as the assignment plan's step 3.3b; its section 7 was superseded by `fair_roadmap.md`; its Phase 1 (`Instrument`, `IonizationSetup`, `Adduct`) is unbuilt and filed as MAS-300 (blocked by the Decisions MAS-350 and MAS-351) and MAS-318. |
 | `chemistry_profiles.md` and assignment quality plan step 3.5 | The profiles and their future rows stay there; the seeded profile of 5.1 is the interim form of its `reagent_profile` row, and `system_key` is the identity that migrates. Routing by detection moves here (phase 5), with the guards 2.3 shows it needs. |
 | Setup-simplification proposal (2026-09-03) | Its steps 1, 2 and 4 shipped (#2044, #2046, #2070). Step 3 (presets) shipped half in phase 2 - mechanisms and modes - and completes in phase 8 with the collections; step 5 (instrument-scoped modes) is phase 2; steps 6 and 7 (notifications, per-file status) are phase 1; step 8 (the profile's reagent ions as calibration anchors) is phase 8, its further tiers later; step 9 (detection with review) is split between phases 1 and 5. Its routing ladder gains the method rung and loses the implicit instrument-plus-polarity rule. Its "profiles as shipped data" is section 5.1 here. |
 

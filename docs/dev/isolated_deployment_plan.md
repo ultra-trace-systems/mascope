@@ -2,7 +2,7 @@
 
 - **Status:** design
 - **As of:** 2026-10-22
-- **Tracked in:** [Isolated deployments](https://linear.app/ultra-trace/project/isolated-deployments-7585d72b2a80) (Linear; no issues filed yet; to be re-based on the wheel install, MAS-116 option b)
+- **Tracked in:** [Isolated deployments](https://linear.app/ultra-trace/project/isolated-deployments-7585d72b2a80) (Linear: MAS-301, MAS-302 and MAS-307 for phase A; MAS-303 re-bases the bundle on the wheel install, MAS-116 option b, before phases B to E are filed)
 
 Goal: run a Mascope server at a customer site where the server itself has no
 route to the internet, the instrument PC next to it has one only when the

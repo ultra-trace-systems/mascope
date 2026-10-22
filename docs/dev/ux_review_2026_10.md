@@ -13,7 +13,7 @@ override and an "All time" option) while MAS-148 is still open and needs
 reconciling with that; QW5 (MAS-152) and QW6 (MAS-153) are open. The medium
 items are MAS-155 to MAS-160 under MAS-154, the decisions MAS-161 to MAS-163;
 of the small items, S2 and S4 were delivered by MAS-151 and MAS-149, and S1,
-S3, S5 and S6 are not filed. The findings below
+S3, S5 and S6 were filed on 2026-10-22 as MAS-314 to MAS-317. The findings below
 were taken from a walk through the dashboard against a running instance and
 then re-verified against the frontend code on `develop` the same day; every
 finding names the file it rests on. The plan at the end is in three tiers:
@@ -598,20 +598,22 @@ so they follow them; M1 and M3 wait on decision D1.
   drives table row height and type size; the fixed widths in
   `PanePeakSearch.vue` and the toolbar audited at 1280px.
 
-### 4.3 Smaller follow-ups not yet filed
+### 4.3 Smaller follow-ups
 
 Each is a small change that fits a quick-win PR but did not make the first
-six. File them when picked up.
+six. S1, S3, S5 and S6 were filed on 2026-10-22; S2 and S4 were delivered by
+MAS-151 and MAS-149.
 
 - **S1.** A grace period after a manual tab pick before the watchers in
-  `stores/ui/tab.js` may switch (F5).
+  `stores/ui/tab.js` may switch (F5). MAS-314.
 - **S2.** The notifications pane's empty state if QW4 does not reach it (F9).
-- **S3.** An overlay in the batch chart in place of empty axes (F11).
+- **S3.** An overlay in the batch chart in place of empty axes (F11). MAS-315.
 - **S4.** The calibration dialog previews silently and toasts on Apply (F15;
   needs QW2's claim).
 - **S5.** On-demand composition search in the embedded targeted layout (F16).
+  MAS-316.
 - **S6.** Replace the hand-tuned height constants with flex and a
-  `ResizeObserver` (F23).
+  `ResizeObserver` (F23). MAS-317.
 
 ### 4.4 Decisions for the plan owner
 
