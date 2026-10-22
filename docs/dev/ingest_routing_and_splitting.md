@@ -21,8 +21,9 @@ detection deferred** (2026-10-22). Written for issue #2098 ("Split files into
 samples by scan attributes"), which carries the checklist of pull
 requests. Decisions 1 to 5, 7, 9, 11 to 16 and 18 in section 12 are settled;
 6, 8 and 10 are open; 17 was decided on 2026-10-10 (a layout override is
-built when a layout needs one). Three later decisions are not yet in section
-12: MAS-91 (the composite default), MAS-208 and MAS-249.
+built when a layout needs one). One later decision is not yet in section
+12: MAS-91 (the composite default). MAS-249's, made for MAS-208, revises
+decision 14.
 
 ## Picking this up
 
@@ -597,6 +598,21 @@ served. Built so far (#2297): a polarity that holds nothing but the runs of
 one experiment is detected whole, which averages them as the pipeline does
 now. A run that repeats beside another experiment is still a stream of its
 own (4.5).
+
+**Streams on one range at one microscan count are one thing measured**
+(decided 2026-10-22, MAS-249; built in MAS-208). A method can also run one
+range twice under two filters: a targeted MS2 file of the corpus (#2422)
+runs its survey scan at one resolution and then at another, the same range,
+microscans and AGC target, and records no event. The census lists two
+streams, one per signature, as it should. But the stitch can rank two
+streams only by their ranges and microscans, so such streams are counted as
+repeats are: a polarity of nothing but them is detected whole, whatever
+sets them apart otherwise - the resolution, the scan mode, the AGC target,
+the event - and whether they follow each other or interleave. Time order
+is no signal: every composite in reach runs each window as one contiguous
+block too. The settle-then-measure method stays two things measured, by its
+microscans. Splitting such a polarity in time is a window's job (section 6),
+listed among phase 6's gates. The stitch's side of it is in 4.5.
 
 **A file that records no event keeps the filter as its key.** Those are
 manual acquisitions, started with no method file loaded, and a setting
@@ -1653,27 +1669,53 @@ for the whole store. What step 6 still holds is listed in section 10.
   handed no decision.
 - **What the steps after this one meet.**
   - **A repeated experiment is one segment only where it is the whole
-    polarity.** Streams of one signature and the same settings are to be
-    one segment of their composite, averaged together (decision 14).
-    Detection gives each stream its own peak list and the stitch takes
-    each on its own, so repeats tie, the first owns, and the others are
-    left out whole.
-    - *The guard, as built* (decided in the review of #2297).
+    polarity.** Streams the stitch cannot rank - the same scan ranges at
+    the same microscans - are to be one segment of their composite,
+    averaged together (decision 14). Detection gives each stream its own
+    peak list and the stitch takes each on its own, so such streams tie,
+    the first owns, and the others are left out whole.
+    - *The guard, as built* (decided in the review of #2297, widened in
+      MAS-208 as MAS-249 decided on 2026-10-22).
       `mascope_thermo.streams.peak_streams` counts what a polarity's MS1
-      streams measured, and not the streams: their signature, microscan
-      count and AGC target, the two settings that never vary within an
-      experiment (4.1). A file is detected per stream only where some
-      polarity measured more than one thing. A polarity of nothing but
-      repeats is one experiment, and its file is detected whole: pooled,
-      its runs averaged together, which is what the decision says of them.
-      Of the corpus's two polarity-switching files, the one that runs one
-      scan twice in each polarity is detected whole with the setting on,
-      and its store is the pooled one, array for array.
-    - *Counted by signature alone, the guard would undo step 3 for the
-      settle-then-measure method.* Its two events share a filter and
-      differ in both settings, one microscan at 3e5 and then ten at 1e6,
-      so by signature they are one experiment run twice and would be
-      pooled again. Read with the reader as it is now, each of the three
+      streams measured, and not the streams: their scan ranges and their
+      microscan count, which are all the map is drawn from. Two streams
+      that agree on both tie on every m/z they claim, and only file order
+      would choose between them. A file is detected per stream only where
+      some polarity measured more than one thing. A polarity of nothing
+      but such streams is one thing measured, and its file is detected
+      whole, on the path it takes with the setting off: pooled, its
+      streams averaged together. The resolution, the scan mode and the
+      AGC target do not set such streams apart, and neither does their
+      order in time: every stitched file in reach runs each window's scans
+      as one contiguous block, so "interleaves" cannot tell a composite
+      from a repeat. The widening only ever moves a file from per-stream
+      detection to whole, so no stitched file of another shape moves, and
+      neither do the single-stream goldens. A file stitched before it is
+      detected whole by its next re-processing: the detector asks
+      `peak_streams` on every detection and detects whole where it answers
+      nothing, whatever the file's `.props` records.
+    - *What it pools.* Of the corpus's two polarity-switching files, the
+      one that runs one scan twice in each polarity, as before. And the
+      targeted MS2 file of #2422, which runs its survey scan at R=60000 for
+      37 scans and then at R=120000 for 90, on one range at ten microscans
+      and the same AGC target, and records no scan event. Stitched, its
+      map was `{'-': [[40, 600, 0]]}`: the sample was matched on the first
+      37 scans, all taken before its first MS2 scan, and none of the second
+      stream's 4,102 peaks reached the composite. Detected whole, its
+      polarity averages 126 of its 127 scans: all but the first, whose
+      TIC reads as an outlier, and the reader leaves such a first scan out
+      of any file. That mixes the two resolutions' profiles into one peak
+      list and one instrument fit, which is what every such file got
+      before the cut: no worse, and not right. The census keeps each
+      stream and its span in time, and cutting such a polarity at its
+      streams' boundaries is phase 6's, by the `blocks` and `gaps` rules
+      of 6.1 (section 10).
+    - *Counted by scan range alone, the guard would undo step 3 for the
+      settle-then-measure method.* Its two events share a filter and a
+      range and differ in both settings, one microscan at 3e5 and then ten
+      at 1e6, so by range they are one experiment run twice and would be
+      pooled again. Their microscans keep them two, and the measurement
+      owns the range. Read with the reader as it is now, each of the three
       such files sampled from the test set is detected whole that way and
       per stream as built, and the test set's manifest counts 149 files of
       the layout.
@@ -1683,10 +1725,16 @@ for the whole store. What step 6 still holds is listed in section 10.
       detected per stream, and the three runs still tie: each of its
       composites takes about 2,100 peaks from the first run and none of
       the 4,300 to 4,500 the other two hold, where pooled the three are
-      averaged together. Making them one segment needs the reader to
-      select several streams as one, which it does not do. It is on #2098
-      under decision 14, and it is what is left of this item among the
-      things the setting waits for.
+      averaged together. The same holds for a group of one range in a
+      polarity of a file detected per stream for its other polarity's
+      sake: a file is detected whole or per stream, not a polarity. Making
+      them one segment needs the reader to select several streams as one,
+      which it does not do. It is on #2098 under decision 14, and it is
+      what is left of this item among the things the setting waits for
+      (MAS-249, iii). Until then the processing detail names such streams
+      apart: by scan range, then by resolution where two of a polarity run
+      one range and mode at two, then by scan event where the key names
+      one (`m/z 40-600, R=60000`).
   - **An ion on a boundary can be read twice or not at all.** The two
     streams of an overlap read one ion up to a ppm apart, so an ion within
     that of a boundary can have each reading on its own stream's side, or
@@ -1708,7 +1756,8 @@ for the whole store. What step 6 still holds is listed in section 10.
 - **Only files that measure more than one thing in a polarity are
   touched.** A single-stream file takes the path it takes today, byte for
   byte, which the demo goldens pin, and so does a file whose polarities
-  only run one experiment again (the guard above).
+  only run one range at one microscan count, an experiment run again or a
+  resolution changed part way through (the guard above).
 - **Per-stream peak detection, time axis and TIC** (4.3). A segment's
   peaks are found on its own averaged scans, against its own noise, which
   is where the gain is; a peak's timeseries runs over its segment's scans.
@@ -3112,8 +3161,10 @@ Polarity always comes from the file, never from the filename.
      file does not hold is passed over with a note, and nothing hands one
      in until step 9. With it, a file whose polarities only run one
      experiment again is detected whole: `peak_streams` counts what a
-     polarity's streams measured, their signature, microscans and AGC
-     target, and not the streams (4.5). What it leaves for the steps after
+     polarity's streams measured, and not the streams (4.5): their
+     signature, microscans and AGC target as built, and since MAS-208
+     their scan ranges and microscans, so that one range run at two
+     resolutions is pooled too. What it leaves for the steps after
      it is in 4.5, and one of those is not theirs by the list below: a run
      that repeats beside another experiment is still a stream of its own
      to the detection and the stitch, which gives the composite the first
@@ -3343,6 +3394,12 @@ Polarity always comes from the file, never from the filename.
 - **Gates:**
   - the exposure experiment of 2.5 splits into its five blocks;
   - long TOF files split into aligned windows within the item ceiling;
+  - a polarity pooled from streams on one range at one microscan count
+    (4.1) - repeats, or a resolution changed part way through, as in the
+    targeted file of #2422 - is cut at its streams' boundaries in time by
+    the `blocks` and `gaps` rules, one item per block sharing the pooled
+    peaks (MAS-249). Whether a resolution change also deserves a detection
+    and an instrument fit of its own waits for a file where it matters;
   - the batch views stay responsive at the resulting sample counts.
 
 ### Phase 7: declarations and the long tail (open)
@@ -3651,7 +3708,15 @@ through a short-lived stacked branch, merged as one unit.
     are averaged together as this decision says. The group is told by
     signature, microscan count and AGC target; by signature alone the
     settle-then-measure method this decision was raised by would count as
-    a repeat and be pooled again. **Not built:** a group beside another
+    a repeat and be pooled again. **Revised 2026-10-22** (MAS-249, built in
+    MAS-208): the group is told by scan ranges and microscan count, which
+    are all the stitch ranks streams by, so streams that tie in it are one
+    group whatever else sets them apart - a resolution changed part way
+    through (#2422), a scan mode, an AGC target - and whether or not they
+    interleave in time, which no composite in reach does. The microscans
+    still keep settle-then-measure two things. Pooled, not split: a cut in
+    time is phase 6's, by the `blocks` and `gaps` rules (section 10).
+    **Not built:** a group beside another
     experiment of its polarity, where the detection and the stitch still
     take each stream on its own and the composite is the first of them
     (4.5). Reading such a group as one segment needs the reader to select
