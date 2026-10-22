@@ -935,6 +935,10 @@ to the whole search - and then runs the untargeted composition search
 for the batch peaks nothing has assigned yet &mdash; once per species, on its brightest
 peak in that sample's own spectrum &mdash; and then measures the composition it found
 against every other sample the species was seen in, so each carries a fit of its own.
+A batch peak that one sample's search reads as an isotope line of another batch peak's
+composition reads as that line, as it would within one sample. That holds even where the
+line is brightest in a sample of its own, whose search read it as a compound: the line
+reading wins, and that sample is searched again without the peak.
 It writes no per-sample runs: the results appear in the batch ledger and in each
 sample's view, marked as untargeted. An assignment run on a sample still takes
 precedence for that sample.

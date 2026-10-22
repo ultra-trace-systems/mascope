@@ -82,6 +82,10 @@ def _unassigned_rows(sample_item_id, peaks):
 async def folded_batch(async_session_factory, pa_test_data):
     """A batch of its own with two samples folded without runs, every peak
     unassigned."""
+    return await _fold_batch(async_session_factory, pa_test_data, _PEAKS)
+
+
+async def _fold_batch(async_session_factory, pa_test_data, peaks):
     now = datetime.now(timezone.utc)
     batch_id = gen_id()
     samples = {}
@@ -111,7 +115,7 @@ async def folded_batch(async_session_factory, pa_test_data):
                     ionization_mechanism="H+ (untargeted search test)",
                 )
             )
-        for name in _PEAKS:
+        for name in peaks:
             sample_file_id, sample_item_id = gen_id(), gen_id()
             session.add(
                 SampleFile(
@@ -139,7 +143,7 @@ async def folded_batch(async_session_factory, pa_test_data):
             samples[name] = sample_item_id
         await session.commit()
     for name, sample_item_id in samples.items():
-        rows = _unassigned_rows(sample_item_id, _PEAKS[name])
+        rows = _unassigned_rows(sample_item_id, peaks[name])
         assert (
             await fold_sample_into_batch_peaks(
                 sample_item_id, rows=rows, persisted=False
@@ -204,16 +208,33 @@ def _canned_matches():
 def stubbed_engine(monkeypatch, folded_batch):
     """The finder, the peak read, the mechanisms and the seeded scorer replaced
     by canned answers keyed on the sample being searched or measured."""
-    samples = folded_batch["samples"]
+    # S2's peaks pair to glucose's envelope: the M0 and the M+1, not the 250.
+    return _stub_engine(
+        monkeypatch,
+        folded_batch["samples"],
+        _PEAKS,
+        lambda targets: _canned_matches(),
+        {"C6H12O6": ("ion-glc", 0.81, ["p1", "p2"])},
+    )
+
+
+def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
+    """Stub the engine around the search.
+
+    :param matches: The finder's answer for the m/z values it is asked to
+        enumerate.
+    :param pairings: Formula -> (ion id, fit, the peaks its envelope pairs
+        with) in whichever sample the seeded scorer measures it.
+    """
     by_id = {sample_id: name for name, sample_id in samples.items()}
     calls = {"search": [], "score": [], "seeded_fits": []}
 
     def load_peaks(sample):
-        return _frame(_PEAKS[by_id[sample.sample_item_id]])
+        return _frame(peaks[by_id[sample.sample_item_id]])
 
     def assign(peaks, config, heuristics=None, targets=None, scoring=None):
         calls["search"].append(list(targets))
-        return _canned_matches()
+        return matches(list(targets))
 
     async def mechanisms(sample):
         return (
@@ -240,13 +261,15 @@ def stubbed_engine(monkeypatch, folded_batch):
 
     async def seeded(sample, seeds, params):
         calls["score"].append((by_id[sample.sample_item_id], set(seeds)))
-        # S2's peaks pair to glucose's envelope: the M0 and the M+1, not the 250.
-        ion_by_seed = {("C6H12O6", "mech-h"): "ion-glc"}
-        fit_by_ion = {"ion-glc": 0.81}
-        errors = {
-            ("ion-glc", "p1"): {"mz_error_ppm": 0.9},
-            ("ion-glc", "p2"): {"mz_error_ppm": 1.1},
-        }
+        ion_by_seed, fit_by_ion, errors = {}, {}, {}
+        for formula, mechanism in seeds:
+            if formula not in pairings:
+                continue
+            ion, fit, paired = pairings[formula]
+            ion_by_seed[(formula, mechanism)] = ion
+            fit_by_ion[ion] = fit
+            for peak in paired:
+                errors[(ion, peak)] = {"mz_error_ppm": 0.9}
         return ion_by_seed, fit_by_ion, errors, pd.DataFrame({"x": [1]})
 
     monkeypatch.setattr(batch_untargeted, "load_sample_peaks", load_peaks)
@@ -513,3 +536,125 @@ async def test_a_sample_that_will_not_read_leaves_its_anchors_unsearched(
     anchors = await _anchors_by_mz(async_session_factory, batch_id)
     assert all(anchor.consensus_formula is None for anchor in anchors.values())
     assert search_outcome(counts, batch_id)["status"] == "partial"
+
+
+# --- an isotopologue line represented in another sample than its ion ----------
+#
+# Glucose's M0 is brightest in S1 and its M+1 in S2, so the two anchors are
+# searched in different samples. S2's own search, where the M0 is no target,
+# reads the M+1 on its own (C8H11N3) and claims the line above it, at 183, as
+# that reading's M+1. Searched without the M+1, S2 reads the 183 line on its
+# own (C9H10O3).
+
+_SPLIT_PEAKS = {
+    "S1": [
+        ("p1", 181.0707, 9000.0),
+        ("p2", 182.0741, 300.0),
+        ("p3", 183.0775, 100.0),
+    ],
+    "S2": [
+        ("p1", 181.0707, 4000.0),
+        ("p2", 182.0741, 700.0),
+        ("p3", 183.0775, 400.0),
+    ],
+}
+
+
+def _reading(mz, formula, ion, label="M0"):
+    return {
+        "mz": mz,
+        "formula": formula,
+        "ion": ion,
+        "isotope_label": label,
+        "ionization_mechanism": "H+",
+        "isotopic_pattern_score": 0.9,
+        "mz_error_ppm": 0.5,
+        "intensity_error": 0.0,
+        "other_candidates": "",
+    }
+
+
+def _split_matches(targets):
+    rows = []
+    if 181.0707 in targets:
+        rows += [
+            _reading(181.0707, "C6H12O6", "C6H13O6+"),
+            _reading(182.0741, "C6H12O6", "[13C]C5H13O6+", label="13C"),
+        ]
+    if 182.0741 in targets:
+        rows += [
+            _reading(182.0741, "C8H11N3", "C8H12N3+"),
+            _reading(183.0775, "C8H11N3", "[13C]C7H12N3+", label="13C"),
+        ]
+    elif 183.0775 in targets:
+        rows.append(_reading(183.0775, "C9H10O3", "C9H11O3+"))
+    return pd.DataFrame(rows), {}
+
+
+@pytest_asyncio.fixture
+async def split_batch(async_session_factory, pa_test_data):
+    return await _fold_batch(async_session_factory, pa_test_data, _SPLIT_PEAKS)
+
+
+@pytest.mark.parametrize("order", ["as folded", "reversed"])
+async def test_a_line_searched_in_another_sample_than_its_ion_reads_as_its_line(
+    async_session_factory, split_batch, monkeypatch, order
+):
+    batch_id, samples = split_batch["batch_id"], split_batch["samples"]
+    calls = _stub_engine(
+        monkeypatch,
+        samples,
+        _SPLIT_PEAKS,
+        _split_matches,
+        {
+            "C6H12O6": ("ion-glc", 0.81, ["p1", "p2"]),
+            "C9H10O3": ("ion-c9", 0.7, ["p3"]),
+            "C8H11N3": ("ion-c8", 0.3, ["p2", "p3"]),
+        },
+    )
+    if order == "reversed":
+        grouped = batch_untargeted.group_by_sample
+        monkeypatch.setattr(
+            batch_untargeted,
+            "group_by_sample",
+            lambda chosen: dict(reversed(list(grouped(chosen).items()))),
+        )
+
+    counts = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+
+    # S1 searched for the M0, S2 for the M+1 and the 183 line, and S2 again
+    # without the M+1, which its own search had read on its own.
+    assert sorted(sorted(targets) for targets in calls["search"]) == [
+        [181.0707],
+        [182.0741, 183.0775],
+        [183.0775],
+    ]
+    assert counts["samples_searched"] == 2
+    assert counts["samples_researched"] == 1
+    assert counts["isotopologues_carried"] == 1
+    assert counts["anchors_annotated"] == 3
+    assert (
+        "1 batch peak was read as an isotope line"
+        in (search_outcome(counts, batch_id)["message"])
+    )
+
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    glucose, line, above = anchors[181], anchors[182], anchors[183]
+    assert line.isotopologue_of == glucose.batch_peak_id
+    assert line.consensus_formula == "C6H12O6"
+    # The standalone reading reached neither the registry nor the vote, and
+    # nothing measured it in the other sample.
+    assert {entry["formula"] for entry in line.candidates} == {"C6H12O6"}
+    assert not any("C8H11N3" in {f for f, _ in seeds} for _, seeds in calls["score"])
+    # The line above is read on its own, as S2 reads it searched without the
+    # M+1 - not left as a line of an ion the batch does not hold.
+    assert above.consensus_formula == "C9H10O3"
+    assert {entry["formula"] for entry in above.candidates} == {"C9H10O3"}
+    assert above.isotopologue_of is None
+
+    for name in ("S1", "S2"):
+        members = await _members(async_session_factory, samples[name])
+        assert role_name(members["p1"].role) == "M0"
+        assert role_name(members["p2"].role) == "iso_child"
+        assert members["p2"].owner_batch_peak_id == glucose.batch_peak_id
+        assert role_name(members["p3"].role) == "M0"

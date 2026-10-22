@@ -321,6 +321,17 @@ the disagreement is visible per member exactly as it is now.
 > isotope pattern is scored against the whole spectrum; propagation runs the seeded chain per
 > sample and leaves a member the envelope does not reach unassigned. Registry entries now
 > record the `source` of the identity they hold.
+>
+> *Status (2026-10-22, MAS-366):* the samples' rows are merged before any is written
+> (`merge_search_rows`). An anchor and its M+1 are often represented in different samples,
+> and the M+1's own sample, where the parent is no target, read the line as a compound of
+> its own; which reading the anchor kept followed the order the samples were searched in.
+> The merge applies the finder's in-sample rule across samples: a line one sample reads as
+> an isotopologue of a committed ion (its anchor stands on its own) takes that reading, its
+> standalone reading is dropped, and that sample is searched again without the peak, up to
+> `MAX_RESEARCH_ROUNDS` times. A claim by an ion that is itself another ion's line does not
+> hold. On a 12-sample uronium Orbitrap batch 134 of 2,946 searched anchors had both
+> readings, and the standalone one held the consensus on 24.
 
 Untargeted assignment is where the compute cost is: it is off for batches today because it
 multiplies by the sample count. Per anchor it is bounded by the number of unassigned
