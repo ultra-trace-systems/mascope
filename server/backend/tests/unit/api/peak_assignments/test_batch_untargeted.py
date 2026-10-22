@@ -14,6 +14,7 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     choose_representatives,
     gate_search_rows,
     group_by_sample,
+    merge_search_rows,
     owner_anchor_of,
     search_config,
     search_outcome,
@@ -152,6 +153,249 @@ def test_an_isotopologue_whose_owner_is_not_a_member_stands_on_its_own():
         owner_anchor_of(rows["a-iso"], rows, {"p2": _member("bp-2", "s1", "p2", 1.0)})
         is None
     )
+
+
+# --- the merge across samples -------------------------------------------------
+#
+# The case it exists for: the uronium ion of C20H38O2 at m/z 371.33 (anchor X)
+# is brightest in sample A, its 13C line at 372.33 (anchor Y) in sample B. A's
+# search elects the ion and claims the line; B's search, where X is no target,
+# reads the line on its own as C22H45NOS.
+
+
+def _row(
+    row_id,
+    peak,
+    formula,
+    *,
+    mz,
+    role="M0",
+    owner=None,
+    ion=None,
+    tier="candidate",
+    fit=0.6,
+):
+    return {
+        "peak_assignment_id": row_id,
+        "sample_peak_id": peak,
+        "sample_peak_mz": mz,
+        "assigned_formula": formula,
+        "ion_formula": ion,
+        "ionization_mechanism_id": "mech",
+        "role": role,
+        "owner_peak_assignment_id": owner,
+        "tier": tier,
+        "fit_score": fit,
+    }
+
+
+_MEMBERS = [
+    _member("X", "A", "a1", 9e6),
+    _member("Y", "A", "a2", 2e6),
+    _member("X", "B", "b1", 1e6),
+    _member("Y", "B", "b2", 3e6),
+]
+
+_A_ROWS = [
+    _row("x-m0", "a1", "C20H38O2", mz=371.3268, ion="C21H43N2O3+"),
+    _row(
+        "x-13c",
+        "a2",
+        "C20H38O2",
+        mz=372.3305,
+        role="iso_child",
+        owner="x-m0",
+        ion="[13C]C20H43N2O3+",
+    ),
+]
+
+# Better on its own numbers than the claim, as on 13 of the 134 anchors the
+# brief counted: the isotopologue reading wins anyway, as it does in a sample.
+_B_ROWS = [
+    _row("y-alone", "b2", "C22H45NOS", mz=372.3305, tier="assigned", fit=0.9),
+]
+
+
+def _both_orders(rows_by_sample, members=_MEMBERS):
+    forward = merge_search_rows(rows_by_sample, members)
+    backward = merge_search_rows(dict(reversed(list(rows_by_sample.items()))), members)
+    return forward, backward
+
+
+def test_a_line_one_sample_claims_takes_that_reading_in_either_order():
+    for merge in _both_orders({"A": _A_ROWS, "B": _B_ROWS}):
+        line = merge.annotations["Y"]
+        assert line.role == "iso_child"
+        assert line.owner_batch_peak_id == "X"
+        assert line.formula == "C20H38O2"
+        assert line.ion_formula == "[13C]C20H43N2O3+"
+        assert merge.annotations["X"].role == "M0"
+        # The standalone reading is written nowhere; the claim is written where
+        # it was made, and B is to be searched again without the line.
+        assert {r.row["peak_assignment_id"] for r in merge.readings["A"]} == {
+            "x-m0",
+            "x-13c",
+        }
+        assert "B" not in merge.readings
+        assert merge.withheld == {"B": {"b2"}}
+
+
+def test_a_line_nobody_claims_keeps_its_own_reading():
+    merge = merge_search_rows({"B": _B_ROWS}, _MEMBERS)
+    assert merge.annotations["Y"].formula == "C22H45NOS"
+    assert merge.annotations["Y"].owner_batch_peak_id is None
+    assert [r.row["peak_assignment_id"] for r in merge.readings["B"]] == ["y-alone"]
+    assert merge.withheld == {}
+
+
+def test_a_claim_by_an_ion_that_is_itself_a_line_does_not_hold():
+    """X's own reading in A is the 13C line of W's ion in C, so X's ion is not
+    committed and its claim on Y is no reading of Y: Y keeps its own, and A is
+    searched again without X."""
+    members = [*_MEMBERS, _member("W", "C", "c1", 9e6), _member("X", "C", "c2", 1e6)]
+    rows = {
+        "A": _A_ROWS,
+        "B": _B_ROWS,
+        "C": [
+            _row("w-m0", "c1", "C19H36O2", mz=370.3234),
+            _row(
+                "w-13c",
+                "c2",
+                "C19H36O2",
+                mz=371.3268,
+                role="iso_child",
+                owner="w-m0",
+            ),
+        ],
+    }
+    for merge in _both_orders(rows, members):
+        assert merge.annotations["X"].owner_batch_peak_id == "W"
+        assert merge.annotations["Y"].formula == "C22H45NOS"
+        assert merge.annotations["Y"].owner_batch_peak_id is None
+        assert merge.withheld == {"A": {"a1"}}
+        assert "A" not in merge.readings  # neither X's election nor its claim
+        assert [r.row["peak_assignment_id"] for r in merge.readings["B"]] == ["y-alone"]
+
+
+def test_a_line_whose_only_claim_does_not_hold_is_left_unannotated():
+    """Once A is searched again without X, Y has no reading of its own left in
+    a sample where an uncommitted ion claimed it: no reading is better than a
+    line of an ion the batch does not hold."""
+    members = [*_MEMBERS, _member("W", "C", "c1", 9e6), _member("X", "C", "c2", 1e6)]
+    rows = {
+        "A": _A_ROWS,
+        "C": [
+            _row("w-m0", "c1", "C19H36O2", mz=370.3234),
+            _row(
+                "w-13c",
+                "c2",
+                "C19H36O2",
+                mz=371.3268,
+                role="iso_child",
+                owner="w-m0",
+            ),
+        ],
+    }
+    merge = merge_search_rows(rows, members)
+    assert "Y" not in merge.annotations
+    assert set(merge.annotations) == {"W", "X"}
+
+
+def test_of_two_claims_on_a_line_the_better_one_wins_in_either_order():
+    members = [*_MEMBERS, _member("V", "C", "c1", 9e6), _member("Y", "C", "c2", 1e6)]
+    rows = {
+        "A": [{**_A_ROWS[0]}, {**_A_ROWS[1], "tier": "below_assignability"}],
+        "B": _B_ROWS,
+        "C": [
+            _row("v-m0", "c1", "C21H42O", mz=371.33),
+            _row(
+                "v-13c",
+                "c2",
+                "C21H42O",
+                mz=372.3305,
+                role="iso_child",
+                owner="v-m0",
+                tier="candidate",
+                fit=0.4,
+            ),
+        ],
+    }
+    for merge in _both_orders(rows, members):
+        assert merge.annotations["Y"].owner_batch_peak_id == "V"
+        # Both claims are lines of committed ions, so both are written in the
+        # samples that made them; the anchor's annotation is the better one.
+        assert {r.row["peak_assignment_id"] for r in merge.readings["A"]} == {
+            "x-m0",
+            "x-13c",
+        }
+        assert {r.row["peak_assignment_id"] for r in merge.readings["C"]} == {
+            "v-m0",
+            "v-13c",
+        }
+
+
+def test_of_two_claims_of_one_tier_the_better_fit_wins_in_either_order():
+    members = [*_MEMBERS, _member("V", "C", "c1", 9e6), _member("Y", "C", "c2", 1e6)]
+    rows = {
+        "A": [{**_A_ROWS[0]}, {**_A_ROWS[1], "fit_score": 0.7}],
+        "C": [
+            _row("v-m0", "c1", "C21H42O", mz=371.33),
+            _row(
+                "v-13c",
+                "c2",
+                "C21H42O",
+                mz=372.3305,
+                role="iso_child",
+                owner="v-m0",
+                fit=0.5,
+            ),
+        ],
+    }
+    for merge in _both_orders(rows, members):
+        assert merge.annotations["Y"].owner_batch_peak_id == "X"
+
+
+def test_a_long_chain_resolves_from_its_head_without_recursing_through_it():
+    """Each anchor is the 13C line of the one below it, each searched in a
+    sample of its own. The head is committed, so its line is a line; that line
+    is then no committed ion, so the next anchor keeps its own reading, and so
+    on, alternating. Anchors are decided lightest first, so however long the
+    chain the merge never recurses down it - the ids here sort the other way
+    round to show the order is the masses', not the ids'."""
+    length = 1500
+    members, rows = [], {}
+    for i in range(length):
+        anchor, sample = f"bp-{length - i:05d}", f"s-{i:05d}"
+        members.append(_member(anchor, sample, f"own-{i}", 9e6))
+        sample_rows = [_row(f"m0-{i}", f"own-{i}", f"F{i}", mz=100.0 + i)]
+        if i + 1 < length:
+            members.append(_member(f"bp-{length - i - 1:05d}", sample, f"line-{i}", 1))
+            sample_rows.append(
+                _row(
+                    f"iso-{i}",
+                    f"line-{i}",
+                    f"F{i}",
+                    mz=101.0 + i,
+                    role="iso_child",
+                    owner=f"m0-{i}",
+                )
+            )
+        rows[sample] = sample_rows
+    merge = merge_search_rows(rows, members)
+    roles = [merge.annotations[f"bp-{length - i:05d}"].role for i in range(length)]
+    assert roles[:4] == ["M0", "iso_child", "M0", "iso_child"]
+    assert roles == ["M0" if i % 2 == 0 else "iso_child" for i in range(length)]
+
+
+def test_a_row_on_a_claimed_member_is_no_reading():
+    """A pre-pass owns the peak; an envelope landing on it does not take it."""
+    members = [
+        _member("X", "A", "a1", 9e6),
+        _member("Y", "A", "a2", 2e6, role=REAGENT_ROLE_CODE),
+    ]
+    merge = merge_search_rows({"A": _A_ROWS}, members)
+    assert set(merge.annotations) == {"X"}
+    assert [r.row["peak_assignment_id"] for r in merge.readings["A"]] == ["x-m0"]
 
 
 def test_the_search_config_is_the_orchestrators():
