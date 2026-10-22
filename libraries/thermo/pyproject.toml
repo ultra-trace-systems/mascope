@@ -14,7 +14,7 @@ dependencies = [
     # It is not a hold: average_profile no longer depends on how the reader
     # renders the m/z axis (see _average_profile_in_frequency), which is what
     # made 1.4.1 unadoptable.
-    "opentfraw==2.0.0",
+    "opentfraw==3.1.0",
     "pythonnet~=3.1",
     "xarray>=2026.7.0",
 ]

@@ -146,9 +146,18 @@ async def test_the_table_holds_every_scan_and_no_centroid(
         assert row["MsType"] == "Ms"
         assert {"TIC", "StartTime", "ScanType", "FT Resolution:"} <= set(row)
     assert data["stats_per_file"]["Value"]["Model"]
-    # The calibration identity of its one stream, over both scans. The
-    # committed file has no status log, so there is no calibration_status.
-    assert set(data["stats_per_file"]) == {"Value", "calibrations"}
+    # The calibration identity of its one stream, over both scans, and the
+    # status log's word on it: the reader decodes the log, whose record for
+    # either scan names no overdue calibration, as the Thermo library's does.
+    assert set(data["stats_per_file"]) == {
+        "Value",
+        "calibrations",
+        "calibration_status",
+    }
+    assert data["stats_per_file"]["calibration_status"] == {
+        "first_scan": {"scan": 1, "overdue": []},
+        "last_scan": {"scan": 2, "overdue": []},
+    }
     [calibration] = data["stats_per_file"]["calibrations"].values()
     assert calibration["scans"] == 2
     assert (
@@ -172,6 +181,7 @@ async def test_the_rows_are_the_ones_metadata_serves(
     # The table's file statistics add the calibration identity to the
     # instrument's details /metadata has.
     assert table["stats_per_file"].pop("calibrations")
+    assert table["stats_per_file"].pop("calibration_status")
     assert table == document
 
 

@@ -1897,7 +1897,7 @@ requires-dist = [
     { name = "mascope-file", editable = "libraries/file" },
     { name = "mascope-runtime", editable = "libraries/runtime" },
     { name = "numpy", specifier = "~=2.5" },
-    { name = "opentfraw", specifier = "==2.0.0" },
+    { name = "opentfraw", specifier = "==3.1.0" },
     { name = "pythonnet", specifier = "~=3.1" },
     { name = "xarray", specifier = ">=2026.7.0" },
 ]
@@ -2321,18 +2321,18 @@ wheels = [
 
 [[package]]
 name = "opentfraw"
-version = "2.0.0"
+version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7c/b7/1cb5a72fd898d529c5b10d192fccc1d99c1d0be6899a18d6a31522c938e4/opentfraw-2.0.0.tar.gz", hash = "sha256:d18ee5f66fbb940ade20138241c22167168e615921d515d2bb78dc4583cce00d", size = 107055, upload-time = "2026-09-28T04:48:30.956Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/92/c9b27a7dfa26b1baeb8da83031a06848f1104eb838d97006d8c96c9d82f6/opentfraw-3.1.0.tar.gz", hash = "sha256:9cfc580f02a5ca768c18327c6b3b5723e11ba0078d2d3683f49c186f65e6fbf0", size = 147031, upload-time = "2026-10-21T22:55:15.959Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1a/0c/b7b651b85f33c6980b7e5c4f35e0fe69dfee90a481d0d4b39c1d8006f595/opentfraw-2.0.0-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:e18f8cccde5fdf8971b8838fae80abbc9acad0dd176b246ca7a2c6054bbbecab", size = 566118, upload-time = "2026-09-28T04:48:23.805Z" },
-    { url = "https://files.pythonhosted.org/packages/d9/2e/a89a500144799dccd0373dfb3bc0b46e62415de63ef3cc46e6a6813f2a4b/opentfraw-2.0.0-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:8b7c3319cf1c64a56763f26096c43f9b825291870e66d9118726125e31b73c54", size = 558892, upload-time = "2026-09-28T04:48:25.502Z" },
-    { url = "https://files.pythonhosted.org/packages/fd/c0/f6f5e5095e49776d4ee7265c6432db6fd700a2a9e13e768d9d246f96d7dc/opentfraw-2.0.0-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:14171602f114f5800802416b69dccf8d407bfa227f5af9fc3700672704234be8", size = 610826, upload-time = "2026-09-28T04:48:26.998Z" },
-    { url = "https://files.pythonhosted.org/packages/66/69/2d624cbe5ed7407e9bc6226558ed0cde1088abe7f88faed4252dbe019edc/opentfraw-2.0.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e377f6362a731cf99e0df123914a84819bfe054265543c7e26f85c04a6518a1f", size = 624493, upload-time = "2026-09-28T04:48:28.505Z" },
-    { url = "https://files.pythonhosted.org/packages/d4/82/ff1895057e016d776ff8c600b0f581aea83792053ea48956a73795f3922b/opentfraw-2.0.0-cp38-abi3-win_amd64.whl", hash = "sha256:612ea99a36453c91049524598d3b215e4db5c71a10f0af4441ab48735050553e", size = 446815, upload-time = "2026-09-28T04:48:29.771Z" },
+    { url = "https://files.pythonhosted.org/packages/91/48/83ea1f4fdc61fb3e85398f7ff01fd075f28657a6e836f1db9b9adcfea184/opentfraw-3.1.0-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:0ad2e9f52614c8854a9c493b895f97ecb3864a262569b38f0603d29da620de2f", size = 655828, upload-time = "2026-10-21T22:55:07.235Z" },
+    { url = "https://files.pythonhosted.org/packages/58/5e/ef16bf14e00b0515859e0f42ea7d362081e3a9ba2ffcad914fe25d3c8615/opentfraw-3.1.0-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:3623414f2e8842ecbdb54685a6c4fcabf7eb781910e72caf2f24fde7241adcf3", size = 642523, upload-time = "2026-10-21T22:55:09.125Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/96/83581e594e23ac0fc135655f6cd0b30cb8b3979f43f900a16e03741c8023/opentfraw-3.1.0-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:66b526a1e68d92aaf3848bbd89bdbbecc712b86c73edec486179646ae01301f7", size = 700209, upload-time = "2026-10-21T22:55:11Z" },
+    { url = "https://files.pythonhosted.org/packages/41/6a/f329ad80d0d786d2d3f6ec0f295f3ef427fb74de9a0aa6b9f83f597f94b0/opentfraw-3.1.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a3e895300bd0429314332db025ee4acc3a56e91930d3999f2da3918421fa07ad", size = 717860, upload-time = "2026-10-21T22:55:12.741Z" },
+    { url = "https://files.pythonhosted.org/packages/09/3b/5364b2ce154a9ad75dfdaad23c21de5b8eaaee27b8350262a8e46188f39b/opentfraw-3.1.0-cp38-abi3-win_amd64.whl", hash = "sha256:93c9ecd78eefc9e53c835d56a0cfff7d0c9783bb738b059812947a1b256af88d", size = 538007, upload-time = "2026-10-21T22:55:14.342Z" },
 ]
 
 [[package]]

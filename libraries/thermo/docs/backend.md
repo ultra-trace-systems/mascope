@@ -42,26 +42,18 @@ A model with other analyzers, or one OpenTFRaw cannot name, is not judged.
 
 An ion-trap scan is not refused, though no Exploris or Q Exactive records one, because the model is a match on the file's free text: OpenTFRaw takes the first registry name it finds in the file's first 64 KB, which holds the sequence row's sample name, comment and paths, and reads the instrument's own InstID record only when it finds none there.
 Its registry tries every Exploris and Q Exactive name before the LTQ Orbitrap ones and has no Orbitrap ID-X, so a hybrid's file whose comment or method path names a Q Exactive is read as a Q Exactive's, and its ion-trap scans are what a hybrid records.
-A misread that lands only on the FTMS and ITMS codes therefore goes unseen; in the one misread file measured, 1,225 of the 4,114 scans not read as FTMS are read as other analyzers or none.
+A misread that lands only on the FTMS and ITMS codes therefore goes unseen; in the one misread public file measured, 1,225 of the 4,114 scans OpenTFRaw 2.0.0 did not read as FTMS read as other analyzers or none.
 
 The check runs in `OpenTFRawBackend._all_scans`, on the `scan_table()` every scan selection reads anyway, so opening a file costs what it did, and what reads no scan event (`created()`, `method_file()`, `instrument_details()`) is still answered.
 The converter's two censuses, `acquisition_params` and `scan_streams`, degrade any other reader failure to a warning and pass this one through, so a refused file fails once, at the first property that selects scans, with the refusal's text.
 A file converted on misread events before the check is refused by every raw read of it since, and creating a sample item over one fails with the refusal, rather than with "no scans of the polarity".
-Of 166 Orbitrap-only files measured with OpenTFRaw 2.0.0 (the demo bundle's 161, the two committed sample files, and two public Q Exactive Plus runs), it refuses one: a public Q Exactive HF-X PRM run (PRIDE PXD021080) whose event stream is not one record size, and of whose 4,142 scans OpenTFRaw reads 1,225 as an analyzer no Orbitrap instrument has or as none, and 2,889 as ITMS (GitHub #2394).
+Of 166 Orbitrap-only files measured with OpenTFRaw 2.0.0 (the demo bundle's 161, the two committed sample files, and two public Q Exactive Plus runs), it refused one: a public Q Exactive HF-X PRM run (PRIDE PXD021080) whose event stream is not one record size, and of whose 4,142 scans OpenTFRaw read 1,225 as an analyzer no Orbitrap instrument has or as none, and 2,889 as ITMS (GitHub #2394).
 
-### Scan-event records that carry a name (interim, GitHub #2391)
-
-A version-66 scan-event record is a 136-byte preamble and a 136-byte body whose last word counts the UTF-16 code units of a name that follows it.
-A targeted MS2 scan run from an inclusion list stores the entry's name there, so its record is longer than an unnamed one.
-OpenTFRaw 2.0.0 reads every record of a file at one size, inferred from the stream's length, and from the second record on such a file decodes at an offset that drifts: polarity, MS order, analyzer and filter come out as noise, and so does the calibration `profile()` converts frequency to m/z with.
-The scan index, the trailer and the centroids are read from elsewhere and are right.
-
-Until the pinned reader reads these records, the OpenTFRaw backend reads them itself (`mascope_thermo.v66_scan_events`, called once from `OpenTFRawBackend.__enter__`).
-It engages only for a file whose records, walked by their own counts, end exactly at the stream's end, whose names read as text, and whose record boundaries differ from the ones OpenTFRaw reads; every other file gets the `RawFile` as opened.
-For an engaged file the backend's reader re-derives the scan table's event-dependent keys, `scan_filter()` in OpenTFRaw's grammar, and the m/z axis of `profile()`, each from the scan's own event.
-It refuses a file whose events still cannot be right on opening, before it logs one warning per file and process that the file was read, with `UnreadableScanEventsError`, a `MisreadScanEventsError` whose text names the inclusion-list names as the cause: a scan read as an analyzer no Orbitrap instrument has, by the rule every file is judged by ([Scan events the reader misread](#scan-events-the-reader-misread)), or the scans of one nonzero trailer `Scan Event:` of one `Scan Segment:` read as more than one MS order.
-Polarity is not compared within an event, since a polarity-switching full scan alternates under one.
-The module and its call site go once the reader is fixed (MAS-170).
+The two causes of a misread found so far are both read right by the pinned reader, OpenTFRaw 3.1.0, which walks a version-66 stream of more than one record size by the lengths its records carry, wherever the walk ends exactly at the stream's end.
+One is the targeted MS2 scan run from an inclusion list, which stores the list entry's name after its body (GitHub #2391, Sigilweaver/OpenTFRaw#86); the other is the multiplexed scan of a PRM run, which stores one reaction per precursor (Sigilweaver/OpenTFRaw#87).
+On the PXD021080 run, 3.1.0 reads all 4,142 scans as FTMS, and every scan's filter agrees with the Thermo library's.
+Measured with 3.1.0, the check refuses none of 434 Orbitrap files: the demo bundle's 161, the two committed sample files, the 270 Orbitrap files of the internal regression corpus (four of them targeted MS2 with a named inclusion list) and that run.
+`test_named_scan_events.py` gives a committed sample file a named record and asserts the backend reads it as the file without one.
 
 ## API Contract: `ReaderBackend`
 

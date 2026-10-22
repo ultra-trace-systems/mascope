@@ -572,8 +572,9 @@ differs on every sample of them, by 6.7 ppm at the median file's worst.
 
 It is not so on every Orbitrap. The reader's
 [changelog](https://github.com/Sigilweaver/OpenTFRaw/blob/main/CHANGELOG.md)
-lists, as fixed after 2.0.0, MS1 profiles of Fusion Lumos, Eclipse and Orbitrap
-Elite files that come back as frequencies in place of m/z.
+lists, as fixed in 3.0.0 and so in the pinned 3.1.0, MS1 profiles of Fusion
+Lumos, Eclipse and Orbitrap Elite files that came back as frequencies in place
+of m/z. None of the files measured here is from one of those models.
 
 What is left on those 571 scans appears to be on the Thermo side. Its axis for
 such a scan is what converting the scan with an earlier scan's conversion
