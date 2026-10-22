@@ -6,6 +6,11 @@
 - **As of:** 2026-10-22
 - **Tracked in:** closed; continuous URL mirroring, the phase 4 leftover, has no issue
 
+The library as built - `lib/location`'s schema, the two sinks, the URL-wins
+precedence and the graceful stop - is summarised in the developer guide under
+[Location: reload restore and shareable links](developer_guide.md#location-reload-restore-and-shareable-links)
+since 2026-10-22. This note is the design it came from and the phased plan.
+
 ## Purpose
 
 Two related capabilities for the Mascope web UI:

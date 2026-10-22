@@ -372,8 +372,8 @@ arrangement `tooling/backup-cron.sh` on each server expects), that side needs
 setting up **here**: give each server an account of its own, SFTP-only and
 chrooted to its own directory, its key usable only from that server's
 address. The recipe, sshd drop-in and checks included, is
-[Using your own backup server](../../docs/dev/developer_guide.md#using-your-own-backup-server)
-in the developer guide. Not one shared account with a shell: every server
+[Using your own backup server](../../docs/maintaining.md#using-your-own-backup-server)
+in the maintainer runbook. Not one shared account with a shell: every server
 would hold a key that can delete every other server's backups and tunnel
 through this box.
 

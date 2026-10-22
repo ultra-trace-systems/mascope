@@ -225,8 +225,8 @@ schedule - see the [maintainer runbook](maintaining.md).
 #### Persistence & backups
 
 State lives under `.runtime/` (PostgreSQL data + the filestore) - back it up.
-`mascope prod db backup` takes a manual dump; see the database section of the
-developer guide.
+`mascope prod db backup` takes a manual dump; the nightly two-layer backup and
+restoring are under [Backups](maintaining.md#backups) in the maintainer runbook.
 
 ### Isolated and restricted sites
 
@@ -281,6 +281,6 @@ item has bitten some isolated Linux box:
 | Disk | The [disk-check timer](maintaining.md#the-monitor-early-warning) is local and keeps working; enable it as usual. |
 
 For the full operations reference - provisioning, updates, backups, and
-troubleshooting - see the [maintainer runbook](maintaining.md). For deployment
-internals (runtime, database tuning, env sync) see the
+troubleshooting, PostgreSQL tuning and copying an environment between hosts -
+see the [maintainer runbook](maintaining.md). For the runtime internals see the
 [developer guide](dev/developer_guide.md).
