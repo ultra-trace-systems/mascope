@@ -20,6 +20,7 @@ from mascope_file.name import (
     get_instrument_name,
     parse_path_from_item_filename,
 )
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.instrument_func.fit import InsufficientPeaksError
 from mascope_signal.peak import compute_peaks, write_empty_peak_timeseries
 
@@ -29,7 +30,12 @@ from .api import (
     create_sample_file_db_record,
     delete_sample_file_by_filename,
 )
-from .errors import describe_exception, is_routine_file_failure
+from .errors import (
+    UNREGISTERED_FILE_MESSAGE,
+    UnregisteredFileError,
+    describe_exception,
+    is_routine_file_failure,
+)
 from .peak_guard import PeakDetectionGuard
 from .runtime import runtime
 from .schema import SampleFileProps
@@ -521,7 +527,10 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         self.cancel_event.clear()
 
     def _get_file_context(self):
-        """Get file context for the current file being processed."""
+        """Get file context for the current file being processed.
+
+        :raises UnregisteredFileError: When no upload registered one.
+        """
         base_filename = os.path.basename(self.file_to_process)
 
         if not (
@@ -529,9 +538,7 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                 base_filename
             )
         ):
-            raise RuntimeError(
-                f"File {base_filename} not registered in file converter service"
-            )
+            raise UnregisteredFileError(UNREGISTERED_FILE_MESSAGE)
         return file_context
 
     def _wall_time_offset(self, local_dt: dt, zone: ZoneInfo | None) -> int:
@@ -885,6 +892,11 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                     )
                     self.active.set()
 
+                    # Every record of the file is written with its uploader's
+                    # credential: without one nothing can store it, so fail it
+                    # before the file is read and the instruments are fitted
+                    self._get_file_context()
+
                     # Get sample file properties using subclass implementation
                     sample_file_props = self._get_sample_file_props()
 
@@ -923,6 +935,16 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                         # per routine failure, for nothing that is wrong.
                         runtime.logger.info(
                             f"Failed to process file {Path(self.file_to_process).name}: {e}"
+                        )
+                    elif isinstance(e, UnregisteredFileError):
+                        # One issue for every such file, and no traceback: the
+                        # stack is always this check's, and the file's age is
+                        # what tells a restart from a context that came late
+                        runtime.logger.bind(
+                            **{SENTRY_FINGERPRINT: ["file-converter-unregistered-file"]}
+                        ).error(
+                            f"Failed to process file {Path(self.file_to_process).name} "
+                            f"({describe_file_state(self.file_to_process)}): {e}"
                         )
                     else:
                         runtime.logger.exception(
