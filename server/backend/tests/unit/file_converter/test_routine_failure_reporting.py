@@ -48,6 +48,10 @@ class _ContextManager:
     def __init__(self):
         self.cleared = []
 
+    def get_context(self, name):  # noqa: ARG002
+        # Every file here was registered by its upload; the run loop checks
+        return object()
+
     def clear_context(self, name):
         self.cleared.append(name)
 

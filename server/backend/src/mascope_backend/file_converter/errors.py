@@ -79,6 +79,35 @@ class EmptyAcquisitionError(Exception):
     """
 
 
+#: The converter holds no context for the file: who uploaded it, and the
+#: credential the file's records are written with. The upload registers one
+#: in the converter's memory, so a restart between the upload and the
+#: conversion loses it - the watcher still offers a file it finds left in
+#: the streams folder at startup, but nothing can store it any more.
+UNREGISTERED_FILE_MESSAGE = (
+    "The file converter has no record of who uploaded this file, so it cannot "
+    "be stored; it was most likely restarted after the upload. Upload the file "
+    "again."
+)
+
+
+class UnregisteredFileError(RuntimeError):
+    """A file the converter was offered with no upload registered for it.
+
+    Every record of a converted file is written with the uploader's
+    credential, which only the upload's ``file_context`` event carries. With
+    none registered the file cannot be stored whatever it holds, so
+    ``BaseFileProcessor.run`` checks for it before reading the file and fails
+    it straight away, rather than after the instrument-function fit.
+
+    It is not routine: an upload is lost, and the uploader cannot be told
+    either, since the notification needs the same credential. So it is still
+    reported, as one line pinned to one monitoring issue: its stack is always
+    the same, and what tells a restart from a context that arrived late is how
+    long the file had waited, which the line says.
+    """
+
+
 def is_routine_file_failure(e: BaseException) -> bool:
     """
     Whether a processing failure is a property of the data, not a fault.
