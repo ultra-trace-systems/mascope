@@ -863,6 +863,13 @@ class BaseCalibrationHandler:
                 self.warning = "No calibration peaks found after filtering."
             return None, selected_matches_df
 
+        # Too few for the model: the residual filter of a large sample can
+        # keep a single TOF calibrant, which the two-parameter fit refuses
+        # with an error. No fit instead, which the caller reports as "not
+        # enough calibration peaks", a warning the pipeline retries.
+        if len(selected_matches_df) < self._minimum_calibration_points:
+            return None, selected_matches_df
+
         final_fit_result, _ = self._fit_matches(selected_matches_df)
         final_calibration_df = self._build_calibration_df(
             selected_matches_df,
