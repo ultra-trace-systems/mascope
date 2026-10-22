@@ -21,7 +21,6 @@ import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
 from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_thermo.thermo import UnknownStreamError
-from mascope_thermo.v66_scan_events import UnreadableScanEventsError
 
 
 STREAM = "FTMS - p NSI Full ms [40.0000-160.0000] R=120000 event=2"
@@ -220,7 +219,7 @@ def test_a_reader_fault_is_still_answered_with_an_empty_signal(
 
 
 @pytest.mark.parametrize("stream", [None, STREAM])
-@pytest.mark.parametrize("refusal", [MisreadScanEventsError, UnreadableScanEventsError])
+@pytest.mark.parametrize("refusal", [MisreadScanEventsError])
 def test_a_file_refused_as_misread_is_not_answered_with_an_empty_signal(
     raw_orbitrap, monkeypatch, refusal, stream
 ):

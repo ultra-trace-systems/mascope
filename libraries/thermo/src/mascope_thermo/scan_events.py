@@ -19,9 +19,8 @@ cannot name. A misread that lands only on the Orbitrap's and the ion trap's
 codes goes unseen. The Orbitrap Astral is the exception to that set, and is
 kept from the check otherwise (``_ORBITRAP_INSTRUMENT_ANALYZERS``).
 
-A leaf module, imported by both ``mascope_thermo.backend``, which judges
-every file it reads, and the interim ``mascope_thermo.v66_scan_events``,
-which judges the files it re-reads when it opens them.
+A leaf module, imported by ``mascope_thermo.backend``, which judges every
+file it reads.
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ _ORBITRAP_ONLY_MODELS = ("Exploris", "Exactive")
 
 # What an Orbitrap instrument records a scan with: the Orbitrap, and on a
 # hybrid the ion trap. Not the Orbitrap Astral's own analyzer, ASTMS, which
-# OpenTFRaw 2.0.0 does not name (it names codes 0 to 5), so an Astral scan
+# OpenTFRaw 3.1.0 does not name (it names codes 0 to 5), so an Astral scan
 # reads as none. What keeps an Astral file from being refused is the order of
 # OpenTFRaw's registry instead: "Orbitrap Astral" is its first entry, so a
 # file that names it anywhere in its first 64 KB is never read as an Exploris

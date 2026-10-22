@@ -11,8 +11,7 @@ is a match on the file's free text, and a hybrid's file can carry a
 Q Exactive's name.
 
 The reader is a stand-in that answers ``scan_table()`` with the analyzers a
-test gives it, and opens nothing: the backend's path names no file, which the
-check for named scan-event records passes over.
+test gives it, and opens nothing: the backend's path names no file.
 """
 
 import weakref
