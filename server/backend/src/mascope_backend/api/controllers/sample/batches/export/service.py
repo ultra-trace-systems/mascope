@@ -4,9 +4,12 @@ Sample batch export service for generating batch scope Excel spreadsheets, csv f
 The spreadsheet carries what it takes to trace it back: the ids of the dataset,
 batch and target collections it was built from, the ids of the records behind
 every row, the acquisition context of each sample, and the provenance block of
-the build that wrote it (``mascope_backend.provenance``). Additions append - a
-sheet, a column or a row - so a reader written against an earlier export keeps
-finding what it found there, where it found it.
+the build that wrote it (``mascope_backend.provenance``). Each sample's
+instrument model, ion source, mass analyser, detector and polarity are also
+given as PSI-MS terms (``mascope_backend.vocabulary``), so that another tool
+can read what a sample was measured on. Additions append - a sheet, a column
+or a row - so a reader written against an earlier export keeps finding what
+it found there, where it found it.
 """
 
 import asyncio
@@ -16,6 +19,8 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import select
 
+import mascope_signal.metadata as m_metadata
+from mascope_backend import vocabulary
 from mascope_backend.api.controllers.calibration.calibration_controller import (
     is_unfitted_record,
 )
@@ -36,6 +41,7 @@ from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.db import IonizationMode, async_session
 from mascope_backend.provenance import build_provenance, flatten_provenance
 from mascope_backend.runtime import runtime
+from mascope_file.name import get_sample_file_type
 
 
 @api_controller_background_task(
@@ -87,6 +93,7 @@ async def sample_batch_export_spreadsheet(
     ionization_modes = await _ionization_mode_names(
         {sample.get("ionization_mode_id") for sample in data["samples"]}
     )
+    instrument_models = await asyncio.to_thread(_instrument_models, data["samples"])
 
     # --- Prepare lookup dictionaries ---
     samples_lookup = {sample["sample_item_id"]: sample for sample in data["samples"]}
@@ -172,6 +179,13 @@ async def sample_batch_export_spreadsheet(
                 "Sequence run ID": sample.get("sequence_run_id"),
                 "Agent ID": sample.get("agent_id"),
                 "File SHA-256": sample.get("sha256"),
+                # The same acquisition context in PSI-MS terms. Empty where
+                # the vocabulary has no term for what is recorded.
+                **_vocabulary_columns(
+                    instrument_models.get(sample.get("sample_file_id")),
+                    sample.get("instrument_type"),
+                    sample.get("polarity"),
+                ),
             }
         )
     samples_df = pd.DataFrame(samples_data)
@@ -317,6 +331,85 @@ async def _ionization_mode_names(mode_ids: set[str | None]) -> dict[str, str]:
             ).where(IonizationMode.ionization_mode_id.in_(mode_ids))
         )
         return dict(rows.all())
+
+
+def _instrument_models(samples: list[dict]) -> dict[str, str | None]:
+    """
+    The instrument model each sample's raw file names, by sample file id.
+
+    The model is not recorded in the database, only in the raw file, so it is
+    read from there: an Orbitrap file's header, which opens in about a
+    millisecond. A TOF file names no model the vocabulary has a term for, and
+    is not opened. Blocking; run it in a thread.
+
+    :param samples: Sample dicts from ``get_batch_data``.
+    :return: The model by sample file id, None where there is no raw file to
+        read or it could not be read. An export is not refused for one file.
+    :rtype: dict[str, str | None]
+    """
+    files = {
+        sample["sample_file_id"]: sample["filename"]
+        for sample in samples
+        if sample.get("instrument_type") == "orbi" and sample.get("sample_file_id")
+    }
+    return {file_id: _instrument_model(filename) for file_id, filename in files.items()}
+
+
+def _instrument_model(filename: str) -> str | None:
+    """
+    The instrument model one Orbitrap sample file's raw file names.
+
+    :param filename: The sample file's name.
+    :return: The model, such as "Orbitrap Exploris 120"; None when the raw
+        file is not kept or cannot be read.
+    :rtype: str | None
+    """
+    try:
+        if get_sample_file_type(filename) != "orbi_raw":
+            return None
+        details = m_metadata.metadata_factory(filename).instrument_details
+    except Exception as error:  # noqa: BLE001 - one unreadable file costs its cell
+        runtime.logger.warning(
+            f"Could not read the instrument model of '{filename}': {error}"
+        )
+        return None
+    return details.get("Model") or None
+
+
+def _vocabulary_columns(
+    model: str | None, instrument_type: str | None, polarity: str | None
+) -> dict[str, str | None]:
+    """
+    A sample's acquisition context as PSI-MS terms, for the Samples sheet.
+
+    Each term is written as its name and its accession, as a ``cvParam``
+    carries it. A value the vocabulary cannot map leaves both cells empty.
+
+    :param model: The instrument model the raw file names, None if unknown.
+    :param instrument_type: ``"orbi"`` or ``"tof"``.
+    :param polarity: The sample's polarity, ``"+"`` or ``"-"``.
+    :return: The columns, in their order.
+    :rtype: dict[str, str | None]
+    """
+    model_term = vocabulary.instrument_model_term(model)
+    source = vocabulary.source_term(instrument_type)
+    analyser = vocabulary.analyser_term(instrument_type)
+    detector = vocabulary.detector_term(instrument_type)
+    polarities = vocabulary.polarity_terms(polarity)
+    return {
+        "Instrument model": model,
+        "Instrument model accession": model_term.accession if model_term else None,
+        "Ion source": source.name if source else None,
+        "Ion source accession": source.accession if source else None,
+        "Mass analyser": analyser.name if analyser else None,
+        "Mass analyser accession": analyser.accession if analyser else None,
+        "Detector": detector.name if detector else None,
+        "Detector accession": detector.accession if detector else None,
+        "Scan polarity": "; ".join(term.name for term in polarities) or None,
+        "Scan polarity accession": (
+            "; ".join(term.accession for term in polarities) or None
+        ),
+    }
 
 
 def _dataset_metadata_rows(dataset: dict | None) -> list[list]:
