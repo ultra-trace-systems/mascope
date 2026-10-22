@@ -6,22 +6,31 @@ fit together. Everything else in this folder is a design note: the record of
 why a piece of Mascope is shaped the way it is, what of it is built, and where
 the open work is tracked.
 
-Every note opens with the same header, and this table repeats it:
+Every note opens with the same header, and the table below repeats it:
 
 - `Status` is `design` (nothing built), `building` (partly built, work in
   flight), `built` (done; the note is the record) or `retired` (superseded; a
   retired note is deleted with a pointer in the note that superseded it, and
   its text stays in git history).
 - `As of` is the date the header was last checked against the tree.
-- `Tracked in` names the Linear project (team Mascope, key MAS) or the GitHub
-  issue that carries the open work. `closed` means nothing is open; `none`
-  means there is open work no issue owns yet.
+- `Tracked in` links the Linear project or issue (team Mascope, key MAS) or
+  the GitHub issue that carries the open work. `closed` means nothing is
+  open; `none` means there is open work no issue owns yet, which a `design`
+  or `building` note may not have.
 - `Supersedes` or `Superseded by` names the note this one replaced or was
-  replaced by, when there is one.
+  replaced by, when there is one, in backticks or as a link.
+- `What` is one sentence on what the note is.
 
-The header is the source; when a note's state changes, change it there and
-mirror it here. Roadmap work is planned in Linear and defects are GitHub
-issues: `CLAUDE.md`, "Where work is tracked", has the split.
+The fields come in that order, one `- **Field:** value` bullet each, after the
+note's title; a long value runs on in lines indented two spaces.
+
+The header is the source and this table is made from it: when a note's state
+changes, change its header and run `uv run python tooling/notes.py index`.
+`uv run python tooling/notes.py check` fails on a note without the header, on
+a value it does not accept, and on a table that disagrees with the headers;
+it warns about a `design` or `building` note whose `As of` is more than 90
+days old. Roadmap work is planned in Linear and defects are GitHub issues:
+`CLAUDE.md`, "Where work is tracked", has the split.
 
 | Note | Status | Tracked in | What it is |
 |---|---|---|---|
@@ -37,7 +46,7 @@ issues: `CLAUDE.md`, "Where work is tracked", has the split.
 | [`file_agent_self_update_plan.md`](file_agent_self_update_plan.md) | design | [OrbionICS self-update](https://linear.app/ultra-trace/project/orbionics-self-update-96caa663228f) (Linear, ICS-89 to ICS-101, filed 2026-10-22: milestones A, B and C; ICS-92 decides whether B gates MAS-210) | The File Agent moving to a new release without a hand on the instrument PC. |
 | [`handoff_fair_phase0.md`](handoff_fair_phase0.md) | built | [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear, MAS-19 to MAS-23, done) | FAIR phase 0 as built: the provenance block, ids in exports, the OpenAPI document. |
 | [`handoff_fair_phase1.md`](handoff_fair_phase1.md) | building | [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear, MAS-24 to MAS-28; item 9 is PR #2475) | FAIR phase 1 brief: dataset licence and authors, InChIKey on compounds, tombstones. |
-| [`identification_claims.md`](identification_claims.md) | design | [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear: MAS-357, MAS-363, Decision MAS-361; MAS-31 is the level's export) and [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (MAS-358, MAS-359, MAS-360, Decision MAS-362; MAS-73 carries the engine's level) | Identifiers as candidates and an identification as a separate, evidenced claim with a Schymanski level: where each lives, who may state what. |
+| [`identification_claims.md`](identification_claims.md) | design | [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear: MAS-357 the structure lookup, MAS-363 the exports, MAS-361 the decision on the classic sheet; MAS-31 is the level's FAIR export) and [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (MAS-358 the target as a candidate, MAS-359 the claim, MAS-360 the MS/MS ranking, MAS-362 the decision on the targeted path; MAS-73 carries the engine's level); filed 2026-10-22 | Identifiers as candidates and an identification as a separate, evidenced claim with a Schymanski level: where each lives, who may state what. |
 | [`ingest_routing_and_splitting.md`](ingest_routing_and_splitting.md) | building | [Automatic ingest: routing and splitting](https://linear.app/ultra-trace/project/automatic-ingest-routing-and-splitting-68acd9575fa9) (Linear) and GitHub #2098 | Automatic ingest: binding a file's chemistry by evidence and splitting it into streams, segments and windows. |
 | [`isolated_deployment_plan.md`](isolated_deployment_plan.md) | design | [Isolated deployments](https://linear.app/ultra-trace/project/isolated-deployments-7585d72b2a80) (Linear: MAS-301, MAS-302 and MAS-307 for phase A; MAS-303 re-bases the bundle on the wheel install, MAS-116 option b, before phases B to E are filed) | Running and updating a server with no internet route. |
 | [`mfa_totp_plan.md`](mfa_totp_plan.md) | built | [Release 2.0 and the security campaign](https://linear.app/ultra-trace/project/release-20-and-the-security-campaign-89b9f4b36f95) (Linear; MAS-77, MAS-78, MAS-79 and MAS-111 done, MAS-211 open) | A TOTP second factor for the web session, with offline recovery. |
@@ -45,7 +54,7 @@ issues: `CLAUDE.md`, "Where work is tracked", has the split.
 | [`peak_assignment_batch_primary.md`](peak_assignment_batch_primary.md) | built | closed; decisions 10.4 and 10.5 are carried inside MAS-321 and MAS-322 ([Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) milestone 4) | The batch ledger as the durable assignment object; samples fold in at ingest. |
 | [`peak_assignment_frontend.md`](peak_assignment_frontend.md) | built | closed; retiring the Targets/Assignments switch is MAS-162 in [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) | The Sample view as shipped for peak-centric assignment: ledger, inspector, verification, curation. |
 | [`peak_assignment_paradigm.md`](peak_assignment_paradigm.md) | built | closed; the phase 4 leftovers are MAS-61 and MAS-229, the "fold targeted in" of phase 5 is MAS-162 and MAS-80 | The shift from target-anchored matching to assigning every peak, and how the engine is operated. |
-| [`public_database_integration.md`](public_database_integration.md) | building | none; phase 4 (MS/MS) needs a project of its own and the phase 5 wrapper a home, both owner calls left open by the 2026-10-22 import | Mirroring public compound databases to give assigned formulas an identity. |
+| [`public_database_integration.md`](public_database_integration.md) | building | GitHub [#2508](https://github.com/ultra-trace-systems/mascope/issues/2508) until it has a home: phase 4 (MS/MS) needs a project of its own and the phase 5 wrapper a home, both owner calls left open by the 2026-10-22 import | Mirroring public compound databases to give assigned formulas an identity. |
 | [`raw_file_sample_links.md`](raw_file_sample_links.md) | design | [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) (Linear, MAS-245 and MAS-246) | Links from a raw file to the samples made from it. |
 | [`reference_data_authoring.md`](reference_data_authoring.md) | retired | closed | A pointer: the guide to authoring and loading a custom reference compound list is the user page [Reference compound lists](../user/guides/reference-lists.md) since 2026-10-22. |
 | [`sample_filters_and_metadata.md`](sample_filters_and_metadata.md) | design | [Sample finder and acquisition metadata](https://linear.app/ultra-trace/project/sample-finder-and-acquisition-metadata-cd1678c32e78) (Linear; decisions MAS-104 to MAS-110; phases 1 to 4 filed 2026-10-22 as MAS-306, MAS-310, MAS-311, MAS-334 to MAS-336, MAS-338 to MAS-343, MAS-348 and MAS-349) | Sample search and refreshable batches over acquisition metadata. |

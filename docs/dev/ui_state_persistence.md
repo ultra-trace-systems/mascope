@@ -5,6 +5,7 @@
 - **Status:** built
 - **As of:** 2026-10-22
 - **Tracked in:** closed; continuous URL mirroring, the phase 4 leftover, has no issue
+- **What:** UI state that survives a reload, and shareable locations.
 
 The library as built - `lib/location`'s schema, the two sinks, the URL-wins
 precedence and the graceful stop - is summarised in the developer guide under

@@ -5,6 +5,7 @@
 - **Status:** building
 - **As of:** 2026-10-22
 - **Tracked in:** [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) (Linear, MAS-148 to MAS-163)
+- **What:** The dashboard UX review of October 2026 and its three tiers of fixes.
 
 Status: **review recorded 2026-10-16; four of the six quick wins have shipped**
 (2026-10-22): QW2 (MAS-149), QW3 (MAS-150) and QW4 (MAS-151) as filed, and QW1 in

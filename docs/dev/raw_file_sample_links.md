@@ -5,6 +5,7 @@
 - **Status:** design
 - **As of:** 2026-10-22
 - **Tracked in:** [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) (Linear, MAS-245 and MAS-246)
+- **What:** Links from a raw file to the samples made from it.
 
 Status: **design, nothing built** (2026-10-21). Code anchors were read at
 v1.13.0 on 2026-10-20 (`develop` differed from it only in calibration code)

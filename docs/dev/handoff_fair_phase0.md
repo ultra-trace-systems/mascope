@@ -3,6 +3,7 @@
 - **Status:** built
 - **As of:** 2026-10-22
 - **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear, MAS-19 to MAS-23, done)
+- **What:** FAIR phase 0 as built: the provenance block, ids in exports, the OpenAPI document.
 
 *The plan is [fair_roadmap.md](fair_roadmap.md); this document hands off its
 §6 Phase 0 - five tasks, no schema change, independent of the ionization

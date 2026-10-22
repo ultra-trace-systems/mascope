@@ -5,6 +5,7 @@
 - **Status:** building
 - **As of:** 2026-10-22
 - **Tracked in:** [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) (Linear, MAS-123 to MAS-142)
+- **What:** A natural-language agent over the SDK, read-only first, with a confirmed write path later.
 
 ## Purpose
 

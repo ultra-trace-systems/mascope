@@ -3,6 +3,7 @@
 - **Status:** building
 - **As of:** 2026-10-22
 - **Tracked in:** [Release 2.0 and the security campaign](https://linear.app/ultra-trace/project/release-20-and-the-security-campaign-89b9f4b36f95) (Linear: MAS-210, MAS-81, MAS-82 and the decision MAS-305 for phase E; MAS-308, MAS-309, MAS-333 and MAS-304 for phase F)
+- **What:** First-class identity for instrument agents: pairing, attribution, machine accounts, rollout.
 
 Goal: give instrument agents their own first-class identity, so acquisition
 uploads stop borrowing a human's credential. Every uploaded file becomes

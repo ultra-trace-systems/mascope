@@ -4,6 +4,7 @@
 - **As of:** 2026-10-22
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-63 covers V2 activation and the corroboration refit; the V3 active-learning queue is MAS-329, with the three section 7 decisions recorded inside it)
 - **Supersedes:** `verification_capture_frontend.md` (retired 2026-10-22; section 4.5)
+- **What:** Human verdicts on assignments feeding the confidence calibration.
 
 *A design for a human-in-the-loop layer where users confirm or reject peak-centric
 identifications in the UI, and those verdicts become the labelled golden set that fits each

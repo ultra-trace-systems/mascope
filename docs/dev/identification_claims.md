@@ -9,6 +9,7 @@
   (MAS-358 the target as a candidate, MAS-359 the claim, MAS-360 the MS/MS
   ranking, MAS-362 the decision on the targeted path; MAS-73 carries the
   engine's level); filed 2026-10-22
+- **What:** Identifiers as candidates and an identification as a separate, evidenced claim with a Schymanski level: where each lives, who may state what.
 
 ## 1. Purpose
 

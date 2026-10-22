@@ -5,6 +5,7 @@
 - **Status:** building
 - **As of:** 2026-10-22
 - **Tracked in:** [Visual digests](https://linear.app/ultra-trace/project/visual-digests-51cecff8f790) (Linear, MAS-217 to MAS-244)
+- **What:** Charts, dashboards and reports over the SDK for campaign-scale questions.
 
 ## Purpose
 

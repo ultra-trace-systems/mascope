@@ -3,6 +3,7 @@
 - **Status:** building
 - **As of:** 2026-10-22
 - **Tracked in:** [CLI decoupling](https://linear.app/ultra-trace/project/cli-decoupling-f732d6d0ca80) (Linear, MAS-112 to MAS-122)
+- **What:** The standalone operator CLI, the wheel install, and what a server installs.
 
 Status: **phases 0 to 4 shipped in v1.2.0 (2026-07-07): `mascope-cli` and
 `mascope-runtime` are on PyPI, a wheel install runs the operator surface from

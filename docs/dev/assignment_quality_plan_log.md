@@ -6,6 +6,7 @@
 - **As of:** 2026-10-22
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear)
 - **Supersedes:** the measurement logs and completed-step specifications that stood in [`assignment_quality_plan.md`](assignment_quality_plan.md) until 2026-10-22
+- **What:** The quality plan's measurement log and the as-built specifications of its completed steps.
 
 This file holds the measurement log and the as-built specifications of the
 completed steps of the plan in
