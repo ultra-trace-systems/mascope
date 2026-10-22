@@ -97,6 +97,19 @@ score regardless of `MASCOPE_MATCH_SCORE_VERSION`. It is now gated on the peak-a
 feature flag — see
 [`peak_assignment_paradigm.md`](../../../docs/dev/peak_assignment_paradigm.md) §5.1.
 
+**The on-demand composition search takes its mass sigma from the instrument, not from
+the candidates.** `api/new/cheminfo/service.py` rescores each candidate with
+`ion_score_v2`, and the fit score's mass term needs the instrument's mass accuracy.
+Stage A can *fit* it (`fit_sample_mass_accuracy` over every isotopologue the library
+matched across the spectrum), but the search cannot: its rows are the candidates for a
+single m/z, spread across `±mz_precision` by construction, so a fitted sigma would
+measure the search window and flatten the mass term to near-uniform. It uses the
+sample's resolved `match_params.mz_tolerance` read as a ~3σ window (≈1.7 ppm Orbitrap,
+≈5 ppm TOF) instead, and **reports no fit score at all** when no tolerance is
+resolvable — `score_pattern_v2`'s own `FALLBACK_SIGMA_PPM = 2.0` is Orbitrap-only and
+would collapse every candidate on a TOF sample. (Recorded here on 2026-10-22 from the
+retired `docs/dev/handoff_fit_score_and_assignment.md`.)
+
 ## 2. Scientific rationale
 
 High mass accuracy alone is insufficient to determine elemental composition: even at

@@ -20,7 +20,9 @@ It is the concrete plan for the confidence architecture's L3 evidence layer
 ("ionization/reagent priors",
 [assignment_confidence.md](assignment_confidence.md) §2), the chemistry half of
 the acquisition-method redesign
-([ionization_method_config.md](ionization_method_config.md) §4.3), and the
+(the `IonizationSetup` row of the target model in
+[ingest_routing_and_splitting.md](ingest_routing_and_splitting.md) phase 8, carried
+there from the retired `ionization_method_config.md` §4.3), and the
 "reuse peaky's context presets" item of the paradigm plan
 ([peak_assignment_paradigm.md](peak_assignment_paradigm.md) Phase 2). The
 profile system itself is a **harvest of peaky**
@@ -41,7 +43,7 @@ logic and data, not the runtime.
 | Element grid (Stage B) | `PeakAssignmentConfig.formula_ranges`, default `DEFAULT_FORMULA_RANGE = "C0-100 H0-100 O0-100 N0-100"` ([cheminfo/config.py](../../server/backend/src/mascope_backend/api/new/cheminfo/config.py)) | One generic box for all chemistry. No S/halogens by default, yet 100 O — neither CIMS-correct nor cheap. Per-run string, nothing supplies a chemistry-aware default. |
 | Chemical plausibility | `formula_plausibility` ([heuristic_filter.py](../../libraries/tools/src/mascope_tools/composition/heuristic_filter.py)) — Seven Golden Rules, universal Kind & Fiehn bands | Matrix-agnostic by design. Ambient-air HOM chemistry, indoor siloxanes, and PFAS all get the same bands. |
 | Known-compound set (Stage A) | curated targets + reference mirror via `iter_known_compositions` ([known.py](../../libraries/reference/src/mascope_reference/known.py)) | The mirror window is hardcoded: `DEFAULT_ELEMENTS = {C,H,N,O,S}`, `DEFAULT_MAX_CARBON = 40`, `DEFAULT_MAX_MASS = 700`. Every active source applies to every run — no notion of "this list is for monoterpene oxidation studies". |
-| Calibration + adduct weights | `assignment_calibration` keyed `(instrument, score_version)` ([calibration_store.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/calibration_store.py)) | Its own docstring says a curve is valid "per instrument, per reagent chemistry", but the key cannot express the reagent chemistry ([ionization_method_config.md](ionization_method_config.md) §2.3, §8.2). |
+| Calibration + adduct weights | `assignment_calibration` keyed `(instrument, score_version)` ([calibration_store.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/calibration_store.py)) | Its own docstring says a curve is valid "per instrument, per reagent chemistry", but the key cannot express the reagent chemistry (the retired `ionization_method_config.md` §2.3 and §8.2, in git history). |
 | Labelled reagents | `CUSTOM_ELEMENTS` ([custom_elements.py](../../libraries/tools/src/mascope_tools/composition/custom_elements.py)) — `^N` only, purity 0.98 as a module constant | Isotope-labelled reagent chemistry (¹⁵N-nitrate) is code, not configuration. |
 
 ### 1.2 The seams already reserved for this work
@@ -126,7 +128,7 @@ different scopes, and change at different cadences:
 | Owns | polarity, adduct channels (+ priors), reagent-ion cluster grammar, detection fingerprint, isotope labelling/purity, element grid | ratio windows, heteroatom caps, min-C scaffolds, inorganic allowlist, contaminant families, reference-list activation, grid refinements |
 | Attaches to | the sample, via its ionization mode (routing already exists) | the run, with a batch/workspace default (an interpretation choice, re-runnable) |
 | Changes when | the instrument's ion source chemistry changes | the analyst reinterprets the campaign |
-| Ionization-redesign fate | absorbed into `IonizationSetup` ([ionization_method_config.md](ionization_method_config.md) §4.3) | stays its own object, referenced by run config |
+| Ionization-redesign fate | absorbed into `IonizationSetup` ([ingest_routing_and_splitting.md](ingest_routing_and_splitting.md) phase 8, target model 4.3) | stays its own object, referenced by run config |
 
 Keeping the axes separate avoids the combinatorial explosion (5 reagents × 9
 contexts as 45 flat profiles) and matches how the science composes: Br⁻ CIMS on
@@ -197,8 +199,8 @@ mode without a profile behaves exactly as today.
 `PeakAssignmentConfig` gains `reagent_profile` and `chemistry_context`
 references; the *resolved* profile content is snapshotted into
 `PeakAssignmentRun.config` JSON, exactly as the rest of the config already is.
-This closes the reproducibility hole of
-[ionization_method_config.md](ionization_method_config.md) §2.3 for the
+This closes the reproducibility hole of the retired
+`ionization_method_config.md` §2.3 (in git history) for the
 chemistry half: two runs with identical recorded config can no longer differ
 because an admin edited the adduct panel in between — the panel is in the
 snapshot.
@@ -314,7 +316,7 @@ all-True behaviour remains the floor. Winners already inherit
 peaky's families are additive element budgets that **open only on evidence** —
 a homolog series (CF₂, C₂H₆OSi, SO₃ …) detected against decoy offsets with
 ≥12 links and ≥3× enrichment. Mascope's counterpart substrate is the batch-peak
-layer (`docs/dev/peak_assignment_batch.md`, PR #1841): series detection belongs
+layer (`docs/dev/peak_assignment_batch_primary.md` §12, PR #1841): series detection belongs
 on the frozen cross-sample anchors, not on single samples. Phase 5 ports the
 series units + decoy gate and lets a confirmed series (a) open the family's
 element budget for targeted Stage B re-search of member peaks and (b) count as
@@ -365,7 +367,7 @@ their campaign provenance):
 | `NO3_15N` | − | `[M+^NO3]-`, `[M-H]-`; `[M+CO3]-` and `[M+HCOO]-` secondary | as NO3 | `^N` purity 0.98 as data |
 | `IODIDE` | − | `[M+I]-`, `[M-H]-`, `[M+I2]-`, `[M-H+I2]-`; `[M+HCOO]-` secondary | `C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1` | I deliberately off the neutral grid |
 | `EASYIC_POS` / `EASYIC_NEG` | ± | `[M]+.` with `[M-H]+` and `[M+H]+` secondary; `[M]-.` with `[M-H]-` secondary | `C0-40 H0-80 N0-5 O0-15 S0-2` (negative O0-20) | the charge-transfer (EASY-IC) source, recognised by electron transfer on an Orbitrap; ambient context; the fluoranthene beam as its reagent ladder (assignment plan step 3.1) |
-| `ESI_POS` / `ESI_NEG` | ± | the generic panels from [ionization_method_config.md](ionization_method_config.md) Phase 0 item 6 | wide default | no reagent grammar; gives non-CIMS users seeded modes |
+| `ESI_POS` / `ESI_NEG` | ± | the generic panels (Phase 0 item 6 of the retired `ionization_method_config.md`; shipped as seeded system modes in `ionization_catalogue.py`) | wide default | no reagent grammar; gives non-CIMS users seeded modes |
 
 Context presets: the nine peaky contexts with their windows/caps/families
 verbatim as v1 data (ambient-air, chamber, indoor-air, object-headspace,

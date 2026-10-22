@@ -50,7 +50,7 @@ Related designs: `ingest_routing_and_splitting.md` (the part a sample is cut
 from, chemistry profiles as the unit, declarations from the instrument side),
 `chemistry_profiles.md` (reagent profile and chemistry context),
 `reference_data_authoring.md` (the reference lists and their headers),
-`peak_assignment_batch.md` (batch peaks), `ui_state_persistence.md` (the
+`peak_assignment_batch_primary.md` (batch peaks and the batch ledger), `ui_state_persistence.md` (the
 location a URL carries). Section 10 says how this design touches each.
 
 ---
@@ -326,7 +326,7 @@ are editable on a copy. The ionization mode is deliberately not part of it
 already holds or has excluded; show what is left ("14 new samples, 2026-09-28
 to 2026-10-04"); on confirmation, append them through the same copy path and
 flag the batch for matching. Batch-peak anchors are frozen and append-only
-under arrival by design (`peak_assignment_batch.md` section 2), so appending
+under arrival by design (`peak_assignment_batch_primary.md` section 12.1), so appending
 is the case that layer was built for. Whether the copy path folds new members
 into the batch peaks on its own, or a refresh must ask for the fold, is to be
 read off the code in phase 1.
@@ -641,7 +641,7 @@ phase 1 depends on nothing.
 - **`reference_data_authoring.md`**: the header keys it documents as "read,
   but nothing acts on them yet" gain their consumer, and the source row
   records them.
-- **`peak_assignment_batch.md`**: unchanged. A refresh is incremental arrival
+- **`peak_assignment_batch_primary.md`**: unchanged. A refresh is incremental arrival
   into a batch, the case its frozen anchors exist for.
 - **`ui_state_persistence.md`**: the location chain is unchanged, since a
   filter produces an ordinary batch. The finder's filter is a candidate for

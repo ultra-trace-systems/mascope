@@ -94,7 +94,8 @@ const peakSummary = computed(() => {
 
 // --- Verification (labelling) capture -------------------------------------
 // The current verdict for the focused assignment (by stable identity), plus a
-// small confirm/reject/unsure form. See docs/dev/verification_capture_frontend.md.
+// small confirm/reject/unsure form. See docs/dev/verification_calibration_loop.md
+// section 4.5.
 const verification = computed(() =>
   app.data.peakAssignment.verification.forAssignment(focusedAssignment.value)
 )

@@ -1,7 +1,7 @@
 """Add batch peak tables
 
 Introduces the batch-level layer of the peak-centric paradigm
-(docs/dev/peak_assignment_batch.md):
+(docs/dev/peak_assignment_batch_primary.md, section 12):
 
 - batch_peak: a frozen cross-sample m/z anchor -- the stable identity the batch
   overview draws one trace per (the peak-centric replacement for target_ion_id).

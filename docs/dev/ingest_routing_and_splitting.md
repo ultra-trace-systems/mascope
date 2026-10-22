@@ -1,14 +1,21 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
 Status: **phases 0 and 1 shipped; phase 2 shipped up to its backfill
-re-run and per-site switch; the stream work of phases 3 and 4 is being
-built as the composite cut - several m/z ranges of one chemistry stitched
-into one spectrum - its streams detected and stitched in the peak store,
-with nothing reading the stitch yet; phase 8 follows it; detection
-deferred** (2026-10-07). Written for issue #2098 ("Split files into
+re-run and per-site switch; the composite cut - several m/z ranges of one
+chemistry stitched into one spectrum - is built through its readers: the
+streams are detected and stitched in the peak store, the spectrum, the peak
+listing, the item TIC and the exports read the stitch, each segment is
+calibrated and fitted an instrument function of its own, and the files
+acquired before the switch were re-processed on the two sites that acquire
+composites; what phases 3 and 4 still owe is step 9's overlap-drift warning
+and layout override, the per-stream stale rebuild (step 6) and MS2 routes
+taking the stream; phase 8, the profiles, is unbuilt and has no issue;
+detection deferred** (2026-10-22). Written for issue #2098 ("Split files into
 samples by scan attributes"), which carries the checklist of pull
 requests. Decisions 1 to 5, 7, 9, 11 to 16 and 18 in section 12 are settled;
-6, 8, 10 and 17 are open.
+6, 8 and 10 are open; 17 was decided on 2026-10-10 (a layout override is
+built when a layout needs one). Three later decisions are not yet in section
+12: MAS-91 (the composite default), MAS-208 and MAS-249.
 
 ## Picking this up
 
@@ -92,7 +99,8 @@ request for this work updates the table below and ticks its item on #2098.
 
 Related designs, and how this one relates to them (section 13):
 
-- `ionization_method_config.md`: method identity and routing order.
+- `ionization_method_config.md` (retired 2026-10-22; its target model is carried into
+  phase 8 below): method identity and routing order.
 - `chemistry_profiles.md`: the profiles themselves, and the versioned row a
   seeded profile migrates into (5.1).
 - `multi_sample_items_per_file.md`: on
@@ -1936,7 +1944,7 @@ ionization mode may belong to one instrument, so the same filename token can
 mean a different chemistry on each, and a mode only ever run on one instrument
 stops competing for every other instrument's names. That is rung 3 getting
 sharper rather than a rung below it. It also opens the way to per-instrument
-configuration beyond chemistry (`ionization_method_config.md`).
+configuration beyond chemistry (the `Instrument` row of the target model in phase 8).
 
 A site that genuinely runs one chemistry per instrument is served by rung 4
 once its method has been seen once, which is the same outcome without a
@@ -1976,7 +1984,8 @@ than unique outright: at most one unscoped mode per token, and at most one per
 folded. For Orbitrap this is `sample_info["inst_method"]` (read again since
 #2155); for
 Tofwerk, the `Configuration File` attribute. A content hash replaces it once
-method text can be extracted reliably (`ionization_method_config.md` 6.1).
+method text can be extracted reliably (the retired `ionization_method_config.md` 6.1, in
+git history).
 
 **The signature class** is polarity, analyzer, source, scan mode and scan
 ranges, without precursors. A polarity-switching method can therefore bind
@@ -2087,7 +2096,7 @@ rules for the entries:
 - **Content first, name second.** The reader can extract the method text, so
   a shipped file's hash is known when the entry is made, a renamed copy still
   matches, and an edited copy does not; the name is the fallback for readers
-  that give no text (`ionization_method_config.md` 6.1). An edited copy that
+  that give no text (the retired `ionization_method_config.md` 6.1). An edited copy that
   keeps the name parks once, like any unknown method, and its click teaches
   the instrument's own binding.
 - **A mismatched signature class is noted, not refused.** A site that keeps
@@ -2515,7 +2524,8 @@ same hysteresis and dwell logic as a trace.
 - **The SDK** gains the stream on items, and the preview and apply routes.
   Existing calls keep their meaning.
 - **FAIR.** The stream signature, recipe version and binding source are the
-  provenance `ionization_method_config.md` section 7 asks for. Exports should
+  provenance the FAIR roadmap asks for ([fair_roadmap.md](fair_roadmap.md), which
+  superseded the ionization note's section 7). Exports should
   carry them, and the segment each peak of a composite came from.
 - **The reagent-segment normalisation** a composite makes possible - an
   analyte's counts over the reagent ions of the same file - is a consumer
@@ -2894,6 +2904,130 @@ unchanged.
   - the demo goldens are unchanged, and the demo's own modes and batches keep
     their names;
   - a site with tokens sees no change in routing.
+
+#### The target model the profiles grow into
+
+*Carried here on 2026-10-22 from section 4 of `ionization_method_config.md`, the ionization
+and acquisition-method redesign of 2026-07, when that note was retired. Of its five rows,
+`AcquisitionMethod` and `MethodBinding` have their first concrete pieces in
+`acquisition_stream` and `method_binding` (phase 2; section 13), with the routing order of
+4.5 revised by 2.4 and 5.7; `Instrument`, `IonizationSetup` and `Adduct` are unbuilt and
+have no issue (MAS-255 is the decision that found this). The notation of 4.4 shipped as the
+assignment plan's step 3.3b. The text is the proposal as written.*
+
+##### 4.1 `Instrument` - promote to a first-class row
+
+Today an instrument is `SELECT DISTINCT sample_file.instrument`, where the name
+is `filename.split("_")[0]`. Delete the last file and the instrument
+evaporates - along with any metadata about it. Meanwhile the epic wants to hang
+calibration curves off it.
+
+```
+Instrument
+  instrument_id, name (filename-derived key, kept for back-compat)
+  instrument_type (orbi | tof), vendor, model, serial_number, software_version
+  cv_term            -- PSI-MS, e.g. MS:1000449 (LTQ Orbitrap)
+  created_utc, last_seen_utc
+```
+
+Model is available from the reader today and discarded. **Serial number and
+software version are not** - the retired note's 6.1 explains why: they are reachable only on the optional
+pythonnet/DLL backend, and getting them on the default path is new binary-format
+work upstream. Make those columns nullable and treat them as a later fill.
+
+Promoting the row is still worth it on its own: it also satisfies the FAIR
+requirement that metadata outlive the data it describes.
+
+##### 4.2 `AcquisitionMethod` - observed, immutable, auto-created
+
+"What the instrument was told to do." Created automatically on ingest, keyed by
+a stable identity taken from the file.
+
+```
+AcquisitionMethod
+  acquisition_method_id, instrument_id
+  method_name          -- e.g. "Standard_HCD.meth"
+  method_hash          -- content hash; the real identity
+  polarity, mz_range_low, mz_range_high
+  resolution_setting, scan_type, source_type (cv_term)
+  method_text          -- TEXT, verbatim, provenance
+  method_params        -- JSON, opportunistically parsed
+  source               -- extracted | uploaded | manual
+  first_seen_utc
+```
+
+This is where the "upload a method file" idea lands (the retired note's section 6; the first
+concrete piece is `method_binding`, 5.3). Its most
+valuable property is not the parsed fields but the **stable identity**, which is
+the correct routing key and replaces the filename token.
+
+##### 4.3 `IonizationSetup` - the evolved ionization mode, versioned
+
+The human-supplied interpretation layer. Renamed because "mode" now reads as
+polarity to most users, and because the scope genuinely widens.
+
+```
+IonizationSetup (append-only versioned)
+  setup_id, version, is_active, supersedes_id
+  name, description
+  polarity
+  adducts[]              -- ordered, structured (4.4), each with an optional prior
+  charge_states_allowed  -- finally more than +/-1
+  reagents[]             -- custom elements WITH purity as config, not a constant
+  calibration_collection_id, diagnostic_collection_id
+  overrides              -- optional: mass range of interest, tolerance,
+                         --   formula element ranges, tier bands
+  created_by, created_utc
+```
+
+Versioning is the load-bearing change. `AssignmentCalibration` is already
+append-only with an `is_active` flag - this is the same pattern, and it closes
+the reproducibility hole the retired note's 2.3 named (two runs with the same recorded
+config differing because an admin edited the adduct panel in between). Every `PeakAssignmentRun`, match run and calibration stamps the
+`(setup_id, version)` it used.
+
+##### 4.4 `Adduct` - structured, replacing the notation string
+
+The current model is one `String(256)`. It had **two different parsers**
+(`target_ions_compute._mechanism_parts` and
+`mascope_tools.composition.utils.parse_ionization`), whose grammars diverged
+until the assignment plan's step 3.1: the library special-cased `-H-` as
+deprotonation, where the validator reads it as a hydride removed and stores it
+under the positive polarity. Since step 3.3b the string is the standard adduct
+notation (the retired note's section 5, shipped as the assignment plan's step 3.3b), and both parsers, the validator and the frontend read it
+through one notation module (`mascope_tools.composition.mechanism_notation`,
+mirrored by the frontend's `src/lib/mechanism.js`) that also reads the legacy
+spelling. The structured row below is still the fuller answer - it is what
+multimers, neutral losses and multiple charges need - and it can build on the
+string rather than replace a private dialect.
+
+```
+Adduct
+  adduct_id
+  operation        -- add | remove
+  species          -- formula: H, Br, NO3, NH4, CH4N2O
+  species_charge   -- int, may be +/-2
+  multimer_n       -- default 1; enables [2M+H]+
+  neutral_loss     -- optional; enables [M+H-H2O]+
+  name             -- "protonation", "bromide adduct"
+  -- derived: ion_polarity, ion_charge, mass_shift, display "[M+H]+",
+  --          and the legacy spelling "+H+" (the map is exact)
+```
+
+Derived, not stored: ion polarity and charge. That removes the exact confusion
+that caused the doc bugs - the user never types a sign whose meaning is
+ambiguous.
+
+##### 4.5 `MethodBinding` - routing, decoupled from definition
+
+How a file gets a setup. Resolution order:
+
+1. explicit user assignment on the sample
+2. **acquisition-method identity** (the new, correct key)
+3. instrument + polarity, where unambiguous
+4. filename pattern - the legacy token, demoted to a fallback
+
+Polarity always comes from the file, never from the filename.
 
 ### Phase 3: the part contract (2-3 weeks, beside phase 8)
 
@@ -3616,7 +3750,7 @@ through a short-lived stacked branch, merged as one unit.
 |---|---|
 | #749 chunk model (one `sample_file` per part) | Not adopted (3.4). Parts are streams and items. |
 | `multi_sample_items_per_file.md` | Its phase 1 is phase 3 here. Its segment API and chromatogram UI are phase 6. m/z-range splitting is covered by streams, because the scan range is in the signature. |
-| `ionization_method_config.md` | Its Phase 0 items 3 (`method_file`, #2155) and 4 (the delete fan-out, #2156) are done. Its routing order (4.5) is revised by 2.4 and 5.7: a confirmed method identity above the token, a learned one below it, and no instrument-plus-polarity default. `acquisition_stream` and `method_binding` are the first concrete pieces of its `AcquisitionMethod` and `MethodBinding`. |
+| `ionization_method_config.md` (retired 2026-10-22) | Its Phase 0 items 3 (`method_file`, #2155) and 4 (the delete fan-out, #2156) are done. Its routing order (4.5) is revised by 2.4 and 5.7: a confirmed method identity above the token, a learned one below it, and no instrument-plus-polarity default. `acquisition_stream` and `method_binding` are the first concrete pieces of its `AcquisitionMethod` and `MethodBinding`. Its target model (section 4: `Instrument`, `AcquisitionMethod`, `IonizationSetup`, `Adduct`, `MethodBinding`) is carried into phase 8 here; its section 5 notation shipped as the assignment plan's step 3.3b; its section 7 was superseded by `fair_roadmap.md`; its Phase 1 (`Instrument`, `IonizationSetup`, `Adduct`) is unbuilt and unfiled (MAS-255). |
 | `chemistry_profiles.md` and assignment quality plan step 3.5 | The profiles and their future rows stay there; the seeded profile of 5.1 is the interim form of its `reagent_profile` row, and `system_key` is the identity that migrates. Routing by detection moves here (phase 5), with the guards 2.3 shows it needs. |
 | Setup-simplification proposal (2026-09-03) | Its steps 1, 2 and 4 shipped (#2044, #2046, #2070). Step 3 (presets) shipped half in phase 2 - mechanisms and modes - and completes in phase 8 with the collections; step 5 (instrument-scoped modes) is phase 2; steps 6 and 7 (notifications, per-file status) are phase 1; step 8 (the profile's reagent ions as calibration anchors) is phase 8, its further tiers later; step 9 (detection with review) is split between phases 1 and 5. Its routing ladder gains the method rung and loses the implicit instrument-plus-polarity rule. Its "profiles as shipped data" is section 5.1 here. |
 
@@ -3644,7 +3778,7 @@ Function names are the stable reference; line numbers drift.
 | Provenance on items | `create_acquisition_batches_and_items` above; `db/models.py` `SampleItem` | 2 |
 | Binding learner, backfill and report | `api/controllers/sample/files/process/bindings.py` (`_observe`, `resolve_modes_by_method_binding`); `db/scripts/backfill_method_bindings.py` (`_fold`, `_merge`); `db/scripts/report_method_binding_disagreements.py`; `mascope_backend/method_keys.py` | 2 |
 | Profile seeding | `db/admin/ionization/ensure_system_modes.py`; `mascope_backend/ionization_catalogue.py` | 2, 8 |
-| Standard-method catalogue | `mascope_backend/method_catalogue.py` (new), beside the ionization catalogue; consulted from `process/bindings.py`; the method text through `ReaderBackend` (`ionization_method_config.md` 6.1) | 8 |
+| Standard-method catalogue | `mascope_backend/method_catalogue.py` (new), beside the ionization catalogue; consulted from `process/bindings.py`; the method text through `ReaderBackend` (the retired ionization note's 6.1) | 8 |
 | Calibration anchors | `api/controllers/calibration/lib/calibration_mz_fit.py` `_resolve_calibration_isotopes` | 8 |
 | Chemistry surface | `server/frontend/src/lib/panes/PaneIonizationMode.vue`, `lib/dialogs/DialogChooseChemistry.vue`, `stores/data/modules/ionization/mode.js` | 8 |
 | Daily batches | `api/controllers/sample/batches/sample_batches_controller.py` `get_or_create_acquisition_batch` | 4 |

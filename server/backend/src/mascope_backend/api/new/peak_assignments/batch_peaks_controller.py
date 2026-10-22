@@ -15,8 +15,8 @@ into its anchor's candidate registry for the ion formula and mechanism - so the
 batch ledger stands without the per-sample ledger rows it was folded from: a
 run pruned or deleted afterwards costs the anchors nothing.
 
-Design: ``docs/dev/peak_assignment_batch.md`` and, for the member fields,
-``docs/dev/peak_assignment_batch_primary.md``.
+Design: ``docs/dev/peak_assignment_batch_primary.md`` (section 12 for the fold, section 4
+for the member fields).
 """
 
 from __future__ import annotations

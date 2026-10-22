@@ -1,8 +1,8 @@
 """Verdicts on batch peaks: one judgment per species at an anchor, batch-wide.
 
 The anchor-scoped counterpart of the per-sample verification in ``service.py``
-(``docs/dev/peak_assignment_continuity.md`` section 4,
-``docs/dev/peak_assignment_batch_primary.md`` section 6.3). A verdict here judges the
+(``docs/dev/peak_assignment_batch_primary.md`` section 6.3, which records the
+anchor-verdict design of the retired continuity note). A verdict here judges the
 **claim** a batch peak makes - its consensus formula and ionization mechanism - and
 covers every sample in the batch whose peak folded into that anchor and that carries
 no verdict of its own. Per-sample verdicts always win; that is what makes them the
