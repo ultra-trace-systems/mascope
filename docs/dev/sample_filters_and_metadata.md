@@ -136,10 +136,10 @@ creates a new `sample_item` row in the target batch that references the same
   `polarity` and `sample_item_type` parameters, but the route refuses a call
   that names neither a batch nor a sample
   ([samples_routes.py](../../server/backend/src/mascope_backend/api/routes/samples/samples_routes.py)),
-  so it is not a cross-batch query. Its time filter is written with
-  `julianday`, a SQLite function; no Postgres definition of it was found in
-  the repository and the path was not exercised for this document. The finder
-  needs a route of its own rather than an extension of this one.
+  so it is not a cross-batch query. Its time filter bounds
+  `sample_view.datetime_utc`: both bounds are inclusive, either works alone,
+  and a bound with no offset is read as UTC. The finder needs a route of its
+  own rather than an extension of this one.
 - **`sample_view`** joins `sample_item` to `sample_file`
   ([views.py](../../server/backend/src/mascope_backend/db/views.py)); it is the
   natural thing to query.
