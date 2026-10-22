@@ -1,5 +1,10 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** [Automatic ingest: routing and splitting](https://linear.app/ultra-trace/project/automatic-ingest-routing-and-splitting-68acd9575fa9) (Linear) and GitHub #2098
+- **Supersedes:** `ionization_method_config.md` (retired 2026-10-22; its target model is in phase 8 of section 10)
+
 Status: **phases 0 and 1 shipped; phase 2 shipped up to its backfill
 re-run and per-site switch; the composite cut - several m/z ranges of one
 chemistry stitched into one spectrum - is built through its readers: the

@@ -1,5 +1,9 @@
 # Device identity for instrument agents
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** [Release 2.0 and the security campaign](https://linear.app/ultra-trace/project/release-20-and-the-security-campaign-89b9f4b36f95) (Linear: MAS-210, MAS-81, MAS-82 for phase E; phase F has no issue)
+
 Goal: give instrument agents their own first-class identity, so acquisition
 uploads stop borrowing a human's credential. Every uploaded file becomes
 attributable to the machine that sent it and to the named person who vouched
@@ -12,13 +16,21 @@ and (5) what the design deliberately does not attempt. The reader-facing
 authorization model this extends is described in
 [docs/authorization.md](../authorization.md).
 
-> **Status (2026-08-20): phases A-D are built and merged**, in #1851 (TOTP)
+> **Status (2026-10-22): phases A-D are built and merged**, in #1851 (TOTP)
 > and #1877 (registry, attribution, machine accounts, token lifecycle, the
-> new agent). Section 4 has been reconciled with what shipped and now
-> describes running code, noting where the build departed from the design
-> and what it added on top; sections 5, 6 and 10 say what is left. Phases E
-> (the per-deployment rollout) and F (cleanup) have not started, so
-> everything about them is still plan. Nothing here is enabled by default:
+> new agent), with later additions this note has not been re-read for: the
+> browser timezone (#2386), the zone-aware repair of guessed timestamps
+> (#2387, so section 10's backfill item is done), access tokens hashed at
+> rest (#2400, MAS-75, so the digest that 4.5 and section 10 defer to phase F
+> is done), the 360-day lifetime kept (#2439, MAS-201), the pairing endpoints
+> reviewed (#2433, MAS-76), `instrument` and `last_seen_version` on
+> `agent_device`, and the `instrument-agent` (#2343) and `ai-agent` (#2409)
+> service scopes beside the five section 2 lists. Section 4 describes running
+> code as of 2026-08-20, noting where the build departed from the design and
+> what it added on top; sections 5, 6 and 10 say what is left. Phase E (the
+> per-deployment rollout) is MAS-210, MAS-81 and MAS-82 in the Linear project
+> Release 2.0 and the security campaign; phase F (cleanup) and the strict-mode
+> flip have no issue. Nothing here is enabled by default:
 > `require_device_tokens` ships off, and existing agents keep working until
 > a deployment is cut over.
 

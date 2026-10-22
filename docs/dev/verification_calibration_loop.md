@@ -1,5 +1,10 @@
 # Interactive verification → the calibration golden set
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-63 covers V2 activation and the corroboration refit; the V3 queue and three decisions have no issue)
+- **Supersedes:** `verification_capture_frontend.md` (retired 2026-10-22; section 4.5)
+
 *A design for a human-in-the-loop layer where users confirm or reject peak-centric
 identifications in the UI, and those verdicts become the labelled golden set that fits each
 instrument's confidence calibration. This closes the loop opened by the P2 calibration pipeline

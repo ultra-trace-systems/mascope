@@ -2,6 +2,10 @@
 
 # Authoring a custom reference compound database
 
+- **Status:** built
+- **As of:** 2026-10-22
+- **Tracked in:** closed; a guide, to move under docs/user/guides
+
 Mascope annotates assigned formulas with **known compounds** that share the same
 formula, pulled from mirrored reference databases (see
 [public_database_integration.md](public_database_integration.md)). The public

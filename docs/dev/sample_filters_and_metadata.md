@@ -2,6 +2,10 @@
 
 # Sample filters, refreshable batches and acquisition metadata: design
 
+- **Status:** design
+- **As of:** 2026-10-22
+- **Tracked in:** [Sample finder and acquisition metadata](https://linear.app/ultra-trace/project/sample-finder-and-acquisition-metadata-cd1678c32e78) (Linear; decisions MAS-104 to MAS-110, steps not yet filed)
+
 Status: **design, nothing built** (2026-10-05). The decisions in section 3 were
 settled in design review on that date. Section 9 lists what is open, each item
 with a recommendation. Code anchors were read on `develop` on the same date

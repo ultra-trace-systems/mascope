@@ -2,6 +2,10 @@
 
 # Mascope AI layer: Design & Plan
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) (Linear, MAS-123 to MAS-142)
+
 ## Purpose
 
 Mascope computes; users interrogate. Today the interrogation surface is the web
@@ -18,9 +22,15 @@ open questions that draft flagged are resolved here against the backend source,
 its appendix is corrected, and the staging is revised around a constraint the
 draft missed (section 1.3).
 
-> **Status (2026-10-19).** Design revision after codebase verification. No code
-> written. Written and verified against the tree on 2026-08-11 and committed
-> 2026-10-14 as written. Section 1 and the appendix were re-read against
+> **Status (2026-10-22).** Building, in the Linear project
+> [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) (appendix B):
+> phase 0 is mostly done (MAS-123, MAS-125, MAS-126, MAS-127, MAS-142 and MAS-202
+> Done; MAS-264 in review; MAS-277 and MAS-278 open), phase 1 has started
+> (MAS-128 part 1 merged 2026-10-21 as `libraries/ai`; MAS-129 in progress;
+> MAS-130 and MAS-131 open), the backend half of phase 3 is done (MAS-136, the
+> write routes; MAS-137, the SDK write wrappers; MAS-138 open), and phases 2 and
+> 4 have not started. The design revision below is from 2026-10-19: written and
+> verified against the tree on 2026-08-11 and committed 2026-10-14 as written. Section 1 and the appendix were re-read against
 > `develop` on 2026-10-19, the first step of the plan: the SDK's write path
 > (the batch-ledger import), the provenance block on SDK frames, unified name
 > matching, the token-reachable assignment and upload routes, device-token

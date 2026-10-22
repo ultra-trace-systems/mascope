@@ -1,5 +1,10 @@
 # Batch-Primary Peak Assignment: the Batch Ledger as the Durable Object — Design Note
 
+- **Status:** built
+- **As of:** 2026-10-22
+- **Tracked in:** closed; the open decisions 10.4 and 10.5 have no issue
+- **Supersedes:** `peak_assignment_batch.md` (section 12), `peak_assignment_copy.md` and `peak_assignment_continuity.md` (sections 6.3 and 6.4); all three retired 2026-10-22
+
 *Ingest-time assignment writes a per-sample ledger for every processed sample, and the
 batch ledger (section 12: the batch-peak design this note inverted) is derived from it
 afterwards. This note proposes inverting that: the batch ledger becomes the object that is

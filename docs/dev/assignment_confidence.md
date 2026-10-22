@@ -1,5 +1,9 @@
 # Peak Assignment & Identification Confidence — Study, Design and Plan
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-73 carries the identification level)
+
 *A science-based, layered architecture for going from a peak to a confident chemical
 identification. This document sets the scientific framing, surveys the relevant
 literature, states where we are today, defines how the work is organized, and lays out
