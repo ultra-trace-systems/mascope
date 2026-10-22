@@ -389,7 +389,9 @@ walkthrough, including authoring a custom list:
 **Interrupted runs.** A run is created `running` and finalized by the engine's
 own success and failure paths, neither of which survives the process dying - and
 `CancelledError` is a `BaseException`, so it bypasses the `except Exception`
-finalizer too. `reset_running_peak_assignment_runs` reconciles those at startup.
+finalizer too. `reset_running_peak_assignment_runs` reconciles those at startup; what an
+operator sees of it is under "Interrupted runs" in
+[maintaining.md](../maintaining.md#reclaiming-assignment-runs).
 It is deliberately best-effort: it operates on a table a recent migration added,
 so on a database not yet upgraded to this head it must warn and continue rather
 than take the server down with it.

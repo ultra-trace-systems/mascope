@@ -342,21 +342,13 @@ the constants are in
 
 ### Matching
 
-The calibrants are the isotopes of the mode's calibration collection: every compound of the
-collection under every mechanism of the mode, at the instrument's resolution, kept when their
-relative abundance is at least 0.15 (`DEFAULT_ISOTOPE_ABUNDANCE_MIN`). They are looked for among
-the file's detected peaks:
-
-1. The peak list is loaded without weak and satellite peaks (`load_peak_data`, `drop_bad_peaks`).
-2. Peaks of the mode's polarity with S/N ≥ 10 (`TOF_SNR_THRESHOLD`) are kept.
-3. Of those, the ones within the refine window of some calibrant, 100 ppm by default
-   (`TOF_DEFAULT_REFINE_WINDOW`).
-4. Peaks that overlap a neighbour within one FWHM by the instrument's resolution function are
-   dropped, both of them (`_remove_overlapping_mzs`). The Orbitrap's local-dominance guard is off
-   for TOF.
-5. Each calibrant takes the strongest remaining peak within its refine window, by time-averaged
-   peak area (`_match_max_in_range`). A peak two calibrants claim gives one point, read as the
-   calibrant for which it is the more abundant line (`_one_reading_per_peak`).
+The matching steps and their constants - the 0.15 abundance floor, S/N >= 10, the 100 ppm
+refine window, the FWHM overlap drop, one reading per peak, three points at least - are in
+[calibration.md](../user/how-it-works/calibration.md#candidate-selection-and-matching) since
+2026-10-22. In the code: `DEFAULT_ISOTOPE_ABUNDANCE_MIN`; `load_peak_data` and `drop_bad_peaks`
+(weak and satellite peaks out); `TOF_SNR_THRESHOLD`; `TOF_DEFAULT_REFINE_WINDOW`;
+`_remove_overlapping_mzs` (the Orbitrap's local-dominance guard is off for TOF);
+`_match_max_in_range` and `_one_reading_per_peak`.
 
 A peak that sits beside an unresolved neighbour, or a ¹³C line closer than the overlap test
 catches, is matched like any other: nothing at this stage tells a clean calibrant from a
@@ -424,19 +416,15 @@ stamped `status: "unfitted"` since 2026-09-18 and recognised without the stamp b
 
 ### Apply
 
-A TOF fit is **absolute**. `TofCalibrationHandler._apply_sync` recomputes the m/z axis from the TOF
-index with `tof_to_mass(arange(n), mode, par)` and writes it to the `signal` and every
-`sum_signal*` store, recomputes the peaks' m/z from their stored `tof` coordinate in
-`peak_timeseries`, and stores the record in the file's props. Nothing depends on the axis the file
-had before (unlike an Orbitrap apply, which rescales the stored axis by a cumulative factor). So:
-
-- re-calibrating needs no peak re-detection: refit from the stored peak TOF indices, then apply;
-- an old fit is restored exactly from its two parameters;
-- applying the same fit twice changes nothing.
-
-`calibration_mz_apply` then clears the file's matches and sets its non-acquisition batches to
-`rematch`. Editing the calibration collection a mode already uses only sets its batches to
-`rematch`: the files stay on their old calibration until someone re-calibrates them (MAS-188).
+That a TOF fit is absolute - the axis recomputed from the stored TOF index, so a refit needs no
+re-detection, an old fit is restored from its parameters and a fit applied twice changes nothing -
+and what applying one does to the file's matches and batches are in
+[calibration.md](../user/how-it-works/calibration.md#time-of-flight-tof-multi-point-calibration)
+since 2026-10-22. In the code: `TofCalibrationHandler._apply_sync` writes the axis to the `signal`
+and every `sum_signal*` store and recomputes the peaks' m/z from their stored `tof` coordinate in
+`peak_timeseries`; `calibration_mz_apply` then clears the file's matches and sets its
+non-acquisition batches to `rematch`. Editing the calibration collection a mode already uses only
+sets its batches to `rematch` (MAS-188).
 
 ## 4. The plan
 
@@ -453,8 +441,8 @@ tool, and accuracy is quoted in ppm per mass band, not as one RMS.
   accuracy, each calibrant's presence rate, the composition-free family offset for the mode's
   reagent (CHO·C3H10N+, CHO·NO3−, CHO·Br−, bare CHO) and known cluster series. Its mode-0 refit
   must equal the node's stored fit to 0.01 ppm (MAS-174). It is the maintenance script
-  `audit_tof_calibration` (`mascope prod db script run audit_tof_calibration`, configured through
-  `TOF_AUDIT_*` variables listed in its docstring): a subclass of `TofCalibrationHandler` that
+  `audit_tof_calibration` (how to run it and its `TOF_AUDIT_*` variables:
+  [maintaining.md](../maintaining.md#auditing-a-tof-instruments-mass-calibration)): a subclass of `TofCalibrationHandler` that
   swaps only what the handler reads for reads that write nothing, so the matching, selection and
   fit are the node's own. The family offset reads strong peaks (S/N ≥ 20) against CcHhOo neutrals
   of up to three double bonds and rings under each mechanism of the mode, where members of one

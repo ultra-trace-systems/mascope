@@ -6727,6 +6727,9 @@ its own status.
   changes; the reference engine reads a run's mechanisms without its adapter.
 - **Size.** M, in two PRs (accept and show; migrate). Not a stage-3 gate
   item: it moves no metric, and it lands whenever it is ready before 2.0.
+- **Operator docs.** The notation, the migration and the 2.0 refusal are
+  under "Mechanism notation" in
+  [maintaining.md](../maintaining.md#mechanism-notation) since 2026-10-22.
 
 ### 3.3c Reagent rows read like rows
 
@@ -6859,6 +6862,9 @@ its own status.
   fleet library is logged and under two minutes.
 - **Size.** S-M. Built beside 3.3 in its own PR, and on develop before the
   pass that measures 3.3 (decision 28).
+- **Operator docs.** The seed, its first-start cost and the 300 s healthcheck
+  are under "What a start seeds" in
+  [maintaining.md](../maintaining.md#what-a-start-seeds) since 2026-10-22.
 
 ### 3.3f A list is read through the channels the run opened
 

@@ -27,6 +27,8 @@ Everything below assumes an Ubuntu host provisioned with
 | **Require a new password from every user** | Manage users in the app, or `mascope prod db script run require_password_change` |
 | **Clear a lost second factor (2FA)** | Manage users in the app, or `mascope prod mfa reset <email>` |
 | What a raw file measured (its scan streams) | `mascope file scans <file.raw>` |
+| What the method bindings would route, and where a file name disagrees | `mascope prod db script run report_method_binding_disagreements` |
+| Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` (fill rate and projection on each line) |
 | Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
@@ -1404,6 +1406,40 @@ before it landed, the UI shows no assignment views, and the
 `/api/peak-assignments` write routes refuse to launch runs (403; the read
 routes stay open, so ledgers written while it was on remain visible).
 
+#### What a start seeds
+
+Every backend start creates, before the server listens, the ionization
+mechanisms the engine's chemistry needs - the mechanisms the shipped ionization
+modes declare and every secondary channel an assignment profile can open,
+nineteen in all - and then the eleven shipped modes. Each mechanism is built
+with the target ions of every compound already in the library, so a fresh
+server searches under the same chemistry as any other from its first run. A
+mechanism the deployment already holds under that notation, in either
+spelling, is adopted as it is; the shipped modes arrive inert (no token, no
+collections, left out of the ionization listing until a deployment adopts one);
+a second start changes nothing.
+
+The first start on a large library is the slow one: about 6.5 s per missing
+mechanism against a 1,466-compound library, 85 s for thirteen. The backend's
+compose healthcheck allows a start 300 s for this (`start_period`); a
+healthcheck of your own in front of the backend has to allow the same, or it
+marks a slow first start unhealthy. A shipped mechanism cannot be deleted: the
+settings show a lock, and the delete route refuses it as it refuses a shipped
+mode.
+
+#### Mechanism notation
+
+An ionization mechanism is written in the standard adduct form, the ion's
+charge at the end: `[M-H]-`, `[M+Br]-`, `[M+NH4]+`, `[M]+.`, `[M-H]+`, a
+labelled moiety kept as it is (`[M+^NO3]-`). Rows stored in the older
+`<operation><moiety><charge>` form (`-H+` for deprotonation, `+Br-`) were
+rewritten in the standard form by a data migration (alembic `5193d1e942e0`,
+whose downgrade is the inverse) when the release that shipped the notation was
+applied, so there is no operator step; the mode editor, the exports and the SDK
+show the standard form. The old form is still accepted on input and converted.
+**The 2.0 release refuses it on input**: a client, a script or a list of your
+own that still writes `-H+` has to write `[M-H]-` before the update to 2.0.
+
 ### Reclaiming assignment runs
 
 Each assignment run writes **one row per observed peak** of its sample -
@@ -1477,6 +1513,16 @@ Deleting rows returns space to Postgres for reuse but not to the filesystem;
 `VACUUM FULL peak_assignment` (or `pg_repack`) afterwards does that, and takes
 an exclusive lock while it runs.
 
+**Interrupted runs.** An assignment run that a backend stop interrupts - a
+restart, an update, a crash - cannot finish or fail itself. At its next start
+the backend marks every run still in a state a server task owns as `failed`,
+with the error "Interrupted: the server restarted while this run was in
+progress.", so the run no longer holds its sample against new work; re-run the
+assignment. An import a client started and did not finish is
+not a server task and is left to `MASCOPE_PRUNE_KEEP_IMPORTING_HOURS` above.
+On a database not yet migrated to the release's head the step warns and the
+server starts anyway.
+
 ### The composite cut
 
 **The composite cut** (`composite_scan_streams` in the server's `[backend]`
@@ -1540,6 +1586,151 @@ What to expect and how to pace it:
   file is done. A file already stitched by 1.11.0 gains, when re-processed
   under 1.12.0, a calibration factor per range and the overlap readings in its
   processing detail.
+
+### Method bindings
+
+**A method binding** records which chemistry an acquisition method has been
+seen running - keyed on the instrument, the method file's name and the scan
+signature of the method's MS1 streams - so that a later file of the same method
+can be bound to its ionization mode without a token in its name. Every file
+bound by its acquisition record, a person's choice or a filename token teaches
+its method's binding; [the design note](dev/ingest_routing_and_splitting.md)
+(section 5.3) has the rules. What a deployment does with the bindings is
+`method_binding` in the `[backend]` section of the env's config toml:
+
+```toml
+[backend]
+method_binding = "shadow"   # "shadow" (the default), "route" or "off"
+```
+
+- `"shadow"` learns a binding from every file that routes on a stronger rung
+  and routes nothing on what it learned.
+- `"route"` also binds a file **no token names** to the chemistry its method
+  has been seen running, instead of parking it as *Needs a chemistry*. It sits
+  below the filename token, so a file a token names is bound exactly as before.
+  A method seen running two chemistries is skipped rather than guessed at, and
+  so is a method whose name is a constant the instrument reports for every
+  acquisition (some TOF configurations), which is keyed on the signature class
+  alone and yields to a token. What it gains is concentrated at the sites whose
+  file names carry no token: switch it on there first and watch the parked
+  count.
+- `"off"` records nothing.
+
+It takes effect on restart (`mascope prod up`) and applies to files converted
+from then on. With the rung on, re-processing a parked file from Raw files asks
+its method too, so the files that waited for a chemistry are picked up once one
+file of their method has been given one.
+
+**Prime the table from history.** Bindings are learned as files arrive, so a
+server that installs the feature knows nothing of the methods it has routed
+for years until the backfill reads them. Two scripts, in this order:
+
+```sh
+DRY_RUN=1 mascope prod db script run backfill_scan_stream_census   # what it would do
+mascope prod db script run backfill_scan_stream_census             # again, until nothing is left
+DRY_RUN=1 mascope prod db script run backfill_method_bindings
+mascope prod db script run backfill_method_bindings
+```
+
+- `backfill_scan_stream_census` records, in the files converted before the
+  census existed, the scan-stream census the signature class comes from,
+  reading it off the raw data kept beside each converted sample. Orbitrap files
+  only: a TOF acquisition is one stream and has nothing to fill in. Reading a
+  raw file per census is slow, so a run is bounded and resumable:
+  `CENSUS_LIMIT` caps how many files one run reads (run it again until it
+  reports nothing left to do), a file whose census could not be read is
+  remembered and passed over on the next run, and `CENSUS_RETRY=1` tries those
+  again once the cause is dealt with. A file without a census is skipped by
+  the binding backfill, not guessed at, so on a server with Orbitrap history
+  this one runs first or the next learns nothing from that history.
+- `backfill_method_bindings` folds every acquisition sample auto-processing
+  made into the table. It merges with what live learning has written, so
+  running it twice changes nothing, and the mode a binding points at is the
+  newest one its method's files bound to.
+
+Both take the pre-script database dump the runner makes for any script that
+writes.
+
+**Read what the bindings would do** before and after a change to the switch:
+
+```sh
+mascope prod db script run report_method_binding_disagreements
+BINDING_REPORT_FILES=100000 mascope prod db script run report_method_binding_disagreements
+```
+
+For every binding it says what the newest files of that method bind to by
+their token today and what they would bind to by their method - asked of every
+file read, including the ones a token names, which production never asks -
+plus the files `route` would bind and `shadow` parks, the keys a guard holds
+back and why, the keys following a change of mode that has not landed, and the
+files whose name matches two chemistries, which park whatever the bindings say.
+Both answers come from the code the pipeline runs. It writes nothing, so no
+dump is taken before it. `BINDING_REPORT_FILES` caps the files one run walks
+(20,000 by default, newest acquisition first) and `BINDING_REPORT_PER_KEY` how
+many of them each binding is compared on (200).
+
+**Where the composite cut is on**, `report_stitch_overlaps` reads what the
+scan ranges of stitched files record where two of them overlap: per layout and
+per overlap, which range owns it today, how many ions the two share and how the
+second reads them against the first (the ratio and the m/z offset), how many
+peaks each range holds in the overlap that the other does not, and the ions the
+two ranges do not measure alike. It decides nothing - a ratio far from one can
+be the layout's window factor or chemistry inside the instrument - and writes
+nothing. `STITCH_REPORT_FILES` caps the raw Orbitrap files one run walks
+(5,000, newest first).
+
+```sh
+mascope prod db script run report_stitch_overlaps
+```
+
+### Auditing a TOF instrument's mass calibration
+
+`audit_tof_calibration` refits the stored peaks of one TOF instrument's files
+exactly as the calibration node does - the same matching, the same 15 ppm
+residual rule, the same subset search for five matches or fewer, the same fit -
+under the mode's calibration collection and any calibrant sets you name, and
+reports how good each fit is per ion and per mass band. It is how a change to a
+calibrant collection is measured before it is made and after, in ppm per mass
+band rather than one RMS.
+
+```sh
+TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration
+TOF_AUDIT_INSTRUMENT=<name> TOF_AUDIT_FROM=2026-10-12 TOF_AUDIT_TO=2026-10-18 \
+    TOF_AUDIT_SETS='{"proposed": ["C3H9N", "C6H18N2", "C13H25NO2"]}' \
+    mascope prod db script run audit_tof_calibration
+```
+
+It writes nothing, so no dump is taken before it, and it never computes a peak
+timeseries the store lacks, so it can run on a site inside the backend
+container or on a copy of a site's database and filestore. For each file in the
+range, and each ionization mode the files were acquired in, it reports: each
+ion line's median and IQR error where the fit used it and where it did not
+(held out); each calibrant's presence rate and how often the fit kept it; per
+mass band, the fitted and the held-out error, and how far strong peaks sit from
+the nearest CHO formula under each of the mode's mechanisms, which needs no
+identity to be right; and the nitrate, sulfate and bromide cluster series
+member by member. It checks that its refit under the mode's own collection
+lands on the stored fit to 0.01 ppm on every file the node fitted, and says why
+where it does not.
+
+Everything is set through the environment:
+
+| Variable | Meaning |
+|---|---|
+| `TOF_AUDIT_INSTRUMENT` | The instrument, as files name it. Required |
+| `TOF_AUDIT_FROM` / `TOF_AUDIT_TO` | Acquisition dates, inclusive, `YYYY-MM-DD` (UTC). Default: the seven days up to today |
+| `TOF_AUDIT_PER_DAY` | Files per day, spread over the day; `0` (the default) for every file |
+| `TOF_AUDIT_MODE` | Only the files of the ionization mode of this name |
+| `TOF_AUDIT_SETS` | Named calibrant sets as JSON: a name to a list of compound formulas, which the mode's mechanisms make ions of as a collection would, or to `{"collection": "<id or name>"}`. The mode's own collection is always audited, as `collection` |
+| `TOF_AUDIT_MODELS` | Tofwerk calibration modes to fit, comma-separated; default `0` |
+| `TOF_AUDIT_BANDS` | Mass band edges in Th; default `40,100,150,200,300,500` |
+| `TOF_AUDIT_FAMILIES` | Mechanisms whose CHO family is measured, comma-separated (`[M+NO3]-,[M-H]-`); default the mode's |
+| `TOF_AUDIT_SERIES` | Cluster series as JSON, a name to `{"core": "HSO4", "unit": "H2SO4", "n": 4, "charge": "-"}`, or `none`; default the three negative-ion series |
+| `TOF_AUDIT_FAMILY_SNR`, `TOF_AUDIT_FAMILY_WINDOW_PPM`, `TOF_AUDIT_FAMILY_DBE_MAX` | The family yardstick: strong peaks above this S/N (20), within this window (30 ppm), against formulas of up to this many double bonds and rings (3) |
+| `TOF_AUDIT_JSON=1` | Also print the whole result as one JSON document, per-file fits included, as the last line of the output |
+
+The TOF mass calibration plan ([tof_calibration.md](dev/tof_calibration.md))
+is where the audit's readings go and what they decide.
 
 ### Loading reference chemistry data
 
