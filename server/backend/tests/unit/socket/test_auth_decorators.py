@@ -1,5 +1,5 @@
 """
-Unit tests for the socket_auth decorator's logging levels.
+Unit tests for the socket auth decorators' logging levels.
 
 ``connect`` accepts unauthenticated sockets, so every guarded event such a
 client emits reaches the decorator with no session in Redis. That is routine
@@ -8,6 +8,7 @@ above are exported; see mascope_runtime.logging), while a genuine bug inside a
 handler must still be recorded with its traceback.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -17,8 +18,12 @@ from test_utils import captured_logs
 # other; importing the socket side first hits the cycle mid-initialization.
 # The application boots through the api side, so do the same here.
 import mascope_backend.api.new.auth  # noqa: F401
+from mascope_backend.api.new.auth.exceptions import InvalidTokenException
 from mascope_backend.runtime import runtime
-from mascope_backend.socket.auth.decorators import socket_auth
+from mascope_backend.socket.auth.decorators import (
+    file_converter_socket_auth,
+    socket_auth,
+)
 from mascope_backend.socket.auth.exceptions import SocketForbiddenError
 from mascope_backend.socket.storage import SocketSessionError
 
@@ -95,3 +100,97 @@ async def test_handler_bug_is_still_monitored():
     assert len(monitored) == 1
     assert monitored[0]["level"].name == "ERROR"
     assert monitored[0]["exception"] is not None
+
+
+# file_converter_socket_auth: the converter sends its token in every event's
+# payload. A rejection must not propagate out of the wrapper: python-socketio
+# runs each handler as a task nothing awaits, so a raised rejection surfaced
+# as "Task exception was never retrieved" at ERROR, in error monitoring.
+
+
+async def _call_converter_event(data: dict, user=None, minimum_role="editor"):
+    """Invoke a file_converter_socket_auth-guarded handler.
+
+    ``user`` is either the user validate_service_access_token returns or the
+    exception it raises. Returns the captured records, the handler's calls and
+    the wrapper's return value; awaiting the wrapper raises if anything
+    propagates out of it.
+    """
+    calls = []
+
+    @file_converter_socket_auth(minimum_role=minimum_role)
+    async def handle_event(sid, event_data):
+        calls.append(event_data)
+        return "ok"
+
+    validate = (
+        AsyncMock(side_effect=user)
+        if isinstance(user, Exception)
+        else AsyncMock(return_value=user)
+    )
+    with (
+        captured_logs() as records,
+        patch(f"{_DECORATORS}.validate_service_access_token", new=validate),
+    ):
+        result = await handle_event("sid-001", data)
+    return records, calls, result
+
+
+_EDITOR = SimpleNamespace(username="converter", role_id=200)
+_GUEST = SimpleNamespace(username="converter", role_id=100)
+
+
+@pytest.mark.asyncio
+async def test_converter_missing_token_is_dropped_unmonitored():
+    records, calls, result = await _call_converter_event({"filename": "a.raw"})
+
+    assert calls == []
+    assert result is None
+    assert _monitored(records) == []
+    assert any("Missing access token" in r["message"] for r in records)
+
+
+@pytest.mark.asyncio
+async def test_converter_invalid_token_is_dropped_unmonitored():
+    records, calls, result = await _call_converter_event(
+        {"access_token": "expired"}, user=InvalidTokenException("Token expired")
+    )
+
+    assert calls == []
+    assert result is None
+    assert _monitored(records) == []
+    assert any("Token expired" in r["message"] for r in records)
+
+
+@pytest.mark.asyncio
+async def test_converter_insufficient_role_is_dropped_unmonitored():
+    records, calls, result = await _call_converter_event(
+        {"access_token": "token"}, user=_GUEST
+    )
+
+    assert calls == []
+    assert result is None
+    assert _monitored(records) == []
+
+
+@pytest.mark.asyncio
+async def test_converter_role_configuration_error_is_still_monitored():
+    records, calls, _ = await _call_converter_event(
+        {"access_token": "token"}, user=_EDITOR, minimum_role="no-such-role"
+    )
+
+    assert calls == []
+    monitored = _monitored(records)
+    assert len(monitored) == 1
+    assert "Invalid role configuration" in monitored[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_converter_authenticated_event_reaches_the_handler():
+    records, calls, result = await _call_converter_event(
+        {"access_token": "token", "filename": "a.raw"}, user=_EDITOR
+    )
+
+    assert calls == [{"filename": "a.raw"}]
+    assert result == "ok"
+    assert _monitored(records) == []
