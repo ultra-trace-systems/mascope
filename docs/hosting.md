@@ -228,6 +228,58 @@ State lives under `.runtime/` (PostgreSQL data + the filestore) - back it up.
 `mascope prod db backup` takes a manual dump; see the database section of the
 developer guide.
 
+### Isolated and restricted sites
+
+Some sites will not give the server a default route to the internet. Ask
+first whether "no internet" means "no unrestricted internet": an IT department
+that refuses a default route will often accept an outbound firewall rule to a
+fixed list of names, and with that list the whole update path above works
+unchanged, and so does everything else in the
+[maintainer runbook](maintaining.md). Nothing in Mascope restricts egress
+itself - the fleet firewall role allows all outgoing traffic - so an
+allow-listed site is an ordinary server whose own firewall does the
+restricting.
+
+**The egress allow-list.** Everything a self-hosted server reaches out to once
+it is installed:
+
+| Name | What for |
+|---|---|
+| `api.github.com`, `github.com` | Release discovery and the release manifest (`mascope prod update --check`, the [unattended updater](maintaining.md#unattended-updates-the-timer)), and the tag fetch that aligns the checkout with the release |
+| `ghcr.io`, `pkg-containers.githubusercontent.com` | The release images (`mascope prod docker pull`) |
+| `pypi.org`, `files.pythonhosted.org` | The CLI reinstall at each release |
+| The Ubuntu archive and security mirrors, or the customer's own mirror | OS patching |
+| An NTP source | Time |
+| Optional: the monitoring endpoints | A healthchecks.io-style URL for the [backup](maintaining.md#backups) and [disk-monitor](maintaining.md#the-monitor-early-warning) pings, and the [error-tracking](maintaining.md#error-reporting-to-glitchtip-opt-in) box where a tunnel to it exists |
+
+A first install (`tooling/ubuntu.sh install`) needs more than that - the apt
+mirrors, Docker's apt repository, the NodeSource script,
+`packages.microsoft.com`, the snap store for uv, restic from apt - so install
+with the route open, or from a mirror of those.
+
+**Without any route**, the update path stops: release discovery fails (so
+leave `mascope-update.timer` off, or its unit fails every night), the image
+pull fails before anything running is touched, and the CLI reinstall fails.
+Releases then have to be carried in by hand, and the server's own
+diagnostics carried out; Mascope ships no tooling for that yet (the design is
+[isolated_deployment_plan.md](dev/isolated_deployment_plan.md), which also
+lists every outbound contact with its code path). The File Agent is
+unaffected - it reaches the server over the LAN and the instrument PC's
+internet state never enters into it - and so are the user docs, which the
+frontend image bundles with their fonts and scripts for exactly this case.
+
+**Host hygiene on such a server.** None of this is Mascope code, but every
+item has bitten some isolated Linux box:
+
+| Concern | Do this |
+|---|---|
+| Time | Point the host's time sync (`systemd-timesyncd` on Ubuntu) at the customer's NTP server, or at the instrument PC, whose Windows Time service can be configured to serve NTP. A minute of skew locks every two-factor user out: TOTP verifies with a 30 s step and one step of tolerance either way, and token expiry is time-based too. |
+| TLS | Use the internal-CA or self-signed option above. The DNS-01 option needs egress at every renewal and is out. |
+| OS patching | Unattended upgrades cannot run. Either apply security updates by hand when someone is on the host (the fleet's `reboot.yml` verifies the stack after a reboot), or agree that the customer's own patching regime covers the host. Write down which, per site. |
+| Backups | Keep [`backup-cron.sh`](maintaining.md#backups)'s local layer; point restic at a local path or a customer NAS over SFTP instead of an internet target. If off-site copies are required, a machine that is online - the instrument PC, say - can push the local restic repository out. |
+| Monitoring | Leave `HEALTHCHECK_URL` and `MASCOPE_SENTRY_DSN` unset, so nothing fails nightly for want of a route; error events would be dropped anyway, as the SDK keeps no on-disk queue. `mascope prod doctor` on the host is the status report. |
+| Disk | The [disk-check timer](maintaining.md#the-monitor-early-warning) is local and keeps working; enable it as usual. |
+
 For the full operations reference - provisioning, updates, backups, and
 troubleshooting - see the [maintainer runbook](maintaining.md). For deployment
 internals (runtime, database tuning, env sync) see the
