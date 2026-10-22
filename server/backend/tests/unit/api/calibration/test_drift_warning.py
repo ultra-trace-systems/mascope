@@ -1,5 +1,6 @@
 """Unit tests for the acquisition-drift warning."""
 
+import asyncio
 import time
 from datetime import datetime
 from types import SimpleNamespace
@@ -34,18 +35,52 @@ TOF_FILE = "TOF-1_file.h5"
 _CTRL = "mascope_backend.api.controllers.calibration.calibration_controller"
 
 
+class FakeRedis:
+    """The window's Redis calls against a dict every "worker" shares."""
+
+    def __init__(self):
+        self.store: dict[str, str] = {}
+        self.expiries: list[int] = []
+        self.failing = False
+
+    async def set(self, key, value, ex=None, nx=False):
+        if self.failing:
+            raise ConnectionError("Redis is down")
+        if nx and key in self.store:
+            return None
+        self.store[key] = value
+        self.expiries.append(ex)
+        return True
+
+    async def delete(self, *keys):
+        if self.failing:
+            raise ConnectionError("Redis is down")
+        for key in keys:
+            self.store.pop(key, None)
+
+
 @pytest.fixture(autouse=True)
-def reset_drift_suppression():
-    """Give every test an empty suppression window to start from."""
+def fake_redis(monkeypatch):
+    """Give every test an empty suppression window to start from.
+
+    Both halves of it: this worker's own entries and the shared store.
+    """
+    fake = FakeRedis()
+    monkeypatch.setattr(calibration_controller, "_redis", lambda: fake)
     calibration_controller._drift_warned_at.clear()
-    yield
+    yield fake
+    calibration_controller._drift_warned_at.clear()
+
+
+def _another_worker():
+    """Stand in for a sibling uvicorn worker: none of this one's entries."""
     calibration_controller._drift_warned_at.clear()
 
 
 def _observe(fit, instrument="ORBI-1", filename=ORBI_FILE):
     """Run one drift observation, returning the log records it produced."""
     with captured_logs() as records:
-        warn_on_acquisition_drift(fit, instrument, filename)
+        asyncio.run(warn_on_acquisition_drift(fit, instrument, filename))
     return records
 
 
@@ -57,6 +92,7 @@ def _capture(fit, instrument="ORBI-1", filename=ORBI_FILE):
     :class:`TestDriftWarningSuppression`.
     """
     calibration_controller._drift_warned_at.clear()
+    calibration_controller._redis().store.clear()
     return _observe(fit, instrument, filename)
 
 
@@ -411,7 +447,7 @@ class TestClearDriftSuppression:
         calibration_controller._drift_warned_at.update(
             {("ORBI-1", 10.0): 1000.0, ("ORBI-1", 50.0): 1000.0}
         )
-        clear_drift_suppression("ORBI-1")
+        asyncio.run(clear_drift_suppression("ORBI-1"))
 
         assert calibration_controller._drift_warned_at == {}
 
@@ -419,7 +455,7 @@ class TestClearDriftSuppression:
         calibration_controller._drift_warned_at.update(
             {("ORBI-1", 10.0): 1000.0, ("ORBI-2", 10.0): 1000.0}
         )
-        clear_drift_suppression("ORBI-1")
+        asyncio.run(clear_drift_suppression("ORBI-1"))
 
         assert list(calibration_controller._drift_warned_at) == [("ORBI-2", 10.0)]
 
@@ -428,17 +464,44 @@ class TestClearDriftSuppression:
         # nothing keyed under an empty name to clear - and clearing "all
         # unnamed" would be indiscriminate.
         calibration_controller._drift_warned_at.update({("ORBI-1", 10.0): 1000.0})
-        clear_drift_suppression(None)
-        clear_drift_suppression("")
+        asyncio.run(clear_drift_suppression(None))
+        asyncio.run(clear_drift_suppression(""))
 
         assert list(calibration_controller._drift_warned_at) == [("ORBI-1", 10.0)]
+
+    def test_the_shared_windows_are_forgotten_too(self, fake_redis):
+        fake_redis.store.update(
+            {
+                "mascope:calibration:drift-warned:ORBI-1:10": "1",
+                "mascope:calibration:drift-warned:ORBI-1:50": "1",
+                "mascope:calibration:drift-warned:ORBI-2:10": "1",
+            }
+        )
+        asyncio.run(clear_drift_suppression("ORBI-1"))
+
+        assert list(fake_redis.store) == ["mascope:calibration:drift-warned:ORBI-2:10"]
+
+    def test_redis_down_still_clears_this_worker(self, fake_redis):
+        calibration_controller._drift_warned_at.update({("ORBI-1", 10.0): 1000.0})
+        fake_redis.failing = True
+        asyncio.run(clear_drift_suppression("ORBI-1"))
+
+        assert calibration_controller._drift_warned_at == {}
+
+    def test_another_worker_warns_again_afterwards(self):
+        drifting = {"quality": {"pre_fit_mz_error_ppm": -12.53}}
+        assert len(_warnings(_observe(drifting))) == 1
+        asyncio.run(clear_drift_suppression("ORBI-1"))
+
+        _another_worker()
+        assert len(_warnings(_observe(drifting))) == 1
 
     def test_the_instrument_warns_again_afterwards(self):
         drifting = {"quality": {"pre_fit_mz_error_ppm": -12.53}}
         assert len(_warnings(_observe(drifting))) == 1
         assert _warnings(_observe(drifting)) == []
 
-        clear_drift_suppression("ORBI-1")
+        asyncio.run(clear_drift_suppression("ORBI-1"))
 
         assert len(_warnings(_observe(drifting))) == 1
 
@@ -525,24 +588,30 @@ class TestApplyRoutesTheMarkerByPath:
         assert stored["acquisition_drift_ppm"] == pytest.approx(12.6)
         assert "drift_cleared_at" not in stored
 
+    SHARED = "mascope:calibration:drift-warned:ORBI-1:10"
+
     @pytest.mark.asyncio
-    async def test_manual_apply_retires_the_stale_suppression_window(self):
+    async def test_manual_apply_retires_the_stale_suppression_window(self, fake_redis):
         # The warning that opened the window came from the fit the operator
         # has just overruled, so leaving it would hide a genuine drift on this
         # instrument for the rest of the day.
         calibration_controller._drift_warned_at[self.WINDOW] = time.monotonic()
+        fake_redis.store[self.SHARED] = "1"
 
         await _apply(dict(self.CLEAN), self.FLAGGED, manual=True)
 
         assert self.WINDOW not in calibration_controller._drift_warned_at
+        assert self.SHARED not in fake_redis.store
 
     @pytest.mark.asyncio
-    async def test_automatic_apply_keeps_the_suppression_window(self):
+    async def test_automatic_apply_keeps_the_suppression_window(self, fake_redis):
         calibration_controller._drift_warned_at[self.WINDOW] = time.monotonic()
+        fake_redis.store[self.SHARED] = "1"
 
         await _apply(dict(self.CLEAN), self.FLAGGED, manual=False)
 
         assert self.WINDOW in calibration_controller._drift_warned_at
+        assert self.SHARED in fake_redis.store
 
     @pytest.mark.asyncio
     async def test_manual_apply_on_a_displaced_axis_clears_and_retires_the_window(self):
@@ -658,6 +727,14 @@ class TestTheWarningFollowsTheMarker:
 
         assert len(_warnings(records)) == 1
 
+    @pytest.mark.asyncio
+    async def test_the_pipeline_keeps_to_the_shared_window(self, fake_redis):
+        # Another worker warned about this instrument already today.
+        fake_redis.store["mascope:calibration:drift-warned:ORBI-1:10"] = "1"
+        records = await _calibrate_sample(dict(self.DISPLACED), None, manual=False)
+
+        assert _warnings(records) == []
+
 
 class TestDriftWarningSuppression:
     """Drift persists until an instrument is retuned, so it is reported on a
@@ -712,6 +789,48 @@ class TestDriftWarningSuppression:
         window = calibration_config.ACQUISITION_DRIFT_WARNING_INTERVAL_S
         for key in list(calibration_controller._drift_warned_at):
             calibration_controller._drift_warned_at[key] -= window
+        # Redis expires the shared window by then too.
+        calibration_controller._redis().store.clear()
+        assert len(_warnings(_observe(self.DRIFTING))) == 1
+
+    def test_another_worker_is_suppressed_too(self):
+        # Each uvicorn worker keeps its own entries; with those alone, one
+        # drifting instrument warned once a day per worker, and again after
+        # every restart.
+        assert len(_warnings(_observe(self.DRIFTING))) == 1
+        _another_worker()
+        assert _warnings(_observe(self.DRIFTING)) == []
+
+    def test_the_shared_window_lasts_the_interval(self, fake_redis):
+        _observe(self.DRIFTING)
+
+        assert list(fake_redis.store) == ["mascope:calibration:drift-warned:ORBI-1:10"]
+        assert fake_redis.expiries == [
+            int(calibration_config.ACQUISITION_DRIFT_WARNING_INTERVAL_S)
+        ]
+
+    def test_a_worker_that_found_the_window_taken_does_not_ask_again(self, fake_redis):
+        _observe(self.DRIFTING)
+        _another_worker()
+        _observe(self.DRIFTING)
+        # The window it found taken is this worker's own for the interval
+        # now, so it stays quiet without another round trip.
+        fake_redis.store.clear()
+        assert _warnings(_observe(self.DRIFTING)) == []
+
+    def test_an_unnamed_instrument_keeps_out_of_the_shared_window(self, fake_redis):
+        _observe(self.DRIFTING, instrument=None)
+        assert fake_redis.store == {}
+
+    def test_redis_down_falls_back_to_the_per_worker_window(self, fake_redis):
+        # A Redis blip must neither lose the warning nor fail the calibration.
+        fake_redis.failing = True
+        records = _observe(self.DRIFTING)
+        assert len(_warnings(records)) == 1
+        assert any("drift detail" in r["message"] for r in records)
+        assert _warnings(_observe(self.DRIFTING)) == []
+
+        _another_worker()
         assert len(_warnings(_observe(self.DRIFTING))) == 1
 
     def test_the_window_is_a_day(self):
