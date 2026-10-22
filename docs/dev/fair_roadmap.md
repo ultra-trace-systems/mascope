@@ -7,9 +7,10 @@
 This document reviews Mascope against the [FAIR principles](https://www.go-fair.org/fair-principles/)
 (Findable, Accessible, Interoperable, Reusable) and proposes a phased plan.
 
-It supersedes and expands section 7 of
-[ionization_method_config.md](ionization_method_config.md), which introduced the
-topic as a side-effect of the ionization redesign. That framing was right about
+It supersedes and expands section 7 of the ionization redesign note
+(`ionization_method_config.md`, retired 2026-10-22; its target model now lives in
+[ingest_routing_and_splitting.md](ingest_routing_and_splitting.md) phase 8), which
+introduced the topic as a side-effect of the ionization redesign. That framing was right about
 the important thing - **FAIR is mostly not a separate workstream, it is
 acceptance criteria on work already planned** - but it was written from one
 subsystem's vantage point, has since gone stale in several places, and dismissed
@@ -268,8 +269,8 @@ the reasoning.
     Thermo side; Tofwerk needs a small hand-authored mapping.
 11. **mzML export route** for raw and time-windowed sample data, over
     `to_mzml`. Requires an A/B against the current reader path before it is
-    trusted - the same numeric check `ionization_method_config.md` §9 already
-    asks for.
+    trusted - the same numeric check the retired `ionization_method_config.md`
+    section 9 asked for.
 12. **Schymanski/MSI levels** alongside the private tier vocabulary. Already
     planned as [assignment_confidence.md](assignment_confidence.md) P4; this
     document only adds that it is also R1.3, and that the level belongs in the
@@ -312,7 +313,7 @@ attached to them, not scheduled against them.
 
 | Workstream | Relationship |
 |---|---|
-| **Ionization/method redesign** ([ionization_method_config.md](ionization_method_config.md)) | **Hard prerequisite** for most of I and R. Its `Instrument` table (Phase 1) closes A2's root cause, and its versioned `IonizationSetup` is what a provenance block points at. Phase 2 item 10 hangs directly off it |
+| **Ionization/method redesign** (`ionization_method_config.md`, retired 2026-10-22; its target model is in [ingest_routing_and_splitting.md](ingest_routing_and_splitting.md) phase 8) | **Hard prerequisite** for most of I and R. Its `Instrument` table closes A2's root cause, and its versioned `IonizationSetup` is what a provenance block points at; neither is built or filed (MAS-255). Phase 2 item 10 hangs directly off it |
 | **Peak-centric assignment epic** | **Already the model to copy.** `engine_version` + `config` + per-row `provenance` is the pattern; the classic matching path is what lacks it. Do not invent a second provenance design |
 | **Identification confidence** ([assignment_confidence.md](assignment_confidence.md)) | **Owns Phase 2 item 12.** Schymanski levels are already P4 there. FAIR adds a reason, not a task |
 | **Public database integration** ([public_database_integration.md](public_database_integration.md)) | **Already delivered the I3 half that is done.** Phase 1 item 9 is a small extension of its annotation path |
@@ -342,7 +343,7 @@ These are product calls that change the schema or the shape of the work.
 
 1. **Ambition.** Does this stop at internal reproducibility (Phases 0-1), or
    go through to deposit-ready packages (Phase 3)? This is
-   `ionization_method_config.md` §10.5 restated, and it is still open.
+   decision 10.5 of the retired `ionization_method_config.md` restated, and it is still open.
    **Recommendation: commit to Phase 3**, because the paper is out and users
    will be asked by reviewers to deposit data. Phases 0-1 are worth doing
    under either answer, so the decision can be deferred without blocking.

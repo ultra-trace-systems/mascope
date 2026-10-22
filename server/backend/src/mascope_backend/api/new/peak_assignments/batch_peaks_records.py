@@ -5,7 +5,7 @@ carrying its consensus (m/z, formula, tier) once, plus a ``peak_series`` of
 parallel per-sample arrays. This keeps chart-data responses for large batches
 small. The ledger read is its metadata-only counterpart, and the counterpart
 read walks one occurrence backwards, from a sample peak to the same species in
-another sample. See ``docs/dev/peak_assignment_batch.md``.
+another sample. See ``docs/dev/peak_assignment_batch_primary.md`` (sections 6 and 12).
 """
 
 from __future__ import annotations

@@ -2,7 +2,14 @@
 
 # Dashboard UX review, October 2026
 
-Status: **review recorded, nothing built** (2026-10-16). The findings below
+Status: **review recorded 2026-10-16; four of the six quick wins have shipped**
+(2026-10-22): QW2 (MAS-149), QW3 (MAS-150) and QW4 (MAS-151) as filed, and QW1 in
+a different shape in 1.13.0 (a default "Last 7 days" with an `acquisition_filter`
+override and an "All time" option) while MAS-148 is still open and needs
+reconciling with that; QW5 (MAS-152) and QW6 (MAS-153) are open. The medium
+items are MAS-155 to MAS-160 under MAS-154, the decisions MAS-161 to MAS-163;
+of the small items, S2 and S4 were delivered by MAS-151 and MAS-149, and S1,
+S3, S5 and S6 are not filed. The findings below
 were taken from a walk through the dashboard against a running instance and
 then re-verified against the frontend code on `develop` the same day; every
 finding names the file it rests on. The plan at the end is in three tiers:
@@ -649,7 +656,7 @@ the medium items named wait on it.
 
 - The peak-centric layout with the flag on (assignment ledgers, inspector,
   verification capture) beyond the code the two paradigms share; it has its
-  own notes (`peak_assignment_frontend.md`, `verification_capture_frontend.md`).
+  own notes (`peak_assignment_frontend.md`, `verification_calibration_loop.md`).
 - The sidebar drawer's workspace and user management dialogs, the import
   dialogs and the user guide text.
 - Accessibility beyond labels and tooltips (focus order, screen-reader

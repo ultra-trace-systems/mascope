@@ -164,7 +164,10 @@ verification, which is keyed on the peak rather than on a run.
 
 **Stage A - database / known.** Match every peak against the union of known
 isotopologues (the existing target library, optionally plus a curated "known
-compositions" reference set). The existing matcher already produces, per known
+compositions" reference set). That reference set is
+`mascope_reference.known.iter_known_compositions` (PR #1633): the active reference
+mirror's unique neutral formulas with their identities, bounded by the Stage A window
+([public_database_integration.md](public_database_integration.md) Phase 3). The existing matcher already produces, per known
 isotope, the `sample_peak_id` it hit and the score, so Stage A is mostly *reuse
 `compute_match_isotopes` + invert the result* (group by `sample_peak_id`, pick
 the best-scoring owner) and write `PeakAssignment` rows with `source=database`.
@@ -255,8 +258,10 @@ sides. This exists because "coexist" is easy to claim and easy to lose: three
 parts of the first iteration changed behaviour for users who never opened the
 feature, and are now gated on it:
 
-- assignment ran on **every sample ingest**, creating a run per sample
-  (`auto_assign_sample_peaks`);
+- assignment ran on **every sample ingest** - at first creating a run per sample
+  (`auto_assign_sample_peaks`); since the batch-primary epic (1.8.0) ingest folds the
+  sample into the batch ledger without a run, `peak_assignment_ingest_ledger = "batch"`
+  ([peak_assignment_batch_primary.md](peak_assignment_batch_primary.md) §5.1);
 - the on-demand composition search was rescored to fit/tier/plausibility,
   bypassing the `MASCOPE_MATCH_SCORE_VERSION` switch meant to keep legacy
   scoring intact (`api/new/cheminfo`);
@@ -271,8 +276,8 @@ the pre-feature layout (see
 
 **On the API, the flag gates the writes.** The read routes stay open
 regardless — ledgers written while the feature was on remain inspectable after
-opting out — but the write routes (assign per sample or batch, verify,
-recalibrate) return 403 via `require_peak_assignment_enabled`
+opting out — but the write routes (assign, verify, curate,
+recalibrate, import) return 403 via `require_peak_assignment_enabled`
 ([routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py))
 while the flag is off. The first iteration left every route open so the engine
 could be exercised without opting in; the honest reading was that "nothing
@@ -330,18 +335,22 @@ to their rows. On a provisioned deployment `mascope-assignment-prune.timer`
 runs it nightly (enabled by default, policy in `/etc/mascope/prune.env`);
 elsewhere it is manual - see `docs/maintaining.md`.
 
-**Batch cost is per-sample cost times N**, which makes the batch entry point the
-one place a default matters. `batch.default_batch_config()` is therefore Stage A
-only; the untargeted stage is opt-in per batch, exactly as it is for ingest. The
-batch also filters samples the engine cannot usefully assign - blank ones, and
-ones whose m/z calibration is unverified - mirroring `match_compute_batch`,
-rather than driving them through a run that fails.
+**Batch cost is per-sample cost times N**, which is why there is no batch-wide
+run any more: the batch-wide assignment run (`peak_assignments/batch.py`) was
+retired in the batch-primary epic (PR #2049, 1.8.0). A batch is assigned by
+folding each sample into the batch ledger at ingest, Stage A only and without a
+per-sample run, and the untargeted stage runs once per batch peak on request
+(*Search untargeted*), not once per sample
+([peak_assignment_batch_primary.md](peak_assignment_batch_primary.md) §5.1,
+§5.3); *Rebuild batch ledger* folds every sample of a batch that predates the
+ledger or was imported. Ingest still skips samples the engine cannot usefully
+assign - blank ones, and ones whose m/z calibration is unverified.
 
 **Admission control.** Background work runs on the API worker's event loop, so a
-batch competes with interactive requests for the same connection pool. Batch
-assignment holds a semaphore slot for its duration (mirroring `_auto_process_gate`
-in the sample auto-processing controller) and refuses a batch already in flight
-instead of queueing it silently behind a multi-minute run. The in-process
+run competes with interactive requests for the same connection pool. A run holds
+an admission slot for its duration, and a second run for the same sample is
+refused (409, naming the run in flight) instead of being queued silently behind
+a multi-minute one. The in-process
 guards bound one worker; a session-level Postgres advisory-lock claim
 (`admission.py`) extends the same refusal across processes, held on a
 dedicated connection for the run's duration and released by Postgres itself

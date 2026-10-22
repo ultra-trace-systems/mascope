@@ -7,8 +7,11 @@ socket/notification, join keys — and keeps net-new UI deliberately small.*
 
 ## Current state (2026-07-09) — shipped
 
-> This section is the authoritative description of what is on the branch. The original plan (§0
-> onward) is kept below as design record; where they disagree, this wins. The work went past the
+> This section is the authoritative description of what shipped. The original plan (sections 0 to 7
+> of this note: the settled decisions, the endpoint table, the store design, the component list, the B2
+> contract and the task tables) was removed on 2026-10-22; its record is CHANGELOG 1.6.0 to 1.8.0 and
+> this file's git history, and the endpoint surface it tabulated is the published OpenAPI document
+> (`/docs/openapi.json`; the SDK README lists the peak-assignment routes). The work went past the
 > "keep a separate Fit view" plan and **consolidated everything onto the Sample view**.
 
 > **Everything below is behind the feature flag.** The consolidation replaced the Sample tab
@@ -78,8 +81,8 @@ state. The batch-peak ledger
 ([`PaneBrowserBatchPeaks.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue))
 mirrors the isotopologue fold under the same two constraints, and now behind the same cog at the end
 of its own tier strip — with one difference: a batch peak is a bare m/z
-anchor, so the family link is **derived** (`isotopologue_of`, §5.4 of
-[`peak_assignment_batch.md`](peak_assignment_batch.md)) rather than given, and it arrives ONE hop deep
+anchor, so the family link is **derived** (`isotopologue_of`, a member aggregate the fold rolls up;
+[`peak_assignment_batch_primary.md`](peak_assignment_batch_primary.md) §12) rather than given, and it arrives ONE hop deep
 pointing into a list the pane does not control — so the pane flattens a chain onto its root and leaves a
 link it cannot follow at top level, rather than nesting a row under one that is never drawn. Both panes
 own their sort (`lazy`) for the same reason; the batch one owns its column filtering with it, since
@@ -128,7 +131,7 @@ consumers (which branch on opposite comparisons) cannot land on opposite sides.
 **Stores** ([`peakAssignment/`](../../server/frontend/src/stores/data/modules/peakAssignment/)):
 `run` (auto-focus latest completed via a list-membership watcher in the store itself;
 `peak_assignment_reload` event), `peak` (`byPeakId`/`forPeak`, `childrenOf`/`familyOf`/`m0Of`,
-`tierCounts` excluding iso_child; loads the ledger itself page by page — see §2.2) and `verification`
+`tierCounts` excluding iso_child; loads the ledger itself page by page) and `verification`
 (the append-only verdict history: `currentByIdentity`/`forAssignment` keyed on the stable
 `sample_peak_id|assigned_formula|ionization_mechanism_id` identity — not `peak_assignment_id`, which
 every run regenerates — plus `verify()`). Registered nested (not spread) under
@@ -138,8 +141,8 @@ every run regenerates — plus `verify()`). Registered nested (not spread) under
 dependency watcher resets the persisted selection and reloads, and its refocus falls through to
 `unfocus()` because the old sample's peak ids match nothing in the new list. It now follows instead.
 On a sample-to-sample switch the store resolves the focused peak's **batch-peak anchor** in the newly
-focused sample — `GET /api/batch-peaks/records/counterpart`, two hops over `BatchPeakOccurrence` (see
-[`peak_assignment_batch.md`](peak_assignment_batch.md) §6) — and focuses the counterpart once the
+focused sample — `GET /api/batch-peaks/records/counterpart`, two hops over `BatchPeakOccurrence` (the
+counterpart read in [`batch_peaks_records.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_records.py)) — and focuses the counterpart once the
 reload settles. Sameness is the anchor, never m/z proximity. The mapping is not resident in the
 browser (the ledger store carries no `peak_series`, and the chart holds series only for ticked peaks),
 which is why it is a read rather than a join over loaded records.
@@ -171,8 +174,8 @@ family**: both the read and the write resolve a row to its family's M0 (`peak.m0
 shows its compound's verdict and verifying from one writes a single label against the M0. Backend
 surface: `GET /sample/{id}/verifications`, `POST /sample/{id}/verify` (editor), and the superuser
 `POST /calibration/{instrument}/recalibrate` that refits the confidence calibration from the
-accumulated labels. Details in [`verification_capture_frontend.md`](verification_capture_frontend.md)
-and [`verification_calibration_loop.md`](verification_calibration_loop.md).
+accumulated labels. Details in [`verification_calibration_loop.md`](verification_calibration_loop.md)
+(§4.5 records the capture UI and how the current verdict is derived).
 
 **Manual curation.** An assignment can be replaced by hand, and the change persists in the ledger
 marked as human-made. Two entry points, one endpoint
@@ -267,8 +270,9 @@ formula it judged and a curated row comes back with no current verdict. An overr
 edits and a later run supersedes it; the durable record of the judgement is still a verdict the user
 records with the evidence level they have.
 
-**Confidence.** fit, plausibility and calibrated P(correct) are surfaced (see
-[`peak_assignment_confidence_frontend.md`](peak_assignment_confidence_frontend.md)). Untargeted winners
+**Confidence.** fit, plausibility and calibrated P(correct) are surfaced (the four quantities and what
+each means: [`assignment_confidence.md`](assignment_confidence.md) and the help card
+[`assignment-evidence.md`](../user/_help/assignment-evidence.md)). Untargeted winners
 carry `plausibility` too; alternatives carry `plausibility` (database ones also fit + m/z error). Adduct
 **corroboration** exists on the record (`provenance.corroboration` / `n_adducts`, folded into
 `p_correct` by the backend) and is surfaced as a **"Supported by N adducts" badge** — a teal pill in the
@@ -287,6 +291,17 @@ lives in the M0's `p_correct`, never in a child's**: `_fold_adduct_corroboration
 only, so a child must not claim the probability beside it already accounts for the other adducts. The
 M0's own badge now also resolves from the flattened `corroboration_adducts` before its detail arrives, so
 it no longer pops in a moment late.
+
+One asymmetry to know before reading `n_adducts` as "how many adducts is this compound seen via": the
+engine's tier gate filters which channels *contribute* to the co-occurrence set, not which rows
+*receive* a boost. A confident winner's own channel is in the set, so its `n_adducts` counts itself
+plus its corroborators; a `below_assignability` winner's is not, so its `n_adducts` counts only the
+corroborators and can legitimately be 1. Both badges gate on `n_adducts > 1`, which hides that case -
+keep the gate if you add a third surface. Evidence-tiering leaves the asymmetry itself untouched but
+moves what feeds it: a tier is now read off `fit x plausibility` rather than off the fit alone, so a
+formula whose chemistry drags its evidence under the band drops out of a co-occurrence set it used to
+join, and a compound's `n_adducts` can differ from the count fit-tiering would have given it. (Carried over on 2026-10-22 from the retired
+`peak_assignment_confidence_frontend.md`.)
 
 **The Match tab is NOT gated on the flag (reversed; was #1736).** It was retired under the flag
 for one release cycle, on the reading that the Sample view's spectrum-envelope and time-series
@@ -308,7 +323,7 @@ feature landed.
 
 **Open threads.** **Tier is evidence-based** (`tier_for_evidence(evidence, …)`, evidence being
 fit × chemical plausibility) — settled, at both engine stages and every other site that derives a tier;
-the chip's number moved with it (§3). What is still open is the step past it: binding the tier to a
+the chip's number moved with it. What is still open is the step past it: binding the tier to a
 calibrated `p_correct` needs universal calibration coverage (untargeted + all instruments) —
 backend/science, still deferred, and evidence-tiering is a step toward it rather than its arrival. Both
 `tier` and `P(correct)` are now shown side-by-side so the discrepancy is inspectable.
@@ -328,458 +343,3 @@ The form's bounds come from `GET /params` (`peak_assignment` defaults +
 validates against - so an input cannot offer a value the API then rejects. Both launchers
 leave untouched fields `null` and strip them before posting, so the backend default
 applies rather than a null overriding it.
-
-## 0. Decisions settled
-
-| Question | Decision |
-|---|---|
-| Match tab (spectrum + isotope timeseries) | **Keep it, rename to "Fit view".** It is the visual verification that a signal fit is good. |
-| Match **browser / ion table** (bottom-left) | Peak assignments go **here**. Coexist with the target/ion tables at first; **aim to retire** the `match_ion` table. |
-| Tier band recalibration | Real, but **backend work** (`tier_for_evidence`); the UI just renders whatever tier the API returns. |
-| `match_score` naming | UI labels say **"fit"** everywhere new. The `PeakAssignment` surface already carries `fit_score`. |
-
-## 1. The backend contract (what we consume)
-
-Thirteen endpoints, all under `/api/peak-assignments` (see
-[`routes.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py)). The
-seven write routes — assign (per sample and per batch), verify, **curate**, recalibrate, import, and
-abandon-an-import — are additionally gated on the feature flag: they carry
-`Depends(require_peak_assignment_enabled)`, which returns 403 with the feature off. The reads stay
-open so ledgers written while it was on remain inspectable, and so do the two `fit/…` endpoints,
-which persist nothing:
-
-| Method | Path | Returns | Notes |
-|---|---|---|---|
-| `GET` | `/sample/{sample_item_id}` | `{ data: PeakAssignment[], total, results }` | Query: `peak_assignment_run_id?`, `tier?`, `role?`, `source?`, `limit?`, `offset?`. No run id ⇒ **latest completed** run. **Slim rows** — no `alternatives` / `provenance`. |
-| `GET` | `/sample/{sample_item_id}/assignment/{peak_assignment_id}` | `{ data: [PeakAssignmentDetail] }` | One assignment in full (`alternatives` + `provenance`); fetched by the inspector on peak selection. |
-| `GET` | `/sample/{sample_item_id}/runs` | `{ data: PeakAssignmentRun[] }` | Newest first. |
-| `GET` | `/sample/{sample_item_id}/verifications` | `{ data: AssignmentVerification[] }` | Append-only verdict history, newest first. |
-| `POST` | `/sample/{sample_item_id}/verify` | `201` | Record confirm / reject / unsure. Requires `editor` + flag. |
-| `PATCH` | `/sample/{sample_item_id}/assignment/{peak_assignment_id}` | `{ data: PeakAssignmentDetail[] }` | Manual curation. Body is one of two actions: `promote_alternative` (`alternative_index`, optional `expected_formula` guard → 409 on a mismatch) or `set_assignment` (`assigned_formula` + `ionization_mechanism_id`, both required, plus the search's own `ion_formula` / `isotope_label` / `isotope_formula` / `fit_score` / `mz_error_ppm`). `data[0]` is the curated row, **followed by every isotopologue row the edit moved** — the isotopologues it demoted, then the ones it restored — as full detail records, so a client can refresh what it holds without a second read. Requires `editor` + flag. |
-| `POST` | `/calibration/{instrument}/recalibrate` | `{ recalibrated, ... }` | Refit the confidence calibration from labels. Superuser + flag. |
-| `POST` | `/sample/{sample_item_id}/assign` | `202 { message, process_id }` | Body `{ config?: PeakAssignmentConfig }`. Requires `editor` + flag. |
-| `POST` | `/sample/{sample_item_id}/runs/import` | `{ data: [ImportState] }` | Publish an externally computed run, assembled over one or more chunks. `data[0]` carries `peak_assignment_run_id`, `rows`, `max_rows_per_request`, `run_status`. Requires `editor` + flag. |
-| `DELETE` | `/sample/{sample_item_id}/runs/{run_id}` | `200` | Abandon an `importing` run and its staged rows, releasing the sample. Requires `editor` + flag. |
-| `POST` | `/sample/{sample_item_id}/fit/aggregate` | `{ match_ions, match_isotopes }` | B2a: non-persisting composition fit (isotope table). |
-| `POST` | `/sample/{sample_item_id}/fit/visualize` | `202` | B2b: composition Fit visualization over the socket. |
-
-**Record shape** (`PeakAssignmentRecord`, one row per observed peak):
-
-```
-peak_assignment_id · peak_assignment_run_id · sample_item_id
-sample_peak_id · sample_peak_mz · sample_peak_intensity · sample_peak_tof
-role            M0 | iso_child | reagent | artifact | unassigned
-tier            assigned | candidate | below_assignability | unassigned
-source          database | untargeted | manual | null
-assigned_formula · ion_formula · ionization_mechanism_id · isotope_label · isotope_formula
-fit_score · mz_error_ppm · abundance_error
-target_compound_id · target_ion_id        (nullable — set when the winner came from the library)
-owner_peak_assignment_id                   (an iso_child points at its M0)
-evidence · p_correct · p_correct_provisional · corroboration_adducts   (flattened for the ledger columns)
-alternatives (JSON list) · provenance (JSON)    — detail endpoint only (~74% of a full row's bytes)
-```
-
-> **Confidence fields.** `provenance` carries the confidence story — including the calibrated
-> **probability** `provenance.p_correct`. How to surface fit / plausibility / probability (and the
-> upcoming adduct-corroboration signal) honestly is written up in
-> [`peak_assignment_confidence_frontend.md`](peak_assignment_confidence_frontend.md).
-
-> **`source: "manual"` and the `provenance.manual` block.** A curated row is not an engine row with a
-> flag on it — `manual` is a third value of the same `AssignmentSource` literal that types the ledger's
-> `source=` filter and an imported row, so an override is filterable and survives an export/import
-> round trip. What made the row is under `provenance.manual` (detail endpoint only):
->
-> ```
-> action           promote_alternative | set_assignment | demote_isotopologue
-> scored_by        run_alternative | composition_search   (where the row's numbers came from)
-> user_id · at     who curated it, and when
-> previous_formula · previous     the displaced winner, verbatim, in the `alternatives` shape —
->                                 including previous.engine_judgement, where the calibrated fields
->                                 (p_correct, calibrated, calibration, corroboration, confidence,
->                                 n_candidates, is_tie, evidence, reference_identities) are archived
-> demoted          the isotopologues this override stripped, each with enough state to be
->                  put back; capped at 32 entries (MAX_DEMOTED_ARCHIVE)
-> restored                        what a restoring edit put back,
-> restore_skipped                 what it left to a later hand (that isotopologue has been curated since),
-> restore_failed                  and what it could not put back at all: the row is gone from this run
->                                 or belongs to another, or its archived state cannot be committed
->                                 (all three audit only — see "The undo is a real undo" under
->                                 Current state)
-> ```
->
-> A demoted isotopologue gets its own thinner block: `action: "demote_isotopologue"` (rows demoted
-> by earlier builds carry `"demote_satellite"`, and both read as a demotion), `reason:
-> "owner_overridden"`, and `previous_owner_formula` beside its own `previous`. A curated row still
-> carries `p_correct` / `p_correct_provisional` / `corroboration_adducts` as flattened record fields,
-> but all three read **null** on it. They are not columns — `PeakAssignment` in
-> [`models.py`](../../server/backend/src/mascope_backend/db/models.py) has no such field, and
-> `_provenance_scalars` ([`service.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py))
-> derives them from `provenance` on every read — which is the actual mechanism by which they vanish:
-> curation archives the calibrated block into `manual.previous.engine_judgement` and leaves nothing in
-> `provenance` for the flattener to pick up. The calibration described an arbitration that is no
-> longer the row's.
-
-### 1.1 Two facts that drive the wiring
-
-1. **Join key.** The peak list (`GET /samples/{id}/peaks`) returns `peak_id`; the engine stringifies
-   the same column into `sample_peak_id` (`_load_sample_peaks`,
-   [`service.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py)).
-   So the peak↔assignment join is **`String(peak.peak_id) === assignment.sample_peak_id`**. Coerce to
-   string on both sides.
-
-2. **Completion is a *notification*, not a record socket event.** `rematch_sample` emits a
-   `match_reload` socket event that the `useData` events framework auto-handles. The assignment task
-   does **not** — it only sends `user_notification` of `type: "assign_sample_peaks"` (a `pending`
-   progress stream 0.1→1.0, then a terminal `success`/`error`), whose `data` carries
-   `sample_item_id` and `peak_assignment_run_id`. So a run store cannot rely on `*_reload`; it must
-   either watch that notification or we add a socket event (see §2.3, **one backend ask**).
-
-## 2. New Pinia stores
-
-Three modules under `src/stores/data/modules/peakAssignment/`, mirroring `modules/match/`: `run`,
-`assignment` and `verification` (the last added with verification capture — see
-[`verification_capture_frontend.md`](verification_capture_frontend.md); this section describes the
-first two). All use the existing [`useData`](../../server/frontend/src/lib/store/data.js) composable
-(deps-driven reload, selection, socket CRUD auto-registration).
-
-### 2.1 `usePeakAssignmentRun` — the run list + selector
-
-```js
-// modules/peakAssignment/run.js
-export const usePeakAssignmentRun = defineStore('app.data.peakAssignment.run', () => {
-  const name = 'peak_assignment_run'
-  const key = 'peak_assignment_run_id'
-
-  const data = useData(
-    name,
-    ({ sample_item_id }) =>
-      sample_item_id
-        ? api.http.get(`/peak-assignments/sample/${sample_item_id}/runs`, {
-            use: 'read', type: 'load_peak_assignment_runs'
-          }).then((r) => r.data)     // handler unwraps to the array
-        : [],
-    {
-      key,
-      deps: () => ({ sample_item_id: useSample().focusedId }),
-      selection: true,               // focused run == the run being viewed
-      events: ['peak_assignment_reload']   // backend emits on run finalize (B1)
-    }
-  )
-
-  // default focus = latest COMPLETED run (list is newest-first)
-  const latestCompleted = computed(() =>
-    data.list.value.find((run) => run.status === 'completed') ?? null)
-
-  // launch a run; returns process_id, completion arrives via notification (§2.3)
-  const assign = (sampleItemId, config) =>
-    api.http.post(`/peak-assignments/sample/${sampleItemId}/assign`, { config },
-      { use: 'process', type: 'assign_sample_peaks' })
-
-  return { ...data, latestCompleted, assign }
-})
-```
-
-### 2.2 `usePeakAssignment` — the ledger for the focused sample + selected run
-
-**Handler caveat (updated to the shipped store).** The shared `read` handler returns
-`response.data.data` — it unwraps to the body's `data` field and drops the envelope's siblings
-([`handlers.js`](../../server/frontend/src/api/handlers.js)). The shipped assignment store therefore
-**bypasses the `read` handler deliberately**: a run is one row per detected peak, so the endpoint
-pages the ledger and the loader needs the envelope's `total` to know when it has the whole run
-(`fetchAssignmentPage` + `loadAssignments` in
-[`assignment.js`](../../server/frontend/src/stores/data/modules/peakAssignment/assignment.js),
-`PAGE_SIZE = 1000`, hard-capped at `MAX_PAGES = 200`, dedup-by-`sample_peak_id` so a server ignoring
-`offset` terminates the loop). **Run metadata comes from the run store**
-(`usePeakAssignmentRun().focused`, which already holds each run's full `to_dict()`), not the
-envelope. The auto-focus of `latestCompleted` lives **in the run store itself** (a list-membership
-watcher in [`run.js`](../../server/frontend/src/stores/data/modules/peakAssignment/run.js)), not in
-the Assignments browser, and the assignment store's deps guard against a stale run id from the
-previously focused sample. The snippet below is the original design record; the shipped store
-differs as described here.
-
-```js
-// modules/peakAssignment/assignment.js
-export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
-  const name = 'peak_assignment'
-  const key = 'sample_peak_id'       // unique within a run; the peak-join key
-
-  const data = useData(
-    name,
-    ({ sample_item_id, peak_assignment_run_id }) => {
-      if (!sample_item_id || !peak_assignment_run_id) return []
-      return api.http.get(`/peak-assignments/sample/${sample_item_id}`, {
-        params: { peak_assignment_run_id },
-        use: 'read', type: 'load_peak_assignments'   // → assignments array
-      })
-    },
-    {
-      key,
-      deps: () => ({
-        sample_item_id: useSample().focusedId,
-        peak_assignment_run_id: usePeakAssignmentRun().focusedId ?? null
-      }),
-      selection: true
-    }
-  )
-
-  // run metadata for the current view (status, config, timestamps)
-  const run = computed(() => usePeakAssignmentRun().focused)
-
-  // peak-join map + tier histogram: consumed by the ledger AND the spectrum
-  const byPeakId = computed(() => {
-    const m = new Map()
-    for (const a of data.list.value) m.set(String(a.sample_peak_id), a)
-    return m
-  })
-  const tierCounts = computed(() => {
-    const c = { assigned: 0, candidate: 0, below_assignability: 0, unassigned: 0, reagent: 0 }
-    for (const a of data.list.value) {
-      if (a.role === 'reagent' || a.role === 'artifact') c.reagent++
-      else c[a.tier] = (c[a.tier] ?? 0) + 1
-    }
-    return c
-  })
-
-  return { ...data, run, byPeakId, tierCounts }
-})
-```
-
-Register both in [`stores/data/index.js`](../../server/frontend/src/stores/data/index.js) as a
-namespace (nested, **not** spread — spreading a Pinia store snapshots its refs and breaks reactivity):
-
-```js
-peakAssignment: {
-  run: usePeakAssignmentRun(),   // app.data.peakAssignment.run.{list,focused,assign,latestCompleted}
-  peak: usePeakAssignment(),     // app.data.peakAssignment.peak.{list,byPeakId,forPeak,tierCounts,run}
-  verification: usePeakAssignmentVerification() // .{currentByIdentity,forAssignment,verify}
-}
-```
-
-The selection state of both stores is registered in
-[`stores/data/filter.js`](../../server/frontend/src/stores/data/filter.js)
-(`peak_assignment_run`, `peak_assignment`) so `useSelection` binds to the shared filter store
-rather than a local fallback ref.
-
-**Filtering** (tier/role/source) is **client-side** off `data.list` — the full ledger is already in
-memory, so filter chips are instant. The server's `limit`/`offset` params are used by the store's
-paging loop (§2.2); the tier/role/source query params stay unused by the UI.
-
-### 2.3 Run-completion refresh — `peak_assignment_reload` event (decided)
-
-The backend emits a **`peak_assignment_reload`** cross-store event when a run finalizes, mirroring the
-way `rematch_sample` emits `match_reload` (backend task **B1**, §7 — implemented as
-`success_reload=[("peak_assignment", "sample_batch_id")]` on the `assign_sample_peaks` decorator; the
-room id resolves from the returned `_notification_data.sample_batch_id`, the same room the client
-already joins for match). The run store refreshes through the existing `useData` events framework with
-no component-scoped notification watcher — hence `events: ['peak_assignment_reload']` in §2.1. The event name is deliberately semantic (not
-`peak_assignment_run_reload`) to match the `match_reload` precedent and to let both stores subscribe if
-needed.
-
-On the event: `usePeakAssignmentRun` re-syncs its runs; the Assignments browser then **selects the
-newly completed run when the user launched it this session, otherwise surfaces a "new run available"
-affordance** rather than yanking the view off a run they were inspecting. Selecting a run changes
-`usePeakAssignment`'s deps, which cascades the ledger reload. (The earlier notification-watch fallback
-is dropped now that the event exists; the `assign_sample_peaks` progress notification is still used
-purely for the progress bar via the existing `PaneProgress`.)
-
-## 3. Component changes (kept small)
-
-Layout is unchanged. Most work is reframing three existing panes + one new tag + one config dialog.
-
-| File | Change | Effort |
-|---|---|---|
-| [`PaneBrowserPeak.vue`](../../server/frontend/src/lib/panes/PaneBrowserPeak/PaneBrowserPeak.vue) | The **ledger**. Replace the header ratio with `tierCounts`; add a **formula + tier + source + fit** column set read from `byPeakId.get(String(data.peak_id))`; keep the legacy `match[]` buttons behind the coexistence flag. | M |
-| [`PanePeakAssign.vue`](../../server/frontend/src/lib/panes/PanePeakAssign/PanePeakAssign.vue) | The **inspector**. When the focused peak has an assignment, render committed winner + evidence + `alternatives` + known-compound; demote the existing on-demand `/cheminfo/mz/match` search to a **"Re-search"** action. (The whole current file becomes the fallback path.) | M |
-| [`ChartSampleSpectrum/data.js`](../../server/frontend/src/lib/charts/ChartSampleSpectrum/data.js) | **Annotated spectrum.** Split the single grey `Peak` trace into one trace per tier (color from `byPeakId`), plus a reagent/artifact trace. Focus/preview traces unchanged. Legend = trace names. | S |
-| [`PaneBrowserMatch.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserMatch.vue) | Add an **"Assignments"** tab beside the existing Targets/collections view: run selector + `tierCounts` histogram + a per-peak list backed by `usePeakAssignment`. Row click ⇒ `app.data.peak.focused = <matching peak>` (drives the Sample tab). Existing `MatchIonTable` stays under a "Targets" tab. | M |
-| `BaseTierTag.vue` **(new)** | 4-tier chip + role icon, naming the tier alone. Its hover text gives the **evidence** (fit × plausibility) the tier was banded off, not the raw `fit_score`; the face carries no number, where a percentage would read as the chance the assignment is right. A caller whose tier came from no single quantity (the batch ledger's consensus vote over member tiers) passes no evidence, and the hover text names the tier alone. One shared component; keep `BaseMatchTag` for the legacy targeted view. | S |
-| Run-config dialog **(new)** | `run_untargeted`, `mz_precision_ppm`, `formula_ranges`, `max_untargeted_peaks`, `peak_intensity_threshold`, `max_alternatives`. Reuse `SidebarMatchParams` patterns; submit ⇒ `run.assign(...)`. | S |
-| `Dashboard.vue` tab label | `"Match"` → `"Fit"` (see §4). Help text updated. | XS |
-
-The **inspector reads from the focused peak**, not its own selection: `app.data.peakAssignment.byPeakId
-.get(String(app.data.peak.focused?.peak_id))`. No new selection wiring needed for the common path.
-
-## 4b. B2 — composition-driven Fit visualization: endpoint contract
-
-The Fit view makes **two** calls today, both keyed on `target_ion_id`
-([`visualized.js`](../../server/frontend/src/stores/data/modules/match/visualized.js)): a synchronous
-**aggregate** (isotope-table data) and a **background visualization** (spectra + timeseries pushed over
-the socket). B2 adds a **composition** variant of each — keyed on `assigned_formula` +
-`ionization_mechanism_id` instead of a persisted ion — so untargeted winners can be verified.
-
-**Do not reuse `POST /match/aggregate/sample/{id}/compound`.** It calls `create_target_ions`, which
-**persists** ions to the DB (verified live: it returns `400 "Failed to create target ions"` for an
-ephemeral formula). B2 must be **non-persisting**: build ions/isotopes in memory with
-`generate_target_ions_from_composition(TargetCompound(gen_id(), formula), [mechanism])`
-([`target_ions_compute.py`](../../server/backend/src/mascope_backend/api/controllers/target/lib/compute/target_ions_compute.py)),
-never `session.add` them.
-
-### B2a — composition aggregate (isotope table)
-
-```
-POST /api/peak-assignments/aggregate/sample/{sample_item_id}
-body: { assigned_formula: str, ionization_mechanism_id: str, match_params?: BaseMatchParams }
-→ { match_ions: [ion], match_isotopes: [isotope] }   # NESTED shape, see below
-```
-
-Implementation (new controller; mirrors `aggregate_sample_match_ion`'s **nested** output, NOT
-`aggregate_sample_match_compound`'s flat `to_dict("records")`):
-1. `sample = fetch_sample(id)`; fetch the one `IonizationMechanism` by `ionization_mechanism_id`.
-2. `ions, isotopes = generate_target_ions_from_composition(TargetCompound(gen_id(), norm(formula)), [mech])`
-   — in memory, no persistence.
-3. `target_isotopes_df = DataFrame([iso.to_dict() for iso in isotopes])`, filtered to the sample's
-   resolution (`HIGH` for orbi, `LOW` for tof — `get_instrument_type(sample.filename)`).
-4. `match_isotope_df = await compute_match_isotopes(sample.filename, target_isotopes_df, match_params, sample.polarity)`
-   then `apply_match_params(...)`. `match_params` defaults via `default_match_params(id)`.
-5. Emit the **nested** shape the Fit view consumes (copy the row-building from
-   `aggregate_sample_match_ion`, lines ~139–206): `match_ions[0]` = the synthetic ion
-   (`target_ion_id` = the generated id, `target_ion_formula`, `ionization_mechanism`, `match:{match_score,
-   match_category, sample_peak_intensity_sum}`); each `match_isotopes[i]` = `{target_ion_id,
-   target_isotope_id, target_isotope_formula, mz, relative_abundance, resolution, match:{sample_peak_mz,
-   sample_peak_intensity, match_mz_error, match_abundance_error, match_score, match_category}}`. Carry the
-   generated `target_isotope_id`s through so the frontend has stable keys and color-sync.
-
-### B2b — composition visualization (spectra + timeseries)
-
-```
-POST /api/peak-assignments/visualize/sample/{sample_item_id}
-body: { assigned_formula, ionization_mechanism_id, peak_min_intensity, mz_tolerance, isotope_ratio_tolerance }
-→ 202 (background); emits `visualization_signal_sum_spectrum` + `visualization_signal_timeseries`
-  (same socket events + trace shape ChartMatchSpectra/ChartMatchTimeseries already consume)
-```
-
-Reuse the visualization internals verbatim
-([`visualization_controller.py`](../../server/backend/src/mascope_backend/api/controllers/visualization/visualization_controller.py)):
-`_load_peaks_and_averaged_signal`, `_process_isotope`, the sum-timeseries logic, and the two
-`sio.emit`s. The **only** change is the isotope source: instead of `_fetch_isotopes` (DB by
-`target_ion_id`), build the same `list[SimpleNamespace]` from steps 2–4 above, sorted by
-`relative_abundance` desc (main isotope first). Each SimpleNamespace must carry the fields
-`_process_isotope` reads: `mz`, `relative_abundance`, `target_isotope_id` (the generated id, or `None`),
-plus the matched fields from `compute_match_isotopes` — `sample_peak_mz`, `sample_peak_intensity`,
-`match_score`, `match_mz_error`, `match_abundance_error` (`sample_peak_mz = None` for unmatched
-isotopes). Recommended: extract the isotope-building (steps 2–4) into a shared helper used by both
-B2a and B2b. Consider factoring `visualize_ion_focus`'s body into a
-`_visualize_isotopes(sample, isotopes, …)` that both the target-ion and composition entry points call.
-
-### F6 — frontend wiring (blocked on B2)
-
-In `useMatchVisualized.set(...)`, branch on whether the focused assignment has a `target_ion_id`:
-present → today's path; absent (untargeted) → call B2a for the isotope table (`ion`/`isotopes`) and B2b
-for the charts, passing `assigned_formula` + `ionization_mechanism_id` from the `PeakAssignment` row.
-Add a **"Verify fit"** action (assignments browser row / inspector) that calls
-`app.data.match.visualized.set({ assignment })` and switches to the Fit tab. The chart components need
-no change — B2 returns the same shapes.
-
-**Status: backend implemented; the UI wiring is settled as retired (#1736).**
-`api/new/peak_assignments/visualization.py` holds the non-persisting `aggregate_composition_fit`
-(B2a) and `visualize_composition_focus` (B2b); the visualization core was extracted from
-`visualize_ion_focus` into the shared `emit_isotope_visualization`. Routes:
-`POST /api/peak-assignments/sample/{id}/fit/aggregate` and `.../fit/visualize`. The frontend
-wiring stopped at a store function (`useMatchVisualized.verifyAssignment`) that no UI control
-ever invoked; it was removed when the Fit view's retirement was settled (see Current state).
-The endpoints remain API/SDK surface without in-app UI. Verified live at the API level: aggregate
-returns the nested match_ions/match_isotopes for an untargeted formula; visualize emits both socket
-events without error.
-
-## 4. The Fit view rename & composition-driven visualization (decided)
-
-Renaming the tab is cosmetic. The **functional** change: the Fit view
-([`visualized.js`](../../server/frontend/src/stores/data/modules/match/visualized.js)) is driven
-entirely by `target_ion_id` + `target_collection_id` (`/match/aggregate/.../ion`,
-`/visualization/ion_focus`), which **untargeted winners don't carry**. Decision: the **Fit
-visualization will accept a composition** (formula + ionization mechanism + sample), not only a
-`target_ion_id` (backend task **B2**, §7). With it the Fit view works for *every* assignment and the
-Assignments browser can offer "Verify fit" on any row.
-
-Frontend consequence (task **F6**): `useMatchVisualized.set(...)` gains a composition branch —
-when the focused assignment has a `target_ion_id` it takes today's path; otherwise it calls the new
-composition endpoint with `assigned_formula` + `ionization_mechanism_id` from the `PeakAssignment`
-row. The chart components (`ChartMatchSpectra`, `ChartMatchTimeseries`) are unchanged as long as B2
-returns the same `{ match_ions, match_isotopes }` shape they consume today.
-
-## 5. Labels
-
-- New surfaces say **"Fit"** / **"Fit score"** where the fit itself is shown, and `fit_score` is
-  unchanged as the stored measurement. The tier tag renders the **evidence** instead — the quantity its
-  band was read off — spelled out as "Evidence: NN% (fit x plausibility)" in its tooltip.
-- `BaseTierTag` replaces the 0/1/2 severity of `BaseMatchTag` with the 4 tiers; `BaseMatchTag` stays
-  only where the legacy `match_category` is still shown (targeted view during coexistence).
-
-## 6. Phased checklist
-
-- **A — Read the run (ships first, GET-only).** `usePeakAssignmentRun` + `usePeakAssignment` + index
-  registration; `BaseTierTag`; ledger columns in `PaneBrowserPeak`; spectrum coloring. No writes, no
-  new science. Depends only on endpoints already on the epic branch.
-- **B — Launch & watch.** Run-config dialog + `run.assign()`; completion refresh via
-  `peak_assignment_reload` (§2.3); run selector in the Assignments browser.
-- **C — Inspect & act.** Inspector `alternatives` + commit-alternative + add-to-target-list; "Re-search"
-  fallback; "Verify fit" via the composition Fit view (§4). *Commit-alternative shipped later than the
-  rest of C, as the manual-curation write path — see **Current state**.*
-- **D — Retire the match_ion table.** Fold the Targets view into a `source=database` /
-  `target_compound_id != null` filter over the ledger; remove `MatchIonTable` once parity is reached.
-- **E — Batch level.** Batch-overview coloring by tier; GKA / Van Krevelen (backend Phase 4).
-
-## 7. Work distribution
-
-### Implementation status
-
-All F1–F6, B1, B2 landed and **merged to `epic`** (build + lint + 119 frontend unit tests + 32 backend
-engine tests green). See the **Current state** section at the top for the shipped behaviour; the table
-below records the original plan items plus the consolidation that followed.
-
-| ID | Status | Notes |
-|---|---|---|
-| **F1** store spine + tier tag | ✅ done | `peakAssignment/{run,assignment}.js` + `BaseTierTag`. |
-| **F2** peak ledger | ✅ done, then **relocated** | With the flag on the ledger lives in the Assignments tab (`PaneBrowserAssignment`); `PaneBrowserPeak` is still the Sample-tab ledger with the flag off, so it stays live code. |
-| **F3** peak inspector | ✅ done, since trimmed | `PanePeakAssign` is a compact card (no header, no Verify-fit); Re-search is a bottom-pane takeover. |
-| **F4** annotated spectrum | ✅ done | Per-tier traces + theoretical envelope; instrument-aware focus zoom. |
-| **F5** assignments browser + config dialog | ✅ done | + auto-select latest run, P(correct) column, unfold-isotopologues toggle. The config form was later extracted to `dialogs/PeakAssignConfigForm.vue` and shared with the batch launcher (below). |
-| **F6** Fit-view rename + composition wiring | ✅ done, retired (#1736), then **un-retired** | Renamed + wired to B2. The composition-fit entry point (`verifyAssignment`) was redundant post-consolidation and is gone for good. Retiring the whole Match **tab** under the flag went too far - it took the match-parameter drawer and *Rate Match* with it - so the tab is unconditional again (see Current state). |
-| **B1** `peak_assignment_reload` event | ✅ done | `success_reload=[("peak_assignment","sample_batch_id")]`. |
-| **B2** composition Fit visualization | ✅ done | `visualization.py`: `aggregate_composition_fit` + `visualize_composition_focus`; kept as API/SDK surface without in-app UI (#1736). |
-| **Consolidation** onto the Sample view | ✅ done | Time series via REST, 3-pane layout, Re-search takeover, inspector trim, ledger unfold, sample-switch race fix. |
-| **C** commit-alternative (manual curation) | ✅ done | The one phase-C item that had no row here and no code anywhere. `PATCH …/assignment/{id}` with `promote_alternative` / `set_assignment`, backend `api/new/peak_assignments/curation.py`, store `peakAssignment/assignment.js` → `peak.curate()`, "use this" in the inspector and the hand button on a search hit. See **Current state**. |
-
-**Verified live** against the isolated instance stack (`mascope dev run backend frontend --instance
---skip-migrations`; env `wt-…`, backend :8090, frontend :5173, seeded from the demo DB): read contract
-and the `String(peak_id) === sample_peak_id` join (1:1); `POST …/assign` creating a run through to
-`completed`; the REST timeseries shape; and the provenance/plausibility/alternatives fields on a fresh
-run. Note: uvicorn `--reload` is unreliable in this setup — hard-restart the backend after engine
-changes before trusting a live run.
-
-### Full task list
-
-Tasks are cut so they can be handed to separate agents with minimal collision. **F1 is the foundation**
-— it freezes the store API and delivers `BaseTierTag`, which every other frontend task consumes — so it
-lands first. The two backend tasks are independent of F1 and of each other and can start immediately.
-Once F1 is in, F2–F5 touch disjoint files and parallelize freely.
-
-| ID | Task | Files (primary) | Depends on | Notes |
-|---|---|---|---|---|
-| **F1** | Store spine + tier tag | `stores/data/modules/peakAssignment/{run,assignment}.js`, `stores/data/index.js`, `lib/base/BaseTierTag.vue` | GET endpoints (landed) | **The shared contract.** §2. Do first. |
-| **B1** | `peak_assignment_reload` event | `api/new/peak_assignments/service.py` (finalize path) + the socket emit helper used by `match_reload` | — | Small. Mirror `match_reload`. §2.3. |
-| **B2** | Composition-driven Fit visualization | new endpoint(s) beside `/match/aggregate/.../ion` + `/visualization/ion_focus` | — | Larger. Accept formula + mechanism + sample; return the same `{match_ions, match_isotopes}` shape. §4. |
-| **F2** | Peak ledger | `PaneBrowserPeak.vue` | F1 | Reads `byPeakId`, `tierCounts`. §3. |
-| **F3** | Peak inspector | `PanePeakAssign.vue` | F1 | Winner + evidence + `alternatives`; existing search → "Re-search". §3. |
-| **F4** | Annotated spectrum | `ChartSampleSpectrum/data.js` | F1 | Per-tier Plotly traces from `byPeakId`. §3. |
-| **F5** | Assignments browser + run selector + config dialog | `PaneBrowserMatch.vue`, new run-config dialog | F1; **B1** for live refresh | Coexist "Targets"/"Assignments"; row click focuses the peak. §3. |
-| **F6** | Fit view rename + composition wiring | `Dashboard.vue` (label), `match/visualized.js` | **B2** | Rename now; composition branch when B2's contract is fixed. §4. |
-
-**Suggested sequencing**
-
-1. **Now, in parallel:** F1 (foundation), B1, B2.
-2. **After F1:** F2, F3, F4, F5 in parallel; F5 stubs the refresh until B1 lands.
-3. **After B2:** F6.
-
-**Collision map.** The only shared frontend surfaces are `stores/data/index.js` and `BaseTierTag.vue`,
-both **owned by F1** and consumed read-only thereafter. F2 (`PaneBrowserPeak`), F4
-(`ChartSampleSpectrum`), and F5 (`PaneBrowserMatch`) are disjoint files; F3 (`PanePeakAssign`) is
-disjoint from all of them. So post-F1 the frontend work has no file overlap.
-
-**Branching.** Backend tasks (B1, B2) branch off `epic/peak-centric-assignment`. Frontend tasks branch
-off `design/peak-centric-frontend` (which already carries this doc), or off F1's branch once it lands,
-then merge back to epic. Keep each task a `feat(peak-assignments): …` / `feat(frontend): …` commit.
-
-**Read-path note.** No backend change is needed for reads: the `read` handler's `data.data` unwrap means
-run metadata comes from the runs endpoint (via the run store), not the `{run, data}` envelope. If a
-future call wants the envelope's `run` inline, add a dedicated handler rather than reusing `read`.

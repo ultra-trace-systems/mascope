@@ -2,7 +2,7 @@
 
 Two member aggregates materialized onto ``batch_peak`` so the ledger keeps its
 defining property -- one cheap read of the batch peaks alone, never a join to
-the occurrence table (docs/dev/peak_assignment_batch.md, section 6):
+the occurrence table (docs/dev/peak_assignment_batch_primary.md, section 4):
 
 - ``max_intensity``: the brightest member's intensity, in the unit
   ``intensity_variable`` already names. The ledger's sortable intensity column.

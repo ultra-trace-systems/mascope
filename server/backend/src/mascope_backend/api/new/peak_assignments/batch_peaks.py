@@ -31,7 +31,8 @@ This module holds the PURE logic (no DB, no I/O) behind the batch overview:
   the per-sample ledger reads such a peak.
 
 The DB controller (fold-in on arrival, backfill, consensus persistence) calls into
-these functions. Design: ``docs/dev/peak_assignment_batch.md``.
+these functions. Design: ``docs/dev/peak_assignment_batch_primary.md`` (section 12: the
+anchors and the fold).
 """
 
 from __future__ import annotations

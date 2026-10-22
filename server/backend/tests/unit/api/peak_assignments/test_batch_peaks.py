@@ -5,7 +5,7 @@ never move when a sample arrives), the resolution-adaptive membership, the
 evidence-weighted consensus (confidence over assigned members, prevalence kept
 separate, ties surfaced), and the two ledger aggregates the consensus pass rolls
 up alongside it: the brightest member and the isotopologue family link. See
-docs/dev/peak_assignment_batch.md.
+docs/dev/peak_assignment_batch_primary.md (section 12).
 """
 
 import itertools

@@ -28,7 +28,7 @@ Stage A is designed to consume.
 
 ---
 
-## 1. Current state (as-is)
+## 1. Current state as this was written (before phases 0 to 3 shipped)
 
 Composition assignment is **de novo only**. `find_compositions(mz, config)`
 ([finder.py](../../libraries/tools/src/mascope_tools/composition/finder.py))
@@ -213,32 +213,42 @@ distinct, larger subsystem and is sequenced after MS1 annotation is proven.
 
 Each phase is intended to land independently and leave the system shippable.
 
-### Phase 0 - Foundations
+### Phase 0 - Foundations (shipped)
 - New `mascope_reference` library skeleton: common record model, `by_formula` /
   `by_mass_window` query interface, formula normalization reuse.
 - `reference_source` + `reference_compound` tables + Alembic migration.
 - No ingestion yet - schema, query interface, and read path only.
 
-### Phase 1 - PubChem + EPA CompTox (highest ROI)
+### Phase 1 - PubChem + EPA CompTox (highest ROI; shipped)
 - ETL adapters for PubChem and CompTox bulk dumps -> normalized records.
 - `mascope reference sync` CLI command with versioned loads.
 - Wire `by_formula` annotation into `retrieve_compositions_by_mz`. Proves the
   full path end to end.
 
-### Phase 2 - Curated & suspect-screening sources
+### Phase 2 - Curated & suspect-screening sources (shipped)
 - Adapters for ChEBI, HMDB, LIPID MAPS, COCONUT, and NORMAN suspect lists.
 - InChIKey-based cross-source dedup and a collapsed view.
 - "Known compounds only" prior surfaced through the cheminfo path.
 
-### Phase 3 - Peak-centric integration
-- Expose `reference_compound` as the known-composition set for Stage A of the
-  peak-centric engine; annotate `source=database` assignments with identity.
+### Phase 3 - Peak-centric integration (shipped)
 
-### Phase 4 - MS/MS spectral matching
+Shipped in PR [#1633](https://github.com/ultra-trace-systems/mascope/pull/1633) (commit
+53282ce75): `mascope_reference.known.iter_known_compositions` is the known-composition set
+Stage A pre-computes isotopologues from - one entry per unique neutral formula of the active
+reference sources with the identities that share it, deduplicated on formula,
+licence-filterable, and bounded by the Stage A window (`KnownWindow`, polarity) rather than
+the whole mirror - and a `source=database` assignment carries the matched identities in its
+provenance. Matching stays formula-based; identity is one-to-many and attached, never
+matched on. The seam was designed in `reference_peak_assignment_convergence.md` (retired
+2026-10-22; in git history) and is documented in the
+[reference library's README](../../libraries/reference/README.md) ("Ownership boundary")
+and the [`known.py`](../../libraries/reference/src/mascope_reference/known.py) docstring.
+
+### Phase 4 - MS/MS spectral matching (not started)
 - `reference_spectrum` table + MassBank/MoNA/GNPS adapters (license-filtered).
 - Spectral-similarity scorer against extracted MS2 centroids; surface hits.
 
-### Phase 5 - Productization
+### Phase 5 - Productization (partly shipped: identities in the ledger and inspector, licence gating)
 - UI/SDK surfaces for annotations and spectral hits.
 - Refresh cadence for source dumps; version pinning for reproducibility.
 - Performance: keep annotation an indexed lookup; bound live-API fallback.

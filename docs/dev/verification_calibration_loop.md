@@ -4,15 +4,14 @@
 identifications in the UI, and those verdicts become the labelled golden set that fits each
 instrument's confidence calibration. This closes the loop opened by the P2 calibration pipeline
 ([`assignment_confidence.md`](assignment_confidence.md)) and the D6 calibration store
-([`handoff_fit_score_and_assignment.md`](handoff_fit_score_and_assignment.md)).*
+(the same note, P2).*
 
-**Status.** V1 (capture) backend is **shipped**: the `assignment_verification` table (migration
-`a1f8c25d9e47`), the `POST …/verify` + `GET …/verifications` API, and the frontend contract
-([`verification_capture_frontend.md`](verification_capture_frontend.md), design branch). The V1 UI
-is being built from that contract. V2 (close the loop) is **built** — `mascope_tools.recalibrate` +
+**Status.** V1 (capture) is **shipped**, backend and UI: the `assignment_verification` table (migration
+`a1f8c25d9e47`), the `POST …/verify` + `GET …/verifications` API, and the capture UI (§4.5).
+V2 (close the loop) is **built** — `mascope_tools.recalibrate` +
 `calibration_store.save_calibration` + `recalibrate_instrument` + `POST /calibration/{instrument}/recalibrate`
 (superuser), verified on synthetic labels and live on the demo; it just waits on real V1-UI labels
-to switch on. V3 (quality) is still design (below).
+to switch on real labels. V3 (quality) is still design (§6).
 
 ## 1. Why
 
@@ -119,8 +118,7 @@ enforced in the schema) and `GET /sample/{id}/verifications` (newest first).
 
 Settled on a **minimal** control (no full checklist in V1): confirm / reject / unsure + an
 evidence-level dropdown + optional note, in the peak-assignment inspector; a verdict badge on the
-assignment; and a verified/rejected ledger filter. Full spec + guardrails in the handover
-([`verification_capture_frontend.md`](verification_capture_frontend.md)). The structured checklist
+assignment; and a verified/rejected ledger filter. Shipped as §4.5 describes. The structured checklist
 and the active-learning queue (§5) are V3.
 
 ### 4.4 Feeding the calibration
@@ -131,6 +129,88 @@ run `fit_calibration` and write a new active `assignment_calibration` row (flipp
 inactive). Show before/after held-out ECE so the user sees the improvement. The same accumulated
 labels can refit the **per-adduct corroboration weights** (the offset-decoy benchmark generalises to
 "confirmed multi-adduct compounds vs rejected ones").
+
+### 4.5 Shipped: the capture UI, and how the current verdict is derived
+
+*Carried over on 2026-10-22 from the frontend handover `verification_capture_frontend.md`
+(its status and section 4), retired that day.*
+
+All three capture surfaces are implemented: the inspector control and verdict badge
+(`PanePeakAssign.vue` / `BaseVerdictBadge.vue`), the ledger badge column and filter
+(`PaneBrowserAssignment.vue`), and the `peakAssignment/verification` store (current verdict by
+stable identity, resolved to the isotopologue family's M0). Shared vocabulary in
+`src/lib/verification.js`. Verified against the live API (422 confirm-without-evidence guard,
+201 capture, snapshot record).
+
+The GET returns the **append-only history** (every verdict ever recorded, superseded ones included).
+The current verdict for an assignment is the record whose **`superseded_utc` is null** among those
+sharing its **stable identity**:
+
+```
+key = `${sample_peak_id}|${assigned_formula}|${ionization_mechanism_id}`
+```
+
+Use that identity — **not `peak_assignment_id`**, which is regenerated on every assignment run, so a
+label made against last run must still light up this run's matching assignment. Group the list by
+that key, keep the live record per group → `currentByIdentity`. Badge + ledger filter read from it.
+
+Recording a verdict stamps `superseded_utc` on the one it replaces, in the same transaction, and a
+partial unique index on the identity (`WHERE superseded_utc IS NULL`, `NULLS NOT DISTINCT` — both
+identity halves are nullable) guarantees there is **exactly one** live record per identity. Filtering
+on that field is therefore enough; the older max-by-`verified_utc` reduction gives the same answer
+but is no longer what defines it.
+
+A superseded record is history, not noise. It keeps the `fit_score` / `evidence` / `p_correct` the
+user judged at the time, which stays a valid calibration pair for *that* score even once a later
+verdict replaces it as the current answer — so it is stamped rather than deleted. It is excluded
+from the UI and from the label pool (`recalibrate_instrument` fits on live verdicts only).
+
+#### One verdict per isotopologue family
+
+**A verdict covers the M0 and every `iso_child` in its family, within the sample.** Not batch-wide,
+not across adducts — an M+1 peak is not a second finding to judge, it is the same compound seen
+through one heavy atom, and a chemist does not confirm the carbon-12 form while leaving the
+carbon-13 form open.
+
+The engine copies the M0's `assigned_formula` and `ionization_mechanism_id` onto each isotopologue, so
+**`sample_peak_id` is the only one of the three identity fields that differs across a family** — two
+thirds already match, and the lookup still misses. That single divergence is what used to give a
+focused M+1 an empty verify form beside a confirmed M0, and blank verdict cells on unfolded child
+rows sitting under a badge that said "Confirmed".
+
+The rule is therefore **resolve to the M0 first, then take the identity** — on read and on write
+alike, and inside the store rather than at each call site:
+
+| | where | what it does |
+|---|---|---|
+| resolution | `familyM0(row, byId)` / `m0Of(row)` in [`peakAssignment/assignment.js`](../../server/frontend/src/stores/data/modules/peakAssignment/assignment.js) | a row that is not an `iso_child` is its own anchor; one that is resolves through `owner_peak_assignment_id` |
+| read | `forAssignment(row)` in [`peakAssignment/verification.js`](../../server/frontend/src/stores/data/modules/peakAssignment/verification.js) | looks up `identityOf(m0Of(row))`, so every family member reports the family's verdict |
+| write | `verify(body)`, same file | rewrites `body.peak_assignment_id` to the family's M0 before POSTing |
+
+Consequences worth knowing:
+
+- **`AssignmentVerification` is unchanged** — no migration. `sample_peak_id` stays NOT NULL and now
+  always holds an *M0's* peak id. A formula-scoped key would have needed nullable identity halves and
+  would have collided with the per-peak score snapshot and the `(sample_item_id, sample_peak_id)`
+  index; this needs none of that.
+- **Resolution is strict, not a preference order.** An isotopologue reads its M0's verdict even when an
+  older build left a record against the isotopologue itself. Those historical records stay in the
+  append-only history for audit and are simply not surfaced — preferring an isotopologue's own record is
+  how a family would come to disagree with itself row by row.
+- **An isotopologue with no owner resolves to itself**, and that is an ordinary case rather than a
+  corrupt one: the engine leaves `owner_peak_assignment_id` null when the ion's M0 peak was won by a
+  different ion in that run
+  ([`engine.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/engine.py), see
+  `test_child_owner_stays_none_when_ions_m0_lost_its_peak`). Such a row keeps a badge and stays
+  verifiable rather than being treated as no row at all — but its verdict genuinely covers only
+  itself, so the inspector's "one verdict per compound" note is shown **only when the resolution
+  actually redirected**, never on a row standing for itself. It never reaches the ledger at all:
+  `childrenByOwner` skips null owners, so it is neither a parent row nor attached under one.
+- **The recalibration flow is untouched.** Labels still snapshot the M0's scores, so
+  `recalibrate_instrument` gets one label per family per judgment instead of N correlated ones.
+- **The ledger filter was already family-scoped** and stays that way: it runs over parents only
+  (isotopologues are re-attached under whichever parent survived), so a family has always been one unit
+  there. What changed is that the badge column now agrees with it.
 
 ## 5. The central risk: the confirmation-bias loop
 
@@ -158,12 +238,11 @@ prophecy. Everything else here is secondary to getting this right.
 
 ## 6. Phased plan
 
-- **V1 — capture. Backend DONE; UI in progress.** `assignment_verification` table (migration
+- **V1 — capture. Done.** `assignment_verification` table (migration
   `a1f8c25d9e47`) + `POST …/verify` (editor, `confirmed` requires an evidence level) / `GET …/verifications`,
   with the score snapshot and the Schymanski-aligned evidence levels. The **minimal** capture UI —
   confirm/reject/unsure + evidence dropdown + note in the inspector, a verdict badge, and a
-  verified/rejected ledger filter — is handed to the frontend in
-  [`verification_capture_frontend.md`](verification_capture_frontend.md) (guardrails 1, 2, 4, 5 baked
+  verified/rejected ledger filter — shipped as §4.5 records (guardrails 1, 2, 4, 5 baked
   in server-side + UX). No auto-calibration yet — just accumulate honest labels.
 - **V2 — close the loop. Built.** `mascope_tools.recalibrate` turns confirmed/rejected verdicts
   (evidence snapshot = score) into a new Platt curve, carries the corroboration weights forward, and
@@ -179,8 +258,9 @@ prophecy. Everything else here is secondary to getting this right.
 
 ## 7. Open questions
 
-- Verdict granularity: is the compound confirmed, or this specific adduct/ion? (Propose: the ion;
-  aggregate to compound for corroboration.)
+- Verdict granularity. *Answered:* one verdict per isotopologue family, within the sample - the
+  ion, not the compound, and not across adducts (§4.5). Aggregating to the compound for
+  corroboration stays open.
 - Shared vs per-user calibration: whose labels fit the curve for a shared instrument? (Propose:
   workspace/instrument-scoped, with per-user attribution retained.)
 - How to weight `visual` labels in the fit without letting them dominate (down-weight vs exclude).

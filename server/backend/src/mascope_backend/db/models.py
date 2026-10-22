@@ -2590,7 +2590,7 @@ class BatchPeak(Base):
 
     Batch peaks are partitioned per ionization mode (the m/z axis and intensity
     units differ between modes/instruments). Design:
-    ``docs/dev/peak_assignment_batch.md``.
+    ``docs/dev/peak_assignment_batch_primary.md`` (section 12 for the anchor model).
 
     consensus_tier values mirror ``PeakAssignment.tier``:
     'assigned' | 'candidate' | 'below_assignability' | 'unassigned'.
@@ -3072,7 +3072,7 @@ class BatchPeakVerification(Base):
     """A user's verdict on a batch peak's species claim - one per anchor, batch-wide.
 
     The anchor-scoped counterpart of :class:`AssignmentVerification`
-    (``docs/dev/peak_assignment_continuity.md`` section 4): judging the consensus formula of
+    (``docs/dev/peak_assignment_batch_primary.md`` section 6.3): judging the consensus formula of
     one batch peak covers every sample in the batch whose peak folded into that anchor and
     that carries no verdict of its own. Append-only with the current row marked, exactly as
     the per-sample table: one live row per ``(batch_peak_id, assigned_formula,
