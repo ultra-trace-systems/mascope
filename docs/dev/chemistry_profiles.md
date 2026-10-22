@@ -2,6 +2,10 @@
 
 # Reagent-Ion Chemistry Profiles & Chemistry Context: Design & Plan
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear: MAS-59, MAS-61, MAS-63, MAS-65)
+
 ## Purpose
 
 The peak-centric engine currently treats every spectrum as generic small-molecule

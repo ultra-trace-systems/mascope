@@ -1,5 +1,9 @@
 # The acquisition record: what an instrument's control program says of a file
 
+- **Status:** built
+- **As of:** 2026-10-22
+- **Tracked in:** [Automatic ingest: routing and splitting](https://linear.app/ultra-trace/project/automatic-ingest-routing-and-splitting-68acd9575fa9) (Linear; the FAIR export of its ids is MAS-33)
+
 Status: **built** (2026-10-07): the schema, the File Agent's half and the
 server's. A control program writes a record, an agent sends it with the
 file's upload, and the server keeps it on the file, binds the file by the

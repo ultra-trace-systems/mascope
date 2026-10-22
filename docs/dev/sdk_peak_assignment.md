@@ -2,6 +2,10 @@
 
 # Making the SDK peak-assignment aware (read-first)
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** MAS-71 in [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) for the import contract; the SDK write wrappers (section 8.4 steps 5 and 6) have no issue
+
 ## Purpose
 
 The [peak-centric assignment paradigm](peak_assignment_paradigm.md) inverts Mascope

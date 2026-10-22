@@ -1,5 +1,10 @@
 # Peak-Centric Assignment — Frontend Design & Implementation Plan
 
+- **Status:** built
+- **As of:** 2026-10-22
+- **Tracked in:** closed; retiring the Targets/Assignments switch is MAS-162 in [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9)
+- **Supersedes:** `peak_assignment_confidence_frontend.md` (retired 2026-10-22; its `n_adducts` rule is under "Confidence")
+
 *The UI side of the peak-centric paradigm ([`peak_assignment_paradigm.md`](peak_assignment_paradigm.md)).
 The backend inverts the unit of result from target to observed peak; this document is how the
 Vue/PrimeVue frontend consumes that. It is weighted toward the technical wiring — stores, API,

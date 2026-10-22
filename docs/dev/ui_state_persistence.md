@@ -2,6 +2,10 @@
 
 # Persisting UI State and Sharing Locations
 
+- **Status:** built
+- **As of:** 2026-10-22
+- **Tracked in:** closed; continuous URL mirroring, the phase 4 leftover, has no issue
+
 ## Purpose
 
 Two related capabilities for the Mascope web UI:

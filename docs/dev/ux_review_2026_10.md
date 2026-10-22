@@ -2,6 +2,10 @@
 
 # Dashboard UX review, October 2026
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) (Linear, MAS-148 to MAS-163)
+
 Status: **review recorded 2026-10-16; four of the six quick wins have shipped**
 (2026-10-22): QW2 (MAS-149), QW3 (MAS-150) and QW4 (MAS-151) as filed, and QW1 in
 a different shape in 1.13.0 (a default "Last 7 days" with an `acquisition_filter`

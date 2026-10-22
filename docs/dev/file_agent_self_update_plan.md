@@ -1,5 +1,9 @@
 # File Agent self-update
 
+- **Status:** design
+- **As of:** 2026-10-22
+- **Tracked in:** [OrbionICS self-update](https://linear.app/ultra-trace/project/orbionics-self-update-96caa663228f) (Linear; no issues filed yet)
+
 Goal: make the File Agent installed on an instrument PC able to move to a
 newer release without anyone touching that PC, so that the next hands-on
 campaign across customer sites is the last one. The server decides which

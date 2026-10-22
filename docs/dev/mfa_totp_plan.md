@@ -1,5 +1,21 @@
 # MFA (TOTP) plan
 
+- **Status:** built
+- **As of:** 2026-10-22
+- **Tracked in:** [Release 2.0 and the security campaign](https://linear.app/ultra-trace/project/release-20-and-the-security-campaign-89b9f4b36f95) (Linear; MAS-77, MAS-78, MAS-79 and MAS-111 done, MAS-211 open)
+
+Status: **built** in #1851 (1.8.0): phases 1 to 3 below (enrolment, verification,
+policy and administration) are running code, and the text reads as the proposal
+it was. Since then: web sessions are revoked on disable and password change
+(#2374, MAS-111), sockets are evicted with them (#2399, MAS-78), machine
+accounts are exempt (#2376, MAS-79), and access tokens are hashed at rest
+(#2400) with the 360-day lifetime kept (#2439, MAS-201; a 90-day cut is
+MAS-211, behind MAS-210), so section 5's "the raw token is the primary key" is
+no longer true. Of section 11's decisions, the threshold default is settled
+(disabled, documented), the token lifetime is settled, the session lifetime is
+decided and shipped, and "remember this device" is open with no issue
+(2026-10-22).
+
 Goal: a second authentication factor for the interactive web session, using
 time-based one-time passwords (RFC 6238) from any authenticator app.
 

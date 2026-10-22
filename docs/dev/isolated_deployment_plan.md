@@ -1,5 +1,9 @@
 # Isolated deployments: reaching and updating a server with no internet route
 
+- **Status:** design
+- **As of:** 2026-10-22
+- **Tracked in:** [Isolated deployments](https://linear.app/ultra-trace/project/isolated-deployments-7585d72b2a80) (Linear; no issues filed yet; to be re-based on the wheel install, MAS-116 option b)
+
 Goal: run a Mascope server at a customer site where the server itself has no
 route to the internet, the instrument PC next to it has one only when the
 customer says so, and maintaining that server is not harder than maintaining a

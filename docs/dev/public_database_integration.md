@@ -2,6 +2,11 @@
 
 # Public Chemistry & Spectral Database Integration: Design & Plan
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** none; phase 4 (MS/MS) and the phase 5 wrapper have no issue
+- **Supersedes:** `reference_peak_assignment_convergence.md` (retired 2026-10-22; Phase 3 records it)
+
 ## Purpose
 
 Mascope assigns chemistry to peaks entirely from first principles: given an m/z,

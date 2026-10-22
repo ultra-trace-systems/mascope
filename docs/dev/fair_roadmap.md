@@ -2,6 +2,11 @@
 
 # FAIR: Review & Roadmap
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear, MAS-19 to MAS-36)
+- **Supersedes:** section 7 of `ionization_method_config.md` (retired 2026-10-22)
+
 ## Purpose
 
 This document reviews Mascope against the [FAIR principles](https://www.go-fair.org/fair-principles/)

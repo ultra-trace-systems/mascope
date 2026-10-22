@@ -2,6 +2,10 @@
 
 # Visual digests: charts, dashboards and reports over the SDK
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** [Visual digests](https://linear.app/ultra-trace/project/visual-digests-51cecff8f790) (Linear, MAS-217 to MAS-244)
+
 ## Purpose
 
 Mascope's web app draws one batch at a time, and a batch is one instrument-day
@@ -19,12 +23,17 @@ can drive, and the one place in which figure code over the SDK lives.
 
 It is an engineering design and phased plan, not a user guide.
 
-> **Status (2026-10-21).** Proposal, reviewed by the owner on 2026-10-21: it
-> stands as written, with datashader added as an optional raster path on top
-> of the two renderers (section 2.4, decision 2). No code written. Section 1
-> was verified against `develop` at 5bd66b2d1 on 2026-10-20; file links are
-> the evidence. The plan is a Linear project (appendix B); this note stays
-> the record.
+> **Status (2026-10-22).** Building. Reviewed by the owner on 2026-10-21: the
+> design stands as written, with datashader added as an optional raster path on
+> top of the two renderers (section 2.4, decision 2). Phase 0 is done (MAS-217,
+> decisions 1 to 7; MAS-219, token auth on the series routes; MAS-220,
+> `batches.ion_series`, `batch_peaks.series` and `sample_files.list` in the SDK;
+> MAS-221, the synthetic campaign fixture in `libraries/viz/`), phase 1 has
+> started (MAS-222 waiting for merge; MAS-223 to MAS-225 open), phases 2 to 5
+> (MAS-226 to MAS-244) are open, and decision 8 is MAS-218. Section 1 was
+> verified against `develop` at 5bd66b2d1 on 2026-10-20; file links are the
+> evidence. The plan is a Linear project (appendix B); this note stays the
+> record.
 
 > **Scope decision (v1): read-only, over the public API.** The package reads
 > through `mascope_sdk` with the user's own token and writes nothing to the
