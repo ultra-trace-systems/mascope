@@ -1288,6 +1288,12 @@ DNS cannot resolve MagicDNS names). One-time per server: the backend container
 needs a `tailscale0` masquerade line in the `MASCOPE NAT` block; see the
 [monitoring runbook](../tooling/monitoring/README.md) step 7.1.
 
+Code fed to Python on stdin or typed at its prompt never reports, though it
+inherits the DSN in the container: a prod job or an operator's
+`docker exec -i <container> python - < script.py` keeps its errors on the
+terminal instead of filing them as the server's. Run a script by its path when
+its errors should reach GlitchTip.
+
 Backend images ship `sentry-sdk` (the runtime's `[sentry]` extra) since
 2026-07, so there is nothing to install per server; the DSN alone toggles
 reporting. The event `environment` is the runtime mode and `release` follows

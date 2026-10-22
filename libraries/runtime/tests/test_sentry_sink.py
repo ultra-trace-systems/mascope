@@ -7,8 +7,8 @@ into ``sys.modules`` so they run without the optional ``sentry`` extra installed
 and cover: the default-OFF gate, init wiring/idempotency, the WARNING+ capture
 paths (message vs exception), how each is grouped (call-site fingerprint, bound
 override, log entry beside an exception), the SDK-loop guard, never-raise
-behavior, and the CLI exclusion in ``RuntimeLogging.configure``. One test drives a real loguru
-logger end to end.
+behavior, and the CLI and ad-hoc script exclusions in ``RuntimeLogging.configure``.
+One test drives a real loguru logger end to end.
 """
 
 import logging as std_logging
@@ -377,7 +377,8 @@ def test_sink_never_raises(fake_sentry):
 # --- configure() gating -----------------------------------------------------
 # The sink handler is appended for server modules only. The CLI is excluded:
 # its WARNING+ records are user-facing terminal output, and a DSN exported in
-# the shell env must not turn them into GlitchTip events.
+# the shell env must not turn them into GlitchTip events. So is a script read
+# from stdin or a prompt, which inherits the server's DSN in its container.
 
 
 class _FakeModuleConfig:
@@ -453,6 +454,39 @@ def test_configure_adds_sentry_sink_for_server_modules(tmp_path, sink_events):
     logger = rl.RuntimeLogging(_FakeRuntime("backend", str(tmp_path))).configure()
     logger.warning("server warning")
     logger.info("below threshold")
+
+    assert [m.record["message"] for m in sink_events] == ["server warning"]
+
+
+@pytest.mark.parametrize("argv0", ["-", ""], ids=["stdin", "prompt"])
+def test_configure_skips_sentry_for_ad_hoc_scripts(
+    tmp_path, monkeypatch, sink_events, argv0
+):
+    """A script piped to `python -` in a server's container reports nothing."""
+    init_calls = []
+    monkeypatch.setattr(
+        rl, "_init_sentry", lambda **kwargs: init_calls.append(kwargs) or True
+    )
+    monkeypatch.setattr(sys, "argv", [argv0])
+
+    logger = rl.RuntimeLogging(_FakeRuntime("backend", str(tmp_path))).configure()
+    logger.warning("a warning from an operator's script")
+
+    assert init_calls == []  # no SDK, so no excepthook either
+    assert sink_events == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["/opt/mascope/bin/api-server"], ["-c", "--multiprocessing-fork"], []],
+    ids=["program", "spawned-child", "empty-argv"],
+)
+def test_configure_reports_for_programs(tmp_path, monkeypatch, sink_events, argv):
+    """A program, a multiprocessing child (`-c`) and an emptied argv report."""
+    monkeypatch.setattr(sys, "argv", argv)
+
+    logger = rl.RuntimeLogging(_FakeRuntime("backend", str(tmp_path))).configure()
+    logger.warning("server warning")
 
     assert [m.record["message"] for m in sink_events] == ["server warning"]
 
