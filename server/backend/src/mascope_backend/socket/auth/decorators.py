@@ -108,13 +108,14 @@ def file_converter_socket_auth(minimum_role: str):
                 )
 
                 return await handler(sid, data, *args, **kwargs)
-            except InvalidTokenException as e:
-                # Expected 401-class rejection; the raise carries it upstream
+            except (InvalidTokenException, SocketAuthError) as e:
+                # Expected rejection (no token, a bad or expired one, too low
+                # a role): log it and drop the event, as socket_auth does.
+                # Re-raising reached nobody: python-socketio runs each handler
+                # as a task nothing awaits, so asyncio reported the exception
+                # as "Task exception was never retrieved" at ERROR. A missing
+                # role configuration is still logged at ERROR above.
                 runtime.logger.info(f"File converter auth error: {str(e)}")
-                raise SocketUnauthenticatedError(str(e)) from e
-            except SocketAuthError as e:
-                runtime.logger.info(f"File converter auth error: {str(e)}")
-                raise
             except Exception:
                 # Not an auth rejection: this broad catch also swallows
                 # exceptions from the handler itself, so record the traceback
