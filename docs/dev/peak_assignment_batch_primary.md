@@ -415,6 +415,14 @@ already read anchors and occurrences only. They change by column types, not by s
 > state archived on the pin so release is a true undo. The registry made "rewriting
 > the head of the candidate list" unnecessary: members address identities by index,
 > so the pin names an index and nothing else moves.
+>
+> *Status (2026-10-22, MAS-366):* an identity whose ion has its monoisotopic line elsewhere
+> is refused (`batch_peak_candidate_isotope_line`, 422), and the refusal names the batch
+> peak of the same ionization mode that holds that line. The registry holds isotope lines
+> too, and the propagation measured a pinned one as an M0 carrying its parent's envelope
+> fit, at its parent's tier and with no family link. The check reads the ion's mass, not
+> the brackets in its formula, since a labelled reagent's own ion carries its label in
+> brackets as well.
 
 Manual curation today is run-local
 ([`curation.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/curation.py)):

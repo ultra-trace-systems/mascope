@@ -29,10 +29,18 @@ since, drops the pin and recomputes the plain vote.
 The claim is guarded as a verdict's is: the client names the consensus formula it
 saw (``expected_formula``), and a mismatch is refused rather than a pin recorded
 over a consensus the user never read.
+
+An identity whose ion has its monoisotopic line elsewhere is refused too. The
+registry holds every identity a member carried, isotope lines included - the
+13C line of an ion one mass unit below - and pinned here such a line would be
+measured as an ion of its own: an M0 carrying its parent's envelope fit, at its
+parent's tier, with no family link. The refusal names the batch peak that holds
+the monoisotopic line, where the compound can be pinned.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime as dt
 from datetime import timezone
 from typing import Any, Optional
@@ -53,6 +61,8 @@ from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_M0,
+    Anchor,
+    AnchorSet,
     manual_pin_of,
     member_state,
     resolve_candidate,
@@ -66,6 +76,11 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     _propagate_to_sample,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.engine import monoisotopic_row
+from mascope_backend.api.new.peak_assignments.seeded_scoring import (
+    build_seeded_isotopes_df,
+    fetch_mechanisms_by_id,
+)
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import (
@@ -82,7 +97,19 @@ ACTION_PROMOTE_IDENTITY = "promote_identity"
 
 #: Machine-readable codes on the refusals a client has to react to.
 UNKNOWN_CANDIDATE_CODE = "batch_peak_candidate_unknown"
+ISOTOPE_LINE_CODE = "batch_peak_candidate_isotope_line"
 NOT_CURATED_CODE = "batch_peak_not_curated"
+
+#: How far from an identity's monoisotopic line, in m/z, a batch peak may sit
+#: and still be that line. Every other line of an ion is a mass unit or more
+#: away: its 13C line 1.003 above, a 15N reagent's unlabelled remainder 0.997
+#: below.
+MONOISOTOPIC_WINDOW = 0.5
+
+#: How far around the monoisotopic m/z the batch's peaks are read to find the
+#: one holding it, in ppm. Wider than any batch peak's own tolerance, which
+#: then decides (:meth:`batch_peaks.AnchorSet.find`).
+PARENT_SEARCH_PPM = 500.0
 
 
 class UnknownCandidateException(CodedHTTPException):
@@ -96,6 +123,36 @@ class UnknownCandidateException(CodedHTTPException):
             detail=(
                 f"Batch peak '{batch_peak_id}' has no candidate {candidate}; the "
                 "identities it can be assigned are the ones its members have carried"
+            ),
+        )
+
+
+class IsotopeLineException(CodedHTTPException):
+    """The identity is an isotope line of an ion whose monoisotopic line is
+    elsewhere (422); the message names the batch peak that holds it."""
+
+    error_code = ISOTOPE_LINE_CODE
+
+    def __init__(
+        self,
+        anchor: Any,
+        entry: dict,
+        monoisotopic_mz: float,
+        parent: Optional[Any],
+    ):
+        where = (
+            f"the batch peak at m/z {parent.mz:.4f} ('{parent.batch_peak_id}'); "
+            "assign the compound there"
+            if parent is not None
+            else f"at m/z {monoisotopic_mz:.4f}, which no batch peak holds"
+        )
+        super().__init__(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Batch peak '{anchor.batch_peak_id}' at m/z {anchor.mz:.4f} reads "
+                f"{entry.get('ion_formula') or entry.get('formula')} as an isotope "
+                f"line of {entry.get('formula')}, not as an ion of its own. The "
+                f"ion's monoisotopic line is {where}"
             ),
         )
 
@@ -125,6 +182,26 @@ def registry_entry(anchor: Any, candidate: int) -> Optional[dict]:
     if not isinstance(entry, dict) or not entry.get("formula"):
         return None
     return entry
+
+
+def monoisotopic_mz(formula: str, mechanism: Any) -> Optional[float]:
+    """The m/z of the monoisotopic line of the ion ``formula`` makes through
+    ``mechanism`` - for a labelled reagent's ion, its labelled line - or None
+    when the ion cannot be generated.
+
+    :param formula: The identity's neutral formula.
+    :param mechanism: Its mechanism (``ionization_mechanism_id``,
+        ``ionization_mechanism``, ``ionization_mechanism_polarity``).
+    """
+    isotopes, _ = build_seeded_isotopes_df(
+        {(formula, mechanism.ionization_mechanism_id)},
+        {mechanism.ionization_mechanism_id: mechanism},
+        "HIGH",
+        0.0,
+    )
+    if isotopes.empty:
+        return None
+    return float(monoisotopic_row(isotopes)["mz"])
 
 
 def manual_pin(anchor: Any, candidate: int, user_id: Optional[int], at: str) -> dict:
@@ -240,6 +317,46 @@ def _check_claim(
     return entry
 
 
+async def _check_monoisotopic(session, anchor: Any, entry: dict) -> None:
+    """Refuse an identity whose ion has its monoisotopic line elsewhere.
+
+    Read off the ion itself rather than off how its formula is spelled: a
+    labelled reagent's ion carries its label in brackets as a 13C line does,
+    and only the line's mass tells a monoisotopic reading from an isotope one.
+    An identity whose ion cannot be generated is not refused here.
+    """
+    mechanism_id = entry.get("ionization_mechanism_id")
+    mechanism = (await fetch_mechanisms_by_id({mechanism_id})).get(mechanism_id)
+    if mechanism is None:
+        return
+    mono = await asyncio.to_thread(monoisotopic_mz, entry["formula"], mechanism)
+    if mono is None or abs(anchor.mz - mono) <= MONOISOTOPIC_WINDOW:
+        return
+    window = mono * PARENT_SEARCH_PPM * 1e-6
+    nearby = (
+        (
+            await session.execute(
+                select(BatchPeak).where(
+                    BatchPeak.sample_batch_id == anchor.sample_batch_id,
+                    BatchPeak.ionization_mode_id.is_not_distinct_from(
+                        anchor.ionization_mode_id
+                    ),
+                    BatchPeak.mz.between(mono - window, mono + window),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_id = {peak.batch_peak_id: peak for peak in nearby}
+    peaks = AnchorSet(
+        Anchor(peak.batch_peak_id, peak.mz, peak.mz_tol_ppm) for peak in nearby
+    )
+    found = peaks.find(mono)
+    parent = by_id[peaks.get(found).batch_peak_id] if found is not None else None
+    raise IsotopeLineException(anchor, entry, mono, parent)
+
+
 @api_controller()
 async def validate_curation(
     sample_batch_id: str,
@@ -257,6 +374,7 @@ async def validate_curation(
         anchor = await session.get(BatchPeak, batch_peak_id)
         _check(anchor, sample_batch_id, batch_peak_id)
         entry = _check_claim(anchor, batch_peak_id, candidate, expected_formula)
+        await _check_monoisotopic(session, anchor, entry)
     return {"formula": entry.get("formula"), "mz": anchor.mz}
 
 
@@ -276,7 +394,8 @@ async def _pin(
         await _acquire_batch_fold_lock(session, sample_batch_id)
         anchor = await session.get(BatchPeak, batch_peak_id)
         _check(anchor, sample_batch_id, batch_peak_id)
-        _check_claim(anchor, batch_peak_id, candidate, expected_formula)
+        entry = _check_claim(anchor, batch_peak_id, candidate, expected_formula)
+        await _check_monoisotopic(session, anchor, entry)
         now = dt.now(timezone.utc)
         pin = manual_pin(anchor, candidate, user_id, now.isoformat())
         provenance = (
@@ -510,6 +629,7 @@ async def release_batch_peak_curation(sample_batch_id: str, batch_peak_id: str) 
 
 __all__ = [
     "ACTION_PROMOTE_IDENTITY",
+    "ISOTOPE_LINE_CODE",
     "NOTIFICATION_TYPE",
     "NOT_CURATED_CODE",
     "UNKNOWN_CANDIDATE_CODE",
@@ -517,6 +637,7 @@ __all__ = [
     "curation_outcome",
     "manual_pin",
     "member_state",
+    "monoisotopic_mz",
     "registry_entry",
     "release_batch_peak_curation",
     "restore_member",

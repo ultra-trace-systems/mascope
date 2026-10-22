@@ -17,3 +17,11 @@
   as a good fit there while a search of the same sample read it as a poor one.
   They are now scored at the instrument class's width, as an assignment run
   scores a sample whose library fits no width.
+
+- **An isotope line's identity can no longer be pinned on a batch peak.**
+  *Use this* on a batch peak's identity that reads the peak as the 13C line
+  of a compound pinned the line as an ion of its own: it carried the
+  compound's envelope fit, at the compound's tier and with no link to the
+  compound's batch peak. Such a request is now refused, and the message names
+  the batch peak that holds the compound's monoisotopic line, where the
+  compound can be pinned.
