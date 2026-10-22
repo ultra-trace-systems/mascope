@@ -449,6 +449,56 @@ def test_the_report_says_what_it_read(composite, monkeypatch):
     assert [layout["files"] for layout in summary] == [1]
 
 
+def test_a_window_run_at_two_resolutions_is_named_apart(monkeypatch):
+    """A reagent scan, then one window at one resolution and then at
+    another: each a stream, and the first run of the window owns it. Named
+    by range alone, the report would say "m/z 66-124 and m/z 66-124
+    overlap"; it names them as the processing detail does."""
+    slower = LOW.replace("R=120000", "R=60000")
+    pair = PairReading(
+        first=slower,
+        second=LOW,
+        overlap=((66, 124),),
+        owners=((66, 124, slower),),
+        shared=10,
+        ratio=1.0,
+        ppm=0.4,
+        kept_first=12,
+        kept_second=12,
+    )
+    reading = _reading(
+        pair,
+        layout=(REAGENT, slower, LOW),
+        runs=((40, 66, REAGENT), (66, 124, slower), (124, 138, REAGENT)),
+    )
+
+    async def walk(_limit):
+        return report.Walked(files=1, stitched=1, readings=[reading])
+
+    async def settings(_sample_file_id):
+        return {slower: "2 scans, 10 microscans", LOW: "3 scans, 10 microscans"}
+
+    lines = []
+    monkeypatch.setattr(report, "walk", walk)
+    monkeypatch.setattr(report, "_stream_settings", settings)
+    monkeypatch.setattr(report.runtime.logger, "info", lines.append)
+
+    asyncio.run(report.stitch_overlap_report(10))
+
+    said = "\n".join(lines)
+    assert "range m/z 40-138\n" in said
+    assert "range m/z 66-124, R=60000 [2 scans, 10 microscans]" in said
+    assert "range m/z 66-124, R=120000 [3 scans, 10 microscans]" in said
+    assert (
+        "stitched: m/z 40-66 from m/z 40-138; m/z 66-124 from m/z 66-124, "
+        "R=60000; m/z 124-138 from m/z 40-138"
+    ) in said
+    assert (
+        "m/z 66-124, R=60000 and m/z 66-124, R=120000 overlap over m/z 66-124, "
+        "owned 66-124 by m/z 66-124, R=60000"
+    ) in said
+
+
 def test_a_site_with_no_stitched_file_is_told_why(monkeypatch):
     async def pages(_limit):
         yield []

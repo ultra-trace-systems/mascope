@@ -1577,7 +1577,7 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
                 "old_factor": old_factor,
                 "tic": tic,
                 "rows": calibration_df.assign(
-                    segment=index, segment_label=segment_label(key)
+                    segment=index, segment_label=segment_label(key, keys)
                 ),
             }
         self.warning = None
@@ -1592,7 +1592,10 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         )
         if not placed:
             self.warning = _why_no_stream_was_fitted(
-                {segment_label(keys[index]): note for index, note in notes.items()}
+                {
+                    segment_label(keys[index], keys): note
+                    for index, note in notes.items()
+                }
             )
             return
 
@@ -1644,12 +1647,12 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
                 {
                     "index": index,
                     "key": keys[index],
-                    "label": segment_label(keys[index]),
+                    "label": segment_label(keys[index], keys),
                     "source": entry["source"],
                     "origin": (
                         None
                         if entry["origin"] is None
-                        else segment_label(keys[entry["origin"]])
+                        else segment_label(keys[entry["origin"]], keys)
                     ),
                     "calibration_factor": entry["calibration_factor"],
                     "shift_ppm": _finite_or_none(entry["shift_ppm"]),

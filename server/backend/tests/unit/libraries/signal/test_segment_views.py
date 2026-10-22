@@ -109,6 +109,65 @@ def pooled(acquire, instrument_functions):
 )
 def test_a_segment_is_named_by_its_scan_range(key, label):
     assert segment_label(key) == label
+    # Beside streams that read otherwise, it is named as on its own
+    assert segment_label(key, [key, *KEYS]) == label
+
+
+ONE_RANGE = "FTMS - p NSI Full ms [40.0000-600.0000]"
+
+
+@pytest.mark.parametrize(
+    "key, among, label",
+    [
+        (
+            f"{ONE_RANGE} R=60000",
+            [f"{ONE_RANGE} R=60000", f"{ONE_RANGE} R=120000"],
+            "m/z 40-600, R=60000",
+        ),
+        (
+            f"{ONE_RANGE} R=120000",
+            [f"{ONE_RANGE} R=60000"],
+            "m/z 40-600, R=120000",
+        ),
+        (
+            f"{ONE_RANGE} R=120000 event=2",
+            [
+                f"{ONE_RANGE} R=120000 event=2",
+                f"{ONE_RANGE} R=120000 event=3",
+                f"{ONE_RANGE} R=60000",
+            ],
+            "m/z 40-600, R=120000, event 2",
+        ),
+        (
+            f"{ONE_RANGE} R=120000 event=2",
+            [f"{ONE_RANGE} R=120000 event=3"],
+            "m/z 40-600, event 2",
+        ),
+        (ONE_RANGE, [f"{ONE_RANGE} R=60000"], "m/z 40-600"),
+    ],
+    ids=["first", "second", "with-its-event", "event-alone", "none-stated"],
+)
+def test_streams_of_one_range_are_told_apart_by_their_resolution(key, among, label):
+    """A method that changes its resolution part way through runs one range
+    twice. Named by the range alone, the two would read alike; the event
+    says which run of one resolution a stream is."""
+    assert segment_label(key, among) == label
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "FTMS + p NSI Full ms [40.0000-600.0000] R=60000",
+        "FTMS - p NSI SIM ms [40.0000-600.0000] R=60000",
+        "FTMS - p NSI Full ms [40.0000-601.0000] R=60000",
+        "a key that states no range R=60000",
+    ],
+    ids=["other-polarity", "other-mode", "other-range", "no-range"],
+)
+def test_a_resolution_is_said_only_beside_a_stream_that_reads_alike(other):
+    """One of the other polarity reads alike, and is in a sentence of its
+    own; one of another mode or range already reads otherwise."""
+    assert segment_label(f"{ONE_RANGE} R=120000", [other]) == "m/z 40-600"
 
 
 # -- what a sample's composite is made of ------------------------------------------
@@ -124,6 +183,30 @@ def test_a_stitched_polarity_names_its_streams_and_its_runs(composite):
     assert segments.boundaries() == [
         {"segment": index, "mz_lower": float(lower), "mz_upper": float(upper)}
         for lower, upper, index in RUNS
+    ]
+
+
+def test_a_window_run_at_two_resolutions_is_named_by_the_one_that_owns_it(
+    acquire, instrument_functions
+):
+    """A reagent scan, then one window at one resolution and then at
+    another: each a stream, and the first run of the window owns it."""
+    reagent = "FTMS - p NSI Full ms [40.0000-138.0000]"
+    window = "FTMS - p NSI Full ms [66.0000-124.0000]"
+    acquire(
+        [(reagent, 1, {62.0: 1000.0, 125.0: 400.0})] * 3
+        + [(window, 2, {100.0: 50.0})] * 2
+        + [(window, 3, {100.0: 60.0})] * 2,
+        {1: 1, 2: 10, 3: 10},
+        resolutions={2: 60000, 3: 120000},
+    )
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+
+    segments = read_sample_segments(SAMPLE_FILENAME, "-")
+
+    assert [segment["label"] for segment in segments.segments] == [
+        "m/z 40-138",
+        "m/z 66-124, R=60000",
     ]
 
 

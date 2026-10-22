@@ -482,9 +482,10 @@ def _three(spread: list[float] | None, digits: int = 2) -> str:
     return f"{median} ({lower} to {upper})"
 
 
-def _named(key: str, settings: dict[str, str]) -> str:
+def _named(key: str, settings: dict[str, str], among: list[str]) -> str:
+    label = segment_label(key, among)
     said = settings.get(key)
-    return f"{segment_label(key)} [{said}]" if said else segment_label(key)
+    return f"{label} [{said}]" if said else label
 
 
 async def _log(walked: Walked, files_limit: int) -> None:
@@ -523,26 +524,30 @@ async def _log(walked: Walked, files_limit: int) -> None:
             f"- {layout['instrument']}, polarity {layout['polarity']}: "
             f"{layout['files']} file(s), {span}"
         )
-        for key in layout["layout"]:
-            log(f"    range {_named(key, settings)}")
+        # Two of its ranges on one range and mode at two resolutions are
+        # named apart, as the processing detail names them
+        among = layout["layout"]
+        for key in among:
+            log(f"    range {_named(key, settings, among)}")
         if layout["runs"]:
             log(
                 "    stitched: "
                 + "; ".join(
-                    f"m/z {lower:g}-{upper:g} from {segment_label(key)}"
+                    f"m/z {lower:g}-{upper:g} from {segment_label(key, among)}"
                     for lower, upper, key in layout["runs"]
                 )
             )
         if not layout["pairs"]:
             log("    No two of its ranges overlap.")
         for pair in layout["pairs"]:
-            first, second = segment_label(pair["first"]), segment_label(pair["second"])
+            first = segment_label(pair["first"], among)
+            second = segment_label(pair["second"], among)
             overlap = "; ".join(
                 f"{lower:g}-{upper:g}" for lower, upper in pair["overlap"]
             )
             owners = (
                 "; ".join(
-                    f"{lower:g}-{upper:g} by {segment_label(key)}"
+                    f"{lower:g}-{upper:g} by {segment_label(key, among)}"
                     for lower, upper, key in pair["owners"]
                 )
                 or "nobody"

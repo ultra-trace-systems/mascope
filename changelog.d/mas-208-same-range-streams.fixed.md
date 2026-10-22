@@ -9,3 +9,6 @@
   off. Stitched files of several ranges, and the settle-then-measure layout,
   whose measurement owns its range by its microscans, are stitched as before.
   A file already stitched this way is detected whole when it is re-processed.
+  Where such streams still sit beside another range, the processing detail
+  and the calibration name them apart by resolution (`m/z 40-600, R=60000`)
+  instead of by the same range twice.
