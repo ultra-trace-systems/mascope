@@ -85,8 +85,8 @@ mascope reference status
 ```
 
 To author your own reference data from a published peak list (e.g. atmospheric
-compounds not yet in the public databases), use the `custom` adapter - see
-[docs/dev/reference_data_authoring.md](../../docs/dev/reference_data_authoring.md).
+compounds not yet in the public databases), use the `custom` adapter - see the
+user guide [Reference compound lists](../../docs/user/guides/reference-lists.md).
 
 ## Loading the shipped lists
 

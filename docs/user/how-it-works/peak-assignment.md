@@ -46,8 +46,8 @@ Every peak is assigned in a two-stage engine:
 
 - **Stage A — database-first.** The peak is matched against the sample's known target
   library (the same target isotopologues used by [target matching](matching.md)) and
-  against any reference lists your deployment has loaded; the best-fitting known
-  composition wins the peak. A reference list is matched only within its own element,
+  against any [reference lists](../guides/reference-lists.md) your deployment has
+  loaded; the best-fitting known composition wins the peak. A reference list is matched only within its own element,
   carbon and mass window, under a ceiling the sample's chemistry context sets; only in
   the polarity it is detected in; and it contributes radicals only if it allows them.
   The target library is read through the ionization mechanisms of the sample's mode; a
