@@ -31,6 +31,9 @@ A time without a zone is in the instrument's acquisition zone (`tz=` names
 another), and a sample is in the range when its file started in it, the end
 excluded. Names match as literal text, a compiled `re.Pattern` as a regex;
 of `batches`, a string names one batch and a pattern every batch it matches.
+`mode=` takes an ionization mode's name, as `mascope.ionization.modes()`
+lists it; with `instrument=`, only that instrument's modes and those of
+every instrument are looked at.
 A name that matches several objects is not an error: `resolved.ambiguous` is
 true, `resolved.candidates` lists them, and nothing past the ambiguity was
 read. One that matches nothing raises `mascope_viz.errors.NotFound`, which
