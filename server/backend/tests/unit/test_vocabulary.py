@@ -27,6 +27,10 @@ ACCESSION = re.compile(r"MS:\d{7}")
         ("Q Exactive HF-X", "MS:1002877"),
         ("Orbitrap Astral", "MS:1003378"),
         ("LTQ Orbitrap", "MS:1000449"),
+        # Filed directly under orbitrap instrument, not under one of its
+        # four sibling classes
+        ("Exactive", "MS:1000649"),
+        ("Exactive Plus", "MS:1002526"),
     ],
 )
 def test_a_model_maps_to_its_term_by_its_psi_ms_name(model, accession):
@@ -48,19 +52,29 @@ def test_a_model_is_looked_up_regardless_of_case_and_spacing(model):
     assert vocabulary.instrument_model_term(model).accession == "MS:1003095"
 
 
-@pytest.mark.parametrize(
-    ("alias", "name"),
-    [
-        ("LTQ Orbitrap Elite", "Orbitrap Elite"),
-        ("LTQ Orbitrap Velos Pro", "Orbitrap Velos Pro"),
-        ("LTQ Orbitrap Velos ETD", "LTQ Orbitrap Velos/ETD"),
-        ("Q Exactive GC", "Q Exactive GC Orbitrap"),
-        ("Orbitrap XL", "LTQ Orbitrap XL"),
-    ],
-)
+#: Every name in ``MODEL_ALIASES``, written out with the PSI-MS name it must
+#: give, so that dropping or misdirecting any alias fails a test.
+ALIASES = {
+    "LTQ Orbitrap Elite": "Orbitrap Elite",
+    "LTQ Orbitrap Velos Pro": "Orbitrap Velos Pro",
+    "LTQ Orbitrap Velos ETD": "LTQ Orbitrap Velos/ETD",
+    "Q Exactive GC": "Q Exactive GC Orbitrap",
+    "Orbitrap Velos": "LTQ Orbitrap Velos",
+    "Orbitrap Discovery": "LTQ Orbitrap Discovery",
+    "Orbitrap XL": "LTQ Orbitrap XL",
+}
+
+
+@pytest.mark.parametrize(("alias", "name"), ALIASES.items())
 def test_a_readers_other_name_for_a_model_maps_to_the_models_term(alias, name):
     """The term keeps the ontology's name, whatever the reader called it."""
-    assert vocabulary.instrument_model_term(alias).name == name
+    term = vocabulary.instrument_model_term(alias)
+    assert term.name == name
+    assert term.accession == vocabulary.MODEL_ALIASES[alias]
+
+
+def test_every_alias_is_tested():
+    assert set(ALIASES) == set(vocabulary.MODEL_ALIASES)
 
 
 @pytest.mark.parametrize(

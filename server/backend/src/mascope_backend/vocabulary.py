@@ -18,8 +18,9 @@ The accessions were checked against PSI-MS release :data:`PSI_MS_VERSION`.
 OpenTFRaw's mzML writer embeds a model table of its own, and not all of it
 agrees with the ontology: it writes ``MS:1003199`` for the Orbitrap
 Exploris 120, an accession the ontology gives to "change log", and several
-other accessions in its table are not instrument models either. The ontology is what a reader of an export resolves an
-accession against, so it is what this table follows.
+other accessions in its table are not instrument models either. The
+ontology is what a reader of an export resolves an accession against, so
+it is what this table follows.
 """
 
 from typing import NamedTuple
@@ -36,22 +37,26 @@ class CvTerm(NamedTuple):
     name: str
 
 
-#: Every Thermo instrument model the ontology files under an Orbitrap
-#: instrument class (ion trap, quadrupole, tribrid and Astral Orbitraps),
-#: by its PSI-MS name. Only Orbitraps: an ``"orbi"`` file is analysed by an
-#: orbitrap, so a model listed here never contradicts :data:`ANALYSERS`.
+#: Every instrument model the ontology files under ``orbitrap instrument``
+#: (``MS:1003953``: the Exactive and Exactive Plus) or under one of the four
+#: classes beside it (ion trap, quadrupole, tribrid and Astral Orbitraps,
+#: ``MS:1003768`` to ``MS:1003771``), by its PSI-MS name. Only Orbitraps: an
+#: ``"orbi"`` file is analysed by an orbitrap, so a model listed here never
+#: contradicts :data:`ANALYSERS`.
 ORBITRAP_MODELS: tuple[CvTerm, ...] = (
     CvTerm("MS:1000449", "LTQ Orbitrap"),
     CvTerm("MS:1000555", "LTQ Orbitrap Discovery"),
     CvTerm("MS:1000556", "LTQ Orbitrap XL"),
     CvTerm("MS:1000639", "LTQ Orbitrap XL ETD"),
     CvTerm("MS:1000643", "MALDI LTQ Orbitrap"),
+    CvTerm("MS:1000649", "Exactive"),
     CvTerm("MS:1001742", "LTQ Orbitrap Velos"),
     CvTerm("MS:1001910", "Orbitrap Elite"),
     CvTerm("MS:1001911", "Q Exactive"),
     CvTerm("MS:1002416", "Orbitrap Fusion"),
     CvTerm("MS:1002417", "Orbitrap Fusion ETD"),
     CvTerm("MS:1002523", "Q Exactive HF"),
+    CvTerm("MS:1002526", "Exactive Plus"),
     CvTerm("MS:1002634", "Q Exactive Plus"),
     CvTerm("MS:1002732", "Orbitrap Fusion Lumos"),
     CvTerm("MS:1002835", "LTQ Orbitrap Classic"),
