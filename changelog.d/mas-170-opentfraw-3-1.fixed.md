@@ -5,4 +5,5 @@
   analyzers that gave its scans. The pinned reader walks these records at
   their own sizes: a public Q Exactive HF-X PRM run that was refused now
   reads as 4,142 Orbitrap MS2 scans, each with the filter the Thermo library
-  gives it.
+  gives it. A file refused under 1.13.0 is not read again by itself: it
+  needs processing again, by *Re-process* in Raw files.
