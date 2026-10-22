@@ -55,6 +55,7 @@ One row per sample.
 | m/z calibration verified, m/z calibration error (ppm) | Whether the fit cleared the [quality bar](../how-it-works/calibration.md#verification), and its mean post-fit m/z error |
 | Acquisition ID, Step ID, Sequence run ID, Agent ID | The identifiers of the file's [acquisition record](../instruments/acquisition-records.md), empty for a file that came with none |
 | File SHA-256 | The raw file's hash as it was uploaded, where the agent reported one and the bytes received had it |
+| Instrument model, Ion source, Mass analyser, Detector, Scan polarity, each followed by its *accession* column | The same acquisition context as [PSI-MS](https://github.com/HUPO-PSI/psi-ms-CV) controlled-vocabulary terms, each by its name and its accession (`MS:1000484`, ...), so another tool can read them without knowing Mascope's own names. A value the vocabulary has no term for, such as a TOF instrument's model or a family name, leaves both cells empty; a polarity-switching sample lists its two polarity terms joined by `; ` |
 
 ### Match compounds
 
