@@ -21,3 +21,11 @@
   two committed sample files and the corpus's 270 Orbitrap files): every
   scan's centroids and profile, MS2 scans included, and the averaged
   centroids and profiles (GitHub #2391).
+
+- **The demo dataset is now bundle v1.3.2**
+  ([10.5281/zenodo.23562417](https://doi.org/10.5281/zenodo.23562417)),
+  built with OpenTFRaw 3.1.0, the reader the reproducibility check now
+  expects. Same 161 acquisitions, the same reference data and the same
+  goldens: all 42,521 peaks and 17,254 ions hold the values 1.3.1 gave them.
+  `mascope demo` picks it up by default, and 1.3.1 stays registered so a
+  pinned run still resolves.
