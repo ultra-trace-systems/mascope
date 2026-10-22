@@ -426,6 +426,19 @@ class TestMs2Contract:
             assert summary["groups"] == []
         else:
             assert summary["parent_peaks"]
+        for group in summary["groups"]:
+            # Every width the group's scans used; its one width only when
+            # they share one.
+            widths = [entry["isolation_width"] for entry in group["isolation_widths"]]
+            assert widths == sorted(set(widths))
+            assert (
+                sum(e["scan_count"] for e in group["isolation_widths"])
+                <= (group["scan_count"])
+            )
+            if len(widths) == 1:
+                assert group["isolation_width"] == widths[0]
+            else:
+                assert group["isolation_width"] is None
 
     def test_averaged_centroids_are_keyed_by_parent_mz(self, mascope, ms2_sample_id):
         centroids = mascope.samples.ms2(ms2_sample_id).get_averaged_centroids()
