@@ -108,9 +108,11 @@ async def get_samples(
     :type instrument: str | None
     :param sample_item_type: Filter by sample item types, defaults to None
     :type sample_item_type: list[str] | None
-    :param datetime_min: Filter samples after this datetime, defaults to None
+    :param datetime_min: Keep samples acquired at or after this time (inclusive;
+        a value with no offset is read as UTC), defaults to None
     :type datetime_min: datetime | None
-    :param datetime_max: Filter samples before this datetime, defaults to None
+    :param datetime_max: Keep samples acquired at or before this time (inclusive;
+        a value with no offset is read as UTC), defaults to None
     :type datetime_max: datetime | None
     :param polarity: Filter by ion polarity modes, defaults to None
     :type polarity: list[str] | None

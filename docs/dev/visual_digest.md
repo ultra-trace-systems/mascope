@@ -775,10 +775,10 @@ issue for the owner in the Linear project.
    the scans table or the peak sum, which the fixture should cover both
    ways.
 3. **The `datetime_min`/`max` filter of `GET /api/samples`** (filed as
-   [#2490](https://github.com/ultra-trace-systems/mascope/issues/2490) on 2026-10-22) uses an
-   SQLite function and the sample-finder note says it was never exercised on
-   Postgres. The package filters client-side on the listing; a server fix is
-   a separate small issue.
+   [#2490](https://github.com/ultra-trace-systems/mascope/issues/2490) on 2026-10-22).
+   *Answered:* it used an SQLite function and answered 500 on Postgres; it
+   is fixed, with both bounds inclusive, either alone, and a bound with no
+   offset read as UTC.
 4. **Store location and multi-server.** A per-user cache directory keyed by
    server is the leaning; a shared store on a server for scheduled digests
    is phase 5's question.

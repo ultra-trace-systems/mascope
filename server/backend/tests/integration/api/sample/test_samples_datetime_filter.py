@@ -10,6 +10,7 @@ Run against the real route and a real database, because the finding was the
 SQL itself.
 """
 
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -215,16 +216,24 @@ async def test_a_bound_in_another_offset_is_the_same_instant(editor_client, seed
 
 
 @pytest.fixture
-def server_zone(monkeypatch):
+def server_zone():
     """Set the process's local time zone, which the driver reads a naive
-    bound in, and put it back afterwards."""
+    bound in, and put it back afterwards.
+
+    Restores ``TZ`` alone: ``monkeypatch.undo()`` would also undo the
+    session maker that ``bind_db`` patched, before the other fixtures tear
+    down."""
+    before = os.environ.get("TZ")
 
     def set_zone(name: str) -> None:
-        monkeypatch.setenv("TZ", name)
+        os.environ["TZ"] = name
         time.tzset()
 
     yield set_zone
-    monkeypatch.undo()
+    if before is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = before
     time.tzset()
 
 
