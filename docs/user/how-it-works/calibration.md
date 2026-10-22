@@ -17,6 +17,14 @@ Fourier-transform centroiding of short transients produces weak sidelobe ("satel
 To avoid isobaric interference, adjacent candidate peaks are checked for Full-Width at Half-Maximum (FWHM) overlap.
 Each peak is given an expected width envelope, and any overlapping pairs are discarded to keep only clean calibration points.
 
+On a TOF file the numbers are these.
+A calibrant's isotopes are kept when their relative abundance is at least 0.15.
+Peaks of the mode's polarity with a signal-to-noise ratio of at least 10 are candidates, and the refinement window is 100 ppm around each calibrant.
+A peak that overlaps a neighbour within one FWHM by the instrument's resolution function is dropped, and so is the neighbour; the local-dominance guard is an Orbitrap rule and is off for TOF.
+Each calibrant then takes the strongest remaining peak in its window, by time-averaged peak area.
+A fit needs at least three matched points; fewer leaves the file with the warning *Not enough calibration peaks*.
+The residual rule that keeps or drops a point in the fit below is 15 ppm, and a fit whose mean post-fit residual exceeds 15 ppm, or whose points all come from one ion, warns *Calibration inaccurate*.
+
 ## Quality Assessment and Scoring
 
 Each target isotope is matched to the highest-intensity sample peak located within the chosen mass tolerance range.
@@ -92,6 +100,13 @@ The optimization utilizes a soft $L_1$ loss function to handle minor residual de
 The optimized parameters are used to re-calculate the mass axis according to the following analytical form:
 
 $$m = \left( \frac{\text{TOF} - p_1}{p_0} \right)^2$$
+
+A TOF fit is absolute.
+Applying it recomputes the m/z axis from the stored time-of-flight index of every point of the spectrum and every detected peak, and nothing depends on the axis the file had before (an Orbitrap fit, by contrast, rescales the stored axis by a cumulative factor).
+So re-calibrating needs no peak re-detection, an earlier fit is restored exactly from its two parameters, and applying the same fit twice changes nothing.
+Applying a fit clears the file's matches and marks its batches for rematching.
+Editing the calibration collection a mode already uses only marks its batches: the files stay on their old calibration until someone re-calibrates them.
+A TOF file that has never been fitted carries the axis the acquisition software wrote, stamped `unfitted` in its calibration record.
 
 ### Orbitrap One-Point Scaling Calibration
 

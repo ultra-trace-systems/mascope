@@ -2739,7 +2739,9 @@ Needed before any rung can be provisional or park.
   `mascope prod db script run backfill_scan_stream_census`, which gives the
   Orbitrap history a signature class to be keyed on, and then
   `mascope prod db script run backfill_method_bindings`. Both have run on
-  every production server, and the first fleet measurement is in 5.7. What
+  every production server, and the first fleet measurement is in 5.7. The
+  operator's view of the switch, the two backfills and the report is
+  [maintaining.md](../maintaining.md#method-bindings) since 2026-10-22. What
   remains, in order:
   1. ~~provenance on every ACQUISITION item (5.6), one migration~~ - done
      in #2254;
@@ -3728,7 +3730,8 @@ through a short-lived stacked branch, merged as one unit.
       any server: who owns each overlap, how the second range reads the
       ions both hold against the first, how many peaks each holds there
       that the other does not, and the ions most of the files list as far
-      off the layout's ratio. It writes nothing and decides nothing.
+      off the layout's ratio. It writes nothing and decides nothing. How an
+      operator runs it: [maintaining.md](../maintaining.md#method-bindings).
     No map of the test set moves, so "every layout of the test set maps
     with nothing configured" holds as it did (4.5).
 
