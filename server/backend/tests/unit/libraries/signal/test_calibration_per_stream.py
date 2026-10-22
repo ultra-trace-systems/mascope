@@ -585,26 +585,25 @@ def _isotopes(targets=TARGETS):
     )
 
 
+async def _fitted(targets=TARGETS, polarity="-"):
+    """Fit the test sample's polarity against the given calibrants."""
+    params = CalibrationFitParams(
+        calibration_collection_id="tc-1",
+        ionization_mechanism_ids=["im-1"],
+        polarity=polarity,
+        **OrbiCalibrationParams().model_dump(),
+    )
+    handler = OrbiCalibrationHandler(SAMPLE_FILENAME, params)
+    handler._resolve_calibration_isotopes = AsyncMock(return_value=_isotopes(targets))
+    resolution = AsyncMock(return_value=(None, lambda mz: np.full_like(mz, 1e5)))
+    with patch.object(calibration_mz_fit, "read_instrument_functions", resolution):
+        await handler.fit()
+    return handler
+
+
 @pytest.fixture
 def fitted(composite):
     """Fit the composite's negative polarity against the given calibrants."""
-
-    async def _fitted(targets=TARGETS, polarity="-"):
-        params = CalibrationFitParams(
-            calibration_collection_id="tc-1",
-            ionization_mechanism_ids=["im-1"],
-            polarity=polarity,
-            **OrbiCalibrationParams().model_dump(),
-        )
-        handler = OrbiCalibrationHandler(SAMPLE_FILENAME, params)
-        handler._resolve_calibration_isotopes = AsyncMock(
-            return_value=_isotopes(targets)
-        )
-        resolution = AsyncMock(return_value=(None, lambda mz: np.full_like(mz, 1e5)))
-        with patch.object(calibration_mz_fit, "read_instrument_functions", resolution):
-            await handler.fit()
-        return handler
-
     return _fitted
 
 
@@ -966,6 +965,66 @@ async def test_a_polarity_the_store_holds_one_stream_of_names_that_stream(
 
     assert list(handler.fit_result["streams"]) == [f"{positive} R=120000"]
     assert [segment["source"] for segment in handler.segments] == ["anchors"]
+
+
+# -- one range at two resolutions --------------------------------------------------
+
+WIDE = "FTMS - p NSI Full ms [40.0000-138.0000]"
+ONE_RANGE = "FTMS - p NSI Full ms [66.0000-124.0000]"
+
+#: A reagent scan, then one window run at one resolution and then at
+#: another. The polarity measured two things, so each is a stream, and the
+#: two runs of the window read alike by their range alone.
+TWO_RESOLUTIONS = (
+    [(WIDE, 1, {62.0: 1000.0, 125.0: 400.0})] * 3
+    + [(ONE_RANGE, 2, {100.0: 50.0})] * 2
+    + [(ONE_RANGE, 3, {110.0: 20.0})] * 2
+)
+TWO_RESOLUTIONS_LABELS = ["m/z 40-138", "m/z 66-124, R=60000", "m/z 66-124, R=120000"]
+
+
+@pytest.fixture
+def two_resolutions(acquire, instrument_functions):
+    """That file, its peaks detected per stream."""
+    acquire(TWO_RESOLUTIONS, {1: 1, 2: 10, 3: 10}, resolutions={2: 60000, 3: 120000})
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+    return _fitted
+
+
+@pytest.mark.asyncio
+async def test_streams_of_one_range_are_named_by_their_resolution(two_resolutions):
+    """In the segments of the fit, in whose factor a stream took, and in
+    the statistics: the window at 120000 holds no calibrant and takes the
+    one at 60000's factor, and says so in words that tell the two apart."""
+    handler = await two_resolutions(
+        [("ion-reagent", "NO3-", 62.0), ("ion-low", "C3H3O4-", 100.0)]
+    )
+
+    assert [segment["label"] for segment in handler.segments] == (
+        TWO_RESOLUTIONS_LABELS
+    )
+    assert handler.segments[2]["source"] == "borrowed"
+    assert handler.segments[2]["origin"] == TWO_RESOLUTIONS_LABELS[1]
+    *points, _summary = handler.stats
+    assert [(point["segment"], point["segment_label"]) for point in points] == [
+        (0, TWO_RESOLUTIONS_LABELS[0]),
+        (1, TWO_RESOLUTIONS_LABELS[1]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_streams_of_one_range_turned_down_are_each_named(two_resolutions):
+    after_filtering = "No calibration peaks found after filtering."
+    with _turned_down({"ion-low": NO_SUBSET, "ion-other": after_filtering}):
+        handler = await two_resolutions(
+            [("ion-low", "C3H3O4-", 100.0), ("ion-other", "C4H5O3-", 110.0)]
+        )
+
+    assert handler.fit_result is None
+    assert handler.warning == (
+        f"{TWO_RESOLUTIONS_LABELS[1]}: {NO_SUBSET}; "
+        f"{TWO_RESOLUTIONS_LABELS[2]}: {after_filtering}"
+    )
 
 
 # -- what the fit answers ------------------------------------------------------------

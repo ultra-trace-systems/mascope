@@ -22,6 +22,7 @@ last processing. Where the file has a row under a segment's key, the segment
 carries both; where it has none, it carries neither and is shown without.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -31,7 +32,7 @@ import mascope_signal.compute as m_compute
 import mascope_signal.stitch as m_stitch
 import mascope_thermo.streams as m_streams
 from mascope_backend.db import AcquisitionStream, async_session
-from mascope_thermo.scan_filter import parse_stream_key
+from mascope_thermo.scan_filter import StreamKey, parse_stream_key
 
 
 @dataclass(frozen=True)
@@ -98,7 +99,20 @@ class SampleSegments:
         return described
 
 
-def segment_label(key: str) -> str:
+def _range_and_mode(read: StreamKey) -> list[str]:
+    """What a segment's label says first: its scan ranges, and its scan
+    mode where that is not a full scan."""
+    scan_filter = read.scan_filter
+    ranges = ", ".join(
+        f"{lower:g}-{upper:g}" for lower, upper in scan_filter.scan_ranges
+    )
+    parts = [f"m/z {ranges}"]
+    if scan_filter.scan_mode and scan_filter.scan_mode.lower() != "full":
+        parts.append(scan_filter.scan_mode)
+    return parts
+
+
+def segment_label(key: str, among: Iterable[str] = ()) -> str:
     """A stream key as a person reads a segment: its scan range and mode.
 
     A key is the scan filter of the stream's scans with what else tells it
@@ -106,17 +120,31 @@ def segment_label(key: str) -> str:
     R=120000`` reads ``m/z 72-118, SIM``. A full scan is not said to be one,
     and an experiment that shares its filter with another says which it is.
     A key that states no range is shown as it is.
+
+    Two streams of one polarity can run the same range and mode at two
+    resolutions, as a method that changes its resolution part way through
+    does. Named beside each other by range alone they would read alike, so
+    where ``among`` holds such another the label says the resolution too:
+    ``m/z 40-600, R=60000``, and then the event where the key names one.
+
+    :param key: The stream's key.
+    :param among: The keys of the streams it is named beside, its own
+        included or not: those of its file's peak store.
+    :return: The label.
     """
     read = parse_stream_key(key)
-    scan_filter = read.scan_filter
-    if not scan_filter.scan_ranges:
+    if not read.scan_filter.scan_ranges:
         return key
-    ranges = ", ".join(
-        f"{lower:g}-{upper:g}" for lower, upper in scan_filter.scan_ranges
-    )
-    parts = [f"m/z {ranges}"]
-    if scan_filter.scan_mode and scan_filter.scan_mode.lower() != "full":
-        parts.append(scan_filter.scan_mode)
+    parts = _range_and_mode(read)
+    if read.resolution is not None:
+        for other in map(parse_stream_key, among):
+            if (
+                other.scan_filter.polarity == read.scan_filter.polarity
+                and _range_and_mode(other) == parts
+                and other.resolution != read.resolution
+            ):
+                parts.append(f"R={read.resolution}")
+                break
     if read.event is not None:
         parts.append(f"event {read.event}")
     return ", ".join(parts)
@@ -143,7 +171,11 @@ def read_sample_segments(filename: str, polarity: str) -> SampleSegments | None:
     owners = sorted({index for _lower, _upper, index in composite["runs"]})
     return SampleSegments(
         segments=[
-            {"index": index, "key": keys[index], "label": segment_label(keys[index])}
+            {
+                "index": index,
+                "key": keys[index],
+                "label": segment_label(keys[index], keys),
+            }
             for index in owners
         ],
         runs=composite["runs"],

@@ -759,6 +759,53 @@ def test_a_file_stitched_in_both_polarities_says_whose_widths_are_whose():
     assert "Peak widths per scan range of polarity +, " in note
 
 
+# -- streams of one range at two resolutions ---------------------------------------
+
+#: The low window at another resolution: a stitched file whose window runs
+#: at one and then at the other, beside the reagent scan.
+SLOW_KEY = "FTMS - p NSI Full ms [66.0000-124.0000] R=60000"
+TWO_RESOLUTION_KEYS = [REAGENT_KEY, SLOW_KEY, LOW_KEY]
+
+
+def test_a_stitched_files_streams_of_one_range_are_named_by_resolution():
+    streams = [_stream(key, "-") for key in TWO_RESOLUTION_KEYS]
+
+    note = status.pooled_streams_note(streams, stitched=TWO_RESOLUTION_KEYS)
+
+    assert note == (
+        "Polarity - stitches 3 MS1 scan streams into one spectrum: "
+        "m/z 40-138; m/z 66-124, R=60000; m/z 66-124, R=120000."
+    )
+
+
+def test_two_streams_of_one_range_that_overlap_say_which_reads_what():
+    note = status.overlap_readings_note(
+        TWO_RESOLUTION_KEYS, [_overlap(1, 2, 12, 0.1, 1.02)]
+    )
+
+    assert note == (
+        "Where two scan ranges overlap: m/z 66-124, R=120000 reads the 12 ions "
+        "it shares with m/z 66-124, R=60000 0.10 ppm higher, at 1.02 times the "
+        "intensity."
+    )
+
+
+def test_a_stream_of_one_range_says_which_of_the_two_it_takes_its_width_from():
+    record = _widths(
+        thin={LOW_KEY: SLOW_KEY},
+        resolutions={REAGENT_KEY: 141_000, SLOW_KEY: 132_000, LOW_KEY: 125_000},
+    )
+
+    note = status.stream_widths_note(TWO_RESOLUTION_KEYS, record)
+
+    assert "m/z 66-124, R=60000 reads 132,000" in note
+    assert (
+        "m/z 66-124, R=120000 has no fit of its own (not enough quality peaks "
+        "to evaluate instrument functions) and takes that of m/z 66-124, "
+        "R=60000, 132,000"
+    ) in note
+
+
 @pytest.mark.parametrize(
     "record",
     [

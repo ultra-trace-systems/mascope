@@ -16,7 +16,8 @@ its streams says more of them: what two scan ranges read where they overlap,
 which ranges have no fit of their own and run on a neighbour's m/z
 calibration, and how wide each range's peaks are. Its ranges are named as
 the views name them, by scan range, so that what is said of them has room
-inside the detail's bound.
+inside the detail's bound, and by resolution as well where two of them run
+one range.
 """
 
 import asyncio
@@ -120,7 +121,7 @@ def pooled_streams_note(
     notes = [
         (
             f"Polarity {polarity} stitches {len(keys)} MS1 scan streams into one "
-            f"spectrum: {'; '.join(segment_label(key) for key in keys)}."
+            f"spectrum: {'; '.join(segment_label(key, keys) for key in keys)}."
             if all(key in stitched for key in keys)
             else f"Polarity {polarity} pools {len(keys)} MS1 scan streams into "
             f"one peak list: {'; '.join(keys)}."
@@ -272,7 +273,8 @@ def overlap_readings_note(keys: list[str], readings: list[dict]) -> str | None:
         if not reading.get("shared") or not reading.get("ppm"):
             continue
         first_key, second_key = (keys[index] for index in reading["streams"])
-        first, second = segment_label(first_key), segment_label(second_key)
+        first = segment_label(first_key, keys)
+        second = segment_label(second_key, keys)
         offset, ratio = reading["ppm"][1], reading["ratio"][1]
         shared = reading["shared"]
         polarity = parse_stream_key(first_key).scan_filter.polarity
@@ -329,7 +331,7 @@ def stream_widths_note(keys: list[str], record: dict) -> str | None:
         resolution = _resolution(entry)
         if resolution is None:
             continue
-        label = segment_label(key)
+        label = segment_label(key, keys)
         source = entry.get("source")
         if source == m_stream_functions.FITTED:
             clause = f"{label} reads {resolution}"
@@ -338,7 +340,7 @@ def stream_widths_note(keys: list[str], record: dict) -> str | None:
             reason = f" ({note[0].lower()}{note[1:]})" if note else ""
             origin = entry.get("origin")
             taken = (
-                f"that of {segment_label(origin)}"
+                f"that of {segment_label(origin, keys)}"
                 if source == m_stream_functions.SIBLING and origin
                 else "the whole file's"
             )
