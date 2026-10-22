@@ -22,6 +22,14 @@
   scan's centroids and profile, MS2 scans included, and the averaged
   centroids and profiles (GitHub #2391).
 
+  A raw Orbitrap file's cached profile is named after the reader that
+  averaged it, so each sample is averaged anew on its first view after the
+  upgrade, to the profile it had.
+
+  Operators: the caches OpenTFRaw 2.0.0 averaged (`...otf2.0.0-g5.zarr`) are
+  never read again. Reclaim the space with
+  `python -m mascope_backend.db.admin.filestore delete-stale-sum-signal`.
+
 - **The demo dataset is now bundle v1.3.2**
   ([10.5281/zenodo.23562417](https://doi.org/10.5281/zenodo.23562417)),
   built with OpenTFRaw 3.1.0, the reader the reproducibility check now
