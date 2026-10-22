@@ -99,7 +99,9 @@ Besides these, a token can:
   (`POST /api/sample/files/delete`, admin in the instrument's workspace);
 - add an instrument function (`POST /api/instrument_configs`, the global
   editor role);
-- run and review peak assignments and the batch peak ledger, and refit an
+- run and review peak assignments and the batch peak ledger, publish an
+  external engine's assignment run
+  ([Publishing an assignment run](publishing-assignments.md)), and refit an
   instrument's peak-assignment confidence calibration (a superuser).
 
 Everything else, such as workspaces and their members, m/z calibration,

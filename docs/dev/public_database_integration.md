@@ -73,15 +73,10 @@ matter for storage and provenance (Section 3).
 
 ### 2.1 Structure / identity (MS1 annotation)
 
-| Database | Content | Access | License |
-| --- | --- | --- | --- |
-| **PubChem** | ~120M compounds; name, SMILES, InChIKey, exact & monoisotopic mass, formula, xrefs | [PUG-REST](https://pubchem.ncbi.nlm.nih.gov/docs/pug-rest) (<=5 req/s) + FTP bulk dumps | Public domain |
-| **EPA CompTox / CCTE** | ~1.2M environment-relevant chemicals, "MS-ready" structures, formula & mass search | [CCTE REST APIs](https://api-ccte.epa.gov) + bulk downloads | Public domain |
-| **ChEBI** | ~200k curated biologically-relevant molecules + ontology | SDF/FTP dump, API | CC BY 4.0 |
-| **HMDB** | ~250k human metabolites, some predicted MS/MS | XML/SDF bulk download | Free/open (attribution; verify commercial terms) |
-| **LIPID MAPS (LMSD)** | ~48k curated lipids, systematic nomenclature | SDF download | CC BY 4.0 |
-| **COCONUT** | ~400k natural products | Bulk download, API | CC0 / open |
-| **NORMAN Suspect List Exchange** | Curated suspect lists (PFAS, pesticides, ...) | Downloadable lists via CompTox | Open |
+The seven sources as shipped - what each holds, the dump its adapter reads
+and its licence - are listed under "Sources" in
+[libraries/reference/README.md](../../libraries/reference/README.md#sources)
+since 2026-10-22.
 
 ### 2.2 MS/MS spectral libraries (MS2 matching)
 
@@ -93,12 +88,8 @@ matter for storage and provenance (Section 3).
 
 ### 2.3 Deliberately excluded
 
-Not free-to-use, so out of scope unless a licensing decision changes: **NIST**
-MS library (paid), **mzCloud** (browse-only, not redistributable), **METLIN**
-(restricted), **CAS**/SciFinder (paid), **ChemSpider** (non-commercial key).
-**KEGG** is conditional - the web/REST API is free for academic use but bulk FTP
-is a paid subscription and commercial use is restricted; treat it as
-conditional, not free.
+The databases left out for not being free to use, and KEGG's conditional
+status, are in the same README section.
 
 ### 2.4 Priority for this codebase
 
