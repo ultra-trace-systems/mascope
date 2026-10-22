@@ -79,7 +79,8 @@ sample_view_table = Table(
     Column("range", JSON),
     Column("mz_calibration", JSON),
     Column("datetime", TIMESTAMP),
-    Column("datetime_utc", TIMESTAMP),
+    # An instant, as on sample_file: a bound compared with it binds as one.
+    Column("datetime_utc", TIMESTAMP(timezone=True)),
 )
 
 
