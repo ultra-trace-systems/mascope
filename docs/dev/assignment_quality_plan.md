@@ -86,7 +86,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
 | 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below |
 | 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | - |  | planned; no target until two gates have read them |
-| 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - |  | measured 2026-10-16 on the pass-9 ledgers; the call on 3.5b's form is open, recorded there |
+| 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - |  | measured 2026-10-16 on the pass-9 ledgers; 3.5b's form decided 2026-10-22 (decision 32) |
 | 5.4 - the side lobe's signatures: width-scaled offset and narrowness in the sidelobe flag | - |  | planned; after 3.5b and 3.5 |
 | 5.5 - the TOF signal-to-noise column: verify it tracks height, fix the picker or fall back to counting statistics | #2377 | 2026-10-16 | built: the picker's TOF noise is now the baseline's MAD; measured next on E, F, J |
 | 5.6 - the import contract: a verdict on batch rows, the engine tier where the user looks | - |  | planned; between rounds |
@@ -524,23 +524,55 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
 
 ### 3.5b The envelope's tolerance, fitted per run
 
-- **What.** The fit score's intensity term takes its width from the run.
-  Today a matched isotope line is scored on `exp(-0.5 * ((observed -
-  predicted) / sigma)^2)` with `sigma` the larger of the line's own noise,
-  5% of its predicted share and 0.001 (`score_pattern_v2`), so for a clean
-  peak the tolerance is 5% of the predicted share, and a line 15% under it
-  is a three-sigma miss that alone takes the ion's fit to about a half. The
-  run instead fits, on its own confidently committed envelopes (a second
-  channel or a list, mass within the gate, lines the gate calls tracking),
-  the relative error of a committed line against its predicted share: a
-  centre, since an Orbitrap reads its isotope lines low against the anchor,
-  and a width, which floors the 5%. The score subtracts the centre and
-  scores against the fitted width; the SNR terms stay as they are, since
-  they only ever widen. The run records both (`config.envelope_tolerance`),
-  with the count of lines they were fitted on, and falls back to today's
-  numbers where a run has too few. The mass term's width already works this
-  way (the per-sample `sigma_ppm`, and the mass gate's centre and width of
-  step 2.2); this is the same fit for the intensity axis.
+- **What.** The fit score's intensity term takes its tolerance from the
+  data, in the form decided on 5.3's numbers (decision 32). Today a matched
+  isotope line is scored on `exp(-0.5 * ((observed - predicted) /
+  sigma)^2)` with `sigma` the larger of the line's own noise, 5% of its
+  predicted share and 0.001 (`score_pattern_v2`), so for a clean peak the
+  tolerance is 5% of the predicted share, and a line 15% under it is a
+  three-sigma miss that alone takes the ion's fit to about a half; and an
+  absent line takes the miss penalty of 0.3 wherever its expected S/N, the
+  anchor's S/N times its predicted share, is at least `k_detect = 3`.
+  Lines stay read by height on every instrument, as today. What is fitted
+  depends on the instrument class:
+  - **Orbitrap-class runs: a response curve per file.** On the file's
+    confidently committed envelopes (a second channel or a list, mass
+    within the gate, lines the gate calls tracking), the 13C lines'
+    observed / predicted share is binned by expected S/N; per bin the
+    median and the 20th percentile, made non-decreasing in S/N and capped
+    at 1.0. A matched line scores as a full match anywhere between the
+    curve's 20th percentile at its expected S/N and its natural share, and
+    outside that band is charged from the nearer end at today's width.
+  - **The curve also sets which absent lines are charged.** On a fitted
+    file an absent line takes the miss penalty only above the expected S/N
+    where that file's lines are actually present, in place of `k_detect`.
+    The step sets that threshold and records it, for example the lowest
+    bin in which at least half the predicted 13C lines are in the list.
+    At 3 to 10, 60 to 94% of predicted 13C lines are absent on every
+    Orbitrap set, and today's charge costs a C10 ion about 11% of its fit
+    and a C20 ion about 19% for a line the instrument usually does not
+    deliver.
+  - **Fallback in two steps.** A file with too few committed lines for a
+    curve of its own takes the curve pooled over the run's files that
+    share its acquisition settings (a 100-microscan file stays apart from
+    its 10-microscan siblings), and only then today's numbers. Committed
+    lines are thin on several sets: 34 over 7 files on K3, 30 over 6 on
+    I positive, 52 over 5 on C2.
+  - **The TOF: a centre and a width per run**, until 5.5's re-detection
+    gives it a usable S/N. The run fits, on the same committed envelopes,
+    the relative error of a committed line against its predicted share: a
+    centre, which the score subtracts, and a width, which floors the 5%.
+    The SNR terms stay as they are, since they only ever widen, and
+    `k_detect` stays at 3. Revisited once sets E, F and J are re-read.
+
+  The run records what it fitted (`config.envelope_tolerance`): per file
+  the form, the level it used (its own curve, the pooled curve, or today's
+  numbers), the bins with their median, 20th percentile and line count,
+  and the detectability threshold; per TOF run the centre and the width;
+  and the minimum line count the fit asks for. The mass term's width
+  already works this way (the per-sample `sigma_ppm`, and the mass gate's
+  centre and width of step 2.2); this is the same fit for the intensity
+  axis.
 - **Why.** The plan owner's reading of 2026-09-25: on the internal
   Orbitrap's uronium batch, D4 `[M+H]+` at m/z 297.0825 is committed with
   three lines (M0 at 0.04 ppm, the 29Si line at -0.15 ppm, the 30Si line at
@@ -627,34 +659,47 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   and 100-microscan nitrate pair (its Orbitrap files are 10-microscan, but
   for that one file), so the reference's 0.3 at an S/N of 20 on
   1-microscan files is neither confirmed nor refuted.
-- **The open call on the form (5.3's, for the plan owner).** (1) Does
-  this step fit a centre and a width as written, a response curve against
-  expected S/N on Orbitrap-class runs (the reference's form, a median and
-  a 20th percentile per bin, non-decreasing, capped at the natural share),
-  or the curve on the Orbitraps and a centre and a width on the TOF? The
-  numbers bear on it this way: a single centre averages a bin 13% low with
-  one 2% low, and its width would be set by the dim lines and loosen the
-  bright ones; a curve has to be fitted per file. (2) Does the engine read
-  Orbitrap isotope lines by area? By area the share of committed lines
-  under 0.9 falls from 25 to 36% to 3 to 7%, but the mid-S/N lines read
-  above their share, where a band capped at the natural share charges
-  them; by height the bias is one-sided and the curve's cap holds.
-- **Where.** `score_pattern_v2` in `heuristic_filter.py` (a floor and a
-  centre for the relative error, parameters with today's values as
-  defaults); the engine's scoring call and the seeded fit; the service's
-  per-run fit of the two numbers over the run's committed envelopes, run
-  after Stage A and before the search is scored, or as a second scoring
-  pass over the committed rows; `config.py`; `fit_score.md` and the
-  how-it-works page's paragraph on the fit; tests on the score (a line 15%
-  under at a fitted 12% width scores as a one-sigma miss; the centre
-  subtracted; the fallback) and on the fit of the two numbers.
+- **The form, decided (decision 32, 2026-10-22, on 5.3's numbers).**
+  The curve on the Orbitraps and a centre and a width on the TOF, read by
+  height. A single centre and width would average a bin 13% low with one
+  2% low, and the dim lines would set the width, loosening the bright
+  lines' 5% to roughly 15 to 20%, where a miss is real evidence against a
+  formula. The onset of the miss is the file's (the 100-microscan file of
+  L), so the curve is fitted per file. Area does not remove the bias but
+  flips it, 12 to 18% high at 10 to 20 on all three Orbitraps, where a
+  band capped at the share would charge those lines, and it does nothing
+  for the absent ones; the curve gives height the low under-0.9 share
+  that area promised. The TOF's 83 lines all sit under an expected S/N of
+  20 on the column 5.5 replaced, and a per-run centre there also absorbs
+  the engine's 13C-alone prediction on a TOF peak that holds the 15N, 2H
+  and 17O lines too, until that follow-up lands.
+- **Where.** `score_pattern_v2` in `heuristic_filter.py`: a matched
+  line's band (a lower end and the natural share, with a centre and a
+  floor for the TOF's form) and the absent line's detectability
+  threshold, as parameters with today's values as defaults; the engine's
+  scoring call and the seeded fit; the service's fit, per file of the
+  curve with its pooled and default fallbacks, per run of the centre and
+  width, run after Stage A and before the search is scored, or as a
+  second scoring pass over the committed rows; `config.py`; `fit_score.md`
+  and the how-it-works page's paragraph on the fit; tests on the score (a
+  line inside the curve's band scores as a match, one under it is charged
+  from the band's lower end, an absent line under the fitted threshold is
+  excluded and one above it charged, the TOF's centre subtracted and a
+  line 15% under at a fitted 12% width a one-sigma miss, the fallback) and
+  on the fit (non-decreasing, capped at 1.0, the pooled level chosen by
+  acquisition settings, the level recorded).
 - **Verify.** On the uronium sample the D4 row is at assigned with its
   three lines named. On the gate's Orbitrap sets the share of committed
   rows with lines whose fit is under the assigned band falls from 27 and
   34% toward the mass term's share, and the bromide files read their
-  doublets at a fit above the band. No row gains assigned on a line the
-  gate calls untracked, and G12 stays at 0. G1 and G2 read as readings
-  (decision 27).
+  doublets at a fit above the band. On the Orbitrap sets, absent 13C
+  lines at an expected S/N of 3 to 10 take no miss penalty on files whose
+  fitted threshold is above them, and the share of committed lines under
+  0.9 of their share falls from 25 to 36% toward 5.3's area reading of 3
+  to 7%; `config.envelope_tolerance` names each file's level, and on L
+  the 100-microscan file has a curve of its own or the default, never its
+  siblings'. No row gains assigned on a line the gate calls untracked,
+  and G12 stays at 0. G1 and G2 read as readings (decision 27).
 - **Size.** M. The score is the library's, so the library and the backend
   release together.
 - **Order.** Built with 3.5, right after 3.3c, before 3.4 and 3.6 (agreed
@@ -927,8 +972,8 @@ under its milestone 5.
   result into 3.5b's section; no engine change.
 - **Verify.** The table per set with line counts; the call recorded on 3.5b
   before its PR opens.
-- **Measured** 2026-10-16: the per-instrument reading and the open call
-  in 3.5b, the per-set tables in the log's block "After step 5.3"
+- **Measured** 2026-10-16: the per-instrument reading and the form it
+  decided (decision 32) in 3.5b, the per-set tables in the log's block "After step 5.3"
   ([`assignment_quality_plan_log.md`](assignment_quality_plan_log.md)).
 - **Size.** S. Blocks 3.5b.
 
@@ -1157,7 +1202,7 @@ under its milestone 5.
 - Its known-species registry and certified-neutral passes (the note's
   "Not in this plan").
 
-### Decisions proposed to the plan owner (30 taken 2026-10-14)
+### Decisions proposed to the plan owner (30 taken 2026-10-14, 32 on 2026-10-22)
 
 29. **The reference is pinned at a release, and each peaky minor gets a
     boundary review** (step 5.1).
@@ -1170,6 +1215,13 @@ under its milestone 5.
 31. **The decoy arms join the gate without a target** until two gates have
     read them; then a target is set from those readings, not from the
     reference's numbers.
+32. **The envelope's tolerance is a per-file response curve on
+    Orbitrap-class runs and a centre and a width on the TOF, read by
+    height** (taken 2026-10-22 by the plan owner, on 5.3's numbers). On a
+    fitted file the curve also sets above which expected S/N an absent
+    line is charged; a file too thin for its own curve takes the curve of
+    the run's files with its acquisition settings, then today's numbers.
+    The TOF is revisited once E, F and J are re-read (step 3.5b).
 
 ### Worth watching
 
