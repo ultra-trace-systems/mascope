@@ -36,7 +36,10 @@ four decimals a stream's key states it to, and a trimmed edge that falls
 exactly on a half goes to the even m/z, so no map depends on how a product
 of floats happens to round. And two streams the rule cannot tell apart, of
 the same microscans on ranges that start at the same m/z, go by their order
-in the file: the first owns.
+in the file: the first owns. Streams on the same ranges at the same
+microscans tie wherever they claim, and so reach the stitch only beside
+another experiment of their file: elsewhere peak detection pools them, and
+there is nothing to stitch (``mascope_thermo.streams.peak_streams``).
 
 The boundaries are m/z as the instrument records them. A file's m/z
 calibration moves its peaks by parts per million and leaves what its method

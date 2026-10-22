@@ -490,12 +490,12 @@ class BackendConfig(ModuleConfig):
     #
     # A file with one experiment in each polarity - nearly every file - is
     # processed exactly as before whichever way this is set, and so is one
-    # whose method only runs the same experiment again in a polarity (the
-    # same scan at the same microscans and AGC target). A file already
-    # converted keeps what was decided for it then: rebuilding a store goes by
-    # that decision and never by this setting. An explicit re-processing
-    # decides again, so this applies to files converted from then on and to
-    # files re-processed from then on.
+    # whose streams in each polarity only run the same scan ranges at the
+    # same microscans: an experiment run again, or a resolution changed part
+    # way through. A file already converted keeps what was decided for it
+    # then: rebuilding a store goes by that decision and never by this
+    # setting. An explicit re-processing decides again, so this applies to
+    # files converted from then on and to files re-processed from then on.
     #
     # Read where a decision is made, when the process starts: by the file
     # converter for a file's first conversion, and by the backend for a

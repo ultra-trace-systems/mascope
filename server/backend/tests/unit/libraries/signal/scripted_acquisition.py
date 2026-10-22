@@ -35,6 +35,9 @@ class ScriptedAcquisition:
     :param scans: One ``(filter, event, {m/z: intensity})`` per scan.
     :param microscans: ``{event: count}``, the microscan count the trailers
         of an event's scans report. An event it leaves out reports none.
+    :param resolutions: ``{event: resolution}``, the FT resolution the
+        trailers of an event's scans report. An event it leaves out reports
+        :attr:`RESOLUTION`.
     """
 
     RESOLUTION = 120000
@@ -43,9 +46,10 @@ class ScriptedAcquisition:
     # sample is the same float in each scan's profile.
     PROFILE_STEP = 0.25
 
-    def __init__(self, scans, microscans=None):
+    def __init__(self, scans, microscans=None, resolutions=None):
         self._scans = list(scans)
         self._microscans = dict(microscans or {})
+        self._resolutions = dict(resolutions or {})
         self.trailer_reads = 0
         self.profiles_averaged = 0
 
@@ -71,7 +75,8 @@ class ScriptedAcquisition:
 
     def scan_trailer(self, scan_number):
         self.trailer_reads += 1
-        return {"FT Resolution:": self.RESOLUTION}
+        event = self._scans[scan_number - 1][1]
+        return {"FT Resolution:": self._resolutions.get(event, self.RESOLUTION)}
 
     def acquisition_parameters(self, max_scans=5, scan_numbers=None):
         """What the trailers of these scans agree on: their microscan count,
