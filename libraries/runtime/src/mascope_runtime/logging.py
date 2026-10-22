@@ -208,6 +208,29 @@ def _traces_sample_rate() -> float:
     return rate
 
 
+#: ``sys.argv[0]`` of an interpreter running code that is no Mascope program:
+#: ``-`` for a script read from stdin (``python -``, as a prod job or an
+#: operator's ``docker exec -i ... python - < script.py`` runs one), ``""``
+#: for an interactive prompt, a script redirected without ``-``
+#: (``python < script.py``) and an embedded interpreter, which Python 3.8+
+#: starts with ``sys.argv == [""]``. ``-c`` is left out on purpose:
+#: multiprocessing starts its spawn and forkserver children with it.
+_AD_HOC_ARGV0 = frozenset({"-", ""})
+
+
+def _is_ad_hoc_script() -> bool:
+    """
+    Tell whether this process runs code read from stdin or typed at a prompt.
+
+    Such code is an operator's, not the product's: its typos and its own
+    exceptions are terminal output, and reporting them would file them as
+    production errors of the server it ran on. Python never starts with an
+    empty ``sys.argv``; the ``bool`` check only guards against code that sets
+    ``sys.argv = []`` itself, which then counts as a program.
+    """
+    return bool(sys.argv) and sys.argv[0] in _AD_HOC_ARGV0
+
+
 def _init_sentry(environment: str, release: str | None) -> bool:
     """
     Initialize the Sentry SDK once, iff ``MASCOPE_SENTRY_DSN`` is set.
@@ -487,10 +510,17 @@ class RuntimeLogging:
         # The CLI never reports: its WARNING+ records are user-facing terminal
         # output (bad arguments, status notices), not operator signal, and a
         # DSN exported in the shell env would otherwise turn every CLI warning
-        # into a GlitchTip event.
+        # into a GlitchTip event. Nor does a script read from stdin or a
+        # prompt (``_is_ad_hoc_script``): importing a module there configures
+        # this logging with the server's DSN, and the SDK's excepthook would
+        # then report the script's own errors.
         is_cli = self.runtime.module.name == "cli"
-        sentry_on = not is_cli and _init_sentry(
-            environment=str(self.runtime.mode), release=self.runtime.version
+        sentry_on = (
+            not is_cli
+            and not _is_ad_hoc_script()
+            and _init_sentry(
+                environment=str(self.runtime.mode), release=self.runtime.version
+            )
         )
 
         # create fresh config
