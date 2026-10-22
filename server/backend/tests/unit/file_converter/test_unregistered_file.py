@@ -43,11 +43,18 @@ class _OneShotQueue:
 
 
 class _ContextManager:
-    def __init__(self, registered):
+    """Holds the ``registered`` names, each after ``late_by`` lookups miss."""
+
+    def __init__(self, registered, late_by=0):
         self.registered = registered
+        self.late_by = late_by
+        self.lookups = 0
         self.cleared = []
 
     def get_context(self, name):
+        self.lookups += 1
+        if self.lookups <= self.late_by:
+            return None
         return object() if os.path.basename(name) in self.registered else None
 
     def clear_context(self, name):
@@ -55,9 +62,9 @@ class _ContextManager:
 
 
 class _Socket:
-    def __init__(self, registered):
+    def __init__(self, registered, late_by=0):
         self.emitted = []
-        self.context_manager = _ContextManager(registered)
+        self.context_manager = _ContextManager(registered, late_by)
 
     def emit(self, event, payload):
         self.emitted.append((event, payload))
@@ -67,21 +74,24 @@ class _PropsRead(Exception):
     """Stands for everything past the check: the file was read."""
 
 
-def _run_once(path, registered=()):
+def _run_once(path, registered=(), late_by=0):
     """Run one file through the loop.
 
     Reading the file's properties raises ``_PropsRead``, so a file that got
-    past the context check is told apart from one that did not.
+    past the context check is told apart from one that did not. The wait for
+    a late context is cut to a fraction of a second.
 
     :return: (log records, socket, processor) captured from the iteration.
     """
     shutdown = Event()
-    socket = _Socket(registered)
+    socket = _Socket(registered, late_by)
     processor = H5Processor(
         socket_client=socket,
         file_queue=_OneShotQueue(path, shutdown),
         shutdown_event=shutdown,
     )
+    processor.CONTEXT_GRACE_WAIT = 0.2
+    processor.CONTEXT_GRACE_POLL = 0.01
     processor.props_read = []
 
     def _read_props():
@@ -112,6 +122,14 @@ def stale_file(tmp_path):
     return str(path)
 
 
+@pytest.fixture
+def fresh_file(tmp_path):
+    """A file the watcher queued moments after it was written."""
+    path = tmp_path / SAMPLE
+    path.write_bytes(b"x" * 10)
+    return str(path)
+
+
 class TestUnregisteredFile:
     def test_it_fails_before_the_file_is_read(self, stale_file):
         _, _, processor = _run_once(stale_file)
@@ -125,7 +143,16 @@ class TestUnregisteredFile:
 
         assert processor.props_read == [stale_file]
 
-    def test_the_user_is_told_to_upload_it_again(self, stale_file):
+    def test_it_fails_without_waiting(self, stale_file):
+        # A leftover from before a restart gets no grace: a backlog of them
+        # must not hold the queue up
+        _, socket, _ = _run_once(stale_file, registered={SAMPLE}, late_by=1)
+
+        assert socket.context_manager.lookups == 2
+
+    def test_the_error_says_to_upload_it_again(self, stale_file):
+        # The notification carries this; without a context the backend
+        # refuses it (#2535), so the converter's log is where it is read.
         _, socket, _ = _run_once(stale_file)
 
         errors = [p for event, p in socket.emitted if event == "file_processing_error"]
@@ -166,6 +193,37 @@ class TestUnregisteredFile:
         assert SAMPLE in message
         assert "last written 2592" in message
         assert UNREGISTERED_FILE_MESSAGE in message
+
+
+class TestLateContext:
+    """A context still crossing Redis when its fresh file is dequeued."""
+
+    def test_a_context_that_arrives_shortly_after_is_waited_for(self, fresh_file):
+        _, socket, processor = _run_once(fresh_file, registered={SAMPLE}, late_by=3)
+
+        assert processor.props_read == [fresh_file]
+        assert socket.context_manager.lookups > 3
+
+    def test_a_context_that_never_arrives_still_fails_the_file(self, fresh_file):
+        records, socket, processor = _run_once(fresh_file)
+
+        assert processor.props_read == []
+        assert socket.context_manager.lookups > 2
+        assert len(_failure_records(records)) == 1
+
+    def test_shutdown_ends_the_wait(self, fresh_file):
+        shutdown = Event()
+        shutdown.set()
+        socket = _Socket(registered=())
+        processor = H5Processor(
+            socket_client=socket, file_queue=None, shutdown_event=shutdown
+        )
+        processor.file_to_process = fresh_file
+
+        started = time.monotonic()
+        with pytest.raises(UnregisteredFileError):
+            processor._await_file_context()
+        assert time.monotonic() - started < 1
 
 
 def test_the_lookup_raises_the_dedicated_error(stale_file):
