@@ -2095,28 +2095,158 @@ echo $MASCOPE_PATH   # e.g. /home/<deploy-user>/mascope (from /etc/environment)
    target over plain SFTP. Do not expose its SSH port to the internet — connect
    the VPSes and the backup server through a VPN overlay instead
    ([Tailscale](https://tailscale.com/) is the quickest: install on both ends,
-   no inbound router ports needed):
+   no inbound router ports needed).
+
+   Give **every backed-up server an account of its own** on the backup server,
+   one that can do nothing but SFTP into its own directory. The obvious setup,
+   one shared account with an ordinary shell, hands every server a key that can
+   delete or overwrite every other server's backups, open a shell on the backup
+   server and tunnel through it into the rest of the network: one compromised
+   server would cost you all of them. The commands below use a group
+   `site-backup`, an account `backup-<server>` per backed-up server, a chroot
+   per account under `/srv/site-backups` (put it on the big disk) and the keys
+   in `/etc/ssh/site-backup-keys`; any names work. `<server>.pub` is the public
+   half of the key that server's backup cron uses (made further down), and
+   `203.0.113.10` stands for that server's VPN address (`tailscale ip -4`).
+
+   On the backup server, once — the group, two root-owned directories, and an
+   sshd drop-in that applies to every member of the group:
 
    ```bash
-   # on the backup server: dedicated user, key-only SSH.
-   # NB: do not name the user `backup` — that is a built-in Ubuntu system
-   # account (uid 34, nologin shell) and adduser will silently no-op.
-   sudo adduser --disabled-password --gecos "" mascope-backup
-   sudo -u mascope-backup mkdir -p /home/mascope-backup/.ssh
-   sudo mkdir -p /path/to/big-disk/mascope-backups
-   sudo chown mascope-backup:mascope-backup /path/to/big-disk/mascope-backups
-   # append each VPS's public key to /home/mascope-backup/.ssh/authorized_keys
-   # (mode 600, owner mascope-backup; ~/.ssh mode 700)
-
-   # on each VPS (backup.env) — note the absolute repository path:
-   RESTIC_REPOSITORY=sftp:mascope-backup@<tailscale-ip>:/path/to/big-disk/mascope-backups/<hostname>
+   sudo groupadd --system site-backup
+   sudo install -d -o root -g root -m 755 /srv/site-backups /etc/ssh/site-backup-keys
+   sudoedit /etc/ssh/sshd_config.d/30-site-backups.conf
    ```
+
+   ```
+   # Backups: one sftp-only account per backed-up server (group site-backup).
+   # Each sees only its own chroot, its repository at /repo; no shell, no
+   # terminal, no tunnels. Its keys sit in a root-owned file named after it.
+   Match Group site-backup
+       ChrootDirectory /srv/site-backups/%u
+       ForceCommand internal-sftp
+       AuthorizedKeysFile /etc/ssh/site-backup-keys/%u
+       DisableForwarding yes
+       PermitTTY no
+   Match all
+   ```
+
+   The closing `Match all` is load-bearing. A `Match` block runs until the
+   next `Match` line or the end of the file, so without it a line added to
+   this file later — or the block pasted into the middle of `sshd_config` —
+   would quietly apply to the backup accounts alone. `Match all` ends the
+   block; whatever follows it is global again.
+
+   Then for each backed-up server — an account with no password and no shell,
+   its chroot, and its key:
+
+   ```bash
+   sudo useradd --system --user-group --groups site-backup --no-create-home \
+     --home-dir /nonexistent --shell /usr/sbin/nologin backup-<server>
+   # sshd refuses a chroot that is not root's or that anyone else can write;
+   # the account cannot create its repository directory there, so make it
+   sudo install -d -o root -g root -m 755 /srv/site-backups/backup-<server>
+   sudo install -d -o backup-<server> -g backup-<server> -m 700 \
+     /srv/site-backups/backup-<server>/repo
+   printf 'restrict,command="internal-sftp",from="%s" %s\n' \
+     203.0.113.10 "$(cat <server>.pub)" \
+     | sudo tee /etc/ssh/site-backup-keys/backup-<server>
+   sudo chmod 644 /etc/ssh/site-backup-keys/backup-<server>
+   ```
+
+   In the key line, `restrict` turns off forwarding, the terminal and
+   `~/.ssh/rc`; `command="internal-sftp"` keeps the key to SFTP even without
+   the drop-in; `from=` refuses it from any address but that server's own, so
+   a copy of the key is no use anywhere else (it takes a comma-separated list
+   if the server may also connect over IPv6). Adding a server later needs no
+   reload: sshd reads the account and its key file at login.
+
+   Check the drop-in before reloading sshd, and keep an automatic revert armed
+   while you test, so a mistake cannot lock you out of the backup server:
+
+   ```bash
+   sudo sshd -t     # syntax; prints nothing when the config is valid
+   # a backup account: expect its chroot, internal-sftp, its key file,
+   # "disableforwarding yes" and "permittty no"
+   sudo sshd -T -C user=backup-<server>,host=<server>,addr=203.0.113.10 \
+     | grep -E '^(chrootdirectory|forcecommand|authorizedkeysfile|disableforwarding|permittty) '
+   # your own account: chrootdirectory and forcecommand must still be "none"
+   sudo sshd -T -C user="$USER",host=<your-machine>,addr=<your-address> \
+     | grep -E '^(chrootdirectory|forcecommand) '
+   # takes the drop-in out again in 15 minutes unless stopped
+   sudo systemd-run --on-active=15min --unit=site-backup-revert \
+     /bin/sh -c 'rm -f /etc/ssh/sshd_config.d/30-site-backups.conf && systemctl reload ssh'
+   sudo systemctl reload ssh   # the unit is `ssh` on Debian/Ubuntu, often `sshd` elsewhere
+   ```
+
+   Keep your current session open, test a fresh login of your own and the
+   backed-up server (below), then `sudo systemctl stop site-backup-revert.timer`.
+   The revert fails closed: without the drop-in, sshd looks for the backup
+   accounts' keys in their (nonexistent) home and refuses them.
+
+   On each backed-up server, as the user that runs the backup cron, make the
+   key (no passphrase: cron cannot type one), copy its `.pub` to the backup
+   server as `<server>.pub` for the step above, and give the backup server an
+   ssh alias that names the account and the key:
+
+   ```bash
+   ssh-keygen -t ed25519 -N "" -C "backup@$(hostname)" -f ~/.ssh/id_ed25519_backup
+   ```
+
+   ```
+   # ~/.ssh/config
+   Host <backup-host>
+       HostName 203.0.113.20        # the backup server's VPN address
+       User backup-<server>
+       IdentityFile ~/.ssh/id_ed25519_backup
+       IdentitiesOnly yes
+   ```
+
+   Connect once by hand to accept the backup server's host key (cron cannot
+   answer that prompt; compare the fingerprint with
+   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` there), and check what
+   the account can do:
+
+   ```bash
+   sftp <backup-host>       # accept the host key; `ls /` then shows only /repo
+   ssh <backup-host> true   # refused: "This service allows sftp connections only."
+   ```
+
+   In `backup.env` the repository is then the alias and the path the account
+   sees inside its chroot — the same `/repo` on every server:
+
+   ```bash
+   RESTIC_REPOSITORY=sftp:<backup-host>:/repo
+   ```
+
+   Moving from one shared account: take one server at a time, while its
+   backup is not running (its repository's `locks/` directory is empty). Set
+   up its account as above, but instead of creating an empty `repo/`,
+   `sudo mv` its repository there (on the same filesystem that is a rename)
+   and hand it over (`sudo chown -R backup-<server>:backup-<server>`,
+   `sudo chmod 700`); move its key line
+   out of the shared account's `authorized_keys` into the new key file; then
+   change `User` in the server's alias and its `RESTIC_REPOSITORY` to
+   `sftp:<backup-host>:/repo`. Once the shared account holds no keys, give it
+   `/usr/sbin/nologin` (`sudo usermod -s /usr/sbin/nologin <account>`).
+
+   This contains a compromised server; it does not protect that server's own
+   backups from it. restic over SFTP cannot be append-only: every server
+   prunes its own repository (`tooling/backup-cron.sh` runs
+   `restic forget --prune` after each push), so its account must be able to
+   delete, and an attacker who holds the server can delete its history — but
+   no longer anyone else's. The alternative is restic's
+   [rest-server](https://github.com/restic/rest-server) with `--append-only`
+   (and `--private-repos`, so each user reaches only its own repository), with
+   the pruning moved to the backup server, which then needs every
+   repository's password. `backup-cron.sh` always prunes, so that route needs
+   the script changed as well.
 
    Caveats: the backup server needs disk redundancy (RAID/ZFS) and monitoring
    like any other piece of infrastructure, and its location is a
-   data-processing location (Art. 30 record / DPA). With SFTP push, a
-   compromised VPS could delete its own off-site backups; for a hardened setup,
-   run restic's `rest-server --append-only` on the backup server instead.
+   data-processing location (Art. 30 record / DPA). Keep the drop-in and
+   `/etc/ssh/site-backup-keys` in the backup server's own configuration
+   backup — a rebuilt box without them refuses every server.
    Migrating to a hosted target later is just a `RESTIC_REPOSITORY` change
    (`restic init` on the new target, or `restic copy` to carry snapshots over).
 
