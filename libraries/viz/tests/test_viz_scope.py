@@ -19,6 +19,9 @@ instrument in Helsinki time (UTC+2 in early March)::
     Dataset "Imports" (no instrument, no batch)
     Collections: "Organic acids" (the first two days), "Organic acids
                  extra" (the third), "Calibrants" (global; Calibration)
+    Modes: "Br-" (every instrument; every sample but one), "H3O+" on
+           instrument X (the second day's positive sample) and on instrument
+           Y, "NO3-" (instrument Y)
 """
 
 import copy
@@ -73,6 +76,16 @@ COLLECTIONS = {
     "c1": ("ws1", "Organic acids", ["b1", "b2"]),
     "c2": ("ws1", "Organic acids extra", ["b3"]),
     "c3": (None, "Calibrants", ["b7"]),
+}
+
+#: id: (name, instrument), as ``GET /ionization/modes`` lists them. The
+#: listing spells an instrument as the mode was saved, which need not be how
+#: the datasets spell it.
+MODES = {
+    "im-br": ("Br-", None),
+    "im-h": ("H3O+", "Instrument X"),
+    "im-h-y": ("H3O+", "instrument Y"),
+    "im-no3": ("NO3-", "instrument Y"),
 }
 
 
@@ -170,6 +183,7 @@ class FakeAPI:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.failures: list[tuple[re.Pattern, int]] = []
         self.files = copy.deepcopy(FILES)
+        self.modes = dict(MODES)
 
     def fail(self, path: str, status: int) -> None:
         """Answer requests whose path fully matches regex *path* with
@@ -233,6 +247,20 @@ class FakeAPI:
             return 200, _envelope(rows, results=len(rows))
         if path == "sample/files":
             return 200, self._file_page(params)
+        if path == "ionization/modes":
+            rows = [
+                {
+                    "ionization_mode_id": m,
+                    "ionization_mode_name": name,
+                    "ionization_mode_token": m,
+                    "instrument": instrument,
+                    "ionization_mode_polarity": name[-1],
+                    "ionization_mechanism_ids": [],
+                    "system_key": None,
+                }
+                for m, (name, instrument) in self.modes.items()
+            ]
+            return 200, _envelope(rows, results=len(rows))
         if path == "target/collections":
             rows = [
                 {
@@ -584,6 +612,24 @@ class TestAmbiguity:
             "instrument Y",
         }
 
+    def test_a_mode_name_on_two_instruments_returns_both(self, client, api):
+        resolved = resolve(client, Scope(dataset="Campaign 2026", mode="H3O+"))
+
+        assert {(c.id, c.parent) for c in resolved.candidates["mode"]} == {
+            ("im-h", "Instrument X"),
+            ("im-h-y", "instrument Y"),
+        }
+        assert {c.kind for c in resolved.candidates["mode"]} == {"mode"}
+        assert api.requests_to("sample/batches") == []
+
+    def test_a_mode_of_every_instrument_has_no_parent(self, client):
+        resolved = resolve(client, Scope(dataset="Campaign 2026", mode="-"))
+
+        assert {(c.id, c.parent) for c in resolved.candidates["mode"]} == {
+            ("im-br", None),
+            ("im-no3", "instrument Y"),
+        }
+
     def test_an_ambiguous_collection_returns_its_candidates(self, client):
         resolved = resolve(client, Scope(dataset="Campaign 2026", collection="organic"))
 
@@ -676,6 +722,55 @@ class TestNarrowing:
         assert _ids(resolved.batches, "sample_batch_id") == ["b2"]
         assert resolved.batches["n_samples"].tolist() == [1]
 
+    def test_a_mode_by_name_among_the_instruments_own(self, client):
+        """A whole name, case aside and its + no regex; the listing spells
+        the instrument otherwise than the datasets do."""
+        resolved = resolve(
+            client,
+            Scope(dataset="Campaign 2026", instrument="instrument X", mode="h3o+"),
+        )
+
+        assert not resolved.ambiguous
+        assert resolved.scope.mode == "im-h"
+        assert _ids(resolved.batches, "sample_batch_id") == ["b2"]
+        assert resolved.batches["n_samples"].tolist() == [1]
+
+    def test_a_mode_of_every_instrument_is_among_an_instruments(self, client):
+        resolved = resolve(
+            client,
+            Scope(dataset="Campaign 2026", instrument="instrument X", mode="br"),
+        )
+
+        assert resolved.scope.mode == "im-br"
+        assert len(resolved.batches) == 5
+
+    def test_a_mode_by_pattern(self, client):
+        resolved = resolve(
+            client, Scope(dataset="Campaign 2026", mode=re.compile(r"^B"))
+        )
+
+        assert resolved.scope.mode == "im-br"
+        assert "b2" in _ids(resolved.batches, "sample_batch_id")
+        b2 = resolved.batches.set_index("sample_batch_id").loc["b2"]
+        assert b2["n_samples"] == 3
+
+    def test_a_mode_by_name_and_by_id_resolve_alike(self, client):
+        by_name = resolve(
+            client,
+            Scope(dataset="Campaign 2026", instrument="instrument X", mode="H3O+"),
+        )
+        by_id = resolve(
+            client,
+            Scope(dataset="Campaign 2026", instrument="instrument X", mode="im-h"),
+        )
+
+        assert by_name.key == by_id.key
+
+    def test_a_scope_without_a_mode_lists_no_modes(self, client, api):
+        resolve(client, Scope(dataset="Campaign 2026"))
+
+        assert api.requests_to("ionization/modes") == []
+
 
 class TestCollections:
     def test_the_collections_on_the_batches(self, client):
@@ -738,6 +833,29 @@ class TestErrors:
             resolve(client, Scope(dataset="Calibration runs", batches="Blank"))
 
         assert caught.value.available == ["Calibration", "Calibration repeat"]
+
+    def test_a_mode_of_another_instrument_is_not_found(self, client):
+        with pytest.raises(NotFound) as caught:
+            resolve(
+                client,
+                Scope(dataset="Campaign 2026", instrument="instrument X", mode="NO3"),
+            )
+
+        assert caught.value.kind == "mode"
+        assert caught.value.available == ["Br-", "H3O+"]
+
+    def test_a_server_that_refuses_the_token_on_the_modes(self, client, api):
+        """A server older than the token access to the modes."""
+        api.fail(r"ionization/modes", 401)
+
+        with pytest.raises(NotAuthenticated, match="older than the token access"):
+            resolve(client, Scope(dataset="Campaign 2026", mode="Br-"))
+
+    def test_a_server_with_no_modes(self, client, api):
+        api.modes.clear()
+
+        with pytest.raises(NotFound, match="no mode at all"):
+            resolve(client, Scope(dataset="Campaign 2026", mode="Br-"))
 
     def test_an_unmatched_pattern_is_not_found(self, client):
         with pytest.raises(NotFound, match="2027"):
@@ -818,6 +936,7 @@ class TestScope:
             Scope(dataset="d1", end="2026-03-02T00:00Z"),
             Scope(dataset="d1", polarity="-"),
             Scope(dataset="d1", mode="im-br"),
+            Scope(dataset="d1", mode=re.compile("im-br")),
             Scope(dataset="d1", collection="c1"),
             Scope(dataset=re.compile("d1")),
             Scope(dataset=re.compile("d1", re.IGNORECASE)),
@@ -898,6 +1017,8 @@ class TestScope:
             ({"batches": ["b1", 2]}, "each of batches"),
             ({"dataset": 3}, "dataset is a name"),
             ({"dataset": "d1", "mode": ""}, "mode is a non-empty string"),
+            ({"dataset": "d1", "mode": 3}, "mode is a name"),
+            ({"instrument": ""}, "instrument is a non-empty string"),
         ],
     )
     def test_a_scope_that_means_nothing_is_refused(self, kwargs, says):

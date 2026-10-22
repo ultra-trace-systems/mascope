@@ -33,7 +33,9 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
-from ..errors import InvalidScope, NotFound, listed, sdk_errors
+from mascope_sdk.exceptions import AuthenticationError
+
+from ..errors import InvalidScope, NotAuthenticated, NotFound, listed, sdk_errors
 
 
 if TYPE_CHECKING:
@@ -143,9 +145,9 @@ class Scope:
     :ivar end: Only what was acquired before this time.
     :ivar polarity: ``"+"`` or ``"-"`` (``"positive"``, ``"negative"``,
         ``"pos"`` and ``"neg"`` say the same): only samples and files of it.
-    :ivar mode: Only the samples of this ionization mode, by its ID. The
-        modes listing is not open to an SDK token, so a mode's name cannot
-        be looked up yet.
+    :ivar mode: Only the samples of this ionization mode, by name, part of
+        one, ID or pattern. With ``instrument``, among the modes of that
+        instrument and those of every instrument.
     :ivar collection: The target collection the digest draws, by name, part
         of one, ID or pattern, among those on the scope's batches.
     :ivar tz: The time zone to show times in, and the one a bound without a
@@ -160,19 +162,23 @@ class Scope:
     start: "str | datetime | pd.Timestamp | None" = None
     end: "str | datetime | pd.Timestamp | None" = None
     polarity: str | None = None
-    mode: str | None = None
+    mode: "str | re.Pattern | None" = None
     collection: "str | re.Pattern | None" = None
     tz: str = INSTRUMENT_TZ
 
     def __post_init__(self):
-        for name in ("dataset", "collection"):
+        for name in ("dataset", "mode", "collection"):
             value = getattr(self, name)
             if value is not None:
                 _check_name(value, name)
-        for name in ("instrument", "mode"):
-            value = getattr(self, name)
-            if value is not None and (not isinstance(value, str) or not value):
-                raise InvalidScope(f"{name} is a non-empty string, not {value!r}")
+        if self.mode == "":
+            raise InvalidScope("mode is a non-empty string, not ''")
+        if self.instrument is not None and (
+            not isinstance(self.instrument, str) or not self.instrument
+        ):
+            raise InvalidScope(
+                f"instrument is a non-empty string, not {self.instrument!r}"
+            )
 
         batches = self.batches
         if batches is not None:
@@ -255,7 +261,7 @@ class Scope:
             "start": self._bound(self.start),
             "end": self._bound(self.end),
             "polarity": self.polarity,
-            "mode": self.mode,
+            "mode": _name_content(self.mode),
             "collection": _name_content(self.collection),
         }
 
@@ -275,10 +281,12 @@ class Scope:
 class Candidate:
     """One of the objects an ambiguous name matches.
 
-    :ivar kind: ``dataset``, ``batch``, ``instrument`` or ``collection``.
+    :ivar kind: ``dataset``, ``batch``, ``instrument``, ``mode`` or
+        ``collection``.
     :ivar id: Its ID (an instrument's is its name).
     :ivar name: Its name.
-    :ivar parent: The dataset of a batch; None for the rest.
+    :ivar parent: The dataset of a batch, the instrument of a mode that
+        belongs to one; None for the rest.
     """
 
     kind: str
@@ -331,7 +339,7 @@ class ResolvedScope:
     :ivar start_utc: The range's start in UTC, if it has one.
     :ivar end_utc: The range's end in UTC, if it has one.
     :ivar candidates: For each field holding an ambiguous name (``dataset``,
-        ``instrument``, ``batches[0]``, ``collection``), the objects it
+        ``instrument``, ``mode``, ``batches[0]``, ``collection``), the objects it
         matches. Empty when the scope resolved; when not, nothing past the
         ambiguity was read and the frames it would have filled are empty.
     """
@@ -422,6 +430,25 @@ def _datasets(client: "MascopeClient") -> pd.DataFrame:
         return pd.DataFrame(columns=["dataset_id", "dataset_name", "instrument"])
     if "instrument" not in rows:
         rows = rows.assign(instrument=None)
+    return rows
+
+
+def _modes(client: "MascopeClient") -> pd.DataFrame:
+    with sdk_errors("list the ionization modes"):
+        try:
+            rows = client.ionization.modes()
+        except AuthenticationError as e:
+            # The datasets listing took the same token a moment ago
+            raise NotAuthenticated(
+                "The server refused the token on the ionization modes listing "
+                "(HTTP 401), though it took it for the datasets: it is older "
+                "than the token access to the modes. Leave mode out, or "
+                "resolve the scope on a newer server."
+            ) from e
+    if rows is None:
+        return pd.DataFrame(
+            columns=["ionization_mode_id", "ionization_mode_name", "instrument"]
+        )
     return rows
 
 
@@ -639,6 +666,37 @@ def resolve(client: "MascopeClient", scope: Scope) -> ResolvedScope:
             candidates["dataset"] = tuple(chosen)
         else:
             dataset = chosen[0]
+
+    mode = None
+    if scope.mode is not None:
+        modes = _modes(client)
+        if instrument is not None:
+            # A mode of another instrument selects none of its samples
+            modes = modes[
+                modes["instrument"].map(
+                    lambda name: (
+                        not isinstance(name, str)
+                        or name.casefold() == instrument.casefold()
+                    )
+                )
+            ]
+        chosen = _choose(
+            scope.mode,
+            [
+                Candidate(
+                    "mode",
+                    str(row.ionization_mode_id),
+                    str(row.ionization_mode_name),
+                    row.instrument if isinstance(row.instrument, str) else None,
+                )
+                for row in modes.itertuples()
+            ],
+            "mode",
+        )
+        if len(chosen) > 1:
+            candidates["mode"] = tuple(chosen)
+        else:
+            mode = chosen[0].id
     if candidates:
         return _undecided(scope, candidates)
 
@@ -686,8 +744,8 @@ def resolve(client: "MascopeClient", scope: Scope) -> ResolvedScope:
         keep &= samples["instrument"] == instrument
     if scope.polarity is not None:
         keep &= samples["polarity"] == scope.polarity
-    if scope.mode is not None:
-        keep &= samples["ionization_mode_id"] == scope.mode
+    if mode is not None:
+        keep &= samples["ionization_mode_id"] == mode
     samples = samples[keep]
 
     if instrument is not None:
@@ -815,7 +873,7 @@ def resolve(client: "MascopeClient", scope: Scope) -> ResolvedScope:
         start=start_utc,
         end=end_utc,
         polarity=scope.polarity,
-        mode=scope.mode,
+        mode=mode,
         collection=collection if not candidates else scope.collection,
         tz=scope.tz,
     )

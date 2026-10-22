@@ -17,11 +17,12 @@ license.text = "Apache-2.0"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    # A scope resolves through the SDK's listings, the files listing among
-    # them (2026.10.20). The campaign store's tables are pandas frames kept
-    # as parquet. matplotlib and plotly join as the renderers land
-    # (docs/dev/visual_digest.md, section 2.1).
-    "mascope_sdk>=2026.10.20",
+    # A scope resolves through the SDK's listings, the files listing
+    # (2026.10.20) and the modes listing (2026.10.22) among them. The
+    # campaign store's tables are pandas frames kept as parquet. matplotlib
+    # and plotly join as the renderers land (docs/dev/visual_digest.md,
+    # section 2.1).
+    "mascope_sdk>=2026.10.22",
     "numpy>=1.24.0",
     "pandas>=2.0.0",
     "pyarrow>=14.0.0",
