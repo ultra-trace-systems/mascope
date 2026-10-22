@@ -1783,8 +1783,9 @@ ionization redesign note that held it was retired on 2026-10-22).
   batch ledger stage 4 builds on.
 - [verification_calibration_loop.md](verification_calibration_loop.md) -
   verdicts to calibration.
-- [reference_data_authoring.md](reference_data_authoring.md) and the
-  reference-database seed proposal (2026-09-07) - step 2.5.
+- The user guide [Reference compound lists](../user/guides/reference-lists.md)
+  (formerly `reference_data_authoring.md`) and the reference-database seed
+  proposal (2026-09-07) - step 2.5.
 - `tooling/assignment_compare/README.md` - the measurement.
 - The Linear project "Assignment quality plan" (team Mascope): the steps
   of stages 3 to 5 as issues with their order, read beside this note.

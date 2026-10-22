@@ -383,8 +383,8 @@ docker compose exec backend \
 `mascope prod db script run <script>` is the general in-container script runner, but
 it forwards no arguments to the module, so it fits the argument-free scripts
 (`seed_reference_demo`, `prune_peak_assignment_runs`) and not `reference_sync`. Full
-walkthrough, including authoring a custom list:
-[reference_data_authoring.md](reference_data_authoring.md).
+walkthrough, including authoring a custom list: the user guide
+[Reference compound lists](../user/guides/reference-lists.md).
 
 **Interrupted runs.** A run is created `running` and finalized by the engine's
 own success and failure paths, neither of which survives the process dying - and

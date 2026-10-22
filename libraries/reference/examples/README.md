@@ -10,8 +10,8 @@ has **real, non-trivial reference data** to run against without depending on a
 large public-database mirror.
 
 It is deliberately small and illustrative, not exhaustive. Use it to exercise
-the reference path end to end, as the worked example for
-[reference_data_authoring.md](../../../docs/dev/reference_data_authoring.md), and
+the reference path end to end, as the worked example for the user guide
+[Reference compound lists](../../../docs/user/guides/reference-lists.md), and
 as a template for your own hand-authored lists.
 
 ## What it demonstrates

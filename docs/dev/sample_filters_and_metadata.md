@@ -53,7 +53,8 @@ Stage A.
 Related designs: `ingest_routing_and_splitting.md` (the part a sample is cut
 from, chemistry profiles as the unit, declarations from the instrument side),
 `chemistry_profiles.md` (reagent profile and chemistry context),
-`reference_data_authoring.md` (the reference lists and their headers),
+the user guide [Reference compound lists](../user/guides/reference-lists.md)
+(the reference lists and their headers),
 `peak_assignment_batch_primary.md` (batch peaks and the batch ledger), `ui_state_persistence.md` (the
 location a URL carries). Section 10 says how this design touches each.
 
@@ -182,8 +183,8 @@ Facts a filter wants that are not columns:
   says `"applies_to_contexts": ["monoterpene_ox", "biogenic_soa"]`, and the
   contaminant and cyclic-siloxane lists say `"always_active": true`. Both keys
   are read and nothing acts on them: Stage A matches every active source in
-  every context ([reference_data_authoring.md](reference_data_authoring.md)
-  section 6; [known.py](../../libraries/reference/src/mascope_reference/known.py)
+  every context ([Reference compound lists](../user/guides/reference-lists.md#the-lists-that-ship-with-mascope);
+  [known.py](../../libraries/reference/src/mascope_reference/known.py)
   selects on `is_active` and polarity alone). The source row does not record
   them.
 - The chemistry context (`ambient-air`, `chamber`, `indoor-air`,
@@ -642,9 +643,9 @@ phase 1 depends on nothing.
   context's scope open. This design answers both from the sample side: the
   environment on the sample supplies the regimes and, where unambiguous, the
   context.
-- **`reference_data_authoring.md`**: the header keys it documents as "read,
-  but nothing acts on them yet" gain their consumer, and the source row
-  records them.
+- **The user guide [Reference compound lists](../user/guides/reference-lists.md)**:
+  the header keys it documents as "read, but nothing acts on them yet" gain
+  their consumer, and the source row records them.
 - **`peak_assignment_batch_primary.md`**: unchanged. A refresh is incremental arrival
   into a batch, the case its frozen anchors exist for.
 - **`ui_state_persistence.md`**: the location chain is unchanged, since a

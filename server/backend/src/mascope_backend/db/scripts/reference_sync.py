@@ -13,8 +13,8 @@ reference data is loaded by running this script **inside the backend container**
 
 The file path is resolved inside the container, so mount your dump into the
 backend service first (any path the container can read). ``source`` is a
-registered adapter name (``custom`` for hand-authored lists - see
-``docs/dev/reference_data_authoring.md``).
+registered adapter name (``custom`` for hand-authored lists - see the user guide
+``docs/user/guides/reference-lists.md``).
 
 This is the same versioned, idempotent-by-replacement ingest the CLI runs; it
 just executes where the chemistry dependencies live. The source row records how
