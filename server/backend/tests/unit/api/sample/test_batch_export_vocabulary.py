@@ -55,9 +55,16 @@ def test_a_tof_sample_gets_every_term_but_the_model():
     assert columns["Scan polarity accession"] == "MS:1000130"
 
 
-def test_a_model_without_a_term_is_named_but_not_given_one():
+def test_the_model_is_written_as_its_psi_ms_name_not_the_readers():
+    """The name cell is the term's, so it always matches its accession."""
+    columns = service._vocabulary_columns("Orbitrap XL", "orbi", "+")
+    assert columns["Instrument model"] == "LTQ Orbitrap XL"
+    assert columns["Instrument model accession"] == "MS:1000556"
+
+
+def test_a_model_without_a_term_leaves_both_cells_empty():
     columns = service._vocabulary_columns("Orbitrap Exploris", "orbi", "+")
-    assert columns["Instrument model"] == "Orbitrap Exploris"
+    assert columns["Instrument model"] is None
     assert columns["Instrument model accession"] is None
 
 
