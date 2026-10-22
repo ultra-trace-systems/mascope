@@ -121,9 +121,13 @@ nav:
       - Target collections & matching: guides/target-collections.md
       - Reference compound lists: guides/reference-lists.md
       - Two-factor authentication: guides/two-factor.md
-  - Instruments & acquisition: instruments/index.md
+  - Instruments & acquisition:
+      - The File Agent: instruments/index.md
+      - Acquisition records: instruments/acquisition-records.md
   - SDK & API:
       - Overview: sdk/index.md
       - Getting started with Python: sdk/getting-started.md
       - Publishing an assignment run: sdk/publishing-assignments.md
-  - Reference: reference/index.md
+  - Reference:
+      - Glossary: reference/index.md
+      - Export files: reference/exports.md
