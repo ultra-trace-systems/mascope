@@ -33,6 +33,7 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.db.views import Sample
+from mascope_backend.json_safe import non_finite_to_none
 from mascope_backend.runtime import runtime
 from mascope_file.io import load_coord, load_peak_data
 from mascope_file.name import get_sample_file_type
@@ -432,8 +433,12 @@ async def get_sample_peaks(
         # None for a file that stores no noise estimate, never a zero: an
         # engine reading this endpoint scores an absent isotopologue against
         # the noise where there is one and against abundance alone where there
-        # is not, and a zero would say "measured, and noise-free".
-        "signal_to_noise": peak_data.signal_to_noise,
+        # is not, and a zero would say "measured, and noise-free". The same
+        # for one peak with no estimate, which the store holds as NaN: a TOF
+        # peak with no baseline left around it, or a flat one. The route sends
+        # it as None itself: the response's fallback render would log every
+        # such answer as a route that left a value undecided.
+        "signal_to_noise": non_finite_to_none(peak_data.signal_to_noise),
         "segment": peak_data.streams if segments else None,
         "segments": segments.described if segments else None,
     }
