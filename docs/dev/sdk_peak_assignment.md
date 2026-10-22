@@ -4,7 +4,7 @@
 
 - **Status:** building
 - **As of:** 2026-10-22
-- **Tracked in:** MAS-71 in [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) for the import contract; the SDK write wrappers (section 8.4 steps 5 and 6) have no issue
+- **Tracked in:** MAS-71 in [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) for the import contract; the SDK write wrappers (section 8.4 steps 5 and 6) are MAS-330 and MAS-345, the demo bundle MAS-331 and the reference identities in frames MAS-332, in [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) milestone 3 (filed 2026-10-22)
 
 ## Purpose
 

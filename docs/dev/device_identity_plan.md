@@ -2,7 +2,7 @@
 
 - **Status:** building
 - **As of:** 2026-10-22
-- **Tracked in:** [Release 2.0 and the security campaign](https://linear.app/ultra-trace/project/release-20-and-the-security-campaign-89b9f4b36f95) (Linear: MAS-210, MAS-81, MAS-82 for phase E; phase F has no issue)
+- **Tracked in:** [Release 2.0 and the security campaign](https://linear.app/ultra-trace/project/release-20-and-the-security-campaign-89b9f4b36f95) (Linear: MAS-210, MAS-81, MAS-82 and the decision MAS-305 for phase E; MAS-308, MAS-309, MAS-333 and MAS-304 for phase F)
 
 Goal: give instrument agents their own first-class identity, so acquisition
 uploads stop borrowing a human's credential. Every uploaded file becomes
@@ -29,8 +29,10 @@ authorization model this extends is described in
 > code as of 2026-08-20, noting where the build departed from the design and
 > what it added on top; sections 5, 6 and 10 say what is left. Phase E (the
 > per-deployment rollout) is MAS-210, MAS-81 and MAS-82 in the Linear project
-> Release 2.0 and the security campaign; phase F (cleanup) and the strict-mode
-> flip have no issue. Nothing here is enabled by default:
+> Release 2.0 and the security campaign; phase F (cleanup) is MAS-308 (F1),
+> MAS-309 (F2), MAS-333 (F3) and MAS-304 (F4) in the same project, the
+> strict-mode flip is step 4 of MAS-210, and the export agent's fate is the
+> decision MAS-305 (all filed 2026-10-22). Nothing here is enabled by default:
 > `require_device_tokens` ships off, and existing agents keep working until
 > a deployment is cut over.
 

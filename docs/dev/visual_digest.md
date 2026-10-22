@@ -773,7 +773,8 @@ issue for the owner in the Linear project.
    coverage and instrument-signal charts read it; if not, the TIC comes from
    the scans table or the peak sum, which the fixture should cover both
    ways.
-3. **The `datetime_min`/`max` filter of `GET /api/samples`** uses an
+3. **The `datetime_min`/`max` filter of `GET /api/samples`** (filed as
+   [#2490](https://github.com/ultra-trace-systems/mascope/issues/2490) on 2026-10-22) uses an
    SQLite function and the sample-finder note says it was never exercised on
    Postgres. The package filters client-side on the listing; a server fix is
    a separate small issue.
