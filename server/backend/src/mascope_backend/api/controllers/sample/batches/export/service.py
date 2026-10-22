@@ -383,7 +383,9 @@ def _vocabulary_columns(
     A sample's acquisition context as PSI-MS terms, for the Samples sheet.
 
     Each term is written as its name and its accession, as a ``cvParam``
-    carries it. A value the vocabulary cannot map leaves both cells empty.
+    carries it: the model too is its PSI-MS name, not the reader's spelling
+    of it ("Orbitrap XL" reads "LTQ Orbitrap XL"). A value the vocabulary
+    cannot map, such as a family name, leaves both cells empty.
 
     :param model: The instrument model the raw file names, None if unknown.
     :param instrument_type: ``"orbi"`` or ``"tof"``.
@@ -397,7 +399,7 @@ def _vocabulary_columns(
     detector = vocabulary.detector_term(instrument_type)
     polarities = vocabulary.polarity_terms(polarity)
     return {
-        "Instrument model": model,
+        "Instrument model": model_term.name if model_term else None,
         "Instrument model accession": model_term.accession if model_term else None,
         "Ion source": source.name if source else None,
         "Ion source accession": source.accession if source else None,
