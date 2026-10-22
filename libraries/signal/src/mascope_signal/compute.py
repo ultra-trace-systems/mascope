@@ -1866,7 +1866,8 @@ async def get_ms2_summary(
 ) -> dict:
     """Extract MS2 summary metadata.
 
-    Returns parent peaks, HCD energy map, isolation width, and scan counts.
+    Returns parent peaks, HCD energy map, isolation widths, and scan counts
+    (:func:`mascope_thermo.thermo.get_ms2_summary_metadata`).
 
     :param base_filename: Sample file name (base, not full path).
     :type base_filename: str

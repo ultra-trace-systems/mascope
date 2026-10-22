@@ -473,6 +473,34 @@ class ReaderBackend(Protocol):
         """
         ...
 
+    def ms2_scan_records(
+        self,
+        polarity: Polarity | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
+    ) -> list[dict]:
+        """One record per MS2 scan, in scan order: what was measured and how.
+
+        Each record holds the fields of :data:`MS2_SCAN_RECORD_SOURCES` and
+        ``sources``, which says for each field where it was read: ``"index"``
+        (``scan_number``, ``time_s`` in seconds, ``tic``), ``"filter"``
+        (``polarity``, ``precursor_mz``, ``activation`` as
+        :meth:`ms2_events_by_scan` gives it, ``activation_kind`` and ``nce``
+        parsed from it, and ``low_mass`` and ``high_mass``, the outer bounds
+        of the filter's scan ranges) or ``"trailer"`` (``hcd_energy_v``, a
+        list of volts, several when the energy stepped within the scan;
+        ``isolation_width``; ``injection_time_ms``).
+
+        A field the scan does not hold is ``None``, and so is its source: a
+        trailer without the label, a width or injection time the trailer
+        holds as text (as :meth:`trailer_numbers`), a filter with no MS2
+        event or no scan range. Each record is read from its own scan alone,
+        so a missing value is never a neighbouring scan's.
+
+        :raises NoScansFoundError: No MS2 scan is selected.
+        """
+        ...
+
     def ms2_centroids_for_scans(
         self, scan_indices: list[int]
     ) -> tuple[list[dict], list[float]]:
@@ -672,6 +700,27 @@ def _common_isolation_width(widths: Iterable[float]) -> float | None:
     return distinct.pop() if len(distinct) == 1 else None
 
 
+def _isolation_width_counts(widths: Iterable[float]) -> list[dict]:
+    """Every isolation width these MS2 scans used, with its scan count.
+
+    ``[{"isolation_width": 1.0, "scan_count": 12}, ...]``, narrowest first,
+    each width rounded as :func:`_common_isolation_width` rounds it, so the
+    one width that function names is the one entry here when the scans
+    share it.
+
+    :param widths: The widths the scans' trailers store, one per scan that
+        stores one.
+    """
+    counts: dict[float, int] = {}
+    for width in widths:
+        rounded = round(width, 6)
+        counts[rounded] = counts.get(rounded, 0) + 1
+    return [
+        {"isolation_width": width, "scan_count": counts[width]}
+        for width in sorted(counts)
+    ]
+
+
 def _ms2_isolation_widths(
     scan_idx_to_width: dict[int, float],
 ) -> tuple[float | None, dict[int, float]]:
@@ -683,6 +732,119 @@ def _ms2_isolation_widths(
     if not scan_idx_to_width:
         raise ValueError("No MS2 scan stores an isolation width")
     return _common_isolation_width(scan_idx_to_width.values()), scan_idx_to_width
+
+
+#: The trailer label of the time an MS2 scan's ions were accumulated for.
+MS2_INJECTION_TIME = "Ion Injection Time (ms):"
+
+#: The numbers an MS2 scan record reads from the scan's trailer, as stored.
+_MS2_RECORD_TRAILER_NUMBERS = (MS2_ISOLATION_WIDTH, MS2_INJECTION_TIME)
+
+#: The fields of an MS2 scan record (:meth:`ReaderBackend.ms2_scan_records`),
+#: each with where it is read from: the scan index, the scan's filter, or its
+#: trailer.
+MS2_SCAN_RECORD_SOURCES = {
+    "scan_number": "index",
+    "time_s": "index",
+    "polarity": "filter",
+    "precursor_mz": "filter",
+    "activation": "filter",
+    "activation_kind": "filter",
+    "nce": "filter",
+    "hcd_energy_v": "trailer",
+    "isolation_width": "trailer",
+    "low_mass": "filter",
+    "high_mass": "filter",
+    "injection_time_ms": "trailer",
+    "tic": "index",
+}
+
+# One stage of an activation as _parse_ms2_event gives it: "hcd25.00", "etd".
+_ACTIVATION_STAGE = re.compile(r"^([a-z]+)(\d+(?:\.\d+)?)?$")
+
+
+def _activation_kind_and_nce(activation: str | None) -> tuple[str | None, float | None]:
+    """The kind of an activation and its collision energy, as the filter
+    renders them.
+
+    ``"hcd25.00"`` is ``("hcd", 25.0)``. A chained activation names every
+    stage, ``"cid30.00@hcd20.00"`` is ``("cid@hcd", None)``: it has an
+    energy per stage, which ``activation`` keeps, and no one energy. One
+    rendered without an energy (``"etd"``) has none either, and one whose
+    energy does not read as a number has neither.
+    """
+    if not activation:
+        return None, None
+    stages = [_ACTIVATION_STAGE.match(stage) for stage in activation.split("@")]
+    if not all(stages):
+        return None, None
+    kind = "@".join(stage.group(1) for stage in stages)
+    energy = stages[0].group(2) if len(stages) == 1 else None
+    return kind, None if energy is None else float(energy)
+
+
+def _hcd_energy_volts(value) -> list[float] | None:
+    """A trailer's ``"HCD Energy V:"`` as its volts, or None.
+
+    The instrument writes one value per energy it stepped through within the
+    scan, comma-separated (``"28.5,57.0,85.5"``); the Thermo library writes
+    the text in the invariant culture, so no comma here is a decimal mark.
+    An empty or unreadable value is None, never a part of it.
+    """
+    if value is None:
+        return None
+    parts = [part for part in str(value).split(",") if part.strip()]
+    volts = [trailer_float(part) for part in parts]
+    if not volts or any(v is None for v in volts):
+        return None
+    return volts
+
+
+def _ms2_scan_record(
+    scan_number: int,
+    time_s: float,
+    tic: float,
+    filter_string: str | None,
+    trailer_numbers: dict[str, float],
+    hcd_energy: object,
+) -> dict:
+    """One MS2 scan's record, from what both backends read of it.
+
+    :param scan_number: The scan's number, from 1.
+    :param time_s: Its start time in seconds.
+    :param tic: Its total ion current.
+    :param filter_string: Its filter, as the backend renders it.
+    :param trailer_numbers: The numbers its trailer stores under
+        :data:`_MS2_RECORD_TRAILER_NUMBERS` (:meth:`ReaderBackend.trailer_numbers`);
+        a label the trailer lacks is absent.
+    :param hcd_energy: Its trailer's ``"HCD Energy V:"`` value as the backend
+        reads it, None when the trailer has no such field.
+    """
+    event = _parse_ms2_event(filter_string or "")
+    precursor_mz, activation = event if event else (None, None)
+    activation_kind, nce = _activation_kind_and_nce(activation)
+    parsed = parse_scan_filter(filter_string)
+    ranges = parsed.scan_ranges
+    record = {
+        "scan_number": int(scan_number),
+        "time_s": float(time_s),
+        "polarity": parsed.polarity,
+        "precursor_mz": precursor_mz,
+        "activation": activation,
+        "activation_kind": activation_kind,
+        "nce": nce,
+        "hcd_energy_v": _hcd_energy_volts(hcd_energy),
+        "isolation_width": trailer_numbers.get(MS2_ISOLATION_WIDTH),
+        "low_mass": min(low for low, _ in ranges) if ranges else None,
+        "high_mass": max(high for _, high in ranges) if ranges else None,
+        "injection_time_ms": trailer_numbers.get(MS2_INJECTION_TIME),
+        "tic": float(tic),
+    }
+    record["sources"] = {
+        field: None if record[field] is None else source
+        for field, source in MS2_SCAN_RECORD_SOURCES.items()
+    }
+    return record
 
 
 def _method_scan_event(index_event: int) -> int | None:
@@ -1632,6 +1794,32 @@ class ThermoBackend:
             hcd = None if hcd_label_idx is None else trailer_values[hcd_label_idx]
             scan_idx_to_hcd[scan_idx] = "" if hcd is None else str(hcd)
         return *_ms2_isolation_widths(scan_idx_to_width), scan_idx_to_hcd
+
+    def ms2_scan_records(
+        self,
+        polarity: Polarity | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
+    ) -> list[dict]:
+        selector = self._selector(polarity, t_min, t_max, ms_type="Ms2")
+        records = []
+        for scan_idx, scan_filter, scan_stats in zip(
+            selector.scan_indices_1based,
+            selector.scan_filters,
+            selector.scan_stats,
+            strict=True,
+        ):
+            records.append(
+                _ms2_scan_record(
+                    scan_idx,
+                    scan_stats.StartTime * _SECONDS_PER_MINUTE,
+                    scan_stats.TIC,
+                    scan_filter.ToString(),
+                    self.trailer_numbers(scan_idx, _MS2_RECORD_TRAILER_NUMBERS),
+                    self.scan_trailer(scan_idx).get(MS2_HCD_ENERGY),
+                )
+            )
+        return records
 
     def ms2_centroids_for_scans(
         self, scan_indices: list[int]
@@ -2988,6 +3176,28 @@ class OpenTFRawBackend:
             hcd = params.get(MS2_HCD_ENERGY)
             scan_idx_to_hcd[scan_number] = "" if hcd is None else str(hcd)
         return *_ms2_isolation_widths(scan_idx_to_width), scan_idx_to_hcd
+
+    def ms2_scan_records(
+        self,
+        polarity: Polarity | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
+    ) -> list[dict]:
+        records = []
+        for s in self._selected(polarity, t_min, t_max, ms_type="Ms2"):
+            scan_number = int(s["scan_number"])
+            trailer = self.scan_trailer(scan_number)
+            records.append(
+                _ms2_scan_record(
+                    scan_number,
+                    s["retention_time"] * _SECONDS_PER_MINUTE,
+                    s["total_ion_current"],
+                    self._raw.scan_filter(scan_number) or s.get("filter_string"),
+                    _trailer_numbers(trailer, _MS2_RECORD_TRAILER_NUMBERS),
+                    trailer.get(MS2_HCD_ENERGY),
+                )
+            )
+        return records
 
     def ms2_centroids_for_scans(
         self, scan_indices: list[int]

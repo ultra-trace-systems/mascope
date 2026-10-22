@@ -30,7 +30,10 @@ async def get_ms2_summary_route(
     user: User = Depends(current_active_user),
     membership=Depends(require_sample_role("guest")),
 ):
-    """Retrieve MS2 summary (parent peaks, HCD map, isolation width).
+    """Retrieve MS2 summary (parent peaks, HCD map, isolation widths).
+
+    Each group reports its ``isolation_width`` and ``isolation_widths``,
+    every width its scans used with their scan counts.
 
     :param sample_item_id: The unique identifier of the sample.
     :param query_params: Query parameters for MS2 summary including parent peak tolerance.

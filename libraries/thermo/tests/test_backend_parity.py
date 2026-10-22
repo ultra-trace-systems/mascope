@@ -650,6 +650,45 @@ def test_ms2_acquisition_info_matches_thermo(monkeypatch, path):
         )
 
 
+#: The fields of an MS2 scan record the two backends render each from their
+#: own filter text, which writes m/z to different precision.
+_RENDERED_MZ_FIELDS = ("precursor_mz", "low_mass", "high_mass")
+
+
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_ms2_scan_records_match_thermo(monkeypatch, path):
+    """OpenTFRaw's MS2 scan records must be Thermo's, field by field and
+    source by source. The m/z fields come from each backend's rendering of
+    the filter, so they agree to the filter's precision; the trailer's
+    numbers are read as stored and agree exactly. Skips files without MS2
+    scans.
+    """
+    path = str(path)
+
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
+    try:
+        with open_backend(path) as backend:
+            th = backend.ms2_scan_records()
+    except m_thermo.NoScansFoundError:
+        pytest.skip("no MS2 scans")
+
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
+    with open_backend(path) as backend:
+        ot = backend.ms2_scan_records()
+
+    assert [r["scan_number"] for r in ot] == [r["scan_number"] for r in th]
+    for o, t in zip(ot, th, strict=True):
+        scan = t["scan_number"]
+        for field in _RENDERED_MZ_FIELDS:
+            assert o[field] == pytest.approx(t[field], abs=1e-3), (
+                f"scan {scan}: {field}"
+            )
+        assert o["time_s"] == pytest.approx(t["time_s"], rel=1e-9), f"scan {scan}"
+        assert o["tic"] == pytest.approx(t["tic"], rel=1e-6), f"scan {scan}"
+        rest = set(t) - {*_RENDERED_MZ_FIELDS, "time_s", "tic"}
+        assert {f: o[f] for f in rest} == {f: t[f] for f in rest}, f"scan {scan}"
+
+
 # Cap on scans averaged by the ppm-averaging parity tests, to bound runtime on
 # files with thousands of scans (the averaging still spans many scans).
 MAX_AVG_SCANS = 25

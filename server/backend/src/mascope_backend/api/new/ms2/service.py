@@ -45,8 +45,12 @@ async def get_ms2_summary(
     """Retrieve MS2 summary for a sample.
 
     Returns parent peaks, HCD energy map, isolation widths, and scan counts.
-    Each group carries its own isolation width; the top-level one is ``None``
-    when the scans do not share one, as a targeted method's events may not.
+    Each group carries its own ``isolation_width``, ``None`` when its scans do
+    not share one, and ``isolation_widths``, every width its scans used with
+    their scan counts (``[{"isolation_width": 1.0, "scan_count": 12}]``), so a
+    group isolated at two widths answers both under its one key. The top-level
+    ``isolation_width`` is ``None`` when the scans do not share one, as a
+    targeted method's events may not.
 
     :param sample_item_id: Unique identifier for the sample.
     :param parent_peak_tolerance: Tolerance in Da for merging duplicate parent peaks.
