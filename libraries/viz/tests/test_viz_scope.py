@@ -88,6 +88,12 @@ MODES = {
     "im-no3": ("NO3-", "instrument Y"),
 }
 
+#: id: (name, system key) of the modes Mascope ships that no instrument has
+#: adopted: the listing gives them only with ``include_system=true``.
+SYSTEM_MODES = {
+    "im-sys-h": ("H3O+", "h3o_plus"),
+}
+
 
 def _utc(day: str, local: str) -> pd.Timestamp:
     return pd.Timestamp(f"{day} {local}").tz_localize(ZONE).tz_convert("UTC")
@@ -260,6 +266,19 @@ class FakeAPI:
                 }
                 for m, (name, instrument) in self.modes.items()
             ]
+            if params.get("include_system") == "true":
+                rows += [
+                    {
+                        "ionization_mode_id": m,
+                        "ionization_mode_name": name,
+                        "ionization_mode_token": m,
+                        "instrument": None,
+                        "ionization_mode_polarity": name[-1],
+                        "ionization_mechanism_ids": [],
+                        "system_key": key,
+                    }
+                    for m, (name, key) in SYSTEM_MODES.items()
+                ]
             return 200, _envelope(rows, results=len(rows))
         if path == "target/collections":
             rows = [
@@ -765,6 +784,18 @@ class TestNarrowing:
         )
 
         assert by_name.key == by_id.key
+
+    def test_a_mode_by_name_leaves_out_the_unadopted_system_modes(self, client, api):
+        """A shipped mode no instrument adopted processes no sample: one of
+        the same name does not make the name ambiguous."""
+        resolved = resolve(
+            client,
+            Scope(dataset="Campaign 2026", instrument="instrument X", mode="H3O+"),
+        )
+
+        assert not resolved.ambiguous
+        assert resolved.scope.mode == "im-h"
+        assert api.requests_to("ionization/modes") == [{}]
 
     def test_a_scope_without_a_mode_lists_no_modes(self, client, api):
         resolve(client, Scope(dataset="Campaign 2026"))
