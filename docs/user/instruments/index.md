@@ -211,10 +211,11 @@ A program that controls the instrument can leave a record beside each
 file it acquires, saying which step of which run the file belongs to
 and under which chemistry it was measured. The record is a small file
 named after the data file, `run_0042.raw.mascope.json` beside
-`run_0042.raw`. The agent sends it with the file's upload, and never
-uploads, changes or deletes the record itself. Nothing has to be
-configured: an agent that finds a record sends it, and one that finds
-none uploads the file as before.
+`run_0042.raw`; what it holds, and the rules a program writing one
+follows, are on [Acquisition records](acquisition-records.md). The agent
+sends it with the file's upload, and never uploads, changes or deletes
+the record itself. Nothing has to be configured: an agent that finds a
+record sends it, and one that finds none uploads the file as before.
 
 ```
 run_0042.raw: its acquisition record went with it.
