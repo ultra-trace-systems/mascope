@@ -124,4 +124,5 @@ nav:
   - SDK & API:
       - Overview: sdk/index.md
       - Getting started with Python: sdk/getting-started.md
+      - Publishing an assignment run: sdk/publishing-assignments.md
   - Reference: reference/index.md

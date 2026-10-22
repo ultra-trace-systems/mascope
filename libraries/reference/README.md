@@ -38,6 +38,35 @@ for the design.
   `collapse_by_inchikey` merges the same molecule from multiple sources into one
   identity when a single answer is wanted.
 
+## Sources
+
+Every source is mirrored from a dump the project publishes, never queried
+live: fetch the dump out of band and point `mascope reference sync <source>
+<file>` at it. All of them are free to use; the licence each record carries is
+what the operator's
+[licence gate](../../docs/maintaining.md#reference-licence-gating) filters on.
+
+| Source | Content | The dump the adapter reads | Licence |
+| --- | --- | --- | --- |
+| `pubchem` [PubChem](https://pubchem.ncbi.nlm.nih.gov/) | ~120M compounds; name, SMILES, InChIKey, exact and monoisotopic mass, formula, cross-references | The Compound SDF dumps (`Compound/CURRENT-Full/SDF` on the FTP site) | Public domain |
+| `comptox` [EPA CompTox / CCTE](https://comptox.epa.gov/dashboard/) | ~1.2M environment-relevant chemicals, "MS-ready" structures | The CompTox Chemicals Dashboard bulk CSV export (DSSTox) | Public domain |
+| `chebi` [ChEBI](https://www.ebi.ac.uk/chebi/) | ~200k curated biologically relevant molecules, with an ontology | `ChEBI_complete.sdf` | CC BY 4.0 |
+| `hmdb` [HMDB](https://hmdb.ca/) | ~250k human metabolites | `hmdb_metabolites.xml` | Free with attribution; verify commercial terms first |
+| `lipidmaps` [LIPID MAPS (LMSD)](https://www.lipidmaps.org/) | ~48k curated lipids, systematic nomenclature | The LMSD SDF dump | CC BY 4.0 |
+| `coconut` [COCONUT](https://coconut.naturalproducts.net/) | ~400k natural products | The bulk CSV export | CC0 / open |
+| `norman` [NORMAN Suspect List Exchange](https://www.norman-network.com/nds/SLE/) | Curated suspect lists (PFAS, pesticides, ...) | A suspect list, or the merged SusDat table, as CSV (distributed via CompTox) | Open |
+
+`custom` (a flat CSV or TSV) and `peaklist` (a self-describing JSON list)
+read hand-authored lists; the authoring guide
+([reference_data_authoring.md](../../docs/dev/reference_data_authoring.md),
+moving to the user documentation) has their formats.
+
+**Deliberately excluded**, because they are not free to use: the NIST MS
+library (paid), mzCloud (browse-only, not redistributable), METLIN
+(restricted), CAS/SciFinder (paid) and ChemSpider (non-commercial key). KEGG
+is conditional - its web API is free for academic use, but bulk FTP is a paid
+subscription and commercial use is restricted - and is treated as not free.
+
 ## Ownership boundary
 
 The `reference_source` / `reference_compound` tables are defined by the backend

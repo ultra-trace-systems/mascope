@@ -129,6 +129,14 @@ consequences of that line.
 
 ### 8.2 Part A - run import (the core)
 
+The contract as an importer reads it - the request and its caps, the row
+fields, the reserved provenance keys, chunking and idempotency, tiers and
+`engine_tier`, the intensity quantity per instrument, partial imports,
+retention and verdicts outside calibration - is the user page
+[Publishing an assignment run](../user/sdk/publishing-assignments.md) since
+2026-10-22. This section is the design behind it: why each rule is what it
+is, and what was tried and retracted.
+
 #### Endpoint
 
 **`POST /api/peak-assignments/sample/{sample_item_id}/runs/import`** accepts a
