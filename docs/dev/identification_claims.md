@@ -2,12 +2,13 @@
 
 - **Status:** design
 - **As of:** 2026-10-22
-- **Tracked in:** none; the identification level is MAS-73 in
+- **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea)
+  (Linear: MAS-357 the structure lookup, MAS-363 the exports, MAS-361 the
+  decision on the classic sheet; MAS-31 is the level's FAIR export) and
   [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c)
-  and its FAIR export MAS-31 in
-  [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea);
-  the claim record, the structure lookup and the targeted path have no issue
-  yet (section 9 proposes them)
+  (MAS-358 the target as a candidate, MAS-359 the claim, MAS-360 the MS/MS
+  ranking, MAS-362 the decision on the targeted path; MAS-73 carries the
+  engine's level); filed 2026-10-22
 
 ## 1. Purpose
 
@@ -344,21 +345,22 @@ Everything else in this note is follow-up work, filed as section 9 proposes.
 ## 8. Decisions for the plan owner
 
 1. **The claim's home** (5.2): extend the verification tables, or a table of
-   its own. Recommended: extend.
+   its own. Recommended: extend. Answered by starting MAS-359.
 2. **A level for the classic sheet** (5.3): derive one, or wait for the fold.
-   Recommended: wait.
+   Recommended: wait. Linear MAS-361.
 3. **The MS/MS scorer's authority** (5.5): write level-2 claims, or rank only.
-   Recommended: rank only until measured.
+   Recommended: rank only until measured. Answered by starting MAS-360.
 4. **Claims on the targeted path** (5.6): build a key for them, or wait for
-   the fold. Recommended: wait.
+   the fold. Recommended: wait. Linear MAS-362.
 
 ## 9. Proposed issues
 
-Filed by the owner; none exists yet. Each is a self-contained brief in the
-MAS convention (Context, Task, Where, Verify, Size).
+Filed in Linear on 2026-10-22, each a self-contained brief in the MAS
+convention (Context, Task, Where, Verify, Size); the summaries below are the
+short form.
 
-**A. Find structure in the compound editor** (FAIR data roadmap, after
-MAS-28). Context: MAS-28 gave target compounds a structure and three paste
+**A. Find structure in the compound editor** (MAS-357; FAIR data roadmap,
+after MAS-28). Context: MAS-28 gave target compounds a structure and three paste
 fields; the handoff scoped the lookup out. Task: in
 `DialogTargetCompoundUpdate.vue` a collapsed *Structure* group (CAS, InChIKey,
 InChI, SMILES) with a *Find structure* action backed by a new route that lists
@@ -368,16 +370,16 @@ four fields. Verify: a compound with a CAS number and no structure gets its
 InChIKey from the lookup in two clicks; an InChI of another formula is still
 refused; the quick paths send no identity. Size: M.
 
-**B. The target's declaration as a candidate** (Assignment quality plan,
-beside MAS-73). Context: section 4.2. Task: the detail read and the ledger's
+**B. The target's declaration as a candidate** (MAS-358; Assignment quality
+plan, beside MAS-73). Context: section 4.2. Task: the detail read and the ledger's
 `reference_listing` carry the target's name and InChIKey as a candidate
 labelled `target`; `referenceListings.js` and the inspector render it beside
 the reference listing, merged with a reference identity of the same InChIKey.
 Verify: a target match reads *target · name*, a reference-only match reads as
 today, a target whose InChIKey a list carries shows once. Size: S.
 
-**C. Claims on the verification tables** (Assignment quality plan, after
-MAS-73 fixes the engine's mapping or beside it). Context: sections 5.1, 5.2
+**C. Claims on the verification tables** (MAS-359; Assignment quality plan,
+beside MAS-73). Context: sections 5.1, 5.2
 and 5.4. Task: one migration adding `claimed_inchikey`, `claimed_name` and
 `level` to `assignment_verification` and `batch_peak_verification`; the
 schemas in `peak_assignments/schemas.py` and the two services
@@ -391,21 +393,23 @@ confirmation without a structure is refused; a level-1 claim reads back with
 its InChIKey from both tables; legacy rows read as level 4; the calibration
 pool's count is unchanged. Size: M.
 
-**D. Level and claim in the exports** (FAIR data roadmap, extends MAS-31).
+**D. Level and claim in the exports** (MAS-363; FAIR data roadmap, extends
+MAS-31; blocked by MAS-359, MAS-73 and MAS-361).
 Context: section 6.2. Task: `batch_export.py` appends `level`, `level_source`,
 `claimed_inchikey`, `claimed_name`; the batch spreadsheet's Provenance sheet
 names the mapping version; the *Match compounds* sheet is left as decision 2
 says. Verify: the traceability test reads the four columns back; a claimed row
 exports its claim's level, an unclaimed one the engine's. Size: S.
 
-**E. MS/MS candidate ranking** (needs the public-database phase 4 project the
-owner has not opened). Context: section 5.5. Task: the scorer ranks the row's
+**E. MS/MS candidate ranking** (MAS-360; in the Assignment quality plan until
+the public-database phase 4 project, which the owner has not opened, exists). Context: section 5.5. Task: the scorer ranks the row's
 candidates by spectral similarity and writes the ranking to provenance; a
 claim is written only if decision 3 says so. Verify: on the decoy harness the
 true structure ranks first at a measured rate. Size: L.
 
-Decisions 2 and 4 are Linear issues labelled *Decision* in the assignment
-quality plan; decisions 1 and 3 are answered by starting C and E.
+Decisions 2 and 4 are MAS-361 (FAIR data roadmap, since it blocks D) and
+MAS-362 (Assignment quality plan), labelled *Decision*; decisions 1 and 3 are
+answered by starting MAS-359 and MAS-360.
 
 ## References
 
