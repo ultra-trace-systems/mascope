@@ -32,11 +32,12 @@ measured on any file in reach, and nothing reads their streams yet.
 
 Peak detection pools every MS1 scan of a polarity unless a deployment asks
 for more, and then a file whose method measures more than one thing in a
-polarity has its peaks detected per stream (:func:`peak_streams`). An
-experiment the method only runs again is not another thing measured
-(:func:`measured`), and its runs stay pooled. The census records
-what each file holds, so that the pooling can be seen, and so that what is
-built on streams rests on evidence
+polarity has its peaks detected per stream (:func:`peak_streams`). Streams
+on the same scan ranges at the same microscans are not another thing
+measured (:func:`measured`): an experiment the method only runs again, or
+one whose resolution changes part way through. Their runs stay pooled. The
+census records what each file holds, so that the pooling can be seen, and
+so that what is built on streams rests on evidence
 (``docs/dev/ingest_routing_and_splitting.md``, section 4). The reader selects
 one stream's scans by its key (:func:`scan_stream_keys`, and the ``stream``
 argument of ``ReaderBackend``'s selecting methods).
@@ -64,12 +65,11 @@ from mascope_thermo.scan_filter import ScanFilter, parse_scan_filter
 
 FT_RESOLUTION = "FT Resolution:"
 
-#: The two settings of an experiment that a method changes from one to the
-#: next without its scan filter showing it, as a scan's trailer names them:
-#: how many transients each scan averages, and how many ions it is filled
-#: to. Neither varies among the scans of one experiment.
+#: How many transients each scan of an experiment averages, as a scan's
+#: trailer names it: a setting a method changes from one experiment to the
+#: next without its scan filter showing it, and that never varies among the
+#: scans of one experiment.
 MICROSCANS = "Micro Scan Count:"
-AGC_TARGET = "AGC Target:"
 
 # Trailers sampled per stream for its acquisition parameters, as many as the
 # whole-file capture samples.
@@ -365,34 +365,43 @@ def microscans(stream: dict) -> float | None:
     return _setting(stream, MICROSCANS)
 
 
-def measured(stream: dict) -> tuple[str, float | None, float | None]:
-    """What a stream's experiment measured, to tell the streams of one file
-    apart by: its signature, its microscan count and its AGC target.
+def measured(stream: dict) -> tuple[tuple[tuple[str, str], ...], float | None]:
+    """What a stream's experiment measured, to tell the MS1 streams of one
+    polarity apart by: its scan ranges and its microscan count.
 
-    The signature is what the scan filter says of its scans, and the two
-    settings are what a method changes without the filter showing it. A
-    method that settles the source with a short scan and then measures
-    defines two experiments under one filter, and these settings are all
-    that says so. Where an experiment sits in the method, its segment and
-    scan event, is no part of it: two streams that agree on all three are
-    one experiment the method runs more than once
-    (``docs/dev/ingest_routing_and_splitting.md``, 4.1).
+    Those two are all the stitch map is drawn from
+    (``mascope_signal.stitch``): a stream claims its ranges, and where two
+    claim one m/z the one with more microscans owns it. Two streams that
+    agree on both tie wherever they claim, and the stitch can only give one
+    of them all of it, by their order in the file. So they are one thing
+    measured, whatever else sets them apart: a resolution changed part way
+    through a run, a scan mode, an AGC target, or where the experiment sits
+    in the method, as an experiment the method runs again does. A method
+    that settles the source with a short scan and then measures defines two
+    experiments under one filter, and its microscans keep them two: the
+    measurement owns the range (``docs/dev/ingest_routing_and_splitting.md``,
+    4.1 and 4.5).
 
-    No other trailer value counts. What a scan reports of itself, its
-    injection time for one, varies within an experiment and says nothing of
-    what the method asked for.
+    What a scan reports of itself, its injection time for one, varies within
+    an experiment and says nothing of what the method asked for.
 
-    A setting the census does not hold is ``None`` and compares as a value
-    like any other, so streams of one signature whose settings cannot be
-    read count as one experiment.
+    A range is read at the four decimals a stream key states it to, as the
+    stitch reads it, and the ranges of a multiplexed scan in m/z order. A
+    microscan count the census does not hold is ``None`` and compares as a
+    value like any other, so streams of one range whose counts cannot be
+    read count as one thing measured.
 
     :param stream: A stream of a census from :func:`scan_streams`.
-    :return: ``(signature key, microscan count, AGC target)``.
+    :return: ``(scan ranges, microscan count)``, each range ``(lower,
+        upper)`` as text.
     """
+    ranges = sorted(
+        (float(lower), float(upper))
+        for lower, upper in (stream.get("signature") or {}).get("scan_ranges") or []
+    )
     return (
-        stream["signature_key"],
+        tuple((f"{lower:.4f}", f"{upper:.4f}") for lower, upper in ranges),
         microscans(stream),
-        _setting(stream, AGC_TARGET),
     )
 
 
@@ -401,21 +410,25 @@ def peak_streams(streams: list[dict]) -> list[dict]:
 
     A file is detected per stream when some polarity holds MS1 streams that
     measured more than one thing (:func:`measured`): two scan ranges, or one
-    range at two settings. Every MS1 stream of the file then gets a peak list
-    of its own, the only stream of another polarity included, so that each
-    peak of such a file belongs to exactly one stream.
+    range at two microscan counts. Every MS1 stream of the file then gets a
+    peak list of its own, the only stream of another polarity included, so
+    that each peak of such a file belongs to exactly one stream.
 
-    A polarity whose streams all measured the same thing is one experiment
-    its method runs more than once, and there is nothing in it to detect
-    apart: pooled, its runs are averaged together, which is what they are.
-    Detected apart, each run would be a peak list of its own with nothing to
-    say which of them is the polarity's. So a file of such polarities is
-    detected whole, like one with a single MS1 stream in each polarity, where
-    the polarity already is the stream.
+    A polarity whose streams all measured the same thing has nothing in it
+    to detect apart. Detected apart, its streams would tie in the stitch
+    and the first of them would be its composite, the others left out
+    whole. Pooled, they are averaged together, as they are with per-stream
+    detection off. So a file of such polarities is detected whole, like one
+    with a single MS1 stream in each polarity, where the polarity already
+    is the stream. That holds whether the streams follow each other or
+    interleave: a composite method runs each window's scans as one block
+    too, so time order tells no composite from a repeat.
 
-    A run that repeats beside another experiment is not reached by this: its
-    file is detected per stream for the other experiment's sake, and each
-    run in it is a stream.
+    A group of such streams beside another experiment of its polarity is
+    not reached by this: its file is detected per stream for the other
+    experiment's sake, and each stream of the group is a stream of its own.
+    So is a group in a polarity of a file detected per stream for another
+    polarity's sake.
 
     :param streams: A census from :func:`scan_streams`.
     :return: The MS1 streams, in the order they first appear, or ``[]``.

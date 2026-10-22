@@ -188,6 +188,42 @@ def test_a_stitched_file_is_detected_again_under_the_setting_it_was_built_by(
     assert m_compute.peak_store_streams(_store()) == [SETTLING, MEASURING]
 
 
+def test_a_file_stitched_from_streams_on_one_range_is_detected_whole_again(
+    acquire, instrument_functions, sample_file_path, setting, redetect, monkeypatch
+):
+    """A file stitched before streams on one range at one microscan count
+    were one thing measured: its survey scan at one resolution and then at
+    another, the first stream owning the whole range. The record says per
+    stream, so a re-processing detects it again, and the detection asks the
+    file's streams as the rule now reads them: one thing measured, so its
+    peaks are detected whole, every scan of both streams averaged together,
+    though the record still says per stream."""
+    scans = [(NEG, 1, {62.0: 100.0, 125.0: 10.0})] * 2 + [
+        (NEG, 2, {62.0: 300.0, 188.0: 50.0})
+    ] * 2
+    acquire(scans, {1: 10, 2: 10}, resolutions={1: 60000, 2: 120000})
+    keys = [f"{NEG} R=60000", f"{NEG} R=120000"]
+    with monkeypatch.context() as before:
+        # As the rule read them before: two signatures, two things measured
+        before.setattr(
+            m_compute,
+            "get_peak_streams",
+            lambda filename: m_compute.get_scan_streams(filename),
+        )
+        _converted(instrument_functions, per_stream=True)
+    assert m_compute.peak_store_streams(_store()) == keys
+    assert m_compute.peak_store_stitch_map(_store())["runs"] == {"-": [[40, 600, 0]]}
+
+    setting(True)
+    assert redetect() is True
+
+    store = _store()
+    assert m_compute.peak_store_streams(store) == []
+    assert m_compute.peak_store_stitch_map(store) is None
+    assert store.sum_peak_heights.values.tolist() == [800.0, 20.0, 100.0]
+    assert _props(sample_file_path)["peaks_per_stream"] is True
+
+
 def test_a_file_decided_against_is_stitched_once_the_setting_is_on(
     acquire, instrument_functions, sample_file_path, setting, redetect
 ):

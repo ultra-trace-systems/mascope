@@ -29,6 +29,7 @@ import mascope_file.io as m_io
 import mascope_signal.compute as m_compute
 import mascope_signal.peak as m_peak
 import mascope_signal.stitch as m_stitch
+import mascope_thermo.streams as m_streams
 from mascope_signal.compute import StalePeakStoreError
 
 
@@ -201,6 +202,40 @@ def test_one_experiment_run_twice_is_not_stitched_at_all(acquire, instrument_fun
     assert m_stitch.STITCH_MAP_ATTR not in store.attrs
     assert store.mz.values.tolist() == [62.0, 100.0, 125.0]
     assert store.sum_peak_heights.values.tolist() == [800.0, 100.0, 20.0]
+
+
+@pytest.mark.parametrize("interleaved", [False, True], ids=["in-turn", "interleaved"])
+def test_one_range_measured_at_two_resolutions_is_not_stitched_at_all(
+    acquire, instrument_functions, interleaved
+):
+    """A method that runs its survey scan at one resolution and then at
+    another, on one range at the same microscans. The two streams measured
+    one thing: stitched, they would tie for every m/z and the composite
+    would be the first stream's scans alone. Asked for per stream, the file
+    is detected whole, every scan of both averaged together, exactly as when
+    nobody asks."""
+    first = (REAGENT, 1, {62.0: 100.0, 125.0: 10.0})
+    second = (REAGENT, 2, {62.0: 300.0, 100.0: 50.0})
+    scans = [first, second] * 2 if interleaved else [first] * 2 + [second] * 2
+    acquire(scans, {1: 10, 2: 10}, resolutions={1: 60000, 2: 120000})
+    assert [stream["key"] for stream in m_streams.file_scan_streams("")] == [
+        f"{REAGENT} R=60000",
+        f"{REAGENT} R=120000",
+    ]
+
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+    asked = _store()
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+    not_asked = _store()
+
+    assert m_compute.peak_store_streams(asked) == []
+    assert "composite" not in asked.variables
+    assert m_stitch.STITCH_MAP_ATTR not in asked.attrs
+    assert asked.mz.values.tolist() == not_asked.mz.values.tolist()
+    for name in ("sum_peak_heights", "sum_peak_areas", "signal_to_noise"):
+        assert asked[name].values.tolist() == not_asked[name].values.tolist()
+    # The reagent ion over all four scans, both resolutions
+    assert asked.sum_peak_heights.values.tolist() == [800.0, 100.0, 20.0]
 
 
 def test_a_run_repeated_beside_another_window_is_stitched_from_its_first_run(
