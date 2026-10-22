@@ -92,9 +92,11 @@ def _request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
             failure = f"HTTP {response.status_code}"
         if delay is None:
             break
-        runtime.logger.warning(
-            f"{method} {url} failed ({failure}), retrying in {delay}s"
-        )
+        # INFO, not WARNING: the error-monitoring sink subscribes at WARNING
+        # (see mascope_runtime.logging), so each retry would mint an event for
+        # a blip the next attempt rides out - a backend restart, a busy pool.
+        # A request that still fails is reported once, by its caller.
+        runtime.logger.info(f"{method} {url} failed ({failure}), retrying in {delay}s")
         time.sleep(delay)
     if response is None:
         if last_exc is None:
@@ -235,7 +237,7 @@ def create_sample_file_db_record(
             # backs it either way; what the 409 says differs. After a retried
             # POST it is most likely the row this call made from this body -
             # the first attempt answered after the server committed and the
-            # answer lost on the way (the retry's WARNING is just above) -
+            # answer lost on the way (the retry's INFO line is just above) -
             # though not certainly: with every earlier attempt refused before
             # it reached the server, or a 503 given before the commit, the
             # row was there already. The converter cannot tell these apart,

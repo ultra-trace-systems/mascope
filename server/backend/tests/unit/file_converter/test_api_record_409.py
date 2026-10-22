@@ -64,9 +64,10 @@ def test_a_409_after_a_lost_answer_is_the_record_made(logger):
         api.create_sample_file_db_record(_props(), "function", access_token="t")
 
     assert request.call_count == 2
-    # The retry's own WARNING for the 500 is the trace; the 409 is an INFO
-    assert logger.warning.call_count == 1
-    assert "retrying" in logger.warning.call_args.args[0]
+    # The retry's own INFO for the 500 is the trace; the 409 is an INFO too,
+    # so nothing reaches monitoring
+    logger.warning.assert_not_called()
+    assert any("retrying" in call.args[0] for call in logger.info.call_args_list)
     assert any(
         "after a retried POST" in call.args[0] for call in logger.info.call_args_list
     )
@@ -80,8 +81,8 @@ def test_a_409_after_a_refused_connection_is_logged_the_same_way(logger):
         api.create_sample_file_db_record(_props(), "function", access_token="t")
 
     assert request.call_count == 2
-    assert logger.warning.call_count == 1
-    assert "retrying" in logger.warning.call_args.args[0]
+    logger.warning.assert_not_called()
+    assert any("retrying" in call.args[0] for call in logger.info.call_args_list)
     assert any(
         "after a retried POST" in call.args[0] for call in logger.info.call_args_list
     )
