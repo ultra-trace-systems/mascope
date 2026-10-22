@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
+from test_utils import captured_logs
 
 from mascope_backend.api.controllers.sample.files.process.bindings import (
     REPOINT_AFTER,
@@ -576,9 +577,16 @@ async def test_a_census_less_orbitrap_file_is_skipped(async_session_factory, his
     mode = await history["add_mode"]()
     await history["add_file"](mode, instrument_type="orbi", method_file="nitrate.meth")
 
-    await backfill_method_bindings()
+    with captured_logs(level="DEBUG") as records:
+        await backfill_method_bindings()
 
     assert await _rows(async_session_factory, history["instrument"]) == []
+    # Counted where the operator reads it, and below WARNING: every record at
+    # WARNING or above becomes an error-monitoring event, and a skip the
+    # script is designed to make is not one.
+    skipped = [r for r in records if "observations were skipped" in r["message"]]
+    assert [r["level"].name for r in skipped] == ["INFO"]
+    assert skipped[0]["message"].startswith("1 observations were skipped")
 
 
 @pytest.mark.asyncio
