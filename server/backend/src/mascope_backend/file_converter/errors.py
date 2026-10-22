@@ -98,7 +98,9 @@ class UnregisteredFileError(RuntimeError):
     credential, which only the upload's ``file_context`` event carries. With
     none registered the file cannot be stored whatever it holds, so
     ``BaseFileProcessor.run`` checks for it before reading the file and fails
-    it straight away, rather than after the instrument-function fit.
+    it there, rather than after the instrument-function fit. Only a file
+    written moments ago first gets a few seconds for a late context
+    (``BaseFileProcessor._await_file_context``).
 
     It is not routine: an upload is lost, and the uploader cannot be told
     either, since the notification needs the same credential. So it is still

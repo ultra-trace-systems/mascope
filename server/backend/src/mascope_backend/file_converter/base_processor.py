@@ -526,6 +526,44 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         self.active.clear()
         self.cancel_event.clear()
 
+    #: A file last written this recently (seconds) whose upload context has
+    #: not arrived yet may be one whose ``file-converter.auth`` event is still
+    #: crossing Redis: the upload awaits only that event's publish, and a busy
+    #: worker stretches its delivery to seconds, while the watcher queues a
+    #: file one to two seconds after it appears. An older one is a leftover.
+    CONTEXT_GRACE_MAX_FILE_AGE = 60.0
+    #: How long (seconds) to wait for such a late context before failing.
+    CONTEXT_GRACE_WAIT = 10.0
+    #: How often (seconds) to look for it meanwhile.
+    CONTEXT_GRACE_POLL = 0.25
+
+    def _await_file_context(self):
+        """Get the current file's context, waiting briefly when it may be late.
+
+        A file last written within ``CONTEXT_GRACE_MAX_FILE_AGE`` gets up to
+        ``CONTEXT_GRACE_WAIT`` for its context to arrive. One left over from
+        before a restart, which is older, fails at once, so a backlog adds no
+        delay.
+
+        :raises UnregisteredFileError: When no context arrives.
+        """
+        context_manager = self.socket_client.context_manager
+        base_filename = os.path.basename(self.file_to_process)
+        if context_manager.get_context(base_filename) is None:
+            try:
+                age = time.time() - os.stat(self.file_to_process).st_mtime
+            except OSError:
+                age = None
+            if age is not None and age < self.CONTEXT_GRACE_MAX_FILE_AGE:
+                deadline = time.monotonic() + self.CONTEXT_GRACE_WAIT
+                while (
+                    context_manager.get_context(base_filename) is None
+                    and time.monotonic() < deadline
+                    and not self.shutdown_event.wait(self.CONTEXT_GRACE_POLL)
+                ):
+                    pass
+        return self._get_file_context()
+
     def _get_file_context(self):
         """Get file context for the current file being processed.
 
@@ -895,7 +933,7 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                     # Every record of the file is written with its uploader's
                     # credential: without one nothing can store it, so fail it
                     # before the file is read and the instruments are fitted
-                    self._get_file_context()
+                    self._await_file_context()
 
                     # Get sample file properties using subclass implementation
                     sample_file_props = self._get_sample_file_props()
