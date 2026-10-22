@@ -5,6 +5,7 @@
 - **Status:** building
 - **As of:** 2026-10-22
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73)
+- **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
 

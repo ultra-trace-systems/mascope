@@ -5,6 +5,7 @@
 - **Status:** built
 - **As of:** 2026-10-22
 - **Tracked in:** closed; the phase 4 leftovers are MAS-61 and MAS-229, the "fold targeted in" of phase 5 is MAS-162 and MAS-80
+- **What:** The shift from target-anchored matching to assigning every peak, and how the engine is operated.
 
 ## Purpose
 

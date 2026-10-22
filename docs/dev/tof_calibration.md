@@ -3,6 +3,7 @@
 - **Status:** building
 - **As of:** 2026-10-22
 - **Tracked in:** [TOF mass calibration](https://linear.app/ultra-trace/project/tof-mass-calibration-8271ef05d142) (Linear, MAS-171 to MAS-197)
+- **What:** TOF mass calibration across the analysed range: measure, fix calibrants, model, re-calibrate.
 
 *The plan to give every TOF file a calibration that holds across the mass range it is analysed
 over: measure each instrument, fix its calibrant sets, add a three-parameter model and coverage

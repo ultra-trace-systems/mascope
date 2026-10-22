@@ -5,6 +5,7 @@
 - **Status:** building
 - **As of:** 2026-10-22
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear: MAS-59, MAS-61, MAS-63, MAS-65; MAS-328 the mismatched-context harm bound; MAS-342 is where 4.4's `reference_tags` activation lives)
+- **What:** Reagent-ion chemistry profiles and chemistry contexts as the unit a run searches under.
 
 ## Purpose
 

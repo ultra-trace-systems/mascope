@@ -4,6 +4,7 @@
 - **As of:** 2026-10-22
 - **Tracked in:** closed; decisions 10.4 and 10.5 are carried inside MAS-321 and MAS-322 ([Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) milestone 4)
 - **Supersedes:** `peak_assignment_batch.md` (section 12), `peak_assignment_copy.md` and `peak_assignment_continuity.md` (sections 6.3 and 6.4); all three retired 2026-10-22
+- **What:** The batch ledger as the durable assignment object; samples fold in at ingest.
 
 *Ingest-time assignment writes a per-sample ledger for every processed sample, and the
 batch ledger (section 12: the batch-peak design this note inverted) is derived from it

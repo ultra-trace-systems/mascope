@@ -6,6 +6,7 @@
 - **As of:** 2026-10-22
 - **Tracked in:** closed
 - **Superseded by:** [docs/user/guides/reference-lists.md](../user/guides/reference-lists.md)
+- **What:** A pointer: the guide to authoring and loading a custom reference compound list is the user page [Reference compound lists](../user/guides/reference-lists.md) since 2026-10-22.
 
 This guide is the user documentation page
 [Reference compound lists](../user/guides/reference-lists.md) since 2026-10-22:

@@ -104,6 +104,7 @@ class Problem(NamedTuple):
     path: str
     line: int | None
     message: str
+    level: str = "error"  # or "warning", which fails nothing
 
 
 class Fragment(NamedTuple):
@@ -390,10 +391,11 @@ def report(problems: list[Problem]) -> None:
             where = f"file={_escape(problem.path, prop=True)}"
             if problem.line:
                 where += f",line={problem.line}"
-            print(f"::error {where}::{_escape(problem.message)}")
+            print(f"::{problem.level} {where}::{_escape(problem.message)}")
         else:
             where = problem.path + (f":{problem.line}" if problem.line else "")
-            print(f"{where}: {problem.message}", file=sys.stderr)
+            label = "" if problem.level == "error" else f"{problem.level}: "
+            print(f"{where}: {label}{problem.message}", file=sys.stderr)
 
 
 # ============= compile =============

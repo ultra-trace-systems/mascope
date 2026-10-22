@@ -3,6 +3,7 @@
 - **Status:** built
 - **As of:** 2026-10-22
 - **Tracked in:** [Release 2.0 and the security campaign](https://linear.app/ultra-trace/project/release-20-and-the-security-campaign-89b9f4b36f95) (Linear; MAS-77, MAS-78, MAS-79 and MAS-111 done, MAS-211 open)
+- **What:** A TOTP second factor for the web session, with offline recovery.
 
 Status: **built** in #1851 (1.8.0): phases 1 to 3 below (enrolment, verification,
 policy and administration) are running code, and the text reads as the proposal

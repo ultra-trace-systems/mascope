@@ -5,6 +5,7 @@
 - **Status:** design
 - **As of:** 2026-10-22
 - **Tracked in:** [Sample finder and acquisition metadata](https://linear.app/ultra-trace/project/sample-finder-and-acquisition-metadata-cd1678c32e78) (Linear; decisions MAS-104 to MAS-110; phases 1 to 4 filed 2026-10-22 as MAS-306, MAS-310, MAS-311, MAS-334 to MAS-336, MAS-338 to MAS-343, MAS-348 and MAS-349)
+- **What:** Sample search and refreshable batches over acquisition metadata.
 
 Status: **design, nothing built** (2026-10-05). The decisions in section 3 were
 settled in design review on that date. Section 9 lists what is open, each item
