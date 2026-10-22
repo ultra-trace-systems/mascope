@@ -4,7 +4,7 @@
 
 - **Status:** building
 - **As of:** 2026-10-22
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73)
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73 and MAS-408 to MAS-410)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -20,10 +20,14 @@ step; merged so far are 3.1 (#2197), 3.1c (#2205), 3.1d (#2211), 3.2
 baseline is the last stage 2 round (step 2.8, engine 0.5.0, tiering rule
 set 6) and, for the chamber dataset's sets G to J, the chemist's reading
 of 2026-09-24 (decision 21). Stage 4 has not started. Of milestone 5, the
-reference's 0.10 review, step 5.5 is built (#2377) and the rest are
-planned. Every planned step is an issue in the Linear project Assignment
-quality plan (MAS-37 to MAS-73; step 5.3 is MAS-68, in progress). The
-measurement log and the specifications of the completed steps are in
+reference's 0.10 review, step 5.5 is built (#2377), 5.3 is measured and
+the rest are planned; a readiness check against the reference's main on
+2026-10-22 (the last section of the review) found nothing new to bin and
+added step 5.9. Every planned step is an issue in the Linear project
+Assignment quality plan (MAS-37 to MAS-73 and MAS-410; step 5.3 is
+MAS-68, in review; decisions 29 and 31 are raised as MAS-408 and
+MAS-409). The measurement log and the specifications of the completed
+steps are in
 [`assignment_quality_plan_log.md`](assignment_quality_plan_log.md); the
 table below names each step's PR, its merge date and one line on its state.
 
@@ -85,14 +89,15 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.3 - calibration from verdicts, per profile | - |  | planned |
 | 4.4 - gate automation | - |  | planned |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
-| 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below |
+| 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below; readiness check against the reference's main on 2026-10-22: nothing new to bin, 0.10.0 still uncut |
 | 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | - |  | planned; no target until two gates have read them |
 | 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - |  | measured 2026-10-16 on the pass-9 ledgers; 3.5b's form decided 2026-10-22 (decision 32) |
-| 5.4 - the side lobe's signatures: width-scaled offset and narrowness in the sidelobe flag | - |  | planned; after 3.5b and 3.5 |
+| 5.4 - the side lobe's signatures: width-scaled offset and narrowness in the sidelobe flag | - |  | planned; after 3.5b and 3.5; a TOF rider from the readiness check of 2026-10-22 |
 | 5.5 - the TOF signal-to-noise column: verify it tracks height, fix the picker or fall back to counting statistics | #2377 | 2026-10-16 | built: the picker's TOF noise is now the baseline's MAD; measured next on E, F, J |
 | 5.6 - the import contract: a verdict on batch rows, the engine tier where the user looks | - |  | planned; between rounds |
-| 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - |  | planned; after 3.5; feeds 4.3 and the axis-fingerprint project |
+| 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - |  | planned; after 3.5; feeds 4.3 and the axis-fingerprint project; the labelled sets wait for a release carrying the reference's #77 |
 | 5.8 - an identification level in Mascope's own vocabulary | - |  | planned 2026-10-14 (decision 30 taken); after 3.7 |
+| 5.9 - the width a run scored at, served on the run and sample records | - |  | planned 2026-10-22, from the readiness check (the digest's one unbinned ask); MAS-410 |
 
 ## Purpose
 
@@ -874,7 +879,8 @@ isotope lines read by area against the file's own minor-line response, a
 resolvability fix). 316 commits, 296 files, 86,000 lines; its test suite
 went from 256 to 2,615 tests. Its 0.10.0 is not cut: "open items can still
 move results", one PR is open (its #77, a false axis step on 15N-labelled
-batches) and its experimental flags stay off.
+batches; merged 2026-10-16, see the readiness check at the end of this
+review) and its experimental flags stay off.
 
 This section is the first boundary review (step 5.1): what of that Mascope
 takes, what it folds into steps already planned, what it has already, and
@@ -911,8 +917,9 @@ under its milestone 5.
   release that published the library).
 - **Verify.** The status table names the reference's tag for every set; a
   review section exists for every peaky minor since 0.9.0.
-- **Size.** S per release. Next: 0.10.0 when it is cut; until peaky's #77
-  merges, no reference run on a labelled set uses its axis correction.
+- **Size.** S per release. Next: 0.10.0 when it is cut; until a tagged
+  release carries peaky's #77 (merged 2026-10-16, in no release as of
+  2026-10-22), no reference run on a labelled set uses its axis correction.
 
 ### 5.2 Decoy arms in the gate
 
@@ -1067,7 +1074,9 @@ under its milestone 5.
 ### 5.7 Experiment: the file's own locks against the calibration node
 
 - **What.** Run the reference's lock model offline on the gate's Orbitrap
-  sets (never on a labelled set until its #77 merges) and read the axis it
+  sets (on a labelled set only with a commit or release carrying its #77,
+  and then expecting no model above m/z about 340 and no correction where
+  the axis is under 1 ppm off) and read the axis it
   proposes per file (spline, segments, steps) against the calibration node's
   residual after its fit (2.2b's lines) and, on Q Exactive files, the axis
   fingerprint's band steps. Then the call: whether the node takes self-found
@@ -1122,6 +1131,42 @@ under its milestone 5.
   differences explained by one side's facts.
 - **Size.** M. After the stage-3 gate (3.7); the mapping is revisited at
   the stage-4 gate, when batch corroboration can lift a level.
+
+### 5.9 The width a run scored at, served on the run and sample records
+
+- **What.** The engine's scoring snapshot (`engine.py`,
+  `pattern_scoring_snapshot`) records the width Stage B fitted on the
+  sample's own lines (`sigma_ppm`, with `sigma_source` fitted or
+  instrument class) and the mass centre (`mu_ppm`, `mu_source`); the picker
+  computes a resolution per peak. Neither reaches a reader: the run record
+  (`schemas.py`, `PeakAssignmentRunRecord`) and the SDK's `list_runs` frame
+  carry neither, and the peaks endpoint does not return the resolution.
+  First read what is stored (whether the snapshot is persisted on the run,
+  whether a per-peak resolution survives detection into the peak table);
+  then serve the snapshot's four numbers on the run record and in
+  `list_runs` beside `engine`, `tier_bands` and `calibration`, an imported
+  run's the same way through the import contract (5.6); and on the sample
+  record the instrument class and a width at a reference m/z from what
+  detection measured, so a sample without a run still answers.
+- **Why.** The reference resolves a sample's instrument class in the order
+  Mascope does and measures the file's line width from the raw profile
+  itself, because nothing it can read says what width the file's lines
+  have ("a batch the server lists as TOF stays one whatever resolving power
+  it is given"): item C.11 of the digest, the one ask the review above did
+  not bin. Every class-keyed rule this plan adds reads a width (5.4, 3.4f,
+  3.5b), and an engine comparing itself to a run should read the width
+  that run scored at rather than re-measure it.
+- **Where.** `server/backend/src/mascope_backend/api/new/peak_assignments/schemas.py`,
+  `engine.py` and `service.py` (where the snapshot is written); the samples
+  API and its record; `libraries/sdk` (`peak_assignments.py`, the sample
+  loaders); `sdk_peak_assignment.md`, the SDK reference, `CHANGELOG.md`.
+- **Verify.** `list_runs` on a gate set returns the width and its source
+  for every run; a TOF and an Orbitrap sample without a run answer
+  different classes and widths; the reference's own measurement on the same
+  files agrees with the served width within its stated tolerance, reported
+  as a reading, not a target. No run or gate number moves.
+- **Size.** S. Independent; between rounds, with 5.6 at the earliest
+  (MAS-410).
 
 ### Riders written into planned steps
 
@@ -1206,7 +1251,7 @@ under its milestone 5.
 ### Decisions proposed to the plan owner (30 taken 2026-10-14, 32 on 2026-10-22)
 
 29. **The reference is pinned at a release, and each peaky minor gets a
-    boundary review** (step 5.1).
+    boundary review** (step 5.1). Raised as MAS-408 on 2026-10-22.
 30. **A Schymanski-style identification level is the target, built in
     Mascope's own vocabulary; the reference's scale is not ported while it
     moves** (taken 2026-10-14 by the plan owner). The level is derived from
@@ -1215,7 +1260,7 @@ under its milestone 5.
     derived tier stays what the fold and the UI read.
 31. **The decoy arms join the gate without a target** until two gates have
     read them; then a target is set from those readings, not from the
-    reference's numbers.
+    reference's numbers. Raised as MAS-409 on 2026-10-22.
 32. **The envelope's tolerance is a per-file response curve on
     Orbitrap-class runs and a centre and a width on the TOF, read by
     height** (taken 2026-10-22 by the plan owner, on 5.3's numbers). On a
@@ -1226,9 +1271,11 @@ under its milestone 5.
 
 ### Worth watching
 
-- peaky's #77: its axis correction builds a false -1.5 ppm step on
-  15N-labelled batches until the lock space carries the label; no reference
-  run on sets C, C2 or G uses it before the fix is released.
+- peaky's #77 (merged 2026-10-16, in no release as of 2026-10-22): its
+  axis correction built a false -1.5 ppm step on 15N-labelled batches while
+  the lock space had no label; no reference run on sets C, C2 or G uses it
+  before a release carries the fix, and with the label its model reaches
+  only m/z about 293 to 342 on a labelled batch (the readiness check below).
 - "A peak list holding two axis states (every ion twice, 3 to 6 ppm apart)"
   defeats its lock model: a file whose scans straddle a recalibration is a
   converter-side shape to recognise.
@@ -1239,6 +1286,53 @@ under its milestone 5.
 - Its TOF picker finding: weak satellites beside a bright line at about a
   tenth of its height, 1 to 1.5 FWHM below and 0.5 to 1 above, which its
   water-ladder decoys had to step around.
+
+### Readiness check against the reference's main (2026-10-22)
+
+A re-read of peaky's `main` from the commit the review above covers
+(`bd672f2`, 2026-10-10) to `aa119ac` (2026-10-21), ten merged PRs, before
+the port of this milestone begins. 0.10.0 is still not cut (the latest tag
+is v0.10.0b1), no PR is open, and one issue is (its #35, the tiering of
+persistence-admitted peaks, which 4.2's "persistence is admission" rider
+already covers). Nothing in the ten changes a bin above.
+
+- **Its #78 to #85 are MS2** (fragment sub-formulas, energy-resolved MS2
+  read from Mascope, breakdown curves, per-scan replicates, a binding class
+  per window ion): another plan's scope. One boundary for that plan: its
+  #85 arbitrates rival formulas of one precursor by their MS2 products
+  against decoys, a formula-assignment verdict taken on MS2 evidence.
+- **Its #77** (the lock model reads a labelled batch with its label in the
+  formula space) merged on 2026-10-16 and is in no release. Its known
+  limits go into 5.7's reading of the labelled sets: a labelled space is
+  about three times larger, so the model ends near m/z 293 to 342; the
+  corrections left sit under its 1 ppm bar and are not applied; `^N3`
+  families stay outside the space; fluorinated families can still alias.
+- **Its #86** raises its SDK floor to mascope-sdk 2026.10.20 (Mascope
+  1.13): a stitched sample reads with a `segment` column it does not yet
+  read, a batch time-series load is whole or refused, the service-name
+  header carries an AI Agent token, and its curation writes use the token
+  where 1.13 opened them. Each of these is a Mascope ask already met. Once
+  it reads the segments, its batch publish has to put a corrected m/z back
+  per scan range, since Mascope calibrates each range of a stitched file on
+  its own since 1.12; 5.6 watches for it.
+
+Filed on 2026-10-22: decisions 29 and 31 as the Decision issues MAS-408
+and MAS-409 (proposed above, they had none); step 5.9 above as MAS-410, the
+one ask of the digest the review did not bin; a TOF rider on 5.4 (MAS-69),
+so the TOF picker's satellites of the list above are measured on sets E, F
+and J beside the Orbitrap lobes; and a rider on the TOF calibration
+project's calibrant-choice step (MAS-177), so the reference's graded
+nitrate reference-ion table and its bromide twin rule are read as an input
+when the calibrant sets are chosen. That table carries no provenance, so
+no ion enters a Mascope list on its word: a work that names the ion, or
+test-spectra evidence stated per ion, as step 3.3 required. The issues of
+5.1 and 5.7 (MAS-66, MAS-72) and the three clauses above now say "until a
+release carries its #77".
+
+Asks back to the reference, filed nowhere yet: its publish map still sends
+a null mechanism for `[M]-.`, shipped here since 3.3e; its Poisson
+signal-to-noise fallback can retire once a release carries 5.5's picker
+fix; and the per-range publish above.
 
 ## Decisions (taken 2026-09-07)
 
