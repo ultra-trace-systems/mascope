@@ -10,8 +10,10 @@ Only the seeds, and what the caller reads off the result, differ.
 
 Declared here rather than inside either caller because the steps are subtle in
 ways that must not diverge between them: the resolution filter is the
-instrument's, the abundance floor is the sample's own match-params floor, and
-the synthetic ion ids exist only to group the scored frame back to its seeds.
+instrument's, the abundance floor is the sample's own match-params floor, the
+width a seed list too short to fit one is scored at is the instrument class's,
+and the synthetic ion ids exist only to group the scored frame back to its
+seeds.
 A second copy of that would drift, and the two callers would then measure the
 same composition differently.
 
@@ -35,6 +37,7 @@ from mascope_backend.db import IonizationMechanism, async_session
 from mascope_backend.runtime import runtime
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
+from mascope_tools.composition.profiles import resolve_fallback_sigma_ppm
 
 
 def finite_or_none(value) -> float | None:
@@ -177,10 +180,24 @@ async def fetch_mechanisms_by_id(
     }
 
 
-def gate_and_score(match_isotope_df: pd.DataFrame, match_params) -> pd.DataFrame:
-    """Gate and fit-score a seeded match frame, exactly as Stage A does."""
+def gate_and_score(
+    match_isotope_df: pd.DataFrame, match_params, *, fallback_sigma_ppm: float
+) -> pd.DataFrame:
+    """Gate and fit-score a seeded match frame, exactly as Stage A does.
+
+    The width and offset are fitted from the seeded frame itself, which a short
+    seed list - a pin, the inspector's evidence for one family - cannot do:
+    below :data:`mass_accuracy.MASS_ACCURACY_MIN_ANCHORS` matched lines there is
+    no width. Such a frame is scored at the instrument class's width, the one
+    Stage A and the untargeted search stand in with, rather than at
+    ``score_pattern_v2``'s generic 2 ppm, so one ion in one sample reads alike
+    alone and among many seeds.
+
+    :param fallback_sigma_ppm: The instrument class's width
+        (``profiles.resolve_fallback_sigma_ppm``).
+    """
     gated = apply_match_params(match_isotope_df, match_params)
-    return score_ions_by_fit(gated)
+    return score_ions_by_fit(gated, fallback_sigma_ppm=fallback_sigma_ppm)
 
 
 def scored_maps(
@@ -244,8 +261,10 @@ async def score_seeds(
 
     The engine's Stage-A chain over a seeded frame and nothing more: ions for
     the seed list, one ``compute_match_isotopes`` pass (a single peak read
-    covers every seed), ``apply_match_params`` gating, ``score_ions_by_fit``.
-    No candidate enumeration, no untargeted stage, no arbitration.
+    covers every seed), ``apply_match_params`` gating, ``score_ions_by_fit`` at
+    the sample's instrument class's width where the seeds are too few to fit
+    one (:func:`gate_and_score`). No candidate enumeration, no untargeted
+    stage, no arbitration.
 
     :param sample: The sample being scored against.
     :param seeds: Distinct ``(formula, ionization_mechanism_id)`` pairs.
@@ -276,6 +295,13 @@ async def score_seeds(
     if matched_df.empty:
         return ion_by_seed, {}, {}, pd.DataFrame()
 
-    scored_df = await asyncio.to_thread(gate_and_score, matched_df, match_params)
+    scored_df = await asyncio.to_thread(
+        gate_and_score,
+        matched_df,
+        match_params,
+        fallback_sigma_ppm=resolve_fallback_sigma_ppm(
+            get_instrument_type(sample.filename)
+        ),
+    )
     fit_by_ion, errors_by_pairing = scored_maps(scored_df)
     return ion_by_seed, fit_by_ion, errors_by_pairing, scored_df
