@@ -122,6 +122,19 @@ findings live here as GitHub issues. The split:
 - **A plan starts as a design note in `docs/dev`** and a Linear project that
   links it. The note stays the record; Linear tracks the work and its
   progress.
+- **A note's header says where it stands** (`docs/dev/README.md` has the
+  fields). It starts `design`, tracked in its Linear project; it is
+  `building` once that project has issues, and `built` when the last step is
+  Done and what a user or operator meets of it is described in `docs/user` or
+  `docs/maintaining.md`. `retired` means deleted, with a pointer in the note
+  that superseded it. When a header changes, run
+  `uv run python tooling/notes.py index`, which writes the README's table;
+  `uv run python tooling/notes.py check` fails a note without the header, a
+  `design` or `building` note tracked in `closed` or `none`, and a table that
+  disagrees with the headers.
+- **A gate is a `blockedBy`, never a sentence.** A prerequisite written only
+  in a brief or a note is one nobody sees close. An issue gets `agent-ready`
+  only when every prerequisite it names is a filed issue it is blocked by.
 - **Branch names and PR bodies link the two.** A branch named from the Linear
   issue (`mas-NN-...`) or `Fixes MAS-NN` in the PR body moves the Linear issue
   by itself. GitHub Issues Sync and the bulk importer stay off.
