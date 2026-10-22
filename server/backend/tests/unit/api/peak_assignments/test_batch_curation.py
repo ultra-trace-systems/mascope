@@ -1,8 +1,9 @@
 """Unit tests for the batch curation's pure parts.
 
 No DB: the pinned consensus, the pin itself and what it archives, the registry
-lookup, the derived row's alternatives naming their registry index, and the
-task's closing message. See ``batch_curation.py`` and ``batch_peaks.py``.
+lookup, where an identity's monoisotopic line is and what the refusal of an
+isotope line says, the derived row's alternatives naming their registry index,
+and the task's closing message. See ``batch_curation.py`` and ``batch_peaks.py``.
 """
 
 from types import SimpleNamespace
@@ -11,8 +12,11 @@ import pytest
 
 from mascope_backend.api.new.peak_assignments.batch_curation import (
     ACTION_PROMOTE_IDENTITY,
+    ISOTOPE_LINE_CODE,
+    IsotopeLineException,
     curation_outcome,
     manual_pin,
+    monoisotopic_mz,
     registry_entry,
     restore_member,
 )
@@ -174,6 +178,62 @@ def test_the_registry_lookup_refuses_what_an_anchor_cannot_be_assigned():
     assert registry_entry(anchor, "1") is None
     assert registry_entry(_anchor(candidates=None), 0) is None
     assert registry_entry(_anchor(candidates=[{"formula": None}]), 0) is None
+
+
+# --- an identity's monoisotopic line ------------------------------------------
+
+
+def _mechanism(notation, polarity):
+    return SimpleNamespace(
+        ionization_mechanism_id=f"im-{notation}",
+        ionization_mechanism=notation,
+        ionization_mechanism_polarity=polarity,
+    )
+
+
+def test_the_monoisotopic_line_is_the_ions_own():
+    # Protonated glucose, C6H13O6+.
+    assert monoisotopic_mz("C6H12O6", _mechanism("[M+H]+", "+")) == pytest.approx(
+        181.0707, abs=1e-3
+    )
+
+
+def test_the_monoisotopic_line_is_not_the_tallest_one():
+    """A dibromide's tallest line is its 79Br81Br one, two units up. The batch
+    peak holding the ion is the 79Br2 line, which every role and label counts
+    from (``engine.monoisotopic_row``)."""
+    assert monoisotopic_mz("CH2Br2", _mechanism("[M+H]+", "+")) == pytest.approx(
+        172.8596, abs=1e-3
+    )
+
+
+def test_a_labelled_reagents_monoisotopic_line_is_its_labelled_one():
+    """The 15N-nitrate adduct's line is the labelled one, a mass unit above the
+    plain adduct's. A batch peak there is the ion's M0, so the check reading
+    the ion's mass, not the brackets in its formula, lets it be pinned."""
+    plain = monoisotopic_mz("C6H12O6", _mechanism("[M+NO3]-", "-"))
+    labelled = monoisotopic_mz("C6H12O6", _mechanism("[M+^NO3]-", "-"))
+    assert labelled - plain == pytest.approx(0.997, abs=1e-3)
+
+
+def test_an_ion_that_cannot_be_generated_has_no_line():
+    assert monoisotopic_mz("C6H12O6", _mechanism("H+ (not a notation)", "+")) is None
+
+
+def test_the_refusal_names_the_batch_peak_holding_the_monoisotopic_line():
+    line = SimpleNamespace(batch_peak_id="bp-line", mz=182.07404)
+    entry = {"formula": "C6H12O6", "ion_formula": "[13C]C5H13O6+"}
+    refusal = IsotopeLineException(
+        line, entry, 181.07066, SimpleNamespace(batch_peak_id="bp-m0", mz=181.0707)
+    )
+    assert refusal.status_code == 422
+    assert refusal.error_code == ISOTOPE_LINE_CODE
+    assert "[13C]C5H13O6+ as an isotope line of C6H12O6" in refusal.detail
+    assert "the batch peak at m/z 181.0707 ('bp-m0')" in refusal.detail
+
+    # Where no batch peak holds the line, the message says where it would be.
+    orphan = IsotopeLineException(line, entry, 181.07066, None)
+    assert "at m/z 181.0707, which no batch peak holds" in orphan.detail
 
 
 def test_manual_pin_of_reads_only_a_pin_that_names_a_formula():

@@ -4,7 +4,9 @@ Two samples in a batch of their own read the same m/z as two different
 formulas, so the anchor's registry holds both identities and the vote picks the
 brighter, better-fitting one. Pinning the other on the anchor re-measures it in
 the dissenting sample (the seeded scorer stubbed to reach its peak), the anchor
-claims it, and a release puts everything back. See ``batch_curation.py``.
+claims it, and a release puts everything back. An identity that is an isotope
+line of an ion whose monoisotopic line is another batch peak is refused, with
+that batch peak named. See ``batch_curation.py``.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -20,8 +22,10 @@ from mascope_backend.api.new.peak_assignments import (
     batch_untargeted,
 )
 from mascope_backend.api.new.peak_assignments.batch_curation import (
+    ISOTOPE_LINE_CODE,
     NOT_CURATED_CODE,
     UNKNOWN_CANDIDATE_CODE,
+    IsotopeLineException,
     curation_outcome,
     run_batch_peak_curation,
 )
@@ -41,6 +45,7 @@ from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
     IonizationMechanism,
+    IonizationMode,
     PeakAssignment,
     PeakAssignmentRun,
     SampleBatch,
@@ -510,3 +515,215 @@ async def test_a_sample_that_cannot_be_measured_keeps_its_identity_and_the_pin_s
         "1 sample could not be measured and keeps its previous identity."
         in outcome["message"]
     )
+
+
+# --- an isotope line's identity ------------------------------------------------
+#
+# One run reads glucose's M0 at 181.0707 and its 13C line at 182.0741, so the
+# batch holds two batch peaks and the line's registry holds the line's own
+# identity, C6H12O6 as [13C]C5H13O6+. Its mechanism is a real [M+H]+, so the
+# ion can be generated and its monoisotopic line found.
+
+
+async def _proton_mechanism_id(session) -> str:
+    existing = (
+        await session.execute(
+            select(IonizationMechanism).where(
+                IonizationMechanism.ionization_mechanism == "[M+H]+"
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing.ionization_mechanism_id
+    mechanism_id = gen_id()
+    session.add(
+        IonizationMechanism(
+            ionization_mechanism_id=mechanism_id,
+            ionization_mechanism_polarity="+",
+            ionization_mechanism="[M+H]+",
+        )
+    )
+    await session.flush()
+    return mechanism_id
+
+
+@pytest_asyncio.fixture
+async def line_batch(async_session_factory, pa_test_data):
+    now = datetime.now(timezone.utc)
+    batch_id = gen_id()
+    async with async_session_factory() as session:
+        mechanism_id = await _proton_mechanism_id(session)
+        dataset_id = (
+            await session.execute(
+                select(SampleBatch.dataset_id).where(
+                    SampleBatch.sample_batch_id == pa_test_data["sample_batch_id"]
+                )
+            )
+        ).scalar_one()
+        session.add(
+            SampleBatch(
+                sample_batch_id=batch_id,
+                dataset_id=dataset_id,
+                sample_batch_name=f"Batch curation line {batch_id}",
+                sample_batch_utc_created=now,
+            )
+        )
+        sample_item_id = await _seed_sample(session, batch_id, "L1", [], now)
+        await session.flush()
+        run_id = (
+            await session.execute(
+                select(PeakAssignmentRun.peak_assignment_run_id).where(
+                    PeakAssignmentRun.sample_item_id == sample_item_id
+                )
+            )
+        ).scalar_one()
+        m0_id = gen_id(32)
+        for row_id, pid, mz, role, ion, owner in (
+            (m0_id, "p1", 181.0707, "M0", "C6H13O6+", None),
+            (gen_id(32), "p2", 182.0741, "iso_child", "[13C]C5H13O6+", m0_id),
+        ):
+            session.add(
+                PeakAssignment(
+                    peak_assignment_id=row_id,
+                    peak_assignment_run_id=run_id,
+                    sample_item_id=sample_item_id,
+                    sample_peak_id=pid,
+                    sample_peak_mz=mz,
+                    sample_peak_intensity=9000.0 if role == "M0" else 600.0,
+                    role=role,
+                    assigned_formula="C6H12O6",
+                    ion_formula=ion,
+                    ionization_mechanism_id=mechanism_id,
+                    source="untargeted",
+                    fit_score=0.95,
+                    mz_error_ppm=0.4,
+                    tier="assigned",
+                    owner_peak_assignment_id=owner,
+                    provenance={},
+                )
+            )
+        await session.commit()
+    assert await fold_sample_into_batch_peaks(sample_item_id) == batch_id
+    async with async_session_factory() as session:
+        anchors = {
+            round(peak.mz): peak
+            for peak in (
+                await session.execute(
+                    select(BatchPeak).where(BatchPeak.sample_batch_id == batch_id)
+                )
+            )
+            .scalars()
+            .all()
+        }
+    m0, line = anchors[181], anchors[182]
+    assert line.isotopologue_of == m0.batch_peak_id
+    return {
+        "batch_id": batch_id,
+        "m0": m0,
+        "line": line,
+        "m0_entry": next(
+            i for i, e in enumerate(m0.candidates) if e["ion_formula"] == "C6H13O6+"
+        ),
+        "line_entry": next(
+            i
+            for i, e in enumerate(line.candidates)
+            if e["ion_formula"] == "[13C]C5H13O6+"
+        ),
+    }
+
+
+async def test_an_isotope_lines_identity_is_refused_naming_its_monoisotopic_peak(
+    editor_client, line_batch, assignment_enabled, monkeypatch
+):
+    launched = []
+
+    async def fake_task(**kwargs):
+        launched.append(kwargs)
+
+    monkeypatch.setattr(batch_peaks_routes, "curate_batch_peak", fake_task)
+    url = f"/api/batch-peaks/batch/{line_batch['batch_id']}/curate"
+    m0 = line_batch["m0"]
+
+    refused = await editor_client.post(
+        url,
+        json={
+            "batch_peak_id": line_batch["line"].batch_peak_id,
+            "candidate": line_batch["line_entry"],
+            "expected_formula": "C6H12O6",
+        },
+    )
+    assert refused.status_code == 422, refused.text
+    assert ISOTOPE_LINE_CODE in refused.text
+    assert f"the batch peak at m/z {m0.mz:.4f} ('{m0.batch_peak_id}')" in refused.text
+    assert launched == []
+
+    # The same identity on its monoisotopic line is pinned as ever.
+    accepted = await editor_client.post(
+        url,
+        json={
+            "batch_peak_id": m0.batch_peak_id,
+            "candidate": line_batch["m0_entry"],
+            "expected_formula": "C6H12O6",
+        },
+    )
+    assert accepted.status_code == 202, accepted.text
+    assert len(launched) == 1
+
+
+async def test_the_task_refuses_an_isotope_line_and_writes_no_pin(
+    async_session_factory, line_batch, stubbed_scorer
+):
+    """The task checks again under the fold lock, as it checks the claim: the
+    registry may have moved since the route's check."""
+    line = line_batch["line"]
+    with pytest.raises(IsotopeLineException):
+        await run_batch_peak_curation(
+            line_batch["batch_id"],
+            line.batch_peak_id,
+            line_batch["line_entry"],
+            "C6H12O6",
+            PeakAssignmentConfig(),
+        )
+    assert stubbed_scorer == []
+    after = await _anchor_row(async_session_factory, line.batch_peak_id)
+    assert manual_pin_of(after) is None
+
+
+async def test_a_batch_peak_of_another_mode_is_not_the_lines_parent(
+    async_session_factory, editor_client, line_batch, assignment_enabled
+):
+    """Batch peaks are kept per ionization mode. One of another mode at the
+    monoisotopic m/z - nearer it than the line's own M0 - is not the ion's."""
+    m0 = line_batch["m0"]
+    async with async_session_factory() as session:
+        mode_id = gen_id()
+        session.add(
+            IonizationMode(
+                ionization_mode_id=mode_id,
+                ionization_mode_name=f"Batch curation other mode {mode_id}",
+                ionization_mode_polarity="+",
+                ionization_mechanism_ids=[],
+            )
+        )
+        await session.flush()
+        session.add(
+            BatchPeak(
+                batch_peak_id=gen_id(),
+                sample_batch_id=line_batch["batch_id"],
+                ionization_mode_id=mode_id,
+                mz=181.07066,
+                mz_tol_ppm=m0.mz_tol_ppm,
+                n_present=1,
+            )
+        )
+        await session.commit()
+
+    refused = await editor_client.post(
+        f"/api/batch-peaks/batch/{line_batch['batch_id']}/curate",
+        json={
+            "batch_peak_id": line_batch["line"].batch_peak_id,
+            "candidate": line_batch["line_entry"],
+        },
+    )
+    assert refused.status_code == 422, refused.text
+    assert f"('{m0.batch_peak_id}')" in refused.text

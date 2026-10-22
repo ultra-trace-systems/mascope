@@ -823,6 +823,11 @@ and says so when the two disagree - and a hand icon beside the formula in the *B
 peaks* ledger marks it. *Release*, in the inspector's note, undoes it: the samples that
 were re-measured go back to what they read before, and the batch decides again.
 
+An identity that reads the peak as an isotope line of a compound, such as its 13C line,
+cannot be pinned there. The line is part of the compound's envelope, not an ion of its
+own. *Use this* on it says which batch peak holds the compound's monoisotopic line;
+pin the compound on that batch peak instead.
+
 ## Verifying assignments
 
 --8<-- "_help/assignment-verification.md"

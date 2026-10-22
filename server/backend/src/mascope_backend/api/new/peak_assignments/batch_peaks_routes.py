@@ -478,9 +478,12 @@ async def curate_batch_peak_route(
     measured in every sample holding the peak - a sample where it can be measured
     now reads it with a fit of its own, one where it cannot keeps what it had -
     and the anchor is recomputed. ``expected_formula`` guards the claim the user
-    saw (409 on a mismatch); an unknown index is a 422. Runs as a background
-    task on the ``curate_batch_peak`` channel and emits ``peak_assignment_reload``
-    on completion.
+    saw (409 on a mismatch); an unknown index is a 422. So is an identity that
+    reads the batch peak as an isotope line of an ion whose monoisotopic line
+    is elsewhere (``batch_peak_candidate_isotope_line``): the message names the
+    batch peak holding that line, where the compound can be pinned instead.
+    Runs as a background task on the ``curate_batch_peak`` channel and emits
+    ``peak_assignment_reload`` on completion.
 
     :param sample_batch_id: The unique identifier of the sample batch.
     :param body: The batch peak, the identity to pin and the formula seen.
