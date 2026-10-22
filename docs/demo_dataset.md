@@ -71,8 +71,8 @@ reproducibility test can verify exactly what they loaded:
 ```
 
 `produced_with.opentfraw_version` is load-bearing: the reproducibility test pins
-it so a reader change that shifts the numbers is caught (see
-[OpenTFRaw migration](../libraries/thermo/OpenTFRaw_migration.md)).
+it so a reader change that shifts the numbers is caught (the golden-dataset check,
+[`reproducibility.yaml`](../.github/workflows/reproducibility.yaml)).
 
 ## Where it lives (Zenodo)
 
