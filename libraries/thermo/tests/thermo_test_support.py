@@ -6,7 +6,9 @@ A plain module rather than conftest.py content, so the tests can import it:
 which in a run spanning several test directories is another directory's.
 """
 
+import importlib.util
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,6 +27,26 @@ TEST_FILES_DIR = Path(
 
 POS_ORBI_FILE_PATH = str(TEST_FILES_DIR / "KORBI2_AMB_POS_20260109174345.raw")
 NEG_ORBI_FILE_PATH = str(TEST_FILES_DIR / "KORBI2_AMB_NEG_20260108144525.raw")
+
+# The hermetic MS2 fixture lives with the backend tests, which every MS2 phase
+# tests on; the reader's own tests read the same shapes and the same answers.
+_MS2_FIXTURE = _TESTS_DIR.parents[2] / "server" / "backend" / "tests" / "ms2_fixture.py"
+
+
+def ms2_fixture():
+    """The hermetic MS2 fixture module (``server/backend/tests/ms2_fixture.py``).
+
+    Imported by path, as the backend's test directory is not on this suite's
+    path, and under the name the backend tests import it by, so a run
+    spanning both suites holds one module.
+    """
+    module = sys.modules.get("ms2_fixture")
+    if module is None:
+        spec = importlib.util.spec_from_file_location("ms2_fixture", _MS2_FIXTURE)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["ms2_fixture"] = module
+        spec.loader.exec_module(module)
+    return module
 
 
 def read_or_xfail(fn, *args, **kwargs):
