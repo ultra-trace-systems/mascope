@@ -106,7 +106,10 @@ class _ScriptedThermoRaw:
 
     def __init__(self, scans):
         self._scans = scans
+        # Trailer reads of either kind, and those of the whole trailer as
+        # text alone.
         self.trailer_reads = 0
+        self.text_reads = 0
         self.RunHeaderEx = SimpleNamespace(
             SpectraCount=len(scans),
             StartTime=0.0,
@@ -132,10 +135,19 @@ class _ScriptedThermoRaw:
 
     def GetTrailerExtraInformation(self, number):  # noqa: N802
         self.trailer_reads += 1
+        self.text_reads += 1
         return SimpleNamespace(
             Labels=["FT Resolution:"],
             Values=[str(self._scans[number - 1].resolution)],
         )
+
+    def GetTrailerExtraHeaderInformation(self):  # noqa: N802
+        return [SimpleNamespace(Label="FT Resolution:", IsNumeric=True)]
+
+    def GetTrailerExtraValue(self, number, index):  # noqa: N802
+        assert index == 0
+        self.trailer_reads += 1
+        return self._scans[number - 1].resolution
 
 
 def _opentfraw(scans):
@@ -417,6 +429,15 @@ def test_the_keys_are_read_once_per_open_file(scripted):
     reader.scan_times(stream=LOW)
 
     assert reader._raw.trailer_reads == len(ALTERNATING)
+
+
+def test_the_thermo_library_keys_a_scan_by_its_stored_resolution():
+    """The whole trailer as text costs that library far more than the one
+    number the key needs."""
+    reader = _thermo(ALTERNATING)
+
+    assert reader.scan_indices(stream=LOW) == [1, 3, 5]
+    assert reader._raw.text_reads == 0
 
 
 def test_no_trailer_is_read_when_no_stream_is_asked_for(scripted):

@@ -99,6 +99,25 @@ def _resolution(trailer: dict) -> int | str | None:
     return int(number) if number.is_integer() else number
 
 
+def _scan_resolution(
+    backend: ReaderBackend, scan_number: int, numbers: dict[str, float]
+) -> int | str | None:
+    """One scan's FT resolution, as :func:`_resolution` reads its trailer.
+
+    ``numbers`` are the scan's :meth:`ReaderBackend.trailer_numbers`, read
+    with ``FT_RESOLUTION`` among the labels. A whole stored number is what
+    the trailer's text says too, however many decimals the Thermo library
+    shows, so it gives the same key without the text: under that library
+    one stored value costs a fraction of the scan's whole trailer as text.
+    Any other resolution - none stored, text, or a fraction the text may
+    round - is read from the trailer as before, so that no key changes.
+    """
+    number = numbers.get(FT_RESOLUTION)
+    if number is not None and float(number).is_integer():
+        return int(number)
+    return _resolution(backend.scan_trailer(scan_number))
+
+
 def scan_streams(backend: ReaderBackend) -> list[dict]:
     """The file's scan streams, in the order they first appear.
 
@@ -229,16 +248,15 @@ def _keyed_scans(
     keyed by its signature whatever it records (see the module docstring).
     """
     labels = tuple(labels)
+    stored = tuple(dict.fromkeys((FT_RESOLUTION, *labels)))
     scans = []
     # signature key -> the experiments its survey scans come from
     experiments: dict[str, set[tuple[int | None, int | None]]] = {}
     for row in backend.scan_filters():
         parsed = parse_scan_filter(row["filter"])
-        trailer = backend.scan_trailer(row["scan"])
-        resolution = _resolution(trailer)
-        numbers = (
-            backend.trailer_numbers(row["scan"], labels, trailer) if labels else {}
-        )
+        read = backend.trailer_numbers(row["scan"], stored)
+        resolution = _scan_resolution(backend, row["scan"], read)
+        numbers = {label: read[label] for label in labels if label in read}
         experiment = (None, None)
         if parsed.ms_order == 1 and row.get("event") is not None:
             # An event with no segment is in the method's first, as the

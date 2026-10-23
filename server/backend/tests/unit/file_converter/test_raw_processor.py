@@ -159,6 +159,9 @@ class _TwoRangesPerPolarity:
     def scan_trailer(self, scan_number):  # noqa: ARG002
         return {"FT Resolution:": 120000}
 
+    def trailer_numbers(self, scan_number, labels, trailer=None):  # noqa: ARG002
+        return {label: 120000 for label in labels if label == "FT Resolution:"}
+
     def acquisition_parameters(self, max_scans=5, scan_numbers=None):  # noqa: ARG002
         return {}
 
