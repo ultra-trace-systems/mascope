@@ -1419,14 +1419,17 @@ class Toolkit:
         *,
         formula_ranges: str | None = None,
         limit: int = 20,
+        isotopologues: bool = True,
+        known_only: bool = False,
     ) -> Candidates:
         """The formulas Mascope's mass query proposes for an m/z.
 
         Candidates, not verdicts: :meth:`match_compounds` scores them in a
-        sample. *mz* may be any line of a candidate's ion above Mascope's
-        floor, not only its monoisotopic one, as a peak's m/z may be a 13C
-        or 81Br line: a candidate's ``mz`` and ``error_ppm`` are taken
-        against the line it was read at.
+        sample. By default *mz* may be any line of a candidate's ion above
+        Mascope's floor, not only its monoisotopic one, as a peak's m/z may
+        be a 13C or 81Br line: a candidate's ``mz`` and ``error_ppm`` are
+        taken against the line it was read at. With ``isotopologues=False``
+        the query reads *mz* as the ion's monoisotopic line only.
 
         :param mz: The m/z, e.g. a peak's.
         :param mechanisms: The ionization mechanisms to consider, by name
@@ -1437,6 +1440,12 @@ class Toolkit:
             when None.
         :param limit: How many to return at most, the closest first;
             ``total`` says how many Mascope found.
+        :param isotopologues: Read *mz* at any line of a candidate's ion,
+            as above; False for the monoisotopic line only. A server that
+            predates it searches the monoisotopic line only, whatever this
+            says.
+        :param known_only: Keep only the formulas of a known reference
+            compound. A server that predates it returns every candidate.
         :raises NotFound: On a mechanism Mascope does not have.
         """
         if isinstance(mz, bool) or not isinstance(mz, (int, float)) or mz <= 0:
@@ -1450,6 +1459,12 @@ class Toolkit:
                 f"tolerance_ppm is a positive number, not {tolerance_ppm!r}"
             )
         limit = _check_cap(limit, "limit")
+        for name, flag in (
+            ("isotopologues", isotopologues),
+            ("known_only", known_only),
+        ):
+            if not isinstance(flag, bool):
+                raise InvalidRequest(f"{name} is True or False, not {flag!r}")
         ids = [mechanism_id for mechanism_id, _ in self._mechanisms(mechanisms)]
         options = {"formula_ranges": formula_ranges} if formula_ranges else {}
         with self._errors("query the formulas of an m/z"):
@@ -1458,6 +1473,8 @@ class Toolkit:
                 ids,
                 mz_tolerance=float(tolerance_ppm),
                 limit=limit,
+                isotopologues=isotopologues,
+                known_only=known_only,
                 **options,
             )
         candidates = sorted(

@@ -92,6 +92,25 @@ class TestQueryByMz:
         ((_, _, _, body),) = api.requests_to("cheminfo/mz/query", "POST")
         assert body["formula_ranges"] == "C0-100 H0-100 O0-100 N0-100"
         assert body["mz_precision"] == 5.0
+        # Any line of an ion by default, every candidate
+        assert body["isotopologues"] is True
+        assert "known_only" not in body
+
+    def test_the_flags_reach_the_server(self, kit, api):
+        kit.query_by_mz(126.9223, "[M+Br]-", isotopologues=False, known_only=True)
+
+        ((_, _, _, body),) = api.requests_to("cheminfo/mz/query", "POST")
+        assert body["isotopologues"] is False
+        assert body["known_only"] is True
+
+    def test_the_flags_are_in_the_manifest(self, kit):
+        kit.query_by_mz(126.9223, "[M+Br]-", known_only=True)
+
+        (call,) = [
+            r for r in kit.session.manifest.records("call") if r["op"] == "query_by_mz"
+        ]
+        assert call["params"]["isotopologues"] is True
+        assert call["params"]["known_only"] is True
 
     def test_a_mechanism_mascope_lacks(self, kit, api):
         with pytest.raises(NotFound) as caught:
@@ -108,6 +127,8 @@ class TestQueryByMz:
             {"mz": 179.0, "mechanisms": ["[M-H]-"], "tolerance_ppm": 0},
             {"mz": 179.0, "mechanisms": ["[M-H]-"], "limit": 0},
             {"mz": 179.0, "mechanisms": []},
+            {"mz": 179.0, "mechanisms": ["[M-H]-"], "isotopologues": "yes"},
+            {"mz": 179.0, "mechanisms": ["[M-H]-"], "known_only": 1},
         ],
     )
     def test_bad_arguments(self, kit, api, args):
