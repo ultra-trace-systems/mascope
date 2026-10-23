@@ -14,6 +14,9 @@ class NotificationKind(StrEnum):
     NEEDS_CHEMISTRY = "needs_chemistry"
     #: Files of an instrument were not matched, their calibration having failed.
     CALIBRATION_FAILED = "calibration_failed"
+    #: Uploads the file converter set aside with no record made of them, for
+    #: the deployment's admins and owners to upload again (``lost_uploads``).
+    UPLOAD_LOST = "upload_lost"
 
 
 #: The processing outcomes that are kept for people to read, with the kind

@@ -993,15 +993,24 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                     # CRITICAL: Finalize BEFORE error emission to ensure file is closed
                     self._finalize()
 
-                    # Emit clean error message
-                    self.socket_client.emit(
-                        "file_processing_error",
-                        {
-                            "filename": file_basename,
-                            "instrument": instrument,
-                            "error": error_msg,
-                        },
-                    )
+                    if isinstance(e, UnregisteredFileError):
+                        # The uploader cannot be told: the backend takes a
+                        # processing error only with the uploader's credential,
+                        # the very thing missing. The admins are told instead.
+                        self.socket_client.emit(
+                            "upload_lost",
+                            {"filename": file_basename, "instrument": instrument},
+                        )
+                    else:
+                        # Emit clean error message
+                        self.socket_client.emit(
+                            "file_processing_error",
+                            {
+                                "filename": file_basename,
+                                "instrument": instrument,
+                                "error": error_msg,
+                            },
+                        )
 
                     # Clear context after error emission
                     self.socket_client.context_manager.clear_context(file_basename)
