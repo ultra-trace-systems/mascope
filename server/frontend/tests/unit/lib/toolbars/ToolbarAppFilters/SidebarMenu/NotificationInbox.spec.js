@@ -127,4 +127,33 @@ describe('NotificationInbox', () => {
     expect(sidebarMenu.open).toBe(false)
     expect(app.ui.inbox.markRead).toHaveBeenCalledWith(['n1'])
   })
+
+  it('names every upload the converter could not store, with nothing to show', () => {
+    const wrapper = setup([
+      digest({
+        kind: 'upload_lost',
+        severity: 'error',
+        instrument: null,
+        message: '2 uploaded files were set aside and never stored.',
+        payload: {
+          files: [
+            { sample_file_id: null, filename: 'Orbi-1_b.raw', detail: 'Found.' },
+            { sample_file_id: null, filename: 'TOF-1_a.h5', detail: 'Restarted.' }
+          ],
+          filenames: ['TOF-1_a.h5', 'Orbi-1_b.raw']
+        }
+      })
+    ])
+
+    expect(wrapper.find('h4').text()).toBe('Upload lost')
+    expect(wrapper.findAll('li .filename').map((el) => el.text())).toEqual([
+      'Orbi-1_b.raw',
+      'TOF-1_a.h5'
+    ])
+    // Each with why it was set aside: not every uploader went untold
+    expect(wrapper.findAll('li .detail').map((el) => el.text())).toEqual(['Found.', 'Restarted.'])
+    expect(wrapper.text()).not.toContain('Latest:')
+    // No record was made of them, so there is nothing in Raw files
+    expect(button(wrapper, 'Show files')).toBeUndefined()
+  })
 })
