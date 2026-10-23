@@ -1210,12 +1210,15 @@ under its milestone 5.
 
 - **What.** Measure first. On the demo raws and the gate's Orbitrap sets,
   take for every peak the picker keeps the share of its per-scan centroids
-  that the instrument flagged Exception (Thermo's `PeakOptions` bit 8, read
-  on both backends by `ReaderBackend.centroid_flags` since MAS-6). Count
-  the Exception-majority peaks the sidelobe flag already takes, those it
-  misses, and the satellites that are not Exception-majority, and read ten
-  of each against the raw profile. If Exception-majority peaks turn out to
-  be ions (an isotopologue, a weak real peak), stop there and report.
+  that the instrument flagged Exception (Thermo's `PeakOptions` value 8,
+  `CENTROID_FLAGS["exception"]`, read on both backends by
+  `ReaderBackend.centroid_flags` since MAS-6). Count the Exception-majority
+  peaks the sidelobe flag already takes, those it misses, and the
+  satellites that are not Exception-majority, and read ten of each against
+  the raw profile. The census below read one instrument, so first check
+  that the gate's other instruments flag the same share and shape. If
+  Exception-majority peaks turn out to be ions (an isotopologue, a weak
+  real peak), stop there and report.
   Otherwise leave every Exception centroid out of the OpenTFRaw backend's
   `average_profile`, blanking its profile chunk per scan before averaging
   as the vendor's averaging does, and out of `average_centroids` on both
@@ -1224,12 +1227,15 @@ under its milestone 5.
   the Fragmented and Merged ones that are not also Exception.
 - **Why.** The reader opens a file with `IncludeReferenceAndExceptionData`
   to keep the lock mass, which lets the Exception centroids in too, and
-  nothing downstream reads the flag. A census on 2026-10-23 of every
-  centroid of 269 Orbitrap files (the 165 demo raws and 104 customer
-  files) found Exception on 7.0 % and 5.2 % of them, in every file. 99.7 %
-  sit within 200 ppm of an unflagged, brighter line at under 5 % of its
-  height (a median 0.5 %, 33 ppm away), in clusters, at a per-scan S/N no
-  weak-peak threshold removes. That is the FT side lobe, and at 33 ppm it
+  nothing downstream reads the flag. A census on 2026-10-23 read every
+  centroid of 165 Orbitrap files from one instrument: the 161 raws of demo
+  bundle 1.3.1 and the four MS2 raws a 1.4.0 candidate bundle adds, 1.4
+  million centroids. It found Exception on 7.0 % of them, in every file
+  (7.1 % of the MS1 centroids, 5.1 % of the MS2 ones). Read on every 16th
+  file (4,874 of them), 99.7 % sit within 200 ppm of an unflagged, brighter
+  line at under 5 % of its height (a median 0.5 %, 33 ppm away), in
+  clusters, at a per-scan S/N no weak-peak threshold removes. That is the
+  FT side lobe, and at 33 ppm it
   is resolved, so it reaches the picker as a peak of its own. The ratio
   test catches part of them: the log ("What the FT sidelobe flag still has
   to find") records 43-236 peaks per Orbitrap set that the reference labels
