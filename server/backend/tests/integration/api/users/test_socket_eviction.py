@@ -257,6 +257,25 @@ def script_redis(monkeypatch):
     return connect, disconnect
 
 
+@pytest.fixture
+def record_sio(sio):
+    """
+    The Socket.IO server as the record-sync emitters see it.
+
+    One log with eviction's ``leave_room`` keeps the order the two were called in.
+    """
+    calls = []
+    sio.leave_room.side_effect = lambda sid, room: calls.append(("leave", sid, room))
+    server = MagicMock()
+    server.emit = AsyncMock(
+        side_effect=lambda event, payload, room=None, namespace=None: calls.append(
+            ("emit", event, room, payload)
+        )
+    )
+    with patch("mascope_backend.socket.records.service.sio", server):
+        yield server, calls
+
+
 @pytest.mark.asyncio
 async def test_the_maintenance_script_evicts(person, sio, script_redis):
     """
@@ -291,6 +310,48 @@ async def test_the_maintenance_script_survives_an_unreachable_redis(
     disconnect.assert_not_awaited()
     async with async_session_factory() as session:
         assert (await session.get(User, person.id)).must_change_password
+
+
+@pytest.mark.asyncio
+async def test_the_maintenance_script_notifies_open_tabs(
+    person, sio, record_sio, script_redis
+):
+    """
+    As the owner's route does: each armed account hears on its own room, after
+    its sockets are evicted, and open user tables are told to reload once.
+    """
+    server, calls = record_sio
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+
+    await sweep_script.run_require_password_change()
+
+    own_room = f"user-{person.id}"
+    notices = [c for c in calls if c[0] == "emit" and c[2] == own_room]
+    assert len(notices) == 1
+    _, event, _, payload = notices[0]
+    assert event == "user_me_updated"
+    assert payload["record_id"] == str(person.id)
+    assert payload["record"] == {"id": person.id, "must_change_password": True}
+    assert calls.index(("leave", "sid-a", RESOURCE_ROOM)) < calls.index(notices[0])
+
+    reloads = [c for c in calls if c[0] == "emit" and c[1] == "user_reload"]
+    assert len(reloads) == 1
+    assert reloads[0][2] is None
+    assert calls[-1] == reloads[0]
+
+
+@pytest.mark.asyncio
+async def test_the_maintenance_script_notifies_nothing_without_redis(
+    person, sio, record_sio, script_redis
+):
+    """An unreachable Redis is reported once, not once per account."""
+    server, _ = record_sio
+    connect, _ = script_redis
+    connect.side_effect = ConnectionError("Redis connection failed")
+
+    await sweep_script.run_require_password_change()
+
+    server.emit.assert_not_awaited()
 
 
 # --- Only the sockets subscribe would now refuse ---
