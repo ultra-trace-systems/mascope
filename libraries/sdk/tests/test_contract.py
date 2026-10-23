@@ -583,6 +583,30 @@ class TestReferenceDataContract:
             batches = mascope.collections.get(collection_id)["sample_batches"]
             assert batch_id in {batch["sample_batch_id"] for batch in batches}
 
+    def test_find_structures_reads_the_reference_rows_of_a_formula(self, mascope):
+        _skip_unless_attr(mascope, "compounds")
+        _skip_unless_attr(mascope.compounds, "find_structures")
+
+        # Any formula: the lists the demo ships name formulas without a
+        # structure, so the answer may be empty, but it is an answer, read
+        # with the SDK's token.
+        rows = mascope.compounds.find_structures("C6H5NO3", limit=5)
+
+        assert isinstance(rows, list)
+        assert len(rows) <= 5
+        for row in rows:
+            assert {
+                "name",
+                "inchikey",
+                "inchi",
+                "smiles",
+                "cas_number",
+                "source",
+                "license",
+                "cas_match",
+                "name_match",
+            } <= set(row)
+
     def test_cheminfo_query_around_a_matched_peak(self, mascope, matched_peaks):
         # A CHON-only compound is guaranteed to be found again by the default
         # composition search (its formula ranges cover C/H/O/N only).

@@ -802,8 +802,11 @@ A collection belongs to the client's workspace unless `workspace_id` names anoth
 | `add(compounds)` | Add compounds, each `{"target_compound_formula": ..., "target_compound_name": ...}` | `dict` |
 | `update(compounds)` | Update compounds, each with its `target_compound_id` | `dict` |
 | `remove(compound_id)` | Delete a compound, taking it out of every collection | `dict` |
+| `find_structures(formula, cas_number=, name=, limit=)` | The reference compounds that could give a compound of the formula its structure | `list[dict]` |
 
-The compound list is shared by every workspace, so these need the global editor role. `add` lists a compound that already exists (the same name and formula, or CAS number) under `existing_compounds` instead of creating it again.
+The compound list is shared by every workspace, so `add`, `update` and `remove` need the global editor role. `add` lists a compound that already exists (the same name and formula, or CAS number) under `existing_compounds` instead of creating it again.
+
+`find_structures` reads, with any role, the rows of the server's active reference lists whose Hill formula is the one given and that carry an InChIKey, an InChI or a SMILES: each with its `name`, `inchikey`, `inchi`, `smiles`, `cas_number`, `source` (the list) and `license`. The rows recording `cas_number` come first, flagged `cas_match`, then those named `name`, flagged `name_match`. A row is a candidate, not an identification; to give a compound one, send its fields with `update`.
 
 #### `mascope.peak_assignments`
 
