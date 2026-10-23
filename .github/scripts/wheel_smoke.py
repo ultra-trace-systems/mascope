@@ -39,7 +39,7 @@ runner = CliRunner()
 
 result = runner.invoke(app, ["--help"])
 assert result.exit_code == 0, result.output
-for command in ("init", "prod", "env", "demo", "logs", "cert"):
+for command in ("init", "prod", "env", "demo", "logs", "cert", "export"):
     assert command in result.output, f"operator command {command} missing"
 
 # Developer commands must not be registered.
