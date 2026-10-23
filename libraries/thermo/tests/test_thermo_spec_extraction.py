@@ -356,10 +356,12 @@ class TestGetCentroidsPerScan:
 
         first = centroids[0]
         expected_keys = {
+            "scan",
             "masses",
             "intensities",
             "resolutions",
             "signal_to_noise",
+            "flags",
             "timestamp",
         }
         assert set(first.keys()) == expected_keys, "Unexpected centroid dictionary keys"

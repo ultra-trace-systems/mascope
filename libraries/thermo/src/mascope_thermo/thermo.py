@@ -21,8 +21,10 @@ import pandas as pd
 import xarray as xr
 
 from mascope_thermo.backend import (
+    _centroids_meta,
     _common_isolation_width,
     _isolation_width_counts,
+    centroid_flag_mask,
     open_backend,
 )
 from mascope_thermo.calibration import calibration_identity
@@ -841,6 +843,7 @@ def get_centroids_per_scan(
     polarity: Literal["+", "-"] | None = None,
     scan_type: Literal["Ms", "Ms2"] | None = None,
     stream: str | None = None,
+    exclude: Iterable[str] = (),
 ) -> list[dict[str, np.ndarray]]:
     """Reads centroided peaks from a Thermo Fisher raw file
     within a specified time range and m/z range.
@@ -868,10 +871,16 @@ def get_centroids_per_scan(
                    ``mascope_thermo.streams``), optional, defaults to None
                    (every stream)
     :type stream: str
+    :param exclude: Names of centroid flags (``mascope_thermo.backend.
+                    CENTROID_FLAGS``: ``reference``, ``exception``,
+                    ``merged``, ``fragmented``) whose centroids are left
+                    out, optional, defaults to none (every stored centroid)
+    :type exclude: Iterable[str]
     :return: List of dictionaries, each containing per-scan
-             centroid masses, intensities, resolutions,
-             signal-to-noise ratios, and timestamps.
+             scan number (``scan``), centroid masses, intensities,
+             resolutions, signal-to-noise ratios, flags, and timestamps.
     :rtype: list[dict[str, np.ndarray]]
+    :raises ValueError: If ``exclude`` names something that is not a flag.
     """
     with open_backend(datafile_path) as backend:
         return backend.centroids_per_scan(
@@ -882,6 +891,7 @@ def get_centroids_per_scan(
             mz_min=mz_min,
             mz_max=mz_max,
             stream=stream,
+            exclude=exclude,
         )
 
 
@@ -1502,32 +1512,41 @@ class RawFileMetadataLegacy(RawFileMetadata):
             "time": [...],  # list of scan times [s]
             "data": [
                 {
+                    "scan": ...,  # the scan number
                     "intensities": ...,
                     "mzs": ...,
                     "resolutions": ...,
-                    "noises": ...
+                    "noises": ...,
+                    "flags": ...  # each centroid's CENTROID_FLAGS, summed
                     }
                     ...
                 ],
                 ...
             }
         }
+
+        Every stored centroid is in it, flagged ones included.
         """
         with open_backend(self.datafile_path) as backend:
             return backend.centroids_meta()
 
-    def iter_centroids_meta(self) -> Iterator[tuple[int, float, dict]]:
+    def iter_centroids_meta(
+        self, exclude: Iterable[str] = ()
+    ) -> Iterator[tuple[int, float, dict]]:
         """:attr:`centroids_meta` one scan at a time, in scan order.
 
         ``(scan_number, time_s, data)`` per scan, ``time_s`` and ``data``
         being the scan's entries of ``"time"`` and ``"data"``. A scan is read
         when its turn comes, and the file stays open until the last one has
         been taken or the iterator is closed.
+
+        :param exclude: Names of centroid flags whose centroids are left out
+            (``mascope_thermo.backend.CENTROID_FLAGS``).
         """
         with open_backend(self.datafile_path) as backend:
-            yield from backend.iter_centroids_meta()
+            yield from backend.iter_centroids_meta(exclude)
 
-    def to_dict(self, include_centroids: bool = True):
+    def to_dict(self, include_centroids: bool = True, exclude: Iterable[str] = ()):
         """Convert the metadata to a dictionary.
 
         The dictionary contains the number of scans, statistics per scan, and statistics
@@ -1540,6 +1559,9 @@ class RawFileMetadataLegacy(RawFileMetadata):
             centroid of every scan. It is nearly all of the dictionary, and
             the only part a peak is read for.
         :type include_centroids: bool, optional
+        :param exclude: Names of centroid flags whose centroids are left out
+            of ``centroids_meta`` (``mascope_thermo.backend.CENTROID_FLAGS``).
+        :type exclude: Iterable[str], optional
         """
         # Built from the reader's dicts rather than the DataFrame views: a pandas
         # round trip turns a None into NaN, and an integer in a numeric scan
@@ -1558,10 +1580,14 @@ class RawFileMetadataLegacy(RawFileMetadata):
             "stats_per_file": {"Value": self.instrument_details},
         }
         if include_centroids:
-            document["centroids_meta"] = self.centroids_meta
+            document["centroids_meta"] = (
+                _centroids_meta(self.iter_centroids_meta(exclude))
+                if exclude
+                else self.centroids_meta
+            )
         return _non_finite_as_none(document)
 
-    def iter_json(self) -> Iterator[str]:
+    def iter_json(self, exclude: Iterable[str] = ()) -> Iterator[str]:
         """The dictionary :meth:`to_dict` returns, as JSON text in pieces.
 
         Joined, the pieces are one JSON document that parses to what
@@ -1575,14 +1601,21 @@ class RawFileMetadataLegacy(RawFileMetadata):
         after it is one scan's centroids, read when the piece is asked for. A
         caller that sends each piece on before taking the next holds one
         scan's centroids at a time, where ``to_dict`` holds the file's.
+
+        :param exclude: Names of centroid flags whose centroids are left out
+            (``mascope_thermo.backend.CENTROID_FLAGS``).
+        :raises ValueError: On the first piece, if ``exclude`` names
+            something that is not a flag.
         """
+        exclude = tuple(exclude)
+        centroid_flag_mask(exclude)
         members = ",".join(
             f"{_json(name)}:{_json(value)}"
             for name, value in self.to_dict(include_centroids=False).items()
         )
         yield "{" + members + ',"centroids_meta":{"data":['
         times = []
-        for index, (_, time_s, data) in enumerate(self.iter_centroids_meta()):
+        for index, (_, time_s, data) in enumerate(self.iter_centroids_meta(exclude)):
             times.append(time_s)
             yield ("," if index else "") + _json(data)
         yield '],"time":' + _json(times) + "}}"

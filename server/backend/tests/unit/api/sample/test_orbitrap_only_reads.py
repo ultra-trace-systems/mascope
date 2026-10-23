@@ -146,7 +146,7 @@ class TestSampleFileMetadata:
         read = Mock(
             return_value=SimpleNamespace(
                 to_dict=lambda include_centroids=True: {"Model": "x"},
-                iter_json=lambda: iter(['{"Model":"x"', "}"]),
+                iter_json=lambda exclude=(): iter(['{"Model":"x"', "}"]),
             )
         )
         stored = AsyncMock(return_value={"data": {"filename": filename}})

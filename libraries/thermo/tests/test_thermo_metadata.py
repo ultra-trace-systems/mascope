@@ -145,11 +145,19 @@ class TestRawFileMetadataLegacy:
         nonempty = [d for d in cm["data"] if d["mzs"]]
         assert nonempty, "expected at least one scan with centroids"
         for d in nonempty:
-            assert set(d) == {"intensities", "mzs", "resolutions", "noises"}
+            assert set(d) == {
+                "scan",
+                "intensities",
+                "mzs",
+                "resolutions",
+                "noises",
+                "flags",
+            }
             n = len(d["mzs"])
             assert len(d["intensities"]) == n
             assert len(d["resolutions"]) == n
             assert len(d["noises"]) == n
+            assert len(d["flags"]) == n
             # centroids_meta filters to finite, positive resolution & intensity.
             res = np.asarray(d["resolutions"])
             inten = np.asarray(d["intensities"])
@@ -348,7 +356,7 @@ class TestRawFileMetadataLegacy:
             }
             instrument_details = {"Model": "X"}
 
-            def iter_centroids_meta(self):
+            def iter_centroids_meta(self, exclude=()):
                 for scan in (1, 2, 3):
                     read.append(scan)
                     yield (
@@ -410,7 +418,7 @@ class TestRawFileMetadataLegacy:
             scan_acquisition_settings = {"header_labels": [], "settings": {}}
             instrument_details = {"Model": "X"}
 
-            def iter_centroids_meta(self):
+            def iter_centroids_meta(self, exclude=()):
                 return iter(())
 
         text = "".join(CraftedMetadata(POS_ORBI_FILE_PATH).iter_json())

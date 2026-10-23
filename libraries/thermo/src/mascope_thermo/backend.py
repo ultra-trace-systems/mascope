@@ -77,6 +77,59 @@ _SECONDS_PER_MINUTE = 60
 # yields no event instead of a ValueError out of float().
 _MS2_EVENT = re.compile(r"ms2 (\d+(?:\.\d+)?)((?:@[A-Za-z]+[\d.]*)+)")
 
+# A centroid's flags, by name, as the bit values of Thermo's PeakOptions. The
+# instrument marks the lock-mass peak a scan was corrected with (Reference), a
+# weak side-lobe peak (Exception), a peak merged from two (Merged) and the two
+# lobes of a split weak peak (Fragmented). A centroid can carry more than one:
+# a fragmented lobe is often an exception too.
+CENTROID_FLAGS = {"fragmented": 2, "merged": 4, "exception": 8, "reference": 16}
+
+# Every bit CENTROID_FLAGS names. The vendor library's PeakOptions has more
+# (saturated, modified, ...), which OpenTFRaw cannot read; they are left out so
+# both backends report the same flags.
+_CENTROID_FLAG_BITS = sum(CENTROID_FLAGS.values())
+
+# Where each flag sits in the word OpenTFRaw stores per centroid
+# (``centroid_labels()["descriptor"]``): bit 20 Exception, 21 Reference,
+# 22 Merged, 23 Fragmented. Bit 21 is the one OpenTFRaw documents as the lock
+# mass; the four together give the vendor library's flags, centroid for
+# centroid, on every file compared.
+_DESCRIPTOR_FLAG_BITS = ((20, 8), (21, 16), (22, 4), (23, 2))
+
+
+def centroid_flags_from_descriptor(descriptor) -> np.ndarray:
+    """The flags of each centroid, from OpenTFRaw's per-centroid descriptor.
+
+    :param descriptor: The scan's ``descriptor`` array, one word per centroid.
+    :return: One integer per centroid: the sum of the :data:`CENTROID_FLAGS`
+        values it carries, 0 for an unflagged one.
+    """
+    descriptor = np.asarray(descriptor, dtype=np.uint32)
+    flags = np.zeros(descriptor.shape, dtype=np.int64)
+    for bit, value in _DESCRIPTOR_FLAG_BITS:
+        flags |= ((descriptor >> bit) & 1).astype(np.int64) * value
+    return flags
+
+
+def centroid_flag_mask(exclude: Iterable[str] = ()) -> int:
+    """The flag bits of the centroids named to be left out.
+
+    :param exclude: Names of :data:`CENTROID_FLAGS`, in any case: a centroid
+        carrying any of them is left out.
+    :return: Their bits, 0 when none is named.
+    :raises ValueError: For a name that is not a flag's.
+    """
+    mask = 0
+    for name in exclude:
+        bit = CENTROID_FLAGS.get(name.strip().lower())
+        if bit is None:
+            raise ValueError(
+                f"Unknown centroid flag {name!r}; expected one of "
+                f"{', '.join(CENTROID_FLAGS)}"
+            )
+        mask |= bit
+    return mask
+
 
 def _parse_ms2_event(filter_string: str) -> tuple[float, str] | None:
     """``(precursor_mz, activation)`` parsed from a rendered scan filter, or
@@ -343,9 +396,25 @@ class ReaderBackend(Protocol):
         mz_min: float | None = None,
         mz_max: float | None = None,
         stream: str | None = None,
+        exclude: Iterable[str] = (),
     ) -> list[dict]:
-        """Per-scan centroids: list of dicts with ``masses``, ``intensities``,
-        ``resolutions``, ``signal_to_noise``, ``timestamp``."""
+        """Per-scan centroids: list of dicts with ``scan`` (the scan number),
+        ``masses``, ``intensities``, ``resolutions``, ``signal_to_noise``,
+        ``flags`` (:meth:`centroid_flags` of the centroids kept) and
+        ``timestamp``. Every stored centroid is kept, flagged ones included,
+        except those carrying a flag ``exclude`` names
+        (:func:`centroid_flag_mask`)."""
+        ...
+
+    def centroid_flags(self, scan_number: int) -> np.ndarray:
+        """The flags of every centroid the scan stores, in stored order.
+
+        One integer per centroid: the sum of the :data:`CENTROID_FLAGS`
+        values it carries (2 Fragmented, 4 Merged, 8 Exception, 16
+        Reference), 0 for an unflagged one. The Thermo backend reads them
+        from the vendor library's centroid stream, the OpenTFRaw backend from
+        the descriptor word stored per centroid. A scan with no centroids
+        gives an empty array."""
         ...
 
     def average_centroids(
@@ -361,12 +430,17 @@ class ReaderBackend(Protocol):
         backend reimplements ppm binning in NumPy."""
         ...
 
-    def centroids_meta(self) -> dict:
+    def centroids_meta(self, exclude: Iterable[str] = ()) -> dict:
         """All-scan centroid arrays for legacy metadata: ``{"time": [...],
-        "data": [{"mzs", "intensities", "resolutions", "noises"}]}``."""
+        "data": [{"scan", "mzs", "intensities", "resolutions", "noises",
+        "flags"}]}``, ``scan`` being the scan number and ``flags`` the
+        :meth:`centroid_flags` of the centroids kept. A centroid carrying a
+        flag ``exclude`` names is left out."""
         ...
 
-    def iter_centroids_meta(self) -> Iterator[tuple[int, float, dict]]:
+    def iter_centroids_meta(
+        self, exclude: Iterable[str] = ()
+    ) -> Iterator[tuple[int, float, dict]]:
         """:meth:`centroids_meta` one scan at a time, in scan order:
         ``(scan_number, time_s, data)``, where ``time_s`` and ``data`` are
         the scan's entries of its ``"time"`` and ``"data"``.
@@ -1080,6 +1154,21 @@ def _scan_window(
     return holds
 
 
+def _vendor_flags(centroid_stream) -> np.ndarray:
+    """The :data:`CENTROID_FLAGS` of each centroid of a Thermo CentroidStream,
+    its other PeakOptions bits cleared."""
+    if centroid_stream is None or centroid_stream.Length == 0:
+        return np.zeros(0, dtype=np.int64)
+    return (
+        np.fromiter(
+            (int(flag) for flag in centroid_stream.Flags),
+            dtype=np.int64,
+            count=centroid_stream.Length,
+        )
+        & _CENTROID_FLAG_BITS
+    )
+
+
 def _centroids_meta(scans: Iterable[tuple[int, float, dict]]) -> dict:
     """``iter_centroids_meta``'s scans gathered into the dict ``centroids_meta``
     returns: ``{"time": [...], "data": [...]}``."""
@@ -1547,28 +1636,40 @@ class ThermoBackend:
         mz_min: float | None = None,
         mz_max: float | None = None,
         stream: str | None = None,
+        exclude: Iterable[str] = (),
     ) -> list[dict]:
         from mascope_thermo.thermo import _validate_mz_range
 
+        excluded = centroid_flag_mask(exclude)
         mz_min, mz_max = _validate_mz_range(self._raw, mz_min, mz_max)
         selector = self._selector(polarity, t_min, t_max, ms_type, stream)
 
         out: list[dict] = []
-        for scan, timestamp in zip(selector.scans, selector.scan_times):
+        for scan_number, scan, timestamp in zip(
+            selector.scan_indices_1based, selector.scans, selector.scan_times
+        ):
             masses, intensities, resolutions, signal_to_noise = _label_peaks(
                 scan.CentroidScan
             )
-            mz_mask = np.logical_and(mz_min <= masses, masses <= mz_max)
+            flags = _vendor_flags(scan.CentroidScan)
+            mask = (mz_min <= masses) & (masses <= mz_max) & ((flags & excluded) == 0)
             out.append(
                 {
-                    "masses": masses[mz_mask],
-                    "intensities": intensities[mz_mask],
-                    "resolutions": resolutions[mz_mask],
-                    "signal_to_noise": signal_to_noise[mz_mask],
+                    "scan": scan_number,
+                    "masses": masses[mask],
+                    "intensities": intensities[mask],
+                    "resolutions": resolutions[mask],
+                    "signal_to_noise": signal_to_noise[mask],
+                    "flags": flags[mask],
                     "timestamp": timestamp,
                 }
             )
         return out
+
+    def centroid_flags(self, scan_number: int) -> np.ndarray:
+        # Reference and exception peaks included, as everywhere else here
+        # (RawFileManager sets IncludeReferenceAndExceptionData).
+        return _vendor_flags(self._raw.GetCentroidStream(scan_number, True))
 
     def average_centroids(
         self,
@@ -1582,13 +1683,16 @@ class ThermoBackend:
             self._raw, scan_indices, ppm=ppm, average=average
         )
 
-    def centroids_meta(self) -> dict:
-        return _centroids_meta(self.iter_centroids_meta())
+    def centroids_meta(self, exclude: Iterable[str] = ()) -> dict:
+        return _centroids_meta(self.iter_centroids_meta(exclude))
 
-    def iter_centroids_meta(self) -> Iterator[tuple[int, float, dict]]:
+    def iter_centroids_meta(
+        self, exclude: Iterable[str] = ()
+    ) -> Iterator[tuple[int, float, dict]]:
         # The Thermo library hands over the scans of a selection together
         # (selector.scans), so here only their conversion to lists - most of
         # what a scan costs in Python - waits for the scan's turn.
+        excluded = centroid_flag_mask(exclude)
         selector = self._selector(ms_type=None)
         for scan_number, timestamp, scan in zip(
             selector.scan_indices_1based, selector.scan_times, selector.scans
@@ -1599,30 +1703,36 @@ class ThermoBackend:
                 intensities = np.frombuffer(centroid_scan.Intensities)
                 resolutions = np.frombuffer(centroid_scan.Resolutions)
                 noises = np.frombuffer(centroid_scan.Noises)
+                flags = _vendor_flags(centroid_scan)
 
                 valid = (
                     np.isfinite(resolutions)
                     & (resolutions > 0)
                     & np.isfinite(intensities)
                     & (intensities > 0)
+                    & ((flags & excluded) == 0)
                 )
                 mzs = mzs[valid].tolist()
                 intensities = intensities[valid].tolist()
                 resolutions = resolutions[valid].tolist()
                 noises = noises[valid].tolist()
+                flags = flags[valid].tolist()
             else:
                 mzs = []
                 intensities = []
                 resolutions = []
                 noises = []
+                flags = []
             yield (
                 scan_number,
                 timestamp,
                 {
+                    "scan": scan_number,
                     "intensities": intensities,
                     "mzs": mzs,
                     "resolutions": resolutions,
                     "noises": noises,
+                    "flags": flags,
                 },
             )
 
@@ -2307,17 +2417,21 @@ class OpenTFRawBackend:
         mz_min: float | None = None,
         mz_max: float | None = None,
         stream: str | None = None,
+        exclude: Iterable[str] = (),
     ) -> list[dict]:
+        excluded = centroid_flag_mask(exclude)
         mz_min, mz_max = self._validate_mz_range(mz_min, mz_max)
         selected = self._selected(polarity, t_min, t_max, ms_type, stream)
 
         out: list[dict] = []
         for s in selected:
-            labels = self._raw.centroid_labels(int(s["scan_number"]))
+            scan_number = int(s["scan_number"])
+            labels = self._raw.centroid_labels(scan_number)
             masses = np.asarray(labels["mz"], dtype=np.float64)
             intensities = np.asarray(labels["intensity"], dtype=np.float64)
             resolutions = np.asarray(labels["resolution"], dtype=np.float64)
             signal_to_noise = np.asarray(labels["signal_to_noise"], dtype=np.float64)
+            flags = centroid_flags_from_descriptor(labels["descriptor"])
             # Keep only FT label peaks (finite resolution / S:N), mirroring
             # Thermo, where non-FT scans return no centroid label peaks at all.
             mask = (
@@ -2325,17 +2439,24 @@ class OpenTFRawBackend:
                 & (masses <= mz_max)
                 & np.isfinite(resolutions)
                 & np.isfinite(signal_to_noise)
+                & ((flags & excluded) == 0)
             )
             out.append(
                 {
+                    "scan": scan_number,
                     "masses": masses[mask],
                     "intensities": intensities[mask],
                     "resolutions": resolutions[mask],
                     "signal_to_noise": signal_to_noise[mask],
+                    "flags": flags[mask],
                     "timestamp": s["retention_time"] * _SECONDS_PER_MINUTE,
                 }
             )
         return out
+
+    def centroid_flags(self, scan_number: int) -> np.ndarray:
+        labels = self._raw.centroid_labels(int(scan_number))
+        return centroid_flags_from_descriptor(labels["descriptor"])
 
     def average_centroids(
         self,
@@ -2686,10 +2807,13 @@ class OpenTFRawBackend:
         out[apply] = cand[apply]
         return out
 
-    def centroids_meta(self) -> dict:
-        return _centroids_meta(self.iter_centroids_meta())
+    def centroids_meta(self, exclude: Iterable[str] = ()) -> dict:
+        return _centroids_meta(self.iter_centroids_meta(exclude))
 
-    def iter_centroids_meta(self) -> Iterator[tuple[int, float, dict]]:
+    def iter_centroids_meta(
+        self, exclude: Iterable[str] = ()
+    ) -> Iterator[tuple[int, float, dict]]:
+        excluded = centroid_flag_mask(exclude)
         for s in self._all_scans():
             scan_number = int(s["scan_number"])
             labels = self._raw.centroid_labels(scan_number)
@@ -2697,21 +2821,25 @@ class OpenTFRawBackend:
             intensities = np.asarray(labels["intensity"], dtype=np.float64)
             resolutions = np.asarray(labels["resolution"], dtype=np.float64)
             noises = np.asarray(labels["noise"], dtype=np.float64)
+            flags = centroid_flags_from_descriptor(labels["descriptor"])
 
             valid = (
                 np.isfinite(resolutions)
                 & (resolutions > 0)
                 & np.isfinite(intensities)
                 & (intensities > 0)
+                & ((flags & excluded) == 0)
             )
             yield (
                 scan_number,
                 s["retention_time"] * _SECONDS_PER_MINUTE,
                 {
+                    "scan": scan_number,
                     "intensities": intensities[valid].tolist(),
                     "mzs": mzs[valid].tolist(),
                     "resolutions": resolutions[valid].tolist(),
                     "noises": noises[valid].tolist(),
+                    "flags": flags[valid].tolist(),
                 },
             )
 

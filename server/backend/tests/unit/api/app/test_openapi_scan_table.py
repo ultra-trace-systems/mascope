@@ -4,10 +4,14 @@
 a generated client is written from the document alone. So the document has to
 say what the route takes: that an API token is accepted, which filters narrow
 the table, and that ``fields`` repeats. ``/metadata`` gained
-``include_centroids`` beside it, on by default, and the document says that too.
+``include_centroids`` beside it, on by default, and the document says that too,
+and ``exclude``, the centroid flags it and ``/api/samples/centroids`` can
+leave out.
 The scan table's file statistics name the calibration a file was acquired on,
 and the document says how to compare them across files.
 """
+
+import pytest
 
 from mascope_backend.app.fast import fast
 
@@ -69,11 +73,25 @@ def test_fields_is_a_repeated_parameter():
 def test_metadata_includes_centroids_unless_told_otherwise():
     parameters = _query_parameters("/api/sample/files/{sample_file_id}/metadata")
 
-    assert set(parameters) == {"include_centroids"}
+    assert set(parameters) == {"include_centroids", "exclude"}
     include_centroids = parameters["include_centroids"]
     assert include_centroids["required"] is False
     assert include_centroids["schema"]["type"] == "boolean"
     assert include_centroids["schema"]["default"] is True
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/sample/files/{sample_file_id}/metadata", "/api/samples/centroids"]
+)
+def test_exclude_names_the_flags_and_leaves_nothing_out_by_default(path):
+    exclude = _query_parameters(path)["exclude"]
+
+    assert exclude["required"] is False
+    assert exclude["schema"]["type"] == "array"
+    assert exclude["schema"]["items"] == {"type": "string"}
+    assert exclude["schema"]["default"] == []
+    for name in ("reference", "exception", "merged", "fragmented"):
+        assert f"`{name}`" in exclude["description"]
 
 
 def test_the_scan_table_names_the_calibration_tolerance():
