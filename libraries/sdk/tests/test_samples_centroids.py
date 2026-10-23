@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from mascope_sdk.exceptions import MascopeAPIError
 from mascope_sdk.resources.samples import SamplesResource
 
 
@@ -77,3 +78,37 @@ def test_an_empty_exclusion_leaves_nothing_out(samples):
     samples.get_centroids(["sample-1"], exclude=[])
 
     assert "exclude" not in samples.requests[0][1]
+
+
+#: The same sample as a server older than the flags sends it: it ignores
+#: ``exclude`` and serves every centroid, with neither ``scan`` nor ``flags``.
+OLD_SERVER_CENTROIDS = {
+    "sample-1": {
+        key: value
+        for key, value in CENTROIDS["sample-1"].items()
+        if key not in ("scan", "flags")
+    }
+}
+
+
+def test_an_exclusion_an_older_server_ignored_raises(samples, monkeypatch):
+    monkeypatch.setattr(
+        samples, "_get", lambda path, params=None, **kw: OLD_SERVER_CENTROIDS
+    )
+
+    with pytest.raises(MascopeAPIError, match="predates centroid flags"):
+        samples.get_centroids(["sample-1"], exclude=["reference"])
+
+
+def test_an_older_server_answers_as_before_without_an_exclusion(samples, monkeypatch):
+    monkeypatch.setattr(
+        samples, "_get", lambda path, params=None, **kw: OLD_SERVER_CENTROIDS
+    )
+
+    assert samples.get_centroids(["sample-1"]) == OLD_SERVER_CENTROIDS
+
+
+def test_an_exclusion_a_flagged_answer_honours_is_returned(samples):
+    centroids = samples.get_centroids(["sample-1"], exclude=["reference"])
+
+    assert centroids == CENTROIDS

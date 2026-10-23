@@ -9,5 +9,6 @@
   defeated. Both routes take `exclude=reference,exception` (any of the four
   names) to leave such centroids out; nothing is left out by default, so the
   responses only gain the two keys. The SDK's `samples.get_centroids` takes
-  `exclude` too. Both reader backends report the same flags. Averaged
-  centroids and peak detection are unchanged.
+  `exclude` too, and raises when a server too old for the flags ignores it.
+  Both reader backends report the same flags. Averaged centroids and peak
+  detection are unchanged.
