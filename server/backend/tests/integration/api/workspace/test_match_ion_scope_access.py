@@ -326,6 +326,24 @@ async def test_a_superuser_reads_an_ion_of_any_workspace(
     assert len(services) == 1
 
 
+# --- No ion scope -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", [ION_RECORDS, ISOTOPE_RECORDS])
+async def test_a_guest_without_an_ion_scope_reaches_the_query(
+    guest_client, services, sample_scope, url
+):
+    """The app's default request names neither a collection nor ions."""
+    if url == ISOTOPE_RECORDS:
+        resp = await guest_client.get(url, params=_query_scope(sample_scope))
+    else:
+        resp = await guest_client.post(url, json=sample_scope)
+
+    assert resp.status_code == 200, resp.text
+    assert len(services) == 1
+
+
 @pytest.mark.asyncio
 async def test_the_series_of_a_readable_ion_still_comes_back(
     guest_client, scope, alpha_batch
