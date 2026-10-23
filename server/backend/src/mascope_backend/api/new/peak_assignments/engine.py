@@ -147,12 +147,13 @@ UNTARGETED_IONIZATION = "()"
 PATTERN_SCORING_KEY = "pattern_scoring"
 
 #: Key under which a run records the mass calibration it fitted from its own
-#: corroborated commits, and what that gating cost: the offset and width every
-#: committed row's ``mass_z`` is measured in, how many rows anchored them, and
-#: how many uncorroborated rows the distance capped. Separate from
-#: :data:`PATTERN_SCORING_KEY` because the two are measured over different rows
-#: at different points - that one is what Stage A had to score the search with,
-#: this one is what the finished ledger turned out to be able to measure.
+#: corroborated commits and its source's own lines, and what that gating cost:
+#: the offset and width every committed row's ``mass_z`` is measured in, how
+#: many rows anchored them, and how many uncorroborated rows the distance
+#: capped. Separate from :data:`PATTERN_SCORING_KEY` because the two are
+#: measured over different rows at different points - that one is what Stage A
+#: had to score the search with, this one is what the finished ledger turned
+#: out to be able to measure.
 MASS_CALIBRATION_KEY = "mass_calibration"
 
 #: Key under which a run records what its own channels corroborated: the

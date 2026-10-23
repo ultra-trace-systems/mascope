@@ -238,9 +238,10 @@ class PeakAssignmentsResource(BaseResource):
                    column, because it is a different measurement.
                  - ``mass_z``: how far the row's mass error sits from the
                    centre the run fitted over its own corroborated
-                   assignments, in the widths it fitted there. Where the run's
-                   commits follow the mass range the centre does too, and is
-                   read at the row's own m/z. The run's
+                   assignments and the source's own lines its reagent
+                   pre-pass claimed, in the widths it fitted there. Where the
+                   run's commits follow the mass range the centre does too,
+                   and is read at the row's own m/z. The run's
                    ``config.mass_calibration`` holds that fit, its ``centre``
                    and any ``trend``; a row beyond three widths with nothing
                    but the mass fit behind it is capped, and says so in its

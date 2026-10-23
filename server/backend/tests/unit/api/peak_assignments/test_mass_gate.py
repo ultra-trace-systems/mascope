@@ -40,6 +40,7 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     isotopologue_tracking,
     line_tolerance_ppm,
     peak_mz,
+    reagent_line_errors,
     tracking_of,
     tracking_tolerance_ppm,
 )
@@ -640,6 +641,128 @@ class TestWhatAnchorsTheCalibration:
         assert summary["gate_sigma_ppm"] == pytest.approx(summary["sigma_ppm"])
         assert summary["gate_sigma_ppm"] > summary["search_sigma_ppm"]
         assert summary["capped"] == 1
+
+
+def _line(row_id, *, ppm=0.0, label=None, mz=100.0, owner=None):
+    """A line the reagent pre-pass claimed: no formula, the source's ion."""
+    return {
+        "peak_assignment_id": row_id,
+        "sample_peak_id": f"peak-{row_id}",
+        "sample_peak_mz": mz,
+        "role": "reagent",
+        "source": "reagent",
+        "assigned_formula": None,
+        "ion_formula": "N3+",
+        "isotope_label": label,
+        "mz_error_ppm": ppm,
+        "tier": TIER_UNASSIGNED,
+        "owner_peak_assignment_id": owner,
+        "provenance": {"reagent": {"family": "air"}},
+    }
+
+
+def _lines(count, *, ppm=0.0, spread=0.1):
+    """`count` monoisotopic source lines scattered evenly about `ppm`."""
+    return [
+        _line(f"line-{i}", ppm=ppm + (spread if i % 2 else -spread))
+        for i in range(count)
+    ]
+
+
+class TestTheSourcesOwnLines:
+    """The reagent pre-pass's lines anchor the calibration beside the commits.
+
+    On the wide-window cylinder set the mode's calibration compounds are the
+    discharge's own ions, which the pre-pass claims before Stage A sees them:
+    four of its seven files kept seven corroborated commits, one short of a
+    fit, and ran with no centre at all.
+    """
+
+    def test_they_let_a_thin_run_measure_its_own_calibration(self):
+        rows = _anchors(7, ppm=-0.3)
+        corroboration = corroboration_of(rows, precision_ppm=PRECISION)
+
+        alone = fit_run_mass_accuracy(rows, corroboration)
+        calibration = fit_run_mass_accuracy(rows, corroboration, _lines(9, ppm=-0.3))
+
+        assert not alone.measured
+        assert (alone.anchors, alone.reagent_anchors) == (7, 0)
+        assert calibration.measured
+        assert calibration.mu_ppm == pytest.approx(-0.3, abs=0.11)
+        assert (calibration.anchors, calibration.reagent_anchors) == (16, 9)
+
+    def test_they_are_pooled_with_the_commits(self):
+        # One median over both, not a fit of either: four commits at 0 and four
+        # lines at +1 ppm put the centre between them.
+        rows = _anchors(4, ppm=0.0, spread=0.0)
+
+        calibration = fit_run_mass_accuracy(
+            rows,
+            corroboration_of(rows, precision_ppm=PRECISION),
+            _lines(4, ppm=1.0, spread=0.0),
+        )
+
+        assert calibration.mu_ppm == pytest.approx(0.5)
+        assert calibration.sigma_ppm == pytest.approx(1.4826 * 0.5)
+
+    def test_only_a_monoisotopic_line_with_an_error_anchors(self):
+        # An isotope line is the same ion on a weaker peak, as a committed
+        # isotopologue is; a row of another role is no source line at all.
+        lines = [
+            _line("mono", ppm=0.4),
+            _line("13C", ppm=0.9, label="13C", owner="mono"),
+            _line("ownerless-15N", ppm=0.9, label="15N"),
+            _line("unmeasured", ppm=None),
+            _line("not-finite", ppm=math.nan),
+            _row("artifact", role="artifact", source="artifact", formula=None),
+            _row("commit", ppm=0.7),
+        ]
+
+        assert reagent_line_errors(lines) == [0.4]
+
+    def test_they_do_not_draw_the_centre_s_line(self):
+        # The line describes the rows the gate judges, and the source's lines
+        # are none of them: forty of them at m/z 30-60, far off the run's
+        # line, change neither the line nor the rows it was drawn over.
+        rows = _trend_run(probe_ppm=_centre(61.0))
+        corroboration = corroboration_of(rows, precision_ppm=PRECISION)
+        lines = [
+            _line(f"line-{i}", ppm=4.0 if i % 2 else -4.0, mz=30.0 + 0.75 * i)
+            for i in range(40)
+        ]
+
+        with_lines = fit_run_mass_accuracy(rows, corroboration, lines)
+        without = fit_run_mass_accuracy(rows, corroboration)
+
+        assert with_lines.trend == without.trend
+        assert with_lines.trend_rows == without.trend_rows == len(rows)
+        assert with_lines.reagent_anchors == 40
+
+    def test_the_gate_judges_at_them_and_leaves_them_as_they_were(self):
+        rows = _anchors(7, spread=0.1) + [_row("off", ppm=2.5)]
+        lines = _lines(9, spread=0.1) + [_line("13C", label="13C", owner="line-0")]
+        before = [dict(line, provenance=dict(line["provenance"])) for line in lines]
+
+        summary = apply_mass_gate(
+            rows, fallback_sigma_ppm=PRECISION, reagent_lines=lines
+        )
+
+        assert summary["applied"]
+        assert (summary["anchors"], summary["reagent_anchors"]) == (16, 9)
+        # The commits are still the commits: a source line is not judged.
+        assert (summary["committed"], summary["corroborated"]) == (8, 7)
+        assert rows[-1]["tier"] == TIER_CANDIDATE
+        assert summary["capped"] == 1
+        assert lines == before
+
+    def test_without_them_the_gate_stands_down_and_says_none_anchored_it(self):
+        rows = _anchors(7, spread=0.1) + [_row("off", ppm=2.5)]
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+
+        assert not summary["applied"]
+        assert (summary["anchors"], summary["reagent_anchors"]) == (7, 0)
+        assert rows[-1]["tier"] == TIER_ASSIGNED
 
 
 #: The line the commits of a run follow below: an absolute offset of -0.15 mDa,
