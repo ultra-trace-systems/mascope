@@ -113,6 +113,13 @@ def test_the_role_is_granted_read_access_in_the_database(docker):
     )
     assert "GRANT USAGE ON SCHEMA %I TO %I" in sql
     assert "GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I" in sql
+    # The schema loop leaves out the system schemas, as readonly_role.py's
+    # read_databases does: pg_catalog holds pg_authid, the password verifiers.
+    assert (
+        "FOR s IN SELECT nspname FROM pg_namespace\n"
+        "    WHERE nspname !~ '^pg_' AND nspname <> 'information_schema'\n"
+        "  LOOP\n" in sql
+    )
     # Defaults first, as in the fleet script: no table falls between them and
     # the bulk grant.
     assert sql.index("ALTER DEFAULT PRIVILEGES") < sql.index("ON ALL TABLES")
