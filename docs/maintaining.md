@@ -299,6 +299,11 @@ Each run:
   Deploying that release (or a later one) yourself with `mascope prod update`
   settles the record as well, so `prod doctor` stops reporting it as pending;
   rolling back to an older release keeps it.
+- **Failed earlier** (an apply of this release failed its health check) ->
+  held: not applied again, and the run exits 2 every time until you act, so
+  the timer does not undo your rollback. `mascope prod update --confirm`
+  retries it once at the next window; `--snooze <days>` keeps it held but
+  quiet for those days. A newer release is tried as usual.
 
 An applied update also moves the deployment checkout to the release it
 deployed, so a reboot redeploys that same release and `mascope prod doctor`
@@ -2136,7 +2141,12 @@ place (no automatic rollback). Investigate with `mascope prod logs backend`. To
 roll back manually: if a migration ran, first restore the pre-migration dump
 (`mascope prod db backup list`, then `mascope prod db restore <dump> --yes`),
 then redeploy the previous release with
-`mascope prod update --version v<previous>`.
+`mascope prod update --version v<previous>`. The timer will not apply the
+failed release again: `--auto` records the failure and holds that release, and
+`mascope prod doctor` reports it as failed. Each timer run exits 2 until you
+act: `mascope prod update --snooze <days>` quiets it while you wait for a
+fixed release, which the timer then applies as usual, and
+`mascope prod update --confirm` retries the failed release at the next window.
 
 **Two-factor codes stopped working for everyone** (typically after a rebuild or
 a restore onto a fresh host). The seeds in the database no longer decrypt:

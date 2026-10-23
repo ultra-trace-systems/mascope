@@ -784,7 +784,12 @@ def _preflight(
 
 
 def _apply_update(
-    target: str, backend_container: str, mascope_path: str, *, kind: str
+    target: str,
+    backend_container: str,
+    mascope_path: str,
+    *,
+    kind: str,
+    alembic_head: str,
 ) -> None:
     """
     Apply an update to ``target`` and verify health.
@@ -792,10 +797,12 @@ def _apply_update(
     Pins the deploy to ``target``, restarts the stack, and waits for the
     backend to report healthy. For a migration update the db_init service takes
     the pre-migration dump and runs the migration on startup. On success clears
-    the pending record; on failure it alerts and stops - it never rolls back
+    the pending record; on failure it records the failure, which holds the
+    release from later runs, alerts and stops - it never rolls back
     automatically. Raises ``typer.Exit`` with the appropriate AUTO_* code.
 
-    :param kind: "fast" or "migration" - for log/status wording only.
+    :param kind: "fast" or "migration" - recorded with a failure, and wording.
+    :param alembic_head: The release's Alembic head, recorded with a failure.
     """
     os.environ["MASCOPE_VERSION"] = target
     os.environ["_MASCOPE_VERSION_PINNED"] = "1"
@@ -820,9 +827,57 @@ def _apply_update(
         _warn_if_cli_stale(auto=True)
         raise typer.Exit(auto_update.AUTO_OK)
 
+    # Recorded before anything else: without it the next window applies the
+    # same release again and undoes the operator's rollback.
+    try:
+        auto_update.record_failure(mascope_path, target, alembic_head, kind)
+    except OSError as e:
+        runtime.logger.warning(
+            f"Could not record the failed update in the updater's state ({e}); "
+            f"the next window may apply {target} again - snooze it with "
+            "'mascope prod update --snooze <days>'."
+        )
     message = (
         f"{kind.capitalize()} update to {target} applied but the backend did not "
-        "become healthy - manual intervention needed (no automatic rollback)."
+        "become healthy - manual intervention needed (no automatic rollback). "
+        f"--auto holds {target} until 'mascope prod update --confirm'."
+    )
+    runtime.logger.error(message)
+    auto_update.record_status(mascope_path, message)
+    raise typer.Exit(auto_update.AUTO_ERROR)
+
+
+def _hold_if_failed(
+    pending: Optional[auto_update.PendingUpdate],
+    target: str,
+    mascope_path: str,
+    *,
+    snoozed_code: int,
+) -> None:
+    """
+    Stop an unattended run on a release whose last apply failed.
+
+    Applying it again would undo the operator's rollback and, for a migration
+    update, migrate the restored database again. Only a confirm retries it; a
+    newer release is a new record and is tried as usual.
+
+    Exits ``AUTO_ERROR`` so the timer keeps reporting it, or ``snoozed_code``
+    while the operator has snoozed it. Returns when nothing is held.
+    """
+    if pending is None or pending.version != target or not pending.failed_at:
+        return
+    if pending.snoozed(auto_update._now()):
+        message = (
+            f"{pending.kind.capitalize()} update {target} failed to apply at "
+            f"{pending.failed_at}; held, snoozed until {pending.snooze_until}."
+        )
+        runtime.logger.info(message)
+        auto_update.record_status(mascope_path, message)
+        raise typer.Exit(snoozed_code)
+    message = (
+        f"{pending.kind.capitalize()} update {target} failed to apply at "
+        f"{pending.failed_at}; not applying it again. Retry it with 'mascope prod "
+        "update --confirm', or silence this with '--snooze <days>'."
     )
     runtime.logger.error(message)
     auto_update.record_status(mascope_path, message)
@@ -852,14 +907,21 @@ def _manage_pending(*, confirm: bool, snooze: Optional[int]) -> None:
         auto_update.record_status(mascope_path, message)
         raise typer.Exit(0)
 
+    held = auto_update.load_pending(mascope_path)
     pending = auto_update.confirm_pending(mascope_path)
     if pending is None:
         runtime.logger.warning("No pending migration update to confirm.")
         raise typer.Exit(0)
     message = (
-        f"Confirmed migration update {pending.version}; it will apply at the next "
-        "maintenance window."
+        f"Confirmed {pending.kind} update {pending.version}; it will apply at the "
+        "next maintenance window."
     )
+    if held is not None and held.failed_at:
+        message = (
+            f"Confirmed a retry of {pending.kind} update {pending.version}, which "
+            f"failed to apply at {held.failed_at}; it will apply at the next "
+            "maintenance window."
+        )
     runtime.logger.success(message)
     auto_update.record_status(mascope_path, message)
     raise typer.Exit(0)
@@ -986,6 +1048,12 @@ def _auto(*, pull: bool) -> None:
 
     if plan.classification == "migration-update":
         pending = auto_update.record_pending(mascope_path, target, plan.target_revision)
+        _hold_if_failed(
+            pending,
+            target,
+            mascope_path,
+            snoozed_code=auto_update.AUTO_MIGRATION_PENDING,
+        )
         try:
             grace_days = int(os.environ.get("MASCOPE_UPDATE_GRACE_DAYS", "7"))
         except ValueError:
@@ -1003,7 +1071,13 @@ def _auto(*, pull: bool) -> None:
             runtime.logger.info(
                 f"Applying migration update {target} ({reason}, in window)."
             )
-            _apply_update(target, backend_container, mascope_path, kind="migration")
+            _apply_update(
+                target,
+                backend_container,
+                mascope_path,
+                kind="migration",
+                alembic_head=plan.target_revision,
+            )
 
         message = (
             f"Migration update {target} available (first seen "
@@ -1015,6 +1089,12 @@ def _auto(*, pull: bool) -> None:
         raise typer.Exit(auto_update.AUTO_MIGRATION_PENDING)
 
     # fast-update
+    _hold_if_failed(
+        auto_update.load_pending(mascope_path),
+        target,
+        mascope_path,
+        snoozed_code=auto_update.AUTO_OK,
+    )
     if not auto_update.in_window(auto_update._now(), window):
         runtime.logger.info(
             f"Fast update {target} available; waiting for the maintenance window "
@@ -1022,7 +1102,13 @@ def _auto(*, pull: bool) -> None:
         )
         raise typer.Exit(auto_update.AUTO_OK)
 
-    _apply_update(target, backend_container, mascope_path, kind="fast")
+    _apply_update(
+        target,
+        backend_container,
+        mascope_path,
+        kind="fast",
+        alembic_head=plan.target_revision,
+    )
 
 
 @prod_app.command()
