@@ -9,6 +9,7 @@ from loguru import logger
 
 from .._concurrent import failure_record, mark_complete, progress_bar, run_concurrent
 from .._resolve import _match_names, _pattern_text, resolve_id
+from ..exceptions import MascopeAPIError
 from ._base import (
     BaseResource,
     Needs,
@@ -1000,7 +1001,9 @@ class SamplesResource(BaseResource):
         weak side-lobe peak), 16 reference (the lock-mass peak the scan was
         corrected with), 0 for an unflagged one. So ``flag & 16`` finds a
         scan's lock mass. A server older than the flags serves neither
-        ``scan`` nor ``flags``.
+        ``scan`` nor ``flags``, and ignores ``exclude``: given ``exclude``,
+        an answer without ``flags`` raises rather than hand back the very
+        centroids asked to be left out.
 
         :param sample_ids: List of sample IDs to retrieve centroids for.
         :type sample_ids: list[str]
@@ -1015,7 +1018,8 @@ class SamplesResource(BaseResource):
         :raises ValidationError: If ``exclude`` names something that is not
             a flag.
         :raises AuthenticationError: If authentication fails.
-        :raises MascopeAPIError: If the API request fails.
+        :raises MascopeAPIError: If the API request fails, or ``exclude`` was
+            given and the server predates centroid flags.
 
         .. note::
             This method returns a dict rather than DataFrame due to the
@@ -1025,7 +1029,17 @@ class SamplesResource(BaseResource):
         if exclude:
             names = [exclude] if isinstance(exclude, str) else list(exclude)
             params["exclude"] = ",".join(names)
-        return self._get("samples/centroids", params=params)
+        data = self._get("samples/centroids", params=params)
+        if "exclude" in params and data:
+            # A server older than the flags ignores the parameter it does not
+            # know and serves every centroid; only the missing flags show it.
+            if any("flags" not in entry for entry in data.values()):
+                raise MascopeAPIError(
+                    "The server predates centroid flags and ignored "
+                    f"exclude={params['exclude']}: its answer still holds "
+                    "the centroids asked to be left out. Upgrade the server."
+                )
+        return data
 
     def update(self, sample_id: str, sample_item: dict[str, Any]) -> dict[str, Any]:
         """Update a sample's fields: its name, type, attributes and the rest.
