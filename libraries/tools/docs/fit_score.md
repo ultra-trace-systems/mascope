@@ -157,6 +157,18 @@ anchor-relative, so both orderings are correct as long as the caller is consiste
 | $s_i$ | observed signal-to-noise of the matched peak |
 | $\sigma$ | instrument mass-error std in ppm (`sigma_ppm`) |
 
+**A line is a peak the file can resolve.** On a TOF the one peak at the 13C position also
+holds the 15N, 2H and 17O lines a few mDa away, so a predicted line per isotopologue
+would read that peak high against the 13C share alone. The composition finder therefore
+predicts one line per peak the file can separate, at the file's own resolving power when
+the run can read one (`heuristic_filter.merge_unresolved_lines`, carried on
+`PatternScoring.resolution`). From the brightest line not yet taken, every line not yet
+taken within half a FWHM either side of it is one line: $p_i$ is the sum of their shares
+and its m/z their abundance-weighted centre. The targeted path does not do this yet: its
+TOF library bins with the same half-FWHM width, but only the lines over its 1% floor, so
+its line at the 13C position is still the 13C line alone (#2587). A file with no
+resolution read is scored one line per isotopologue.
+
 **Guard.** If the anchor is absent ($o_0 \le 0$) the score is $0$ — with nothing to
 measure the envelope against there is no assignment.
 

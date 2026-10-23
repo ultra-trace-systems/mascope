@@ -1418,6 +1418,30 @@ class TestResolvedProfile:
         }
 
     @pytest.mark.asyncio
+    async def test_the_search_matches_envelopes_at_the_files_resolving_power(self):
+        # A TOF peak at the 13C position holds the 15N, 2H and 17O lines too;
+        # the finder can merge them only if the run hands it the file's
+        # resolving power, and the run records that it did.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        def resolution(mz):
+            return 8000.0
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 300.1234, 500.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, []))
+        mocks["resolution"].return_value = resolution
+
+        await _run(PeakAssignmentConfig())
+
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        assert scoring.resolution is resolution
+        recorded = recorder.recorded_configs()[-1]["pattern_scoring"]
+        assert recorded["lines_merged_at_resolution"] is True
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("column", [True, False], ids=["with S/N", "without"])
     async def test_the_run_records_the_signal_to_noise_it_scored_on(self, column):
         # The frame the search scores over is the one whose column is ranked:

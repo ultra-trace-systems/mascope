@@ -218,6 +218,11 @@ def stubbed_engine(monkeypatch, folded_batch):
     )
 
 
+def _tof_resolution(mz):
+    """The searched file's resolving power, as its instrument functions say."""
+    return 8000.0
+
+
 def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
     """Stub the engine around the search.
 
@@ -227,14 +232,18 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
         with) in whichever sample the seeded scorer measures it.
     """
     by_id = {sample_id: name for name, sample_id in samples.items()}
-    calls = {"search": [], "score": [], "seeded_fits": []}
+    calls = {"search": [], "score": [], "seeded_fits": [], "scoring": []}
 
     def load_peaks(sample):
         return _frame(peaks[by_id[sample.sample_item_id]])
 
     def assign(peaks, config, heuristics=None, targets=None, scoring=None):
         calls["search"].append(list(targets))
+        calls["scoring"].append(scoring)
         return matches(list(targets))
+
+    async def resolution_of(sample):
+        return _tof_resolution
 
     async def mechanisms(sample):
         return (
@@ -279,6 +288,7 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
     monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
     monkeypatch.setattr(batch_untargeted, "score_seeds", seeded)
     monkeypatch.setattr(batch_untargeted, "_seeded_fits", seeded_fits)
+    monkeypatch.setattr(batch_untargeted, "_resolution_of", resolution_of)
     return calls
 
 
@@ -325,6 +335,9 @@ async def test_the_search_runs_on_the_brightest_member_and_annotates_the_anchor(
     assert counts["samples_searched"] == 1
     assert len(stubbed_engine["search"]) == 1
     assert 181.0707 in stubbed_engine["search"][0]
+    # The envelopes are matched at the searched file's own resolving power, so
+    # a peak holding several lines is scored against all of them.
+    assert stubbed_engine["scoring"][0].resolution is _tof_resolution
 
     anchors = await _anchors_by_mz(async_session_factory, batch_id)
     glucose, isotopologue, bare = anchors[181], anchors[182], anchors[250]

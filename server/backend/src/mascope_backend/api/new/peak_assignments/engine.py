@@ -13,7 +13,7 @@ persistence.
 
 import math
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -470,6 +470,7 @@ def pattern_scoring_for(
     match_params,
     mass_accuracy: SampleMassAccuracy,
     instrument_accuracy_ppm: float,
+    resolution: Callable[[float], float] | None = None,
 ) -> PatternScoring:
     """How the untargeted stage scores this sample's isotope envelopes.
 
@@ -501,6 +502,10 @@ def pattern_scoring_for(
     :param match_params: The sample's resolved match parameters.
     :param mass_accuracy: What Stage A measured of this sample's mass error.
     :param instrument_accuracy_ppm: The class width to use when it measured none.
+    :param resolution: The file's resolving power as a function of m/z, or None
+        where the run could not read one. With it, the predicted lines one peak
+        of the file cannot separate are scored as one line, the sum of their
+        shares: on a TOF the 13C peak also holds the 15N, 2H and 17O lines.
     :return: The scoring parameters for this sample's search.
     """
     return PatternScoring(
@@ -513,6 +518,7 @@ def pattern_scoring_for(
         mu_ppm=float(mass_accuracy.scoring_mu_ppm or 0.0),
         mz_tolerance_ppm=float(match_params.mz_tolerance),
         abundance_floor=float(match_params.isotope_abundance_threshold),
+        resolution=resolution,
     )
 
 
@@ -606,6 +612,10 @@ def pattern_scoring_snapshot(
         "fitted_anchors": int(mass_accuracy.anchors),
         "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
         "abundance_floor": float(scoring.abundance_floor),
+        # Whether the envelope was predicted at the file's resolving power, one
+        # line per peak it can separate, or one line per isotopologue because
+        # the run could read no resolution for the file.
+        "lines_merged_at_resolution": scoring.resolution is not None,
     }
     reagent = mass_accuracy.reagent
     if reagent is not None:

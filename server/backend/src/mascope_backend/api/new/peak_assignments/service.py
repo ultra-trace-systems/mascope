@@ -2886,8 +2886,12 @@ async def _run_sample_assignment(
         # the untargeted branch because the tiering pass reads it whether or not
         # that branch ran: a run of Stage A alone still has committed rows whose
         # peaks a neighbour's envelope may already predict.
+        resolution = await _resolution_of(sample)
         scoring = pattern_scoring_for(
-            match_params, mass_accuracy, resolved_profile.fallback_sigma_ppm
+            match_params,
+            mass_accuracy,
+            resolved_profile.fallback_sigma_ppm,
+            resolution,
         )
         if config.run_untargeted:
             eligible_df = peaks_df[
@@ -3101,7 +3105,7 @@ async def _run_sample_assignment(
         # and never which tier a row ends on. A line one of them finds on an
         # assigned neighbour's envelope is read as that neighbour's, and then
         # all three run again over the ledger that leaves (`judge_commits`).
-        lines = SpectrumLines.from_peaks(peaks_df, await _resolution_of(sample))
+        lines = SpectrumLines.from_peaks(peaks_df, resolution)
         judged = judge_commits(
             fragments.rows,
             stage_a_accuracy=mass_accuracy,

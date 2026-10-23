@@ -422,6 +422,12 @@ otherwise the sample is scored on its nominal masses. The reagent ions stand in 
 there: they sit at the low end of the mass range and need not agree with the offset
 your library measures.
 
+A predicted line is a peak your instrument can resolve, not a single isotopologue. On a
+TOF, the peak one mass unit above a compound holds its 13C line and also its 15N, 2H and
+17O lines, a few mDa apart. The untargeted search reads that peak against the sum of all
+four, at the resolving power recorded for the file. A file with no recorded resolving
+power is read one isotopologue per line.
+
 **A consequence users see:** a lone mass-only match (one peak, no isotopic corroboration)
 scores *low* by design, while a fully corroborated isotope envelope scores near 1.0. This
 is intentional — mass alone is weak evidence.
