@@ -103,10 +103,12 @@ class UnregisteredFileError(RuntimeError):
     (``BaseFileProcessor._await_file_context``).
 
     It is not routine: an upload is lost, and the uploader cannot be told
-    either, since the notification needs the same credential. So it is still
-    reported, as one line pinned to one monitoring issue: its stack is always
-    the same, and what tells a restart from a context that arrived late is how
-    long the file had waited, which the line says.
+    either, since the notification needs the same credential. The run loop
+    names the file to the deployment's admins instead (the ``upload_lost``
+    event), and it is still reported, as one line pinned to one monitoring
+    issue: its stack is always the same, and what tells a restart from a
+    context that arrived late is how long the file had waited, which the line
+    says.
     """
 
 

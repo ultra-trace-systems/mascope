@@ -33,6 +33,9 @@ from mascope_backend.db.admin.peak_assignments.reset_running_runs import (
     reset_running_batch_peak_runs,
     reset_running_peak_assignment_runs,
 )
+from mascope_backend.db.admin.sample_file.report_unstored_failed_files import (
+    report_unstored_failed_files,
+)
 from mascope_backend.db.admin.sample_file.reset_interrupted_processing import (
     reset_interrupted_processing,
 )
@@ -53,6 +56,8 @@ async def init_main_process() -> None:
     - Reset any batches stuck in 'processing' from a previous run
     - Mark sample files whose processing a restart interrupted as failed, and
       keep a notification of it for the people answerable for each
+    - Name the files in the converter's failed_files that no record was made
+      of to the admins and owners, each file once
     - Purge notifications read long ago
     - Auto-create missing acquisition datasets for all instruments
     - Seed the ionization mechanisms and modes Mascope ships, building the
@@ -101,6 +106,11 @@ async def init_main_process() -> None:
 
         runtime.logger.info("Main process: resetting interrupted file processing")
         await reset_interrupted_processing()
+
+        runtime.logger.info(
+            "Main process: looking for unstored files in the converter's failed_files"
+        )
+        await report_unstored_failed_files()
 
         runtime.logger.info("Main process: purging notifications read long ago")
         await purge_read_notifications()

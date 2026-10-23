@@ -440,13 +440,27 @@ ingested normally. What matters is whether it **stops**:
 ```sh
 # on a server, a few minutes after its restart - expect 0
 docker logs mascope_prod_backend --since 30m 2>&1 | grep -c "not registered in file converter"
-# and nothing quarantined anywhere under the filestore
-find "$(mascope path)"/.runtime/env/*/filestore -type d -name failed_files
+# and nothing quarantined: failed_files sits beside the streams folder
+find "$(mascope path)"/.runtime/env/* -type d -name failed_files
 ```
 
 Errors that keep arriving after the restart window, or any `failed_files`
 directory with contents, are real and worth investigating. Resolve the
 restart-window issues in the error tracker so a recurrence stands out.
+
+A file the converter found in the streams folder with no upload registered
+for it - one left there across a converter restart - can never be stored,
+and its uploader cannot be told. Every active global admin and owner is told
+instead, under "Needs attention" in the notifications pane, as "Upload
+lost" with the file's name. The backend also looks through `failed_files` at
+every start and names each file there that no record was made of, so a file
+the converter could not report reaches them too. The startup scan names each
+file to a person once; the converter names a file again if it is lost again.
+The scan also finds files the converter could not read, whose uploader was
+told why at the time, so the pane says under each file how it was found.
+Upload a lost file again from the instrument, or from `failed_files`, and
+then delete it from the folder; a file that could not be read needs looking
+at first.
 
 ## Backups
 

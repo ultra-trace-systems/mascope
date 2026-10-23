@@ -150,16 +150,20 @@ class TestUnregisteredFile:
 
         assert socket.context_manager.lookups == 2
 
-    def test_the_error_says_to_upload_it_again(self, stale_file):
-        # The notification carries this; without a context the backend
-        # refuses it (#2535), so the converter's log is where it is read.
+    def test_the_admins_are_told_instead_of_the_uploader(self, stale_file):
+        # The backend takes a processing error only with the uploader's
+        # credential, which is what is missing (#2535): the file is reported
+        # as lost, for the deployment's admins, and named so it can be
+        # uploaded again
         _, socket, _ = _run_once(stale_file)
 
-        errors = [p for event, p in socket.emitted if event == "file_processing_error"]
-        assert len(errors) == 1
-        assert errors[0]["filename"] == SAMPLE
-        assert errors[0]["error"] == UNREGISTERED_FILE_MESSAGE
-        assert "Upload the file again" in errors[0]["error"]
+        assert [event for event, _ in socket.emitted] == ["upload_lost"]
+        assert socket.emitted[0][1] == {"filename": SAMPLE, "instrument": "TOF-1"}
+
+    def test_another_failure_still_tells_the_uploader(self, stale_file):
+        _, socket, _ = _run_once(stale_file, registered={SAMPLE})
+
+        assert [event for event, _ in socket.emitted] == ["file_processing_error"]
 
     def test_the_file_is_moved_aside_and_its_context_cleared(self, stale_file):
         _, socket, processor = _run_once(stale_file)
@@ -169,7 +173,8 @@ class TestUnregisteredFile:
 
     def test_it_is_still_reported_to_monitoring(self, stale_file):
         # An upload is lost, and its uploader cannot be told: the notification
-        # needs the credential that is missing. Monitoring is the only report.
+        # needs the credential that is missing. The admins' notification says
+        # which file; monitoring says that it happens.
         records, _, _ = _run_once(stale_file)
 
         failures = _failure_records(records)
