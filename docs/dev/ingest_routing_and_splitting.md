@@ -2756,9 +2756,11 @@ Steps 6 and 7 of the setup-simplification proposal:
     needs one, and choosing it rebuilds the file - and its detail adds that
     its samples are an earlier run's. Not samples an earlier attempt of the
     same run made before it failed: those are partial, and a retry that
-    parks the file clears them. Re-processing keeps its own order
-    (item 3 of phase 2 and step 8 of phase 3 say why), so a file it parks
-    has no samples;
+    parks the file clears them. Re-processing hands the run its own
+    rebuild - the calibration reset, the peaks detected again (step 8 of
+    phase 3) and every sample item cleared - which the run awaits in the
+    same place, once and only when it has bound the file, so a file it
+    parks keeps its samples, its calibration and its peaks too (#2347);
 - the upload capability flag. Shipped in #2168: `GET /api/version`
   and the pairing start response carry the server's capabilities
   (`mascope_backend/capabilities.py`), and the browser lets a token-less name
@@ -2816,10 +2818,9 @@ Needed before any rung can be provisional or park.
      selecting the parked files and pressing Re-process does, and its method
      is not asked first, since such a file has nothing a run could cost it.
      A file whose samples are still there under modes that no longer bind
-     it - a mode deleted since leaves them with none - has: re-processing
-     resets a file's calibration, detects its peaks again where it must, and
-     clears every sample item of the file before the pipeline asks the rung.
-     So where the rung is on, both re-processing and processing one file on
+     it - a mode deleted since leaves them with none - has: a run the
+     method cannot place only parks it, which says less than the method's
+     reason and remedy. So where the rung is on, both re-processing and processing one file on
      request (`POST /api/sample/files/{id}/process`) ask the rung for such a
      file first, as the run asks it, on the file's scan-stream census: a
      file its method binds is started with no modes of its own, and the run
@@ -2845,11 +2846,9 @@ Needed before any rung can be provisional or park.
      file before it clears anything of it (phase 1), so a run that parks a
      file after these checks - started behind the ingest gate, with a mode
      deleted, a token changed or the binding moved in between - keeps its
-     samples. A file re-processing parks that way has been cleared by
-     re-processing already, between its check and its run; for a file whose
-     method was asked, that is the time its own reset, peak detection and
-     clearing take, the window re-processing leaves a token or a kept mode
-     for the whole wait of its batch. A file bound
+     samples. So does a file re-processing parks that way, whose reset, peak
+     detection and clearing are the run's, behind its binding (phase 1). A
+     file bound
      this way teaches its binding nothing, and its items record
      `method_binding_id`, which is checked against the table as the item is
      created rather than trusted from the earlier read: `ON DELETE SET NULL`
@@ -3266,7 +3265,8 @@ Polarity always comes from the file, never from the filename.
      (`re_process_sample_files`) is the one run that decides again how a
      file's peaks are detected. It reads the setting as it is at that
      moment and detects the file's peaks under it before it makes the
-     file's samples (`process/peaks.py`): after the calibration is reset,
+     file's samples (`process/peaks.py`), once its run has bound the file
+     (#2347): after the calibration is reset,
      so on the acquisition axis, as a first conversion detects them, and
      before the old samples are cleared, so that a file whose peaks cannot
      be detected keeps them. The decision is recorded as a conversion

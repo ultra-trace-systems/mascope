@@ -9,6 +9,7 @@ unit tests; here the columns, the writer, the list filter and the startup
 reset meet a real database.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
@@ -379,23 +380,22 @@ async def test_an_unknown_status_is_refused(admin_client):
 async def test_a_file_is_queued_before_re_processing_replaces_it(
     async_session_factory, monkeypatch
 ):
-    """Until the rebuild records its own stages, the old `done` would stand."""
+    """Until the rebuild records its own stages, the old `done` would stand.
+    Its run, which clears the file once it has bound it, starts on `queued`."""
     sample_file_id = await _add_file(async_session_factory, "redo", "done")
     seen = {}
 
-    async def clear(sample_file_id, independent_transaction):
-        row = await _row(async_session_factory, sample_file_id)
+    async def run(**kwargs):
+        row = await _row(async_session_factory, kwargs["sample_file_id"])
         seen["status"] = row.processing_status
-        return set()
+        return {}
 
     monkeypatch.setattr(status, "emit_record_updated", AsyncMock())
-    monkeypatch.setattr(process_service, "reset_mz_calibration", AsyncMock())
     monkeypatch.setattr(
         process_service, "resolve_ionization_modes_by_tokens", AsyncMock()
     )
-    monkeypatch.setattr(process_service, "_clear_sample_items_for_reprocessing", clear)
     monkeypatch.setattr(
-        process_service, "auto_process_sample_file", AsyncMock(return_value={})
+        process_service, "auto_process_sample_file", AsyncMock(side_effect=run)
     )
 
     await process_service.re_process_sample_files(sample_file_ids=[sample_file_id])
@@ -406,12 +406,19 @@ async def test_a_file_is_queued_before_re_processing_replaces_it(
 
 
 @pytest.mark.asyncio
-async def test_a_re_process_that_stops_before_the_pipeline_fails_the_file(
+async def test_a_re_process_whose_clearing_fails_fails_the_file(
     async_session_factory, monkeypatch
 ):
-    """No pipeline runs to say how it ended, so `queued` would stand."""
+    """The clearing is the run's, once it has bound the file, and a run that
+    gives up on it says so, or `queued` would stand."""
     sample_file_id = await _add_file(async_session_factory, "unclear", "done")
-    pipeline = AsyncMock(return_value={})
+
+    async def bound(**kwargs):
+        # The binding is stood in for: the run goes straight to its clearing
+        row = await _row(async_session_factory, kwargs["sample_file_id"])
+        await kwargs["clear_earlier_run"](row)
+        return {}
+
     monkeypatch.setattr(status, "emit_record_updated", AsyncMock())
     monkeypatch.setattr(process_service, "reset_mz_calibration", AsyncMock())
     monkeypatch.setattr(
@@ -422,12 +429,13 @@ async def test_a_re_process_that_stops_before_the_pipeline_fails_the_file(
         "_clear_sample_items_for_reprocessing",
         AsyncMock(side_effect=OperationalError("DELETE", {}, Exception("gone"))),
     )
-    monkeypatch.setattr(process_service, "auto_process_sample_file", pipeline)
+    monkeypatch.setattr(process_service, "_auto_process_sample_file", bound)
+    monkeypatch.setattr(process_service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0))
+    monkeypatch.setattr(process_service, "_shutdown", asyncio.Event())
 
     with pytest.raises(ApiException):
         await process_service.re_process_sample_files(sample_file_ids=[sample_file_id])
 
-    pipeline.assert_not_awaited()
     row = await _row(async_session_factory, sample_file_id)
     assert row.processing_status == "failed"
     assert row.processing_detail == (

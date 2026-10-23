@@ -755,10 +755,10 @@ async def test_reprocessing_leaves_a_file_with_samples_its_method_binds_to_the_r
     whose polarity was changed since is no mode of the file's.
 
     It has no modes to keep, which is what a parked file with no samples says
-    too, but its samples are still there, and re-processing clears them
-    before the pipeline asks the method. So the method is asked first, as the
-    run asks it, on the file's scan-stream census, and a file it binds is
-    sent on with no modes of its own. It is asked in the loop that rebuilds
+    too, but its samples are still there, and a run the method cannot place
+    would only park it. So the method is asked first, as the run asks it, on
+    the file's scan-stream census, and a file it binds is sent on with no
+    modes of its own. It is asked in the loop that rebuilds
     the files, just before the file is claimed, and not with the checks in
     front of the batch: the files ahead of it are bound by then, and those a
     record or a token binds teach the bindings as they are.
@@ -782,10 +782,11 @@ async def test_reprocessing_leaves_a_file_with_samples_its_method_binds_to_the_r
     assert steps.done == [
         "decided",
         "asked its method",
+        "bound the file",
         "reset the calibration",
         "detected per stream",
         "cleared the samples",
-        "ran the pipeline",
+        "made the samples",
     ]
     assert pipeline.await_args.kwargs["sample_file_id"] == orphaned
     assert pipeline.await_args.kwargs["ionization_mode_ids"] is None
@@ -800,7 +801,7 @@ async def test_reprocessing_refuses_a_file_with_samples_its_method_does_not_bind
     async_session_factory, setup, steps, monkeypatch, under
 ):
     """The same file, where the method does not bind it either: its run could
-    only park it, with its samples gone. It is left as it is, with the
+    only park it. It is left as it is, with the
     method's own reason and remedy, as processing it on request refuses it.
     The rung itself is asked: this file's method reports no name, which is
     one of the ways it declines."""
@@ -885,7 +886,7 @@ async def test_reprocessing_asks_a_files_method_once_the_files_named_ahead_have_
 
     def asked(*_args):
         steps.done.append("asked its method")
-        return declines if "ran the pipeline" in steps.done else binds
+        return declines if "made the samples" in steps.done else binds
 
     rung.side_effect = asked
     kept = await _file(
@@ -901,10 +902,11 @@ async def test_reprocessing_asks_a_files_method_once_the_files_named_ahead_have_
         sample_under=(setup["batch"], None),
     )
     rebuilt = [
+        "bound the file",
         "reset the calibration",
         "detected per stream",
         "cleared the samples",
-        "ran the pipeline",
+        "made the samples",
     ]
 
     # A partial result is a warning, which the task reports and does not raise
@@ -970,20 +972,17 @@ async def test_reprocessing_does_not_leave_unread_samples_to_the_rung(
     [
         ("_modes_its_record_declares", "Failed to read its acquisition record"),
         ("resolve_ionization_modes_by_tokens", "Failed to resolve ionization modes"),
-        (
-            "_clear_sample_items_for_reprocessing",
-            "Processing failed: Processing stopped on an unexpected error",
-        ),
     ],
 )
 async def test_reprocessing_reports_a_fault_without_its_text(
     async_session_factory, setup, pipeline, monkeypatch, failing, says
 ):
     """The report goes to whoever pressed Re-process, and a fault's own text
-    can hold SQL with its bound parameters. Wherever one stops a file - at
-    the read of its record, at the reading of its name, or at the clearing
-    before its run - the report says what failed, and what the error said
-    is left to the log."""
+    can hold SQL with its bound parameters. Wherever one stops a file before
+    its run - at the read of its record, or at the reading of its name - the
+    report says what failed, and what the error said is left to the log. The
+    clearing, which its run does, is
+    ``test_a_reprocessed_file_whose_clearing_fails_is_reported_without_its_text``."""
     monkeypatch.setattr(
         process_service,
         failing,
@@ -1086,13 +1085,14 @@ def binding(setup, monkeypatch) -> dict[str, AsyncMock]:
 
     async def as_far_as_the_binding(sample_file_id, **started_with):
         try:
-            # Re-processing has cleared the file already, so the wrapper's
-            # clearing step has nothing to do here.
+            # The binding is what is pinned here. The clearing behind it,
+            # and the re-processing's rebuild it runs, are pinned by the
+            # tests that run the wrapper as well, at the end of this file.
             await process_service._auto_process_sample_file(
                 sample_file_id=sample_file_id,
                 ionization_mode_ids=started_with["ionization_mode_ids"],
                 kept_provenance=started_with["kept_provenance"],
-                clear_earlier_run=AsyncMock(),
+                clear_earlier_run=AsyncMock(return_value=process_service._Cleared()),
             )
         except _SeenEnough:
             pass
@@ -1715,7 +1715,16 @@ def steps(monkeypatch, pipeline) -> _Steps:
         return await clear(**kwargs)
 
     async def ran(**kwargs):
-        steps.done.append("ran the pipeline")
+        # The run binds the file, and only then hands it to the
+        # re-processing's rebuild, as the pipeline does once it has bound it
+        steps.done.append("bound the file")
+        sample_file = await process_service.fetch_sample_file(
+            sample_file_id=kwargs["sample_file_id"]
+        )
+        stopped = await kwargs["rebuild"](sample_file)
+        if stopped is not None:
+            return {"status": "failed", "message": stopped, "_notification_data": {}}
+        steps.done.append("made the samples")
         return {"_notification_data": {}}
 
     monkeypatch.setattr(process_service, "redetection_decision", decide)
@@ -1748,7 +1757,9 @@ async def test_reprocessing_detects_a_files_peaks_before_it_makes_its_samples(
 ):
     """On the acquisition axis, as a first conversion detects them, so after
     the calibration is reset; and under the samples the pipeline is about to
-    make, so before the old ones go and the new ones are cut from the store."""
+    make, so before the old ones go and the new ones are cut from the store.
+    All of it once the run has bound the file, so that one it parks keeps
+    its calibration, its peaks and its samples."""
     bound = await _file(
         async_session_factory,
         "restitched",
@@ -1762,10 +1773,11 @@ async def test_reprocessing_detects_a_files_peaks_before_it_makes_its_samples(
     assert "Successfully re-processed 1" in result["message"]
     assert steps.done == [
         "decided",
+        "bound the file",
         "reset the calibration",
         detected,
         "cleared the samples",
-        "ran the pipeline",
+        "made the samples",
     ]
 
 
@@ -1786,9 +1798,10 @@ async def test_reprocessing_leaves_the_peaks_of_a_file_nothing_is_decided_for(
 
     assert steps.done == [
         "decided",
+        "bound the file",
         "reset the calibration",
         "cleared the samples",
-        "ran the pipeline",
+        "made the samples",
     ]
 
 
@@ -1846,7 +1859,7 @@ async def test_a_file_whose_peaks_cannot_be_detected_again_keeps_its_samples(
     assert "Processing stopped on an unexpected error" in _report(failed)
     assert "No space left" not in _report(failed)
     assert "/srv/filestore" not in _report(failed)
-    assert steps.done == ["decided", "reset the calibration"]
+    assert steps.done == ["decided", "bound the file", "reset the calibration"]
     assert await _samples_of(async_session_factory, failing) == 1
     assert await _status(async_session_factory, failing) == "failed"
     detail = await _detail(async_session_factory, failing)
@@ -1883,7 +1896,7 @@ async def test_one_files_failed_detection_does_not_stop_the_files_after_it(
     # A partial result is a warning, which the task reports and does not raise
     await process_service.re_process_sample_files(sample_file_ids=[first, second])
 
-    assert steps.done.count("ran the pipeline") == 1
+    assert steps.done.count("made the samples") == 1
     other = second if failed_for == [first] else first
     assert await _samples_of(async_session_factory, failed_for[0]) == 1
     assert await _status(async_session_factory, failed_for[0]) == "failed"
@@ -2184,7 +2197,7 @@ async def test_a_calibration_that_cannot_be_put_back_is_reported_and_not_raised(
 
     restore.assert_awaited_once()
     assert restore.await_args.args[1] is cleared
-    assert steps.done.count("ran the pipeline") == 1
+    assert steps.done.count("made the samples") == 1
     other = second if failed_for == [first] else first
     assert await _status(async_session_factory, other) == "queued"
     assert await _status(async_session_factory, failed_for[0]) == "failed"
@@ -2981,3 +2994,152 @@ async def test_a_retry_that_cannot_bind_a_file_clears_what_its_own_run_made(
     detail = await _detail(async_session_factory, bound)
     assert f"No ionization mode has the id {chosen}" in detail
     assert "earlier run" not in detail
+
+
+@pytest.fixture
+def reprocessed(
+    async_session_factory, run_to_the_binding, mode_with_token, monkeypatch
+):
+    """A file a person chose a mode for, re-processed by the pipeline itself.
+
+    Its peaks are decided to be detected again. ``deleted_meanwhile`` makes
+    its chosen mode go while the batch waits: after the checks in front of
+    the batch, as the file is claimed. Gives the mode, the file, the
+    detection and the reset, which give whether they ran.
+    """
+
+    async def make(setup, deleted_meanwhile: bool) -> SimpleNamespace:
+        chosen, _token = await mode_with_token("-")
+        file = await _file(
+            async_session_factory,
+            f"reprocessed-{gen_id(6)}",
+            "-",
+            sample_under=(setup["batch"], chosen),
+            bound_by="explicit",
+        )
+        detect = AsyncMock()
+        monkeypatch.setattr(
+            process_service, "redetection_decision", AsyncMock(return_value=True)
+        )
+        monkeypatch.setattr(process_service, "redetect_peaks", detect)
+        claim = process_service.claim_for_processing
+
+        async def claimed(sample_file_ids, detail):
+            if deleted_meanwhile:
+                async with async_session_factory() as session:
+                    await session.execute(
+                        delete(IonizationMode).where(
+                            IonizationMode.ionization_mode_id == chosen
+                        )
+                    )
+                    await session.commit()
+            return await claim(sample_file_ids, detail)
+
+        monkeypatch.setattr(process_service, "claim_for_processing", claimed)
+        return SimpleNamespace(
+            mode=chosen, file=file, detect=detect, reset=run_to_the_binding
+        )
+
+    return make
+
+
+@pytest.mark.asyncio
+async def test_a_reprocessed_file_its_run_cannot_bind_keeps_what_it_has(
+    async_session_factory, setup, reprocessed
+):
+    """The mode a person chose for the file is deleted after the checks in
+    front of the batch, while the file waits for its turn. Its run parks it
+    before anything of it is touched: its calibration is not reset, its
+    peaks are not detected again, and the sample its last run made is still
+    there. The file needs a chemistry, and its status and the report say
+    that its samples were kept."""
+    file = await reprocessed(setup, deleted_meanwhile=True)
+
+    with pytest.raises(ApiException) as refused:
+        await process_service.re_process_sample_files(sample_file_ids=[file.file])
+
+    file.reset.assert_not_awaited()
+    file.detect.assert_not_awaited()
+    assert await _samples_of(async_session_factory, file.file) == 1
+    assert await _status(async_session_factory, file.file) == "needs_chemistry"
+    kept = "Its samples, from an earlier run, were left as they were."
+    assert kept in await _detail(async_session_factory, file.file)
+    assert f"No ionization mode has the id {file.mode}" in _report(refused)
+    assert kept in _report(refused)
+
+
+@pytest.mark.asyncio
+async def test_a_reprocessed_file_is_rebuilt_once_its_run_has_bound_it(
+    async_session_factory, setup, reprocessed, monkeypatch
+):
+    """The other half. By the time the run makes the file's samples, its
+    calibration is reset, its peaks are detected again and its old sample is
+    gone, each once; and what the run says of its peak store's stitch is
+    read again, from the store just detected."""
+    file = await reprocessed(setup, deleted_meanwhile=False)
+    seen = {}
+
+    async def create(**_):
+        seen["samples"] = await _samples_of(async_session_factory, file.file)
+        seen["resets"] = file.reset.await_count
+        seen["detections"] = file.detect.await_count
+        seen["stitch reads"] = process_service.read_store_stitch.await_count
+        raise _SeenEnough
+
+    monkeypatch.setattr(process_service, "create_acquisition_batches_and_items", create)
+
+    with pytest.raises(ApiException):
+        await process_service.re_process_sample_files(sample_file_ids=[file.file])
+
+    assert seen == {"samples": 0, "resets": 1, "detections": 1, "stitch reads": 2}
+
+
+@pytest.mark.asyncio
+async def test_a_reprocessed_file_whose_clearing_fails_is_reported_without_its_text(
+    async_session_factory, setup, reprocessed, monkeypatch
+):
+    """The clearing is its run's, and a fault in it ends the run as a fault
+    in any other stage does: the file is failed, and the report says what
+    kind of failure it was, not what the error said, whose text can hold SQL
+    with its bound parameters."""
+    file = await reprocessed(setup, deleted_meanwhile=False)
+    monkeypatch.setattr(
+        process_service,
+        "_clear_sample_items_for_reprocessing",
+        AsyncMock(side_effect=RuntimeError("the database went away")),
+    )
+
+    with pytest.raises(ApiException, match="Processing failed") as refused:
+        await process_service.re_process_sample_files(sample_file_ids=[file.file])
+
+    assert "the database went away" not in _report(refused)
+    assert await _samples_of(async_session_factory, file.file) == 1
+    assert await _status(async_session_factory, file.file) == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_reprocessed_file_whose_peaks_cannot_be_detected_stops_its_run(
+    async_session_factory, setup, reprocessed, monkeypatch
+):
+    """Its run bound it, and stops where the detection failed: no sample is
+    cleared or made, the file is failed with the stage named, and the report
+    says so in the words its status uses."""
+    file = await reprocessed(setup, deleted_meanwhile=False)
+    file.detect.side_effect = OSError("/srv/filestore/site/file: No space left")
+    # A file whose calibration had nothing to reset: nothing to put back
+    file.reset.return_value = None
+    create = AsyncMock(side_effect=_SeenEnough)
+    monkeypatch.setattr(process_service, "create_acquisition_batches_and_items", create)
+
+    with pytest.raises(ApiException, match="could not be detected again") as failed:
+        await process_service.re_process_sample_files(sample_file_ids=[file.file])
+
+    assert "/srv/filestore" not in _report(failed)
+    assert "could not be put back" not in _report(failed)
+    file.reset.assert_awaited_once()
+    create.assert_not_awaited()
+    assert await _samples_of(async_session_factory, file.file) == 1
+    assert await _status(async_session_factory, file.file) == "failed"
+    assert "could not be detected again" in await _detail(
+        async_session_factory, file.file
+    )
