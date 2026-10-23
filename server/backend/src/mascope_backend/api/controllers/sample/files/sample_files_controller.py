@@ -40,6 +40,7 @@ from mascope_backend.api.lib.api_features import (
     api_controller,
     api_controller_background_task,
 )
+from mascope_backend.api.lib.datetimes import as_utc
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     NotFoundException,
@@ -396,9 +397,9 @@ async def get_sample_files(
                 }
             stmt = stmt.where(or_(*conditions))
         if datetime_min:
-            stmt = stmt.where(SampleFile.datetime_utc >= datetime_min)
+            stmt = stmt.where(SampleFile.datetime_utc >= as_utc(datetime_min))
         if datetime_max:
-            stmt = stmt.where(SampleFile.datetime_utc <= datetime_max)
+            stmt = stmt.where(SampleFile.datetime_utc <= as_utc(datetime_max))
         if instrument:
             stmt = stmt.where(SampleFile.instrument == instrument)
         if filename:
