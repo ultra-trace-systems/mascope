@@ -31,9 +31,13 @@ from mascope_reference.peaklist import (
     read_peak_list,
 )
 from mascope_reference.query import (
+    StructureCandidate,
+    StructurePage,
     annotate_formulas,
     by_formula,
     by_mass_window,
+    structures_by_formula,
+    xref_cas_number,
 )
 from mascope_reference.record import ReferenceRecord
 from mascope_reference.seed import SeedOutcome, catalogue, seed
@@ -55,6 +59,10 @@ __all__ = [
     "by_formula",
     "by_mass_window",
     "annotate_formulas",
+    "structures_by_formula",
+    "StructureCandidate",
+    "StructurePage",
+    "xref_cas_number",
     "collapse_by_inchikey",
     "iter_known_compositions",
     "known_listings",
