@@ -17,6 +17,7 @@ Neither needs a running stack or a site file.
 """
 
 import itertools
+from collections import Counter
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -239,8 +240,8 @@ class TestTheShapes:
         }
 
     def test_the_stepped_shapes_e50_is_where_survival_crosses_one_half(self):
-        """On NCE and on volts, between the two steps survival falls through
-        0.5 between; the precursor taken at one energy has none."""
+        """On NCE and on volts, between the two steps where survival falls
+        through 0.5; the precursor taken at one energy has none."""
         stepped = ANSWERS["shapes"]["stepped"]["answers"]
         steps = sorted(
             (SPECTRA[g["spectrum"]]["nce"], g["hcd_energy"][0], g["spectrum"])
@@ -286,6 +287,22 @@ class TestTheShapes:
         assert shape["answers"]["ms2_scan_count"] == len(fragment_scans)
         assert shape["answers"]["scans"] == len(shape["scans"])
 
+    @pytest.mark.parametrize("name", SHAPES)
+    def test_its_groups_widths_are_their_scans_widths(self, name):
+        """Each group's widths, narrowest first, with the number of its scans
+        isolated at each; its one width only where they share one."""
+        shape = ANSWERS["shapes"][name]
+        for group in shape["answers"]["groups"]:
+            widths = Counter(shape["scans"][n - 1]["width"] for n in group["scans"])
+
+            assert group["isolation_widths"] == [
+                {"isolation_width": width, "scan_count": count}
+                for width, count in sorted(widths.items())
+            ]
+            assert group["isolation_width"] == (
+                next(iter(widths)) if len(widths) == 1 else None
+            )
+
 
 @pytest.fixture(scope="module", params=SHAPES)
 def stored(request, tmp_path_factory):
@@ -317,6 +334,7 @@ class TestTheRoutes:
                 g["parent_peak_mz"],
                 g["activation"],
                 g["isolation_width"],
+                g["isolation_widths"],
                 g["scan_count"],
             )
             for g in summary["groups"]
@@ -325,6 +343,7 @@ class TestTheRoutes:
                 g["parent_peak_mz"],
                 g["activation"],
                 g["isolation_width"],
+                g["isolation_widths"],
                 g["scan_count"],
             )
             for g in stored["groups"]
