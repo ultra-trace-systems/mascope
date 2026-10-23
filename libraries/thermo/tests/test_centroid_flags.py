@@ -317,6 +317,34 @@ def test_thermo_centroid_flags_count_the_reference_and_exception_centroids():
     assert reader._raw.centroid_reads == [(1, True)]
 
 
+def test_centroid_masses_pair_with_the_flags_centroid_for_centroid():
+    # Every stored centroid, in the order of its flags: OpenTFRaw's last
+    # one has no FT label data and is flagged Reference all the same.
+    opentfraw = _opentfraw()
+    assert opentfraw.centroid_masses(2).tolist() == [*MZS, 105.0]
+    assert opentfraw.centroid_masses(2).size == opentfraw.centroid_flags(2).size
+    thermo = _thermo()
+    assert thermo.centroid_masses(2).tolist() == MZS
+    assert thermo.centroid_masses(2).size == thermo.centroid_flags(2).size
+
+
+def test_a_scan_without_centroids_has_no_masses():
+    opentfraw = _opentfraw()
+    opentfraw._raw.centroid_labels = lambda number: {"mz": np.zeros(0)}
+    assert opentfraw.centroid_masses(1).shape == (0,)
+    thermo = _thermo()
+    thermo._raw.GetCentroidStream = lambda number, include: None
+    assert thermo.centroid_masses(1).shape == (0,)
+
+
+def test_thermo_centroid_masses_count_the_reference_and_exception_centroids():
+    reader = _thermo()
+
+    reader.centroid_masses(1)
+
+    assert reader._raw.centroid_reads == [(1, True)]
+
+
 def test_per_scan_centroids_carry_their_scan_and_flags(reader):
     per_scan = reader.centroids_per_scan(mz_min=50.0, mz_max=750.0)
 

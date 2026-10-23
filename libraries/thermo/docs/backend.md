@@ -133,10 +133,13 @@ Scan selection reads metadata only. The OpenTFRaw backend builds it from `scan_t
 - **`acquisition_parameters(max_scans, scan_numbers)`**: Summarises the trailers of up to `max_scans` scans, sampled evenly from `scan_numbers` (every MS1 scan by default), into the values constant across them and the names of those that vary.
 - **`scan_indices(polarity, t_min, t_max, ms_type, stream)`**: Returns the 1-based numbers of the selected scans.
 - **`mass_range()`**: Returns the run's `(low, high)` m/z range.
+- **`run_time_range()`**: Returns the run's start and end times in seconds, as the MS controller's run header records them: OpenTFRaw's `controllers()`, the Thermo library's `RunHeaderEx`. Not the first and last scan's start times, since a trailing scan can carry the time 0.
 
 ### Data Access and Processing
 
 - **`profile_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max, stream)`**: Retrieves the raw profile m/z and intensity arrays of each selected scan, with the scan times.
+- **`scan_profile(scan_number)`**: One scan's profile, `(mz, intensity)`, as the reader returns it, for a caller that reads a few scans by number. OpenTFRaw returns the points the file stores; the Thermo library also returns the zero-intensity points it adds around each run of them.
+- **`centroid_flags(scan_number)`, `centroid_masses(scan_number)`**: The flags and the m/z of every centroid a scan stores, in one order, so the two pair up centroid for centroid: flagged centroids included, and those without FT label data, which `centroids_per_scan` leaves out. The axis fingerprint reads the lock mass a scan was corrected with off them, the centroid flagged Reference.
 - **`centroids_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max, stream)`**: Retrieves the centroided peaks (m/z, intensity, resolution, S/N) of each selected scan.
 - **`centroids_meta()`**: Returns every scan's centroid m/z, intensity, resolution and noise, decoded from its centroid labels.
 - **`iter_centroids_meta()`**: The same, one scan at a time and in scan order: `(scan_number, time_s, data)`. A scan is decoded when its turn comes, so a caller that hands each scan on before taking the next holds one scan's arrays instead of the file's. `RawFileMetadataLegacy.iter_json()` writes the metadata document this way, which is how `GET /api/sample/files/{id}/metadata` sends a body of hundreds of megabytes without building it.

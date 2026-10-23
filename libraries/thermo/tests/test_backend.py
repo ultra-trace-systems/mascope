@@ -6,10 +6,12 @@ they run anywhere.
 
 import importlib.metadata
 import re
+from types import SimpleNamespace
 
 import pytest
 
 from mascope_thermo import backend as m_backend
+from mascope_thermo.thermo import NoScansFoundError
 
 
 def test_default_backend_is_opentfraw(monkeypatch):
@@ -66,3 +68,30 @@ def test_profile_signature_rejects_an_unknown_backend(monkeypatch):
 def test_profile_signature_is_safe_in_a_file_name(monkeypatch):
     monkeypatch.delenv(m_backend.ENV_BACKEND, raising=False)
     assert re.fullmatch(r"[A-Za-z0-9.+-]+", m_backend.averaged_profile_signature())
+
+
+# The run's start and end times are the run header's, the MS controller's.
+
+
+def test_opentfraw_run_times_are_the_ms_controllers():
+    be = m_backend.OpenTFRawBackend("dummy.raw")
+    be._raw = SimpleNamespace(
+        controllers=lambda: [
+            {"is_ms_controller": False, "start_time": 0.0, "end_time": 0.0},
+            {"is_ms_controller": True, "start_time": 0.25, "end_time": 9.5},
+        ]
+    )
+    assert be.run_time_range() == (15.0, 570.0)
+
+
+def test_opentfraw_file_without_an_ms_controller_has_no_scans():
+    be = m_backend.OpenTFRawBackend("dummy.raw")
+    be._raw = SimpleNamespace(controllers=lambda: [{"is_ms_controller": False}])
+    with pytest.raises(NoScansFoundError):
+        be.run_time_range()
+
+
+def test_thermo_run_times_are_its_run_headers():
+    be = m_backend.ThermoBackend("dummy.raw")
+    be._raw = SimpleNamespace(RunHeaderEx=SimpleNamespace(StartTime=0.25, EndTime=9.5))
+    assert be.run_time_range() == (15.0, 570.0)
