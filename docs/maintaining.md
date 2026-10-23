@@ -852,7 +852,8 @@ mascope export package <dataset id> -o deposit.zip  # under a name of your own
 
 The dataset id is in the app's address bar, after `d=`, when the dataset is
 open. The archive is named `mascope-package_<dataset id>_<dataset name>.zip`,
-and an archive already at the output path is replaced.
+and an archive already at the output path is replaced. An output path that
+ends in `/` is a directory, made if it is missing; its parent must exist.
 
 The archive is built inside the running backend container, from the database
 and filestore of the env the stack runs, in that env's `temp/packages/`. Then
