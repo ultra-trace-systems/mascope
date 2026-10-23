@@ -2682,6 +2682,119 @@ async def test_a_retry_is_told_when_its_run_has_cleared_the_file():
     ]
 
 
+@pytest.mark.asyncio
+async def test_a_callers_rebuild_runs_once_the_file_is_bound_and_not_again():
+    """Re-processing's rebuild is owed to the first attempt that binds the
+    file, which need not be the first attempt, and goes ahead of the
+    clearing of what an earlier attempt left: a retry clears again, and does
+    not rebuild again."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    done: list[str] = []
+    rebuild = AsyncMock(side_effect=lambda _: done.append("rebuilt"))
+    cleanup = AsyncMock(side_effect=lambda _: done.append("cleared"))
+    body = _attempts(
+        (False, ApiException("busy", {}, 503)),
+        (True, ApiException("busy", {}, 503)),
+        (True, {"message": "ok"}),
+    )
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", cleanup),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-rebuilt", independent_transaction=True, rebuild=rebuild
+        )
+
+    assert done == ["rebuilt", "cleared", "cleared"]
+    # The attempt's own row
+    assert rebuild.await_args.args[0].sample_file_id == "sf-rebuilt"
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_that_raises_is_owed_to_the_retry():
+    """A rebuild that raised did not run to its end, so the retry that binds
+    the file runs it again before it clears anything."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    rebuild = AsyncMock(side_effect=[ApiException("busy", {}, 503), None])
+    cleanup = AsyncMock()
+    body = _attempts((True, None), (True, {"message": "ok"}))
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", cleanup),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-rebuilt", independent_transaction=True, rebuild=rebuild
+        )
+
+    assert rebuild.await_count == 2
+    cleanup.assert_awaited_once()
+    # The first attempt raised in its clearing: the second is not told it
+    # cleared the file
+    assert [call.kwargs["cleared_by_this_run"] for call in body.call_args_list] == [
+        False,
+        False,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_that_stops_the_run_clears_nothing():
+    """What the rebuild says it stopped on is what the attempt is told, and
+    nothing of the file is cleared after it. Only a rebuild that ran to its
+    end says the file's store is to be read again."""
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    told = []
+
+    async def attempt(**kwargs):
+        told.append(
+            await kwargs["clear_earlier_run"](
+                _make_sample_file(sample_file_id=kwargs["sample_file_id"])
+            )
+        )
+        return {"status": "failed", "message": "m", "_notification_data": {}}
+
+    cleanup = AsyncMock()
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", AsyncMock(side_effect=attempt)),
+        patch(f"{_SVC}._delete_partial_acquisition_items", cleanup),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-stopped",
+            independent_transaction=True,
+            rebuild=AsyncMock(return_value="Its peaks could not be detected again."),
+        )
+        await service.auto_process_sample_file(
+            sample_file_id="sf-rebuilt",
+            independent_transaction=True,
+            rebuild=AsyncMock(return_value=None),
+        )
+        await service.auto_process_sample_file(
+            sample_file_id="sf-plain", independent_transaction=True
+        )
+
+    assert told == [
+        service._Cleared(stopped="Its peaks could not be detected again."),
+        service._Cleared(rebuilt=True),
+        service._Cleared(),
+    ]
+    assert [call.args[0] for call in cleanup.await_args_list] == [
+        "sf-rebuilt",
+        "sf-plain",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # MS2 parts: a file of fragmentation scans alone, which nothing binds
 # ---------------------------------------------------------------------------
@@ -3026,6 +3139,86 @@ async def test_filing_clears_what_an_earlier_run_left_first(status):
         await _run_pipeline()
 
     assert order == [("clear", "sf-001"), ("file", "sf-001")]
+
+
+@pytest.mark.asyncio
+async def test_filing_stops_where_a_callers_rebuild_stopped_the_run(status):
+    """Re-processing's rebuild runs before filing, as before making samples,
+    and a rebuild that stopped the run leaves the file unfiled: its MS2 part
+    is not cleared, and no other is made."""
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+    cleanup = AsyncMock()
+
+    with (
+        patch(f"{_SVC}._delete_partial_acquisition_items", cleanup),
+        _filing(),
+    ):
+        result = await _run_pipeline(
+            rebuild=AsyncMock(return_value="Its peaks could not be detected again.")
+        )
+        _filer().assert_not_awaited()
+
+    assert result["status"] == "failed"
+    assert result["message"] == "Its peaks could not be detected again."
+    cleanup.assert_not_awaited()
+    assert _recorded(status) == []
+
+
+@pytest.mark.asyncio
+async def test_a_reprocessing_rebuild_does_each_step_once():
+    """A clearing that raised is retried by the pipeline, which runs the
+    rebuild again: the calibration is not reset again, which would lose what
+    the first reset cleared, and the peaks are not detected again, which
+    they were. The clearing is, and the batches its items were in are
+    reloaded."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    reset, detect = AsyncMock(), AsyncMock()
+    clear = AsyncMock(side_effect=[ApiException("busy", {}, 503), {"batch-1"}])
+    affected: set[str] = set()
+    rebuild = service._reprocessing_rebuild(True, False, affected)
+    sample_file = _make_sample_file(sample_file_id="sf-rebuilt")
+    with (
+        patch(f"{_SVC}.reset_mz_calibration", reset),
+        patch(f"{_SVC}.redetect_peaks", detect),
+        patch(f"{_SVC}._clear_sample_items_for_reprocessing", clear),
+    ):
+        with pytest.raises(ApiException):
+            await rebuild(sample_file)
+        assert await rebuild(sample_file) is None
+
+    reset.assert_awaited_once_with(sample_file)
+    detect.assert_awaited_once_with(sample_file, True)
+    assert clear.await_count == 2
+    assert clear.await_args.kwargs == {
+        "sample_file_id": "sf-rebuilt",
+        "independent_transaction": False,
+    }
+    assert affected == {"batch-1"}
+
+
+@pytest.mark.asyncio
+async def test_a_reprocessing_rebuild_detects_nothing_where_nothing_is_decided():
+    """Nearly every file: its store is the one any decision gives it."""
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    detect = AsyncMock()
+    rebuild = service._reprocessing_rebuild(None, True, set())
+    with (
+        patch(f"{_SVC}.reset_mz_calibration", AsyncMock()),
+        patch(f"{_SVC}.redetect_peaks", detect),
+        patch(
+            f"{_SVC}._clear_sample_items_for_reprocessing",
+            AsyncMock(return_value=set()),
+        ) as clear,
+    ):
+        assert await rebuild(_make_sample_file()) is None
+
+    detect.assert_not_awaited()
+    assert clear.await_args.kwargs["independent_transaction"] is True
 
 
 @pytest.mark.asyncio

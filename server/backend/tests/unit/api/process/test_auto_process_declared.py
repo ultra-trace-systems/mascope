@@ -97,7 +97,9 @@ def pipeline():
 
 async def _run(**arguments):
     return await service._auto_process_sample_file(
-        sample_file_id="sf-001", clear_earlier_run=AsyncMock(), **arguments
+        sample_file_id="sf-001",
+        clear_earlier_run=AsyncMock(return_value=service._Cleared()),
+        **arguments,
     )
 
 

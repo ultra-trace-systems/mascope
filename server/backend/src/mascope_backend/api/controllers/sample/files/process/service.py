@@ -917,6 +917,54 @@ async def _reset_calibration(sample_file: SampleFile) -> None:
         )
 
 
+@dataclass(frozen=True)
+class _Cleared:
+    """How an attempt's clearing of a bound file went.
+
+    ``stopped`` is what the caller's rebuild stopped the run with, where it
+    did: nothing of the file was cleared then. ``rebuilt`` says the rebuild
+    ran to its end, which can have detected the file's peaks again, so what
+    the run read of its store before is read again.
+    """
+
+    stopped: str | None = None
+    rebuilt: bool = False
+
+
+async def _streams_of(sample_file: SampleFile) -> tuple[list[dict] | None, str | None]:
+    """A file's scan-stream census, and the note its statuses carry of it.
+
+    :param sample_file: The file.
+    :return: The census (:func:`read_scan_streams`) and the pooled-streams
+        and overlap note, if any.
+    """
+    scan_streams = await read_scan_streams(sample_file.filename)
+    stitch = await read_store_stitch(sample_file.filename)
+    return scan_streams, compose_detail(
+        pooled_streams_note(scan_streams or [], stitch.keys),
+        overlap_readings_note(stitch.keys, stitch.overlaps),
+    )
+
+
+def _rebuild_stopped(sample_file: SampleFile, message: str) -> dict:
+    """The result of a run the caller's rebuild stopped, the file untouched.
+
+    :param sample_file: The file.
+    :param message: What the rebuild said, which a person is told.
+    :return: The run's result.
+    """
+    return {
+        "status": "failed",
+        "message": message,
+        "_notification_data": {
+            "affected_sample_batch_ids": [],
+            "affected_sample_item_ids": [],
+            "instrument": sample_file.instrument,
+            "sample_file_id": sample_file.sample_file_id,
+        },
+    }
+
+
 async def _rematch_when_slot_free(**kwargs) -> dict:
     """
     Run ``rematch_samples`` under the ingest gate.
@@ -967,6 +1015,7 @@ async def auto_process_sample_file(
     ionization_mode_ids: list[str] | None = None,
     kept_provenance: dict[str, "ItemProvenance"] | None = None,
     reset_calibration: bool = False,
+    rebuild: Callable[[SampleFile], Awaitable[str | None]] | None = None,
 ) -> dict:
     """
     Main orchestrator for automatic sample file processing pipeline.
@@ -1017,6 +1066,16 @@ async def auto_process_sample_file(
         re-processing does, for a file rebuilt under other modes. Once per
         run: a retry does not reset it again.
     :type reset_calibration: bool, optional
+    :param rebuild: What the caller does to the file once the run has bound
+        it, before its samples are made: re-processing resets its
+        calibration, detects its peaks again and clears every sample item of
+        it there (:func:`_reprocessing_rebuild`), so that a file the run
+        cannot bind keeps all of that. Awaited until it returns, by the
+        first attempt that binds the file and by each one after an attempt
+        it raised in. It returns None to go on, or what a person is told
+        when it stopped the run, having left the file as it was and recorded
+        its status; the run then ends ``failed`` with that message.
+    :type rebuild: Callable[[SampleFile], Awaitable[str | None]] | None, optional
     :return: Processing results with affected IDs
     """
     # The keys this run has already taught, shared by every attempt: the
@@ -1027,25 +1086,35 @@ async def auto_process_sample_file(
     # Shared by every attempt too: the reset is owed to the first attempt
     # that binds the file, which need not be the first attempt.
     reset_owed = reset_calibration
+    # The caller's own rebuild, owed until it has run to its end.
+    rebuild_owed = rebuild
     # Whether an attempt of this run has cleared the file. The samples it has
     # are then that attempt's own and partial, not an earlier run's, and an
     # attempt that parks it clears them (_park_needing_chemistry).
     cleared = False
 
-    async def clear_earlier_run(sample_file: SampleFile) -> None:
+    async def clear_earlier_run(sample_file: SampleFile) -> _Cleared:
         """Clear what an earlier run left, once an attempt has bound the file.
 
         Any earlier run - a failed attempt, or a whole earlier pipeline a
         restart cut short - may have committed sample items before dying in
         calibration/matching. Every attempt clears them, the first included,
         so neither a retry nor a re-triggered pipeline can duplicate them.
+        The caller's rebuild goes first, where it is owed.
         """
-        nonlocal reset_owed, cleared
+        nonlocal reset_owed, rebuild_owed, cleared
         if reset_owed:
             reset_owed = False
             await _reset_calibration(sample_file)
+        rebuilt = rebuild_owed is not None
+        if rebuild_owed is not None:
+            stopped = await rebuild_owed(sample_file)
+            if stopped is not None:
+                return _Cleared(stopped=stopped)
+            rebuild_owed = None
         await _delete_partial_acquisition_items(sample_file.sample_file_id)
         cleared = True
+        return _Cleared(rebuilt=rebuilt)
 
     for attempt in range(_AUTO_PROCESS_RETRIES + 1):
         try:
@@ -1286,7 +1355,7 @@ async def _auto_process_sample_file(
     kept_provenance: dict[str, ItemProvenance] | None = None,
     recorded_bindings: set[str] | None = None,
     *,
-    clear_earlier_run: Callable[[SampleFile], Awaitable[None]],
+    clear_earlier_run: Callable[[SampleFile], Awaitable[_Cleared]],
     cleared_by_this_run: bool = False,
 ) -> dict:
     """Gated body of ``auto_process_sample_file`` - see the public wrapper.
@@ -1297,8 +1366,9 @@ async def _auto_process_sample_file(
 
     ``clear_earlier_run`` is the wrapper's, and is awaited once the file is
     bound, before any of its samples is made: it clears what an earlier run
-    left, and resets the m/z calibration where the run owes that. Required,
-    so that no caller makes samples without clearing first.
+    left, and resets the m/z calibration and runs the caller's rebuild where
+    the run owes them. Required, so that no caller makes samples without
+    clearing first.
     ``cleared_by_this_run`` says an earlier attempt of this run has cleared
     the file already, so a park clears that attempt's samples.
     """
@@ -1309,12 +1379,19 @@ async def _auto_process_sample_file(
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
     # Describes the file rather than a stage, so every status this run
     # records carries it.
-    scan_streams = await read_scan_streams(sample_file.filename)
-    stitch = await read_store_stitch(sample_file.filename)
-    streams_note = compose_detail(
-        pooled_streams_note(scan_streams or [], stitch.keys),
-        overlap_readings_note(stitch.keys, stitch.overlaps),
-    )
+    scan_streams, streams_note = await _streams_of(sample_file)
+
+    async def clear() -> str | None:
+        """Clear the bound file (``clear_earlier_run``).
+
+        :return: None, or what the caller's rebuild stopped the run with.
+        """
+        nonlocal scan_streams, streams_note
+        cleared = await clear_earlier_run(sample_file)
+        if cleared.rebuilt:
+            # Its peaks may have been detected again, under another stitch
+            scan_streams, streams_note = await _streams_of(sample_file)
+        return cleared.stopped
 
     # --- Get ACQUISITION dataset for the instrument --- #
     # The year-dataset and the daily batch inside it must be dated off the SAME
@@ -1350,7 +1427,9 @@ async def _auto_process_sample_file(
             # Filing makes samples, so what an earlier run left is cleared
             # first, as it is once a file is bound: the MS2 part an earlier
             # run filed included, which filing again would otherwise double.
-            await clear_earlier_run(sample_file)
+            stopped = await clear()
+            if stopped is not None:
+                return _rebuild_stopped(sample_file, stopped)
             return await _file_without_chemistry(
                 sample_file,
                 acquisition_dataset.get("dataset_id"),
@@ -1524,7 +1603,9 @@ async def _auto_process_sample_file(
     # the samples it has, and the m/z calibration they were matched on. Still
     # on every attempt and ahead of every item, because
     # create_acquisition_batches_and_items does not look for existing ones.
-    await clear_earlier_run(sample_file)
+    stopped = await clear()
+    if stopped is not None:
+        return _rebuild_stopped(sample_file, stopped)
 
     # --- Create ACQUISITION batches and sample items for each ionization mode --- #
     (
@@ -2086,6 +2167,97 @@ def _compose_reprocess_failure_message(failed_files: list[dict], header: str) ->
     return "\n".join([header] + lines)
 
 
+def _reprocessing_rebuild(
+    per_stream: bool | None,
+    independent_transaction: bool,
+    affected_sample_batch_ids: set[str],
+) -> Callable[[SampleFile], Awaitable[str | None]]:
+    """What a re-processing does to a file once its run has bound it.
+
+    Handed to the pipeline as its ``rebuild``, which awaits it after the
+    binding and before any sample is made, so that a file the run parks - a
+    token renamed, a kept mode deleted or a binding moved while the batch
+    waited - keeps its calibration, its peaks and its samples. In this order:
+
+    - the m/z calibration is reset. Orbitrap calibration is cumulative (the
+      file's m/z axes are rescaled in place), so without this a re-processed
+      file silently keeps its previous calibration. A failed reset keeps the
+      old calibration, and the file is rebuilt all the same;
+    - where ``per_stream`` is not None, the file's peaks are detected again
+      under it: after the reset, so on the acquisition axis, as a first
+      conversion detects them, and before the samples are cleared, so that a
+      file whose peaks could not be detected keeps them;
+    - every sample item of the file is cleared
+      (:func:`_clear_sample_items_for_reprocessing`), and the batches they
+      were in are added to ``affected_sample_batch_ids``.
+
+    Each step is done once: an attempt that raises in a later step is
+    retried by the pipeline from that step, with what the reset cleared
+    still in hand.
+
+    :param per_stream: The file's decision (:func:`redetection_decision`).
+    :param independent_transaction: Whether the clearing emits its own
+        deletion events.
+    :param affected_sample_batch_ids: The re-processing's batches to reload.
+    :return: The rebuild. It returns None once the file is cleared, or the
+        message for whoever asked when its peaks could not be detected
+        again; the file is then left as it was, its calibration put back,
+        and its status says so.
+    """
+    cleared: ClearedMzCalibration | None = None
+    reset = detected = False
+
+    async def rebuild(sample_file: SampleFile) -> str | None:
+        nonlocal cleared, reset, detected
+        if not reset:
+            reset = True
+            try:
+                cleared = await reset_mz_calibration(sample_file)
+            except Exception:  # noqa: BLE001 - reset is best-effort per file
+                runtime.logger.exception(
+                    "Failed to reset m/z calibration for "
+                    f"'{sample_file.filename}' before re-processing; the "
+                    "previous calibration remains in effect."
+                )
+        if per_stream is not None and not detected:
+            try:
+                await redetect_peaks(sample_file, per_stream)
+            except Exception as e:  # noqa: BLE001 - one file's failure
+                runtime.logger.exception(
+                    "Could not detect the peaks of sample file "
+                    f"{sample_file.filename} again for its re-processing"
+                )
+                # A detection that fails leaves the peak store as it was, on
+                # the acquisition axis the reset left. The samples kept were
+                # matched on the calibration the reset cleared, so it goes
+                # back on, as a parked file keeps the calibration its samples
+                # were matched on.
+                unrestored = ""
+                if cleared is not None and not await _restore_calibration(
+                    sample_file, cleared
+                ):
+                    unrestored = f" {_CALIBRATION_NOT_RESTORED}"
+                # The run stops here, and records nothing of how it ended:
+                # this does. The error's own text can hold a path, so the
+                # status names the stage, and the report adds only the kind
+                # of failure, in the words a failed file's status uses.
+                await _record_failed(
+                    sample_file.sample_file_id,
+                    ValueError(f"{_PEAKS_NOT_REDETECTED}{unrestored}"),
+                )
+                return f"{_PEAKS_NOT_REDETECTED} {_failure_detail(e)}{unrestored}"
+            detected = True
+        affected_sample_batch_ids.update(
+            await _clear_sample_items_for_reprocessing(
+                sample_file_id=sample_file.sample_file_id,
+                independent_transaction=independent_transaction,
+            )
+        )
+        return None
+
+    return rebuild
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     success_reload=[
@@ -2111,9 +2283,11 @@ async def re_process_sample_files(
     - Validate all sample files exist and have no user-created samples
     - For each file: ask the acquisition method of one whose samples nothing
       else binds, where the method rung is on, and leave it as it is if the
-      method declines; detect its peaks again where the deployment's
-      scan-stream setting can give it another peak store than it has, delete
-      its existing ACQUISITION sample items, and run the auto-process pipeline
+      method declines; run the auto-process pipeline, which, once it has
+      bound the file, resets its calibration, detects its peaks again where
+      the deployment's scan-stream setting can give it another peak store
+      than it has, and deletes its existing sample items
+      (:func:`_reprocessing_rebuild`), so that a file it parks keeps them
     - Return aggregated results
 
     :param sample_file_ids: List of IDs of the sample files to re-process
@@ -2242,11 +2416,12 @@ async def re_process_sample_files(
         # file goes through with no modes of its own, whatever its name says
         # and whatever its record or a token bound it to before.
         #
-        # Asked here and not left to the pipeline, because by the time the
-        # pipeline asks, the file's samples are cleared and its calibration
-        # reset. A record that binds nothing must cost a file neither, so
-        # such a file is judged below as one with no record is, and what its
-        # record named goes into the reason if it is refused.
+        # Asked here and not left to the pipeline, because the answer says
+        # what the pipeline is started with, and a file started with modes
+        # of its own is not asked its record there. A record that binds
+        # nothing is no answer, so such a file is judged below as one with
+        # no record is, and what its record named goes into the reason if it
+        # is refused.
         try:
             modes_it_has = (
                 await _kept_modes(sample_file)
@@ -2392,10 +2567,11 @@ async def re_process_sample_files(
                 continue
             if kept is None and unbound_samples and not filed_alone:
                 # Samples, and no modes to keep from them. Not left to the
-                # method unasked as the file below is: a run clears a file's
-                # samples and resets its calibration before the pipeline asks
-                # the rung, so one the method cannot place would park with
-                # its samples gone. Its method is asked first, as the run
+                # method unasked as the file below is: one the method cannot
+                # place would be claimed and run only to park, which says
+                # less than the method's reason and remedy do. The run binds
+                # it before it touches anything of it, so a park would still
+                # leave it its samples. Its method is asked first, as the run
                 # asks it, just before the file is claimed below rather than
                 # here: a file ahead of it in this batch that its record or a
                 # token binds teaches its method's binding as it is bound,
@@ -2431,13 +2607,14 @@ async def re_process_sample_files(
         valid_sample_files.append(sample_file)
 
     # --- Process valid files --- #
-    # Each file is reset, cleared and rebuilt in one pass. Resetting the
-    # calibration and deleting the sample items for the whole batch up front
-    # would commit destruction the loop has not caught up with yet: a run that
-    # stops partway - a worker killed mid-deploy, an unhandled failure - would
-    # leave every file it never reached with no sample items at all and no
-    # calibration, which is worse than the half-processed state re-processing is
-    # meant to repair.
+    # Each file is reset, cleared and rebuilt in its own run, once that run
+    # has bound it (_reprocessing_rebuild). Resetting the calibration and
+    # deleting the sample items for the whole batch up front would commit
+    # destruction the loop has not caught up with yet: a run that stops
+    # partway - a worker killed mid-deploy, an unhandled failure - would leave
+    # every file it never reached with no sample items at all and no
+    # calibration, which is worse than the half-processed state re-processing
+    # is meant to repair.
     for sample_file in valid_sample_files:
         try:
             # What the file's peaks are to be detected by, as the deployment
@@ -2477,7 +2654,7 @@ async def re_process_sample_files(
             # it binds goes on with no modes of its own, and its run asks
             # again; one it declines is left as it is, with the method's
             # reason. A binding that moves between here and the run parks the
-            # file with its samples cleared, as a token or a kept mode removed
+            # file with its samples kept, as a token or a kept mode removed
             # meanwhile does.
             if sample_file.sample_file_id in ask_its_method:
                 no_token, undeclared = ask_its_method[sample_file.sample_file_id]
@@ -2518,11 +2695,11 @@ async def re_process_sample_files(
                         }
                     )
                     continue
-            # Before anything of the file is destroyed: until the rebuild
-            # records its own stages, the row would still say how the last run
-            # ended - `done` on a file with no samples, if a restart cut in -
-            # and an in-progress status is what a restart marks failed. A file
-            # another run has claimed meanwhile is left to it.
+            # Before its run: until the rebuild records its own stages, the
+            # row would still say how the last run ended - `done` on a file
+            # with no samples, if a restart cut in - and an in-progress
+            # status is what a restart marks failed. A file another run has
+            # claimed meanwhile is left to it.
             if not await claim_for_processing(
                 [sample_file.sample_file_id], "Queued for re-processing."
             ):
@@ -2534,77 +2711,6 @@ async def re_process_sample_files(
                     }
                 )
                 continue
-            # Orbitrap calibration is cumulative (the file's m/z axes are
-            # rescaled in place), so without this a re-processed file silently
-            # keeps its previous calibration. A failed reset keeps the old
-            # calibration; the file still re-processes, so log instead of
-            # failing the whole request.
-            cleared = None
-            try:
-                cleared = await reset_mz_calibration(sample_file)
-            except Exception:  # noqa: BLE001 - reset is best-effort per file
-                runtime.logger.exception(
-                    "Failed to reset m/z calibration for "
-                    f"'{sample_file.filename}' before re-processing; the "
-                    "previous calibration remains in effect."
-                )
-
-            if per_stream is not None:
-                # After the reset, so that the peaks are detected on the
-                # acquisition axis, as a first conversion detects them; and
-                # before the samples are cleared, so that a file whose peaks
-                # could not be detected keeps them.
-                try:
-                    await redetect_peaks(sample_file, per_stream)
-                except Exception as e:  # noqa: BLE001 - one file's failure
-                    runtime.logger.exception(
-                        "Could not detect the peaks of sample file "
-                        f"{sample_file.filename} again for its re-processing"
-                    )
-                    # A detection that fails leaves the peak store as it was,
-                    # on the acquisition axis the reset left. The samples
-                    # kept were matched on the calibration the reset cleared,
-                    # so it goes back on, as a parked file keeps the
-                    # calibration its samples were matched on.
-                    unrestored = ""
-                    if cleared is not None and not await _restore_calibration(
-                        sample_file, cleared
-                    ):
-                        unrestored = f" {_CALIBRATION_NOT_RESTORED}"
-                    # No pipeline runs for the file after this, and the
-                    # pipeline is what records how a run ended. The error's
-                    # own text can hold a path, so the status names the stage,
-                    # and the report adds only the kind of failure, in the
-                    # words a failed file's status uses.
-                    await _record_failed(
-                        sample_file.sample_file_id,
-                        ValueError(f"{_PEAKS_NOT_REDETECTED}{unrestored}"),
-                    )
-                    failed_files.append(
-                        {
-                            "sample_file_id": sample_file.sample_file_id,
-                            "filename": sample_file.filename,
-                            "message": (
-                                f"{_PEAKS_NOT_REDETECTED} {_failure_detail(e)}"
-                                f"{unrestored}"
-                            ),
-                        }
-                    )
-                    continue
-
-            try:
-                cleared_batch_ids = await _clear_sample_items_for_reprocessing(
-                    sample_file_id=sample_file.sample_file_id,
-                    independent_transaction=independent_transaction,
-                )
-            except Exception as e:
-                # No pipeline runs for the file after this, and the pipeline
-                # is what records how a run ended: without this the file
-                # would read queued, with no run behind it, until a restart.
-                await _record_failed(sample_file.sample_file_id, e)
-                raise
-            affected_sample_batch_ids.update(cleared_batch_ids)
-
             # Set for a file a person chose the chemistry of, and for one
             # nothing binds now: it is re-processed under the modes its own
             # samples held, carrying their provenance.
@@ -2617,16 +2723,25 @@ async def re_process_sample_files(
                 parent_id=process_id,
                 ionization_mode_ids=kept.mode_ids if kept else None,
                 kept_provenance=kept.provenance if kept else None,
+                # Its calibration reset, its peaks detected again and its
+                # samples cleared only once the run has bound it: a file the
+                # run parks keeps all three.
+                rebuild=_reprocessing_rebuild(
+                    per_stream, independent_transaction, affected_sample_batch_ids
+                ),
             )
-            if result.get("status") == "parked":
-                # Two ways here. What bound it at the validation above - a
-                # token in its name, or the one its record names - was removed
-                # while the batch waited; or neither bound it and this
-                # deployment routes on method bindings, which is the file the
-                # validation lets through on purpose: one with no samples, or
-                # one whose method bound it before its claim and no longer
-                # did by its run. Either way it needs a chemistry and was not
-                # re-processed, and the pipeline's own message says which.
+            if result.get("status") in ("parked", "failed"):
+                # Parked, two ways. What bound it at the validation above - a
+                # token in its name, the one its record names, or a mode kept
+                # from its samples - was removed while the batch waited; or
+                # neither bound it and this deployment routes on method
+                # bindings, which is the file the validation lets through on
+                # purpose: one with no samples, or one whose method bound it
+                # before its claim and no longer did by its run. Either way it
+                # needs a chemistry and was not re-processed, and kept what it
+                # had; the pipeline's own message says which. Failed: its
+                # peaks could not be detected again, and the rebuild left it
+                # as it was and says so.
                 failed_files.append(
                     {
                         "sample_file_id": sample_file.sample_file_id,
@@ -2655,7 +2770,7 @@ async def re_process_sample_files(
         except Exception as e:
             # Not the pipeline's: whatever it raises reaches this loop as an
             # ApiException, logged where it was raised and worded for a
-            # person. This is the claim or the clearing failing, a fault
+            # person. This is the claim failing, a fault
             # nothing else logs, so it is logged here and the report names
             # only its kind, in the words a failed file's status uses.
             runtime.logger.exception(
@@ -2866,9 +2981,10 @@ async def _clear_sample_items_for_reprocessing(
 ) -> set[str]:
     """Delete one file's sample items immediately before it is re-processed.
 
-    Called per file from inside :func:`re_process_sample_files`' processing
-    loop rather than for the whole batch up front, so the deletion is never
-    committed further ahead than the rebuild that follows it.
+    Called per file by :func:`_reprocessing_rebuild`, once the file's run has
+    bound it, rather than for the whole batch up front, so the deletion is
+    never committed further ahead than the rebuild that follows it, and a
+    file the run cannot bind keeps its samples.
 
     Unlike :func:`_delete_partial_acquisition_items` this removes every sample
     item on the file, not only the ACQUISITION ones - re-processing has already
