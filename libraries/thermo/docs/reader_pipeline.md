@@ -797,6 +797,7 @@ a tolerance.
 | Sum signal (app) | `mascope_signal/compute.py:get_sum_signal`, `thermo.py:compute_sum_signal` |
 | Sum signal cache name | `averaged_profile_signature`, `mascope_signal/compute.py:sum_signal_suffix` |
 | Instrument fit | `mascope_signal/instrument_func/fit.py` |
+| Axis fingerprint (the frequency bands of a file's m/z axis) | `axis_fingerprint/__init__.py:compute_axis_fingerprint`, the algorithm in `axis_fingerprint/reference.py` |
 | Cross-backend parity tests | `tests/test_backend_parity.py`, `signal/tests/test_instrument_fit_parity.py` |
 
 ---
