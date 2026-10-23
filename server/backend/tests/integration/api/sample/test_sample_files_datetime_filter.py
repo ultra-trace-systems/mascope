@@ -11,8 +11,6 @@ Run against the real route and a real database, because the reading is the
 driver's.
 """
 
-import os
-import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -72,24 +70,6 @@ async def _listed(client, seeded: dict, **bounds) -> set[str]:
     assert response.status_code == 200, response.text
     by_id = {file_id: name for name, file_id in seeded["files"].items()}
     return {by_id[row["sample_file_id"]] for row in response.json()["data"]}
-
-
-@pytest.fixture
-def server_zone():
-    """Set the process's local time zone, which the driver reads a naive
-    bound in, and put it back afterwards."""
-    before = os.environ.get("TZ")
-
-    def set_zone(name: str) -> None:
-        os.environ["TZ"] = name
-        time.tzset()
-
-    yield set_zone
-    if before is None:
-        os.environ.pop("TZ", None)
-    else:
-        os.environ["TZ"] = before
-    time.tzset()
 
 
 @pytest.mark.asyncio
