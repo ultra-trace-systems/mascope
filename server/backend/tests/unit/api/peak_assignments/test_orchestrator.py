@@ -1508,6 +1508,11 @@ class TestResolvedProfile:
             offset = mocks["fit"].call_args.kwargs["reagent_offset"]
             assert (offset.lines, offset.beyond_width) == (3, True)
             assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+        # The search's commits are measured again as ions at the same offset,
+        # so a seed list too short to fit one is centred where Stage A was.
+        seeded = mocks["seeded"].call_args.kwargs["reagent_offset"]
+        assert (seeded.lines, seeded.beyond_width) == (3, True)
+        assert seeded.mu_ppm == pytest.approx(-1.3, abs=1e-6)
         scoring = mocks["compositions"].call_args.kwargs["scoring"]
         assert scoring.mu_ppm == pytest.approx(-1.3, abs=1e-6)
         recorded = recorder.recorded_configs()[-1]["pattern_scoring"]

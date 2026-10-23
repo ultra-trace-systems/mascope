@@ -420,7 +420,9 @@ width is the instrument class's, and the centre is the median mass error of the 
 ions the run claimed, if it claimed at least three and their offset exceeds that width;
 otherwise the sample is scored on its nominal masses. The reagent ions stand in only
 there: they sit at the low end of the mass range and need not agree with the offset
-your library measures.
+your library measures. A formula measured on its own - a batch peak's *Use this*, the
+inspector's measured evidence and its alternatives - matches too few lines to measure
+either, so it is scored at the same stand-ins, read off the sample's own reagent ions.
 
 A predicted line is a peak your instrument can resolve, not a single isotopologue. On a
 TOF, the peak one mass unit above a compound holds its 13C line and also its 15N, 2H and

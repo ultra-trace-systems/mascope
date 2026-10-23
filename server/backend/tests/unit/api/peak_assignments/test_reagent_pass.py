@@ -337,6 +337,77 @@ class TestWhereTheClaimedLinesPutTheAxis:
         assert offset is None
 
 
+class TestTheOffsetOutsideARun:
+    """The seeded chain reads the offset a run's pre-pass would, with no run.
+
+    A pin, the inspector and the batch ledger's propagation score a short seed
+    list that fits no offset of its own, and a run of the same sample centres
+    such a list on the reagent lines (MAS-375).
+    """
+
+    _urea = staticmethod(TestWhereTheClaimedLinesPutTheAxis._urea)
+
+    def test_the_peak_list_reads_the_runs_offset(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.profiles import (
+            resolve_profile,
+        )
+        from mascope_backend.api.new.peak_assignments.service import (
+            reagent_offset_for,
+        )
+
+        peaks = self._urea(1.0, -1.3)
+        resolved = resolve_profile(
+            PeakAssignmentConfig(profile="UR"),
+            mechanism_notations=["[M+H]+"],
+            instrument_type="orbi",
+            polarity="+",
+        )
+
+        _, _, run_offset = _run_pre_pass(peaks, "UR", "orbi")
+        assert reagent_offset_for(peaks, resolved) == run_offset
+        assert run_offset.beyond_width
+
+    @pytest.mark.asyncio
+    async def test_a_sample_reads_the_profile_its_mechanisms_name(self, monkeypatch):
+        from mascope_backend.api.new.peak_assignments import service
+
+        peaks = self._urea(-1.3, -1.3)
+        read = []
+
+        async def mechanisms(sample):
+            return ["im-urea"], [SimpleNamespace(ionization_mechanism=notation)]
+
+        def load_peaks(sample):
+            read.append(sample)
+            return peaks
+
+        notation = "[M+CH4N2O+H]+"
+        monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
+        monkeypatch.setattr(service, "load_sample_peaks", load_peaks)
+        monkeypatch.setattr(service, "get_instrument_type", lambda name: "orbi")
+        sample = SimpleNamespace(filename="sample", polarity="+")
+
+        offset = await service.sample_reagent_offset(sample)
+
+        assert read == [sample]
+        assert offset == _run_pre_pass(peaks, "UR", "orbi")[2]
+        assert offset.mu_ppm == pytest.approx(-1.3, abs=0.05)
+        assert offset.beyond_width
+
+        # The same lines on a sample whose mechanisms name no reagent source:
+        # no library, so nothing to ask.
+        notation = "[M+H]+"
+        assert await service.sample_reagent_offset(sample) is None
+
+        # And the instrument class sets the width the offset must clear.
+        notation = "[M+CH4N2O+H]+"
+        monkeypatch.setattr(service, "get_instrument_type", lambda name: "tof")
+        assert not (await service.sample_reagent_offset(sample)).beyond_width
+
+
 class TestTheChargeTransferBeam:
     def test_the_fluoranthene_ion_is_claimed_as_the_reagent(self):
         # The EASY-IC source's own beam, in a window that reaches it: a reagent

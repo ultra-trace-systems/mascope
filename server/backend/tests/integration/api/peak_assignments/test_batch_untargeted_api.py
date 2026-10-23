@@ -42,6 +42,7 @@ from mascope_backend.db import (
     SampleItem,
 )
 from mascope_backend.db.id import gen_id
+from mascope_tools.composition.reagents import reagent_library
 
 
 pytestmark = pytest.mark.asyncio
@@ -232,7 +233,13 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
         with) in whichever sample the seeded scorer measures it.
     """
     by_id = {sample_id: name for name, sample_id in samples.items()}
-    calls = {"search": [], "score": [], "seeded_fits": [], "scoring": []}
+    calls = {
+        "search": [],
+        "score": [],
+        "seeded_fits": [],
+        "scoring": [],
+        "seeded_offsets": [],
+    }
 
     def load_peaks(sample):
         return _frame(peaks[by_id[sample.sample_item_id]])
@@ -261,11 +268,12 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
     async def match_params(sample_item_id):
         return SimpleNamespace(isotope_abundance_threshold=0.01, mz_tolerance=5)
 
-    async def seeded_fits(sample, params, seeds):
+    async def seeded_fits(sample, params, seeds, *, reagent_offset):
         # The search's own re-score: the finder's reading measured again as an
         # ion, which is what the rows are tiered on. Canned here for the same
         # reason the finder is - these tests are about the pass, not the fit.
         calls["seeded_fits"].append((by_id[sample.sample_item_id], set(seeds)))
+        calls["seeded_offsets"].append(reagent_offset)
         return {seed: 0.88 for seed in seeds}
 
     async def seeded(sample, seeds, params):
@@ -400,6 +408,34 @@ async def test_a_secondary_channel_the_mode_declares_is_searched_once(
 
     assert ["mech-h", "mech-nh4"] in searched
     assert all(ids.count("mech-nh4") == 1 for ids in searched)
+
+
+async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
+    folded_batch, stubbed_engine, monkeypatch
+):
+    # No run's pre-pass is on this path, so the search reads the sample's
+    # reagent lines off its own peak list and the re-score of its commits is
+    # centred there, as a run of the sample centres its own.
+    ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+    low = 1.0 - 1.3e-6
+    urea = [
+        ("r1", ladder["[CH4N2O+H]+"] * low, 2.0e6),
+        ("r2", ladder["[(CH4N2O)2+H]+"] * low, 3.0e6),
+        ("r3", ladder["[(CH4N2O)3+H]+"] * low, 1.0e5),
+    ]
+    monkeypatch.setattr(
+        batch_untargeted,
+        "load_sample_peaks",
+        lambda sample: _frame(_PEAKS["S1"] + urea),
+    )
+
+    await run_batch_untargeted_search(
+        folded_batch["batch_id"], PeakAssignmentConfig(profile="UR")
+    )
+
+    [offset] = stubbed_engine["seeded_offsets"]
+    assert (offset.lines, offset.beyond_width) == (3, True)
+    assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
 
 
 async def test_the_other_sample_is_measured_and_takes_a_fit_of_its_own(
