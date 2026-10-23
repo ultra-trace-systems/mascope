@@ -31,6 +31,7 @@ acquisition/instrument routes):
 - ``check_instrument_workspace_access``: instrument name → workspace
 - ``accessible_acquisition_instruments``: set of instruments user can access
 - ``check_target_collection_access``:  target_collection_id → workspace_id
+- ``check_target_ion_read_access_bulk``: list of target_ion_ids via their collections
 - ``accessible_workspace_ids_for_user``: set of workspace_ids user is a member of
 - ``access_granted``: run any of the above and report pass/fail as a bool
 
@@ -40,7 +41,7 @@ All return ``WorkspaceMember`` on success or raise ``ForbiddenAccessException``.
 from collections.abc import Awaitable
 
 from fastapi import Depends, Path, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.dependencies import current_active_user
@@ -52,6 +53,8 @@ from mascope_backend.db import (
     SampleItem,
     TargetCollection,
     TargetCollectionInSampleBatch,
+    TargetCompoundInTargetCollection,
+    TargetIon,
     User,
     Workspace,
     WorkspaceMember,
@@ -812,6 +815,59 @@ async def check_target_collection_access(
         return None
 
     return await _enforce(workspace_id, user, _role_levels[min_role])
+
+
+async def check_target_ion_read_access_bulk(
+    target_ion_ids: list[str],
+    user: User,
+) -> None:
+    """Check that the user may read every target ion in a list, in one query.
+
+    A target ion belongs to no workspace itself: it is read through the target
+    collections its compound is in. An ion passes when one of them is global
+    (workspace_id is NULL) or in a workspace the user is a member of. Any
+    membership reads, guest being the lowest role, so this check is for reads
+    only.
+
+    :raises ForbiddenAccessException: If any ion is in no collection the user
+        can read, or does not exist.
+    """
+    if user.is_superuser:
+        return
+
+    requested = set(target_ion_ids)
+    member_of = select(WorkspaceMember.workspace_id).where(
+        WorkspaceMember.user_id == user.id
+    )
+    async with async_session() as session:
+        readable = set(
+            (
+                await session.execute(
+                    select(TargetIon.target_ion_id)
+                    .distinct()
+                    .join(
+                        TargetCompoundInTargetCollection,
+                        TargetCompoundInTargetCollection.target_compound_id
+                        == TargetIon.target_compound_id,
+                    )
+                    .join(
+                        TargetCollection,
+                        TargetCollection.target_collection_id
+                        == TargetCompoundInTargetCollection.target_collection_id,
+                    )
+                    .where(
+                        TargetIon.target_ion_id.in_(requested),
+                        or_(
+                            TargetCollection.workspace_id.is_(None),
+                            TargetCollection.workspace_id.in_(member_of),
+                        ),
+                    )
+                )
+            ).scalars()
+        )
+
+    if requested - readable:
+        raise ForbiddenAccessException()
 
 
 async def check_collection_batch_change_access(
