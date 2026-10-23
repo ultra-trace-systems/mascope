@@ -7,11 +7,13 @@ credentials. The requirement is soft: accounts keep signing in with their
 existing password and are held at a mandatory password screen until they replace
 it. Nobody is excluded, including deactivated accounts and whoever runs this.
 
-Emits no live notification, so sessions that are already open transition when
-their next request is refused; the owner-facing action in the web interface does
-notify. Their open sockets are evicted from their rooms all the same: this
-process serves no sockets, but the Socket.IO server's Redis manager publishes
-each ``leave_room`` to the worker that holds the socket.
+Open sessions hear of it as they do from the owner-facing action in the web
+interface: each armed account's sockets are evicted from their rooms, its tab is
+told on its own ``user-{id}`` room that it now owes a password change, and open
+user-management tables are told to reload. This process serves no sockets, but
+the Socket.IO server's Redis manager publishes each ``leave_room`` and emit to
+the workers that hold them. When Redis cannot be reached, nothing is sent and
+open sessions transition when their next request is refused.
 
 Set MASCOPE_REQUIRE_PASSWORD_CHANGE_DRY_RUN=1 to report what would change
 without changing it.
@@ -140,14 +142,15 @@ async def run_require_password_change() -> None:
     runtime.logger.info("Requiring a password change...")
     result = await require_password_change_for_all_users()
     data = result["data"]
-    await evict_sockets(data["user_ids"])
+    await notify_open_sessions(data["user_ids"])
 
     runtime.logger.info("=" * 80)
     runtime.logger.info("PASSWORD CHANGE REQUIRED")
     runtime.logger.info(f"Accounts affected: {data['flagged_count']}")
     runtime.logger.info(
-        "Sessions that are already open transition when their next request is "
-        "refused; this script sends no live notification."
+        "Open sessions are moved to the password screen at once, unless Redis "
+        "could not be reached (reported above); then they move when their next "
+        "request is refused."
     )
     runtime.logger.info(
         "Each user's API access tokens (SDK, notebooks) are revoked once they "
@@ -160,13 +163,16 @@ async def run_require_password_change() -> None:
     runtime.logger.info("=" * 80)
 
 
-async def evict_sockets(user_ids: list[int]) -> None:
+async def notify_open_sessions(user_ids: list[int]) -> None:
     """
-    Make the open sockets of the accounts just armed leave their rooms.
+    Evict and notify the open sockets of the accounts just armed, as the
+    owner's route does.
 
-    Without it a socket subscribed before the sweep keeps hearing record-sync
-    events until it reconnects. A Redis that cannot be reached is reported, not
-    raised: the requirement already stands, and those sockets are no worse off.
+    Without the eviction a socket subscribed before the sweep keeps hearing
+    record-sync events until it reconnects; without the notification an open
+    tab learns it is held at the password screen only when its next request is
+    refused. A Redis that cannot be reached is reported, not raised: the
+    requirement already stands, and those sockets are no worse off.
 
     :param user_ids: The accounts the sweep armed.
     """
@@ -176,22 +182,38 @@ async def evict_sockets(user_ids: list[int]) -> None:
     # Socket.IO server from the Redis configuration, and the CLI imports this
     # script on the host to list it, where that configuration may be absent.
     from mascope_backend.socket.eviction import evict_ended_sessions
+    from mascope_backend.socket.records.service import (
+        emit_record_reload,
+        emit_record_updated,
+    )
     from mascope_backend.socket.storage import redis_storage_client
 
     try:
         await redis_storage_client.connect()
     except Exception:
         runtime.logger.exception(
-            "Could not reach Redis: open sockets keep their rooms until they reconnect"
+            "Could not reach Redis: open sockets keep their rooms until they "
+            "reconnect, and open tabs are not notified"
         )
         return
     try:
         evicted = 0
         for user_id in user_ids:
             evicted += await evict_ended_sessions(user_id)
+            # The auth store re-fetches the current user on this event and
+            # ignores the payload, so a minimal record is enough.
+            await emit_record_updated(
+                record_type="user_me",
+                record_id=str(user_id),
+                record={"id": user_id, "must_change_password": True},
+                room=f"user-{user_id}",
+            )
+        # Open user-management tables would otherwise show stale flags.
+        await emit_record_reload(record_type="user")
     finally:
         await redis_storage_client.disconnect()
     runtime.logger.info(f"Open sockets evicted from their rooms: {evicted}")
+    runtime.logger.info(f"Accounts notified on their own room: {len(user_ids)}")
 
 
 def main() -> None:

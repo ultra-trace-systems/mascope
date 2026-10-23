@@ -1103,8 +1103,9 @@ that passes the policy and differs from the old. Nobody is excluded - the owner
 who triggers it and deactivated accounts included, so a reactivated account cannot
 come back on a pre-policy password.
 
-An owner can do it from **Manage users** in the web interface, which also notifies
-anyone with the app open. On the server:
+An owner can do it from **Manage users** in the web interface or with a script on
+the server. Either way, anyone with the app open is moved to the password screen at
+once. On the server:
 
 ```sh
 # report what would change, without changing anything
@@ -1114,8 +1115,9 @@ MASCOPE_REQUIRE_PASSWORD_CHANGE_DRY_RUN=1 mascope prod db script run require_pas
 mascope prod db script run require_password_change
 ```
 
-The script sends no live notification - there is no socket server in that process
-- so sessions already open transition when their next request is refused.
+The script reaches open tabs through Redis, as the app's own workers do. If it
+cannot reach Redis it says so, and open sessions move to the password screen when
+their next request is refused.
 
 Maintenance scripts like this one ship in the backend image, and
 `mascope prod db script` lists and runs them inside the backend container -
