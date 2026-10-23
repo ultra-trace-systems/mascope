@@ -478,6 +478,67 @@ async def test_metadata_of_a_file_that_cannot_be_read_is_an_error_status(
     assert "private-filestore" not in resp.text
 
 
+@pytest.mark.asyncio
+async def test_metadata_centroids_carry_each_scans_number_and_flags(
+    guest_client, sample_file, alpha_item
+):
+    resp = await guest_client.get(f"/api/sample/files/{sample_file}/metadata")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]["centroids_meta"]["data"]
+    assert [scan["scan"] for scan in data] == [int(scan) for scan in SCANS]
+    for scan in data:
+        assert len(scan["flags"]) == len(scan["mzs"])
+        assert all(isinstance(flag, int) for flag in scan["flags"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    ["exclude=reference,exception", "exclude=reference&exclude=Exception"],
+    ids=["comma-separated", "repeated"],
+)
+async def test_metadata_hands_the_excluded_flags_to_the_reader(
+    guest_client, sample_file, alpha_item, monkeypatch, query
+):
+    # The committed file holds no flagged centroid, so what is pinned here is
+    # that the names reach the reader; mascope_thermo's tests pin that it
+    # leaves those centroids out.
+    asked = []
+    read = m_thermo.RawFileMetadataLegacy.iter_centroids_meta
+
+    def recording(self, exclude=()):
+        asked.append(tuple(exclude))
+        return read(self, exclude)
+
+    monkeypatch.setattr(
+        m_thermo.RawFileMetadataLegacy, "iter_centroids_meta", recording
+    )
+
+    resp = await guest_client.get(f"/api/sample/files/{sample_file}/metadata?{query}")
+
+    assert resp.status_code == 200, resp.text
+    assert asked == [("reference", "exception")]
+    assert resp.json()["data"] == _document()
+
+
+@pytest.mark.asyncio
+async def test_metadata_refuses_an_exclusion_that_names_no_flag(
+    guest_client, sample_file, alpha_item, monkeypatch
+):
+    def unread(*_args, **_kwargs):
+        raise AssertionError("the file was read")
+
+    monkeypatch.setattr(m_thermo, "open_backend", unread)
+
+    resp = await guest_client.get(
+        f"/api/sample/files/{sample_file}/metadata?exclude=reference,lock"
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert "lock" in resp.text
+
+
 class _ScanReadError(RuntimeError):
     pass
 
@@ -492,7 +553,7 @@ async def test_a_read_that_fails_part_way_leaves_the_json_unclosed_and_is_logged
     # document is what tells it, which must stop unclosed so that a parser
     # fails rather than reading one that silently lacks scans - and the
     # server must say why, since no error handler runs once it has started.
-    def one_scan_then_fail(_self):
+    def one_scan_then_fail(_self, exclude=()):
         yield (
             1,
             0.5,

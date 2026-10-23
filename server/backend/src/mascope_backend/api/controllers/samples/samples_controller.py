@@ -855,11 +855,15 @@ async def get_samples_centroids(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    exclude: tuple[str, ...] = (),
 ) -> dict:
     """Extracts centroids for a list of sample items by their IDs.
 
     :param sample_item_ids: List of sample item IDs for which to extract centroids.
     :type sample_item_ids: list[str]
+    :param exclude: Names of the centroid flags whose centroids are left out
+        (``mascope_thermo.backend.CENTROID_FLAGS``), defaults to none.
+    :type exclude: tuple[str, ...], optional
     :param independent_transaction: Flag to indicate if the operation should be treated as an independent transaction, defaults to False.
     :type independent_transaction: bool, optional
     :param user_id: Current user triggered operation (for user notifications)
@@ -930,14 +934,17 @@ async def get_samples_centroids(
                 t_min=t0,
                 t_max=t1,
                 polarity=polarity,
+                exclude=exclude,
             )
             return {
+                "scan": [cen["scan"] for cen in per_scan],
                 "masses": [cen["masses"].tolist() for cen in per_scan],
                 "intensities": [cen["intensities"].tolist() for cen in per_scan],
                 "resolutions": [cen["resolutions"].tolist() for cen in per_scan],
                 "signal_to_noise": [
                     cen["signal_to_noise"].tolist() for cen in per_scan
                 ],
+                "flags": [cen["flags"].tolist() for cen in per_scan],
                 "timestamp": [cen["timestamp"] for cen in per_scan],
             }
 

@@ -1735,6 +1735,7 @@ def get_orbi_centroids_per_scan(
     polarity: Literal["+", "-"] | None = None,
     scan_type: Literal["Ms", "Ms2"] | None = None,
     stream: str | None = None,
+    exclude: Iterable[str] = (),
 ) -> list:
     """
     Extract per-scan centroids from an Orbitrap raw file
@@ -1751,9 +1752,14 @@ def get_orbi_centroids_per_scan(
     :type scan_type: Literal['Ms', 'Ms2'] | None, optional
     :param stream: Key of the scan stream to read, optional, defaults to None (every stream).
     :type stream: str | None, optional
+    :param exclude: Names of centroid flags (``reference``, ``exception``, ``merged``,
+        ``fragmented``) whose centroids are left out, optional, defaults to none.
+    :type exclude: Iterable[str], optional
     :return: List of dictionaries with per-scan centroid data, each containing
-            centroid masses, intensities, resolutions, signal-to-noise ratios, and timestamps.
+            the scan number, centroid masses, intensities, resolutions,
+            signal-to-noise ratios, flags, and timestamps.
     :rtype: list
+    :raises ValueError: If ``exclude`` names something that is not a flag.
     """
     sample_type = m_name.get_sample_file_type(base_filename)
     match sample_type:
@@ -1766,6 +1772,7 @@ def get_orbi_centroids_per_scan(
                 polarity=polarity,
                 scan_type=scan_type,
                 stream=stream,
+                exclude=exclude,
             )
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]

@@ -52,6 +52,44 @@ A single Orbitrap (FTMS) scan can be read three ways:
 Per-peak resolution and S:N matter downstream (the instrument fit uses FWHM =
 m/z / resolution; peak detection uses S:N), so the labels are first-class.
 
+**Centroid flags.** The instrument marks some centroids, and every per-scan
+read reports the marks beside each centroid as `flags`: the sum of the bit
+values of Thermo's `PeakOptions` it carries (`backend.CENTROID_FLAGS`).
+
+| Flag | Value | What it marks |
+|---|---|---|
+| Fragmented | 2 | one of the two lobes of a split weak peak |
+| Merged | 4 | a peak merged from two |
+| Exception | 8 | a weak side-lobe peak |
+| Reference | 16 | the lock-mass peak the scan was corrected with |
+
+A centroid can carry more than one: a fragmented lobe is often an exception
+too (10). Where they come from:
+
+- **OpenTFRaw** stores a descriptor word per centroid
+  (`RawFile.centroid_labels(scan)["descriptor"]`). Bits 20, 21, 22 and 23 are
+  Exception, Reference, Merged and Fragmented
+  (`backend.centroid_flags_from_descriptor`). OpenTFRaw documents bit 21 as the
+  lock mass; the four together give the vendor library's flags centroid for
+  centroid, on 198 files compared (161 demo files and 37 customer Orbitrap
+  files, 12 of them lock-mass files).
+- **Thermo** reports them in its centroid stream (`CentroidStream.Flags`). Its
+  other `PeakOptions` bits (saturated, modified, ...) are cleared, as OpenTFRaw
+  cannot read them.
+
+`backend.centroid_flags(scan)` gives the flags of every centroid a scan stores.
+`centroids_per_scan()` and `iter_centroids_meta()` carry the flags of the
+centroids they return, with the scan's number (`scan`), and take `exclude`, the
+names of the flags whose centroids are left out. Nothing is left out by
+default: `GET /api/samples/centroids` and `centroids_meta` of
+`GET /api/sample/files/{id}/metadata` serve every stored centroid, and take the
+same `exclude` (`exclude=reference,exception`).
+
+The averaged centroids (section 4) and peak detection keep every centroid,
+Exception ones included: leaving them out would move the published goldens and
+the regression corpus. The vendor library blanks the exception peaks' profile
+chunks; the averaged profile (section 3) does not, yet.
+
 **Scan selection** is shared by every read: `_selector(...)` /
 `_selected(...)` filter scans by polarity (`+`/`-`), MS level (`Ms`/`Ms2`), a
 retention-time window `[t_min, t_max]` and, when one is asked for, a scan

@@ -1897,7 +1897,9 @@ def _metadata_body(
 
 @api_controller()
 async def get_sample_file_metadata(
-    sample_file_id: str, include_centroids: bool = True
+    sample_file_id: str,
+    include_centroids: bool = True,
+    exclude: tuple[str, ...] = (),
 ) -> dict | ClosingStreamingResponse:
     """
     Retrieves metadata for a specific sample file.
@@ -1913,6 +1915,9 @@ async def get_sample_file_metadata(
     :param include_centroids: Whether to include ``centroids_meta``, every
         centroid of every scan.
     :type include_centroids: bool, optional
+    :param exclude: Names of the centroid flags whose centroids are left out
+        of ``centroids_meta`` (``mascope_thermo.backend.CENTROID_FLAGS``).
+    :type exclude: tuple[str, ...], optional
     :raises NotFoundException: If the sample file or its metadata is not found.
     :raises HTTPException: 422 when the sample file has no Orbitrap raw file
         to read the metadata from.
@@ -1943,7 +1948,7 @@ async def get_sample_file_metadata(
     try:
         metadata = m_compute.get_metadata(filename)
         if include_centroids:
-            pieces = metadata.iter_json()
+            pieces = metadata.iter_json(exclude)
             head = await asyncio.to_thread(next, pieces)
         else:
             metadata_dict = await asyncio.to_thread(

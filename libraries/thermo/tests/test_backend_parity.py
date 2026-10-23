@@ -238,6 +238,12 @@ def test_centroids_per_scan_matches_thermo(monkeypatch, path):
     here would silently tolerate a real decode regression. S:N is
     ``(intensity - baseline) / (noise - baseline)`` (matches Thermo to f32).
     Works on Exploris too.
+
+    The flags too, centroid for centroid: OpenTFRaw's are decoded from the
+    descriptor word it stores per centroid, the Thermo library's are its own
+    (measured: identical on every scan of 198 files, lock-mass files among
+    them). Both read every stored centroid, reference and exception peaks
+    included, so the peak counts compared are the full lists.
     """
     path = str(path)
 
@@ -248,10 +254,12 @@ def test_centroids_per_scan_matches_thermo(monkeypatch, path):
 
     compared = 0
     for t, o in zip(th, ot):
+        assert o["scan"] == t["scan"], "scan numbers differ"
         assert o["masses"].size == t["masses"].size, (
             f"peak count differs: OpenTFRaw {o['masses'].size} vs "
             f"Thermo {t['masses'].size}"
         )
+        np.testing.assert_array_equal(o["flags"], t["flags"])
         if t["masses"].size == 0:
             continue
         compared += 1

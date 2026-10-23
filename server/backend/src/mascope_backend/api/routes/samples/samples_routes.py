@@ -12,6 +12,7 @@ from mascope_backend.api.controllers.samples.spectrum_service import (
     get_samples_spectra_for,
 )
 from mascope_backend.api.lib.api_features import api_route
+from mascope_backend.api.lib.centroid_flags import centroid_exclusion
 from mascope_backend.api.models.samples.sample_pydantic_model import (
     GetSamplePeaksQueryParams,
     GetSamplePeakTimeseriesBody,
@@ -59,17 +60,27 @@ async def get_samples_route(
 @api_route(token_access=True)
 async def get_samples_centroids_route(
     sample_item_ids: list[str] = Query(..., description="List of sample item IDs"),
+    exclude: tuple[str, ...] = Depends(centroid_exclusion),
     user: User = Depends(current_active_user),
 ) -> dict:
-    """Retrieve centroids for multiple sample items.
+    """Retrieve the centroids of every scan of several sample items.
+
+    Per sample item, one list entry per scan: `scan` (the scan number),
+    `timestamp` [s], and per centroid its `masses`, `intensities`,
+    `resolutions`, `signal_to_noise` and `flags`. A centroid's flags are the
+    sum of the instrument's marks on it: 2 fragmented (a lobe of a split weak
+    peak), 4 merged, 8 exception (a weak side-lobe peak), 16 reference (the
+    lock-mass peak the scan was corrected with); 0 for an unflagged one.
+    Every stored centroid is served unless `exclude` names its flag.
 
     :param sample_item_ids: List of sample item IDs to retrieve centroids for.
+    :param exclude: The flags whose centroids are left out.
     :param user: The current authenticated user. Requires workspace guest role.
     :type user: User
-    :return: A dictionary containing the process ID for retrieving centroids.
+    :return: The per-scan centroids, keyed by sample item ID.
     """
     await check_sample_access_bulk(sample_item_ids, user, "guest")
-    return await get_samples_centroids(sample_item_ids=sample_item_ids)
+    return await get_samples_centroids(sample_item_ids=sample_item_ids, exclude=exclude)
 
 
 @samples_router.get("/spectra")

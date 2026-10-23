@@ -1,7 +1,7 @@
 """Samples resource for the Mascope SDK."""
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import pandas as pd
@@ -982,16 +982,38 @@ class SamplesResource(BaseResource):
 
         return pd.concat(frames, ignore_index=True)
 
-    def get_centroids(self, sample_ids: Sequence[str]) -> dict | None:
+    def get_centroids(
+        self,
+        sample_ids: Sequence[str],
+        *,
+        exclude: Iterable[str] | None = None,
+    ) -> dict | None:
         """Get centroid data for multiple samples.
 
-        Retrieves per-scan centroid data for the specified samples.
+        Retrieves per-scan centroid data for the specified samples. Per
+        sample, each key holds one entry per scan: ``scan`` (the scan
+        number), ``timestamp`` [s], and per centroid ``masses``,
+        ``intensities``, ``resolutions``, ``signal_to_noise`` and ``flags``.
+
+        A centroid's flags are the sum of the instrument's marks on it:
+        2 fragmented (a lobe of a split weak peak), 4 merged, 8 exception (a
+        weak side-lobe peak), 16 reference (the lock-mass peak the scan was
+        corrected with), 0 for an unflagged one. So ``flag & 16`` finds a
+        scan's lock mass. A server older than the flags serves neither
+        ``scan`` nor ``flags``.
 
         :param sample_ids: List of sample IDs to retrieve centroids for.
         :type sample_ids: list[str]
+        :param exclude: Leave out the centroids carrying any of these flags:
+            ``"reference"``, ``"exception"``, ``"merged"``,
+            ``"fragmented"``. Every stored centroid is returned when this is
+            omitted.
+        :type exclude: Iterable[str], optional
         :return: A dictionary containing centroid data keyed by sample ID.
                  Returns None if no data is found.
         :rtype: dict | None
+        :raises ValidationError: If ``exclude`` names something that is not
+            a flag.
         :raises AuthenticationError: If authentication fails.
         :raises MascopeAPIError: If the API request fails.
 
@@ -999,7 +1021,11 @@ class SamplesResource(BaseResource):
             This method returns a dict rather than DataFrame due to the
             complex nested structure of per-scan centroid data.
         """
-        return self._get("samples/centroids", params={"sample_item_ids": sample_ids})
+        params: dict[str, Any] = {"sample_item_ids": sample_ids}
+        if exclude:
+            names = [exclude] if isinstance(exclude, str) else list(exclude)
+            params["exclude"] = ",".join(names)
+        return self._get("samples/centroids", params=params)
 
     def update(self, sample_id: str, sample_item: dict[str, Any]) -> dict[str, Any]:
         """Update a sample's fields: its name, type, attributes and the rest.

@@ -142,6 +142,19 @@ def test_a_read_given_no_stream_asks_the_reader_for_none(raw_orbitrap, read):
     assert STREAM not in asked["args"]
 
 
+def test_per_scan_centroids_hand_the_excluded_flags_to_the_reader(raw_orbitrap):
+    m_compute.get_orbi_centroids_per_scan(
+        SIGNAL_TEST_FILENAME, exclude=("reference", "exception")
+    )
+    assert raw_orbitrap["get_centroids_per_scan"]["exclude"] == (
+        "reference",
+        "exception",
+    )
+
+    m_compute.get_orbi_centroids_per_scan(SIGNAL_TEST_FILENAME)
+    assert tuple(raw_orbitrap["get_centroids_per_scan"]["exclude"]) == ()
+
+
 # The reads a sample type without streams can answer at all. Centroids are
 # refused for them whatever is asked.
 _READS_OF_ANY_TYPE = [

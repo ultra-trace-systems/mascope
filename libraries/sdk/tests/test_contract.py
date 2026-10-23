@@ -356,6 +356,26 @@ class TestSpectraContract:
         assert sample_id in centroids
         assert {"masses", "intensities", "resolutions"} <= set(centroids[sample_id])
 
+    def test_centroids_carry_scan_numbers_and_flags(self, mascope):
+        _skip_unless_param(mascope.samples.get_centroids, "exclude")
+        sample_id = _first_sample_id(mascope)
+
+        every = mascope.samples.get_centroids([sample_id])[sample_id]
+        kept = mascope.samples.get_centroids(
+            [sample_id], exclude=["reference", "exception"]
+        )[sample_id]
+
+        assert len(every["scan"]) == len(every["masses"]) > 0
+        assert every["scan"] == sorted(set(every["scan"]))
+        for masses, flags in zip(every["masses"], every["flags"]):
+            assert len(flags) == len(masses)
+        assert kept["scan"] == every["scan"]
+        assert all(flag & 24 == 0 for flags in kept["flags"] for flag in flags)
+        excluded = sum(flag & 24 != 0 for flags in every["flags"] for flag in flags)
+        assert sum(map(len, kept["masses"])) == (
+            sum(map(len, every["masses"])) - excluded
+        )
+
     def test_peak_timeseries_by_peak_id(self, top_peak_timeseries):
         peak, ts = top_peak_timeseries
 
