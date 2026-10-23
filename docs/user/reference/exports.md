@@ -13,8 +13,12 @@ Three exports are made from the app:
 | **Peak data** | Right-click a batch, *Download > Peak data*; or a sample's own *Download > Peak data* | A CSV, semicolon-separated |
 | **Batch ledger** | The batch peaks view's menu behind the cog, *Export ledger (CSV)* | A CSV: one row per member peak, described under [Batch peaks](../how-it-works/peak-assignment.md#batch-peaks) |
 
-Each is written in the background and the browser downloads the file when it
-is ready. The same data is one call away in the
+A fourth export covers a whole dataset: the [deposit package](#the-deposit-package),
+one archive to upload to a data repository such as Zenodo. It is not made from
+the app yet. Whoever operates the server writes it with one command.
+
+Each export made from the app is written in the background, and the browser
+downloads the file when it is ready. The same data is one call away in the
 [Python SDK](../sdk/index.md), whose frames carry the same
 [provenance](#provenance) on `df.attrs["provenance"]`.
 
@@ -108,6 +112,59 @@ window, so a sample file of many scans gives many rows per peak.
 The CSVs carry no provenance block: a constant column on every row would
 multiply the size of a per-scan export for a value the spreadsheet and the API
 already give.
+
+## The deposit package
+
+A dataset as one zip archive, for a data repository such as
+[Zenodo](https://zenodo.org). Uploaded there, it tells whoever downloads it
+what was measured, how, under what licence, by whom, and with which software.
+Mascope writes the archive. The repository keeps it and mints its DOI.
+
+Before asking for one, fill in the dataset's licence, authors, keywords,
+related identifiers and funding in the dataset dialog. They are what the
+archive's README and the repository's record say about the data. The archive
+is written by whoever operates the server
+([Packaging a dataset for deposit](https://github.com/ultra-trace-systems/mascope/blob/master/docs/maintaining.md#packaging-a-dataset-for-deposit)).
+
+Unzipped, it is one folder, `mascope-package_<dataset id>_<dataset name>`:
+
+| File | Content |
+|---|---|
+| `README.md` | The dataset for a person: its name, description, licence, authors, keywords, related identifiers and funding; the instruments and what they measured, in PSI-MS terms; the ionization modes, batches and target collections; the software versions; and what each file holds |
+| `DATA_LICENSE` | The dataset's licence, with a link for a Creative Commons one. A dataset without a licence says so: nobody but its authors may reuse it |
+| `raw/` | Each sample file's raw file, `.raw` or `.h5`, as it was uploaded |
+| `raw/<file>.mascope.json` | Beside a raw file, the [acquisition record](../instruments/acquisition-records.md) the instrument's control program sent with it, where it sent one |
+| `batches/` | Each batch's [batch data spreadsheet](#the-batch-data-spreadsheet), the same file *Download > Batch data* gives |
+| `target_collections/` | Each collection a batch was matched against, or an ionization mode calibrates with: its compounds with their CAS number, InChIKey, InChI and SMILES where recorded, and the ions formed from them |
+| `instrument_functions.json` | The peak shape and resolution each raw file was processed with |
+| `manifest.json` | All of the above for a program, below |
+| `SHA256SUMS` | The SHA-256 of every other file. In the folder, `sha256sum -c SHA256SUMS` checks them all |
+
+`manifest.json` is laid out as the demo dataset's manifest is. Its `schema`
+is `mascope-package/1`, and its keys are a contract in the way the
+[provenance](#provenance) block's are:
+
+| Key | Content |
+|---|---|
+| `dataset` | The dataset's metadata record, under the names the API gives the fields |
+| `measurement` | The instruments, instrument types and models, and the first and last acquisition time, in UTC |
+| `produced_with` | The provenance block's versions, and the raw file reader's |
+| `provenance` | The [provenance](#provenance) block, its `inputs` naming the dataset and its batches |
+| `raw` | One entry per sample file: `name`, `sha256` and `bytes` of its raw file; its acquisition context, m/z calibration verdict and PSI-MS terms; the SHA-256 recorded when it was uploaded; and its acquisition record's identifiers |
+| `batches` | One entry per batch: its samples, with their time windows and ionization modes, its target collections and its spreadsheet |
+| `target_collections` | One entry per collection: what it was used as (`matched`, `calibration`, `diagnostic`), its counts and its file |
+| `ionization_modes` | The modes the samples were processed under, with their ionization mechanisms and collections |
+
+Every record carries its id, and on a deployment with an id its global id
+too. Every file the manifest names carries its SHA-256 and size.
+
+A sample file whose raw file Mascope no longer keeps, only the data converted
+from it, is listed with `included` set to `false`, and the README names it.
+A raw file whose SHA-256 differs from the one recorded at its upload is packed
+as it is, both values in its entry.
+
+After the repository mints a DOI, add it to the dataset's related
+identifiers. A package written again then points at the deposit.
 
 ## Provenance
 

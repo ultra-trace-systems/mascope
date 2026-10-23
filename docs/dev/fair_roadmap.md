@@ -3,7 +3,7 @@
 # FAIR: Review & Roadmap
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-10-23
 - **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear, MAS-19 to MAS-36)
 - **Supersedes:** section 7 of `ionization_method_config.md` (retired 2026-10-22)
 - **What:** Mascope against the FAIR principles, and the phased plan: provenance, ids, metadata, deposit.
@@ -306,6 +306,20 @@ the reasoning.
     ionization setup used, and a human-readable README. **Model it on the demo
     bundle's `manifest.json`** - same fields, same checksum discipline,
     generalised from one hand-built bundle to any dataset on demand.
+    *Built (MAS-33):* `mascope export package <dataset id>` runs
+    `mascope_backend.deposit`, the one builder the UI path (item 16) is to
+    call too. The archive is one directory: a README and a `DATA_LICENSE`
+    rendered from the manifest, the raw files with each acquisition record
+    beside its file as the sidecar it was, the batch spreadsheets as the
+    app exports them, the target collections matched and calibrated
+    against with their compounds' identity, the instrument functions,
+    `manifest.json` (schema `mascope-package/1`) and `SHA256SUMS`. The
+    user guide's *Export files* lists it. Two departures. There is no
+    standard-format payload yet: item 11's route had not landed, and
+    #2602 adds each file's mzML when it does. And "the ionization setup
+    used" is the ionization modes and instrument functions as recorded,
+    the modes inside the manifest, since the redesign's versioned
+    `IonizationSetup` is not built.
 15. **RO-Crate as the manifest format.** JSON-LD, schema.org-based, and the
     de-facto standard for exactly this. Gets I1/I2 in the manifest layer as a
     side-effect of a format choice rather than a vocabulary project.

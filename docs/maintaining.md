@@ -27,6 +27,7 @@ Everything below assumes an Ubuntu host provisioned with
 | **Require a new password from every user** | Manage users in the app, or `mascope prod db script run require_password_change` |
 | **Clear a lost second factor (2FA)** | Manage users in the app, or `mascope prod mfa reset <email>` |
 | What a raw file measured (its scan streams) | `mascope file scans <file.raw>` |
+| Package a dataset for a repository such as Zenodo | `mascope export package <dataset id>` |
 | What the method bindings would route, and where a file name disagrees | `mascope prod db script run report_method_binding_disagreements` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
@@ -831,6 +832,55 @@ Pass `--chown` to have the sync attempt that itself. It uses `sudo -n` (non-inte
 If the filestore is a symlink to a data volume (see [The filestore on a data volume](#the-filestore-on-a-data-volume)), chown its target too: `chown -R` does not follow symlinks. `--chown` resolves the link and covers both paths.
 
 File modes are forced to `755` for directories and `644` for files - the same bits the backend writes under the default umask, so a synced tree is indistinguishable from a natively written one. Note that this also applies on a **re-sync**: modes hand-tightened on an existing target filestore are reset to `755`/`644`.
+
+## Packaging a dataset for deposit
+
+A user who publishes their data deposits it in a data repository such as
+Zenodo, which keeps it and mints its DOI. `mascope export package` writes what
+they upload: one zip archive of a dataset, holding its raw files, its batch
+spreadsheets, its target collections, a README that says what was measured,
+how, under what licence, by whom and with which software, and a manifest with
+the SHA-256 of every file. The user guide's
+[Export files](user/reference/exports.md#the-deposit-package) lists what it
+holds.
+
+```bash
+mascope export package <dataset id>                 # into the current directory
+mascope export package <dataset id> -o ~/deposits/  # into a directory
+mascope export package <dataset id> -o deposit.zip  # under a name of your own
+```
+
+The dataset id is in the app's address bar, after `d=`, when the dataset is
+open. The archive is named `mascope-package_<dataset id>_<dataset name>.zip`,
+and an archive already at the output path is replaced.
+
+The archive is built inside the running backend container, from the database
+and filestore of the env the stack runs, in that env's `temp/packages/`. Then
+it is copied to the output path and removed from the container. The stack must
+be up. While the archive is built it needs the archive's size free on the
+env's disk, and again where it is copied. A developer's source checkout builds
+the package itself instead, from the active env's dev database and filestore;
+`--in-container` asks for the container there too.
+
+The archive holds every raw file of the dataset, deflated: plan for most of
+the raw files' size, and a few seconds per hundred megabytes. Zenodo takes
+up to 50 GB a record.
+
+The command reads whatever dataset it is given, whichever workspace it is in:
+whoever runs it has the database. When it is done it says what it wrote, and
+warns when the archive is not ready to deposit as it stands:
+
+- **No licence, or no authors.** A repository asks for both. The user adds
+  them to the dataset in the app, and the package is built again.
+- **Sample files with no raw file.** The filestore keeps only the data
+  converted from them, so the package describes them without the file.
+- **Raw files changed since upload.** Their SHA-256 is not the one recorded
+  when they were uploaded. The manifest gives both. A file that changed on the
+  server's disk is worth looking into before it is published.
+
+Hand the archive to the user to check its README and upload it. Once the
+repository has minted a DOI, it goes into the dataset's related identifiers,
+so that a package built later points at the deposit.
 
 ## Disk space
 
