@@ -129,9 +129,10 @@ and both runs. *Node fit error*: the stored record's mean absolute post-fit erro
 
 - B1's ambient mode and B2's second ambient/zero mode could not be read: the audit failed on every
   file but one with `ValueError` ([#2463](https://github.com/ultra-trace-systems/mascope/issues/2463)).
-- The three ambient/zero modes have no fit. The audit reads their converter record as one, so it
-  has no per-band error for them ([#2462](https://github.com/ultra-trace-systems/mascope/issues/2462)).
-  Their raw axis is the axis they carry.
+- The three ambient/zero modes have no fit. The audit of this baseline read their converter record
+  as one, so it has no per-band error for them. It now counts such files as `unfitted` instead
+  ([#2462](https://github.com/ultra-trace-systems/mascope/issues/2462)). Their raw axis is the axis
+  they carry.
 - Where the refit misses the node's fit, it mostly kept other points. Most misses are in the
   bromide modes of B1 and B2, 0.7–3.0 ppm apart over the calibrants (median per run). The rest
   are further apart: TOF H's sampled run by 17 ppm, as its set changed on 2026-10-17, inside the
