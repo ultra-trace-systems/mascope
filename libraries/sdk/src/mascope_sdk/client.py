@@ -40,7 +40,12 @@ def _configure_logging(env_vars: dict[str, str | None]) -> None:
     ).upper()
 
     if _log_handler_id is not None:
-        logger.remove(_log_handler_id)
+        try:
+            logger.remove(_log_handler_id)
+        except ValueError:
+            # Already gone: something in the process removed every handler
+            # (``logger.remove()``) since the last client was made
+            pass
     else:
         # First call: remove loguru's default handler to avoid double logging
         logger.remove()
