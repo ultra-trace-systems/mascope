@@ -44,7 +44,13 @@ AUTO_ERROR = 2  # discovery, apply, or health check failed
 
 @dataclass
 class PendingUpdate:
-    """A migration update seen but not yet applied."""
+    """
+    A migration update seen but not yet applied, or an update that failed.
+
+    A fast update is applied as soon as it is seen and leaves no record, unless
+    its apply fails: then it is recorded too (``kind="fast"``), so the failure
+    has somewhere to live.
+    """
 
     version: str
     alembic_head: str
@@ -54,6 +60,12 @@ class PendingUpdate:
     # Operator/customer confirmed: apply at the next window without waiting out
     # the grace period.
     confirmed: bool = False
+    # When an unattended apply of this release failed its health check (local
+    # ISO timestamp). `--auto` holds the release from then on, so a manual
+    # rollback is not undone at the next window; a confirm clears it.
+    failed_at: Optional[str] = None
+    # "migration" or "fast": which update this is, for the wording only.
+    kind: str = "migration"
 
     def to_dict(self) -> dict:
         return {
@@ -62,7 +74,15 @@ class PendingUpdate:
             "first_seen_at": self.first_seen_at,
             "snooze_until": self.snooze_until,
             "confirmed": self.confirmed,
+            "failed_at": self.failed_at,
+            "kind": self.kind,
         }
+
+    def snoozed(self, now: datetime.datetime) -> bool:
+        """Whether a snooze is in force at ``now``."""
+        return bool(self.snooze_until) and now < datetime.datetime.fromisoformat(
+            self.snooze_until
+        )
 
 
 def _now() -> datetime.datetime:
@@ -141,6 +161,8 @@ def load_pending(mascope_path: str) -> Optional[PendingUpdate]:
         first_seen_at=data["first_seen_at"],
         snooze_until=data.get("snooze_until"),
         confirmed=data.get("confirmed", False),
+        failed_at=data.get("failed_at"),
+        kind=data.get("kind", "migration"),
     )
 
 
@@ -211,14 +233,40 @@ def snooze_pending(mascope_path: str, days: int) -> Optional[PendingUpdate]:
 def confirm_pending(mascope_path: str) -> Optional[PendingUpdate]:
     """
     Mark the pending update confirmed so it applies at the next window without
-    waiting out the grace period. Returns the updated record, or None if there
-    is nothing pending.
+    waiting out the grace period. A failed apply is cleared too, so a release
+    held after one is retried once. Returns the updated record, or None if
+    there is nothing pending.
     """
     pending = load_pending(mascope_path)
     if pending is None:
         return None
     pending.confirmed = True
     pending.snooze_until = None
+    pending.failed_at = None
+    save_pending(mascope_path, pending)
+    return pending
+
+
+def record_failure(
+    mascope_path: str, version: str, alembic_head: str, kind: str
+) -> PendingUpdate:
+    """
+    Record that applying ``version`` failed its health check.
+
+    The pending record of that release keeps its ``first_seen_at``; a fast
+    update, which has none, gets one of its own. The confirmation is spent:
+    retrying takes a new one.
+    """
+    pending = load_pending(mascope_path)
+    if pending is None or pending.version != version:
+        pending = PendingUpdate(
+            version=version,
+            alembic_head=alembic_head,
+            first_seen_at=_now().replace(microsecond=0).isoformat(),
+            kind=kind,
+        )
+    pending.failed_at = _now().replace(microsecond=0).isoformat()
+    pending.confirmed = False
     save_pending(mascope_path, pending)
     return pending
 
@@ -232,15 +280,15 @@ def should_apply_migration(
     """
     Decide whether a pending migration update may be applied unattended now.
 
-    True only when inside the maintenance window and not snoozed, and either
-    the operator confirmed it or its grace period has elapsed since it was
-    first seen.
+    True only when inside the maintenance window, not snoozed, and not held
+    after a failed apply, and either the operator confirmed it or its grace
+    period has elapsed since it was first seen.
     """
     if not in_window(now, window):
         return False
-    if pending.snooze_until and now < datetime.datetime.fromisoformat(
-        pending.snooze_until
-    ):
+    if pending.failed_at:
+        return False
+    if pending.snoozed(now):
         return False
     if pending.confirmed:
         return True

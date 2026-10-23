@@ -395,6 +395,9 @@ class UpdateStatus:
     pending_version: Optional[str]
     pending_first_seen: Optional[str]
     last_status: Optional[str]
+    # When the unattended apply of the pending release failed: --auto holds it.
+    pending_failed_at: Optional[str] = None
+    pending_kind: Optional[str] = None
 
 
 def update_status(mascope_path: str) -> UpdateStatus:
@@ -416,6 +419,8 @@ def update_status(mascope_path: str) -> UpdateStatus:
         pending_version=pending.version if pending else None,
         pending_first_seen=pending.first_seen_at if pending else None,
         last_status=last,
+        pending_failed_at=pending.failed_at if pending else None,
+        pending_kind=pending.kind if pending else None,
     )
 
 
@@ -626,7 +631,15 @@ def format_text(report: Report) -> str:
         lines.append(("Disk" if i == 0 else "", _disk_line(same[0], label)))
 
     u = report.updates
-    if u.pending_version:
+    if u.pending_version and u.pending_failed_at:
+        lines.append(
+            (
+                "Updates",
+                f"{u.pending_kind} update {u.pending_version} failed to apply at "
+                f"{u.pending_failed_at}; held - confirm to retry",
+            )
+        )
+    elif u.pending_version:
         lines.append(
             (
                 "Updates",

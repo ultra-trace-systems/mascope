@@ -142,7 +142,7 @@ def test_update_snooze_rejects_non_positive(cli_runner):
 
 
 @pytest.fixture
-def auto_env(monkeypatch):
+def auto_env(monkeypatch, tmp_path):
     monkeypatch.setattr(prod_main, "is_container_running", lambda mode: True)
     monkeypatch.setattr(
         prod_main.auto_update, "latest_release_tag", lambda repo: "v1.4.0"
@@ -163,6 +163,9 @@ def auto_env(monkeypatch):
             target_revision=_HEAD,
         ),
     )
+    # The updater's state lands under MASCOPE_PATH: keep it out of the shared
+    # test home, where one test's recorded failure would hold the next's update.
+    monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
     monkeypatch.delenv("MASCOPE_UPDATE_WINDOW", raising=False)
     monkeypatch.delenv("MASCOPE_UPDATE_GRACE_DAYS", raising=False)
     return monkeypatch
