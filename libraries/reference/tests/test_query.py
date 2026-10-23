@@ -21,9 +21,16 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 from mascope_reference.adapters.pubchem import PubChemAdapter  # noqa: E402
 from mascope_reference.ingest import ingest  # noqa: E402
 from mascope_reference.query import (  # noqa: E402
+    STRUCTURE_PAGE_CAP,
     annotate_formulas,
     by_formula,
     by_mass_window,
+    structures_by_formula,
+    xref_cas_number,
+)
+from mascope_reference.schema import (  # noqa: E402
+    reference_compound,
+    reference_source,
 )
 
 
@@ -185,3 +192,249 @@ async def test_query_order_is_stable_across_calls(sync_engine, db_path, tmp_path
     key = [(r.formula, r.source, r.source_native_id) for r in first]
     assert key == [(r.formula, r.source, r.source_native_id) for r in second]
     assert len(key) > 1, "window should span both seeded compounds"
+
+
+# -- structures_by_formula: the compound editor's Find structure ---------------
+
+GLUCOSE = "WQZGKKKJIJFFOK-GASJEMHNSA-N"
+FRUCTOSE = "BJHIKXHVCXFQLS-UYFOZJQFSA-N"
+GALACTOSE = "WQZGKKKJIJFFOK-SVZMEOIVSA-N"
+MANNOSE = "WQZGKKKJIJFFOK-QTVWNMPRSA-N"
+
+
+def _source(conn, name: str, *, active: bool = True, license: str = "CC-BY-4.0"):
+    """Insert a reference source; its id."""
+    return conn.execute(
+        reference_source.insert()
+        .values(name=name, version="v1", license=license, is_active=active)
+        .returning(reference_source.c.reference_source_id)
+    ).scalar_one()
+
+
+def _compound(conn, source_id: int, native_id: str, **values):
+    """Insert a C6H12O6 reference row unless ``values`` says otherwise."""
+    conn.execute(
+        reference_compound.insert().values(
+            reference_source_id=source_id,
+            formula=values.pop("formula", "C6H12O6"),
+            source_native_id=native_id,
+            license=values.pop("license", "CC-BY-4.0"),
+            xrefs=values.pop("xrefs", {}),
+            **values,
+        )
+    )
+
+
+def _seed_hexoses(sync_engine) -> None:
+    """Hexoses in two active sources and one inactive load, and a hexose row
+    with no structure at all."""
+    with sync_engine.begin() as conn:
+        comptox = _source(conn, "comptox")
+        custom = _source(conn, "custom", license="custom")
+        stale = _source(conn, "comptox-old", active=False)
+        _compound(
+            conn,
+            comptox,
+            "DTXSID1",
+            name="Fructose",
+            inchikey=FRUCTOSE,
+            xrefs={"casrn": "57-48-7"},
+        )
+        _compound(
+            conn,
+            comptox,
+            "DTXSID2",
+            name="D-Glucose",
+            inchikey=GLUCOSE,
+            inchi="InChI=1S/C6H12O6/c7-1-2-3(8)4(9)5(10)6(11)12-2/h2-11H,1H2",
+            smiles="OCC1OC(O)C(O)C(O)C1O",
+            xrefs={"casrn": "50-99-7"},
+        )
+        # Hand-typed: undashed, with blanks around it.
+        _compound(
+            conn,
+            custom,
+            "A1",
+            name="Galactose",
+            inchikey=GALACTOSE,
+            license="CC0-1.0",
+            xrefs={"cas": " 59234 "},
+        )
+        _compound(conn, custom, "A2", name="Mannose", smiles="OCC1OC(O)C(O)C1O")
+        _compound(conn, custom, "A3", name="Hexose, unnamed")
+        _compound(
+            conn,
+            custom,
+            "A4",
+            name="Sorbose",
+            inchi="InChI=1S/C6H12O6/c7-1-3-4(9)5(10)6(11,2-8)12-3",
+        )
+        _compound(
+            conn,
+            stale,
+            "DTXSID9",
+            name="Glucose (old load)",
+            inchikey=MANNOSE,
+            xrefs={"casrn": "50-99-7"},
+        )
+        _compound(conn, comptox, "DTXSID3", formula="H2O", inchikey="X" * 27)
+
+
+async def _structures(db_path, formula: str, **kwargs):
+    maker, engine = _sessionmaker(db_path)
+    try:
+        async with maker() as session:
+            return await structures_by_formula(session, formula, **kwargs)
+    finally:
+        await engine.dispose()
+
+
+def _ids(page) -> list[str]:
+    return [c.record.source_native_id for c in page.candidates]
+
+
+@pytest.mark.asyncio
+async def test_structures_are_the_active_rows_of_the_formula_with_a_structure(
+    sync_engine, db_path
+):
+    _seed_hexoses(sync_engine)
+
+    page = await _structures(db_path, "C6H12O6")
+
+    # Not the inactive load's row, not the row without a structure, not water;
+    # a key, a SMILES or an InChI alone is a structure.
+    assert page.total == 5
+    assert sorted(_ids(page)) == ["A1", "A2", "A4", "DTXSID1", "DTXSID2"]
+    assert page.formula == "C6H12O6"
+
+
+@pytest.mark.asyncio
+async def test_structures_normalise_the_formula_asked_about(sync_engine, db_path):
+    _seed_hexoses(sync_engine)
+
+    page = await _structures(db_path, "HOCH2(CHOH)4CHO")
+
+    assert page.formula == "C6H12O6"
+    assert page.total == 5
+
+
+@pytest.mark.asyncio
+async def test_structures_carry_source_and_licence_per_row(sync_engine, db_path):
+    _seed_hexoses(sync_engine)
+
+    page = await _structures(db_path, "C6H12O6")
+
+    by_id = {c.record.source_native_id: c.record for c in page.candidates}
+    assert (by_id["DTXSID2"].source, by_id["DTXSID2"].license) == (
+        "comptox",
+        "CC-BY-4.0",
+    )
+    assert (by_id["A1"].source, by_id["A1"].license) == ("custom", "CC0-1.0")
+    assert by_id["DTXSID2"].inchi.startswith("InChI=1S/C6H12O6/")
+    assert by_id["DTXSID2"].smiles == "OCC1OC(O)C(O)C(O)C1O"
+
+
+@pytest.mark.asyncio
+async def test_structures_put_the_cas_match_first_then_the_name_match(
+    sync_engine, db_path
+):
+    _seed_hexoses(sync_engine)
+
+    # Asked with glucose's CAS number undashed and galactose's name in
+    # another case: the CAS match leads, the name match follows, then the
+    # stable order (source, then its id).
+    page = await _structures(db_path, "C6H12O6", cas_number="50997", name=" GALACTOSE ")
+
+    assert _ids(page) == ["DTXSID2", "A1", "DTXSID1", "A2", "A4"]
+    assert [(c.cas_match, c.name_match) for c in page.candidates] == [
+        (True, False),
+        (False, True),
+        (False, False),
+        (False, False),
+        (False, False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_structures_match_a_cas_number_under_either_key_dashes_aside(
+    sync_engine, db_path
+):
+    _seed_hexoses(sync_engine)
+
+    # Galactose's custom row records its number undashed under "cas", with
+    # blanks around it.
+    page = await _structures(db_path, "C6H12O6", cas_number="59-23-4")
+
+    assert _ids(page)[0] == "A1"
+    assert page.candidates[0].cas_match
+
+
+@pytest.mark.asyncio
+async def test_structures_without_cas_or_name_keep_the_stable_order(
+    sync_engine, db_path
+):
+    _seed_hexoses(sync_engine)
+
+    page = await _structures(db_path, "C6H12O6")
+
+    assert _ids(page) == ["DTXSID1", "DTXSID2", "A1", "A2", "A4"]
+    assert not any(c.cas_match or c.name_match for c in page.candidates)
+
+
+@pytest.mark.asyncio
+async def test_structures_page_through_every_row_once(sync_engine, db_path):
+    _seed_hexoses(sync_engine)
+
+    pages = [
+        await _structures(
+            db_path, "C6H12O6", cas_number="50-99-7", limit=3, offset=offset
+        )
+        for offset in (0, 3)
+    ]
+
+    assert [page.total for page in pages] == [5, 5]
+    assert _ids(pages[0]) + _ids(pages[1]) == [
+        "DTXSID2",
+        "DTXSID1",
+        "A1",
+        "A2",
+        "A4",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_structures_of_a_formula_no_row_has_are_none(sync_engine, db_path):
+    _seed_hexoses(sync_engine)
+
+    page = await _structures(db_path, "C7H14O6")
+
+    assert (page.candidates, page.total, page.formula) == ([], 0, "C7H14O6")
+
+
+@pytest.mark.asyncio
+async def test_structures_of_what_is_no_formula_are_none(sync_engine, db_path):
+    _seed_hexoses(sync_engine)
+
+    page = await _structures(db_path, "Not available")
+
+    assert (page.candidates, page.total, page.formula) == ([], 0, None)
+
+
+@pytest.mark.parametrize("limit", [0, STRUCTURE_PAGE_CAP + 1])
+@pytest.mark.asyncio
+async def test_structures_refuse_a_page_size_past_the_cap(sync_engine, db_path, limit):
+    with pytest.raises(ValueError, match="limit"):
+        await _structures(db_path, "C6H12O6", limit=limit)
+
+
+@pytest.mark.asyncio
+async def test_structures_refuse_a_negative_offset(sync_engine, db_path):
+    with pytest.raises(ValueError, match="offset"):
+        await _structures(db_path, "C6H12O6", offset=-1)
+
+
+def test_xref_cas_number_reads_comptox_then_custom_keys():
+    assert xref_cas_number({"casrn": " 50-99-7 ", "cas": "1-1-1"}) == "50-99-7"
+    assert xref_cas_number({"casrn": "", "cas": "50997"}) == "50997"
+    assert xref_cas_number({"dtxsid": "DTXSID1"}) is None
+    assert xref_cas_number(None) is None

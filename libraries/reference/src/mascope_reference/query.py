@@ -5,12 +5,16 @@ only way the backend reads reference data, so the mirror can be reindexed or
 reshaped without touching callers. Both return normalized
 :class:`ReferenceRecord` instances and only ever see the *active* version of
 each source, so a re-synced source does not double annotations.
+:func:`structures_by_formula` pages through the same rows for a person
+choosing a compound's structure among them.
 """
 
+import re
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mascope_reference.normalize import canonical_formula
@@ -30,6 +34,15 @@ _COMPOUND_COLUMNS = (
     reference_compound.c.xrefs,
     reference_compound.c.license,
 )
+
+
+#: The cross-reference keys a CAS number is recorded under: CompTox's and
+#: NORMAN's, then a custom list's.
+CAS_XREF_KEYS = ("casrn", "cas")
+
+#: Rows per page of :func:`structures_by_formula` by default, and at most.
+STRUCTURE_PAGE_SIZE = 20
+STRUCTURE_PAGE_CAP = 100
 
 
 # A total order over reference rows. (source, source_native_id) is unique within
@@ -181,3 +194,154 @@ async def by_mass_window(
         .order_by(reference_compound.c.monoisotopic_mass, *_STABLE_ORDER)
     )
     return [_row_to_record(row) for row in (await session.execute(stmt)).all()]
+
+
+def xref_cas_number(xrefs: dict | None) -> str | None:
+    """The CAS number a reference row's cross-references record, or None.
+
+    :param xrefs: The row's ``xrefs``.
+    :return: The first non-empty one under :data:`CAS_XREF_KEYS`, stripped.
+    """
+    for key in CAS_XREF_KEYS:
+        value = (xrefs or {}).get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+@dataclass(frozen=True)
+class StructureCandidate:
+    """One reference row offered as the structure of a compound.
+
+    :param record: The row.
+    :param cas_match: Its CAS number is the one asked about, dashes aside.
+    :param name_match: Its name is the one asked about, case aside.
+    """
+
+    record: ReferenceRecord
+    cas_match: bool = False
+    name_match: bool = False
+
+
+@dataclass
+class StructurePage:
+    """One page of :func:`structures_by_formula`.
+
+    :param candidates: The page's rows, in order.
+    :param total: How many rows qualify, on every page.
+    :param formula: The canonical formula they share, or None when the one
+        asked about is not a formula any reference row can have.
+    """
+
+    candidates: list[StructureCandidate] = field(default_factory=list)
+    total: int = 0
+    formula: str | None = None
+
+
+def _cas_is(digits: str):
+    """SQL: the row records the CAS number ``digits`` under a CAS key.
+
+    A stored number is compared without its dashes and surrounding blanks,
+    so ``50-99-7`` and ``50997`` agree; both are spellings sources use.
+    """
+    return or_(
+        *(
+            func.replace(
+                func.trim(reference_compound.c.xrefs[key].as_string()), "-", ""
+            )
+            == digits
+            for key in CAS_XREF_KEYS
+        )
+    )
+
+
+async def structures_by_formula(
+    session: AsyncSession,
+    formula: str,
+    *,
+    cas_number: str | None = None,
+    name: str | None = None,
+    limit: int = STRUCTURE_PAGE_SIZE,
+    offset: int = 0,
+) -> StructurePage:
+    """The active reference rows that offer a structure for ``formula``.
+
+    A row qualifies when its canonical formula is ``formula``'s and it carries
+    a structure: an InChIKey, an InChI or a SMILES. One row per compound per
+    source, not collapsed on InChIKey, since each row has its own licence.
+    The rows recording ``cas_number`` come first, then those named ``name``,
+    then the stable order, which is total, so a page boundary never moves
+    between two reads of the same mirror.
+
+    :param session: Active async session.
+    :param formula: The compound's formula, in any notation.
+    :param cas_number: The compound's CAS number, if any; compared as digits.
+    :param name: The compound's name, if any; compared trimmed, case aside.
+    :param limit: Rows per page, 1 to :data:`STRUCTURE_PAGE_CAP`.
+    :param offset: Rows to skip.
+    :return: The page, the total and the canonical formula.
+    :raises ValueError: On a ``limit`` outside its range or a negative
+        ``offset``.
+    """
+    if not 1 <= limit <= STRUCTURE_PAGE_CAP:
+        raise ValueError(f"limit must be 1 to {STRUCTURE_PAGE_CAP}, not {limit}")
+    if offset < 0:
+        raise ValueError(f"offset must not be negative, not {offset}")
+    canon = canonical_formula(formula)
+    if canon is None:
+        return StructurePage()
+
+    qualifies = (
+        reference_compound.c.formula == canon,
+        or_(
+            reference_compound.c.inchikey.is_not(None),
+            reference_compound.c.inchi.is_not(None),
+            reference_compound.c.smiles.is_not(None),
+        ),
+    )
+    total = await session.scalar(
+        select(func.count()).select_from(
+            active_join(reference_compound.c.reference_compound_id)
+            .where(*qualifies)
+            .subquery()
+        )
+    )
+
+    # A rank of 0 is a match. Only what was asked about is ranked on.
+    ranks = []
+    digits = re.sub(r"\D", "", cas_number or "")
+    if digits:
+        ranks.append(case((_cas_is(digits), 0), else_=1).label("cas_rank"))
+    wanted = (name or "").strip().lower()
+    if wanted:
+        ranks.append(
+            case(
+                (func.lower(reference_compound.c.name) == wanted, 0),
+                else_=1,
+            ).label("name_rank")
+        )
+    stmt = (
+        active_join(*_COMPOUND_COLUMNS, *ranks)
+        .where(*qualifies)
+        .order_by(
+            *ranks,
+            reference_source.c.name,
+            reference_compound.c.source_native_id,
+            reference_compound.c.reference_compound_id,
+        )
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = (await session.execute(stmt)).all()
+    return StructurePage(
+        candidates=[
+            StructureCandidate(
+                record=_row_to_record(row),
+                cas_match=getattr(row, "cas_rank", 1) == 0,
+                name_match=getattr(row, "name_rank", 1) == 0,
+            )
+            for row in rows
+        ],
+        total=total or 0,
+        formula=canon,
+    )
