@@ -290,7 +290,7 @@ def test_a_builder_that_fails_or_reports_nothing_fails_the_command(
     assert docker.commands("cp") == []
 
 
-@pytest.mark.parametrize("suffix", [os.sep, f"{os.sep}."])
+@pytest.mark.parametrize("suffix", [os.sep, f"{os.sep}.", f"{os.sep}x{os.sep}.."])
 def test_an_output_ending_in_a_separator_is_a_directory_made_if_missing(
     cli_runner, operator_install, tmp_path, suffix
 ):
@@ -300,6 +300,22 @@ def test_an_output_ending_in_a_separator_is_a_directory_made_if_missing(
     directory = tmp_path / "deposits"
     result = cli_runner.invoke(
         app, ["export", "package", "ds1", "-o", f"{directory}{suffix}"]
+    )
+    assert result.exit_code == 0, result.output
+    target = directory.resolve() / "mascope-package_ds1_Air.zip"
+    assert docker.commands("cp")[0][-1] == str(target)
+    assert target.is_file()
+
+
+def test_an_existing_directory_ending_in_a_separator_is_written_into(
+    cli_runner, operator_install, tmp_path
+):
+    """The help's own example, ``-o ~/deposits/``."""
+    _, docker = operator_install
+    directory = tmp_path / "deposits"
+    directory.mkdir()
+    result = cli_runner.invoke(
+        app, ["export", "package", "ds1", "-o", f"{directory}{os.sep}"]
     )
     assert result.exit_code == 0, result.output
     target = directory.resolve() / "mascope-package_ds1_Air.zip"
