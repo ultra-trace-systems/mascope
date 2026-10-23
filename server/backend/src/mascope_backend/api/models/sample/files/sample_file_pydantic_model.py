@@ -235,8 +235,20 @@ SampleFileSortColumn = Literal[
 
 
 class GetSampleFilesQueryParams(QueryParamsModel):
-    datetime_min: Optional[dt] = Field(None, description="Minimum datetime filter")
-    datetime_max: Optional[dt] = Field(None, description="Maximum datetime filter")
+    datetime_min: Optional[dt] = Field(
+        None,
+        description=(
+            "Earliest acquisition time to list, inclusive. A time without an "
+            "offset is read as UTC."
+        ),
+    )
+    datetime_max: Optional[dt] = Field(
+        None,
+        description=(
+            "Latest acquisition time to list, inclusive. A time without an "
+            "offset is read as UTC."
+        ),
+    )
     instrument: Optional[str] = Field(None, description="Filter by instrument")
     filename: Optional[str] = Field(None, description="Filter by filename")
     source_filename: Optional[str] = Field(
