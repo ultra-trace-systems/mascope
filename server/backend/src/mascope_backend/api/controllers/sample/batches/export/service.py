@@ -51,7 +51,8 @@ class BatchSheets:
     The sheets of a batch's spreadsheet, built and not yet written.
 
     Built apart from the writing so that a batch's sheets read the same
-    wherever they are written: the export writes them to a download.
+    wherever they are written: the export writes them to a download, and a
+    dataset's deposit package (``mascope_backend.deposit``) into its archive.
     """
 
     sample_batch_name: str
