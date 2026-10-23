@@ -3,7 +3,7 @@
 # MS2 analysis: fragmentation spectra as a stored, assigned and served object
 
 - **Status:** design
-- **As of:** 2026-10-22
+- **As of:** 2026-10-23
 - **Tracked in:** [MS2 analysis](https://linear.app/ultra-trace/project/ms2-analysis-7fdc525bca51)
   (Linear, MAS-380 to MAS-407)
 - **What:** Fragmentation spectra as a stored, assigned and served object: the MS2 store, the fragment composition core shared with peaky, MS2 evidence on ledger rows, the MS2 tab, energy-resolved analysis.
@@ -35,6 +35,15 @@ It is an engineering design and phased plan, not a user guide.
 > for the plan owner. Two issues of phase 0 (MAS-381, the reader; MAS-385,
 > the fixture) were filed `agent-ready` and picked up by the agent loop on
 > the day of filing.
+
+> **Decisions (2026-10-23).** The nine decisions of section 6 stand,
+> confirmed by the plan owner (MAS-380), with one amendment: the
+> composition core's package is `mascope_tools.composition.ms2`, not
+> `composition.fragments`, because the engine's "fragments" are already the
+> MS1 in-source fragments of the reagent pass (1.5) and `peaky/ms2/` is the
+> layout it mirrors. MAS-381 (the reader) merged on 2026-10-22; MAS-385 (the
+> fixture) and MAS-386 (the demo acquisition) are in review. The notebook
+> toolkit's open defect (MAS-425) is parked under decision 9.
 
 > **Scope decision (v1): Orbitrap raw files, formula-level evidence.** MS2
 > is read from Orbitrap raw files only, as today; a TOF sample answers "no
@@ -70,8 +79,10 @@ volts come from the scan's trailer
 [backend.py:655](../../libraries/thermo/src/mascope_thermo/backend.py)). The
 NCE is therefore in the activation string and the volts in the trailer, and
 the two are never converted into each other, because the volts one NCE
-applies depend on the precursor m/z. Nothing reads the scan range, the
-injection time or the low mass per scan.
+applies depend on the precursor m/z. Until MAS-381 nothing read the scan
+range, the injection time or the low mass per scan; its per-scan record
+does, and says for each field whether the filter, the trailer or the index
+gave it.
 
 Scans are grouped by precursor *and* activation
 ([thermo.py:976](../../libraries/thermo/src/mascope_thermo/thermo.py)):
@@ -85,8 +96,11 @@ is what the centroid route serves by default for compatibility. The summary
 reports the parents, one record per group (scan count, time span, volts,
 isolation width), the energies per precursor, and the MS1 and MS2 scan counts.
 Since 1.13.0 each group carries its own width and the file's one is `null`
-when the groups disagree (GitHub #2421); a group whose own scans store two
-widths still reports none (GitHub #2441, Linear MAS-265).
+when the groups disagree (GitHub #2421). A group whose own scans store two
+widths reported none until MAS-381 (on `develop` since 2026-10-22; GitHub
+#2441, Linear MAS-265): each group now lists every width it holds with its
+scan count (`isolation_widths`), and both backends give one record per MS2
+scan (`ms2_scan_records`), the filter's and the trailer's fields alike.
 
 What links a fragment scan to its precursor was measured for the ingest
 design ([ingest_routing_and_splitting.md, section 4.2](ingest_routing_and_splitting.md)):
@@ -235,7 +249,7 @@ plan's phase 0 and 1:
 | Read the trailer itself for NCE, volts, width, scan range, injection time | the reader serves the filter's precursor and activation and two trailer fields | one per-scan record from the reader (MAS-381) |
 | Build the isolation-window inventory and locate the precursor on the client | nothing serves either | `GET .../ms2/window`, the precursor located at store time (2.5) |
 | Treat "summary refused" and "hidden tail" as statuses | the two-width defect; files ingested before the window fix | MAS-381; the store makes a hidden tail impossible |
-| Implement the composition rules itself | Mascope has no fragment reader | `mascope_tools.composition.fragments` (2.4) |
+| Implement the composition rules itself | Mascope has no fragment reader | `mascope_tools.composition.ms2` (2.4) |
 
 ### 1.7 Already filed, and taken up here
 
@@ -318,7 +332,13 @@ of its 80k samples a month; the backfill (MAS-383) counts them before it
 writes anything.
 
 **Reads.** Every route answers from the store when the file has one and from
-the raw file when it does not, and says which (`source`). A file converted
+the raw file when it does not, and says which (`source`). A request whose
+`parent_peak_tolerance` differs from the store's grouping tolerance is
+answered from the store's grouping, with that tolerance in the response; it
+never falls back to the raw read the store exists to remove. The group key
+has one string form, the parent m/z with four decimals, `@`, the activation
+(`137.0960@hcd25.00`), so a store key, an `ms2_group` row and a
+`scans?group=` query spell one group one way. A file converted
 before the store existed is backfilled by a resumable, rate-limited script
 over the census; re-processing a file rewrites its store; deleting the file
 deletes it.
@@ -340,10 +360,14 @@ its schema and built there.
 
 ### 2.4 The fragment composition core
 
-`mascope_tools.composition.fragments` is the one place a fragment peak
-becomes formula readings, for the engine's pass, the readings route, and
-peaky. It is pure: no I/O, no network, no server. Its rules are peaky's,
-ported with peaky's known answers as tests (appendix A has the mapping):
+`mascope_tools.composition.ms2` is the one place a fragment peak becomes
+formula readings, for the engine's pass, the readings route, and peaky. It
+is a package named for what it reads, not `fragments`: the engine's
+"fragments" are the MS1 in-source fragments of the reagent pass (1.5), and
+`peaky/ms2/` is the layout it mirrors module for module (`readings`,
+`attribute`, `breakdown`, `arbitrate`). It is pure: no I/O, no network, no
+server. Its rules are peaky's, ported with peaky's known answers as tests
+(appendix A has the mapping):
 
 - **Readings.** A fragment of a singly charged precursor is an element-wise
   sub-formula of the precursor *ion*; the difference is the neutral it lost.
@@ -377,7 +401,7 @@ ported with peaky's known answers as tests (appendix A has the mapping):
   in counts.
 
 Every threshold is a named constant documented in
-`libraries/tools/docs/fragments.md`, as `fit_score.md` does for the isotope
+`libraries/tools/docs/ms2.md`, as `fit_score.md` does for the isotope
 scorer. Determinism is a test: the same input gives the same bytes under two
 hash seeds.
 
@@ -509,7 +533,9 @@ classifier retires whichever way the decision goes.
 An **MS2 tab** beside the Sample tab, shown when the focused sample's group
 count is above 0, and the tab an MS2 part opens on, since it has no MS1
 spectrum. Behind no feature flag: a sample with no groups shows no tab, and
-nothing else changes.
+nothing else changes. The tab is driven by the inventory, never by a raw
+read, so a file with MS2 whose store has not been backfilled shows no tab
+until MAS-383 has run on that server.
 
 - The **inventory** of the sample's groups (precursor key, located
   precursor, kind and NCE, volts, widths, scans, time span), one selected and
@@ -538,9 +564,10 @@ gate that names the server release a route needs.
 
 Peaky's `ms2 extract` reads the scan table and the window from the routes
 when the server has them, keeps `--file` for files the server cannot read,
-and reads fragments through `mascope_tools.composition.fragments` behind a
+and reads fragments through `mascope_tools.composition.ms2` behind a
 mascope-tools version gate; its known answers must not move. The notebook
-toolkit is retired or cut to a thin consumer (decision 9). The AI layer's
+toolkit is retired (decision 9), and nothing more is spent on it before
+then. The AI layer's
 oracle gains `ms2_groups`, `ms2_readings` and `ms2_breakdown` and one golden
 question. The user docs gain a how-it-works page on fragment readings,
 breakdown curves and what a verdict does and does not claim.
@@ -550,7 +577,8 @@ breakdown curves and what a verdict does and does not claim.
 ## 3. The routes
 
 All under `/api/samples/{id}/ms2/` unless noted, token access at workspace
-guest, Orbitrap only (a TOF sample answers an empty inventory, never 500).
+guest, Orbitrap only (a TOF sample answers an empty inventory with the reason
+`unsupported`, an Orbitrap file with no groups the reason `none`; never 500).
 
 | Route | Phase | Answers | Source |
 |---|---|---|---|
@@ -602,9 +630,9 @@ raw read per request, and a batch's MS2 inventory in one query.
 
 ### Phase 1 - The fragment composition core
 
-- MAS-387: `mascope_tools.composition.fragments`, the readings with loss
-  decomposition, the ranking, the ladder gate; peaky's known answers as
-  tests; `libraries/tools/docs/fragments.md`.
+- MAS-387: `mascope_tools.composition.ms2` (`readings`), the readings with
+  loss decomposition, the ranking, the ladder gate; peaky's known answers as
+  tests; `libraries/tools/docs/ms2.md`.
 - MAS-388: harmonic ghosts and side-lobe satellites as flags.
 - MAS-389: the window inventory route and the precursor located at store
   time.
@@ -647,7 +675,7 @@ as MAS-391 names them.
 - MAS-403: the SDK wrappers and contract tests, route by route.
 - MAS-404: peaky reads the served tables and defers to the core (in the
   peaky repository).
-- MAS-405: the notebook toolkit rewritten on the SDK or retired.
+- MAS-405: the notebook toolkit retired.
 - MAS-406: the AI layer's MS2 oracle wrappers and one golden question.
 - MAS-407: the user docs.
 
@@ -694,7 +722,7 @@ as MAS-391 names them.
 
 ## 6. Key design decisions
 
-The recommendations, for the plan owner (MAS-380):
+The recommendations, confirmed by the plan owner on 2026-10-23 (MAS-380):
 
 1. **Store once, at conversion.** MS2 is written to a store beside the peak
    store and the routes read it; the raw file is read only for a file
@@ -702,9 +730,11 @@ The recommendations, for the plan owner (MAS-380):
 2. **The group key does not move.** `<parent m/z>@<activation>` stays. A
    group whose scans isolate at two widths reports every width it holds and
    its scan table says which scan used which (MAS-265).
-3. **One composition core, in `mascope_tools`.** `composition.fragments` is
-   the one place a fragment becomes formula readings, for the engine and for
-   peaky, as `score_pattern_v2` is the one isotope scorer.
+3. **One composition core, in `mascope_tools`.** `composition.ms2` is the
+   one place a fragment becomes formula readings, for the engine and for
+   peaky, as `score_pattern_v2` is the one isotope scorer. Named `ms2`, not
+   `fragments`: the engine's fragments are MS1 in-source fragments (1.5),
+   and the package mirrors `peaky/ms2/` module for module.
 4. **Window ions are named, never guessed.** The ledger's assigned and
    candidate rows and their grid rivals, the batch's target ions, or ions a
    caller names; an MS2 part reads only named ions.
@@ -745,16 +775,16 @@ The recommendations, for the plan owner (MAS-380):
 
 | peaky | Rule | Lands in | Issue |
 |---|---|---|---|
-| #78 `subformula.py` | sub-formula readings, loss decomposition, library, ranking, `n_parents`, 15N | `mascope_tools.composition.fragments` | MAS-387 |
+| #78 `subformula.py` | sub-formula readings, loss decomposition, library, ranking, `n_parents`, 15N | `mascope_tools.composition.ms2` (`readings`) | MAS-387 |
 | #80 `readings.py` | the ladder gate on a fourth piece | same | MAS-387 |
 | #82 `readings.harmonic_ghosts` | harmonic ghosts | same, as flags | MAS-388 |
 | #80 `attribute.satellite_fragments` | side lobes | same, as flags | MAS-388 |
 | #79 `sources.locate_precursor`, `window_table` | precursor location, window inventory | the reader at store time; `GET .../ms2/window` | MAS-389 |
 | #79 `sources.*`, #81 `scans.py` | per-energy and per-scan tables, the trailer read | the MS2 store and the scans route | MAS-381, MAS-382 |
 | #79 `ms2 list` | the inventory | `ms2_group`, the batch route | MAS-384 |
-| #80, #84 `attribute.py` | candidates, intact test, guard, share weights, branching | `fragments.attribute` | MAS-399 |
-| #80 `breakdown.py` | F, F_lo, S, E50, E_cm, flags, onsets, budget | `fragments.breakdown`; `GET .../ms2/breakdown` | MAS-400 |
-| #85 `arbitrate.py` | rivals, decoys, verdicts | `fragments.arbitrate`; the MS2 pass | MAS-392 |
+| #80, #84 `attribute.py` | candidates, intact test, guard, share weights, branching | `ms2.attribute` | MAS-399 |
+| #80 `breakdown.py` | F, F_lo, S, E50, E_cm, flags, onsets, budget | `ms2.breakdown`; `GET .../ms2/breakdown` | MAS-400 |
+| #85 `arbitrate.py` | rivals, decoys, verdicts | `ms2.arbitrate`; the MS2 pass | MAS-392 |
 | #83 `channels.py` | product channels, binding class | peaky, until MAS-401 | MAS-401 |
 | #82 `replicates.py` | per-scan spread, bootstrap bands | peaky, until MAS-401 | MAS-401 |
 | #78 "next PRs: ledger annotation" | `ms2_support` | the MS2 pass; the import contract | MAS-391, MAS-394 |
