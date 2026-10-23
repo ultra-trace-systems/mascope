@@ -169,6 +169,9 @@ OTHER_TOKEN_ROUTES = {
     ("GET", "/api/version"),
     # The SDK's datasets.tombstones(): what deleted datasets were.
     ("GET", "/api/datasets/tombstones"),
+    # The SDK's compounds.find_structures(): the reference rows that could
+    # give a compound its structure, a read of shared reference data.
+    ("GET", "/api/target/compounds/structures"),
     # The SDK's ionization.modes(), and one mode by its ID: the modes a
     # sample's ionization_mode_id names, so a script can find one by its name.
     ("GET", "/api/ionization/modes"),
