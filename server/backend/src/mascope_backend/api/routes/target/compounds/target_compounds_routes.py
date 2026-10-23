@@ -2,6 +2,9 @@ from typing import List
 
 from fastapi import APIRouter, Depends
 
+from mascope_backend.api.controllers.target.compounds.target_compound_structures import (
+    find_target_compound_structures,
+)
 from mascope_backend.api.controllers.target.compounds.target_compounds_controller import (
     create_target_compound,
     delete_target_compound,
@@ -11,6 +14,7 @@ from mascope_backend.api.controllers.target.compounds.target_compounds_controlle
 )
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
+    FindTargetCompoundStructuresQueryParams,
     GetTargetCompoundsQueryParams,
     TargetCompoundBase,
     TargetCompoundUpdate,
@@ -38,6 +42,30 @@ async def get_target_compounds_route(
     :return: Dictionary with total results and data list of target compounds.
     """
     return await get_target_compounds(**query_params.model_dump())
+
+
+# Before /{target_compound_id}, which would otherwise take "structures" for an ID.
+@target_compounds_router.get("/structures")
+@api_route(token_access=True)
+async def find_target_compound_structures_route(
+    query_params: FindTargetCompoundStructuresQueryParams = Depends(),
+    user=Depends(guest_user),
+):
+    """List the reference compounds that could give a compound its structure.
+
+    The active reference rows whose Hill formula is the one asked about and
+    that carry an InChIKey, an InChI or a SMILES, one per compound per
+    source, each with its source and licence. The rows recording the CAS
+    number asked about come first, then those of the name, then a stable
+    order. Paged; nothing is written.
+
+    :param query_params: The formula, the CAS number and name to rank on, and
+        the page.
+    :param user: The authenticated user, defaults to Depends(guest_user).
+    :return: ``results`` (the rows on every page), ``formula`` (canonical) and
+        ``data``, the page's rows.
+    """
+    return await find_target_compound_structures(**query_params.model_dump())
 
 
 @target_compounds_router.get("/{target_compound_id}")

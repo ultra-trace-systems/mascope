@@ -4,6 +4,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
+from mascope_reference.query import STRUCTURE_PAGE_CAP, STRUCTURE_PAGE_SIZE
 from mascope_tools.composition.utils import assert_valid_formula
 
 
@@ -224,6 +225,40 @@ class GetTargetCompoundsQueryParams(QueryParamsModel):
     limit: int | None = Field(
         None,
         description="The number of results per page, optional. None for no pagination.",
+    )
+
+
+class FindTargetCompoundStructuresQueryParams(QueryParamsModel):
+    """What *Find structure* asks: a formula, and what to rank its rows on."""
+
+    formula: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "The compound's formula, in any notation; the reference rows of "
+            "its Hill formula are listed."
+        ),
+    )
+    cas_number: Optional[str] = Field(
+        None,
+        description=(
+            "The compound's CAS number: the rows recording it come first. "
+            "Compared as digits, so dashes do not matter."
+        ),
+    )
+    name: Optional[str] = Field(
+        None,
+        description=(
+            "The compound's name: the rows of that name, case aside, come "
+            "after the CAS matches."
+        ),
+    )
+    page: int = Field(0, ge=0, description="The page, counted from 0.")
+    limit: int = Field(
+        STRUCTURE_PAGE_SIZE,
+        ge=1,
+        le=STRUCTURE_PAGE_CAP,
+        description=f"Rows per page, at most {STRUCTURE_PAGE_CAP}.",
     )
 
 
