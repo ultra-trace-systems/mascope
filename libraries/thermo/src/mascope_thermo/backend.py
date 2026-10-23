@@ -180,6 +180,9 @@ class ReaderBackend(Protocol):
     does not hold the first scan loses nothing.
     """
 
+    #: Path of the raw file the backend reads.
+    datafile_path: str
+
     def __enter__(self) -> ReaderBackend: ...
     def __exit__(self, *exc) -> None: ...
 
@@ -417,6 +420,15 @@ class ReaderBackend(Protocol):
         gives an empty array."""
         ...
 
+    def centroid_masses(self, scan_number: int) -> np.ndarray:
+        """The m/z of every centroid the scan stores, in stored order.
+
+        The centroids :meth:`centroid_flags` reports, in its order, so the
+        two pair up centroid for centroid: the flagged ones included, and
+        those without FT label data, which :meth:`centroids_per_scan` leaves
+        out. A scan with no centroids gives an empty array."""
+        ...
+
     def average_centroids(
         self,
         scan_indices: list[int],
@@ -452,6 +464,27 @@ class ReaderBackend(Protocol):
 
     def mass_range(self) -> tuple[float, float]:
         """Run-level ``(low_mass, high_mass)`` from the run header."""
+        ...
+
+    def run_time_range(self) -> tuple[float, float]:
+        """The run's ``(start, end)`` times [s], as its run header records
+        them: the MS controller's.
+
+        Not the first and last scan's start times. A trailing scan can carry
+        the time 0, and the header still records the run's end."""
+        ...
+
+    def scan_profile(self, scan_number: int) -> tuple[np.ndarray, np.ndarray]:
+        """One scan's profile, ``(mz, intensity)``, as the reader returns it.
+
+        For a caller that reads a few scans by number, where
+        :meth:`profile_per_scan` reads every scan of a selection. OpenTFRaw
+        returns the points the file stores. The Thermo library also returns
+        the zero-intensity points it adds around each run of stored points,
+        so the two differ by those. A scan OpenTFRaw gives no m/z for
+        refuses the file with
+        :class:`mascope_thermo.scan_events.UnconvertedProfileError`, as
+        :meth:`profile_per_scan` does."""
         ...
 
     def profile_per_scan(
@@ -1671,6 +1704,13 @@ class ThermoBackend:
         # (RawFileManager sets IncludeReferenceAndExceptionData).
         return _vendor_flags(self._raw.GetCentroidStream(scan_number, True))
 
+    def centroid_masses(self, scan_number: int) -> np.ndarray:
+        # The stream centroid_flags reads, so the masses are in its order.
+        stream = self._raw.GetCentroidStream(scan_number, True)
+        if stream is None or stream.Length == 0:
+            return np.zeros(0, dtype=np.float64)
+        return np.frombuffer(stream.Masses).copy()
+
     def average_centroids(
         self,
         scan_indices: list[int],
@@ -1739,6 +1779,23 @@ class ThermoBackend:
     def mass_range(self) -> tuple[float, float]:
         header = self._raw.RunHeaderEx
         return header.LowMass, header.HighMass
+
+    def run_time_range(self) -> tuple[float, float]:
+        header = self._raw.RunHeaderEx
+        return (
+            header.StartTime * _SECONDS_PER_MINUTE,
+            header.EndTime * _SECONDS_PER_MINUTE,
+        )
+
+    def scan_profile(self, scan_number: int) -> tuple[np.ndarray, np.ndarray]:
+        from ThermoFisher.CommonCore.Data import Extensions
+
+        # The scan profile_per_scan reads its segmented scan from.
+        scan = list(Extensions.GetScans(self._raw, scan_number, scan_number))[0]
+        return (
+            np.frombuffer(scan.SegmentedScan.Positions).copy(),
+            np.frombuffer(scan.SegmentedScan.Intensities).copy(),
+        )
 
     def profile_per_scan(
         self,
@@ -2228,6 +2285,17 @@ class OpenTFRawBackend:
             float(max(s["high_mz"] for s in scans)),
         )
 
+    def run_time_range(self) -> tuple[float, float]:
+        from mascope_thermo.thermo import NoScansFoundError
+
+        for controller in self._raw.controllers():
+            if controller.get("is_ms_controller"):
+                return (
+                    float(controller["start_time"]) * _SECONDS_PER_MINUTE,
+                    float(controller["end_time"]) * _SECONDS_PER_MINUTE,
+                )
+        raise NoScansFoundError("No scans found: the file has no MS controller.")
+
     # -- Phase-4 metadata remap --
 
     def instrument_details(self) -> dict:
@@ -2457,6 +2525,10 @@ class OpenTFRawBackend:
     def centroid_flags(self, scan_number: int) -> np.ndarray:
         labels = self._raw.centroid_labels(int(scan_number))
         return centroid_flags_from_descriptor(labels["descriptor"])
+
+    def centroid_masses(self, scan_number: int) -> np.ndarray:
+        labels = self._raw.centroid_labels(int(scan_number))
+        return np.asarray(labels["mz"], dtype=np.float64)
 
     def average_centroids(
         self,
@@ -2865,6 +2937,9 @@ class OpenTFRawBackend:
             scan_specs.append(intensities[mask])
         times = np.array([s["retention_time"] * _SECONDS_PER_MINUTE for s in selected])
         return scan_mzs, scan_specs, times
+
+    def scan_profile(self, scan_number: int) -> tuple[np.ndarray, np.ndarray]:
+        return self._profile(int(scan_number))
 
     def average_profile(
         self,

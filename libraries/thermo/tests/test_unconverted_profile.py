@@ -149,6 +149,15 @@ def test_the_scan_is_refused_rather_than_read_empty(opened, mz_range):
         opened().profile_per_scan(mz_min=mz_min, mz_max=mz_max)
 
 
+def test_a_scan_read_by_number_is_refused_too(opened):
+    with pytest.raises(UnconvertedProfileError, match="scan 2 of this file"):
+        opened().scan_profile(2)
+
+    mz, intensity = opened().scan_profile(1)
+    np.testing.assert_array_equal(mz, _profile()[0])
+    assert mz.dtype == intensity.dtype == np.float64
+
+
 def test_the_averaged_centroids_are_refused(opened):
     # Their heights are read off the averaged profile's apex, which fell
     # back to the binned heights without a word when the average was NaN.

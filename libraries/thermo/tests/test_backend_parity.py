@@ -379,6 +379,54 @@ def test_profile_matches_thermo(monkeypatch, path):
 
 
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_per_scan_reads_match_thermo(monkeypatch, path):
+    """The reads a caller takes one scan at a time by number agree under both
+    backends: what the axis fingerprint reads.
+
+    ``centroid_masses`` beside ``centroid_flags``, every stored centroid
+    with its flags, in one order; ``scan_profile``, OpenTFRaw's stored
+    points the Thermo library's non-zero ones, at the bounds of
+    :func:`test_profile_matches_thermo`; and the run's start and end times
+    from the run header.
+    """
+    path = str(path)
+    reads = {}
+    for name in ("thermo", "opentfraw"):
+        monkeypatch.setenv("MASCOPE_THERMO_BACKEND", name)
+        with open_backend(path) as backend:
+            rows = backend.scan_rows()
+            reads[name] = (
+                backend.run_time_range(),
+                {
+                    scan: (
+                        backend.centroid_masses(scan),
+                        backend.centroid_flags(scan),
+                        backend.scan_profile(scan),
+                        row["IsCentroidScan"],
+                    )
+                    for scan, row in rows.items()
+                },
+            )
+    (th_times, th_scans), (ot_times, ot_scans) = reads["thermo"], reads["opentfraw"]
+
+    np.testing.assert_allclose(ot_times, th_times, rtol=1e-9)
+    assert list(ot_scans) == list(th_scans)
+    for scan, (th_mz, th_flags, (th_pmz, th_pint), centroid) in th_scans.items():
+        ot_mz, ot_flags, (ot_pmz, ot_pint), _ = ot_scans[scan]
+        assert ot_mz.size == ot_flags.size == th_flags.size, f"scan {scan}"
+        np.testing.assert_array_equal(ot_flags, th_flags, err_msg=f"scan {scan}")
+        np.testing.assert_allclose(ot_mz, th_mz, rtol=0, atol=1e-5)
+        if centroid:
+            continue
+        om, tm = ot_pmz[ot_pint > 0], th_pmz[th_pint > 0]
+        assert om.size == tm.size, f"scan {scan}: non-zero profile point count"
+        if tm.size:
+            ppm = (om - tm) / tm * 1e6
+            assert np.max(np.abs(ppm)) <= PROFILE_MZ_PPM, f"scan {scan}"
+            np.testing.assert_array_equal(ot_pint[ot_pint > 0], th_pint[th_pint > 0])
+
+
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_ms2_events_match_thermo(monkeypatch, path):
     """OpenTFRaw's MS2 precursor m/z and activation must match Thermo's.
 
