@@ -30,11 +30,28 @@ from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access,
     check_sample_access,
     check_sample_access_bulk,
+    check_target_collection_access,
+    check_target_ion_read_access_bulk,
 )
 from mascope_backend.db import User
 
 
 match_records_router = APIRouter(prefix="/api/match/records", tags=["Match Records"])
+
+
+async def _check_ion_scope_access(
+    target_collection_id: str | None, target_ion_ids: list[str] | None, user: User
+) -> None:
+    """Check the caller may read the target collection or ions a request names.
+
+    The sample scope check covers the match values only: the ion records also
+    carry the ions' compound names and formulas, which are as private as the
+    collection they come from.
+    """
+    if target_collection_id:
+        await check_target_collection_access(target_collection_id, user, "guest")
+    elif target_ion_ids:
+        await check_target_ion_read_access_bulk(target_ion_ids, user)
 
 
 @match_records_router.get("/collection", response_model=MatchRecordsResponse)
@@ -144,6 +161,7 @@ async def get_match_ion_records_route(
         await check_batch_access(body.sample_batch_id, user, "guest")
     else:
         raise ValueError("Either sample_item_ids or sample_batch_id must be provided.")
+    await _check_ion_scope_access(body.target_collection_id, body.target_ion_ids, user)
     result = await get_match_ion_records(**body.model_dump())
     return MatchRecordsResponse.model_validate(result)
 
@@ -175,6 +193,7 @@ async def get_match_ion_series_route(
         await check_batch_access(body.sample_batch_id, user, "guest")
     else:
         raise ValueError("Either sample_item_ids or sample_batch_id must be provided.")
+    await _check_ion_scope_access(body.target_collection_id, body.target_ion_ids, user)
     result = await get_match_ion_series(**body.model_dump())
     return MatchRecordsResponse.model_validate(result)
 
@@ -207,5 +226,10 @@ async def get_match_isotopes_records_route(
         await check_batch_access(query_params.sample_batch_id, user, "guest")
     else:
         raise ValueError("Either sample_item_id or sample_batch_id must be provided.")
+    await _check_ion_scope_access(
+        query_params.target_collection_id,
+        [query_params.target_ion_id] if query_params.target_ion_id else None,
+        user,
+    )
     result = await get_match_isotope_records(**query_params.model_dump())
     return MatchRecordsResponse.model_validate(result)
