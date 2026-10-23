@@ -11,6 +11,7 @@ was asked for, and what the operator is told.
 """
 
 import json
+import os
 import subprocess
 import sys
 import zipfile
@@ -289,12 +290,65 @@ def test_a_builder_that_fails_or_reports_nothing_fails_the_command(
     assert docker.commands("cp") == []
 
 
-def test_an_output_in_no_directory_is_refused(cli_runner, checkout, tmp_path):
+@pytest.mark.parametrize("suffix", [os.sep, f"{os.sep}."])
+def test_an_output_ending_in_a_separator_is_a_directory_made_if_missing(
+    cli_runner, operator_install, tmp_path, suffix
+):
+    """``Path`` drops the trailing separator: read as one, ``-o deposits/``
+    would name the archive ``deposits``."""
+    _, docker = operator_install
+    directory = tmp_path / "deposits"
     result = cli_runner.invoke(
-        app, ["export", "package", "ds1", "-o", str(tmp_path / "no" / "p.zip")]
+        app, ["export", "package", "ds1", "-o", f"{directory}{suffix}"]
+    )
+    assert result.exit_code == 0, result.output
+    target = directory.resolve() / "mascope-package_ds1_Air.zip"
+    assert docker.commands("cp")[0][-1] == str(target)
+    assert target.is_file()
+
+
+def test_a_checkout_builds_into_the_directory_made_for_it(
+    cli_runner, checkout, tmp_path
+):
+    directory = tmp_path / "deposits"
+    checkout.outcome = {"package": _package(directory / "mascope-package_ds1_Air.zip")}
+    result = cli_runner.invoke(
+        app, ["export", "package", "ds1", "-o", f"{directory}{os.sep}"]
+    )
+    assert result.exit_code == 0, result.output
+    ((command, _),) = checkout.calls
+    assert command[-2:] == ["--output", str(directory.resolve())]
+    assert (directory / "mascope-package_ds1_Air.zip").is_file()
+
+
+@pytest.mark.parametrize("name", ["p.zip", f"deposits{os.sep}"])
+def test_an_output_in_no_directory_is_refused(
+    cli_runner, checkout, tmp_path, errors, name
+):
+    """Only the archive, or the directory for it, is made: a mistyped path
+    above it is not."""
+    missing = tmp_path / "no"
+    result = cli_runner.invoke(
+        app, ["export", "package", "ds1", "-o", f"{missing}{os.sep}{name}"]
     )
     assert _refused(result)
+    assert errors == [f"No such directory: {missing.resolve()}"]
     assert checkout.calls == []
+    assert not missing.exists()
+
+
+def test_an_output_directory_that_is_a_file_is_refused(
+    cli_runner, checkout, tmp_path, errors
+):
+    archive = tmp_path / "deposit.zip"
+    archive.write_bytes(b"")
+    result = cli_runner.invoke(
+        app, ["export", "package", "ds1", "-o", f"{archive}{os.sep}"]
+    )
+    assert _refused(result)
+    assert errors == [f"Not a directory: {archive.resolve()}"]
+    assert checkout.calls == []
+    assert archive.read_bytes() == b""
 
 
 def test_the_operator_is_told_what_to_check_before_depositing(

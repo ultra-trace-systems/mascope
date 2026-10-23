@@ -240,14 +240,15 @@ def package(
         typer.Argument(help="The id of the dataset to package."),
     ],
     output: Annotated[
-        Path,
+        str,
         typer.Option(
             "--output",
             "-o",
             help="The archive's path, or a directory to write it into under "
-            "the package's name. An archive already there is replaced.",
+            "the package's name. A path ending in / is a directory, made if "
+            "it is missing. An archive already there is replaced.",
         ),
-    ] = Path("."),
+    ] = ".",
     in_container: Annotated[
         bool,
         typer.Option(
@@ -278,13 +279,33 @@ def package(
         mascope export package 0a1B2c3D4e5F6g7H
         mascope export package 0a1B2c3D4e5F6g7H -o ~/deposits/
     """
-    output = output.expanduser().resolve()
+    target = _output(output)
+    if in_container or source_checkout() is None:
+        written = _build_in_container(dataset_id, target)
+    else:
+        written = _build_here(dataset_id, target, runtime.state.env)
+    _print_summary(written)
+
+
+def _output(typed: str) -> Path:
+    """
+    Where the archive goes, from ``--output`` as it was typed.
+
+    A path is read as typed, since ``Path`` drops a trailing separator: one
+    that ends in a separator, ``.`` or ``..`` names a directory, which is
+    made if it is missing. Whatever is made, the archive or the directory,
+    its parent must exist, so a mistyped path is refused rather than built.
+
+    :param typed: The ``--output`` option.
+    :return: The archive's path, or the directory to write it into.
+    """
+    output = Path(typed).expanduser().resolve()
     if not output.is_dir() and not output.parent.is_dir():
         runtime.logger.error(f"No such directory: {output.parent}")
         raise typer.Exit(1)
-
-    if in_container or source_checkout() is None:
-        written = _build_in_container(dataset_id, output)
-    else:
-        written = _build_here(dataset_id, output, runtime.state.env)
-    _print_summary(written)
+    if os.path.basename(typed) in ("", ".", "..") and not output.is_dir():
+        if output.exists():
+            runtime.logger.error(f"Not a directory: {output}")
+            raise typer.Exit(1)
+        output.mkdir()
+    return output
