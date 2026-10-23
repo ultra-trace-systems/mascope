@@ -49,7 +49,7 @@ global collections).
 | `load_timeseries(compound= / ion= / isotope=, dataset=, batches=, samples=, max_rows=)` | `Frame` |
 | `load_spectrum(sample, mz_range=, t_range=, max_rows=)` | `Frame` |
 | `load_peaks_by_stage(sample, stages, max_rows=)` | `Frame` |
-| `query_by_mz(mz, mechanisms, tolerance_ppm=5.0, formula_ranges=, limit=20)` | `Candidates`: Mascope's formulas for an m/z, the closest first |
+| `query_by_mz(mz, mechanisms, tolerance_ppm=5.0, formula_ranges=, limit=20, isotopologues=True, known_only=False)` | `Candidates`: Mascope's formulas for an m/z, the closest first |
 | `match_compounds(sample, formulas, params=None, suggested=, mechanisms=)` | `MatchResult`: one verdict per candidate, the tree as a `Frame` |
 | `derive(df, inputs, code=)` | `Frame` of a table computed from Frames, their sources kept |
 | `answer(text, code=, inferred=, frames=)` | the manifest record of an answer |
