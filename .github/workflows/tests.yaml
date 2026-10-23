@@ -1,16 +1,26 @@
 name: Mascope Tests
-run-name: Running tests for PR to develop, master or an epic branch
+run-name: ${{ github.event_name == 'merge_group' && 'Running tests for a merge queue group' || 'Running tests for PR to develop, master or an epic branch' }}
 
+# Every job here also runs for a merge group. The merge queue on develop
+# merges a group only once each check the ruleset requires has reported on
+# the group's own commit, and a workflow that listens to pull_request alone
+# never runs there, so the group would wait for its checks until the queue's
+# timeout and then fail. The group's commit is the pull request merged onto
+# the current base and the entries queued ahead of it - what actually lands.
 on:
   pull_request:
     branches: [develop, master, "epic/**"]
     types: [opened, synchronize, reopened]
+  merge_group:
+    branches: [develop, master, "epic/**"]
+    types: [checks_requested]
 
 # Least privilege: this workflow only checks out code and runs tests.
 permissions:
   contents: read
 
-# A new push to the same PR supersedes the running jobs; cancel them.
+# A new push to the same PR supersedes the running jobs; cancel them. A merge
+# group's ref names its entry, so queue runs never cancel one another.
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
@@ -32,16 +42,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The PR's merge commit and its first parent, the base branch tip
+          # The commit under test and its first parent: for a pull request the
+          # merge commit and the base branch tip, for a merge group the
+          # entry's commit and the entry ahead of it, or the base tip.
           fetch-depth: 2
           persist-credentials: false
 
       - name: Classify the changed paths
         id: diff
         run: |
-          # From the base tip to the merge commit is exactly what merging the
-          # PR changes. --no-renames lists a moved file under both of its
-          # names, so moving code into docs/ cannot pass as a docs change.
+          # From the first parent to the merge commit is exactly what merging
+          # the PR changes, for a pull request and a merge group alike.
+          # --no-renames lists a moved file under both of its names, so
+          # moving code into docs/ cannot pass as a docs change.
           # -z writes each path as it is, NUL-terminated: without it git
           # quotes a path with non-ASCII or special characters
           # ("docs/dev/caf\303\251.md"), which then matches neither pattern.
@@ -127,13 +140,16 @@ jobs:
         # so that one push learns both (changelog.d/README.md).
         if: ${{ !cancelled() }}
         env:
-          BASE_REF: ${{ github.base_ref }}
+          # github.base_ref is set on a pull request only; a merge group names
+          # its base as a full ref, refs/heads/master.
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
-          if [ "$BASE_REF" = master ]; then
-            python3 tooling/changelog.py check --release
-          else
-            python3 tooling/changelog.py check
-          fi
+          case "$BASE_REF" in
+            master | refs/heads/master)
+              python3 tooling/changelog.py check --release ;;
+            *)
+              python3 tooling/changelog.py check ;;
+          esac
 
   nginx-config:
     name: nginx config validation

@@ -149,9 +149,13 @@ Feature) carries the kind. Milestones are not used.
 - Conventional Commits (`type(scope): description`); ASCII-only commit messages,
   no Co-Authored-By trailers.
 - **Rebase PR branches, never merge into them** - a PR should stay a linear
-  series of commits on top of `develop`. When a branch conflicts or falls
-  behind, `git fetch origin develop && git rebase origin/develop`, resolve the
-  conflicts, and force-push with `--force-with-lease`. Do not merge `develop`
+  series of commits on top of `develop`. When a branch conflicts,
+  `git fetch origin develop && git rebase origin/develop`, resolve the
+  conflicts, and force-push with `--force-with-lease`. A branch that is merely
+  behind needs no rebase: `develop` merges through a merge queue, which tests
+  each PR on the current `develop` plus the PRs queued ahead of it and
+  rebases it on when they pass, so "Merge when ready" (or `gh pr merge <n>`)
+  adds the PR to the queue rather than merging it. Do not merge `develop`
   into a PR branch - no "Merge branch 'develop' into ..." commits. If one was
   already made, `git reset --hard <pre-merge-commit>` and rebase instead;
   comparing `git rev-parse HEAD^{tree}` against the merge's tree confirms the
