@@ -102,3 +102,31 @@ jobs:
       - name: Dump stack logs on failure
         if: failure()
         run: docker compose -f docker-compose.demo.yaml logs --tail 300
+
+  # A red scheduled run files, or adds to, the GitHub issue that tracks it
+  # (.github/actions/nightly-failure-issue), so the failure reaches triage
+  # instead of only the failure e-mail. A job of its own, so the token that
+  # writes issues never reaches the job that runs the code under test.
+  # `!success()` rather than `failure()`: a job that hits its timeout is
+  # cancelled, not failed, and a nightly that hung is one to look at.
+  # A dispatched run files nothing: someone is watching it.
+  report:
+    name: File the failure
+    needs: benchmark
+    if: ${{ github.event_name == 'schedule' && !success() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Open or update the issue
+        uses: ./.github/actions/nightly-failure-issue
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

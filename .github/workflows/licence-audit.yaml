@@ -133,3 +133,35 @@ jobs:
       - name: Check the File Agent's dependency licences against the allowlist
         working-directory: agents/file
         run: uv run --no-sync python ../../tooling/check-licenses.py agent
+
+  # A red scheduled run files, or adds to, the GitHub issue that tracks it
+  # (.github/actions/nightly-failure-issue), so the failure reaches triage
+  # instead of only the failure e-mail. A job of its own, so the token that
+  # writes issues never reaches the job that runs the code under test.
+  # `!success()` rather than `failure()`: a job that hits its timeout is
+  # cancelled, not failed, and a nightly that hung is one to look at.
+  # The checkout here is the run's own ref - master, for a schedule - so the
+  # action's code never comes from an audited branch either. `fail-fast:
+  # false` above means one red leg never hides another; the one issue per
+  # workflow names every job that failed. A dispatched run files nothing:
+  # someone is watching it.
+  report:
+    name: File the failure
+    needs: [npm, python, agent]
+    if: ${{ github.event_name == 'schedule' && !success() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Open or update the issue
+        uses: ./.github/actions/nightly-failure-issue
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
