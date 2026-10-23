@@ -3,7 +3,7 @@
 # FAIR: Review & Roadmap
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-10-23
 - **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear, MAS-19 to MAS-36)
 - **Supersedes:** section 7 of `ionization_method_config.md` (retired 2026-10-22)
 - **What:** Mascope against the FAIR principles, and the phased plan: provenance, ids, metadata, deposit.
@@ -290,6 +290,17 @@ the reasoning.
     `to_mzml`. Requires an A/B against the current reader path before it is
     trusted - the same numeric check the retired `ionization_method_config.md`
     section 9 asked for.
+    *Built (MAS-30):* `POST /api/file/mzml`, over
+    `mascope_thermo.mzml.write_mzml`. The A/B changed what the export is:
+    `to_mzml` writes each scan's centroids, equal array for array to the
+    reader's under either backend, and labels them "profile spectrum". The
+    export relabels them "centroid spectrum"; the profile is not exported
+    ([#2594](https://github.com/ultra-trace-systems/mascope/issues/2594)). A
+    sample's file is its window's scans of its polarity, as the reader
+    selects them. Thermo raw only
+    ([#2596](https://github.com/ultra-trace-systems/mascope/issues/2596)), and
+    no web app or SDK action yet
+    ([#2595](https://github.com/ultra-trace-systems/mascope/issues/2595)).
 12. **Schymanski/MSI levels** alongside the private tier vocabulary. Already
     planned as [assignment_confidence.md](assignment_confidence.md) P4; this
     document only adds that it is also R1.3, and that the level belongs in the
