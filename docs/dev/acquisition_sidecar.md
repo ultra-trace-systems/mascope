@@ -1,7 +1,7 @@
 # The acquisition record: what an instrument's control program says of a file
 
 - **Status:** built
-- **As of:** 2026-10-22
+- **As of:** 2026-10-23
 - **Tracked in:** [Automatic ingest: routing and splitting](https://linear.app/ultra-trace/project/automatic-ingest-routing-and-splitting-68acd9575fa9) (Linear; the FAIR export of its ids is MAS-33)
 - **What:** The acquisition record a control program writes and the File Agent sends with a file: how it travels, routing and export. The schema itself is the user page [Acquisition records](../user/instruments/acquisition-records.md).
 
@@ -290,10 +290,13 @@ Not built:
 
 ## Reading the record as provenance
 
-For the deposit-ready package of the FAIR roadmap's phase 3, which is JSON-LD
-on schema.org and PROV. Nothing builds the package yet; this is the reading
-both sides hold to, so that the package will have what it needs from the
-instrument side. The identifiers export as `urn:uuid:<id>`.
+For the deposit-ready package of the FAIR roadmap's phase 3. The package is
+built (MAS-33): it carries each file's record as the sidecar beside its raw
+file, `raw/<file>.mascope.json`, and the record's four identifiers in the
+manifest's entry for the file, as they are stored. Its JSON-LD view on
+schema.org and PROV is MAS-34's to write; this is the reading both sides hold
+to, so that the view has what it needs from the instrument side. There the
+identifiers export as `urn:uuid:<id>`.
 
 | In the record | In PROV |
 |---|---|

@@ -44,6 +44,7 @@ mascope prod db backup           # dump the database
 mascope prod db restore --yes    # restore the latest dump
 mascope logs query --grep error  # search the application's file logs
 mascope env list                 # manage runtime environments
+mascope export package <id>      # a dataset's archive, to deposit in a repository
 ```
 
 Run `mascope --help` or `mascope <command> --help` for the full reference.
