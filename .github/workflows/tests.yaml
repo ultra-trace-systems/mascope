@@ -647,8 +647,12 @@ jobs:
           # changes that unit tests cannot. The image-build step earlier in
           # this job already created .venv, so sync into it (no `uv venv`,
           # which refuses to overwrite an existing environment).
+          # The mascope_ai toolkit's contract tests
+          # (libraries/ai/tests/test_ai_contract.py) read through the SDK
+          # against the same stack, under the same MASCOPE_SDK_CONTRACT=1
+          # switch and settings.
           uv sync --group dev
-          uv run pytest libraries/sdk/tests/ -v
+          uv run pytest libraries/sdk/tests/ libraries/ai/tests/ -v
 
       - name: Dump stack logs on failure
         if: failure()
