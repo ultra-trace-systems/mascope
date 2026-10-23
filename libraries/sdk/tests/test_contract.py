@@ -541,6 +541,7 @@ class TestReferenceDataContract:
         } <= set(df.columns)
 
     def test_ionization_modes_shape(self, mascope):
+        _skip_unless_attr(mascope.ionization, "modes")
         df = mascope.ionization.modes()
 
         # The demo's samples are processed, so a mode is there to name them.
