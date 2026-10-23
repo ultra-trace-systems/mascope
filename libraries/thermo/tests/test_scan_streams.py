@@ -24,13 +24,18 @@ from mascope_thermo.backend import (
     _method_experiment,
     _method_scan_event,
     _summarize_acquisition_parameters,
+    _trailer_numbers,
     open_backend,
 )
 from mascope_thermo.streams import (
+    _resolution,
+    _scan_resolution,
     measured,
     microscans,
     peak_streams,
     pooled_ms1_streams,
+    scan_stream_keys,
+    scan_stream_numbers,
     scan_streams,
     stream_report,
 )
@@ -61,6 +66,11 @@ class _ScriptedReader:
 
     def scan_trailer(self, scan_number):
         return self._scans[scan_number - 1][1]
+
+    def trailer_numbers(self, scan_number, labels, trailer=None):
+        if trailer is None:
+            trailer = self.scan_trailer(scan_number)
+        return _trailer_numbers(trailer, labels)
 
     def acquisition_parameters(self, max_scans=5, scan_numbers=None):
         return _summarize_acquisition_parameters(
@@ -259,6 +269,90 @@ def test_a_scan_without_a_resolution_is_keyed_without_one():
     )
     assert census[0]["key"] == "ITMS + c NSI Full ms [100.0000-1000.0000]"
     assert census[0]["signature"]["resolution"] is None
+
+
+class _TextTrailerReader(_ScriptedReader):
+    """A reader that gives its trailer as text, as the Thermo library does,
+    and the numbers it stores apart from it: one ``(filter, text trailer,
+    stored numbers)`` per scan. Counts the text trailers read."""
+
+    def __init__(self, scans):
+        super().__init__([(text, trailer) for text, trailer, _numbers in scans])
+        self._numbers = [numbers for _text, _trailer, numbers in scans]
+        self.text_reads = []
+
+    def scan_trailer(self, scan_number):
+        self.text_reads.append(scan_number)
+        return super().scan_trailer(scan_number)
+
+    def trailer_numbers(self, scan_number, labels, trailer=None):
+        stored = self._numbers[scan_number - 1]
+        return {label: stored[label] for label in labels if label in stored}
+
+
+def test_a_stored_whole_resolution_keys_a_scan_without_its_text_trailer():
+    """Under the Thermo library, a scan's whole trailer as text costs far
+    more than the one number the key needs."""
+    reader = _TextTrailerReader(
+        [(NEG_LOW, {"FT Resolution:": "120000"}, {"FT Resolution:": 120000.0})] * 3
+    )
+
+    assert scan_stream_keys(reader) == [f"{NEG_LOW} R=120000"] * 3
+    assert reader.text_reads == []
+
+
+@pytest.mark.parametrize(
+    ("text", "stored", "resolution"),
+    [
+        # The library shows a stored fraction rounded; the key has always
+        # held what the text shows.
+        ("15000", 15000.4, 15000),
+        ("15000.4", 15000.4, 15000.4),
+        # Text the trailer stores as text, which reads as no number.
+        ("High", None, "High"),
+        (None, None, None),
+    ],
+    ids=["rounded-fraction", "fraction", "text", "none"],
+)
+def test_a_resolution_stored_as_no_whole_number_is_read_from_the_text(
+    text, stored, resolution
+):
+    trailer = {} if text is None else {"FT Resolution:": text}
+    numbers = {} if stored is None else {"FT Resolution:": stored}
+    reader = _TextTrailerReader([(NEG_LOW, trailer, numbers)])
+
+    census = scan_streams(reader)
+
+    assert census[0]["signature"]["resolution"] == resolution
+    assert scan_stream_keys(reader) == [census[0]["key"]]
+    assert reader.text_reads[0] == 1
+
+
+def test_a_stored_whole_resolution_keys_a_scan_as_its_text_does():
+    """Whatever decimals the library shows, a whole number keys alike."""
+    by_text = scan_streams(_ScriptedReader([(NEG_LOW, _trailer("120000.00"))]))
+    by_number = scan_streams(
+        _TextTrailerReader(
+            [(NEG_LOW, _trailer("120000.00"), {"FT Resolution:": 120000.0})]
+        )
+    )
+
+    assert by_number[0]["key"] == by_text[0]["key"] == f"{NEG_LOW} R=120000"
+    assert by_number[0]["signature"] == by_text[0]["signature"]
+
+
+def test_the_numbers_asked_for_beside_the_keys_are_those_asked_for():
+    stored = {"FT Resolution:": 120000.0, "AGC Target:": 100000.0, "Other:": 1.0}
+    reader = _TextTrailerReader([(NEG_LOW, {}, stored)])
+
+    assert [numbers for _row, _key, numbers in scan_stream_numbers(reader, [])] == [{}]
+    assert [
+        numbers
+        for _row, _key, numbers in scan_stream_numbers(
+            reader, ["AGC Target:", "FT Resolution:", "Missing:"]
+        )
+    ] == [{"AGC Target:": 100000.0, "FT Resolution:": 120000.0}]
+    assert reader.text_reads == []
 
 
 def test_a_file_without_scans_has_no_streams():
@@ -1091,6 +1185,20 @@ def test_both_backends_group_the_same_scripted_scans_alike():
 
 
 # -- the committed sample files, through each backend available --------------
+
+
+@pytest.mark.parametrize("path", [POS_ORBI_FILE_PATH, NEG_ORBI_FILE_PATH])
+def test_a_files_stored_resolution_keys_each_scan_as_its_text_trailer_does(
+    backend, path
+):
+    """The key read from the stored number is the one the whole trailer gave."""
+    with open_backend(path) as reader:
+        for row in reader.scan_filters():
+            numbers = reader.trailer_numbers(row["scan"], ["FT Resolution:"])
+            assert "FT Resolution:" in numbers
+            assert _scan_resolution(reader, row["scan"], numbers) == _resolution(
+                reader.scan_trailer(row["scan"])
+            )
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,7 @@ which in a run spanning several test directories is another directory's.
 
 import numpy as np
 
+from mascope_thermo.backend import _trailer_numbers
 from mascope_thermo.scan_filter import parse_scan_filter
 from mascope_thermo.streams import scan_stream_keys
 from mascope_thermo.thermo import NoScansFoundError, UnknownStreamError
@@ -77,6 +78,11 @@ class ScriptedAcquisition:
         self.trailer_reads += 1
         event = self._scans[scan_number - 1][1]
         return {"FT Resolution:": self._resolutions.get(event, self.RESOLUTION)}
+
+    def trailer_numbers(self, scan_number, labels, trailer=None):
+        if trailer is None:
+            trailer = self.scan_trailer(scan_number)
+        return _trailer_numbers(trailer, labels)
 
     def acquisition_parameters(self, max_scans=5, scan_numbers=None):
         """What the trailers of these scans agree on: their microscan count,
