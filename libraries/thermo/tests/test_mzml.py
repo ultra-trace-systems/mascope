@@ -183,6 +183,31 @@ def test_a_failed_write_leaves_no_file(tmp_path, monkeypatch):
     assert os.listdir(tmp_path) == []
 
 
+def test_two_writes_of_one_output_do_not_share_a_staging_file(tmp_path, monkeypatch):
+    """A second write of the same output, started while the first one is
+    writing, leaves both whole: neither truncates nor publishes the other's
+    staging file."""
+    import mascope_thermo.mzml as m_mzml
+
+    out = tmp_path / "out.mzML"
+    real_filter = m_mzml._filter
+    nested = []
+
+    def filter_then_write_again(source, sink, keep):
+        if not nested:
+            nested.append(None)
+            nested[0] = write_mzml(POS_ORBI_FILE_PATH, str(out), t_max=12.0)
+        return real_filter(source, sink, keep)
+
+    monkeypatch.setattr(m_mzml, "_filter", filter_then_write_again)
+    written = write_mzml(POS_ORBI_FILE_PATH, str(out))
+
+    assert nested == [1]
+    assert written == 2
+    assert [s["scan"] for s in _spectra(out)] == [1, 2]
+    assert os.listdir(tmp_path) == ["out.mzML"]
+
+
 WRITER_OUTPUT = """\
 <run>
   <spectrumList count="2">
