@@ -590,11 +590,25 @@ jobs:
           cache: npm
           cache-dependency-path: server/frontend/package-lock.json
 
+      - name: Restore the Playwright browser from the cache
+        # Before the install step: on a hit the Chromium build is already in
+        # Playwright's store, and the install below finds it there and
+        # downloads nothing. The action says what a hit and a miss each mean.
+        uses: ./.github/actions/playwright-cache
+
       - name: Install dependencies and browsers
         working-directory: server/frontend
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          # No --with-deps. The shared libraries Chromium loads are on the
+          # runner image, which ships Google Chrome; what install-deps would
+          # add is fonts for scripts the app does not render, xvfb for a
+          # headed run and newer builds of libraries already present: 26 MB
+          # from the Ubuntu mirror, whose throughput is the one thing in this
+          # job that can stall for minutes. A browser with a library missing
+          # does not launch - Playwright names it and refuses - so an image
+          # that drops one fails the first test loudly, not quietly.
+          npx playwright install chromium
 
       - name: Wait for the stack to come up
         id: wait-stack
