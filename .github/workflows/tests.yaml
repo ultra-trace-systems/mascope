@@ -42,23 +42,40 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The commit under test and its first parent: for a pull request the
-          # merge commit and the base branch tip, for a merge group the
-          # entry's commit and the entry ahead of it, or the base tip.
+          # The commit under test and its first parent. On a pull request
+          # that is GitHub's merge of the PR onto the base tip, so the
+          # first-parent diff is the PR. A merge group is the PR's commits
+          # rebased onto the base and the entries ahead of it, so its first
+          # parent is only the PR's previous commit: the group is compared
+          # with the base the queue built it on instead, fetched below.
           fetch-depth: 2
           persist-credentials: false
 
       - name: Classify the changed paths
         id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          # The base tip a merge group was built on; empty on a pull request.
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
-          # From the first parent to the merge commit is exactly what merging
-          # the PR changes, for a pull request and a merge group alike.
+          # On a pull request, from the base tip to the merge commit is
+          # exactly what merging the PR changes. In a merge group, from the
+          # base the queue built on to the group's head covers this PR and
+          # the entries ahead of it: more than this PR alone, which can only
+          # run more here, never less.
           # --no-renames lists a moved file under both of its names, so
           # moving code into docs/ cannot pass as a docs change.
           # -z writes each path as it is, NUL-terminated: without it git
           # quotes a path with non-ASCII or special characters
           # ("docs/dev/caf\303\251.md"), which then matches neither pattern.
-          git diff --name-only --no-renames -z HEAD^1 HEAD > "$RUNNER_TEMP/changed-paths"
+          if [ "$EVENT" = merge_group ]; then
+            [ -n "$GROUP_BASE" ] || { echo "::error::merge group without base_sha"; exit 1; }
+            git fetch --depth=1 origin "$GROUP_BASE"
+            from=$GROUP_BASE
+          else
+            from=HEAD^1
+          fi
+          git diff --name-only --no-renames -z "$from" HEAD > "$RUNNER_TEMP/changed-paths"
           code=false
           count=0
           while IFS= read -r -d '' path; do
