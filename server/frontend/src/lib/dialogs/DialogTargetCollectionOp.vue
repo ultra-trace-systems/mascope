@@ -31,6 +31,8 @@ import { BaseClipboardContext } from '@/lib/base'
 import {
   isValidChemicalFormula,
   isSameCompound,
+  isIsomer,
+  inchikeyOf,
   findExistingCompound,
   parseCompoundPaste,
   validateCompoundPaste,
@@ -112,6 +114,14 @@ const structureNotApplied = ref(new Set())
 const structureNotAppliedTip =
   'This row reuses a stored compound, which keeps its own structure. ' +
   'The InChIKey, InChI or SMILES given was not applied: change it in Edit compound.'
+// Stored compounds a pasted or entered row matched by its InChIKey: the same
+// structure, so nothing of it is left out.
+const structureMatched = ref(new Set())
+const structureMatchedTip = "This row has the stored compound's InChIKey: it is the same compound."
+// A created row of a formula another compound has, told apart by its InChIKey.
+const isomerTip = (other) =>
+  `Created as another compound: its InChIKey differs from that of ${other}, ` +
+  'which has the same formula.'
 const deleteOrphans = ref(true)
 
 const key = reactive({
@@ -180,10 +190,18 @@ const changes = computed(() =>
         status = '4 remove'
       }
     }
+    // The compound of the same formula a created row was told apart from.
+    const isomer = created
+      ? [...app.data.target.compound.list, ...compounds.created].find((other) =>
+          isIsomer(other, comp)
+        )
+      : null
     return {
       ...comp,
       status,
-      structureNotApplied: structureNotApplied.value.has(comp.target_compound_id)
+      structureNotApplied: structureNotApplied.value.has(comp.target_compound_id),
+      structureMatched: structureMatched.value.has(comp.target_compound_id),
+      isomerOf: isomer ? isomer.target_compound_name || isomer.target_compound_formula : null
     }
   })
 )
@@ -310,8 +328,10 @@ function remove(compound) {
   if (compound.status == '1 create') {
     compounds.created = compounds.created.filter((selected) => !isSameCompound(selected, compound))
   } else {
+    // Selected compounds are stored ones: compare by id, as a formula match
+    // would take a same-formula isomer along.
     compounds.selected = compounds.selected.filter(
-      (selected) => !isSameCompound(selected, compound)
+      (selected) => selected.target_compound_id !== compound.target_compound_id
     )
   }
 }
@@ -319,14 +339,32 @@ function restore(compound) {
   compounds.selected.push(compound)
 }
 
+// Whether the stored compound a row resolved to is in the selection already.
+// A row matched by its InChIKey is that compound, so it is checked by id: a
+// keyless compound of the formula in the selection is not it. Any other row
+// is checked by identity against the selection, as it was before structures,
+// so a formula-only row does not add a second compound of its formula.
+function inSelection(row, record) {
+  const key = inchikeyOf(row)
+  if (record && key && key === inchikeyOf(record)) {
+    return compounds.selected.some((comp) => comp.target_compound_id === record.target_compound_id)
+  }
+  return compounds.selected.some((comp) => isSameCompound(comp, row))
+}
+
 function loadSpreadsheet({ rows }) {
   let prexisting = []
+  // the pasted row behind each entry of prexisting
+  const prexistingRows = []
   rows.forEach((compound) => {
     const identity = compoundIdentity(compound)
     const record = findExistingCompound(app.data.target.compound.list, compound)
     if (record) {
       prexisting.push(record)
-      if (Object.values(identity).some(Boolean)) {
+      prexistingRows.push(compound)
+      if (identity.inchikey && inchikeyOf(identity) === inchikeyOf(record)) {
+        structureMatched.value = new Set(structureMatched.value).add(record.target_compound_id)
+      } else if (Object.values(identity).some(Boolean)) {
         structureNotApplied.value = new Set(structureNotApplied.value).add(
           record.target_compound_id
         )
@@ -357,7 +395,7 @@ function loadSpreadsheet({ rows }) {
       compound
     )
   })
-  const unselected = (added) => !compounds.selected.some((comp) => isSameCompound(comp, added))
+  const unselected = (added, i) => !inSelection(prexistingRows[i], added)
   compounds.selected.push(...reconciled.filter(unselected))
   // force DataTable re-render
   key.targets += 1
@@ -566,7 +604,8 @@ const existingInputCompound = computed(() =>
   findExistingCompound(app.data.target.compound.list, {
     target_compound_formula: add.formula,
     target_compound_name: add.name,
-    cas_number: add.cas
+    cas_number: add.cas,
+    inchikey: add.inchikey
   })
 )
 
@@ -577,11 +616,12 @@ const alreadyInSelection = computed(() => {
   const searchCompound = {
     target_compound_formula: add.formula,
     target_compound_name: add.name,
-    cas_number: add.cas
+    cas_number: add.cas,
+    inchikey: add.inchikey
   }
 
   return (
-    compounds.selected.some((comp) => isSameCompound(comp, searchCompound)) ||
+    inSelection(searchCompound, existingInputCompound.value) ||
     compounds.created.some((comp) => isSameCompound(comp, searchCompound))
   )
 })
@@ -718,6 +758,7 @@ async function init(mode) {
   compounds.initial = []
   compounds.created = []
   structureNotApplied.value = new Set()
+  structureMatched.value = new Set()
   resetAddInput()
   batches.loaded = []
   batches.selected = []
@@ -1086,6 +1127,11 @@ watch(
                           when you save.
                         </p>
                         <p>
+                          A row whose InChIKey differs from that of a compound with the same
+                          formula is an isomer: it is created, and its row says so. A row with
+                          the stored compound's InChIKey reuses it.
+                        </p>
+                        <p>
                           A reused compound keeps its own structure: a pasted InChIKey, InChI
                           or SMILES is not applied to it, and its row says so. Change it in
                           <b>Edit compound</b>.
@@ -1126,7 +1172,7 @@ watch(
                       :dataKey="
                         (item) =>
                           item.target_compound_id ||
-                          `create_${item.target_compound_formula}_${item.target_compound_name || ''}_${item.cas_number || ''}`
+                          `create_${item.target_compound_formula}_${item.target_compound_name || ''}_${item.cas_number || ''}_${item.inchikey || ''}`
                       "
                       v-if="changes.length"
                       :value="changes"
@@ -1157,6 +1203,14 @@ watch(
                               :pt="statusBadgePt"
                             >
                               Create
+                              <i
+                                v-if="slotProps.data.isomerOf"
+                                class="pi pi-clone structure-isomer"
+                                role="img"
+                                aria-label="Created as an isomer"
+                                v-tooltip.top="isomerTip(slotProps.data.isomerOf)"
+                                style="margin-left: 0.4rem; font-size: 13px"
+                              />
                             </Message>
                             <Message
                               v-else-if="slotProps.data.status == '2 add'"
@@ -1174,6 +1228,14 @@ watch(
                                 v-tooltip.top="structureNotAppliedTip"
                                 style="margin-left: 0.4rem; font-size: 13px"
                               />
+                              <i
+                                v-if="slotProps.data.structureMatched"
+                                class="pi pi-link structure-matched"
+                                role="img"
+                                aria-label="Same structure as the stored compound"
+                                v-tooltip.top="structureMatchedTip"
+                                style="margin-left: 0.4rem; font-size: 13px"
+                              />
                             </Message>
                             <Message
                               v-else-if="slotProps.data.status == '3 keep'"
@@ -1189,6 +1251,14 @@ watch(
                                 role="img"
                                 aria-label="Structure not applied"
                                 v-tooltip.top="structureNotAppliedTip"
+                                style="margin-left: 0.4rem; font-size: 13px"
+                              />
+                              <i
+                                v-if="slotProps.data.structureMatched"
+                                class="pi pi-link structure-matched"
+                                role="img"
+                                aria-label="Same structure as the stored compound"
+                                v-tooltip.top="structureMatchedTip"
                                 style="margin-left: 0.4rem; font-size: 13px"
                               />
                             </Message>
