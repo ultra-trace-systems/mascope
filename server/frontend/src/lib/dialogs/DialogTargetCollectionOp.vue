@@ -328,8 +328,10 @@ function remove(compound) {
   if (compound.status == '1 create') {
     compounds.created = compounds.created.filter((selected) => !isSameCompound(selected, compound))
   } else {
+    // Selected compounds are stored ones: compare by id, as a formula match
+    // would take a same-formula isomer along.
     compounds.selected = compounds.selected.filter(
-      (selected) => !isSameCompound(selected, compound)
+      (selected) => selected.target_compound_id !== compound.target_compound_id
     )
   }
 }
@@ -377,7 +379,10 @@ function loadSpreadsheet({ rows }) {
       compound
     )
   })
-  const unselected = (added) => !compounds.selected.some((comp) => isSameCompound(comp, added))
+  // By id: a keyless compound of the formula in the selection is not the
+  // stored compound carrying the row's InChIKey.
+  const unselected = (added) =>
+    !compounds.selected.some((comp) => comp.target_compound_id === added.target_compound_id)
   compounds.selected.push(...reconciled.filter(unselected))
   // force DataTable re-render
   key.targets += 1
@@ -602,10 +607,13 @@ const alreadyInSelection = computed(() => {
     inchikey: add.inchikey
   }
 
-  return (
-    compounds.selected.some((comp) => isSameCompound(comp, searchCompound)) ||
-    compounds.created.some((comp) => isSameCompound(comp, searchCompound))
-  )
+  // A stored match is in the selection only by its id; a new compound is
+  // checked against the selection by identity.
+  const record = existingInputCompound.value
+  const selected = record
+    ? compounds.selected.some((comp) => comp.target_compound_id === record.target_compound_id)
+    : compounds.selected.some((comp) => isSameCompound(comp, searchCompound))
+  return selected || compounds.created.some((comp) => isSameCompound(comp, searchCompound))
 })
 
 // Button configuration for manual input

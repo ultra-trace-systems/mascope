@@ -212,12 +212,12 @@ describe('DialogTargetCollectionOp manual compound input', () => {
   const field = (wrapper, id) =>
     wrapper.findAllComponents({ name: 'InputText' }).find((input) => input.attributes('id') === id)
 
-  async function openOnInput() {
+  async function openOnInput(action = 'create') {
     const wrapper = mount(DialogTargetCollectionOp, {
       props: { action: null },
       global: { plugins: [PrimeVue], stubs, directives: { tooltip: {} } }
     })
-    await wrapper.setProps({ action: 'create' })
+    await wrapper.setProps({ action })
     await flushPromises()
     wrapper
       .findAllComponents({ name: 'SelectButton' })
@@ -382,6 +382,45 @@ describe('DialogTargetCollectionOp manual compound input', () => {
     const { target_compound_ids, target_compounds_create } = await saveCreated(wrapper)
     expect(target_compound_ids).toEqual([ETHANOL.target_compound_id])
     expect(target_compounds_create).toEqual([])
+  })
+
+  it('adds the stored compound of the InChIKey when a keyless one is already selected', async () => {
+    compoundList.push({ ...KEYLESS_C2H6O }, { ...ETHANOL })
+    const wrapper = await openOnInput()
+    await type(wrapper, 'add-compound-formula', 'C2H6O')
+    addButton(wrapper).vm.$emit('click')
+    await nextTick()
+
+    await type(wrapper, 'add-compound-formula', 'C2H6O')
+    await typeStructure(wrapper, { inchikey: ETHANOL.inchikey })
+    expect(addButton(wrapper).attributes('disabled')).toBe('false')
+    addButton(wrapper).vm.$emit('click')
+    await nextTick()
+
+    const { target_compound_ids, target_compounds_create } = await saveCreated(wrapper)
+    expect(target_compound_ids).toEqual([
+      KEYLESS_C2H6O.target_compound_id,
+      ETHANOL.target_compound_id
+    ])
+    expect(target_compounds_create).toEqual([])
+  })
+
+  it('will not add a selected compound missing from the stored list twice', async () => {
+    // the collection's compound is not among the stored ones listed
+    opened.collection = {
+      target_collection_id: 'c1',
+      target_collection_name: 'Solvents',
+      target_collection_type: 'TARGETS',
+      workspace_id: 'w1',
+      target_compounds: [{ ...KEYLESS_C2H6O }]
+    }
+    try {
+      const wrapper = await openOnInput('update')
+      await type(wrapper, 'add-compound-formula', 'C2H6O')
+      expect(addButton(wrapper).attributes('disabled')).toBe('true')
+    } finally {
+      opened.collection = null
+    }
   })
 
   it('will add an isomer of a compound already in the selection', async () => {
@@ -678,6 +717,39 @@ describe('DialogTargetCollectionOp spreadsheet paste', () => {
         status: '2 add',
         structureMatched: true,
         structureNotApplied: false
+      })
+    ])
+  })
+
+  it('adds the stored compound of the InChIKey when a keyless one is already selected', async () => {
+    compoundList.push({ ...KEYLESS_C2H6O }, { ...ETHANOL })
+    const wrapper = await open()
+    await paste(wrapper, 'Unknown alcohol\tC2H6O')
+    await paste(wrapper, `Ethanol\tC2H6O\t\t${ETHANOL.inchikey}`)
+
+    expect(changesTable(wrapper).props('value')).toEqual([
+      expect.objectContaining({
+        target_compound_id: KEYLESS_C2H6O.target_compound_id,
+        status: '2 add'
+      }),
+      expect.objectContaining({ target_compound_id: ETHANOL.target_compound_id, status: '2 add' })
+    ])
+  })
+
+  it('removes the stored compound of the InChIKey and keeps the keyless one', async () => {
+    compoundList.push({ ...KEYLESS_C2H6O }, { ...ETHANOL })
+    const wrapper = await open()
+    await paste(wrapper, `Unknown alcohol\tC2H6O\nEthanol\tC2H6O\t\t${ETHANOL.inchikey}`)
+    const ethanol = changesTable(wrapper)
+      .props('value')
+      .find((row) => row.target_compound_id === ETHANOL.target_compound_id)
+    wrapper.vm.$.setupState.remove(ethanol)
+    await nextTick()
+
+    expect(changesTable(wrapper).props('value')).toEqual([
+      expect.objectContaining({
+        target_compound_id: KEYLESS_C2H6O.target_compound_id,
+        status: '2 add'
       })
     ])
   })
