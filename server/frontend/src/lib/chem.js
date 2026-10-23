@@ -123,7 +123,10 @@ export function isIsomer(compound1, compound2) {
 
 /**
  * Finds the compound of a list a search compound is the same as
- * Matches as `isSameCompound` does: CAS, else InChIKey, else formula
+ * Matches as `isSameCompound` does, by priority over the whole list: a CAS
+ * match first, then an InChIKey match, then a formula match. A keyless
+ * compound of the formula earlier in the list does not win over the one
+ * that carries the search compound's InChIKey.
  *
  * @param {Array} compoundList - List of existing compounds to search in
  * @param {Object} searchCompound - Compound to search for with properties:
@@ -135,7 +138,14 @@ export function isIsomer(compound1, compound2) {
 export function findExistingCompound(compoundList, searchCompound) {
   if (!searchCompound?.target_compound_formula?.trim()) return null
 
-  return compoundList.find((comp) => isSameCompound(comp, searchCompound))
+  const cas = searchCompound.cas_number && norm(searchCompound.cas_number)
+  const key = inchikeyOf(searchCompound)
+  const candidates = compoundList.filter((comp) => isSameCompound(comp, searchCompound))
+  return (
+    (cas && candidates.find((comp) => comp.cas_number && norm(comp.cas_number) === cas)) ||
+    (key && candidates.find((comp) => inchikeyOf(comp) === key)) ||
+    candidates[0]
+  )
 }
 
 /** The structure identity a target compound may carry, all optional. */
