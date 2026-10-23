@@ -84,6 +84,9 @@ from mascope_backend.api.new.peak_assignments.engine import (
     FRAGMENTS_KEY,
     LIST_PRIOR_WEIGHT,
     MASS_CALIBRATION_KEY,
+    MU_SOURCE_FITTED,
+    MU_SOURCE_NONE,
+    MU_SOURCE_REAGENT,
     PARTNER_GATE_KEY,
     PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
@@ -2484,35 +2487,116 @@ def reagent_offset_for(
     )
 
 
+async def _latest_run_pattern_scoring(sample_item_id: str) -> dict | None:
+    """What the sample's latest completed in-app run recorded it scored at.
+
+    :param sample_item_id: The sample.
+    :return: The run's ``pattern_scoring`` snapshot; None where the sample has
+        no completed in-app run, or its latest recorded none (a run without an
+        untargeted search, or one from before the snapshot).
+    """
+    async with async_session() as session:
+        config = (
+            await session.execute(
+                select(PeakAssignmentRun.config)
+                .where(
+                    PeakAssignmentRun.sample_item_id == sample_item_id,
+                    PeakAssignmentRun.status == "completed",
+                    # An import's config is the client's own, stored as sent:
+                    # it says nothing of where the in-app scorer centred.
+                    PeakAssignmentRun.engine == IN_APP_ENGINE,
+                )
+                .order_by(PeakAssignmentRun.peak_assignment_run_utc_created.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    snapshot = (config or {}).get(PATTERN_SCORING_KEY)
+    return snapshot if isinstance(snapshot, dict) else None
+
+
+def _recorded_scoring_centre(
+    snapshot: dict | None,
+) -> tuple[bool, ReagentOffset | None]:
+    """The centre a run's snapshot says it scored the sample at, as the seeded
+    chain takes one.
+
+    The same centre :func:`_run_scoring_centre` hands the run's own re-score:
+    the library's fit where it made one, the reagent lines' where they stood in
+    for it, and none where the run scored uncorrected.
+
+    :param snapshot: A run's ``pattern_scoring`` snapshot, or None.
+    :return: Whether the snapshot records a centre, and that centre, marked
+        beyond the width so it is taken as it is; None for a run that scored
+        the sample uncorrected.
+    """
+    # A snapshot from before the offset was recorded says nothing about it.
+    source = (snapshot or {}).get("mu_source")
+    if source == MU_SOURCE_NONE:
+        return True, None
+    if source == MU_SOURCE_FITTED:
+        lines = snapshot.get("fitted_anchors") or 0
+    elif source == MU_SOURCE_REAGENT:
+        lines = snapshot.get("reagent_lines") or 0
+    else:
+        return False, None
+    return True, ReagentOffset(
+        mu_ppm=float(snapshot["mu_ppm"]), lines=int(lines), beyond_width=True
+    )
+
+
 async def sample_reagent_offset(
-    sample, config: PeakAssignmentConfig | None = None
+    sample,
+    config: PeakAssignmentConfig | None = None,
+    *,
+    peaks_df: pd.DataFrame | None = None,
+    resolved_profile: ResolvedProfile | None = None,
 ) -> ReagentOffset | None:
-    """Where a sample's reagent lines put its mass axis, outside any run.
+    """Where a run of a sample scores its mass axis at, outside any run.
 
     What the seeded chain scores a short seed list at when it has no run's
-    pre-pass to hand (``seeded_scoring.score_seeds``): a pin, the inspector's
-    evidence and alternatives, the batch ledger's propagation. Resolved as the
-    run-less ingest fold resolves it - the configuration's profile (the
-    default's where the caller has none), from the sample's own mechanisms,
-    instrument and polarity, over the same peak read - so the seeded readers
-    and a run of the sample agree on where the axis sits.
+    centre to hand (``seeded_scoring.score_seeds``): a pin, the inspector's
+    evidence and alternatives, the batch search's re-score and its
+    propagation. A run scores at the target library's own offset where it
+    fitted one, and at the reagent lines' only where it fitted none
+    (:attr:`SampleMassAccuracy.scoring_mu_ppm`); the lines need not sit where
+    the library does (on the gate's uronium set -0.9 ppm against near zero),
+    so a centre read off the lines alone would move these readers away from the
+    run. The sample's latest completed run's record of its centre is taken
+    first, then.
+
+    Only where no run recorded one are the lines claimed, as the run-less
+    ingest fold resolves them - the configuration's profile (the default's
+    where the caller has none), from the sample's own mechanisms, instrument
+    and polarity, over the same peak read - since a library too short to fit
+    an offset of its own is what a run then has as well.
 
     :param sample: The sample being scored.
     :param config: The configuration of the pass the caller is part of, whose
         ``profile`` or ``mz_precision_ppm`` may override the default's: the
-        batch ledger's propagation is a step of a batch search, and centres a
-        sample where that search's own re-score does. None for a caller with no
-        configuration of its own (a pin, the inspector).
-    :return: The lines' offset; None for a profile with no reagent library.
+        batch ledger's propagation is a step of a batch search, and claims a
+        sample's lines where that search's own re-score does. None for a
+        caller with no configuration of its own (a pin, the inspector).
+    :param peaks_df: The sample's peaks, where the caller has read them.
+    :param resolved_profile: The sample's resolved chemistry, where the caller
+        has resolved it; ``config`` is then not read.
+    :return: That centre; None where the run scored uncorrected, or, with no
+        run's record, for a profile with no reagent library.
     """
-    _, mechanisms = await fetch_sample_mechanisms(sample)
-    resolved_profile = resolve_profile(
-        config if config is not None else PeakAssignmentConfig(),
-        mechanism_notations=[m.ionization_mechanism for m in mechanisms],
-        instrument_type=get_instrument_type(sample.filename),
-        polarity=sample.polarity,
+    recorded, centre = _recorded_scoring_centre(
+        await _latest_run_pattern_scoring(sample.sample_item_id)
     )
-    peaks_df = await asyncio.to_thread(load_sample_peaks, sample)
+    if recorded:
+        return centre
+    if resolved_profile is None:
+        _, mechanisms = await fetch_sample_mechanisms(sample)
+        resolved_profile = resolve_profile(
+            config if config is not None else PeakAssignmentConfig(),
+            mechanism_notations=[m.ionization_mechanism for m in mechanisms],
+            instrument_type=get_instrument_type(sample.filename),
+            polarity=sample.polarity,
+        )
+    if peaks_df is None:
+        peaks_df = await asyncio.to_thread(load_sample_peaks, sample)
     return await asyncio.to_thread(reagent_offset_for, peaks_df, resolved_profile)
 
 

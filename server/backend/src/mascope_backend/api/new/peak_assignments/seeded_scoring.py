@@ -12,16 +12,15 @@ Declared here rather than inside either caller because the steps are subtle in
 ways that must not diverge between them: the resolution filter is the
 instrument's, the abundance floor is the sample's own match-params floor, the
 width a seed list too short to fit one is scored at is the instrument class's,
-its offset is where the sample's reagent lines put the axis, as a run's
-pre-pass reads them, and the synthetic ion ids exist only to group the scored
-frame back to its seeds.
+its offset is the one a run of the sample scores at, and the synthetic ion
+ids exist only to group the scored frame back to its seeds.
 A second copy of that would drift, and the two callers would then measure the
 same composition differently.
 
 Nothing here writes. The ids are synthetic, the frames are in memory, and the
 only database access is reading the mechanism rows the seeds name and, for a
-caller outside a run, the sample's own mechanisms its reagent profile is
-resolved from.
+caller outside a run, the centre the sample's latest run recorded, or the
+sample's own mechanisms its reagent profile is resolved from.
 """
 
 import asyncio
@@ -208,16 +207,18 @@ def gate_and_score(
     :data:`mass_accuracy.MASS_OFFSET_MIN_ANCHORS` lines, and an Orbitrap
     sample's axis can sit beyond the class's width: on the gate's
     labelled-nitrate set the reagent lines put it at -1.26 ppm, 2.2 widths out.
-    Such a frame is centred where the reagent pre-pass's lines put the axis,
-    where that is beyond the width, as Stage A centres one; uncorrected, the
-    same ion would read worse alone than in a run of its sample.
+    Such a frame is centred where a run of the sample scores it: the library's
+    own offset where it fitted one, the reagent pre-pass's lines' where they
+    stood in beyond the width; uncorrected, the same ion would read worse alone
+    than in a run of its sample.
 
     :param fallback_sigma_ppm: The instrument class's width
         (``profiles.resolve_fallback_sigma_ppm``).
-    :param reagent_offset: Where the sample's reagent lines put its axis
-        (``engine.reagent_line_offset``), or inside a run the offset the run
-        scored Stage A at (``service._run_scoring_centre``); None where its
-        profile has no reagent library, or the run scored uncorrected.
+    :param reagent_offset: The centre a run of the sample scored at: inside a
+        run its own (``service._run_scoring_centre``), outside one what its
+        latest run recorded, else where its reagent lines put the axis
+        (``service.sample_reagent_offset``); None where the run scored
+        uncorrected, or with no run, where its profile has no reagent library.
     """
     gated = apply_match_params(match_isotope_df, match_params)
     return score_ions_by_fit(
@@ -296,8 +297,8 @@ async def score_seeds(
     The engine's Stage-A chain over a seeded frame and nothing more: ions for
     the seed list, one ``compute_match_isotopes`` pass (a single peak read
     covers every seed), ``apply_match_params`` gating, ``score_ions_by_fit`` at
-    the sample's instrument class's width and its reagent lines' offset where
-    the seeds are too few to fit their own (:func:`gate_and_score`). No
+    the sample's instrument class's width and the offset a run of it scores at
+    where the seeds are too few to fit their own (:func:`gate_and_score`). No
     candidate enumeration, no untargeted stage, no arbitration.
 
     :param sample: The sample being scored against.
@@ -307,10 +308,10 @@ async def score_seeds(
         of. Left out, the sample's own is resolved
         (``service.sample_reagent_offset``), which is what every caller outside
         a run - a pin, the inspector, the batch ledger's propagation - wants.
-    :param config: The configuration the sample's own offset is resolved
-        under, where it is: the batch search's for its propagation, whose
-        ``profile`` or ``mz_precision_ppm`` may override the default's. None
-        resolves under the default configuration.
+    :param config: The configuration the sample's reagent lines are claimed
+        under where no run recorded a centre: the batch search's for its
+        propagation, whose ``profile`` or ``mz_precision_ppm`` may override
+        the default's. None resolves under the default configuration.
     :return: ``(ion by seed, fit by ion, errors by pairing, the scored frame)``.
     """
     if not seeds:
