@@ -15,6 +15,7 @@ export { default as DialogTargetCollectionOp } from './DialogTargetCollectionOp.
 export { default as DialogTargetCompoundUpdate } from './DialogTargetCompoundUpdate.vue'
 export { default as DialogTemplateCreate } from './DialogTemplateCreate.vue'
 export { default as DialogUserManagement } from './DialogUserManagement.vue'
+export { default as DialogDeletedDatasets } from './DialogDeletedDatasets.vue'
 export { default as DialogDatasetOp } from './DialogDatasetOp.vue'
 export { default as DialogWorkspaceOp } from './DialogWorkspaceOp.vue'
 export { default as DialogWorkspaceMembership } from './DialogWorkspaceMembership.vue'
