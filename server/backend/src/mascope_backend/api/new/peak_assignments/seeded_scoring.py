@@ -12,13 +12,16 @@ Declared here rather than inside either caller because the steps are subtle in
 ways that must not diverge between them: the resolution filter is the
 instrument's, the abundance floor is the sample's own match-params floor, the
 width a seed list too short to fit one is scored at is the instrument class's,
-and the synthetic ion ids exist only to group the scored frame back to its
-seeds.
+its offset is where the sample's reagent lines put the axis, as a run's
+pre-pass reads them, and the synthetic ion ids exist only to group the scored
+frame back to its seeds.
 A second copy of that would drift, and the two callers would then measure the
 same composition differently.
 
 Nothing here writes. The ids are synthetic, the frames are in memory, and the
-only database access is reading the mechanism rows the seeds name.
+only database access is reading the mechanism rows the seeds name and, for a
+caller outside a run, the sample's own mechanisms its reagent profile is
+resolved from.
 """
 
 import asyncio
@@ -32,7 +35,10 @@ from mascope_backend.api.controllers.target.lib.compute.target_ions_compute impo
     generate_target_ions_from_composition,
 )
 from mascope_backend.api.new.match.params.lib import apply_match_params
-from mascope_backend.api.new.peak_assignments.engine import score_ions_by_fit
+from mascope_backend.api.new.peak_assignments.engine import (
+    ReagentOffset,
+    score_ions_by_fit,
+)
 from mascope_backend.db import IonizationMechanism, async_session
 from mascope_backend.runtime import runtime
 from mascope_file.name import get_instrument_type
@@ -181,7 +187,11 @@ async def fetch_mechanisms_by_id(
 
 
 def gate_and_score(
-    match_isotope_df: pd.DataFrame, match_params, *, fallback_sigma_ppm: float
+    match_isotope_df: pd.DataFrame,
+    match_params,
+    *,
+    fallback_sigma_ppm: float,
+    reagent_offset: ReagentOffset | None,
 ) -> pd.DataFrame:
     """Gate and fit-score a seeded match frame, exactly as Stage A does.
 
@@ -193,11 +203,24 @@ def gate_and_score(
     ``score_pattern_v2``'s generic 2 ppm, so one ion in one sample reads alike
     alone and among many seeds.
 
+    Nor can it fit an offset, below
+    :data:`mass_accuracy.MASS_OFFSET_MIN_ANCHORS` lines, and an Orbitrap
+    sample's axis can sit beyond the class's width: on the gate's
+    labelled-nitrate set the reagent lines put it at -1.26 ppm, 2.2 widths out.
+    Such a frame is centred where the reagent pre-pass's lines put the axis,
+    where that is beyond the width, as Stage A centres one; uncorrected, the
+    same ion would read worse alone than in a run of its sample.
+
     :param fallback_sigma_ppm: The instrument class's width
         (``profiles.resolve_fallback_sigma_ppm``).
+    :param reagent_offset: Where the sample's reagent lines put its axis
+        (``engine.reagent_line_offset``); None where its profile has no reagent
+        library.
     """
     gated = apply_match_params(match_isotope_df, match_params)
-    return score_ions_by_fit(gated, fallback_sigma_ppm=fallback_sigma_ppm)
+    return score_ions_by_fit(
+        gated, fallback_sigma_ppm=fallback_sigma_ppm, reagent_offset=reagent_offset
+    )
 
 
 def scored_maps(
@@ -247,10 +270,18 @@ def scored_maps(
     return fit_by_ion, errors
 
 
+#: :func:`score_seeds` was handed no reagent offset and resolves the sample's.
+#: Distinct from None, which is a run's answer for a profile with no reagent
+#: library.
+RESOLVE_REAGENT_OFFSET = object()
+
+
 async def score_seeds(
     sample,
     seeds: set[tuple[str, str]],
     match_params,
+    *,
+    reagent_offset: ReagentOffset | None | object = RESOLVE_REAGENT_OFFSET,
 ) -> tuple[
     dict[tuple[str, str], str],
     dict[str, float | None],
@@ -262,13 +293,17 @@ async def score_seeds(
     The engine's Stage-A chain over a seeded frame and nothing more: ions for
     the seed list, one ``compute_match_isotopes`` pass (a single peak read
     covers every seed), ``apply_match_params`` gating, ``score_ions_by_fit`` at
-    the sample's instrument class's width where the seeds are too few to fit
-    one (:func:`gate_and_score`). No candidate enumeration, no untargeted
-    stage, no arbitration.
+    the sample's instrument class's width and its reagent lines' offset where
+    the seeds are too few to fit their own (:func:`gate_and_score`). No
+    candidate enumeration, no untargeted stage, no arbitration.
 
     :param sample: The sample being scored against.
     :param seeds: Distinct ``(formula, ionization_mechanism_id)`` pairs.
     :param match_params: The sample's resolved match parameters.
+    :param reagent_offset: The reagent pre-pass offset of the run the caller is
+        part of. Left out, the sample's own is resolved
+        (``service.sample_reagent_offset``), which is what every caller outside
+        a run - a pin, the inspector, the batch ledger's propagation - wants.
     :return: ``(ion by seed, fit by ion, errors by pairing, the scored frame)``.
     """
     if not seeds:
@@ -295,6 +330,12 @@ async def score_seeds(
     if matched_df.empty:
         return ion_by_seed, {}, {}, pd.DataFrame()
 
+    if reagent_offset is RESOLVE_REAGENT_OFFSET:
+        # Imported here: the service imports this module for its own runs.
+        from mascope_backend.api.new.peak_assignments import service
+
+        reagent_offset = await service.sample_reagent_offset(sample)
+
     scored_df = await asyncio.to_thread(
         gate_and_score,
         matched_df,
@@ -302,6 +343,7 @@ async def score_seeds(
         fallback_sigma_ppm=resolve_fallback_sigma_ppm(
             get_instrument_type(sample.filename)
         ),
+        reagent_offset=reagent_offset,
     )
     fit_by_ion, errors_by_pairing = scored_maps(scored_df)
     return ion_by_seed, fit_by_ion, errors_by_pairing, scored_df
