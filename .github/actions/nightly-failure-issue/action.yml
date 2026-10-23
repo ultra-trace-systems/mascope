@@ -1,0 +1,27 @@
+name: Nightly failure issue
+description: >-
+  Opens, or comments on, the GitHub issue that tracks a scheduled workflow
+  going red, so the failure reaches triage instead of only the failure
+  e-mail. One open issue per workflow, labelled ci; nothing here closes it.
+  issue.sh says how.
+
+inputs:
+  token:
+    description: >-
+      A token that may read this run's jobs and write issues: the calling
+      job's GITHUB_TOKEN, with permissions actions read and issues write.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Open or update the issue
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        WORKFLOW: ${{ github.workflow }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/issue.sh"
