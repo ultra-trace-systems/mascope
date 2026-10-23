@@ -36,6 +36,10 @@ mfa_app = typer.Typer(
 
 _MODE = "prod"
 
+# The backend's ACCOUNT_TYPE_MACHINE (mascope_backend.accounts). The CLI does
+# not import the backend, so the literal is repeated here.
+_ACCOUNT_TYPE_MACHINE = "machine"
+
 
 def _psql(sql: str, env: str) -> str:
     """
@@ -140,6 +144,10 @@ def mfa_status(
     """
     List which accounts hold a second factor.
 
+    A machine account (a File Agent device's account) is shown as ``exempt``:
+    it never signs in interactively, so the two-factor policy does not apply to
+    it and it can never hold a factor.
+
     \b
     Example:
         mascope prod mfa status
@@ -147,7 +155,7 @@ def mfa_status(
     env = _resolve_env(env)
     _require_running(env)
     rows = _psql(
-        "SELECT email, mfa_enabled, "
+        "SELECT email, account_type, mfa_enabled, "
         "(SELECT count(*) FROM user_recovery_code r "
         " WHERE r.user_id = u.id AND r.used_at IS NULL) "
         'FROM "user" u ORDER BY email;',
@@ -158,8 +166,11 @@ def mfa_status(
         return
     runtime.logger.info("email | two-factor | unused recovery codes")
     for line in rows.splitlines():
-        email, enabled, codes = line.split("|")
-        state = "on" if enabled == "t" else "off"
+        email, account_type, enabled, codes = line.split("|")
+        if account_type == _ACCOUNT_TYPE_MACHINE:
+            state = "exempt"
+        else:
+            state = "on" if enabled == "t" else "off"
         runtime.logger.info(f"{email} | {state} | {codes}")
 
 
