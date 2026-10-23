@@ -17,6 +17,11 @@ socket held elsewhere is published to the workers and applied by the one that
 holds it, and the sockets and their rooms are found through the Redis records
 kept beside the session (:mod:`mascope_backend.socket.storage`).
 
+The signed-in room the room-less record-sync broadcasts go to
+(:mod:`mascope_backend.socket.signed_in`) is one of the rooms an evicted socket
+leaves; a socket eviction keeps is put back in it, which is how the tab of an
+account released from the password screen hears those broadcasts again.
+
 Only the sockets subscribe would now refuse are evicted - the same comparison,
 :func:`socket_hold_reason` - so a session the cutoff's tolerance still keeps,
 the one that just changed its own password, carries on.
@@ -27,6 +32,7 @@ from typing import Optional
 
 from mascope_backend.runtime import runtime
 from mascope_backend.socket import sio
+from mascope_backend.socket.signed_in import SIGNED_IN_ROOM, admit_signed_in
 from mascope_backend.socket.storage import (
     SocketSessionError,
     forget_user_socket,
@@ -107,6 +113,11 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
                 and socket_hold_reason(user, session.get("issued_at")) is None
             ):
                 kept |= rooms
+                # A socket that may read hears the room-less broadcasts again:
+                # the held tab of an account that has just changed its
+                # password left the room, or never entered it, at sign-in.
+                if SIGNED_IN_ROOM not in rooms:
+                    await admit_signed_in(sid, user, session.get("issued_at"))
                 continue
             for room in rooms - {own_room}:
                 await sio.leave_room(sid, room)

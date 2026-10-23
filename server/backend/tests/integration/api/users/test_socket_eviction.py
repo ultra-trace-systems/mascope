@@ -31,6 +31,8 @@ from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken, User
 from mascope_backend.db.id import gen_id
 from mascope_backend.db.scripts import require_password_change as sweep_script
+from mascope_backend.socket.auth.exceptions import SocketUnauthenticatedError
+from mascope_backend.socket.auth.service import authenticate_socket_connection
 from mascope_backend.socket.events.handlers.default.connection import (
     connect,
     disconnect,
@@ -40,6 +42,7 @@ from mascope_backend.socket.events.handlers.default.subscription import (
     unsubscribe,
 )
 from mascope_backend.socket.eviction import evict_ended_sessions
+from mascope_backend.socket.signed_in import SIGNED_IN_ROOM
 from mascope_backend.socket.storage import (
     get_session_user,
     get_user_socket_sids,
@@ -125,7 +128,8 @@ async def other_person(async_session_factory, roles):
 @pytest.fixture
 def sio():
     """
-    The Socket.IO server, as both the subscribe handler and eviction see it.
+    The Socket.IO server, as the subscribe handler, eviction and the signed-in
+    room see it.
 
     The workspace ACL is opened too: what is under test is the credential
     state, not the room's access check.
@@ -138,6 +142,7 @@ def sio():
             "mascope_backend.socket.events.handlers.default.subscription.sio", server
         ),
         patch("mascope_backend.socket.eviction.sio", server),
+        patch("mascope_backend.socket.signed_in.sio", server),
         patch(
             "mascope_backend.api.new.workspaces.dependencies.user_can_subscribe_to_room",
             AsyncMock(return_value=True),
@@ -170,7 +175,8 @@ def _left(sio, sid: str) -> set[str]:
 
 async def _assert_evicted(sio, sid: str, user: User) -> None:
     own_room = f"user-{user.id}"
-    assert _left(sio, sid) == {RESOURCE_ROOM}
+    # The signed-in room too: the room-less broadcasts stop with the rest.
+    assert _left(sio, sid) == {RESOURCE_ROOM, SIGNED_IN_ROOM}
     # The record of its rooms follows, so a second eviction has nothing to do.
     assert await room_tracker.socket_rooms(sid) == {own_room}
     # And notification routing no longer counts the user as in the room.
@@ -187,6 +193,7 @@ async def test_the_sweep_evicts_a_socket_subscribed_before_it(
 ):
     await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
     assert sio.enter_room.await_args_list == [
+        call("sid-a", SIGNED_IN_ROOM),
         call("sid-a", RESOURCE_ROOM),
         call("sid-a", f"user-{person.id}"),
     ]
@@ -351,7 +358,8 @@ async def test_the_maintenance_script_notifies_open_tabs(
 
     reloads = [c for c in calls if c[0] == "emit" and c[1] == "user_reload"]
     assert len(reloads) == 1
-    assert reloads[0][2] is None
+    # Room-less: every signed-in socket, none of the evicted ones.
+    assert reloads[0][2] == SIGNED_IN_ROOM
     assert calls[-1] == reloads[0]
 
 
@@ -397,11 +405,14 @@ async def test_a_password_change_keeps_the_socket_its_tolerance_keeps(person, si
         )
     assert resp.status_code == 200, resp.text
 
-    assert _left(sio, "sid-old") == {RESOURCE_ROOM}
+    assert _left(sio, "sid-old") == {RESOURCE_ROOM, SIGNED_IN_ROOM}
     assert _left(sio, "sid-fresh") == set()
+    # Already in the signed-in room: eviction does not enter it again.
+    assert sio.enter_room.await_args_list.count(call("sid-fresh", SIGNED_IN_ROOM)) == 1
     assert await room_tracker.socket_rooms("sid-fresh") == {
         RESOURCE_ROOM,
         f"user-{person.id}",
+        SIGNED_IN_ROOM,
     }
     assert await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
 
@@ -419,6 +430,127 @@ async def test_an_update_that_ends_nothing_evicts_nothing(owner_client, person, 
     assert await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
 
 
+# --- The signed-in room the room-less broadcasts go to ---
+
+
+def _entered(sio, sid: str) -> set[str]:
+    """The rooms ``sid`` was put in."""
+    return {args[1] for args, _ in sio.enter_room.await_args_list if args[0] == sid}
+
+
+async def _hold(async_session_factory, user: User) -> None:
+    """Arm the forced password change on ``user``, as the sweep does."""
+    async with async_session_factory() as session:
+        stored = await session.get(User, user.id)
+        stored.must_change_password = True
+        await session.commit()
+
+
+async def _login(sid: str, user: User) -> None:
+    """Sign in through the login route, as the SPA does, naming its socket."""
+    async with AsyncClient(
+        transport=ASGITransport(app=fast), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/auth/login",
+            data={"username": user.email, "password": ORIGINAL_PASSWORD},
+            headers={"X-SID": sid},
+        )
+    assert resp.status_code in (200, 204), resp.text
+    assert (await get_session_user(sid))["user_id"] == user.id
+
+
+@pytest.mark.asyncio
+async def test_a_socket_that_has_not_signed_in_hears_no_broadcast(sio):
+    """The SPA connects before its login form; that socket is in no room."""
+    assert await connect("sid-anon", {})
+    assert await connect(
+        "sid-bad", {"HTTP_COOKIE": f"{auth_settings.COOKIE_NAME}=not.a.token"}
+    )
+
+    sio.enter_room.assert_not_awaited()
+    assert await room_tracker.socket_rooms("sid-anon") == set()
+    assert await room_tracker.socket_rooms("sid-bad") == set()
+
+
+@pytest.mark.asyncio
+async def test_a_socket_connecting_with_a_session_hears_broadcasts(person, sio):
+    cookie = f"{auth_settings.COOKIE_NAME}={_token(person, datetime.now(timezone.utc))}"
+    assert await connect("sid-a", {"HTTP_COOKIE": cookie})
+
+    assert _entered(sio, "sid-a") == {SIGNED_IN_ROOM}
+    # On record, so eviction on any worker knows to take it away.
+    assert await room_tracker.socket_rooms("sid-a") == {SIGNED_IN_ROOM}
+
+
+@pytest.mark.asyncio
+async def test_a_socket_signed_in_at_login_hears_broadcasts(person, sio):
+    assert await connect("sid-a", {})
+    sio.enter_room.assert_not_awaited()
+
+    await _login("sid-a", person)
+
+    assert _entered(sio, "sid-a") == {SIGNED_IN_ROOM}
+    assert await room_tracker.socket_rooms("sid-a") == {SIGNED_IN_ROOM}
+
+
+@pytest.mark.asyncio
+async def test_a_held_account_hears_no_broadcast(person, sio, async_session_factory):
+    """Held at the password screen, at connect and at sign-in alike."""
+    await _hold(async_session_factory, person)
+    cookie = f"{auth_settings.COOKIE_NAME}={_token(person, datetime.now(timezone.utc))}"
+    assert await connect("sid-a", {"HTTP_COOKIE": cookie})
+    assert await get_session_user("sid-a"), "the socket did not authenticate"
+    assert await connect("sid-b", {})
+    await _login("sid-b", person)
+
+    sio.enter_room.assert_not_awaited()
+    assert await room_tracker.socket_rooms("sid-a") == set()
+    assert await room_tracker.socket_rooms("sid-b") == set()
+
+
+@pytest.mark.asyncio
+async def test_a_held_account_hears_broadcasts_once_it_changes_its_password(
+    person, sio, async_session_factory
+):
+    """The tab that changed the password is let back in; an older one is not."""
+    await _hold(async_session_factory, person)
+    now = datetime.now(timezone.utc)
+    for sid, issued in (("sid-fresh", now), ("sid-old", now - LONG_AGO)):
+        cookie = f"{auth_settings.COOKIE_NAME}={_token(person, issued)}"
+        assert await connect(sid, {"HTTP_COOKIE": cookie})
+    sio.enter_room.assert_not_awaited()
+
+    async with _cookie_client(_token(person, now)) as client:
+        resp = await client.patch(
+            "/api/users/me/creds",
+            json={
+                "current_password": ORIGINAL_PASSWORD,
+                "new_password": COMPLIANT_PASSWORD,
+                "verify_new_password": COMPLIANT_PASSWORD,
+            },
+        )
+    assert resp.status_code == 200, resp.text
+
+    assert _entered(sio, "sid-fresh") == {SIGNED_IN_ROOM}
+    assert await room_tracker.socket_rooms("sid-fresh") == {SIGNED_IN_ROOM}
+    assert _entered(sio, "sid-old") == set()
+
+
+@pytest.mark.asyncio
+async def test_a_socket_failing_to_sign_in_again_stops_hearing_broadcasts(person, sio):
+    """A failed attempt clears the earlier session, and the room goes with it."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+
+    with pytest.raises(SocketUnauthenticatedError):
+        await authenticate_socket_connection(
+            sid="sid-a", token="not.a.token", minimum_role="guest"
+        )
+
+    assert _left(sio, "sid-a") == {SIGNED_IN_ROOM}
+    assert SIGNED_IN_ROOM not in await room_tracker.socket_rooms("sid-a")
+
+
 # --- The index ---
 
 
@@ -429,7 +561,10 @@ async def test_the_index_follows_connect_and_disconnect(person, sio):
     assert await get_user_socket_sids(person.id) == {"sid-a", "sid-b"}
 
     await unsubscribe("sid-a", RESOURCE_ROOM)
-    assert await room_tracker.socket_rooms("sid-a") == {f"user-{person.id}"}
+    assert await room_tracker.socket_rooms("sid-a") == {
+        f"user-{person.id}",
+        SIGNED_IN_ROOM,
+    }
 
     await disconnect("sid-a")
     assert await get_user_socket_sids(person.id) == {"sid-b"}
