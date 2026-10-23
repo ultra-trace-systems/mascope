@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick, reactive } from 'vue'
 
 // The edit dialog opens on a match ion record, which carries the compound's
@@ -7,11 +7,13 @@ import { nextTick, reactive } from 'vue'
 // reads both from the stored compound list, and Save sends only the identity
 // fields the user changed: a field sent empty would clear the stored value.
 // The CAS number and the identity sit in a Structure group, collapsed unless
-// one of them has a value.
+// one of them has a value. Its Find structure lists the reference rows of the
+// compound's formula, and picking one fills the group.
 
 const update = vi.fn()
+const findStructures = vi.fn()
 // Reactive, as the store's list is: a sync replaces its records.
-const store = reactive({ list: [], update })
+const store = reactive({ list: [], update, findStructures })
 const compounds = store.list
 
 vi.mock('@/stores', () => ({
@@ -52,31 +54,74 @@ const Button = {
   emits: ['click'],
   template: '<button :disabled="disabled" @click="$emit(\'click\')">{{ label }}</button>'
 }
+const Tag = { props: ['value'], template: '<span class="tag">{{ value }}</span>' }
 
-function open() {
+function open(compound = record) {
   return mount(DialogTargetCompoundUpdate, {
-    props: { compound: record, visible: true },
+    props: { compound, visible: true },
     global: {
       stubs: {
         Dialog: { template: '<div><slot /></div>' },
         FloatLabel: { template: '<div><slot /></div>' },
         InputText,
         Panel,
-        Button
+        Button,
+        Tag
       },
       directives: { tooltip: {} }
     }
   })
 }
 
-const save = (wrapper) =>
-  wrapper
+const button = (wrapper, label) =>
+  wrapper.findAll('button').find((candidate) => candidate.text().startsWith(label))
+
+const save = (wrapper) => button(wrapper, 'Save').trigger('click')
+
+// Reference rows of methane's formula, as the structures route lists them:
+// the row of the compound's CAS number first.
+const ROWS = [
+  {
+    name: 'Methane',
+    ...METHANE,
+    cas_number: '74-82-8',
+    source: 'comptox',
+    source_native_id: 'DTXSID8025545',
+    license: 'CC-BY-4.0',
+    cas_match: true,
+    name_match: true
+  },
+  {
+    name: 'Marsh gas',
+    inchikey: 'VNWKTOKETHGBQD-UHFFFAOYSA-N',
+    inchi: null,
+    smiles: null,
+    cas_number: null,
+    source: 'custom',
+    source_native_id: 'row-7',
+    license: 'CC0-1.0',
+    cas_match: false,
+    name_match: false
+  }
+]
+
+const answer = (data, results = data.length) => ({ message: '', results, formula: 'CH4', data })
+
+const find = async (wrapper) => {
+  await button(wrapper, 'Find structure').trigger('click')
+  await flushPromises()
+}
+
+const use = async (wrapper, index) => {
+  await wrapper
     .findAll('button')
-    .find((button) => button.text() === 'Save')
-    .trigger('click')
+    .filter((candidate) => candidate.text() === 'Use')
+    [index].trigger('click')
+}
 
 beforeEach(() => {
   update.mockClear()
+  findStructures.mockReset()
   compounds.splice(0)
 })
 
@@ -282,5 +327,198 @@ describe('DialogTargetCompoundUpdate', () => {
     const withCas = open()
     await nextTick()
     expect(withCas.find('section').attributes('data-collapsed')).toBe('false')
+  })
+
+  it('opens the Structure group for an identity alone', async () => {
+    compounds.push({ ...record, inchikey: METHANE.inchikey })
+    const wrapper = open()
+    await nextTick()
+
+    expect(wrapper.find('section').attributes('data-collapsed')).toBe('false')
+  })
+
+  it('finds the structures of the formula, the CAS number and the name', async () => {
+    compounds.push(stored)
+    findStructures.mockResolvedValue(answer(ROWS))
+    const wrapper = open()
+    await nextTick()
+
+    await find(wrapper)
+
+    expect(findStructures).toHaveBeenCalledWith({
+      formula: 'CH4',
+      cas_number: '74-82-8',
+      name: 'Methane',
+      page: 0,
+      limit: 10
+    })
+    const listed = wrapper.findAll('li')
+    expect(listed).toHaveLength(2)
+    expect(listed[0].text()).toContain('Methane')
+    expect(listed[0].text()).toContain(METHANE.inchikey)
+    expect(listed[0].text()).toContain('CAS 74-82-8')
+    expect(listed[0].text()).toContain('comptox · CC-BY-4.0')
+    expect(listed[0].findAll('.tag').map((tag) => tag.text())).toEqual(['CAS', 'name'])
+    expect(listed[1].text()).toContain('custom · CC0-1.0')
+    expect(listed[1].text()).not.toContain('CAS')
+  })
+
+  it('fills a compound with a CAS number and no structure in two clicks', async () => {
+    compounds.push(stored)
+    findStructures.mockResolvedValue(answer(ROWS))
+    const wrapper = open()
+    await nextTick()
+
+    await find(wrapper)
+    await use(wrapper, 0)
+
+    expect(wrapper.find('#edit-compound-inchikey').element.value).toBe(METHANE.inchikey)
+    expect(wrapper.find('#edit-compound-inchi').element.value).toBe(METHANE.inchi)
+    expect(wrapper.find('#edit-compound-smiles').element.value).toBe(METHANE.smiles)
+    expect(wrapper.find('#add-compound-cas').element.value).toBe('74-82-8')
+    expect(wrapper.find('[data-testid="picked"]').text()).toContain('comptox, CC-BY-4.0')
+    // The list closes on the pick.
+    expect(wrapper.findAll('li')).toHaveLength(0)
+
+    await save(wrapper)
+    expect(update).toHaveBeenCalledWith({
+      target_compound_id: 'tc1',
+      target_compound_formula: 'CH4',
+      target_compound_name: 'Methane',
+      cas_number: '74-82-8',
+      ...METHANE
+    })
+  })
+
+  it('replaces the whole structure with the picked row', async () => {
+    compounds.push({ ...stored, ...METHANE, smiles: '[CH4]' })
+    findStructures.mockResolvedValue(answer(ROWS))
+    const wrapper = open()
+    await nextTick()
+
+    await find(wrapper)
+    await use(wrapper, 1)
+    await save(wrapper)
+
+    // The row has a key alone: the InChI and the SMILES of the structure
+    // stored before are cleared, not left beside another row's key.
+    const [sent] = update.mock.calls[0]
+    expect(sent).toMatchObject({ inchi: null, smiles: null })
+    expect(sent).not.toHaveProperty('inchikey')
+  })
+
+  it("keeps the compound's CAS number when the row records none", async () => {
+    compounds.push(stored)
+    findStructures.mockResolvedValue(answer(ROWS))
+    const wrapper = open()
+    await nextTick()
+
+    await find(wrapper)
+    await use(wrapper, 1)
+
+    expect(wrapper.find('#add-compound-cas').element.value).toBe('74-82-8')
+  })
+
+  it("takes the row's CAS number over the compound's", async () => {
+    compounds.push({ ...stored, cas_number: '50-00-0' })
+    findStructures.mockResolvedValue(answer(ROWS))
+    const wrapper = open()
+    await nextTick()
+
+    await find(wrapper)
+    await use(wrapper, 0)
+    await save(wrapper)
+
+    expect(update.mock.calls[0][0].cas_number).toBe('74-82-8')
+  })
+
+  it('lists the rows again on another lookup after a pick', async () => {
+    compounds.push(stored)
+    findStructures.mockResolvedValue(answer(ROWS))
+    const wrapper = open()
+    await nextTick()
+    await find(wrapper)
+    await use(wrapper, 0)
+
+    await find(wrapper)
+
+    expect(wrapper.find('[data-testid="picked"]').exists()).toBe(false)
+    expect(wrapper.findAll('li')).toHaveLength(2)
+  })
+
+  it('asks once while a lookup is under way', async () => {
+    compounds.push(stored)
+    findStructures.mockReturnValue(new Promise(() => {}))
+    const wrapper = open()
+    await nextTick()
+
+    await button(wrapper, 'Find structure').trigger('click')
+
+    expect(button(wrapper, 'Find structure').attributes('disabled')).toBeDefined()
+  })
+
+  it('says so when no reference list has a structure for the formula', async () => {
+    compounds.push(stored)
+    findStructures.mockResolvedValue(answer([]))
+    const wrapper = open()
+    await nextTick()
+
+    await find(wrapper)
+
+    expect(wrapper.find('[data-testid="no-structures"]').text()).toBe(
+      'No active reference list has a structure for CH4.'
+    )
+    expect(wrapper.findAll('li')).toHaveLength(0)
+  })
+
+  it('says why a lookup failed, and fills nothing', async () => {
+    compounds.push(stored)
+    findStructures.mockRejectedValue({ response: { data: { error: 'Lookup broke' } } })
+    const wrapper = open()
+    await nextTick()
+
+    await find(wrapper)
+
+    expect(wrapper.find('[role="alert"]').text()).toBe('Lookup broke')
+    expect(wrapper.find('#edit-compound-inchikey').element.value).toBe('')
+  })
+
+  it('reads the next page with what the first page asked', async () => {
+    compounds.push(stored)
+    findStructures.mockResolvedValueOnce(answer([ROWS[0]], 2))
+    const wrapper = open()
+    await nextTick()
+    await find(wrapper)
+
+    // A CAS number typed since would reorder the rows under the next page.
+    await wrapper.find('#add-compound-cas').setValue('50-00-0')
+    findStructures.mockResolvedValueOnce(answer([ROWS[1]], 2))
+    await button(wrapper, 'Show more').trigger('click')
+    await flushPromises()
+
+    expect(findStructures).toHaveBeenLastCalledWith({
+      formula: 'CH4',
+      cas_number: '74-82-8',
+      name: 'Methane',
+      page: 1,
+      limit: 10
+    })
+    expect(wrapper.findAll('li').map((item) => item.text())).toHaveLength(2)
+    expect(button(wrapper, 'Show more')).toBeUndefined()
+  })
+
+  it('drops an answer that arrives after it opened on another compound', async () => {
+    compounds.push(stored)
+    let resolve
+    findStructures.mockReturnValue(new Promise((done) => (resolve = done)))
+    const wrapper = open()
+    await nextTick()
+    await button(wrapper, 'Find structure').trigger('click')
+
+    await wrapper.setProps({ compound: { ...record, target_compound_id: 'tc2' } })
+    resolve(answer(ROWS))
+    await flushPromises()
+
+    expect(wrapper.findAll('li')).toHaveLength(0)
   })
 })

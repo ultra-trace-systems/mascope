@@ -66,6 +66,34 @@ again.
 Each row in the collection list gets a status badge — *Create*, *Add*, *Keep*,
 or *Remove* — so you always see what saving will change.
 
+#### Find a compound's structure
+
+Rather than paste an identifier, pick the structure from the reference lists
+Mascope holds. A formula is shared by every isomer, so picking from the
+compounds that have it keeps you from pasting the key of another one.
+
+1. In *Edit compound*, open the *Structure* group. It is already open when the
+   compound has a CAS number.
+2. Click **Find structure**. The dialog lists the compounds of the active
+   reference lists that have this formula and a structure. The ones with the
+   compound's CAS number come first, tagged *CAS*, then the ones with its
+   name, tagged *name*. Each row shows its InChIKey, its CAS number where the
+   list records one, the list it comes from and its licence. **Show more**
+   reads further rows.
+3. Click **Use** on a row. Its InChIKey, InChI and SMILES replace the ones in
+   the group; a row without one of them leaves that field empty. Its CAS
+   number replaces the compound's; a row that records none leaves the
+   compound's CAS number as it is.
+4. Click **Save**. The InChI is checked against the formula as when you type
+   it.
+
+When no active reference list has a structure for the formula, the dialog
+says so. The lists Mascope ships name formulas without structures; a source
+an operator loaded, such as CompTox or a
+[custom list](reference-lists.md) with InChIKeys, gives them.
+Pasting stays possible. As with a typed structure, a picked one says what the
+target stands for, not what a peak is.
+
 ### Assign and save
 
 On the **Batches** tab, tick the batches to analyse with this collection — the
