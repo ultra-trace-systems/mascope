@@ -25,6 +25,7 @@ import WorkspacePane from './WorkspacePane.vue'
 import UserSettingsPane from './UserSettingsPane.vue'
 import NotificationPane from './NotificationPane.vue'
 import NotificationOverlay from './NotificationOverlay.vue'
+import DeletedDatasetsPane from './DeletedDatasetsPane.vue'
 import AboutPane from './AboutPane.vue'
 
 import { useApp } from '@/stores'
@@ -239,6 +240,9 @@ watchEffect(() => {
               <span class="pi ph ph-bell" />
             </NotificationOverlay>
           </Tab>
+          <Tab value="deleted" v-tooltip.bottom="'Deleted datasets'">
+            <span class="pi ph ph-trash" />
+          </Tab>
           <Tab value="settings" v-tooltip.bottom="'Settings'">
             <span class="pi ph ph-gear-six" />
           </Tab>
@@ -253,6 +257,9 @@ watchEffect(() => {
         </TabPanel>
         <TabPanel value="notifications">
           <NotificationPane />
+        </TabPanel>
+        <TabPanel value="deleted">
+          <DeletedDatasetsPane />
         </TabPanel>
         <TabPanel value="settings">
           <UserSettingsPane />
