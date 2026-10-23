@@ -155,8 +155,12 @@ is `mascope-package/1`, and its keys are a contract in the way the
 | `target_collections` | One entry per collection: what it was used as (`matched`, `calibration`, `diagnostic`), its counts and its file |
 | `ionization_modes` | The modes the samples were processed under, with their ionization mechanisms and collections |
 
-Every record carries its id, and on a deployment with an id its global id
-too. Every file the manifest names carries its SHA-256 and size.
+Every record carries its id. On a deployment with an id, the dataset, its
+batches, samples and sample files, and the collections with their compounds
+and ions carry their global id too. Ionization modes, their mechanisms and the
+instrument functions have none. In `provenance`, `inputs` gives the dataset's
+global id; the batches' are in `batches`. Every file the manifest names
+carries its SHA-256 and size.
 
 A sample file whose raw file Mascope no longer keeps, only the data converted
 from it, is listed with `included` set to `false`, and the README names it.
