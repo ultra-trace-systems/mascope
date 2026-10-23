@@ -747,8 +747,10 @@ async def _propagate_to_sample(
         return 0
     sample = await fetch_sample(sample_item_id)
     match_params = await default_match_params(sample_item_id)
+    # Centred where this search's own re-score centres the searched sample:
+    # the reagent lines its configuration's profile claims.
     ion_by_seed, fit_by_ion, errors_by_pairing, _ = await score_seeds(
-        sample, seeds, match_params
+        sample, seeds, match_params, config=config
     )
     if not ion_by_seed:
         return 0

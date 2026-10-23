@@ -193,7 +193,7 @@ def stubbed_scorer(monkeypatch):
     a fit of its own; the match params are canned."""
     calls = []
 
-    async def seeded(sample, seeds, params):
+    async def seeded(sample, seeds, params, *, config=None):
         calls.append((sample.sample_item_id, set(seeds)))
         (formula, mech) = next(iter(seeds))
         return (
@@ -285,7 +285,7 @@ async def test_curation_pins_propagates_and_recomputes(
 async def test_a_member_the_measurement_does_not_reach_keeps_its_own(
     async_session_factory, anchor, monkeypatch
 ):
-    async def unreached(sample, seeds, params):
+    async def unreached(sample, seeds, params, *, config=None):
         return {}, {}, {}, pd.DataFrame()
 
     async def match_params(sample_item_id):
@@ -471,7 +471,7 @@ async def test_a_sample_that_cannot_be_measured_keeps_its_identity_and_the_pin_s
 
     scorer = batch_untargeted.score_seeds  # the fixture's canned pairing
 
-    async def failing(sample, seeds, params):
+    async def failing(sample, seeds, params, *, config=None):
         if sample.sample_item_id == anchor["s1"]:
             raise FileNotFoundError("S1's peak file has moved")
         return await scorer(sample, seeds, params)

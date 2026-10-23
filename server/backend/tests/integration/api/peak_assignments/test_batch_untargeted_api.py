@@ -18,7 +18,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from mascope_backend.api.new.peak_assignments import batch_untargeted
+from mascope_backend.api.new.peak_assignments import batch_untargeted, service
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     resolve_candidate,
     role_name,
@@ -239,6 +239,7 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
         "seeded_fits": [],
         "scoring": [],
         "seeded_offsets": [],
+        "score_configs": [],
     }
 
     def load_peaks(sample):
@@ -276,8 +277,9 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
         calls["seeded_offsets"].append(reagent_offset)
         return {seed: 0.88 for seed in seeds}
 
-    async def seeded(sample, seeds, params):
+    async def seeded(sample, seeds, params, *, config=None):
         calls["score"].append((by_id[sample.sample_item_id], set(seeds)))
+        calls["score_configs"].append((sample, config))
         ion_by_seed, fit_by_ion, errors = {}, {}, {}
         for formula, mechanism in seeds:
             if formula not in pairings:
@@ -437,6 +439,22 @@ async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
     assert (offset.lines, offset.beyond_width) == (3, True)
     assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
 
+    # The propagation of the same run measures the other sample under the
+    # search's own configuration, so it resolves the same lines to the same
+    # offset rather than the auto profile, whose mechanisms name no reagent.
+    monkeypatch.setattr(
+        service, "load_sample_peaks", batch_untargeted.load_sample_peaks
+    )
+    monkeypatch.setattr(
+        service, "fetch_sample_mechanisms", batch_untargeted.fetch_sample_mechanisms
+    )
+    propagated = stubbed_engine["score_configs"]
+    assert propagated
+    for sample, config in propagated:
+        assert config.profile == "UR"
+        assert await service.sample_reagent_offset(sample, config) == offset
+    assert await service.sample_reagent_offset(propagated[0][0]) is None
+
 
 async def test_the_other_sample_is_measured_and_takes_a_fit_of_its_own(
     async_session_factory, folded_batch, stubbed_engine
@@ -523,7 +541,7 @@ async def test_a_sample_that_cannot_be_measured_is_skipped_and_the_pass_finishes
     batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
     scorer = batch_untargeted.score_seeds  # the fixture's canned pairing
 
-    async def failing(sample, seeds, params):
+    async def failing(sample, seeds, params, *, config=None):
         if sample.sample_item_id == samples["S2"]:
             raise FileNotFoundError("S2's peak file has moved")
         return await scorer(sample, seeds, params)

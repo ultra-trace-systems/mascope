@@ -35,6 +35,7 @@ from mascope_backend.api.controllers.target.lib.compute.target_ions_compute impo
     generate_target_ions_from_composition,
 )
 from mascope_backend.api.new.match.params.lib import apply_match_params
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
     ReagentOffset,
     score_ions_by_fit,
@@ -214,8 +215,9 @@ def gate_and_score(
     :param fallback_sigma_ppm: The instrument class's width
         (``profiles.resolve_fallback_sigma_ppm``).
     :param reagent_offset: Where the sample's reagent lines put its axis
-        (``engine.reagent_line_offset``); None where its profile has no reagent
-        library.
+        (``engine.reagent_line_offset``), or inside a run the offset the run
+        scored Stage A at (``service._run_scoring_centre``); None where its
+        profile has no reagent library, or the run scored uncorrected.
     """
     gated = apply_match_params(match_isotope_df, match_params)
     return score_ions_by_fit(
@@ -282,6 +284,7 @@ async def score_seeds(
     match_params,
     *,
     reagent_offset: ReagentOffset | None | object = RESOLVE_REAGENT_OFFSET,
+    config: PeakAssignmentConfig | None = None,
 ) -> tuple[
     dict[tuple[str, str], str],
     dict[str, float | None],
@@ -300,10 +303,14 @@ async def score_seeds(
     :param sample: The sample being scored against.
     :param seeds: Distinct ``(formula, ionization_mechanism_id)`` pairs.
     :param match_params: The sample's resolved match parameters.
-    :param reagent_offset: The reagent pre-pass offset of the run the caller is
-        part of. Left out, the sample's own is resolved
+    :param reagent_offset: The offset of the run or search the caller is part
+        of. Left out, the sample's own is resolved
         (``service.sample_reagent_offset``), which is what every caller outside
         a run - a pin, the inspector, the batch ledger's propagation - wants.
+    :param config: The configuration the sample's own offset is resolved
+        under, where it is: the batch search's for its propagation, whose
+        ``profile`` or ``mz_precision_ppm`` may override the default's. None
+        resolves under the default configuration.
     :return: ``(ion by seed, fit by ion, errors by pairing, the scored frame)``.
     """
     if not seeds:
@@ -334,7 +341,7 @@ async def score_seeds(
         # Imported here: the service imports this module for its own runs.
         from mascope_backend.api.new.peak_assignments import service
 
-        reagent_offset = await service.sample_reagent_offset(sample)
+        reagent_offset = await service.sample_reagent_offset(sample, config)
 
     scored_df = await asyncio.to_thread(
         gate_and_score,

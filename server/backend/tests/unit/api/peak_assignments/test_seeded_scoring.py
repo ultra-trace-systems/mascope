@@ -17,8 +17,10 @@ import pandas as pd
 import pytest
 
 from mascope_backend.api.new.peak_assignments import seeded_scoring, service
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
     ReagentOffset,
+    SampleMassAccuracy,
     score_ions_by_fit,
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
@@ -77,11 +79,13 @@ def _matched(
 def reagent(monkeypatch):
     """The sample's reagent pre-pass, as ``score_seeds`` resolves it: none by
     default; set ``offset`` to give the sample's lines one. ``calls`` records
-    the samples it was resolved for."""
-    state = SimpleNamespace(offset=None, calls=[])
+    the samples it was resolved for, ``configs`` the configuration each was
+    resolved under."""
+    state = SimpleNamespace(offset=None, calls=[], configs=[])
 
-    async def sample_reagent_offset(sample):
+    async def sample_reagent_offset(sample, config=None):
         state.calls.append(sample)
+        state.configs.append(config)
         return state.offset
 
     monkeypatch.setattr(service, "sample_reagent_offset", sample_reagent_offset)
@@ -171,6 +175,18 @@ async def test_a_lone_seed_is_centred_where_the_reagent_lines_put_the_axis(
     assert corrected - uncorrected > 0.1
 
 
+async def test_the_sample_is_resolved_under_the_callers_configuration(stubbed, reagent):
+    """The batch ledger's propagation is a step of a batch search whose
+    profile may be overridden, and resolves the sample under that search's
+    configuration; a pin or the inspector, with none, under the default."""
+    config = PeakAssignmentConfig(profile="UR")
+
+    await _fit({TARGET}, config=config)
+    await _fit({TARGET})
+
+    assert reagent.configs == [config, None]
+
+
 async def test_an_offset_inside_the_width_is_not_taken(stubbed, reagent):
     """As in Stage A: lines that put the axis inside the width say nothing the
     score does not already allow for."""
@@ -215,3 +231,26 @@ async def test_a_runs_seeded_re_score_is_handed_the_runs_offset(stubbed, reagent
     assert reagent.calls == []
     assert fits[TARGET] == pytest.approx(await _fit({TARGET}, reagent_offset=offset))
     assert fits[TARGET] - await _fit({TARGET}, reagent_offset=None) > 0.1
+
+
+async def test_a_run_centres_its_re_score_where_stage_a_was_scored():
+    """Stage A and the search are scored at ``scoring_mu_ppm``: the library's
+    own fit where it made one, which need not be the reagent lines', and the
+    lines' only otherwise. The re-score of the search's commits is handed that
+    centre, not the lines' alone."""
+    lines = ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=True)
+    inside = ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=False)
+
+    fitted = service._run_scoring_centre(
+        SampleMassAccuracy(mu_ppm=0.2, sigma_ppm=0.3, anchors=9, reagent=lines)
+    )
+    assert (fitted.mu_ppm, fitted.lines, fitted.beyond_width) == (0.2, 9, True)
+    assert (
+        service._run_scoring_centre(SampleMassAccuracy(anchors=2, reagent=lines))
+        == lines
+    )
+    assert (
+        service._run_scoring_centre(SampleMassAccuracy(anchors=2, reagent=inside))
+        is None
+    )
+    assert service._run_scoring_centre(SampleMassAccuracy()) is None
