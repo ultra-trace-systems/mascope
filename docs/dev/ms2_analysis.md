@@ -6,6 +6,7 @@
 - **As of:** 2026-10-22
 - **Tracked in:** [MS2 analysis](https://linear.app/ultra-trace/project/ms2-analysis-7fdc525bca51)
   (Linear, MAS-380 to MAS-407)
+- **What:** Fragmentation spectra as a stored, assigned and served object: the MS2 store, the fragment composition core shared with peaky, MS2 evidence on ledger rows, the MS2 tab, energy-resolved analysis.
 
 ## Purpose
 
