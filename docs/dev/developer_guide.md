@@ -1608,6 +1608,23 @@ consequences:
   WARNING naming a stale secret as the likely cause).
 - A converter without the secret file fails at startup rather than connecting unauthenticated.
 
+**Per-event authentication** — one converter connection serves uploads by many users, so each
+event the converter emits on `/file-converter` (`file_processing_*`, `peak_detection_*`) carries
+the acting user's `access_token` in its payload, and the backend checks it and the user's role
+(editor or above) before handling the event (`file_converter_socket_auth` in
+`mascope_backend/socket/auth/decorators.py`). A rejected event is dropped, and its
+acknowledgement is an error payload naming why:
+
+| Acknowledgement | Meaning |
+| --- | --- |
+| `{"error": "SOCKET_UNAUTHENTICATED"}` | no `access_token`, or an invalid, expired or revoked one |
+| `{"error": "SOCKET_FORBIDDEN"}` | the token's user is below editor |
+| `{"error": "SOCKET_AUTH_CONFIG_ERROR"}` | the backend's role configuration is broken (logged at ERROR) |
+
+An accepted event's acknowledgement is whatever its handler returns, today nothing. Only a
+client that emits with a callback (`sio.emit(..., callback=...)` or `sio.call`) receives it;
+the converter currently emits without one.
+
 ## 💾 Database
 
 Mascope uses **PostgreSQL 16** as its primary database, accessed via **SQLAlchemy 2.x** (async,
