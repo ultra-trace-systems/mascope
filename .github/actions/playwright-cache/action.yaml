@@ -1,0 +1,71 @@
+name: Playwright browser cache
+description: >-
+  Restore the Chromium build the e2e suite runs on from the Actions cache,
+  and save it there at the end of a job that had to download it.
+
+# `playwright install` downloads a browser build from Playwright's CDN on
+# every run that does not already have it. This keeps the build in the
+# repository's Actions cache, so a job neither downloads it nor depends on
+# the CDN answering:
+#
+#   - uses: ./.github/actions/playwright-cache
+#   - working-directory: server/frontend
+#     run: |
+#       npm ci
+#       npx playwright install chromium
+#
+# The directory is Playwright's own browser store, where `playwright install`
+# puts a build and where the test runner looks for one. `playwright install`
+# skips a build that is already there, so on a hit the job's install step
+# downloads nothing and needs no branch on the outcome. The system packages
+# a browser runs on (`--with-deps`, `install-deps`) are not in the store and
+# not what this caches.
+#
+# The key is the Playwright version the frontend lockfile resolves, and the
+# browser the entry holds. Each Playwright release pins its own browser
+# builds, so a bump is a different key and the old entry is left to expire.
+# A job that installs another browser than the entry holds would not find it
+# complete, so the browser is in the key too.
+#
+# On a miss nothing here downloads: the job's install step does, as it does
+# without this action, and the cache step's own post step saves the directory
+# once the job has succeeded.
+#
+# Which runs can read a saved copy is GitHub's rule, not this action's: a run
+# reads caches saved on its own ref, on the default branch and, for a pull
+# request, on its base branch. .github/workflows/playwright-cache.yaml is what
+# saves one where pull requests can read it.
+
+outputs:
+  cache-hit:
+    description: "'true' when the browser build was restored from the cache."
+    value: ${{ steps.cache.outputs.cache-hit }}
+  version:
+    description: The Playwright version the frontend lockfile resolves.
+    value: ${{ steps.version.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read the Playwright version from the lockfile
+      id: version
+      shell: bash
+      run: |
+        # playwright-core is the package that names the browser builds (its
+        # browsers.json); @playwright/test pins it to its own version. Read
+        # from the lockfile, not node_modules, so the key is known before
+        # anything is installed.
+        version=$(jq -er '.packages["node_modules/playwright-core"].version' \
+          server/frontend/package-lock.json)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "key=playwright-chromium-${RUNNER_OS}-${version}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the browser build from the cache
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        # Playwright's browser store on Linux, which every runner here is.
+        # Every job has to name the same path: it is part of what identifies
+        # a cache entry.
+        path: ~/.cache/ms-playwright
+        key: ${{ steps.version.outputs.key }}
