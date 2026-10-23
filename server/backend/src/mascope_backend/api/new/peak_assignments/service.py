@@ -2410,6 +2410,26 @@ async def _already_running_result(
     return result
 
 
+def _claim_reagent_lines(peaks_df: pd.DataFrame, resolved_profile: ResolvedProfile):
+    """The reagent pre-pass's claim, as every reader of it makes it.
+
+    One call for the run's pre-pass (:func:`_reagent_assignments`) and the
+    offset a path with no run reads (:func:`reagent_offset_for`): the claim is
+    made at the profile's own m/z precision, and a second copy of it is where
+    that precision would drift apart.
+
+    :param peaks_df: Every observed peak of the sample.
+    :param resolved_profile: The chemistry the claim is made under.
+    :return: What :func:`claim_reagent_peaks` claimed, and its calibration.
+    """
+    return claim_reagent_peaks(
+        peaks_df,
+        reagent_library_for(resolved_profile.profile.name),
+        claim_ppm=resolved_profile.mz_precision_ppm,
+        purity=resolved_profile.profile.label_purity,
+    )
+
+
 def _claimed_lines_offset(
     hits, calibration, resolved_profile: ResolvedProfile
 ) -> ReagentOffset | None:
@@ -2452,32 +2472,35 @@ def reagent_offset_for(
     :return: Where the claimed lines put the axis; None for a profile with no
         reagent library.
     """
-    hits, calibration = claim_reagent_peaks(
-        peaks_df,
-        reagent_library_for(resolved_profile.profile.name),
-        claim_ppm=resolved_profile.mz_precision_ppm,
-        purity=resolved_profile.profile.label_purity,
+    return _claimed_lines_offset(
+        *_claim_reagent_lines(peaks_df, resolved_profile), resolved_profile
     )
-    return _claimed_lines_offset(hits, calibration, resolved_profile)
 
 
-async def sample_reagent_offset(sample) -> ReagentOffset | None:
+async def sample_reagent_offset(
+    sample, config: PeakAssignmentConfig | None = None
+) -> ReagentOffset | None:
     """Where a sample's reagent lines put its mass axis, outside any run.
 
     What the seeded chain scores a short seed list at when it has no run's
     pre-pass to hand (``seeded_scoring.score_seeds``): a pin, the inspector's
     evidence and alternatives, the batch ledger's propagation. Resolved as the
-    run-less ingest fold resolves it - the default configuration's profile,
-    from the sample's own mechanisms, instrument and polarity, over the same
-    peak read - so the seeded readers and a run of the sample agree on where
-    the axis sits.
+    run-less ingest fold resolves it - the configuration's profile (the
+    default's where the caller has none), from the sample's own mechanisms,
+    instrument and polarity, over the same peak read - so the seeded readers
+    and a run of the sample agree on where the axis sits.
 
     :param sample: The sample being scored.
+    :param config: The configuration of the pass the caller is part of, whose
+        ``profile`` or ``mz_precision_ppm`` may override the default's: the
+        batch ledger's propagation is a step of a batch search, and centres a
+        sample where that search's own re-score does. None for a caller with no
+        configuration of its own (a pin, the inspector).
     :return: The lines' offset; None for a profile with no reagent library.
     """
     _, mechanisms = await fetch_sample_mechanisms(sample)
     resolved_profile = resolve_profile(
-        PeakAssignmentConfig(),
+        config if config is not None else PeakAssignmentConfig(),
         mechanism_notations=[m.ionization_mechanism for m in mechanisms],
         instrument_type=get_instrument_type(sample.filename),
         polarity=sample.polarity,
@@ -2509,12 +2532,7 @@ def _reagent_assignments(
         target library fits no offset (:func:`reagent_line_offset`); None for a
         profile with no reagent library.
     """
-    hits, calibration = claim_reagent_peaks(
-        peaks_df,
-        reagent_library_for(resolved_profile.profile.name),
-        claim_ppm=resolved_profile.mz_precision_ppm,
-        purity=resolved_profile.profile.label_purity,
-    )
+    hits, calibration = _claim_reagent_lines(peaks_df, resolved_profile)
     if calibration is not None and calibration.anchors:
         runtime.logger.info(
             "Reagent pre-pass anchored at "
@@ -2568,6 +2586,31 @@ def _artifact_assignments(
     return rows, {row["sample_peak_id"] for row in rows}
 
 
+def _run_scoring_centre(mass_accuracy: SampleMassAccuracy) -> ReagentOffset | None:
+    """The offset a run scored Stage A and its search at, as the seeded chain
+    takes one.
+
+    The seeded re-score of the search's commits is a frame too short to fit an
+    offset, which ``score_ions_by_fit`` centres on the offset it is handed
+    where that is beyond the width. In a run that has to be where Stage A and
+    the search were scored (:attr:`SampleMassAccuracy.scoring_mu_ppm`): the
+    target library's own fit where it made one, which need not be where the
+    reagent lines sit, and the lines' only otherwise. Handed the lines' offset
+    alone, a library fitted at +0.2 ppm with lines at -1.3 would rank a reading
+    at +0.2 and tier it at -1.3.
+
+    :param mass_accuracy: What Stage A measured, with the run's reagent offset.
+    :return: That centre, marked beyond the width so it is taken as it is; None
+        where the run scored the sample uncorrected.
+    """
+    mu_ppm = mass_accuracy.scoring_mu_ppm
+    if mu_ppm is None:
+        return None
+    if mass_accuracy.mu_ppm is None:
+        return mass_accuracy.reagent
+    return ReagentOffset(mu_ppm=mu_ppm, lines=mass_accuracy.anchors, beyond_width=True)
+
+
 async def _seeded_fits(
     sample,
     match_params,
@@ -2591,9 +2634,10 @@ async def _seeded_fits(
     :param sample: The sample being assigned.
     :param match_params: The sample's resolved match parameters.
     :param seeds: ``(formula, mechanism id)`` pairs, from ``untargeted_seeds``.
-    :param reagent_offset: The run's reagent pre-pass offset, which Stage A was
-        scored at too; a seed list too short to fit an offset is centred on it
-        where it is beyond the width.
+    :param reagent_offset: The centre a seed list too short to fit an offset of
+        its own is scored at, where it is beyond the width: in a run, the one
+        Stage A and the search were scored at (:func:`_run_scoring_centre`);
+        in a batch search, which runs no Stage A, the reagent lines' own.
     :return: Fit per seed; a seed whose ion the pass could not score is absent,
         and its rows fall back to the finder's own number.
     """
@@ -3101,7 +3145,7 @@ async def _run_sample_assignment(
                         mechanism_id_by_notation,
                         to_custom_element_format,
                     ),
-                    reagent_offset=reagent_offset,
+                    reagent_offset=_run_scoring_centre(mass_accuracy),
                 )
                 stage_b_assignments = untargeted_matches_to_peak_assignments(
                     election.matches,

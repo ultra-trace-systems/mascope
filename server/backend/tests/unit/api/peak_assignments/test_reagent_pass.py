@@ -370,9 +370,42 @@ class TestTheOffsetOutsideARun:
         assert reagent_offset_for(peaks, resolved) == run_offset
         assert run_offset.beyond_width
 
+    def test_the_claim_is_made_at_the_profiles_precision(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.profiles import (
+            resolve_profile,
+        )
+        from mascope_backend.api.new.peak_assignments.service import (
+            reagent_offset_for,
+        )
+
+        # The rungs sit at -1.3 ppm and their isotopologue lines 5.8 ppm above
+        # them: outside an Orbitrap's 3 ppm claim, inside a 10 ppm one. Claimed
+        # at the profile's precision the rungs alone are counted; claimed any
+        # wider, the isotopologues would pull the offset to +4.5.
+        peaks = self._urea(-1.3, 4.5)
+        resolved = resolve_profile(
+            PeakAssignmentConfig(profile="UR"),
+            mechanism_notations=["[M+H]+"],
+            instrument_type="orbi",
+            polarity="+",
+        )
+        assert resolved.mz_precision_ppm == 3.0
+
+        offset = reagent_offset_for(peaks, resolved)
+
+        assert offset == _run_pre_pass(peaks, "UR", "orbi")[2]
+        assert offset.lines == 3
+        assert offset.mu_ppm == pytest.approx(-1.3, abs=0.05)
+
     @pytest.mark.asyncio
     async def test_a_sample_reads_the_profile_its_mechanisms_name(self, monkeypatch):
         from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
 
         peaks = self._urea(-1.3, -1.3)
         read = []
@@ -401,6 +434,11 @@ class TestTheOffsetOutsideARun:
         # no library, so nothing to ask.
         notation = "[M+H]+"
         assert await service.sample_reagent_offset(sample) is None
+
+        # A caller's own configuration picks the profile: one that names the
+        # reagent finds the lines the mechanisms alone would not.
+        config = PeakAssignmentConfig(profile="UR")
+        assert await service.sample_reagent_offset(sample, config) == offset
 
         # And the instrument class sets the width the offset must clear.
         notation = "[M+CH4N2O+H]+"
