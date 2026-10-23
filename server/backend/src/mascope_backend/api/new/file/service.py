@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import os
 import shutil
+import tempfile
 
 from sqlalchemy import select
 
@@ -237,14 +238,19 @@ async def export_mzml(
         for sample in samples
     ]
 
-    datetime_stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    dirname = f"mzml_{datetime_stamp}"
     # One file is written where it is downloaded from; more are written into
-    # a folder of their own, which is zipped and removed.
+    # a folder of their own, which is zipped and removed. The folder's name is
+    # made unique, not only stamped: two exports started within one second
+    # run side by side and would otherwise share it, and its zip.
     single = len(jobs) == 1
-    out_dir = None if single else user_temp_path(user_id, dirname)
-    if out_dir is not None:
-        os.mkdir(out_dir)
+    out_dir = None
+    if not single:
+        datetime_stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        out_dir = tempfile.mkdtemp(
+            prefix=f"mzml_{datetime_stamp}_",
+            dir=os.path.dirname(user_temp_path(user_id, "mzml")),
+        )
+        dirname = os.path.basename(out_dir)
 
     found: list[str] = []
     not_found: list[str] = []

@@ -14,10 +14,12 @@ Fixtures used:
 - ``orphan_sample_file`` - no sample item references
 """
 
+import datetime
 import os
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -250,6 +252,31 @@ async def test_more_than_one_is_zipped(
         )
         archive.extractall(raw_file / "out")
     assert _scans(raw_file / "out" / f"{filename}.{item_id}.mzML") == [2]
+
+
+@pytest.mark.asyncio
+async def test_two_zipped_exports_in_one_second_do_not_collide(
+    raw_file, sample_file, make_sample, monkeypatch
+):
+    item_id = await make_sample(12.0, 60.0)
+
+    class FrozenClock(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 23, 12, 0, 0)
+
+    monkeypatch.setattr(service, "datetime", SimpleNamespace(datetime=FrozenClock))
+    downloads = []
+    for _ in range(2):
+        result = await export_mzml(
+            sample_file_ids=[sample_file], sample_item_ids=[item_id], user_id=1
+        )
+        downloads.append(result["_notification_data"]["download"])
+    first, second = downloads
+
+    assert first != second
+    assert first.startswith("mzml_2026-10-23_120000_")
+    assert sorted(os.listdir(raw_file)) == sorted([first, second])
 
 
 @pytest.mark.asyncio
