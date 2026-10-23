@@ -51,6 +51,13 @@ Three ways to fill the **Compounds** tab, mix and match freely:
   the compound already exists in Mascope, the button reads **Add compound**
   and reuses it.
 
+A row whose InChIKey differs from that of a compound with the same formula is
+an isomer, another compound: Mascope creates it, and an icon beside its
+*Create* badge names the compound it was told apart from. A row with the stored
+compound's InChIKey is that compound and reuses it, and an icon says it matched.
+A row without an InChIKey matches by formula or CAS number as before, and a CAS
+number match reuses the compound whatever the InChIKey.
+
 A row that reuses a compound already in Mascope keeps that compound's
 structure. A pasted or entered InChIKey, InChI or SMILES is not applied to it,
 and an info icon beside the row's status says so. The structure of a stored

@@ -61,11 +61,25 @@ export function isValidChemicalFormula(formula) {
 }
 
 /**
- * Checks if two compounds are the same using matching by CAS number OR formula
+ * A compound's InChIKey for comparing: trimmed and upper-cased, null when it
+ * has none.
+ *
+ * @param {Object} compound
+ * @returns {?string}
+ */
+export function inchikeyOf(compound) {
+  const value = compound?.inchikey
+  return typeof value === 'string' ? value.trim().toUpperCase() || null : null
+}
+
+/**
+ * Checks if two compounds are the same: by CAS number, else by InChIKey when
+ * both carry one, else by formula. Two compounds of one formula whose
+ * InChIKeys differ are isomers, not the same compound.
  *
  * @param {Object} compound1 - First compound to compare
  * @param {Object} compound2 - Second compound to compare
- * @returns {boolean} True if compounds match by CAS OR formula
+ * @returns {boolean} True if compounds match
  */
 export function isSameCompound(compound1, compound2) {
   if (!compound1?.target_compound_formula?.trim() || !compound2?.target_compound_formula?.trim()) {
@@ -76,21 +90,46 @@ export function isSameCompound(compound1, compound2) {
     compound1.cas_number &&
     compound2.cas_number &&
     norm(compound1.cas_number) === norm(compound2.cas_number)
+  if (casMatch) return true
 
-  const formulaMatch =
+  const key1 = inchikeyOf(compound1)
+  const key2 = inchikeyOf(compound2)
+  if (key1 && key2) return key1 === key2
+
+  return (
     norm(compound1.target_compound_formula, true) === norm(compound2.target_compound_formula, true)
-
-  return casMatch || formulaMatch
+  )
 }
 
 /**
- * Finds existing compound in database using backend matching logic
- * Matches by CAS number OR formula
+ * Whether two compounds are isomers the dialog tells apart: one formula, and
+ * an InChIKey on each that differs.
+ *
+ * @param {Object} compound1
+ * @param {Object} compound2
+ * @returns {boolean}
+ */
+export function isIsomer(compound1, compound2) {
+  const key1 = inchikeyOf(compound1)
+  const key2 = inchikeyOf(compound2)
+  return (
+    !!key1 &&
+    !!key2 &&
+    key1 !== key2 &&
+    !!compound1.target_compound_formula?.trim() &&
+    norm(compound1.target_compound_formula, true) === norm(compound2.target_compound_formula, true)
+  )
+}
+
+/**
+ * Finds the compound of a list a search compound is the same as
+ * Matches as `isSameCompound` does: CAS, else InChIKey, else formula
  *
  * @param {Array} compoundList - List of existing compounds to search in
  * @param {Object} searchCompound - Compound to search for with properties:
  *   - target_compound_formula: Chemical formula
  *   - cas_number: CAS registry number
+ *   - inchikey: InChIKey, optional
  * @returns {Object|null} Existing compound if found, null otherwise
  */
 export function findExistingCompound(compoundList, searchCompound) {
