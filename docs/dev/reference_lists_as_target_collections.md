@@ -2,10 +2,16 @@
 
 # Reference lists as target collections: design
 
+- **Status:** design
+- **As of:** 2026-10-23
+- **Tracked in:** [Reference lists as target collections](https://linear.app/ultra-trace/project/reference-lists-as-target-collections-63b440eeab90) (Linear; decisions MAS-447 to MAS-452; phases 0 to 3 filed 2026-10-23 as MAS-453 to MAS-467)
+- **What:** Curated reference lists usable as target collections, pinned to a version and materialized as ordinary compounds, with target management moved onto the batch.
+
 Status: **design, nothing built** (2026-10-23). Section 3 holds the decisions
 this note is built on, each with its reason; section 9 holds the calls the
-plan owner still has to make, each with a leaning. Code anchors were read on
-`develop` on the same date and are named where a claim rests on them.
+plan owner still has to make, each with a leaning, filed as the Decision
+issues MAS-447 to MAS-452. Code anchors were read on `develop` on the same
+date and are named where a claim rests on them.
 
 ## Picking this up
 
@@ -43,14 +49,16 @@ a list is seen and turned into targets.
 | 2 | Target management on the batch: attach from the pane, save runs matching, promote from a row | open |
 | 3 | Convergence: environments suggest list collections, seeded profile collections share the mechanism, results read off assignments | open; waits on other plans |
 
-Related designs: `reference_data_authoring.md` (the lists and their headers),
-`reference_peak_assignment_convergence.md` (the Stage A seam this note
-leaves alone), `public_database_integration.md` (the reference tables),
-`peak_assignment_paradigm.md` (targeted analysis as a view over
-assignments), `sample_filters_and_metadata.md` section 4.6 (environments
-selecting lists), `chemistry_profiles.md` section 4.4 (the same seam, from
-the profile side), `ux_review_2026_10.md` (the dialog grammar and the
-retirement decision). Section 11 says how this design touches each.
+Related designs: `public_database_integration.md` (the reference tables, and
+in its phase 3 the Stage A seam this note leaves alone), the user page
+`docs/user/guides/reference-lists.md` (the lists and their headers; the
+authoring note it replaced is retired), `peak_assignment_paradigm.md`
+(section 3.2 the same seam from the engine's side, section 5.1 targeted
+analysis as a view over assignments), `sample_filters_and_metadata.md`
+section 4.6 (environments selecting lists), `chemistry_profiles.md`
+section 4.4 (the seam from the profile side), `ux_review_2026_10.md` (the
+dialog grammar and the retirement decision). Section 11 says how this
+design touches each.
 
 ---
 
@@ -79,8 +87,8 @@ The consequences, as users report them:
 - The lists themselves are invisible: no route lists them, no page shows them
   (section 2.4).
 
-The two models are converging in the engine already (Stage A reads both,
-`reference_peak_assignment_convergence.md`). This note converges them where
+The two models are converging in the engine already (Stage A reads both:
+`public_database_integration.md` phase 3). This note converges them where
 the person stands: in the collections a batch is matched against.
 
 ---
@@ -116,8 +124,10 @@ chart series, no alarm. Where a target and a mirror row read the same ion on
 the same peak, the target wins and the mirror row is dropped as a copy
 (`_reference_copies` in
 [engine.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/engine.py)),
-which is the precedence `reference_peak_assignment_convergence.md` section 4
-set.
+which is the precedence the seam was designed with: the target library owns
+the target id, reference identity is attached and never matched on
+(`public_database_integration.md` phase 3, `peak_assignment_paradigm.md`
+section 3.2).
 
 ### 2.3 What the matching path reads
 
@@ -211,7 +221,7 @@ appears only as the **listed as** name on an assignment row
 | 7 | **Fork is the existing import.** A person who wants to edit a list's membership creates a collection and imports from the list-backed one. No copy route. | The dialog's *Import existing* with a collection as source already does this. |
 | 8 | **The licence gate applies.** A source outside `reference_licenses` is not offered as targets and is not materialized. | A deployment that declined to match a source in Stage A has not accepted its terms for the targeted path either. |
 | 9 | **Saving an attachment runs matching.** The Targets save calls `/api/match/compute/batch/{id}` after the attach; membership edits keep the flag only. | Attaching is the common act and is always followed by the refresh; a membership edit is often one of several. |
-| 10 | **Nothing changes in Stage A.** A list-backed collection attached to a batch and the same list active in the mirror produce one reading per peak: the target row wins and the mirror copy is dropped, which is today's precedence. | Section 2.2. The seam the convergence note owns stays its own. |
+| 10 | **Nothing changes in Stage A.** A list-backed collection attached to a batch and the same list active in the mirror produce one reading per peak: the target row wins and the mirror copy is dropped, which is today's precedence. | Section 2.2. The seam phase 3 of `public_database_integration.md` owns stays its own. |
 | 11 | **The seed does not create collections.** The Reference lists page, the SDK and the API do. | Materializing the HOM list writes tens of thousands of isotope rows a small site may never match against. Loading a list is an operator's choice already ("nothing loads them unasked"); using one as targets is a second choice. |
 
 ---
@@ -465,7 +475,7 @@ belongs in the library rather than the backend;
 (new), `SidebarMenu.vue`, `index.js`;
 `libraries/sdk/src/mascope_sdk/resources/reference.py` (new),
 `libraries/sdk/src/mascope_sdk/client.py`;
-`docs/user/guides/reference-lists.md` (new, the page MAS-336 expects),
+`docs/user/guides/reference-lists.md` (a section on seeing what is loaded),
 `docs/maintaining.md` ("Loading reference chemistry data" links the page),
 `docs/user/sdk/index.md`; a `changelog.d` fragment.
 
@@ -506,9 +516,9 @@ shared module both paths import),
 `lib/toolbars/ToolbarAppFilters/SidebarMenu/ReferenceListsPane.vue`,
 `lib/constants.js` (the glyph);
 `libraries/sdk/src/mascope_sdk/resources/collections.py`;
-`docs/user/guides/target-collections.md`, `docs/user/guides/reference-lists.md`,
-`docs/dev/reference_data_authoring.md` (section 6 says a list can be
-targets), `docs/user/concepts/index.md` ("Targeted analysis"),
+`docs/user/guides/target-collections.md`, `docs/user/guides/reference-lists.md`
+(a loaded list can be targets, and what the pin means for a re-sync),
+`docs/user/concepts/index.md` ("Targeted analysis"),
 `docs/user/sdk/index.md`; a `changelog.d` fragment.
 
 **Verify.** Backend, on the LAN agent host:
@@ -661,19 +671,20 @@ Each is a call, not a task; the phase named waits on it.
 
 ## 11. How this touches the related designs
 
-- **`reference_peak_assignment_convergence.md`**: untouched. Stage A's
-  known set and its precedence rule are what make decision 10 free: a list
-  that is both a mirror source and an attached collection reads once per
-  peak. Its open decision 2 ("precedence, target vs reference, for the same
-  formula... confirm this matches how targeted alarms/collections should
-  behave") is confirmed by this design: the collection owns the target id
-  and the alarm; the mirror adds the name.
-- **`reference_data_authoring.md`**: section 6 gains a paragraph saying a
-  loaded list can be used as a target collection from the Reference lists
-  page, and what the pin means for a re-sync.
-- **`public_database_integration.md`**: its phase 5 ("UI/SDK surfaces for
-  annotations") gets its first UI surface in phase 0 here; MAS-373 tracks
-  the phase.
+- **`public_database_integration.md`**: its phase 3, the Stage A seam, is
+  untouched. The known set and its precedence rule are what make decision
+  10 free: a list that is both a mirror source and an attached collection
+  reads once per peak. The question the seam's design left open, whether
+  "the target owns the id, the reference adds the name" matches how
+  targeted alarms and collections should behave, is answered here: the
+  collection owns the target id and the alarm; the mirror adds the name.
+  Its phase 5 (productization, partly shipped) gains in phase 0 here the
+  first surface for the sources themselves, beside the identities the
+  ledger already shows; GitHub #2508 and MAS-373 carry the phase.
+- **`docs/user/guides/reference-lists.md`**, the user page the retired
+  `reference_data_authoring.md` became: gains a section saying a loaded
+  list can be used as a target collection from the Reference lists page,
+  and what the pin means for a re-sync.
 - **`peak_assignment_paradigm.md`**: section 5.1's "targeted analysis
   becomes a filtered view" is where phase 3's third step lands; a
   list-backed collection is a collection there.
