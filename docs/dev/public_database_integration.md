@@ -3,8 +3,13 @@
 # Public Chemistry & Spectral Database Integration: Design & Plan
 
 - **Status:** building
-- **As of:** 2026-10-22
-- **Tracked in:** GitHub [#2508](https://github.com/ultra-trace-systems/mascope/issues/2508) until it has a home: phase 4 (MS/MS) needs a project of its own and the phase 5 wrapper a home, both owner calls left open by the 2026-10-22 import
+- **As of:** 2026-10-23
+- **Tracked in:** [MS2 analysis](https://linear.app/ultra-trace/project/ms2-analysis-7fdc525bca51)
+  milestone 6, "Spectral library matching", for phase 4 (Linear: MAS-429 the
+  `reference_spectrum` table and the library adapters, MAS-360 the ranking); for
+  phase 5, MAS-427 the SDK surface in [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f)
+  milestone 1 and MAS-428 the refresh cadence and version pinning in
+  [Ops workflows and dev tooling](https://linear.app/ultra-trace/project/ops-workflows-and-dev-tooling-0dd3555613f9)
 - **Supersedes:** `reference_peak_assignment_convergence.md` (retired 2026-10-22; Phase 3 records it)
 - **What:** Mirroring public compound databases to give assigned formulas an identity.
 
