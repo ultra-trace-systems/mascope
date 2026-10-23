@@ -101,11 +101,36 @@ def test_reset_prompts_before_writing_without_yes(running):
     assert psql.call_count == 1
 
 
-def test_status_reports_each_account(running):
-    rows = "a@example.org|t|8\nb@example.org|f|0"
-    with patch.object(mfa, "_psql", return_value=rows):
+def _status_lines(monkeypatch, rows):
+    """Run ``status`` on stubbed rows and return the lines it printed."""
+    printed = []
+    monkeypatch.setattr(mfa.runtime.logger, "info", printed.append)
+    with patch.object(mfa, "_psql", return_value=rows) as psql:
         result = runner.invoke(mfa.mfa_app, ["status"])
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
+    assert "account_type" in psql.call_args.args[0]
+    return printed
+
+
+def test_status_reports_each_account(running, monkeypatch):
+    rows = "a@example.org|person|t|8\nb@example.org|person|f|0"
+    printed = _status_lines(monkeypatch, rows)
+    assert "a@example.org | on | 8" in printed
+    assert "b@example.org | off | 0" in printed
+
+
+def test_status_shows_a_machine_account_as_exempt(running, monkeypatch):
+    # A machine account never signs in interactively, so it can never hold a
+    # factor; listing it as "off" would show a gap that cannot be closed.
+    rows = (
+        "agent@example.org|machine|f|0\n"
+        "a@example.org|person|t|8\n"
+        "b@example.org|person|f|0"
+    )
+    printed = _status_lines(monkeypatch, rows)
+    assert "agent@example.org | exempt | 0" in printed
+    assert "a@example.org | on | 8" in printed
+    assert "b@example.org | off | 0" in printed
 
 
 def test_reset_looks_up_the_email_case_insensitively(running):

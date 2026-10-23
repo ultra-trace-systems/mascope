@@ -1246,7 +1246,7 @@ nothing in the app can reach - the only account that could reset the factor
 has lost its own authenticator and its codes:
 
 ```sh
-mascope prod mfa status          # who holds a second factor + unused code counts
+mascope prod mfa status          # who holds a second factor (machine accounts: exempt) + unused code counts
 mascope prod mfa reset <email>   # clear it so its holder can enrol afresh
 ```
 
