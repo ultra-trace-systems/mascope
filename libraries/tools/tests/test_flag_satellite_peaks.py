@@ -1,6 +1,6 @@
 """Unit tests for flag_satellite_peaks.
 
-The synthetic spectra mirror the ORBIONSTAR short-transient pattern that
+The synthetic spectra mirror a customer Orbitrap's short-transient pattern that
 motivated the current defaults: sidelobes appear as intensity-asymmetric
 mirror pairs around an intense parent (similarity well below 0.5) and as
 weak unpaired shoulders out to tens of ppm.
