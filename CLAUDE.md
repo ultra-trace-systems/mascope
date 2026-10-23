@@ -242,6 +242,16 @@ Feature) carries the kind. Milestones are not used.
   backend or e2e test must not read a doc: one that did would go unrun on the
   very PR that changes the doc. A test that has to read one belongs in a suite
   that always runs, as the CLI tests read `docs/maintaining.md`.
+- **A scheduled workflow that goes red files a GitHub issue.** The four
+  nightlies (`reproducibility.yaml`, `benchmark.yaml`, `sdk-compat.yaml`,
+  `licence-audit.yaml`) end in a `report` job that opens, or comments on, the
+  one open issue labelled `ci` titled `Nightly CI: <workflow> is red`, with
+  the run link and the jobs that failed (`.github/actions/nightly-failure-issue`).
+  Nothing closes it but the fixing PR's `Fixes #N` or a person, so a green
+  night cannot hide a break; triage picks the issue up like any other. A
+  dispatched or pull-request run files nothing. A schedule runs master's copy
+  of a workflow, so a change to these files reaches master in the same step
+  as develop.
 - The golden-dataset reproducibility check
   (`.github/workflows/reproducibility.yaml`) is required on PRs into `master`
   but does not run on PRs into `develop`. If a change can move the pipeline's
