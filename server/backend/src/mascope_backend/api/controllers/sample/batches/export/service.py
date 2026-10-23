@@ -13,8 +13,9 @@ it found there, where it found it.
 """
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import IO, Any
 
 import pandas as pd
 from sqlalchemy import select
@@ -44,6 +45,23 @@ from mascope_backend.runtime import runtime
 from mascope_file.name import get_sample_file_type
 
 
+@dataclass(frozen=True)
+class BatchSheets:
+    """
+    The sheets of a batch's spreadsheet, built and not yet written.
+
+    Built apart from the writing so that a batch's sheets read the same
+    wherever they are written: the export writes them to a download.
+    """
+
+    sample_batch_name: str
+    batch_info: pd.DataFrame
+    samples: pd.DataFrame
+    compounds: pd.DataFrame
+    ions: pd.DataFrame
+    provenance: pd.DataFrame
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     error_notification_rooms=["user_id"],
@@ -70,6 +88,44 @@ async def sample_batch_export_spreadsheet(
     :type parent_id: str, optional
     :return: Dictionary with success message, filename, and download info.
     :rtype: dict
+    """
+    sheets = await build_batch_sheets(sample_batch_id)
+    sample_batch_name = sheets.sample_batch_name
+
+    # --- Generate Excel file ---
+    dt_str = datetime.now().isoformat().replace("-", "").replace(":", "").split(".")[0]
+    file = download_name(dt_str, sample_batch_name, extension="xlsx")
+    filepath = user_temp_path(user_id, file)
+
+    runtime.logger.info(f"Writing spreadsheet to file {file}")
+
+    # Offload blocking I/O to thread pool
+    await asyncio.to_thread(write_batch_workbook, filepath, sheets)
+
+    message = f"Spreadsheet for sample batch '{sample_batch_name}' was exported to file '{file}'."
+    runtime.logger.info(message)
+
+    return {
+        "message": message,
+        "data": {"file": file},
+        "_notification_data": {
+            "sample_batch_id": sample_batch_id,
+            "download": file,
+        },
+    }
+
+
+async def build_batch_sheets(sample_batch_id: str) -> BatchSheets:
+    """
+    Build the sheets of a batch's spreadsheet.
+
+    Reads through its own sessions, as every controller it calls does, so it
+    needs a configured engine and nothing else: no request and no user.
+
+    :param sample_batch_id: ID of the sample batch to export.
+    :type sample_batch_id: str
+    :return: The sheets, in the order the workbook holds them.
+    :rtype: BatchSheets
     """
     # --- Fetch batch data ---
     batch_data_result = await get_batch_data(sample_batch_id)
@@ -249,64 +305,37 @@ async def sample_batch_export_spreadsheet(
     )
     provenance_df = pd.DataFrame(flatten_provenance(provenance))
 
-    # --- Generate Excel file ---
-    dt_str = datetime.now().isoformat().replace("-", "").replace(":", "").split(".")[0]
-    file = download_name(dt_str, sample_batch_name, extension="xlsx")
-    filepath = user_temp_path(user_id, file)
-
-    runtime.logger.info(f"Writing spreadsheet to file {file}")
-
-    # Offload blocking I/O to thread pool
-    await asyncio.to_thread(
-        _write_excel_file,
-        filepath,
-        batch_info_df,
-        samples_df,
-        compounds_df,
-        ions_df,
-        provenance_df,
+    return BatchSheets(
+        sample_batch_name=sample_batch_name,
+        batch_info=batch_info_df,
+        samples=samples_df,
+        compounds=compounds_df,
+        ions=ions_df,
+        provenance=provenance_df,
     )
 
-    message = f"Spreadsheet for sample batch '{sample_batch_name}' was exported to file '{file}'."
-    runtime.logger.info(message)
 
-    return {
-        "message": message,
-        "data": {"file": file},
-        "_notification_data": {
-            "sample_batch_id": sample_batch_id,
-            "download": file,
-        },
-    }
-
-
-def _write_excel_file(
-    filepath: str,
-    batch_info_df: pd.DataFrame,
-    samples_df: pd.DataFrame,
-    compounds_df: pd.DataFrame,
-    ions_df: pd.DataFrame,
-    provenance_df: pd.DataFrame,
-) -> None:
+def write_batch_workbook(target: str | IO[bytes], sheets: BatchSheets) -> None:
     """
-    Write DataFrames to Excel file with auto-adjusted columns.
+    Write a batch's sheets as an Excel workbook, columns sized to fit.
 
-    :param filepath: Full path to output Excel file
-    :param batch_info_df: Batch metadata DataFrame
-    :param samples_df: Samples with match data DataFrame
-    :param compounds_df: Match compounds DataFrame
-    :param ions_df: Match ions DataFrame
-    :param provenance_df: The provenance block as key/value rows
+    A sheet of matches is left out when the batch has none. Blocking; run it
+    in a thread.
+
+    :param target: The file's path, or a binary stream to write it to.
+    :param sheets: The sheets, from :func:`build_batch_sheets`.
     """
-    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
-        batch_info_df.to_excel(writer, sheet_name="Batch", index=False, header=False)
-        samples_df.to_excel(writer, sheet_name="Samples", index=False)
+    with pd.ExcelWriter(target, engine="openpyxl") as writer:
+        sheets.batch_info.to_excel(
+            writer, sheet_name="Batch", index=False, header=False
+        )
+        sheets.samples.to_excel(writer, sheet_name="Samples", index=False)
 
-        if not compounds_df.empty:
-            compounds_df.to_excel(writer, sheet_name="Match compounds", index=False)
-        if not ions_df.empty:
-            ions_df.to_excel(writer, sheet_name="Match ions", index=False)
-        provenance_df.to_excel(
+        if not sheets.compounds.empty:
+            sheets.compounds.to_excel(writer, sheet_name="Match compounds", index=False)
+        if not sheets.ions.empty:
+            sheets.ions.to_excel(writer, sheet_name="Match ions", index=False)
+        sheets.provenance.to_excel(
             writer, sheet_name="Provenance", index=False, header=False
         )
 
