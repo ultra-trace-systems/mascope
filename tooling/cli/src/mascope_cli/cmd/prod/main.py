@@ -27,7 +27,7 @@ import platform
 import subprocess
 import time
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, NoReturn, Optional
 
 import typer
 
@@ -809,8 +809,15 @@ def _apply_update(
 
     check_data_dirs(_MODE)
     runtime.logger.info(f"Applying {kind} update to '{target}'")
+    # A failed pull leaves the stack as it was: nothing to hold.
     _run_compose(["pull"])
-    _run_compose(["up", "--detach"])
+    try:
+        _run_compose(["up", "--detach"])
+    except typer.Exit:
+        # The prod compose file starts the backend after db_init and the rest
+        # after a healthy backend, so a failed migration or an unhealthy
+        # backend usually fails `up` itself. The stack is half on the release.
+        _fail_apply(target, mascope_path, kind=kind, alembic_head=alembic_head)
 
     if auto_update.wait_healthy(backend_container):
         auto_update.clear_pending(mascope_path)
@@ -827,6 +834,18 @@ def _apply_update(
         _warn_if_cli_stale(auto=True)
         raise typer.Exit(auto_update.AUTO_OK)
 
+    _fail_apply(target, mascope_path, kind=kind, alembic_head=alembic_head)
+
+
+def _fail_apply(
+    target: str, mascope_path: str, *, kind: str, alembic_head: str
+) -> NoReturn:
+    """
+    Record and report an apply of ``target`` that did not leave a healthy stack.
+
+    Holds the release from later unattended runs, alerts and exits
+    ``AUTO_ERROR``; it never rolls back automatically.
+    """
     # Recorded before anything else: without it the next window applies the
     # same release again and undoes the operator's rollback.
     try:
@@ -838,8 +857,8 @@ def _apply_update(
             "'mascope prod update --snooze <days>'."
         )
     message = (
-        f"{kind.capitalize()} update to {target} applied but the backend did not "
-        "become healthy - manual intervention needed (no automatic rollback). "
+        f"{kind.capitalize()} update to {target} applied but the stack did not "
+        "come up healthy - manual intervention needed (no automatic rollback). "
         f"--auto holds {target} until 'mascope prod update --confirm'."
     )
     runtime.logger.error(message)
