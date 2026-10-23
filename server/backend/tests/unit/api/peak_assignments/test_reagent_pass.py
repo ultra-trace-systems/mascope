@@ -417,11 +417,15 @@ class TestTheOffsetOutsideARun:
             read.append(sample)
             return peaks
 
+        async def no_run(sample_item_id):
+            return None
+
         notation = "[M+CH4N2O+H]+"
         monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
         monkeypatch.setattr(service, "load_sample_peaks", load_peaks)
         monkeypatch.setattr(service, "get_instrument_type", lambda name: "orbi")
-        sample = SimpleNamespace(filename="sample", polarity="+")
+        monkeypatch.setattr(service, "_latest_run_pattern_scoring", no_run)
+        sample = SimpleNamespace(sample_item_id="s1", filename="sample", polarity="+")
 
         offset = await service.sample_reagent_offset(sample)
 
@@ -444,6 +448,114 @@ class TestTheOffsetOutsideARun:
         notation = "[M+CH4N2O+H]+"
         monkeypatch.setattr(service, "get_instrument_type", lambda name: "tof")
         assert not (await service.sample_reagent_offset(sample)).beyond_width
+
+    @pytest.mark.asyncio
+    async def test_a_sample_is_centred_where_its_latest_run_scored(self, monkeypatch):
+        from mascope_backend.api.new.peak_assignments import service
+
+        # The gate's uronium case: the library fitted its own offset near zero
+        # while the reagent lines sit at -0.9 ppm, beyond an Orbitrap's width.
+        # A run scored the sample at the library's fit, so the seeded readers
+        # are centred there, not on the lines.
+        peaks = self._urea(-0.9, -0.9)
+        recorded = {
+            "mu_ppm": -0.05,
+            "mu_source": "fitted",
+            "fitted_anchors": 12,
+            "reagent_lines": 3,
+            "reagent_mu_ppm": -0.9,
+        }
+        asked, read = [], []
+
+        async def latest(sample_item_id):
+            asked.append(sample_item_id)
+            return recorded
+
+        async def mechanisms(sample):
+            return ["im-urea"], [SimpleNamespace(ionization_mechanism="[M+CH4N2O+H]+")]
+
+        def load_peaks(sample):
+            read.append(sample)
+            return peaks
+
+        monkeypatch.setattr(service, "_latest_run_pattern_scoring", latest)
+        monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
+        monkeypatch.setattr(service, "load_sample_peaks", load_peaks)
+        monkeypatch.setattr(service, "get_instrument_type", lambda name: "orbi")
+        sample = SimpleNamespace(sample_item_id="s1", filename="sample", polarity="+")
+        assert _run_pre_pass(peaks, "UR", "orbi")[2].beyond_width
+
+        offset = await service.sample_reagent_offset(sample)
+
+        assert asked == ["s1"]
+        assert offset == service.ReagentOffset(
+            mu_ppm=-0.05, lines=12, beyond_width=True
+        )
+        # The run's record answers it: the peaks are not read.
+        assert read == []
+
+        # A run that stood the lines in scored at them.
+        recorded = {
+            "mu_ppm": -0.9,
+            "mu_source": "reagent",
+            "fitted_anchors": 1,
+            "reagent_lines": 3,
+            "reagent_mu_ppm": -0.9,
+        }
+        assert await service.sample_reagent_offset(sample) == service.ReagentOffset(
+            mu_ppm=-0.9, lines=3, beyond_width=True
+        )
+        # A run that scored the sample uncorrected leaves it uncorrected, even
+        # where the lines today would say otherwise.
+        recorded = {"mu_ppm": 0.0, "mu_source": "none", "fitted_anchors": 0}
+        assert await service.sample_reagent_offset(sample) is None
+        assert read == []
+
+        # A record from before the offset was recorded says nothing, and the
+        # lines are claimed as with no run at all.
+        recorded = {"sigma_ppm": 0.6, "sigma_source": "instrument_class"}
+        offset = await service.sample_reagent_offset(sample)
+        assert read == [sample]
+        assert offset == _run_pre_pass(peaks, "UR", "orbi")[2]
+
+    @pytest.mark.asyncio
+    async def test_a_caller_with_the_peaks_and_profile_is_not_read_again(
+        self, monkeypatch
+    ):
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.profiles import (
+            resolve_profile,
+        )
+
+        async def no_run(sample_item_id):
+            return None
+
+        async def unread(*args, **kwargs):
+            raise AssertionError("resolved again")
+
+        def unloaded(sample):
+            raise AssertionError("read again")
+
+        monkeypatch.setattr(service, "_latest_run_pattern_scoring", no_run)
+        monkeypatch.setattr(service, "fetch_sample_mechanisms", unread)
+        monkeypatch.setattr(service, "load_sample_peaks", unloaded)
+        peaks = self._urea(-1.3, -1.3)
+        resolved = resolve_profile(
+            PeakAssignmentConfig(profile="UR"),
+            mechanism_notations=["[M+H]+"],
+            instrument_type="orbi",
+            polarity="+",
+        )
+        sample = SimpleNamespace(sample_item_id="s1", filename="sample", polarity="+")
+
+        offset = await service.sample_reagent_offset(
+            sample, peaks_df=peaks, resolved_profile=resolved
+        )
+
+        assert offset == _run_pre_pass(peaks, "UR", "orbi")[2]
 
 
 class TestTheChargeTransferBeam:

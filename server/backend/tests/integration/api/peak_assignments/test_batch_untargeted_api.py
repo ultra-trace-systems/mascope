@@ -10,7 +10,7 @@ anchor, the other sample is measured and takes a fit of its own or stays
 unassigned, and the consensus follows. See ``batch_untargeted.py``.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pandas as pd
@@ -31,12 +31,16 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     run_batch_untargeted_search,
     search_outcome,
 )
-from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.config import (
+    IN_APP_ENGINE,
+    PeakAssignmentConfig,
+)
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
     IonizationMechanism,
+    PeakAssignmentRun,
     SampleBatch,
     SampleFile,
     SampleItem,
@@ -454,6 +458,109 @@ async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
         assert config.profile == "UR"
         assert await service.sample_reagent_offset(sample, config) == offset
     assert await service.sample_reagent_offset(propagated[0][0]) is None
+
+
+async def _record_run(
+    session_factory, sample_item_id, status, minutes_ago, scoring, engine=IN_APP_ENGINE
+):
+    now = datetime.now(timezone.utc)
+    async with session_factory() as session:
+        session.add(
+            PeakAssignmentRun(
+                peak_assignment_run_id=gen_id(),
+                sample_item_id=sample_item_id,
+                engine=engine,
+                engine_version="0.1.0-test",
+                status=status,
+                config={"run_untargeted": True, "pattern_scoring": scoring},
+                peak_assignment_run_utc_created=now - timedelta(minutes=minutes_ago),
+            )
+        )
+        await session.commit()
+
+
+def _scoring(mu_ppm, mu_source):
+    return {
+        "sigma_ppm": 0.583,
+        "mu_ppm": mu_ppm,
+        "sigma_source": "fitted",
+        "mu_source": mu_source,
+        "fitted_anchors": 12,
+        "reagent_lines": 3,
+        "reagent_mu_ppm": -1.3,
+    }
+
+
+async def test_a_sample_with_a_run_is_re_scored_where_that_run_scored(
+    async_session_factory, folded_batch, stubbed_engine, monkeypatch
+):
+    # The uronium case: the sample's library fitted its own offset near zero,
+    # and its reagent lines sit beyond the width at -1.3 ppm. A run scored it
+    # at the library's fit, so the search's re-score is centred there too.
+    samples = folded_batch["samples"]
+    ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+    low = 1.0 - 1.3e-6
+    urea = [
+        ("r1", ladder["[CH4N2O+H]+"] * low, 2.0e6),
+        ("r2", ladder["[(CH4N2O)2+H]+"] * low, 3.0e6),
+        ("r3", ladder["[(CH4N2O)3+H]+"] * low, 1.0e5),
+    ]
+    monkeypatch.setattr(
+        batch_untargeted,
+        "load_sample_peaks",
+        lambda sample: _frame(_PEAKS["S1"] + urea),
+    )
+    # The latest completed in-app run is the one read: not an older one, nor
+    # one still running or failed since, nor a newer import, whose config is
+    # the client's own and need not hold a well-formed snapshot.
+    await _record_run(
+        async_session_factory, samples["S1"], "completed", 60, _scoring(-0.5, "fitted")
+    )
+    await _record_run(
+        async_session_factory, samples["S1"], "completed", 30, _scoring(-0.05, "fitted")
+    )
+    await _record_run(
+        async_session_factory,
+        samples["S1"],
+        "completed",
+        10,
+        {"mu_source": "fitted", "mu_ppm": None},
+        engine="ext",
+    )
+    await _record_run(
+        async_session_factory, samples["S1"], "running", 5, _scoring(-2.0, "fitted")
+    )
+    await _record_run(
+        async_session_factory, samples["S1"], "failed", 1, _scoring(-2.0, "fitted")
+    )
+
+    await run_batch_untargeted_search(
+        folded_batch["batch_id"], PeakAssignmentConfig(profile="UR")
+    )
+
+    [offset] = stubbed_engine["seeded_offsets"]
+    assert offset == service.ReagentOffset(mu_ppm=-0.05, lines=12, beyond_width=True)
+
+    # The other sample has no run, so its propagation claims its lines under
+    # the search's configuration; once a run records a centre, that is read.
+    monkeypatch.setattr(
+        service, "load_sample_peaks", batch_untargeted.load_sample_peaks
+    )
+    monkeypatch.setattr(
+        service, "fetch_sample_mechanisms", batch_untargeted.fetch_sample_mechanisms
+    )
+    sample, config = next(
+        (sample, config)
+        for sample, config in stubbed_engine["score_configs"]
+        if sample.sample_item_id == samples["S2"]
+    )
+    claimed = await service.sample_reagent_offset(sample, config)
+    assert (claimed.lines, claimed.beyond_width) == (3, True)
+    assert claimed.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+    await _record_run(
+        async_session_factory, samples["S2"], "completed", 1, _scoring(0.0, "none")
+    )
+    assert await service.sample_reagent_offset(sample, config) is None
 
 
 async def test_the_other_sample_is_measured_and_takes_a_fit_of_its_own(

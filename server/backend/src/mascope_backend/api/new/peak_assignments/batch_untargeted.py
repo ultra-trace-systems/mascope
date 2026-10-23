@@ -92,7 +92,7 @@ from mascope_backend.api.new.peak_assignments.service import (
     fetch_mechanisms_by_notation,
     fetch_sample_mechanisms,
     load_sample_peaks,
-    reagent_offset_for,
+    sample_reagent_offset,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_RANK, TIER_UNASSIGNED
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
@@ -568,10 +568,11 @@ async def _search_sample(
         untargeted_seeds(
             matches_df, mechanism_id_by_notation, to_custom_element_format
         ),
-        # A run's pre-pass is not on this path, so its offset is read off the
-        # whole peak list here, as the run's pre-pass reads it.
-        reagent_offset=await asyncio.to_thread(
-            reagent_offset_for, peaks_df, resolved_profile
+        # No Stage A ran on this path, so the centre is the one a run of the
+        # sample scored at, or the lines this search's profile claims off the
+        # whole peak list where no run recorded one.
+        reagent_offset=await sample_reagent_offset(
+            sample, peaks_df=peaks_df, resolved_profile=resolved_profile
         ),
     )
     rows = untargeted_matches_to_peak_assignments(

@@ -6,4 +6,6 @@
   assignment run of the same sample is centred on its reagent ions' offset
   when that lies beyond the instrument's width. On an Orbitrap sample whose
   axis sits 1.3 ppm low, the same ion read about two widths off there and
-  near the centre in a run. They now take the reagent ions' offset too.
+  near the centre in a run. They are now centred where the sample's
+  latest run in Mascope scored it, and on its reagent ions where no such run
+  recorded that.
