@@ -34,7 +34,10 @@ from typing import Literal, Protocol, runtime_checkable
 import numpy as np
 
 from mascope_thermo.run_header import records_no_run_header
-from mascope_thermo.scan_events import refuse_misread_analyzers
+from mascope_thermo.scan_events import (
+    refuse_misread_analyzers,
+    refuse_unconverted_profile,
+)
 from mascope_thermo.scan_filter import parse_scan_filter
 
 
@@ -390,7 +393,10 @@ class ReaderBackend(Protocol):
         """Per-scan profile spectra: ``(scan_mzs, scan_intensities, scan_times)``,
         the m/z and intensity arrays already restricted to ``[mz_min, mz_max]``.
 
-        The profile arrays come from the ``opentfraw`` profile accessor."""
+        The profile arrays come from the ``opentfraw`` profile accessor. A
+        scan it gives no m/z for refuses the file with
+        :class:`mascope_thermo.scan_events.UnconvertedProfileError` rather
+        than come back empty."""
         ...
 
     def average_profile(
@@ -406,7 +412,10 @@ class ReaderBackend(Protocol):
         The measured signal, never a model of it: the instrument-function fit
         needs the real peak shapes, and the spectrum views draw it as measured.
 
-        Builds on the profile accessor and the NumPy ppm averaging above."""
+        Builds on the profile accessor and the NumPy ppm averaging above. A
+        scan the accessor gives no m/z for refuses the file with
+        :class:`mascope_thermo.scan_events.UnconvertedProfileError`, as
+        :meth:`profile_per_scan` does."""
         ...
 
     def xic(
@@ -2722,9 +2731,7 @@ class OpenTFRawBackend:
         scan_mzs: list[np.ndarray] = []
         scan_specs: list[np.ndarray] = []
         for s in selected:
-            mz, intensities = self._raw.profile(int(s["scan_number"]))
-            mz = np.asarray(mz, dtype=np.float64)
-            intensities = np.asarray(intensities, dtype=np.float64)
+            mz, intensities = self._profile(int(s["scan_number"]))
             mask = np.logical_and(mz_min <= mz, mz <= mz_max)
             scan_mzs.append(mz[mask])
             scan_specs.append(intensities[mask])
@@ -2764,9 +2771,7 @@ class OpenTFRawBackend:
         num_combined = len(scan_indices)
         scans: list[tuple[np.ndarray, np.ndarray, float | None, float | None]] = []
         for scan_number in scan_indices:
-            mz, intensity = self._raw.profile(int(scan_number))
-            mz = np.asarray(mz, dtype=np.float64)
-            intensity = np.asarray(intensity, dtype=np.float64)
+            mz, intensity = self._profile(int(scan_number))
             if mz.size:
                 b, c = self._profile_conversion_params(int(scan_number))
                 scans.append((mz, intensity, b, c))
@@ -2838,6 +2843,24 @@ class OpenTFRawBackend:
         new_v = np.concatenate([summed, np.zeros(zeros.size)])
         order = np.argsort(new_mz, kind="stable")
         return new_mz[order], new_v[order]
+
+    def _profile(self, scan_number: int) -> tuple[np.ndarray, np.ndarray]:
+        """One scan's profile, ``(mz, intensity)``, as float64 arrays.
+
+        The m/z is the reader's, and a scan the reader gives no m/z for
+        refuses the file here, before a ``NaN`` reaches a range mask, which
+        would drop the scan's points without a word, or an average, which
+        would lose every other scan's to it.
+
+        :raises UnconvertedProfileError: When a point of the scan's profile
+            has no finite m/z (:mod:`mascope_thermo.scan_events`).
+        """
+        mz, intensity = self._raw.profile(scan_number)
+        mz = np.asarray(mz, dtype=np.float64)
+        refuse_unconverted_profile(
+            scan_number, mz, f"OpenTFRaw {_distribution_version('opentfraw')}"
+        )
+        return mz, np.asarray(intensity, dtype=np.float64)
 
     def _profile_conversion_params(
         self, scan_number: int

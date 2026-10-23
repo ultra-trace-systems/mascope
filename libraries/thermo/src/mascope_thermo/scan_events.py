@@ -19,6 +19,14 @@ cannot name. A misread that lands only on the Orbitrap's and the ion trap's
 codes goes unseen. The Orbitrap Astral is the exception to that set, and is
 kept from the check otherwise (``_ORBITRAP_INSTRUMENT_ANALYZERS``).
 
+**A profile with no m/z.** OpenTFRaw also converts a scan's profile from
+frequency to m/z with the calibration the scan's event carries, and from
+3.0.0 on gives ``NaN`` for each point of a scan whose calibration layout it
+does not know, where 2.0.0 gave the frequencies themselves. Such a scan has
+no m/z axis to average or draw it on, and a ``NaN`` taken into an average
+takes every other scan's points with it. So a file is refused for one too,
+when its profile is read (GitHub issue #2518).
+
 A leaf module, imported by ``mascope_thermo.backend``, which judges every
 file it reads.
 """
@@ -27,6 +35,8 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
+
+import numpy as np
 
 
 # Instrument models whose only analyzer is an Orbitrap, as OpenTFRaw names
@@ -99,4 +109,37 @@ def refuse_misread_analyzers(
         raise MisreadScanEventsError(
             f"The scan events of this file cannot be read: {problem}, so the "
             "raw-file reader has misread them (GitHub issue #2394)."
+        )
+
+
+class UnconvertedProfileError(MisreadScanEventsError):
+    """A raw file with a scan whose profile the reader gives no m/z for.
+
+    OpenTFRaw gives ``NaN`` m/z for a scan whose event carries a calibration
+    layout it does not know, so the scan cannot be averaged or drawn on an
+    m/z axis, and the file is refused rather than read without it.
+
+    A :class:`MisreadScanEventsError`: the scan's event is one the reader
+    cannot read, misread or written in a layout newer than the reader, so
+    every handler that lets a misread file's refusal through, rather than
+    take it for an empty selection, lets this one through for the same reason.
+    """
+
+
+def refuse_unconverted_profile(scan_number: int, mz: np.ndarray, reader: str) -> None:
+    """Refuse a file whose scan's profile the reader gives no m/z for.
+
+    :param scan_number: The scan the profile is of.
+    :param mz: The scan's profile m/z, as the reader gives it.
+    :param reader: The reader and its version, as the message names it.
+    :raises UnconvertedProfileError: When any point of the profile has an
+        m/z that is not finite.
+    """
+    unconverted = int(np.count_nonzero(~np.isfinite(mz)))
+    if unconverted:
+        raise UnconvertedProfileError(
+            f"The profile of scan {scan_number} of this file cannot be read: "
+            f"{reader} gives no m/z for {unconverted} of its {mz.size} points, "
+            "as it does for a scan whose calibration layout it does not know "
+            "(GitHub issue #2518)."
         )
