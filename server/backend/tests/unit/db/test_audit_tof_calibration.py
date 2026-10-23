@@ -187,6 +187,10 @@ def test_an_empty_setting_is_unset(no_env):
 # --- Which files ---
 
 
+#: The database record of the site's second file, which a run carries along.
+SECOND_RECORD = {"mode": 0, "par": [10850.0, -18500.0], "status": "unfitted"}
+
+
 def _row(day: int, hour: int, mode: str | None = "m1") -> script.FileRow:
     acquired = datetime(2026, 10, day, hour, tzinfo=UTC)
     return script.FileRow(f"sf{day}-{hour}", f"f{day}-{hour}", acquired, mode)
@@ -320,6 +324,7 @@ async def site(async_session_factory):
                 length=1.0,
                 range=[10.0, 500.0],
                 polarity="-",
+                mz_calibration=SECOND_RECORD if key == "second" else None,
             )
             session.add(sample_file)
             await session.flush()
@@ -453,6 +458,13 @@ async def test_a_run_reads_the_instrument_tof_files_in_the_range(site):
         site["other_mode_id"],
         site["mode_id"],
     ]
+    assert [row.mz_calibration for row in rows] == [
+        None,
+        None,
+        SECOND_RECORD,
+        None,
+        None,
+    ]
 
 
 @pytest.mark.asyncio
@@ -518,9 +530,12 @@ async def test_named_families_replace_the_mode_mechanisms(site, filestore):
 # --- One file ---
 
 
-#: A fit applied to the file: the stored axis, 6 ppm low. ``STORED_FIT``
-#: alone has the shape of the converter's own record, which is no fit.
+#: The database record of a fit applied to the file before fits carried
+#: their ``quality``: the stored axis, 6 ppm low, which ``.props`` holds bare
+#: (``support.STORED_FIT``), in the shape of the converter's own record.
 FITTED = {**support.STORED_FIT, "verified": True}
+#: The database record of a file the node has not fitted: the converter's.
+CONVERTER = {**support.STORED_FIT, "status": "unfitted"}
 
 
 def _mode_audit(sets=None, families=None, series=None) -> script.ModeAudit:
@@ -561,9 +576,15 @@ async def _node_record(filestore, peaks, tolerance=15.0) -> dict:
     }
 
 
-async def _audit(filestore, peaks, record, mode_audit=None, config=None):
+async def _audit(
+    filestore, peaks, record, mode_audit=None, config=None, database=FITTED
+):
+    """Audit a file whose ``.props`` holds ``record`` and whose database
+    record is ``database``."""
     filename = support.write_file(filestore, peaks, record=record)
-    row = script.FileRow("sf1", filename, datetime(2026, 10, 20, 12, tzinfo=UTC), "m1")
+    row = script.FileRow(
+        "sf1", filename, datetime(2026, 10, 20, 12, tzinfo=UTC), "m1", database
+    )
     with patch.object(
         script,
         "read_instrument_functions",
@@ -767,7 +788,7 @@ async def test_a_file_is_measured_under_every_fit(filestore):
         ),
     )
 
-    file = await _audit(filestore, peaks, FITTED, mode_audit)
+    file = await _audit(filestore, peaks, support.STORED_FIT, mode_audit)
 
     assert set(file.fits) == {"stored", "collection/mode0", "nitrate/mode0"}
     assert file.fits["stored"] == support.STORED_FIT
@@ -783,18 +804,26 @@ async def test_a_file_is_measured_under_every_fit(filestore):
 
 
 @pytest.mark.parametrize(
-    "record",
+    "database",
     [
         support.STORED_FIT,
-        {**support.STORED_FIT, "status": "unfitted"},
+        CONVERTER,
+        {
+            **support.STORED_FIT,
+            "status": "failed",
+            "verified": False,
+            "error": "too few calibrants",
+        },
     ],
-    ids=["bare", "stamped"],
+    ids=["bare", "stamped", "failed fit"],
 )
 @pytest.mark.asyncio
-async def test_a_converter_record_is_no_stored_fit(filestore, record):
+async def test_a_converter_record_is_no_stored_fit(filestore, database):
     """The converter's record counts samples from the start of the raw
     file's axis, not the stored TOF index: read there it puts every peak far
-    off, so it is counted as unfitted and not scored as the stored fit."""
+    off, so it is counted as unfitted and not scored as the stored fit. The
+    database record says which it is: registered as the converter's, bare
+    from before that stamp, or a failed fit's marker over it."""
     mechanism = IonizationMechanism(
         ionization_mechanism_id="nitrate",
         ionization_mechanism="[M+NO3]-",
@@ -805,7 +834,11 @@ async def test_a_converter_record_is_no_stored_fit(filestore, record):
     member = audit.composition_mass(audit.parse_composition("C10H16O6")) + shift
     mode_audit = _mode_audit(families=[family])
     file = await _audit(
-        filestore, support.calibrant_peaks() + [{"mz": member}], record, mode_audit
+        filestore,
+        support.calibrant_peaks() + [{"mz": member}],
+        support.STORED_FIT,
+        mode_audit,
+        database=database,
     )
 
     assert file.unfitted
@@ -822,6 +855,29 @@ async def test_a_converter_record_is_no_stored_fit(filestore, record):
     assert (stored["fitted"], stored["failed"]) == (0, {})
     assert (stored["ions"], stored["bands"]) == ([], [])
     assert report["fits"]["collection/mode0"]["fitted"] == 1
+
+
+@pytest.mark.parametrize(
+    "database",
+    [
+        FITTED,
+        {**support.STORED_FIT, "status": "ok", "verified": True, "quality": {}},
+        {**support.STORED_FIT, "status": "poor", "verified": False, "quality": {}},
+        None,
+    ],
+    ids=["legacy fit", "fit", "fit below the bar", "no database record"],
+)
+@pytest.mark.asyncio
+async def test_an_applied_fit_bare_in_props_is_the_stored_fit(filestore, database):
+    """``.props`` holds an applied fit without the stamps the database record
+    has, an older one in the converter's very shape: it is still the stored
+    fit, not the converter's."""
+    file = await _audit(
+        filestore, support.calibrant_peaks(), support.STORED_FIT, database=database
+    )
+
+    assert not file.unfitted
+    assert file.fits["stored"] == support.STORED_FIT
 
 
 def test_the_report_says_how_many_records_were_the_converter(no_env):
@@ -870,7 +926,9 @@ async def test_an_ion_a_fit_did_not_use_is_held_out(filestore):
     )
     names = ["stored", "collection/mode0", "nitrate/mode0"]
     config = _config("AuditTof")
-    file = await _audit(filestore, support.calibrant_peaks(), FITTED, mode_audit)
+    file = await _audit(
+        filestore, support.calibrant_peaks(), support.STORED_FIT, mode_audit
+    )
     summary = _summary(mode_audit, names)
 
     script.summarise_file(summary, file, mode_audit, config)
@@ -955,7 +1013,9 @@ async def test_the_record_is_read_at_the_collection_peaks(filestore):
         return result
 
     with patch.object(audit, "refit", shifted):
-        file = await _audit(filestore, support.calibrant_peaks(), FITTED, mode_audit)
+        file = await _audit(
+            filestore, support.calibrant_peaks(), support.STORED_FIT, mode_audit
+        )
 
     label = next(label for label in file.matched["nitrate"])
     assert file.readings[label] == file.set_readings["collection"][label]
@@ -967,7 +1027,9 @@ async def test_a_set_name_may_hold_a_slash(filestore):
     mode_audit = _mode_audit(
         sets={"nitrate/v2": support.isotopes(["NO3", "HN2O6", "H2N3O9"])}
     )
-    file = await _audit(filestore, support.calibrant_peaks(), FITTED, mode_audit)
+    file = await _audit(
+        filestore, support.calibrant_peaks(), support.STORED_FIT, mode_audit
+    )
     summary = _summary(mode_audit, ["stored", "nitrate/v2/mode0"])
 
     script.summarise_file(summary, file, mode_audit, _config("AuditTof"))
@@ -982,7 +1044,9 @@ async def test_a_set_name_may_hold_a_slash(filestore):
 async def test_a_failed_refit_is_counted_with_its_reason(filestore):
     mode_audit = _mode_audit(sets={"collection": support.isotopes(["NO3"])})
     names = ["stored", "collection/mode0"]
-    file = await _audit(filestore, support.calibrant_peaks(), FITTED, mode_audit)
+    file = await _audit(
+        filestore, support.calibrant_peaks(), support.STORED_FIT, mode_audit
+    )
     summary = _summary(mode_audit, names)
 
     script.summarise_file(summary, file, mode_audit, _config("AuditTof"))
@@ -1013,7 +1077,7 @@ async def test_family_offsets_are_read_per_band_under_each_fit(filestore):
     peaks = support.calibrant_peaks() + [{"mz": mz} for mz in members]
     mode_audit = _mode_audit(families=[family])
     names = ["stored", "collection/mode0"]
-    file = await _audit(filestore, peaks, FITTED, mode_audit)
+    file = await _audit(filestore, peaks, support.STORED_FIT, mode_audit)
     summary = _summary(mode_audit, names)
 
     script.summarise_file(summary, file, mode_audit, _config("AuditTof"))

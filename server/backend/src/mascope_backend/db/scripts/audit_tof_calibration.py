@@ -23,8 +23,8 @@ per day), and for each ionization mode they were acquired in, it:
    cluster series matched in the file, and on the file's strong peaks against
    the CHO family of each of the mode's mechanisms.
 
-A record that is the file converter's own calibration (``is_unfitted_record``)
-is not evaluated: its coefficients count samples from the start of the raw
+A record that is the file converter's own calibration (``is_unfitted_record``
+on the database record, or a failed fit's marker) is not evaluated: its coefficients count samples from the start of the raw
 file's mass axis, not the peak store's TOF index, so read at that index they
 put every peak far off. The report counts such files as ``unfitted`` instead.
 
@@ -352,6 +352,9 @@ class FileRow:
     filename: str
     acquired: datetime
     ionization_mode_id: str | None
+    #: The database's record (``sample_file.mz_calibration``), which says what
+    #: the record in ``.props`` is: that one carries no stamp.
+    mz_calibration: dict | None = None
 
 
 def sample_per_day(rows: list[FileRow], per_day: int) -> list[FileRow]:
@@ -383,6 +386,7 @@ async def select_files(config: Config) -> list[FileRow]:
                 SampleFile.filename,
                 SampleFile.datetime_utc,
                 SampleItem.ionization_mode_id,
+                SampleFile.mz_calibration,
             )
             .join(SampleItem, SampleItem.sample_file_id == SampleFile.sample_file_id)
             .where(
@@ -394,11 +398,11 @@ async def select_files(config: Config) -> list[FileRow]:
             .order_by(SampleFile.datetime_utc, SampleFile.filename)
         )
         rows = {}
-        for sample_file_id, filename, acquired, mode_id in result.all():
+        for sample_file_id, filename, acquired, mode_id, record in result.all():
             known = rows.get(sample_file_id)
             if known is None or (known.ionization_mode_id is None and mode_id):
                 rows[sample_file_id] = FileRow(
-                    sample_file_id, filename, acquired, mode_id
+                    sample_file_id, filename, acquired, mode_id, record
                 )
     return sample_per_day(list(rows.values()), config.per_day)
 
@@ -601,6 +605,22 @@ def fit_names(mode_audit: ModeAudit, models: tuple[int, ...]) -> list[str]:
     return [f"{name}/mode{model}" for name in mode_audit.sets for model in models]
 
 
+def _converter_on_disk(record: dict | None) -> bool:
+    """Whether a file's ``.props`` record is the converter's, by its database
+    record.
+
+    ``.props`` cannot say: an applied fit is written there before its status
+    and ``verified`` are stamped on the database record, so an older applied
+    fit, which has no ``quality`` either, has the converter's shape there. The
+    database record is the converter's (``is_unfitted_record``), or a failed
+    fit's marker, which only ever replaces the converter's and leaves
+    ``.props`` as it was.
+    """
+    return isinstance(record, dict) and (
+        is_unfitted_record(record) or record.get("status") == "failed"
+    )
+
+
 def _node_record(record: dict | None) -> bool:
     """Whether a stored record is a fit the node made and an audit can redo."""
     return (
@@ -631,7 +651,7 @@ async def audit_file(row: FileRow, mode_audit: ModeAudit, config: Config) -> Fil
 
     # A converter's record does not place the stored TOF index: the raw
     # file's calibration counts samples from the start of its own axis
-    unfitted = isinstance(record, dict) and is_unfitted_record(record)
+    unfitted = _converter_on_disk(row.mz_calibration)
     if (
         not unfitted
         and isinstance(record, dict)
@@ -861,7 +881,8 @@ def summarise_file(
     for name in summary.fit_names:
         fit = file.fits.get(name)
         if fit is None:
-            # A file with no record has no stored fit to fail
+            # A file with no record, or with the converter's (counted as
+            # unfitted), has no stored fit to fail
             if name in file.fits:
                 summary.failed[name][file.warnings.get(name) or "no fit"] += 1
             continue
