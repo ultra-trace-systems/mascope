@@ -34,6 +34,10 @@ Deleting flows down the tree: removing a dataset removes its batches, their
 samples, and all results. Sample files are not deleted with them — they are
 managed separately (see [Instruments & acquisition](../instruments/index.md)).
 
+Deleting a dataset keeps a record of what it was: its name and workspace, who
+deleted it and when, what it held, and how it was described. **Settings** →
+**Deleted datasets** lists these records.
+
 ## Workspaces and sharing
 
 A **workspace** is the unit of access control. Each workspace has its own member
