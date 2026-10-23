@@ -360,6 +360,158 @@ async def test_the_index_follows_connect_and_disconnect(person, sio):
     assert await room_tracker.socket_rooms("sid-a") == set()
 
 
+# --- The user's membership follows the sockets that hold the room ---
+
+OTHER_ROOM = "another-sample-batch-id"
+
+
+@pytest.mark.asyncio
+async def test_closing_one_tab_keeps_the_rooms_another_tab_holds(person, sio):
+    """
+    Notification routing asks whether the user is in a room, not a socket.
+
+    Closing one of two tabs on a workspace must not tell it the user has
+    stopped listening there; the room only the closed tab held goes.
+    """
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await subscribe("sid-a", OTHER_ROOM)
+    await _open_socket("sid-b", person, datetime.now(timezone.utc))
+
+    await disconnect("sid-a")
+
+    assert await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    assert await room_tracker.is_in_room(person.id, f"user-{person.id}")
+    assert not await room_tracker.is_in_room(person.id, OTHER_ROOM)
+
+    await disconnect("sid-b")
+
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    assert not await room_tracker.is_in_room(person.id, f"user-{person.id}")
+
+
+@pytest.mark.asyncio
+async def test_leaving_a_room_in_one_tab_keeps_it_while_another_holds_it(person, sio):
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await _open_socket("sid-b", person, datetime.now(timezone.utc))
+
+    await unsubscribe("sid-a", RESOURCE_ROOM)
+    assert await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+
+    await unsubscribe("sid-b", RESOURCE_ROOM)
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    # The tabs' other rooms are theirs still.
+    assert await room_tracker.is_in_room(person.id, f"user-{person.id}")
+
+
+@pytest.mark.asyncio
+async def test_leaving_a_room_in_the_only_tab_keeps_its_other_rooms(person, sio):
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await subscribe("sid-a", OTHER_ROOM)
+
+    await unsubscribe("sid-a", RESOURCE_ROOM)
+
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    assert await room_tracker.is_in_room(person.id, OTHER_ROOM)
+
+
+@pytest.mark.asyncio
+async def test_a_socket_gone_without_a_disconnect_holds_no_room(person, sio):
+    """A worker that died ran no disconnect; its room record may outlive it."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await _open_socket("sid-dead", person, datetime.now(timezone.utc))
+    await subscribe("sid-dead", OTHER_ROOM)
+    await stop_session_renewal("sid-dead")
+    await redis_storage_client.client.delete(
+        storage_config.session_key("sid-dead", "/")
+    )
+    await _open_socket("sid-b", person, datetime.now(timezone.utc))
+
+    await unsubscribe("sid-a", RESOURCE_ROOM)
+    await unsubscribe("sid-b", RESOURCE_ROOM)
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+
+    await disconnect("sid-a")
+    await disconnect("sid-b")
+    assert not await room_tracker.is_in_room(person.id, OTHER_ROOM)
+    assert not await room_tracker.is_in_room(person.id, f"user-{person.id}")
+
+
+@pytest.mark.asyncio
+async def test_the_last_tab_closing_clears_every_room_of_the_user(person, sio):
+    """Including a membership no socket's room record names (a lapsed record)."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await room_tracker.join(person.id, OTHER_ROOM)
+
+    await disconnect("sid-a")
+
+    assert not await room_tracker.is_in_room(person.id, OTHER_ROOM)
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+
+
+def _yield_at_every_call(redis) -> None:
+    """
+    Make each Redis command of the in-memory stub yield to the event loop.
+
+    Two handlers awaited together then interleave at every command, as two
+    workers sharing one Redis do.
+    """
+    for name in ("get", "exists", "setex", "delete", "sadd", "srem", "smembers"):
+        command = getattr(redis, name)
+
+        async def yielding(*args, _command=command, **kwargs):
+            await asyncio.sleep(0)
+            return await _command(*args, **kwargs)
+
+        setattr(redis, name, yielding)
+
+
+@pytest.mark.asyncio
+async def test_two_tabs_closing_at_once_clear_every_room(
+    person, sio, live_rate_limiter
+):
+    """
+    Closing the browser window disconnects both tabs at the same moment.
+
+    Neither may count the other as still holding the rooms, or the user stays
+    in every room with no tab open.
+    """
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await _open_socket("sid-b", person, datetime.now(timezone.utc))
+    _yield_at_every_call(live_rate_limiter)
+
+    await asyncio.gather(disconnect("sid-a"), disconnect("sid-b"))
+
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    assert not await room_tracker.is_in_room(person.id, f"user-{person.id}")
+
+
+@pytest.mark.asyncio
+async def test_a_tab_leaving_a_room_another_is_entering_keeps_the_user_in_it(
+    person, sio
+):
+    """
+    Subscribe records the socket's room before the user's membership.
+
+    An unsubscribe in another tab that runs between the two writes then finds
+    the entering socket's hold, or its leave comes before the membership.
+    """
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await _open_socket("sid-b", person, datetime.now(timezone.utc))
+    await unsubscribe("sid-b", RESOURCE_ROOM)
+    join_socket = room_tracker.join_socket
+
+    async def unsubscribe_meanwhile(sid, room):
+        if sid == "sid-b":
+            await unsubscribe("sid-a", RESOURCE_ROOM)
+        await join_socket(sid, room)
+
+    with patch.object(room_tracker, "join_socket", unsubscribe_meanwhile):
+        await subscribe("sid-b", RESOURCE_ROOM)
+
+    assert await room_tracker.socket_rooms("sid-b") >= {RESOURCE_ROOM}
+    assert await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+
+
 @pytest.mark.asyncio
 async def test_a_service_socket_is_not_indexed(person):
     """Service namespaces join no rooms through subscribe; nothing to evict."""

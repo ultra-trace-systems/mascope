@@ -90,9 +90,11 @@ async def subscribe(sid, room):
     await sio.enter_room(sid, room)
 
     # Redis tracking (cross-worker membership queries, and the socket's own
-    # rooms for eviction)
-    await room_tracker.join(user_id, room)
+    # rooms for eviction). The socket's record first: an unsubscribe of the
+    # room in another tab that reads it between the two then keeps the
+    # user's membership rather than dropping the one just added.
     await room_tracker.join_socket(sid, room)
+    await room_tracker.join(user_id, room)
 
 
 @sio.event(namespace="/")
@@ -115,6 +117,7 @@ async def unsubscribe(sid, room):
     # Remove from Socket.IO room
     await sio.leave_room(sid, room)
 
-    # Remove from Redis tracking
-    await room_tracker.leave(user_id, room)
+    # Remove from Redis tracking; the user stays in the room while another of
+    # their sockets holds it
     await room_tracker.leave_socket(sid, room)
+    await room_tracker.release(user_id, sid, room)
