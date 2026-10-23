@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import os
 import shutil
@@ -10,9 +11,16 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     raise_api_warning,
 )
 from mascope_backend.api.new.temp.storage import user_temp_path
-from mascope_backend.db import SampleFile, async_session
+from mascope_backend.db import SampleFile, SampleItem, async_session
 from mascope_backend.runtime import runtime
-from mascope_file.name import get_instrument_type, parse_path_from_item_filename
+from mascope_file.name import (
+    filename_to_datafile_path,
+    get_instrument_type,
+    get_sample_file_type,
+    parse_path_from_item_filename,
+)
+from mascope_thermo.mzml import write_mzml
+from mascope_thermo.thermo import NoScansFoundError
 
 
 @api_controller_background_task(
@@ -149,3 +157,161 @@ async def download_files(
                 "download": download,
             },
         }
+
+
+@api_controller_background_task(
+    success_notification_rooms=["user_id"],
+    error_notification_rooms=["user_id"],
+)
+async def export_mzml(
+    sample_file_ids: list[str],
+    sample_item_ids: list[str],
+    independent_transaction: bool = False,
+    user_id: int | None = None,
+    process_id: str | None = None,
+    parent_id: str | None = None,
+) -> dict:
+    """
+    Writes sample files, and the time windows of samples, as mzML for download.
+
+    A sample file is written whole, as ``<filename>.mzML``. A sample is its
+    file's scans of the sample's polarity between its ``t0`` and ``t1``, the
+    scans the sample reads, as ``<filename>.<sample id>.mzML``
+    (:func:`mascope_thermo.mzml.write_mzml`). One result is offered as the file
+    itself, more than one as a zip. Only a Thermo raw file can be written: a
+    TOF file, or a file whose raw data is not in the filestore, is skipped, and
+    so is a sample whose window holds no scan.
+
+    :param sample_file_ids: The sample files to write whole.
+    :param sample_item_ids: The samples to write the windows of.
+    :param independent_transaction: Flag to indicate if the operation should be treated as an independent transaction
+    :param user_id: Current user triggered operation (for user notifications)
+    :param process_id: Optional identifier for the processing task
+    :param parent_id: Optional identifier of the parent task
+    :raises NotFoundException: If none of the ids is found
+    :return: A dictionary with the names written and the ones skipped
+    :rtype: dict
+    """
+    async with async_session() as session:
+        sample_files = (
+            (
+                await session.execute(
+                    select(SampleFile.filename).where(
+                        SampleFile.sample_file_id.in_(sample_file_ids)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        samples = (
+            await session.execute(
+                select(
+                    SampleItem.sample_item_id,
+                    SampleFile.filename,
+                    SampleItem.polarity,
+                    SampleItem.t0,
+                    SampleItem.t1,
+                )
+                .join(
+                    SampleFile, SampleFile.sample_file_id == SampleItem.sample_file_id
+                )
+                .where(SampleItem.sample_item_id.in_(sample_item_ids))
+            )
+        ).all()
+    if not sample_files and not samples:
+        raise NotFoundException("No sample files or samples found with the given IDs")
+
+    # (name of the mzML, sample file, polarity, t0, t1)
+    jobs = [
+        (f"{filename}.mzML", filename, None, None, None) for filename in sample_files
+    ]
+    jobs += [
+        (
+            f"{sample.filename}.{sample.sample_item_id}.mzML",
+            sample.filename,
+            sample.polarity,
+            sample.t0,
+            sample.t1,
+        )
+        for sample in samples
+    ]
+
+    datetime_stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    dirname = f"mzml_{datetime_stamp}"
+    # One file is written where it is downloaded from; more are written into
+    # a folder of their own, which is zipped and removed.
+    single = len(jobs) == 1
+    out_dir = None if single else user_temp_path(user_id, dirname)
+    if out_dir is not None:
+        os.mkdir(out_dir)
+
+    found: list[str] = []
+    not_found: list[str] = []
+    download = None
+    try:
+        for name, filename, polarity, t0, t1 in jobs:
+            if get_sample_file_type(filename) != "orbi_raw":
+                not_found.append(name)
+                continue
+            try:
+                await asyncio.to_thread(
+                    write_mzml,
+                    filename_to_datafile_path(filename),
+                    user_temp_path(user_id, name)
+                    if single
+                    else os.path.join(out_dir, name),
+                    polarity=polarity,
+                    t_min=t0,
+                    t_max=t1,
+                )
+            except NoScansFoundError:
+                not_found.append(name)
+                continue
+            found.append(name)
+
+        if found:
+            if single:
+                download = found[0]
+            else:
+                download = f"{dirname}.zip"
+                await asyncio.to_thread(
+                    shutil.make_archive,
+                    user_temp_path(user_id, dirname),
+                    "zip",
+                    out_dir,
+                )
+    finally:
+        if out_dir is not None:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    files_found = (
+        f"wrote {len(found)} file{'s' if len(found) > 1 else ''}" if found else None
+    )
+    files_not_found = (
+        f"skipped {len(not_found)} which could not be written as mzML: {', '.join(not_found)}"
+        if not_found
+        else None
+    )
+    message = "mzML export: " + " and ".join(
+        [m for m in [files_found, files_not_found] if m]
+    )
+
+    if not_found:
+        # raise_api_warning logs the message itself
+        raise_api_warning(
+            message,
+            {
+                "data": {
+                    "download": download,
+                    "found": found,
+                    "not_found": not_found,
+                }
+            },
+        )
+    runtime.logger.info(message)
+    return {
+        "message": message,
+        "data": {"found": found, "not_found": not_found},
+        "_notification_data": {"download": download},
+    }
