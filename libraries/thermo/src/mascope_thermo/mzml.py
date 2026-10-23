@@ -88,7 +88,13 @@ def write_mzml(
         dir=out_dir, prefix=".mzml-", suffix=".full", delete=False
     )
     full.close()
-    part = f"{out_path}.part"
+    # Named apart from ``out_path`` so that two writes of one output, say the
+    # same sample file exported twice at once, never share their staging file.
+    part = tempfile.NamedTemporaryFile(
+        dir=out_dir, prefix=".mzml-", suffix=".part", delete=False
+    )
+    part.close()
+    part = part.name
     try:
         # Each spectrum keeps the reader's extra values for its scan (its
         # trailer, as userParams): about a tenth of the file, and what the
