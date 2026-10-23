@@ -125,6 +125,14 @@ class DataExtractor:
                 width = max(w for w, _ in counts)
             if width is None:
                 width = isolation_width
+            if width is None and "isolation_widths" not in g:
+                # A server older than the widths list sends a group whose
+                # scans used several widths as null too: upgrading it answers.
+                raise ValueError(
+                    f"The MS2 scans of {group} store no single isolation "
+                    "width, and this server does not list the widths they "
+                    "use; upgrade the Mascope server to analyse the sample."
+                )
             if width is None:
                 raise ValueError(
                     f"The MS2 scans of {group} store no isolation width; "
