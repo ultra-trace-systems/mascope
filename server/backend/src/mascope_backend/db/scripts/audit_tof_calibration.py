@@ -65,7 +65,13 @@ Configuration, all through the environment:
   ``{"core": "HSO4", "unit": "H2SO4", "n": 4, "charge": "-"}``, or ``none``;
   default the three negative-ion series above.
 - ``TOF_AUDIT_FAMILY_SNR`` (20), ``TOF_AUDIT_FAMILY_WINDOW_PPM`` (30),
-  ``TOF_AUDIT_FAMILY_DBE_MAX`` (3): the family yardstick.
+  ``TOF_AUDIT_FAMILY_WINDOW_SPACING`` (0.5), ``TOF_AUDIT_FAMILY_DBE_MAX`` (3):
+  the family yardstick. A strong peak counts within the window of its
+  nearest member: 30 ppm, or half the member's spacing where that is
+  narrower.
+- ``TOF_AUDIT_FAMILY_PEAKED_IQR`` (0.5): a band's family offset is a reading
+  only where its IQR is at most this share of the window; elsewhere the
+  offsets fill the window and the report says so instead of a median.
 - ``TOF_AUDIT_JSON=1``: also print the whole result as one JSON document,
   per-file fits included, as the last line of stdout.
 
@@ -159,6 +165,8 @@ class Config:
     series: dict
     family_snr: float
     family_window_ppm: float
+    family_window_spacing: float
+    family_peaked_iqr: float
     family_dbe_max: int
     as_json: bool
 
@@ -313,6 +321,15 @@ def read_config(today: date | None = None) -> Config:
         ),
         family_window_ppm=_number_env(
             "TOF_AUDIT_FAMILY_WINDOW_PPM", audit.DEFAULT_FAMILY_WINDOW_PPM, float, 0
+        ),
+        family_window_spacing=_number_env(
+            "TOF_AUDIT_FAMILY_WINDOW_SPACING",
+            audit.DEFAULT_FAMILY_WINDOW_SPACING,
+            float,
+            0,
+        ),
+        family_peaked_iqr=_number_env(
+            "TOF_AUDIT_FAMILY_PEAKED_IQR", audit.DEFAULT_FAMILY_PEAKED_IQR, float, 0
         ),
         family_dbe_max=_number_env(
             "TOF_AUDIT_FAMILY_DBE_MAX", audit.DEFAULT_FAMILY_DBE_MAX, int, 0
@@ -762,6 +779,9 @@ class ModeSummary:
     fit_names: list[str]
     band_labels: list[str]
     notes: list[str]
+    #: The largest IQR of a family offset that reads the axis, as a share of
+    #: its window
+    family_peaked_iqr: float
     files: int = 0
     unreadable: Counter = field(default_factory=Counter)
     estimated_files: int = 0
@@ -785,7 +805,7 @@ class ModeSummary:
     band_errors: dict = field(
         default_factory=lambda: defaultdict(lambda: {"used": [], "held_out": []})
     )
-    #: (fit, mechanism, band) -> offsets
+    #: (fit, mechanism, band) -> (offset, window) pairs, ppm
     family: dict = field(default_factory=lambda: defaultdict(list))
     reproduction: list = field(default_factory=list)
 
@@ -859,10 +879,14 @@ def summarise_file(
                 tof_to_mass(file.strong_tofs, fit["mode"], fit["par"]), dtype=np.float64
             )
             for family in mode_audit.families:
-                mz, offsets = family.offsets_ppm(strong_mz, config.family_window_ppm)
-                for band, offset in zip(audit.band_of(mz, config.band_edges), offsets):
+                mz, offsets, windows = family.offsets_ppm(
+                    strong_mz, config.family_window_ppm, config.family_window_spacing
+                )
+                for band, offset, window in zip(
+                    audit.band_of(mz, config.band_edges), offsets, windows
+                ):
                     summary.family[(name, family.mechanism, int(band))].append(
-                        float(offset)
+                        (float(offset), float(window))
                     )
     if file.reproduction is not None:
         summary.reproduction.append(
@@ -921,8 +945,12 @@ def summary_dict(summary: ModeSummary) -> dict:
                 (name, index), {"used": [], "held_out": []}
             )
             families = {
-                mechanism: audit.spread(offsets)
-                for (fit, mechanism, band_index), offsets in summary.family.items()
+                mechanism: audit.family_spread(
+                    [offset for offset, _ in readings],
+                    [window for _, window in readings],
+                    summary.family_peaked_iqr,
+                )
+                for (fit, mechanism, band_index), readings in summary.family.items()
                 if fit == name and band_index == index
             }
             if (
@@ -970,6 +998,16 @@ def _ppm(stats: dict | None) -> str:
     if stats is None:
         return "-"
     return f"{stats['median']:+.1f} (IQR {stats['iqr']:.1f}, n {stats['n']})"
+
+
+def _family(stats: dict | None) -> str:
+    """A family offset, or why it is no reading."""
+    if stats is None:
+        return "-"
+    window = f"within +-{stats['window_ppm']:.0f} ppm"
+    if stats["peaked"]:
+        return f"{_ppm(stats)} {window}"
+    return f"no reading: flat {window} (IQR {stats['iqr']:.1f}, n {stats['n']})"
 
 
 def _share(value: float | None) -> str:
@@ -1056,12 +1094,15 @@ def log_summary(summary: dict, config: Config) -> None:
                 + (f", RMS {held_out['rms']:.1f}" if held_out else "")
             )
             for mechanism, offsets in band["families"].items():
-                log(f"               family CHO under {mechanism}: {_ppm(offsets)}")
+                log(f"               family CHO under {mechanism}: {_family(offsets)}")
     log(
         "    Errors in ppm of the exact m/z, as median (IQR, count) over the files; "
         "'used' where the fit kept the ion, 'held out' where it did not. The "
         "stored record keeps no list of what it was fitted on, so all of its "
-        "errors count as held out."
+        "errors count as held out. A family offset is read only where its IQR "
+        f"is at most {config.family_peaked_iqr:g} of its window; where the "
+        "offsets fill the window, its median says nothing of the axis and is "
+        "not given."
     )
 
 
@@ -1108,6 +1149,7 @@ async def run_audit(config: Config) -> dict:
             fit_names=names,
             band_labels=audit.band_labels(config.band_edges),
             notes=mode_audit.notes,
+            family_peaked_iqr=config.family_peaked_iqr,
         )
 
         async def one(row: FileRow) -> FileAudit | None:

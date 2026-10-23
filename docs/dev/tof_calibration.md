@@ -1,7 +1,7 @@
 # TOF mass calibration
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-10-23
 - **Tracked in:** [TOF mass calibration](https://linear.app/ultra-trace/project/tof-mass-calibration-8271ef05d142) (Linear, MAS-171 to MAS-197)
 - **What:** TOF mass calibration across the analysed range: measure, fix calibrants, model, re-calibrate.
 
@@ -448,6 +448,11 @@ tool, and accuracy is quoted in ppm per mass band, not as one RMS.
   fit are the node's own. The family offset reads strong peaks (S/N ≥ 20) against CcHhOo neutrals
   of up to three double bonds and rings under each mechanism of the mode, where members of one
   nominal mass are 36.4 mDa apart; with four or more, two members can sit 15.3 mDa apart.
+  A peak counts within ±30 ppm of its member, or half the member's distance to its nearest
+  neighbour where that is narrower (above about 600 Th, and wherever the two bromine lines'
+  lattices interleave, 17.7 mDa apart). A band's offset is given only where its IQR is at most
+  half that window; offsets spread evenly over ±w have an IQR of w, and the report says "no
+  reading" there (#2464, MAS-274).
 - **This note** (MAS-173).
 - **The fleet baseline**: the audit tool on every instrument × mode, a sample per day over 60 days
   plus one complete day, in bands 40–100, 100–150, 150–200, 200–300, 300–500 Th and above where

@@ -391,16 +391,73 @@ def test_a_family_offset_is_the_distance_to_the_nearest_member():
     family = audit.family_of(_mechanism("[M+NO3]-"), audit.cho_neutral_masses(3))
     # C5H8O4.NO3-: a member, read 10 ppm high
     member = _member("C5H8O4", "[M+NO3]-")
-    mz, offsets = family.offsets_ppm(np.array([member * (1 + 10e-6)]), 30.0)
+    mz, offsets, windows = family.offsets_ppm(np.array([member * (1 + 10e-6)]), 30.0)
     assert offsets == pytest.approx([10.0], abs=0.1)
     assert mz == pytest.approx([member * (1 + 10e-6)])
+    # Its spacing, 36.4 mDa, is 188 ppm at 194 Th: the window is the 30 ppm
+    assert windows == pytest.approx([30.0])
 
 
 def test_a_peak_far_from_every_member_is_left_out():
     family = audit.family_of(_mechanism("[M+NO3]-"), audit.cho_neutral_masses(3))
     member = _member("C5H8O4", "[M+NO3]-")
-    _, offsets = family.offsets_ppm(np.array([member * (1 + 50e-6)]), 30.0)
+    _, offsets, _ = family.offsets_ppm(np.array([member * (1 + 50e-6)]), 30.0)
     assert offsets.size == 0
+
+
+def test_the_window_narrows_to_half_the_member_spacing():
+    """At 800 Th members are 36.4 mDa, 45 ppm apart: the window is half that,
+    and a peak 25 ppm off one member reads as the next one's, 20 ppm low."""
+    family = audit.family_of(_mechanism("[M+NO3]-"), audit.cho_neutral_masses(3))
+    member = family.lattice[np.searchsorted(family.lattice, 800.0)]
+    spacing = 1e6 * 0.0363855 / member
+
+    near = np.array([member * (1 + 10e-6)])
+    _, offsets, windows = family.offsets_ppm(near, 30.0)
+    assert offsets == pytest.approx([10.0], abs=0.1)
+    assert windows == pytest.approx([spacing / 2], abs=0.01)
+    assert spacing / 2 == pytest.approx(22.7, abs=0.1)
+
+    _, offsets, _ = family.offsets_ppm(np.array([member * (1 + 25e-6)]), 30.0)
+    assert offsets == pytest.approx([25.0 - spacing], abs=0.1)
+
+    # A smaller share of the spacing leaves the 10 ppm peak out
+    assert family.offsets_ppm(near, 30.0, spacing_share=0.2)[1].size == 0
+
+
+def test_the_spacing_is_to_the_nearest_member_of_either_bromine_line():
+    """The 79Br and 81Br lattices interleave: a member of one sits 17.7 mDa
+    from a member of the other with two hydrogens fewer."""
+    family = audit.family_of(_mechanism("[M+Br]-"), audit.cho_neutral_masses(3))
+    near_500 = (family.lattice > 490) & (family.lattice < 510)
+    assert family.spacing[near_500].min() == pytest.approx(0.0177, abs=1e-4)
+    assert family.spacing.min() > 0
+
+
+def test_a_member_spacing_is_to_its_nearer_neighbour():
+    family = audit.Family(
+        mechanism="x", lattice=np.array([100.0, 100.03, 100.1, 101.0])
+    )
+    assert family.spacing == pytest.approx([0.03, 0.03, 0.07, 0.9])
+
+
+def test_a_family_offset_is_a_reading_only_where_it_is_peaked():
+    peaked = audit.family_spread([-1.0, 0.0, 0.5, 1.0, 2.0], [20.0] * 5)
+    assert peaked["peaked"]
+    assert peaked["window_ppm"] == 20.0
+    assert peaked["median"] == 0.5
+    # Spread evenly over +-20 ppm: an IQR of 20, the window's
+    flat = audit.family_spread(np.linspace(-20, 20, 41), [20.0] * 41)
+    assert flat["iqr"] == pytest.approx(20.0)
+    assert not flat["peaked"]
+    # The share decides, against the median window
+    assert audit.family_spread(
+        np.linspace(-20, 20, 41), [10.0] * 20 + [40.0] * 21, peaked_iqr=0.5
+    )["peaked"]
+    assert not audit.family_spread(
+        np.linspace(-20, 20, 41), [40.0] * 41, peaked_iqr=0.4
+    )["peaked"]
+    assert audit.family_spread([], []) is None
 
 
 def test_both_bromine_lines_make_a_lattice():
