@@ -34,10 +34,13 @@ dataset (``mascope-package_<dataset id>_<dataset name>``)::
 ``raw`` entries carry ``name``, ``sha256`` and ``bytes``, its
 ``produced_with`` the bundle's keys, and its ``provenance`` is the block every
 export carries (``mascope_backend.provenance``), whose ``inputs`` name the
-dataset and its batches with their global ids. The ionization modes the
-samples were processed under, with their mechanisms, are in it too, and every
-record it names carries its id and, where the deployment has an id, its global
-id (``mascope_backend.deployment``). Its ``schema`` is
+dataset, with its global id, and its batches. The ionization modes the samples
+were processed under, with their mechanisms, are in it too. Every record it
+names carries its id. Where the deployment has an id, the records a global id
+can name (``GLOBAL_ID_ENTITIES`` in ``mascope_backend.deployment``) carry it
+too: the dataset, its batches, samples and sample files, and the collections,
+compounds and ions. Ionization modes, mechanisms and instrument functions
+carry their id alone. Its ``schema`` is
 :data:`PACKAGE_SCHEMA`; like the provenance block's keys, the manifest's are a
 contract: a key may be added, and one that has shipped is never renamed or
 given a new meaning without a new schema.
