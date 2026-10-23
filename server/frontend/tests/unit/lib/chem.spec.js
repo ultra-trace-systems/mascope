@@ -7,6 +7,8 @@ import {
   isValidInchikey,
   isValidChemicalFormula,
   isSameCompound,
+  isIsomer,
+  inchikeyOf,
   findExistingCompound,
   formatIsotopeFormula,
   formatIsotopeLabel,
@@ -63,6 +65,66 @@ describe('isSameCompound', () => {
   })
 })
 
+const ETHANOL = 'LFQSCWFLJHTTHZ-UHFFFAOYSA-N'
+const DIMETHYL_ETHER = 'LCGLNKUTAGEVQW-UHFFFAOYSA-N'
+
+describe('isSameCompound by structure', () => {
+  const ethanol = { target_compound_formula: 'C2H6O', inchikey: ETHANOL }
+
+  it('tells isomers apart by their InChIKeys', () => {
+    expect(
+      isSameCompound(ethanol, { target_compound_formula: 'C2H6O', inchikey: DIMETHYL_ETHER })
+    ).toBe(false)
+  })
+
+  it('matches one InChIKey however it is written', () => {
+    const other = { target_compound_formula: 'C2H6O', inchikey: ` ${ETHANOL.toLowerCase()} ` }
+    expect(isSameCompound(ethanol, other)).toBe(true)
+  })
+
+  it('matches by formula when either side has no InChIKey', () => {
+    expect(isSameCompound(ethanol, { target_compound_formula: 'C2H6O' })).toBe(true)
+    expect(isSameCompound({ target_compound_formula: 'C2H6O', inchikey: '  ' }, ethanol)).toBe(true)
+  })
+
+  it('still matches by CAS number when the InChIKeys differ', () => {
+    expect(
+      isSameCompound(
+        { ...ethanol, cas_number: '64-17-5' },
+        { target_compound_formula: 'C2H6O', cas_number: '64-17-5', inchikey: DIMETHYL_ETHER }
+      )
+    ).toBe(true)
+  })
+})
+
+describe('isIsomer', () => {
+  const ethanol = { target_compound_formula: 'C2H6O', inchikey: ETHANOL }
+
+  it('is one formula with two InChIKeys', () => {
+    expect(isIsomer(ethanol, { target_compound_formula: 'c2h6o', inchikey: DIMETHYL_ETHER })).toBe(
+      true
+    )
+  })
+
+  it('is not the same InChIKey, another formula, or a side without a key', () => {
+    expect(isIsomer(ethanol, { ...ethanol })).toBe(false)
+    expect(isIsomer(ethanol, { target_compound_formula: 'C3H8O', inchikey: DIMETHYL_ETHER })).toBe(
+      false
+    )
+    expect(isIsomer(ethanol, { target_compound_formula: 'C2H6O' })).toBe(false)
+    expect(isIsomer({ inchikey: ETHANOL }, { inchikey: DIMETHYL_ETHER })).toBe(false)
+  })
+})
+
+describe('inchikeyOf', () => {
+  it('trims and upper-cases, and has none for a blank or missing key', () => {
+    expect(inchikeyOf({ inchikey: ` ${ETHANOL.toLowerCase()}` })).toBe(ETHANOL)
+    expect(inchikeyOf({ inchikey: ' ' })).toBe(null)
+    expect(inchikeyOf({})).toBe(null)
+    expect(inchikeyOf(null)).toBe(null)
+  })
+})
+
 describe('findExistingCompound', () => {
   const list = [
     { target_compound_formula: 'C6H12O6', cas_number: '50-99-7' },
@@ -76,6 +138,12 @@ describe('findExistingCompound', () => {
   it('returns null when the search compound has no formula', () => {
     expect(findExistingCompound(list, { cas_number: '50-99-7' })).toBe(null)
     expect(findExistingCompound(list, null)).toBe(null)
+  })
+
+  it('finds no compound of the formula whose InChIKey differs', () => {
+    const stored = [{ target_compound_formula: 'C2H6O', inchikey: ETHANOL }]
+    const search = { target_compound_formula: 'C2H6O', inchikey: DIMETHYL_ETHER }
+    expect(findExistingCompound(stored, search)).toBeUndefined()
   })
 
   it('returns undefined when nothing matches', () => {

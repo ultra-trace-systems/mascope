@@ -159,6 +159,14 @@ describe('DialogTargetCollectionOp add-compounds panel', () => {
   })
 })
 
+const ETHANOL = {
+  target_compound_id: 'tc-ethanol',
+  target_compound_formula: 'C2H6O',
+  target_compound_name: 'Ethanol',
+  inchikey: 'LFQSCWFLJHTTHZ-UHFFFAOYSA-N'
+}
+const DIMETHYL_ETHER_KEY = 'LCGLNKUTAGEVQW-UHFFFAOYSA-N'
+
 const METHANE = {
   cas: '74-82-8',
   inchikey: 'VNWKTOKETHGBQD-UHFFFAOYSA-N',
@@ -343,6 +351,32 @@ describe('DialogTargetCollectionOp manual compound input', () => {
     }
   })
 
+  it('offers to create the isomer of a stored compound, and to add the same structure', async () => {
+    compoundList.push({ ...ETHANOL })
+    const wrapper = await openOnInput()
+    await type(wrapper, 'add-compound-formula', 'C2H6O')
+    await typeStructure(wrapper, { inchikey: DIMETHYL_ETHER_KEY })
+    expect(addButton(wrapper).attributes('label')).toBe('Create compound')
+
+    await typeStructure(wrapper, { inchikey: ETHANOL.inchikey })
+    expect(addButton(wrapper).attributes('label')).toBe('Add compound')
+    expect(addButton(wrapper).attributes('severity')).toBe('info')
+  })
+
+  it('will add an isomer of a compound already in the selection', async () => {
+    const wrapper = await openOnInput()
+    await type(wrapper, 'add-compound-formula', 'C2H6O')
+    await typeStructure(wrapper, { inchikey: ETHANOL.inchikey })
+    addButton(wrapper).vm.$emit('click')
+    await nextTick()
+
+    await type(wrapper, 'add-compound-formula', 'C2H6O')
+    await typeStructure(wrapper, { inchikey: ETHANOL.inchikey })
+    expect(addButton(wrapper).attributes('disabled')).toBe('true')
+    await typeStructure(wrapper, { inchikey: DIMETHYL_ETHER_KEY })
+    expect(addButton(wrapper).attributes('disabled')).toBe('false')
+  })
+
   it.each([
     ['InChIKey', { inchikey: 'VNWKTOKETHGBQD' }, /InChIKey reads like/],
     ['InChI', { inchi: '1S/CH4/h1H4' }, /InChI starts with InChI=/]
@@ -457,9 +491,14 @@ describe('DialogTargetCollectionOp spreadsheet paste', () => {
     )
     expect(rows.CH4).toMatchObject({ status: '2 add', structureNotApplied: true })
     // a reused row without a structure, and a created one, have nothing to say
-    expect(rows.H2O).toMatchObject({ status: '2 add', structureNotApplied: false })
+    expect(rows.H2O).toMatchObject({
+      status: '2 add',
+      structureNotApplied: false,
+      structureMatched: false
+    })
     expect(rows.C2H6).toMatchObject({ status: '1 create', structureNotApplied: false })
     expect(wrapper.findAll('.structure-not-applied')).toHaveLength(1)
+    expect(wrapper.findAll('.structure-matched')).toHaveLength(0)
 
     // nothing of the structure is sent for the stored compound
     const sent = await saveCreated(wrapper)
@@ -511,6 +550,170 @@ describe('DialogTargetCollectionOp spreadsheet paste', () => {
 
     expect(changesTable(wrapper).props('value')).toEqual([
       expect.objectContaining({ target_compound_id: 'tc1', structureNotApplied: false })
+    ])
+  })
+
+  // Rows by name: isomers share a formula.
+  const rowsByName = (wrapper) =>
+    Object.fromEntries(
+      changesTable(wrapper)
+        .props('value')
+        .map((row) => [row.target_compound_name, row])
+    )
+
+  it('creates both isomers of one paste, each said to be an isomer', async () => {
+    const wrapper = await open()
+    await paste(
+      wrapper,
+      `Ethanol\tC2H6O\t\t${ETHANOL.inchikey}\nDimethyl ether\tC2H6O\t\t${DIMETHYL_ETHER_KEY}`
+    )
+
+    const rows = rowsByName(wrapper)
+    expect(rows.Ethanol).toMatchObject({ status: '1 create', isomerOf: 'Dimethyl ether' })
+    expect(rows['Dimethyl ether']).toMatchObject({ status: '1 create', isomerOf: 'Ethanol' })
+    expect(wrapper.findAll('.structure-isomer')).toHaveLength(2)
+
+    const { target_compounds_create } = await saveCreated(wrapper)
+    expect(target_compounds_create.map((c) => c.inchikey)).toEqual([
+      ETHANOL.inchikey,
+      DIMETHYL_ETHER_KEY
+    ])
+  })
+
+  it('keys two unnamed isomers apart in the changes table', async () => {
+    const wrapper = await open()
+    await paste(wrapper, `\tC2H6O\t\t${ETHANOL.inchikey}\n\tC2H6O\t\t${DIMETHYL_ETHER_KEY}`)
+
+    const table = changesTable(wrapper)
+    const keys = table.props('value').map(table.props('dataKey'))
+    expect(new Set(keys).size).toBe(2)
+  })
+
+  it('removes one created isomer and keeps the other', async () => {
+    const wrapper = await open()
+    await paste(
+      wrapper,
+      `Ethanol\tC2H6O\t\t${ETHANOL.inchikey}\nDimethyl ether\tC2H6O\t\t${DIMETHYL_ETHER_KEY}`
+    )
+    wrapper.vm.$.setupState.remove(rowsByName(wrapper)['Dimethyl ether'])
+    await nextTick()
+
+    expect(changesTable(wrapper).props('value')).toEqual([
+      expect.objectContaining({ target_compound_name: 'Ethanol', isomerOf: null })
+    ])
+  })
+
+  it('creates the isomer of a stored compound instead of reusing it', async () => {
+    compoundList.push({ ...ETHANOL })
+    const wrapper = await open()
+    await paste(wrapper, `Dimethyl ether\tC2H6O\t\t${DIMETHYL_ETHER_KEY}`)
+
+    expect(changesTable(wrapper).props('value')).toEqual([
+      expect.objectContaining({
+        target_compound_name: 'Dimethyl ether',
+        status: '1 create',
+        isomerOf: 'Ethanol',
+        structureNotApplied: false
+      })
+    ])
+    expect(wrapper.findAll('.structure-isomer')).toHaveLength(1)
+    expect(wrapper.findAll('.structure-not-applied')).toHaveLength(0)
+
+    const sent = await saveCreated(wrapper)
+    expect(sent.target_compound_ids).toEqual([])
+    expect(sent.target_compounds_create).toEqual([
+      expect.objectContaining({
+        target_compound_name: 'Dimethyl ether',
+        inchikey: DIMETHYL_ETHER_KEY
+      })
+    ])
+  })
+
+  it('reuses a stored compound of the same InChIKey, and says it matched', async () => {
+    compoundList.push({ ...ETHANOL })
+    const wrapper = await open()
+    await paste(wrapper, `Ethanol\tC2H6O\t\t${ETHANOL.inchikey}\tInChI=1S/C2H6O/c1-2-3/h3H,2H2,1H3`)
+
+    expect(changesTable(wrapper).props('value')).toEqual([
+      expect.objectContaining({
+        target_compound_id: ETHANOL.target_compound_id,
+        status: '2 add',
+        structureMatched: true,
+        structureNotApplied: false
+      })
+    ])
+    expect(wrapper.findAll('.structure-matched')).toHaveLength(1)
+    expect(wrapper.findAll('.structure-not-applied')).toHaveLength(0)
+  })
+
+  it('says so on a kept row matched by its InChIKey too', async () => {
+    compoundList.push({ ...ETHANOL })
+    opened.collection = {
+      target_collection_id: 'c1',
+      target_collection_name: 'Solvents',
+      target_collection_type: 'TARGETS',
+      workspace_id: 'w1',
+      target_compounds: [{ ...ETHANOL }]
+    }
+    try {
+      const wrapper = await open('update')
+      await paste(wrapper, `Ethanol\tC2H6O\t\t${ETHANOL.inchikey}`)
+
+      expect(changesTable(wrapper).props('value')).toEqual([
+        expect.objectContaining({ status: '3 keep', structureMatched: true })
+      ])
+      expect(wrapper.findAll('.structure-matched')).toHaveLength(1)
+    } finally {
+      opened.collection = null
+    }
+  })
+
+  it('keeps the formula match for a row without a structure', async () => {
+    compoundList.push({ ...ETHANOL })
+    const wrapper = await open()
+    await paste(wrapper, 'Alcohol\tC2H6O')
+
+    expect(changesTable(wrapper).props('value')).toEqual([
+      expect.objectContaining({
+        target_compound_id: ETHANOL.target_compound_id,
+        status: '2 add',
+        structureMatched: false,
+        structureNotApplied: false
+      })
+    ])
+  })
+
+  it('reuses a stored compound of the CAS number whatever the InChIKey', async () => {
+    compoundList.push({ ...ETHANOL, cas_number: '64-17-5' })
+    const wrapper = await open()
+    await paste(wrapper, `Ethanol\tC2H6O\t64-17-5\t${DIMETHYL_ETHER_KEY}`)
+
+    expect(changesTable(wrapper).props('value')).toEqual([
+      expect.objectContaining({
+        target_compound_id: ETHANOL.target_compound_id,
+        status: '2 add',
+        structureMatched: false,
+        structureNotApplied: true
+      })
+    ])
+  })
+
+  it('forgets which rows matched by structure when the dialog opens again', async () => {
+    compoundList.push({ ...ETHANOL })
+    const wrapper = await open()
+    await paste(wrapper, `Ethanol\tC2H6O\t\t${ETHANOL.inchikey}`)
+    expect(wrapper.findAll('.structure-matched')).toHaveLength(1)
+
+    await wrapper.setProps({ action: null })
+    await wrapper.setProps({ action: 'create' })
+    await flushPromises()
+    await paste(wrapper, 'Ethanol\tC2H6O')
+
+    expect(changesTable(wrapper).props('value')).toEqual([
+      expect.objectContaining({
+        target_compound_id: ETHANOL.target_compound_id,
+        structureMatched: false
+      })
     ])
   })
 })
