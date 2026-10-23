@@ -9,6 +9,12 @@ DEFAULT_MAXIMUM_UNSATURATION = 50.0
 ISOTOPE_ABUNDANCE_THRESHOLD = 0.01
 ISOTOPE_MATCHING_MZ_TOLERANCE_PPM = 5
 ISOTOPE_MATCHING_INTENSITY_TOLERANCE = 0.4
+# How much deeper than the envelope's floor the predictor reaches for the lines a
+# peak of the file's width merges (`heuristic_filter.predict_resolved_isotopes`).
+# The 15N, 2H and 17O lines a TOF's 13C peak holds sit well under a 1% floor one
+# by one - 0.37%, 0.17% and 0.11% for C10H15NO3 - and their sum is what the
+# peak adds to its 13C share; a member under a tenth of the floor is left out.
+UNRESOLVED_MEMBER_DEPTH = 0.1
 
 
 # Wiley spectral database:

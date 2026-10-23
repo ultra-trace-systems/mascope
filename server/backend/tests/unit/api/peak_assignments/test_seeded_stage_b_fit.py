@@ -337,9 +337,39 @@ class TestPatternScoringForTheSample:
         )
         assert scoring.abundance_floor == 1e-5
 
+    def test_the_files_resolving_power_reaches_the_envelope_match(self):
+        # Where the run read one, the lines one peak of the file cannot
+        # separate are matched as one; where it read none, nothing is merged.
+        def resolution(mz):
+            return 8000.0
+
+        with_resolution = pattern_scoring_for(
+            _orbi_params(), SampleMassAccuracy(0.0, 0.3, 9), ORBI_ACCURACY, resolution
+        )
+        without = pattern_scoring_for(
+            _orbi_params(), SampleMassAccuracy(0.0, 0.3, 9), ORBI_ACCURACY
+        )
+
+        assert with_resolution.resolution is resolution
+        assert without.resolution is None
+
 
 class TestTheRunSaysWhatItJudgedAt:
     """A ppm is not a ppm without the width it was judged against."""
+
+    @pytest.mark.parametrize("read", [True, False], ids=["read", "none"])
+    def test_it_says_whether_the_lines_were_merged_at_the_files_width(self, read):
+        accuracy = SampleMassAccuracy(0.0, 0.3, 9)
+        scoring = pattern_scoring_for(
+            _orbi_params(),
+            accuracy,
+            ORBI_ACCURACY,
+            (lambda mz: 8000.0) if read else None,
+        )
+
+        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+
+        assert snapshot["lines_merged_at_resolution"] is read
 
     def test_a_fitted_width_says_so_and_names_its_anchors(self):
         accuracy = SampleMassAccuracy(-0.24, 0.30, 14)

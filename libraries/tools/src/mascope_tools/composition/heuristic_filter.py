@@ -3,7 +3,7 @@ Based on 7 Golden Rules by https://bmcbioinformatics.biomedcentral.com/articles/
 """
 
 from functools import lru_cache
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 import polars as pl
@@ -17,6 +17,7 @@ from mascope_tools.composition.config import (
     ISOTOPE_ABUNDANCE_THRESHOLD,
     ISOTOPE_MATCHING_INTENSITY_TOLERANCE,
     ISOTOPE_MATCHING_MZ_TOLERANCE_PPM,
+    UNRESOLVED_MEMBER_DEPTH,
 )
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.grid import admits
@@ -1238,6 +1239,137 @@ def _target_peak(
     return float(intensities[position]), snr
 
 
+def merge_unresolved_lines(
+    predicted_mz,
+    predicted_intensity,
+    labels: Sequence[str],
+    resolution: Callable[[float], float] | None,
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Merge the predicted lines one peak of the file's width cannot separate.
+
+    The predictor returns the fine structure: one line per isotopologue. A peak
+    on a TOF is far wider than that structure, so the one peak at the 13C
+    position also holds the 15N, 2H and 17O lines a few mDa away, and scored
+    against the 13C line alone the observed share reads high - by about 14% on a
+    TOF gate set, where against the sum of the lines that peak holds the median
+    was 1.03. An Orbitrap at low resolution does the same on fewer lines.
+
+    A merged line is what that peak measures: its share is the sum of its
+    members', its m/z their intensity-weighted centre. One peak holds, from the
+    brightest line not yet taken, every line not yet taken within half the FWHM
+    either side of it, the FWHM read off the file's resolving power at that
+    line. Starting from the brightest line rather than the lightest keeps a
+    cluster whole: the 15N line sits 6 mDa under the 13C line, and a bin
+    started there can take the 13C line and leave the 17O and 2H lines, under
+    3 mDa from it, behind. The half-FWHM width is the one the targeted
+    matcher's TOF library bins with (``group_target_isotopes`` in the backend's
+    target computation), but that library groups only the lines over its 1%
+    floor, so its line at the 13C position is still the 13C line alone
+    (mascope#2587).
+
+    The merged line keeps one label, because a row's label is parsed into its
+    ion formula: ``M0`` where the ion's own line is a member, so the line
+    :func:`anchor_on_monoisotopic` finds is still the ion's, else the brightest
+    member's.
+
+    :param predicted_mz: The envelope's m/z values, in the predictor's order.
+    :param predicted_intensity: Their abundances, same order.
+    :param labels: Their isotope labels, same order.
+    :param resolution: The file's resolving power as a function of m/z, or None
+        when the run could not read one; then nothing is merged.
+    :return: The merged envelope, in the order of each line's labelled member
+        in the input.
+    """
+    predicted_mz = np.asarray(predicted_mz, dtype=float)
+    predicted_intensity = np.asarray(predicted_intensity, dtype=float)
+    labels = list(labels)
+    if resolution is None or predicted_mz.size < 2:
+        return predicted_mz, predicted_intensity, labels
+
+    # Brightest first: a peak sits on its dominant line, and which line
+    # happens to be the lightest of a cluster (the 15N line, below 13C) must
+    # not decide what the peak holds.
+    order = np.lexsort((np.arange(predicted_mz.size), -predicted_intensity))
+    taken = np.zeros(predicted_mz.size, dtype=bool)
+    groups: list[np.ndarray] = []
+    for brightest in order:
+        if taken[brightest]:
+            continue
+        centre_mz = float(predicted_mz[brightest])
+        try:
+            resolving_power = float(resolution(centre_mz))
+        except (TypeError, ValueError, ArithmeticError):
+            resolving_power = float("nan")
+        if np.isfinite(resolving_power) and resolving_power > 0:
+            half_fwhm = centre_mz / resolving_power / 2
+            members = np.flatnonzero(
+                ~taken & (np.abs(predicted_mz - centre_mz) < half_fwhm)
+            )
+        else:
+            members = np.array([brightest])
+        taken[members] = True
+        groups.append(members)
+
+    merged = []
+    for members in groups:
+        weights = predicted_intensity[members]
+        total = float(weights.sum())
+        centre = (
+            float(np.sum(predicted_mz[members] * weights) / total)
+            if total > 0
+            else float(predicted_mz[members].mean())
+        )
+        own = [index for index in members if labels[index] == "M0"]
+        named = int(own[0]) if own else int(members[np.argmax(weights)])
+        merged.append((named, centre, total, labels[named]))
+    merged.sort(key=lambda line: line[0])
+    return (
+        np.array([line[1] for line in merged], dtype=float),
+        np.array([line[2] for line in merged], dtype=float),
+        [line[3] for line in merged],
+    )
+
+
+def predict_resolved_isotopes(
+    ion_formula: str,
+    ion_charge: int,
+    threshold: float,
+    resolution: Callable[[float], float] | None,
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """An ion's envelope as a file of this resolving power shows it.
+
+    :func:`predict_isotopes` with the lines one peak cannot separate merged
+    (:func:`merge_unresolved_lines`). The members are predicted
+    :data:`UNRESOLVED_MEMBER_DEPTH` deeper than ``threshold``, because the lines
+    a merged peak adds are each far under the floor - the 15N, 2H and 17O lines
+    of a TOF's 13C peak - and the floor is then applied to the merged lines,
+    so the envelope holds the lines it held before, each with its whole share.
+
+    :param ion_formula: The ion's formula, no charge sign.
+    :param ion_charge: Its charge.
+    :param threshold: The envelope's floor, relative to its most abundant line.
+    :param resolution: The file's resolving power as a function of m/z, or None,
+        which predicts exactly as :func:`predict_isotopes` does.
+    :return: The envelope's m/z values, abundances and labels.
+    """
+    if resolution is None:
+        return predict_isotopes(ion_formula, ion_charge, threshold=threshold)
+    mzs, intensities, labels = merge_unresolved_lines(
+        *predict_isotopes(
+            ion_formula, ion_charge, threshold=threshold * UNRESOLVED_MEMBER_DEPTH
+        ),
+        resolution,
+    )
+    if not intensities.size:
+        return mzs, intensities, labels
+    keep = intensities >= threshold * intensities.max()
+    return (
+        mzs[keep],
+        intensities[keep],
+        [label for label, kept in zip(labels, keep) if kept],
+    )
+
+
 def match_isotopic_pattern(
     candidates: list[dict[str, Any]],
     peaks: pl.DataFrame,
@@ -1350,8 +1482,13 @@ def match_isotopic_pattern(
     all_isotope_data = []
 
     for ind, (ion_formula, ion_charge) in enumerate(zip(ion_formulas, ion_charges)):
-        predicted_mzs, predicted_intensities, isotope_labels = predict_isotopes(
-            ion_formula, ion_charge, threshold=envelope_floor
+        # One line per peak the file can resolve, not per isotopologue: a TOF
+        # peak at the 13C position is measured against the 15N, 2H and 17O
+        # lines it holds too. See :func:`predict_resolved_isotopes`.
+        predicted_mzs, predicted_intensities, isotope_labels = (
+            predict_resolved_isotopes(
+                ion_formula, ion_charge, envelope_floor, scoring.resolution
+            )
         )
         # The ion's own line first, whatever order the predictor returned. Every
         # index-0 assumption below - the intensity the envelope is normalised

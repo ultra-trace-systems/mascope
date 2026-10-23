@@ -85,6 +85,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.api.new.peak_assignments.service import (
+    _resolution_of,
     _searched_mechanisms,
     _seeded_fits,
     _untargeted_ionization_notations,
@@ -542,7 +543,10 @@ async def _search_sample(
     # run of the same sample would, which is the honest state of it: the width
     # is a measurement, and this path has not made it.
     scoring = pattern_scoring_for(
-        match_params, SampleMassAccuracy(), resolved_profile.fallback_sigma_ppm
+        match_params,
+        SampleMassAccuracy(),
+        resolved_profile.fallback_sigma_ppm,
+        await _resolution_of(sample),
     )
     search_columns = [
         column
