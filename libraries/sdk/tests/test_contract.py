@@ -145,8 +145,9 @@ def ms2_sample_id(mascope):
     ``MASCOPE_SDK_TEST_MS2_SAMPLE`` names one directly. Otherwise the MS2
     summary of the first sample in each batch is probed - one request per
     batch, not per sample, since an MS2 acquisition in the demo bundle goes in
-    a batch of its own (docs/demo_dataset.md). The bundle is MS1-only today,
-    so absence is an environment gap rather than a contract violation.
+    a batch of its own (docs/demo_dataset.md). A bundle without one (every
+    one before 1.4.0) makes absence an environment gap rather than a contract
+    violation.
 
     A probe the server cannot answer - a non-Orbitrap file, a raw missing from
     the filestore - is passed over rather than failed on: it says nothing
@@ -420,8 +421,8 @@ class TestMs2Contract:
     is opt-in (``by_activation``) and keys each spectrum
     ``"<parent m/z>@<activation>"``.
 
-    The demo bundle is MS1-only today, so only the summary runs there; the
-    centroid tests skip until the stack carries an MS2 acquisition.
+    Against a bundle without an MS2 acquisition (every one before 1.4.0) only
+    the summary runs; the centroid tests skip until the stack carries one.
     """
 
     def test_summary_reports_scan_counts(self, mascope):
