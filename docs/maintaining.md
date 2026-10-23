@@ -1727,6 +1727,10 @@ identity to be right; and the nitrate, sulfate and bromide cluster series
 member by member. It checks that its refit under the mode's own collection
 lands on the stored fit to 0.01 ppm on every file the node fitted, and says why
 where it does not.
+A file whose record is the converter's own calibration, as on a mode with no
+calibrants, has no `stored` fit: those coefficients count samples from the start
+of the raw file's axis, not the stored TOF index the audit reads at. The report
+counts such files as `unfitted` instead.
 
 Everything is set through the environment:
 

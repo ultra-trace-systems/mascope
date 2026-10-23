@@ -23,6 +23,11 @@ per day), and for each ionization mode they were acquired in, it:
    cluster series matched in the file, and on the file's strong peaks against
    the CHO family of each of the mode's mechanisms.
 
+A record that is the file converter's own calibration (``is_unfitted_record``)
+is not evaluated: its coefficients count samples from the start of the raw
+file's mass axis, not the peak store's TOF index, so read at that index they
+put every peak far off. The report counts such files as ``unfitted`` instead.
+
 It reports, per mode and per fit:
 
 - each ion line's median and IQR error where the fit used it, and where it
@@ -586,6 +591,9 @@ class FileAudit:
     strong_tofs: np.ndarray
     estimated: int
     reproduction: dict | None
+    #: Whether the stored record is the converter's, which is no fit and is
+    #: left out of the stored one.
+    unfitted: bool = False
 
 
 def fit_names(mode_audit: ModeAudit, models: tuple[int, ...]) -> list[str]:
@@ -621,7 +629,15 @@ async def audit_file(row: FileRow, mode_audit: ModeAudit, config: Config) -> Fil
     set_readings: dict[str, dict[str, tuple[float, float]]] = {}
     refits: dict[str, audit.Refit] = {}
 
-    if isinstance(record, dict) and "mode" in record and "par" in record:
+    # A converter's record does not place the stored TOF index: the raw
+    # file's calibration counts samples from the start of its own axis
+    unfitted = isinstance(record, dict) and is_unfitted_record(record)
+    if (
+        not unfitted
+        and isinstance(record, dict)
+        and "mode" in record
+        and "par" in record
+    ):
         fits[STORED] = {"mode": record["mode"], "par": record["par"]}
         warnings[STORED] = None
 
@@ -690,6 +706,7 @@ async def audit_file(row: FileRow, mode_audit: ModeAudit, config: Config) -> Fil
         strong_tofs=np.asarray(peaks.tof.values[strong], dtype=np.float64),
         estimated=len(stored.estimated),
         reproduction=reproduction,
+        unfitted=unfitted,
     )
 
 
@@ -785,6 +802,8 @@ class ModeSummary:
     files: int = 0
     unreadable: Counter = field(default_factory=Counter)
     estimated_files: int = 0
+    #: Files whose record is the converter's, left out of the stored fit
+    unfitted: int = 0
     fitted: Counter = field(default_factory=Counter)
     failed: dict[str, Counter] = field(default_factory=lambda: defaultdict(Counter))
     points: dict[str, list] = field(default_factory=lambda: defaultdict(list))
@@ -821,6 +840,7 @@ def summarise_file(
     """Add one file's evaluations to its mode's summary."""
     summary.files += 1
     summary.estimated_files += bool(file.estimated)
+    summary.unfitted += file.unfitted
     for set_name, labels in file.matched.items():
         summary.set_files[set_name] += 1
         for label in labels:
@@ -980,6 +1000,7 @@ def summary_dict(summary: ModeSummary) -> dict:
         "files": summary.files,
         "unreadable": dict(summary.unreadable),
         "estimated_files": summary.estimated_files,
+        "unfitted": summary.unfitted,
         "notes": summary.notes,
         "reproduction": {
             "checked": len(checked),
@@ -1031,6 +1052,12 @@ def log_summary(summary: dict, config: Config) -> None:
             f"    {summary['estimated_files']} file(s) had candidate peaks with no "
             "stored timeseries; they were ranked by their stored sum, where the "
             "node would have computed the timeseries."
+        )
+    if summary["unfitted"]:
+        log(
+            f"    {summary['unfitted']} file(s) carry the converter's own "
+            "calibration (unfitted), which does not place the stored TOF index; "
+            f"they have no '{STORED}' fit."
         )
     for note in summary["notes"]:
         log(f"    {note}")
@@ -1181,6 +1208,7 @@ async def run_audit(config: Config) -> dict:
                         for name, fit in file.fits.items()
                     },
                     "estimated_peaks": file.estimated,
+                    "unfitted": file.unfitted,
                     "reproduction": file.reproduction,
                 }
             )
