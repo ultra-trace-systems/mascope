@@ -166,6 +166,13 @@ const ETHANOL = {
   inchikey: 'LFQSCWFLJHTTHZ-UHFFFAOYSA-N'
 }
 const DIMETHYL_ETHER_KEY = 'LCGLNKUTAGEVQW-UHFFFAOYSA-N'
+// A stored compound of ethanol's formula with no structure: most stored
+// compounds have none.
+const KEYLESS_C2H6O = {
+  target_compound_id: 'tc-keyless',
+  target_compound_formula: 'C2H6O',
+  target_compound_name: 'Unknown alcohol'
+}
 
 const METHANE = {
   cas: '74-82-8',
@@ -361,6 +368,20 @@ describe('DialogTargetCollectionOp manual compound input', () => {
     await typeStructure(wrapper, { inchikey: ETHANOL.inchikey })
     expect(addButton(wrapper).attributes('label')).toBe('Add compound')
     expect(addButton(wrapper).attributes('severity')).toBe('info')
+  })
+
+  it('adds the stored compound of the InChIKey, not a keyless one listed before it', async () => {
+    compoundList.push({ ...KEYLESS_C2H6O }, { ...ETHANOL })
+    const wrapper = await openOnInput()
+    await type(wrapper, 'add-compound-formula', 'C2H6O')
+    await typeStructure(wrapper, { inchikey: ETHANOL.inchikey })
+    expect(addButton(wrapper).attributes('label')).toBe('Add compound')
+    addButton(wrapper).vm.$emit('click')
+    await nextTick()
+
+    const { target_compound_ids, target_compounds_create } = await saveCreated(wrapper)
+    expect(target_compound_ids).toEqual([ETHANOL.target_compound_id])
+    expect(target_compounds_create).toEqual([])
   })
 
   it('will add an isomer of a compound already in the selection', async () => {
@@ -644,6 +665,21 @@ describe('DialogTargetCollectionOp spreadsheet paste', () => {
     ])
     expect(wrapper.findAll('.structure-matched')).toHaveLength(1)
     expect(wrapper.findAll('.structure-not-applied')).toHaveLength(0)
+  })
+
+  it('reuses the stored compound of the InChIKey, not a keyless one listed before it', async () => {
+    compoundList.push({ ...KEYLESS_C2H6O }, { ...ETHANOL })
+    const wrapper = await open()
+    await paste(wrapper, `Ethanol\tC2H6O\t\t${ETHANOL.inchikey}`)
+
+    expect(changesTable(wrapper).props('value')).toEqual([
+      expect.objectContaining({
+        target_compound_id: ETHANOL.target_compound_id,
+        status: '2 add',
+        structureMatched: true,
+        structureNotApplied: false
+      })
+    ])
   })
 
   it('says so on a kept row matched by its InChIKey too', async () => {

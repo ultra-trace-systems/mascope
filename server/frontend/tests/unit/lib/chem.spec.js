@@ -149,6 +149,32 @@ describe('findExistingCompound', () => {
   it('returns undefined when nothing matches', () => {
     expect(findExistingCompound(list, { target_compound_formula: 'CH4' })).toBeUndefined()
   })
+
+  it('prefers the compound of the InChIKey to a keyless one of the formula before it', () => {
+    const stored = [
+      { target_compound_formula: 'C2H6O', target_compound_name: 'unknown' },
+      { target_compound_formula: 'C2H6O', inchikey: ETHANOL }
+    ]
+    const search = { target_compound_formula: 'C2H6O', inchikey: ETHANOL.toLowerCase() }
+    expect(findExistingCompound(stored, search)).toBe(stored[1])
+  })
+
+  it('prefers the compound of the CAS number to one of the InChIKey before it', () => {
+    const stored = [
+      { target_compound_formula: 'C2H6O', inchikey: ETHANOL },
+      { target_compound_formula: 'C2H6O', cas_number: '64-17-5' }
+    ]
+    const search = { target_compound_formula: 'C2H6O', cas_number: '64-17-5', inchikey: ETHANOL }
+    expect(findExistingCompound(stored, search)).toBe(stored[1])
+  })
+
+  it('falls back to the first formula match for a search without a key', () => {
+    const stored = [
+      { target_compound_formula: 'C2H6O', target_compound_name: 'unknown' },
+      { target_compound_formula: 'C2H6O', inchikey: ETHANOL }
+    ]
+    expect(findExistingCompound(stored, { target_compound_formula: 'C2H6O' })).toBe(stored[0])
+  })
 })
 
 describe('parseCompoundPaste', () => {
