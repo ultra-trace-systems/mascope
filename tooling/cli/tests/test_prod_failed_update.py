@@ -43,6 +43,9 @@ def root(tmp_path):
 @pytest.fixture
 def auto_env(monkeypatch, root):
     """`_auto` against a temporary state dir, with docker and GitHub stubbed."""
+    # Build the runtime singleton first: built from the empty temp dir, its
+    # config would not load.
+    prod_main.runtime.full_config  # noqa: B018
     monkeypatch.setenv("MASCOPE_PATH", root)
     monkeypatch.delenv("MASCOPE_UPDATE_WINDOW", raising=False)
     monkeypatch.delenv("MASCOPE_UPDATE_GRACE_DAYS", raising=False)
@@ -63,12 +66,23 @@ def auto_env(monkeypatch, root):
     return monkeypatch
 
 
-def _run_auto(env, *, classification, healthy=True):
-    """One `_auto` call; returns (exit code, the compose calls it made)."""
+def _run_auto(env, *, classification, healthy=True, failing=None):
+    """
+    One `_auto` call; returns (exit code, the compose calls it made).
+
+    :param failing: A compose subcommand ("pull", "up") that exits 1, as
+        `_run_compose` does when compose fails.
+    """
     env.setattr(prod_main.preflight, "build_plan", lambda **k: _plan(classification))
     env.setattr(prod_main.auto_update, "wait_healthy", lambda c: healthy)
     compose = []
-    env.setattr(prod_main, "_run_compose", lambda args: compose.append(args))
+
+    def run_compose(args):
+        compose.append(args)
+        if args[0] == failing:
+            raise typer.Exit(1)
+
+    env.setattr(prod_main, "_run_compose", run_compose)
     with pytest.raises(typer.Exit) as e:
         prod_main._auto(pull=True)
     return e.value.exit_code, compose
@@ -190,6 +204,45 @@ def test_failed_fast_update_is_not_applied_again(auto_env, root):
     assert compose == []
 
     _confirm()
+    code, compose = _run_auto(auto_env, classification="fast-update")
+    assert code == au.AUTO_OK
+    assert ["up", "--detach"] in compose
+
+
+@pytest.mark.parametrize(
+    "classification, kind",
+    [("migration-update", "migration"), ("fast-update", "fast")],
+)
+def test_a_failed_compose_up_is_held(auto_env, root, classification, kind):
+    # The prod compose file starts the backend only after db_init and the rest
+    # only after a healthy backend, so a failed migration or an unhealthy
+    # backend fails `up` itself, before the health check.
+    if classification == "migration-update":
+        au.save_pending(
+            root,
+            au.PendingUpdate("v1.4.0", _HEAD, "2026-07-01T00:00:00", confirmed=True),
+        )
+    code, compose = _run_auto(auto_env, classification=classification, failing="up")
+    assert code == au.AUTO_ERROR
+    assert compose == [["pull"], ["up", "--detach"]]
+    pending = au.load_pending(root)
+    assert (pending.version, pending.kind) == ("v1.4.0", kind)
+    assert pending.failed_at == "2026-07-20T03:00:00"
+    assert "did not come up healthy" in _status_log(root)
+
+    # The operator rolls back; the next night must not apply it again.
+    code, compose = _run_auto(auto_env, classification=classification)
+    assert code == au.AUTO_ERROR
+    assert compose == []
+
+
+def test_a_failed_pull_is_not_held(auto_env, root):
+    # A pull that fails leaves the stack as it was: the next night retries it.
+    code, compose = _run_auto(auto_env, classification="fast-update", failing="pull")
+    assert code == 1
+    assert compose == [["pull"]]
+    assert au.load_pending(root) is None
+
     code, compose = _run_auto(auto_env, classification="fast-update")
     assert code == au.AUTO_OK
     assert ["up", "--detach"] in compose

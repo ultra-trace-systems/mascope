@@ -299,7 +299,8 @@ Each run:
   Deploying that release (or a later one) yourself with `mascope prod update`
   settles the record as well, so `prod doctor` stops reporting it as pending;
   rolling back to an older release keeps it.
-- **Failed earlier** (an apply of this release failed its health check) ->
+- **Failed earlier** (an apply of this release did not come up healthy: its
+  migration failed, or the backend never turned healthy) ->
   held: not applied again, and the run exits 2 every time until you act, so
   the timer does not undo your rollback. `mascope prod update --confirm`
   retries it once at the next window; `--snooze <days>` keeps it held but
@@ -2137,7 +2138,9 @@ repair follows the converter's rule for the hour the clocks repeat or skip,
 and names the rows that fall in one.
 
 **Backend unhealthy after an update.** The updater stops and leaves the stack in
-place (no automatic rollback). Investigate with `mascope prod logs backend`. To
+place (no automatic rollback). That covers a failed migration too, which stops
+`docker compose up` before the backend starts. Investigate with
+`mascope prod logs backend` (and `mascope prod logs db_init` for a migration). To
 roll back manually: if a migration ran, first restore the pre-migration dump
 (`mascope prod db backup list`, then `mascope prod db restore <dump> --yes`),
 then redeploy the previous release with
