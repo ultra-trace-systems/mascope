@@ -457,6 +457,10 @@ def test_a_family_offset_is_a_reading_only_where_it_is_peaked():
     assert not audit.family_spread(
         np.linspace(-20, 20, 41), [40.0] * 41, peaked_iqr=0.4
     )["peaked"]
+    # The median window, not the widest: against 100 ppm this would read
+    assert not audit.family_spread(
+        np.linspace(-20, 20, 41), [10.0] * 21 + [100.0] * 20, peaked_iqr=0.5
+    )["peaked"]
     assert audit.family_spread([], []) is None
 
 
