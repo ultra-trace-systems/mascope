@@ -453,6 +453,8 @@ def test_modes_are_the_resolution_and_scan_range_most_scans_first(raw_path):
     assert document["dominant_mode"] == MODE
     assert [m["scan_share"] for m in document["modes"]] == [0.6, 0.4]
     assert document["flags"] == ["mixed_resolution"]
+    # The file's first scan is the one no pick takes, not each mode's first
+    assert [m["profile"]["scans_used"] for m in document["modes"]] == [[2, 3, 5], [4]]
 
 
 def test_modes_of_both_polarities_mark_the_file(raw_path):
