@@ -61,7 +61,41 @@ _DEID_NAME = re.compile(
     r"(?P<stamp>\d{14})\.raw$"
 )
 
+# A plain acquisition filename: what an acquisition started by hand at the
+# instrument, rather than by a sequence, is named. It carries no polarity
+# segment and no run index, e.g.
+#   <label>_2026.10.15-03h49m40s_MS2_15NO3_manual-C10H18O2_20261015034940.raw
+# `rest` holds the chemistry token (`15NO3`) that binds the file to its
+# ionization mode, so it is kept whole. Tried after `_RAW_NAME`, which a
+# sequence-named file matches first.
+_PLAIN_RAW_NAME = re.compile(
+    r"^(?P<instrument>[A-Za-z0-9]+)_"
+    r"(?P<date>\d{4}\.\d{2}\.\d{2})-(?P<time>\d{2}h\d{2}m\d{2}s)_"
+    r"(?P<rest>.+?)_"
+    r"(?P<stamp>\d{14})\.raw$"
+)
+
+# Its de-identified form, e.g.
+# Orbion_MS2_15NO3_manual-C10H18O2_20261015034940.raw. Tried last: it would
+# take a sequence-named de-identified file too, with the polarity and sample
+# segments inside `rest`, so `_DEID_NAME` goes first.
+_PLAIN_DEID_NAME = re.compile(
+    r"^(?P<instrument>[A-Za-z0-9]+)_(?P<rest>.+?)_(?P<stamp>\d{14})\.raw$"
+)
+
 # Instrument label aliasing for de-identification. Original -> published alias.
+#
+# Only the maintainer's own instrument is named here. The label of a
+# customer's instrument is what de-identification exists to keep out of the
+# repository, so it is given on the command line instead
+# (`mascope demo snapshot --alias <label>=Orbion`, see `build`), and the
+# sign-off report, which lists it, stays local. Bundle 1.4.0's MS2
+# acquisitions come from a second instrument aliased that way to the one
+# label on purpose: the demo stack files each instrument's acquisitions in a
+# workspace named after the label its stored filenames start with, and the
+# SDK contract and e2e suites bind to that one workspace
+# (docs/demo_dataset.md, section E). A second label would put the files of
+# the second instrument out of their reach.
 INSTRUMENT_ALIASES = {"KORBI2": "Orbion"}
 
 # The compact 14-digit acquisition stamp, e.g. `20250811142350`. It is the only
@@ -136,11 +170,12 @@ def check_raw_coverage(
     :param raw_entries: The manifest ``raw`` block (``{name, sha256, bytes}``).
     :param ingested: Filenames of every ingested sample file
                      (``export_goldens.get_ingested_filenames``).
-    :param golden_filenames: The distinct filenames present in the golden rows,
-                             or ``None`` when this run matched nothing at all -
-                             the ingestion side is still checked, since a
-                             database that does not hold the bundle's files is
-                             not one to capture a snapshot from either.
+    :param golden_filenames: The distinct filenames the goldens cover - a
+                             file with matched peaks, or one with MS2 spectra -
+                             or ``None`` when this run produced neither at
+                             all - the ingestion side is still checked, since
+                             a database that does not hold the bundle's files
+                             is not one to capture a snapshot from either.
     :return: Human-readable problem descriptions; empty means full coverage.
     """
     bundle: dict[str, list[str]] = {}
@@ -183,8 +218,9 @@ def check_raw_coverage(
         )
     if no_goldens:
         problems.append(
-            f"{len(no_goldens)} ingested raw file(s) produced no matched peaks, so "
-            f"the goldens would not cover them: {_sample(no_goldens)}"
+            f"{len(no_goldens)} ingested raw file(s) produced neither matched "
+            f"peaks nor MS2 spectra, so the goldens would not cover them: "
+            f"{_sample(no_goldens)}"
         )
     if unexpected:
         problems.append(
@@ -211,8 +247,19 @@ def _deidentify_name(
         KORBI2_2025.08.11-14h23m12s_pos_Ur_NoRI_1_20250811142302.raw
         -> Orbion_pos_Ur_NoRI_20250811142302.raw
 
+    An acquisition started by hand at the instrument has a plain name, with
+    no polarity segment and no run index. Only the label and the readable
+    timestamp come off it; the rest is kept whole, since it carries the
+    chemistry token the file binds to its ionization mode by::
+
+        <label>_2026.10.15-03h49m40s_MS2_15NO3_manual-C10H18O2_20261015034940.raw
+        -> Orbion_MS2_15NO3_manual-C10H18O2_20261015034940.raw
+
+    Such a name parses with no ``polarity`` and no ``sample``.
+
     :param name: Original raw filename.
-    :param aliases: Instrument alias map. Defaults to :data:`INSTRUMENT_ALIASES`.
+    :param aliases: Instrument alias map. Defaults to :data:`INSTRUMENT_ALIASES`;
+                    a build passes the map with its command-line aliases merged in.
     :return: ``(new_name, parsed_original)``. If the name does not match the
              expected pattern, ``new_name`` is the original (unchanged) and
              ``parsed_original`` is empty so the caller can warn.
@@ -229,9 +276,15 @@ def _deidentify_name(
         )
         return new_name, parts
 
+    m = _PLAIN_RAW_NAME.match(name)
+    if m:
+        parts = m.groupdict()
+        instrument = alias_map.get(parts["instrument"], parts["instrument"])
+        return f"{instrument}_{parts['rest']}_{parts['stamp']}.raw", parts
+
     # Already de-identified (e.g. renamed in place): leave unchanged, but still
     # parse so measurement metadata works. Derive the date from the compact stamp.
-    d = _DEID_NAME.match(name)
+    d = _DEID_NAME.match(name) or _PLAIN_DEID_NAME.match(name)
     if d:
         parts = d.groupdict()
         stamp = parts["stamp"]
@@ -265,7 +318,9 @@ def _match_score_version() -> int | None:
         return None
 
 
-def _copy_raw(raw_dir: Path, out_dir: Path) -> tuple[list[dict], list[dict]]:
+def _copy_raw(
+    raw_dir: Path, out_dir: Path, aliases: dict[str, str] | None = None
+) -> tuple[list[dict], list[dict]]:
     """
     Copy + de-identify raw files into ``out_dir/raw``.
 
@@ -276,6 +331,7 @@ def _copy_raw(raw_dir: Path, out_dir: Path) -> tuple[list[dict], list[dict]]:
 
     :param raw_dir: Source directory of original raw files.
     :param out_dir: Bundle output directory.
+    :param aliases: Instrument alias map. Defaults to :data:`INSTRUMENT_ALIASES`.
     :return: ``(entries, renames)`` where ``entries`` are the published
              ``{name, sha256, bytes}`` manifest entries (de-identified names),
              and ``renames`` are ``{original, new, parsed}`` records for the
@@ -296,7 +352,7 @@ def _copy_raw(raw_dir: Path, out_dir: Path) -> tuple[list[dict], list[dict]]:
     unmatched = 0
 
     for src in raw_files:
-        new_name, parsed = _deidentify_name(src.name)
+        new_name, parsed = _deidentify_name(src.name, aliases)
         if not parsed:
             unmatched += 1
             runtime.logger.warning(
@@ -327,7 +383,9 @@ def _copy_raw(raw_dir: Path, out_dir: Path) -> tuple[list[dict], list[dict]]:
     return entries, renames
 
 
-def _write_deid_report(out_dir: Path, renames: list[dict]) -> Path:
+def _write_deid_report(
+    out_dir: Path, renames: list[dict], aliases: dict[str, str] | None = None
+) -> Path:
     """
     Write a human-readable de-identification report for sign-off.
 
@@ -344,14 +402,30 @@ def _write_deid_report(out_dir: Path, renames: list[dict]) -> Path:
 
     :param out_dir: Bundle output directory.
     :param renames: ``{original, new, parsed}`` records from :func:`_copy_raw`.
+    :param aliases: Instrument alias map. Defaults to :data:`INSTRUMENT_ALIASES`.
     :return: Path to the written report (a sibling of ``out_dir``).
     """
+    alias_map = INSTRUMENT_ALIASES if aliases is None else aliases
     parsed = [r["parsed"] for r in renames if r["parsed"]]
     src_instruments = sorted({p["instrument"] for p in parsed})
-    samples = sorted({p["sample"] for p in parsed})
-    polarities = sorted({p["polarity"] for p in parsed})
+    # A plain (hand-started) acquisition's name has neither segment.
+    samples = sorted({p["sample"] for p in parsed if p.get("sample")})
+    polarities = sorted({p["polarity"] for p in parsed if p.get("polarity")})
+    plain = sorted(
+        r["new"] for r in renames if r["parsed"] and not r["parsed"].get("polarity")
+    )
+    # A label that is itself an alias comes from a raw set that was
+    # de-identified before (a refresh of an existing bundle), not from an
+    # instrument the map does not know.
     alias_lines = [
-        f"  - {inst} -> {INSTRUMENT_ALIASES.get(inst, inst + ' (NOT aliased!)')}"
+        f"  - {inst} -> "
+        + (
+            alias_map[inst]
+            if inst in alias_map
+            else inst + " (already de-identified)"
+            if inst in alias_map.values()
+            else inst + " (NOT aliased!)"
+        )
         for inst in src_instruments
     ]
 
@@ -373,19 +447,27 @@ def _write_deid_report(out_dir: Path, renames: list[dict]) -> Path:
         "- Removed the run index (the `_1_` segment)",
         "- Kept polarity, sample short-name, RI marker, and the "
         "compact acquisition stamp",
+        "- A hand-started acquisition's plain name (no polarity segment, no "
+        "run index) kept its method segment whole: it carries the chemistry "
+        "token the file binds to its ionization mode by",
         "",
         f"Sample short-names retained: {', '.join(samples)}",
         f"Polarities: {', '.join(polarities)}",
+        f"Plain names (method segment kept whole): {len(plain)}",
+        *[f"  - `{name}`" for name in plain],
         "",
-        "Confirm the retained sample short-names are not sensitive. The compact",
-        "acquisition stamp (and thus acquisition date/time) is retained deliberately.",
+        "Confirm the retained sample short-names and method segments are not",
+        "sensitive. The compact acquisition stamp (and thus acquisition",
+        "date/time) is retained deliberately.",
         "",
         "## Not checked automatically",
         "",
         "Embedded `.raw` binary metadata (operator name, sample comments,",
-        "instrument serial) is not parsed or scrubbed by this tool. Inspect a",
-        "sample of files in the vendor software if any of these could be",
-        "sensitive for this dataset.",
+        "instrument serial, the acquisition computer's name, the instrument",
+        "method's path, the original file path) is not parsed or scrubbed by",
+        "this tool. Inspect a sample of files in the vendor software, or with",
+        "the raw reader, if any of these could be sensitive for this dataset.",
+        "A method path can carry its author's name, and a file path the site's.",
         "",
         "## Rename map (original -> published)",
         "",
@@ -495,6 +577,13 @@ def export_goldens(out_dir: Path, raw_entries: list[dict]) -> dict | None:
     writes them to ``expected/peaks.parquet``. The matching comparison side is
     :func:`verify.compare_peaks`.
 
+    An MS2 acquisition's spectra go to ``expected/ms2.parquet``: every
+    (precursor, activation) group of each sample with fragmentation scans,
+    and the group's averaged centroids down to the peak store's floor
+    (``export_goldens.get_golden_ms2``). Its comparison side is
+    :func:`verify.compare_ms2`. A file with MS2 spectra counts as covered
+    whether or not its MS1 scans matched anything.
+
     Refuses to write ``expected/`` unless the database covers the bundle's whole
     raw set (:func:`check_raw_coverage`): a rebuild can quietly ingest fewer
     files than the bundle contains, and goldens captured from such a run freeze
@@ -520,21 +609,22 @@ def export_goldens(out_dir: Path, raw_entries: list[dict]) -> dict | None:
     # secret, both present in the demo flow). Mirrors `_seed_credentials`.
     from mascope_backend.db.scripts.export_goldens import (
         get_golden_ions,
+        get_golden_ms2,
         get_golden_peaks,
         get_ingested_filenames,
     )
 
     rows = get_golden_peaks()
+    ms2_rows = get_golden_ms2()
 
     # Coverage first, before the no-peaks exit: the caller records the snapshot
     # either way, so a database that does not hold the bundle's raw set has to
     # be refused even on the path where matching produced nothing - otherwise
     # the manifest ends up pairing a fresh snapshot of a partial ingestion with
     # the previous run's goldens.
+    covered = {row["filename"] for row in rows} | {row["filename"] for row in ms2_rows}
     problems = check_raw_coverage(
-        raw_entries,
-        get_ingested_filenames(),
-        {row["filename"] for row in rows} if rows else None,
+        raw_entries, get_ingested_filenames(), covered if covered else None
     )
     if problems:
         raise RuntimeError(
@@ -566,6 +656,23 @@ def export_goldens(out_dir: Path, raw_entries: list[dict]) -> dict | None:
         "sha256": bundles.sha256_file(peaks_path),
     }
 
+    # MS2 spectra, when the bundle has an acquisition with fragmentation scans.
+    # A bundle without one records no `ms2` block, and the comparison side
+    # skips it, so an MS1-only bundle is unchanged by this export.
+    if ms2_rows:
+        ms2_path = dest_dir / "ms2.parquet"
+        pd.DataFrame(ms2_rows).to_parquet(ms2_path, index=False)
+        groups = {
+            (r["filename"], r["polarity"], r["parent_peak_mz"], r["activation"])
+            for r in ms2_rows
+        }
+        runtime.logger.success(
+            f"Exported {len(ms2_rows)} golden MS2 centroid(s) in {len(groups)} "
+            f"group(s) to {ms2_path}"
+        )
+        expected["ms2"] = "expected/ms2.parquet"
+        expected["ms2_sha256"] = bundles.sha256_file(ms2_path)
+
     # Per-ION scores: this is the level the consolidated v2 match score operates at
     # (the per-isotopologue peaks.parquet above is unchanged by it).
     ion_rows = get_golden_ions()
@@ -584,6 +691,7 @@ def build(
     raw_dir: Path | None = None,
     update: bool = False,
     seed: bool = False,
+    aliases: dict[str, str] | None = None,
 ) -> Path:
     """
     Build (or refresh) a demo bundle directory.
@@ -612,6 +720,10 @@ def build(
         Required on first build; optional when refreshing an existing bundle.
     :param update: Rebuild the derived snapshot + goldens.
     :param seed: Capture the reference seed dump.
+    :param aliases: Instrument aliases given on the command line, merged over
+        :data:`INSTRUMENT_ALIASES`. The label of a customer's instrument is
+        passed here rather than written into the map, so it is in the local
+        sign-off report and nowhere in the repository.
     :return: The output bundle directory.
     :raises FileNotFoundError: If ``raw_dir`` is given but missing, or if it is
         omitted and the bundle has no raw set to reuse.
@@ -620,6 +732,7 @@ def build(
         goldens nor the snapshot are written in that case.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    alias_map = {**INSTRUMENT_ALIASES, **(aliases or {})}
 
     # Load any prior manifest first: it carries the derived blocks across runs
     # and, when --raw is omitted, the raw set + measurement metadata to reuse.
@@ -634,15 +747,19 @@ def build(
         # published instrument label is the alias, never the original.
         if not raw_dir.is_dir():
             raise FileNotFoundError(f"Raw directory not found: {raw_dir}")
-        raw_entries, renames = _copy_raw(raw_dir, out_dir)
-        _write_deid_report(out_dir, renames)
-        parsed = next((r["parsed"] for r in renames if r["parsed"]), {})
+        raw_entries, renames = _copy_raw(raw_dir, out_dir, alias_map)
+        _write_deid_report(out_dir, renames, alias_map)
+        parsed_all = [r["parsed"] for r in renames if r["parsed"]]
+        parsed = parsed_all[0] if parsed_all else {}
         orig_instrument = parsed.get("instrument", "")
+        # `acquired` is the earliest day; a bundle that spans several
+        # acquisition days lists them all beside it.
+        days = sorted({p["date"] for p in parsed_all if p.get("date")})
         measurement = {
-            "instrument": INSTRUMENT_ALIASES.get(orig_instrument, orig_instrument)
-            or None,
+            "instrument": alias_map.get(orig_instrument, orig_instrument) or None,
             "instrument_type": "orbi",
-            "acquired": parsed.get("date"),
+            "acquired": days[0] if days else None,
+            "acquisition_days": days,
         }
     elif "raw" in prior:
         # Refresh only: reuse the raw set + metadata already in the bundle so a

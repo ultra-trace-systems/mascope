@@ -434,6 +434,17 @@ def verify(
             help="Parquet of peaks to compare instead of the live demo database",
         ),
     ] = None,
+    actual_ms2: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--actual-ms2",
+            help=(
+                "Parquet of MS2 centroids to compare instead of the live demo "
+                "database (with --actual; the MS2 goldens are skipped when "
+                "--actual is given without it)"
+            ),
+        ),
+    ] = None,
     local: Annotated[
         Optional[Path],
         typer.Option(
@@ -454,7 +465,8 @@ def verify(
 
     The 'actual' peaks default to a live export from the current demo database
     (run after `mascope demo --rebuild`); pass `--actual <parquet>` to compare a
-    pre-exported file instead.
+    pre-exported file instead. A bundle with MS2 goldens (`expected/ms2.parquet`)
+    has its MS2 spectra compared the same way.
     """
     import json
 
@@ -499,6 +511,27 @@ def verify(
         actual=actual_df,
         tolerances=manifest.get("tolerances"),
     )
+
+    # The MS2 goldens, where the bundle has them. Compared from the live
+    # database as the peaks are, or from a pre-exported file beside --actual.
+    ms2_rel = manifest.get("expected", {}).get("ms2")
+    if ms2_rel and (actual is None or actual_ms2 is not None):
+        if actual_ms2 is not None:
+            actual_ms2_df = pd.read_parquet(actual_ms2)
+        else:
+            from mascope_backend.db.scripts.export_goldens import get_golden_ms2
+
+            actual_ms2_df = pd.DataFrame(get_golden_ms2())
+        problems += verify_mod.compare_ms2(
+            expected=pd.read_parquet(bundle_root / ms2_rel),
+            actual=actual_ms2_df,
+            tolerances=manifest.get("tolerances"),
+        )
+    elif ms2_rel:
+        runtime.logger.warning(
+            "Bundle has MS2 goldens; pass --actual-ms2 beside --actual to compare them"
+        )
+
     if problems:
         runtime.logger.error(f"Reproducibility check FAILED ({len(problems)} diffs):")
         for p in problems:
@@ -545,6 +578,18 @@ def snapshot(
             ),
         ),
     ] = False,
+    alias: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--alias",
+            help=(
+                "Alias a source instrument's label, ORIGINAL=ALIAS (repeatable), "
+                "for this build only. The label of a customer's instrument goes "
+                "here, never into the repository's alias map; it ends up in the "
+                "local sign-off report and nowhere else."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """
     MAINTAINER: (re)build a demo bundle from the raw source of truth.
@@ -566,13 +611,42 @@ def snapshot(
     from mascope_cli.cmd.demo import build_bundle
 
     try:
-        build_bundle.build(out_dir=out, raw_dir=raw, update=update, seed=seed)
+        aliases = _parse_aliases(alias or [])
+    except ValueError as e:
+        runtime.logger.error(str(e))
+        raise typer.Exit(2)
+
+    try:
+        build_bundle.build(
+            out_dir=out, raw_dir=raw, update=update, seed=seed, aliases=aliases
+        )
     except (RuntimeError, OSError) as e:
         # A rejected coverage check is a routine authoring outcome with its own
         # remediation text, and a missing --raw is a usage error; neither is
         # worth a traceback (matching the sibling flows above).
         runtime.logger.error(str(e))
         raise typer.Exit(1)
+
+
+def _parse_aliases(pairs: list[str]) -> dict[str, str]:
+    """
+    Read ``--alias ORIGINAL=ALIAS`` options into an alias map.
+
+    :param pairs: The option values as given.
+    :return: ``{original: alias}``.
+    :raises ValueError: On a value that is not ``ORIGINAL=ALIAS`` with both
+        sides non-empty.
+    """
+    aliases: dict[str, str] = {}
+    for pair in pairs:
+        original, sep, alias = pair.partition("=")
+        if not sep or not original.strip() or not alias.strip():
+            raise ValueError(
+                f"--alias expects ORIGINAL=ALIAS (e.g. --alias MYLABEL=Orbion), "
+                f"got {pair!r}"
+            )
+        aliases[original.strip()] = alias.strip()
+    return aliases
 
 
 def info(
