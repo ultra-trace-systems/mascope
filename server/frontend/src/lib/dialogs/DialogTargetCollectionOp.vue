@@ -339,13 +339,29 @@ function restore(compound) {
   compounds.selected.push(compound)
 }
 
+// Whether the stored compound a row resolved to is in the selection already.
+// A row matched by its InChIKey is that compound, so it is checked by id: a
+// keyless compound of the formula in the selection is not it. Any other row
+// is checked by identity against the selection, as it was before structures,
+// so a formula-only row does not add a second compound of its formula.
+function inSelection(row, record) {
+  const key = inchikeyOf(row)
+  if (record && key && key === inchikeyOf(record)) {
+    return compounds.selected.some((comp) => comp.target_compound_id === record.target_compound_id)
+  }
+  return compounds.selected.some((comp) => isSameCompound(comp, row))
+}
+
 function loadSpreadsheet({ rows }) {
   let prexisting = []
+  // the pasted row behind each entry of prexisting
+  const prexistingRows = []
   rows.forEach((compound) => {
     const identity = compoundIdentity(compound)
     const record = findExistingCompound(app.data.target.compound.list, compound)
     if (record) {
       prexisting.push(record)
+      prexistingRows.push(compound)
       if (identity.inchikey && inchikeyOf(identity) === inchikeyOf(record)) {
         structureMatched.value = new Set(structureMatched.value).add(record.target_compound_id)
       } else if (Object.values(identity).some(Boolean)) {
@@ -379,10 +395,7 @@ function loadSpreadsheet({ rows }) {
       compound
     )
   })
-  // By id: a keyless compound of the formula in the selection is not the
-  // stored compound carrying the row's InChIKey.
-  const unselected = (added) =>
-    !compounds.selected.some((comp) => comp.target_compound_id === added.target_compound_id)
+  const unselected = (added, i) => !inSelection(prexistingRows[i], added)
   compounds.selected.push(...reconciled.filter(unselected))
   // force DataTable re-render
   key.targets += 1
@@ -607,13 +620,10 @@ const alreadyInSelection = computed(() => {
     inchikey: add.inchikey
   }
 
-  // A stored match is in the selection only by its id; a new compound is
-  // checked against the selection by identity.
-  const record = existingInputCompound.value
-  const selected = record
-    ? compounds.selected.some((comp) => comp.target_compound_id === record.target_compound_id)
-    : compounds.selected.some((comp) => isSameCompound(comp, searchCompound))
-  return selected || compounds.created.some((comp) => isSameCompound(comp, searchCompound))
+  return (
+    inSelection(searchCompound, existingInputCompound.value) ||
+    compounds.created.some((comp) => isSameCompound(comp, searchCompound))
+  )
 })
 
 // Button configuration for manual input

@@ -423,6 +423,25 @@ describe('DialogTargetCollectionOp manual compound input', () => {
     }
   })
 
+  it('will not add another stored compound of a formula already in the selection', async () => {
+    compoundList.push({ ...ETHANOL }, { ...KEYLESS_C2H6O })
+    opened.collection = {
+      target_collection_id: 'c1',
+      target_collection_name: 'Solvents',
+      target_collection_type: 'TARGETS',
+      workspace_id: 'w1',
+      target_compounds: [{ ...KEYLESS_C2H6O }]
+    }
+    try {
+      const wrapper = await openOnInput('update')
+      // a formula alone matches as before structures: the selection has it
+      await type(wrapper, 'add-compound-formula', 'C2H6O')
+      expect(addButton(wrapper).attributes('disabled')).toBe('true')
+    } finally {
+      opened.collection = null
+    }
+  })
+
   it('will add an isomer of a compound already in the selection', async () => {
     const wrapper = await openOnInput()
     await type(wrapper, 'add-compound-formula', 'C2H6O')
@@ -734,6 +753,53 @@ describe('DialogTargetCollectionOp spreadsheet paste', () => {
       }),
       expect.objectContaining({ target_compound_id: ETHANOL.target_compound_id, status: '2 add' })
     ])
+  })
+
+  it('adds no other stored compound of a formula already selected for a row without a structure', async () => {
+    compoundList.push({ ...ETHANOL }, { ...KEYLESS_C2H6O })
+    opened.collection = {
+      target_collection_id: 'c1',
+      target_collection_name: 'Solvents',
+      target_collection_type: 'TARGETS',
+      workspace_id: 'w1',
+      target_compounds: [{ ...KEYLESS_C2H6O }]
+    }
+    try {
+      const wrapper = await open('update')
+      await paste(wrapper, 'Some alcohol\tC2H6O')
+
+      expect(changesTable(wrapper).props('value')).toEqual([
+        expect.objectContaining({
+          target_compound_id: KEYLESS_C2H6O.target_compound_id,
+          status: '3 keep'
+        })
+      ])
+    } finally {
+      opened.collection = null
+    }
+  })
+
+  it('matches by formula against the selection a row whose InChIKey no stored compound has', async () => {
+    const otherKeyless = { ...KEYLESS_C2H6O, target_compound_id: 'tc-keyless-2' }
+    compoundList.push({ ...KEYLESS_C2H6O }, otherKeyless)
+    opened.collection = {
+      target_collection_id: 'c1',
+      target_collection_name: 'Solvents',
+      target_collection_type: 'TARGETS',
+      workspace_id: 'w1',
+      target_compounds: [{ ...otherKeyless }]
+    }
+    try {
+      const wrapper = await open('update')
+      // resolves to the first keyless compound by formula, not by structure
+      await paste(wrapper, `Dimethyl ether\tC2H6O\t\t${DIMETHYL_ETHER_KEY}`)
+
+      expect(changesTable(wrapper).props('value')).toEqual([
+        expect.objectContaining({ target_compound_id: otherKeyless.target_compound_id })
+      ])
+    } finally {
+      opened.collection = null
+    }
   })
 
   it('removes the stored compound of the InChIKey and keeps the keyless one', async () => {
