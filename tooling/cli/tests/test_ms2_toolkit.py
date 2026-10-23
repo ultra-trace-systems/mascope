@@ -117,6 +117,13 @@ def test_a_group_with_no_width_at_all_is_still_refused():
         _extract(_summary(_group(200.0, None, [])))
 
 
+def test_a_group_at_several_widths_from_an_older_server_asks_for_an_upgrade():
+    # A server older than the widths list sends such a group as a null width
+    # and no list, and the file's width is null as the groups disagree.
+    with pytest.raises(ValueError, match="upgrade the Mascope server"):
+        _extract(_summary(_group(200.0, None)))
+
+
 def test_the_label_names_one_width():
     assert isolation_width_label(1.0, [(1.0, 10)]) == (
         "&emsp; <b>Isolation width:</b> 1.0 m/z"
@@ -129,6 +136,9 @@ def test_the_label_names_every_width_and_the_widest():
     assert "1.0 m/z (12 scans)" in label
     assert "4.0 m/z (3 scans)" in label
     assert label.endswith("the window uses the widest, 4.0 m/z")
+    # A width one scan used, such as an inclusion-list entry hit once.
+    label = isolation_width_label(4.0, [(1.0, 1), (4.0, 3)])
+    assert "1.0 m/z (1 scan), 4.0 m/z (3 scans)" in label
 
 
 class _NoCompositions:

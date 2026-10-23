@@ -19,7 +19,10 @@ def isolation_width_label(
     """
     if len(counts) <= 1:
         return f"&emsp; <b>Isolation width:</b> {isolation_width} m/z"
-    widths = ", ".join(f"{width} m/z ({scans} scans)" for width, scans in counts)
+    widths = ", ".join(
+        f"{width} m/z ({scans} scan{'s' if scans != 1 else ''})"
+        for width, scans in counts
+    )
     return (
         f"&emsp; <b>Isolation widths:</b> {widths}; "
         f"the window uses the widest, {isolation_width} m/z"
