@@ -196,6 +196,61 @@ def test_failed_fast_update_is_not_applied_again(auto_env, root):
 
 
 @pytest.mark.parametrize(
+    "classification, kind, quiet",
+    [
+        ("migration-update", "migration", au.AUTO_MIGRATION_PENDING),
+        ("fast-update", "fast", au.AUTO_OK),
+    ],
+)
+def test_failure_survives_a_night_on_the_failed_release(
+    auto_env, root, classification, kind, quiet
+):
+    if classification == "migration-update":
+        au.save_pending(
+            root,
+            au.PendingUpdate("v1.4.0", _HEAD, "2026-07-01T00:00:00", confirmed=True),
+        )
+    code, _ = _run_auto(auto_env, classification=classification, healthy=False)
+    assert code == au.AUTO_ERROR
+
+    # The failed apply left the stack on v1.4.0, so the next night sees it up
+    # to date. The hold must outlive that night.
+    code, compose = _run_auto(auto_env, classification="up-to-date")
+    assert code == au.AUTO_ERROR
+    assert compose == []
+    assert au.load_pending(root).failed_at == "2026-07-20T03:00:00"
+    assert "held while this deployment still runs it" in _status_log(root)
+
+    # Snoozed, it stays held but quiet, with the code of its kind.
+    au.snooze_pending(root, 3)
+    code, _ = _run_auto(auto_env, classification="up-to-date")
+    assert code == quiet
+    assert au.load_pending(root).failed_at == "2026-07-20T03:00:00"
+
+    # The operator rolls back a day later: the release is still not applied.
+    auto_env.setattr(au, "_now", lambda: _NOW + datetime.timedelta(days=4))
+    code, compose = _run_auto(auto_env, classification=classification)
+    assert code == au.AUTO_ERROR
+    assert compose == []
+    assert au.load_pending(root).kind == kind
+
+
+def test_up_to_date_after_a_confirmed_retry_clears_the_record(auto_env, root):
+    au.record_failure(root, "v1.4.0", _HEAD, "fast")
+    _confirm()
+    code, _ = _run_auto(auto_env, classification="up-to-date")
+    assert code == au.AUTO_OK
+    assert au.load_pending(root) is None
+
+
+def test_snooze_message_names_the_kind(auto_env, root):
+    au.record_failure(root, "v1.4.0", _HEAD, "fast")
+    with pytest.raises(typer.Exit):
+        prod_main._manage_pending(confirm=False, snooze=3)
+    assert "Snoozed fast update v1.4.0 until" in _status_log(root)
+
+
+@pytest.mark.parametrize(
     "classification, quiet",
     [("migration-update", au.AUTO_MIGRATION_PENDING), ("fast-update", au.AUTO_OK)],
 )
@@ -283,3 +338,17 @@ def test_doctor_text_says_failed_and_how_to_retry():
         "confirm to retry" in text
     )
     assert "pending (first seen" not in text
+
+
+def test_doctor_text_names_a_confirmed_fast_update():
+    report = doctor.Report(
+        containers=[],
+        versions=doctor.VersionStatus(expected=None, running={}),
+        disks=[],
+        updates=doctor.UpdateStatus(
+            "v1.4.0", "2026-07-01T00:00:00", None, pending_kind="fast"
+        ),
+        backups=doctor.BackupStatus(0, None),
+        images=doctor.ImageFootprint(None, None, None),
+    )
+    assert "fast update v1.4.0 pending (first seen" in doctor.format_text(report)

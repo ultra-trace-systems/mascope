@@ -643,8 +643,8 @@ def format_text(report: Report) -> str:
         lines.append(
             (
                 "Updates",
-                f"migration update {u.pending_version} pending "
-                f"(first seen {u.pending_first_seen})",
+                f"{u.pending_kind or 'migration'} update {u.pending_version} "
+                f"pending (first seen {u.pending_first_seen})",
             )
         )
     else:
