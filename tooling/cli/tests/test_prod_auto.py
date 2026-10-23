@@ -249,6 +249,9 @@ def auto_env(monkeypatch, tmp_path):
     monkeypatch.setattr(prod_main, "_prune_images", lambda: None)
     # The updater's state lands under MASCOPE_PATH: keep it out of the shared
     # test home, where one test's recorded failure would hold the next's update.
+    # Build the runtime singleton first: built from the empty temp dir, its
+    # config would not load.
+    prod_main.runtime.full_config  # noqa: B018
     monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
     monkeypatch.delenv("MASCOPE_UPDATE_WINDOW", raising=False)
     return monkeypatch
