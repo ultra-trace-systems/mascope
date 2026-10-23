@@ -1,6 +1,6 @@
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 
 import numpy as np
 from fastapi import HTTPException
@@ -16,6 +16,7 @@ from mascope_backend.api.controllers.samples.lib.samples_segments import (
     with_stream_rows,
 )
 from mascope_backend.api.lib.api_features import api_controller
+from mascope_backend.api.lib.datetimes import as_utc
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     NotFoundException,
@@ -65,14 +66,6 @@ def _nearest_listed_mz(filename: str, peak_mz: float) -> float:
     if listed.size == 0:
         return peak_mz
     return float(listed[np.abs(listed - peak_mz).argmin()])
-
-
-def _as_utc(moment: datetime) -> datetime:
-    """A bound on ``datetime_utc`` given with no offset is UTC, like the column.
-
-    Left naive, the driver would read it in the server's local time zone.
-    """
-    return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
 
 
 @api_controller()
@@ -178,9 +171,9 @@ async def get_samples(
             stmt = stmt.filter(Sample.sample_item_type.in_(sample_item_type))
 
         if datetime_min:
-            stmt = stmt.where(Sample.datetime_utc >= _as_utc(datetime_min))
+            stmt = stmt.where(Sample.datetime_utc >= as_utc(datetime_min))
         if datetime_max:
-            stmt = stmt.where(Sample.datetime_utc <= _as_utc(datetime_max))
+            stmt = stmt.where(Sample.datetime_utc <= as_utc(datetime_max))
 
         if polarity is not None:
             stmt = stmt.filter(Sample.polarity.in_(polarity))
