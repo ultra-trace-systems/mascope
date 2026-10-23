@@ -52,7 +52,8 @@ reproducibility test can verify exactly what they loaded:
   "measurement": {
     "instrument": "Orbion",
     "instrument_type": "orbi",
-    "acquired": "2025-08-11",
+    "acquired": "2025.08.11", // the earliest acquisition day
+    "acquisition_days": ["2025.08.11", "2026.10.15", "2026.10.16"],
   },
   "produced_with": {
     "mascope_version": "<git describe at snapshot time>",
@@ -65,7 +66,11 @@ reproducibility test can verify exactly what they loaded:
     "sha256": "...",
     "filestore": "snapshot/filestore",
   },
-  "expected": { "peaks": "expected/peaks.parquet", "sha256": "..." },
+  "expected": {
+    "peaks": "expected/peaks.parquet", "sha256": "...",
+    "ions": "expected/ions.parquet", "ions_sha256": "...",
+    "ms2": "expected/ms2.parquet", "ms2_sha256": "...", // only with an MS2 acquisition
+  },
   "tolerances": { "mz_ppm": 0.1, "intensity_rel": 0.01, "area_rel": 0.02 },
 }
 ```
@@ -300,6 +305,23 @@ What it asserts:
    `sample_item_id`, which is regenerated every ingestion and asserted within
    the manifest's tolerances (m/z within `mz_ppm`, intensity within
    `intensity_rel`, no unexpected peaks).
+
+   A bundle with an MS2 acquisition also ships `expected/ms2.parquet`: every
+   (precursor, activation) group of each sample whose scan-stream census
+   records fragmentation scans, read through the same compute path as the
+   MS2 routes, with the group's averaged centroids down to the peak store's
+   signal-to-noise floor (`SIGNAL_TO_NOISE_THRESHOLD` in
+   `mascope_signal.peak`, deeper than the route's default) and its scan count
+   and isolation width. Nothing about an MS2 spectrum is stored in the
+   database, so a group is keyed by what the scan filters say,
+   `(filename, polarity, parent_peak_mz, activation)`, which a rebuild reads
+   the same. The test exports the produced spectra the same way
+   (`export_goldens --ms2-json`) and compares them group by group
+   (`compare_ms2`): a group on one side only is missing or unexpected; within
+   a group the centroids are paired by m/z within `mz_ppm`, nearest first,
+   what is left unpaired on either side is missing or unexpected, and a
+   pair's intensity must agree within `intensity_rel`. An MS1-only bundle
+   has no `ms2` block, and the step is skipped.
 4. Pin `opentfraw` to `produced_with.opentfraw_version`; a mismatch fails loudly.
 
 Step 2 waits for the pipeline to settle rather than for a fixed time, so a file
@@ -339,11 +361,15 @@ human sign-off. Candidate identifiers here:
   instrument label is aliased and the redundant timestamp + run index are
   stripped (below); the sample short-names are standards (kept) and the compact
   stamp is kept so the timeseries stays meaningful.
-- **Embedded `.raw` metadata** may include operator name, sample comments, and
-  instrument serial. The report surfaces these; the maintainer decides what (if
-  anything) to scrub. Deep rewriting of `.raw` internals is avoided unless
-  something genuinely sensitive is flagged, the publishability call rests with
-  the data owner, not the tooling.
+- **Embedded `.raw` metadata** may include operator name, sample comments,
+  instrument serial, the instrument method's path, the original file's path
+  and the acquisition computer's name. The tooling reads none of it: the
+  report names what to look at, and the maintainer decides what (if anything)
+  to scrub. A method path can carry its author's name and a file path the
+  site's, so read them with the raw reader before signing off a file the
+  instrument's sequence named. Deep rewriting of `.raw` internals is avoided
+  unless something genuinely sensitive is flagged, the publishability call
+  rests with the data owner, not the tooling.
 
 ### Filename de-identification
 
@@ -354,6 +380,31 @@ unchanged:
 KORBI2_2025.08.11-14h23m12s_pos_Ur_NoRI_1_20250811142302.raw
   -> Orbion_pos_Ur_NoRI_20250811142302.raw
 ```
+
+An acquisition started by hand at the instrument, rather than by a sequence,
+has a plain name with no polarity segment and no run index. Only the label
+and the readable timestamp come off it; the method segment is kept whole,
+since it carries the chemistry token the seed binds the file by:
+
+```
+<label>_2026.10.15-03h49m40s_MS2_15NO3_manual-C10H18O2_20261015034940.raw
+  -> Orbion_MS2_15NO3_manual-C10H18O2_20261015034940.raw
+```
+
+`INSTRUMENT_ALIASES` in `build_bundle.py` names the maintainer's own
+instrument only. The label of a customer's instrument is what the renaming
+exists to keep out of the repository, so it is given to the build on the
+command line and never committed:
+
+```sh
+mascope demo snapshot --raw <RAW> --out <BUNDLE> --seed --alias <label>=Orbion
+```
+
+It then appears in the local sign-off report and nowhere else. Both source
+instruments of bundle 1.4.0 carry the one alias on purpose: the demo stack
+files each instrument's acquisitions in a workspace named after the label
+its stored filenames start with, and the contract and e2e suites bind to
+that one workspace (see [E](#e-ms2-acquisitions)).
 
 The published `manifest.json` records only de-identified names. The report lists
 the full original -> published map, so it contains the real instrument label and
@@ -500,46 +551,85 @@ The published artifact is a zip of `<BUNDLE>`. The sign-off report lives outside
    mascope demo                    # instant load from the published snapshot
    ```
 
-### E. Add an MS2 acquisition
+### E. MS2 acquisitions
 
-Every bundle so far is MS1-only (1.3.2: 161 Orbitrap acquisitions, no MS2
-scans), so nothing that runs against a demo stack reads MS2. On it
-`/api/samples/{id}/ms2/summary` reports `ms2_scan_count: 0` and
-`/ms2/centroids` answers 400. The SDK contract suite's `TestMs2Contract`
-(`libraries/sdk/tests/test_contract.py`) checks only the summary there and
-skips its centroid tests. Those tests pin the key shape the published SDK
-documents, so they are what would catch a server changing it. Adding an MS2
-acquisition is a MINOR bundle version (samples added):
+Bundle 1.4.0 added four MS2 acquisitions to the 161 MS1 acquisitions of
+1.3.2 (a MINOR version: samples added); 1.4.1 is the same raw set and seed
+rebuilt with the raw reader the stack pins, as 1.3.2 was of 1.3.1, with
+goldens identical to 1.4.0's. They are hand-started, stepped-energy
+MS2 acquisitions of alpha-pinene oxidation products from a chamber oxidation
+experiment, on a second Orbitrap of the same model whose label was aliased
+to the demo's on the command line, in the three reagent-ion chemistries the
+experiment ran: one to nine precursors per file, each
+isolated (1 Da) and fragmented at a ladder of HCD energies in consecutive
+blocks, with the MS1 scans recorded first and the fragment scans after. Their
+names are plain (no polarity segment, no run index) and carry the chemistry
+token the seed binds them by:
 
-1. **Choose the file.** Pick one small MS2 acquisition whose owner agrees to
+| File | Mode (token, polarity) | Precursors | Steps | MS1 / MS2 scans |
+| --- | --- | --- | --- | --- |
+| `Orbion_MS2_15NO3_manual-C10H18O2_20261015034940.raw` | Nitrate-15N (`15NO3`, -) | 1 | 4 | 19 / 33 |
+| `Orbion_MS2_15NO3_manual-C10H18O4-O7-TFA_20261015033640.raw` | Nitrate-15N (`15NO3`, -) | 5 | 4 to 5 | 126 / 162 |
+| `Orbion_Ur_RI_manual-MS2_20261015050615.raw` | Uronium RI (`Ur_RI`, +) | 6 | 4 to 5 | 63 / 193 |
+| `Orbion_NH4+_14N_manual-MS2_20261016030443.raw` | Ammonium (`NH4+_14N`, +) | 9 | 2 to 7 | 175 / 296 |
+
+The seed carries the three modes beside the two of 1.3.2. Uronium RI reuses
+the uronium calibrants and monitor, the same chemistry on another
+instrument. Ammonium and Nitrate-15N have a calibrant collection each (the
+strongest product ions of their acquisitions, which their operator chose as
+precursors, and for nitrate the reagent's own dimer, `H^NO3`) and a monitor
+each with the uronium monitor's compounds, read as their own adducts. The
+four files land in the demo workspace's 2026 dataset, in a batch per day and
+chemistry, so the 2025 batches the other contract and e2e tests index into
+are as they were, and the SDK contract suite's `ms2_sample_id` probe finds
+them as the first sample of their batch.
+
+Their MS1 peaks are in `expected/peaks.parquet` as any file's are, and their
+MS2 spectra in `expected/ms2.parquet` (see the
+[reproducibility test](#end-to-end-reproducibility-test)). Unlike the
+sequence-run files of 1.3.2, these four carry no embedded sample
+information, method path or file path; what they carry, as every file does,
+is the acquisition computer's name.
+
+#### Adding another
+
+1. **Choose the file.** Pick a small MS2 acquisition whose owner agrees to
    publish it under the bundle's data licence. A stepped-energy one exercises
    both the default per-parent response and the `by_activation` split. MS2
    scan headers carry more per-scan metadata than MS1 (precursor, activation,
-   isolation, energies), so read the de-identification report closely before
-   signing off. The build renames only files matching its acquisition-filename
-   pattern, and aliases only instruments listed in `INSTRUMENT_ALIASES`
-   (`build_bundle.py`). The report flags anything else as `NOT aliased!`.
-   Such a file would be published under its real label.
+   isolation, energies), and a sequence-run file embeds its method's path and
+   its original path, so read the de-identification report, and the file's
+   embedded metadata with the raw reader, before signing off. The build
+   renames only files matching its acquisition-filename patterns (a
+   sequence-run name, or a hand-started plain one), and aliases only
+   instruments in `INSTRUMENT_ALIASES` (`build_bundle.py`) or given with
+   `--alias`. The report flags anything else as `NOT aliased!`. Such a file
+   would be published under its real label.
 2. **Put it where the tests look.** Ingest files each instrument into a system
    workspace of its own (`Acquisitions <instrument>`, from the label the stored
    filename starts with), with a dataset per acquisition year and a batch per
    acquisition day and ionization mode. The contract suite binds to one
    workspace. It probes the first sample of each batch for MS2 scans. So the
-   file needs the demo's instrument alias and an acquisition day the existing
-   files do not share. That way it gets a batch of its own, and the existing
-   batches that the other contract and e2e tests index into stay as they are.
-   A file that cannot meet this can be named to the suite with
-   `MASCOPE_SDK_TEST_MS2_SAMPLE` instead. Either way, the manifest's
-   `measurement` block describes a single instrument and date, so check that
-   it still reads true.
-3. **Seed.** If the file needs an ionization mode or instrument configuration
-   that `seed/` lacks, re-author the seed (A1-A2). Otherwise add the file to
-   `<RAW>` and re-run from A2 (see C).
+   file needs the demo's instrument alias (`--alias <label>=Orbion` on the
+   `snapshot --raw` run; the label itself is never committed) and an
+   acquisition day and chemistry the existing files do not share. That way
+   it gets a batch of
+   its own, and the existing batches that the other contract and e2e tests
+   index into stay as they are. A file that cannot meet this can be named to
+   the suite with `MASCOPE_SDK_TEST_MS2_SAMPLE` instead. Either way, check
+   that the manifest's `measurement` block still reads true: it names the one
+   alias and lists every acquisition day.
+3. **Seed.** The file binds to an ionization mode by a token in its name. If
+   its chemistry is one the seed carries (`Ur_NoRI`, `Br_NoRI`, `Ur_RI`,
+   `NH4+_14N`, `15NO3`), the name must contain that token and no other mode's;
+   otherwise re-author the seed (A1-A2) with a mode, its mechanisms and its
+   calibrant and monitor collections, as 1.4.0 did for its two new
+   chemistries. Then add the file to `<RAW>` and re-run from A2 (see C).
 4. **Rebuild and capture** (A3-A4). The coverage check refuses to write goldens
-   until the new file is in the database. The goldens are MS1 found-isotope
-   peaks, so they grow by the new file's MS1 peaks; review that diff. Its MS2
-   output is not in the goldens. Asserting it would need its own export in
-   `export_goldens` and its own comparison.
+   until the new file is in the database, and counts a file covered when it
+   has matched MS1 peaks or MS2 spectra. The MS1 goldens grow by the new
+   file's found isotope peaks and the MS2 goldens by its spectra; review both
+   diffs.
 5. **Publish and register** (D) as the next MINOR version, then dispatch the
    reproducibility workflow on the branch. Before merging, check on a demo
    stack that the MS2 contract tests run rather than skip:
