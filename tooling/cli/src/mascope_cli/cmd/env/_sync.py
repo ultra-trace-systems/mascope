@@ -59,6 +59,7 @@ from mascope_cli.cmd.env._ssh import cygwin_bin, get_identity_args
 from mascope_cli.pg import (
     dirs,
     drop_database,
+    grant_readonly_role,
     is_database_ready,
     is_server_ready,
     pg_dump,
@@ -454,6 +455,9 @@ def _restore_local(mode: str, env_name: str, dump_file: Path) -> None:
 
     runtime.logger.info(f"Restoring '{database}' from '{dump_file.name}'...")
     pg_restore(container, db_cfg.user, database, dump_file, transfer_mount)
+    # --no-acl left the fleet's read-only role, where there is one, without
+    # its grants in the new database.
+    grant_readonly_role(container, db_cfg.user, database)
 
 
 # --- Database sync — remote operations ---

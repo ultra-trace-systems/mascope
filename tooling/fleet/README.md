@@ -215,10 +215,16 @@ a stopped backend skips that check with a note. Everything else goes through
 `--check` included. A failed run's output lists what it changed before it
 failed.
 
-**After a restore.** `mascope prod db restore` restores without privileges
-(`pg_restore --no-acl`), and a new env starts a new database: either leaves the
-role without its grants and default privileges there. Run the role again
-afterwards. The role itself is cluster-wide and survives both.
+**After a restore.** The role itself is cluster-wide, but its grants and
+default privileges live in each database. Every restore the CLI makes is
+without privileges (`pg_restore --no-acl`), and a new env starts a new
+database. So `mascope prod db restore`, `mascope prod db create` and a
+`mascope env sync` into a local stack grant the role read access to that
+database again when the cluster has the role: the grants and default
+privileges this role makes there, through the same `docker exec ... psql`. If
+that fails, the command says so and exits non-zero, with the data already in
+place; run the role again then. A database made any other way, or a restore by
+hand, still needs a run of the role.
 
 ## Rolling out a release
 

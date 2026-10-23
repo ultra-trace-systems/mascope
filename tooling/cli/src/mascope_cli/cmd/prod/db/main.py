@@ -21,9 +21,11 @@ import typer
 from mascope_cli.cmd.prod.db.backup import backup_app
 from mascope_cli.cmd.prod.db.scripts import prod_db_scripts_app
 from mascope_cli.pg import (
+    READONLY_ROLE,
     check_prerequisites,
     dirs,
     drop_database,
+    grant_readonly_role,
     is_container_running,
     is_database_ready,
     is_server_ready,
@@ -82,6 +84,34 @@ def _create_database_if_missing(container: str, user: str, database: str) -> boo
     except RuntimeError as e:
         runtime.logger.error(str(e))
         return False
+
+
+def _grant_readonly_role(container: str, user: str, database: str) -> None:
+    """
+    Give the fleet's read-only role its grants in a new or restored database.
+
+    The database's data is in place by now, so a failure here says so and
+    exits non-zero rather than reporting the restore as failed.
+
+    :param container: PostgreSQL container name.
+    :type container: str
+    :param user: The app's PostgreSQL role.
+    :type user: str
+    :param database: The database just created or restored.
+    :type database: str
+    """
+    try:
+        if grant_readonly_role(container, user, database):
+            runtime.logger.info(
+                f"Granted the read-only role '{READONLY_ROLE}' read access "
+                f"to '{database}'"
+            )
+    except RuntimeError as e:
+        runtime.logger.error(
+            f"'{database}' is in place, but the read-only role has no access "
+            f"to it: run the fleet role postgres_readonly again.\n{e}"
+        )
+        raise typer.Exit(1)
 
 
 # --- Commands ---
@@ -287,6 +317,7 @@ def create(
         raise typer.Exit(1)
 
     runtime.logger.success(f"Database '{database}' is ready")
+    _grant_readonly_role(container, db_cfg.user, database)
 
 
 @prod_db_app.command()
@@ -446,3 +477,4 @@ def restore(
     runtime.logger.success(
         f"Database '{database}' restored from '{resolved.name}' successfully"
     )
+    _grant_readonly_role(container, db_cfg.user, database)

@@ -481,6 +481,106 @@ def create_database(
         )
 
 
+#: The fleet's read-only role (`tooling/fleet`, role `postgres_readonly`).
+#: Audits and prod jobs connect as it.
+READONLY_ROLE = "mascope_readonly"
+
+
+def grant_readonly_role(
+    container: str,
+    user: str,
+    database: str,
+    role: str = READONLY_ROLE,
+) -> bool:
+    """
+    Give the fleet's read-only role its grants in `database`, when the cluster has the role.
+
+    The role is cluster-wide, but its grants live in each database. A database
+    that was dropped and restored with `pg_restore --no-acl`, or created for a
+    new env, holds none, and a job connecting as the role reads nothing. This
+    issues what the fleet role's `readonly_role.py` grants there: CONNECT on
+    the database, USAGE on each schema, SELECT on every table and view, and
+    default privileges so that tables and schemas `user` creates later are
+    readable too. All are grants: nothing is taken from the role, which a
+    restored database cannot have given it in the first place.
+
+    A cluster without the role (any dev or demo stack, a server the fleet
+    has not converged) is left as it is.
+
+    :param container: PostgreSQL container name.
+    :type container: str
+    :param user: The app's role: a superuser, and the owner of the tables.
+    :type user: str
+    :param database: The database to grant in.
+    :type database: str
+    :param role: The read-only role's name.
+    :type role: str
+    :return: Whether the role exists, and so was granted.
+    :rtype: bool
+    :raises RuntimeError: If reading the role or a grant fails.
+    """
+    result = _docker_exec(
+        container,
+        [
+            "psql",
+            "--username",
+            user,
+            "--dbname",
+            "postgres",
+            "--no-password",
+            "--tuples-only",
+            "--no-align",
+            "--command",
+            f"SELECT 1 FROM pg_roles WHERE rolname = '{role}';",
+        ],
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to look for the role '{role}'.\nstderr: {result.stderr.strip()}"
+        )
+    if result.stdout.strip() != "1":
+        return False
+
+    # The default privileges go in first, as in readonly_role.py: a table made
+    # after them is theirs, one made before is the bulk grant's.
+    grants = (
+        f'GRANT CONNECT ON DATABASE "{database}" TO "{role}";\n'
+        f'ALTER DEFAULT PRIVILEGES FOR ROLE "{user}" GRANT SELECT ON TABLES TO "{role}";\n'
+        f'ALTER DEFAULT PRIVILEGES FOR ROLE "{user}" GRANT USAGE ON SCHEMAS TO "{role}";\n'
+        "DO $$\n"
+        "DECLARE s text;\n"
+        "BEGIN\n"
+        "  FOR s IN SELECT nspname FROM pg_namespace\n"
+        "    WHERE nspname !~ '^pg_' AND nspname <> 'information_schema'\n"
+        "  LOOP\n"
+        f"    EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', s, '{role}');\n"
+        f"    EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I', s, '{role}');\n"
+        "  END LOOP;\n"
+        "END $$;\n"
+    )
+    result = _docker_exec(
+        container,
+        [
+            "psql",
+            "--username",
+            user,
+            "--dbname",
+            database,
+            "--no-password",
+            "--quiet",
+            "--set",
+            "ON_ERROR_STOP=1",
+        ],
+        stdin_input=grants,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to grant '{role}' read access to '{database}'.\n"
+            f"stderr: {result.stderr.strip()}"
+        )
+    return True
+
+
 def clone_database(
     container: str,
     user: str,
