@@ -66,6 +66,7 @@ class TestTheSummary:
                 g["activation"],
                 g["hcd_energy"],
                 g["isolation_width"],
+                g["isolation_widths"],
                 g["scan_count"],
             )
             for g in summary["groups"]
@@ -75,6 +76,7 @@ class TestTheSummary:
                 g["activation"],
                 g["hcd_energy"],
                 g["isolation_width"],
+                g["isolation_widths"],
                 g["scan_count"],
             )
             for g in expected
@@ -127,10 +129,14 @@ class TestTheTwoWidthGroup:
             _, widths, _ = backend.ms2_acquisition_info()
             events = backend.ms2_events_by_scan()
 
-        b = ANSWERS["precursors"]["B"]["isolation_mz"]
+        (group,) = [
+            g
+            for g in ANSWERS["shapes"]["interleaved"]["answers"]["groups"]
+            if len(g["isolation_widths"]) == 2
+        ]
+        b = group["parent_peak_mz"]
         assert sorted({widths[n] for n, (mz, _) in events.items() if mz == b}) == [
-            1.0,
-            2.0,
+            w["isolation_width"] for w in group["isolation_widths"]
         ]
 
 

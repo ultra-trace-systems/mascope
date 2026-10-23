@@ -176,7 +176,7 @@
             "activation": "hcd20.00",
             "hcd_energy": [7.8],
             "isolation_width": 1.0,
-            "isolation_widths": [1.0],
+            "isolation_widths": [{"isolation_width": 1.0, "scan_count": 6}],
             "scan_count": 6,
             "scans": [3, 4, 5, 6, 7, 8],
             "spectrum": "A@20"
@@ -219,7 +219,7 @@
             "activation": "hcd30.00",
             "hcd_energy": [9.79],
             "isolation_width": null,
-            "isolation_widths": [1.0, 2.0],
+            "isolation_widths": [{"isolation_width": 1.0, "scan_count": 2}, {"isolation_width": 2.0, "scan_count": 2}],
             "scan_count": 4,
             "scans": [3, 5, 9, 11],
             "spectrum": "B@30"
@@ -229,7 +229,7 @@
             "activation": "hcd30.00",
             "hcd_energy": [11.71],
             "isolation_width": 1.0,
-            "isolation_widths": [1.0],
+            "isolation_widths": [{"isolation_width": 1.0, "scan_count": 4}],
             "scan_count": 4,
             "scans": [2, 6, 8, 12],
             "spectrum": "A@30"
@@ -278,7 +278,7 @@
             "activation": "hcd30.00",
             "hcd_energy": [9.79],
             "isolation_width": 1.2,
-            "isolation_widths": [1.2],
+            "isolation_widths": [{"isolation_width": 1.2, "scan_count": 3}],
             "scan_count": 3,
             "scans": [6, 12, 18],
             "spectrum": "B@30"
@@ -288,7 +288,7 @@
             "activation": "hcd10.00",
             "hcd_energy": [3.9],
             "isolation_width": 1.2,
-            "isolation_widths": [1.2],
+            "isolation_widths": [{"isolation_width": 1.2, "scan_count": 3}],
             "scan_count": 3,
             "scans": [2, 8, 14],
             "spectrum": "A@10"
@@ -298,7 +298,7 @@
             "activation": "hcd20.00",
             "hcd_energy": [7.8],
             "isolation_width": 1.2,
-            "isolation_widths": [1.2],
+            "isolation_widths": [{"isolation_width": 1.2, "scan_count": 3}],
             "scan_count": 3,
             "scans": [3, 9, 15],
             "spectrum": "A@20"
@@ -308,7 +308,7 @@
             "activation": "hcd40.00",
             "hcd_energy": [15.61],
             "isolation_width": 1.2,
-            "isolation_widths": [1.2],
+            "isolation_widths": [{"isolation_width": 1.2, "scan_count": 3}],
             "scan_count": 3,
             "scans": [4, 10, 16],
             "spectrum": "A@40"
@@ -318,7 +318,7 @@
             "activation": "hcd60.00",
             "hcd_energy": [23.41],
             "isolation_width": 1.2,
-            "isolation_widths": [1.2],
+            "isolation_widths": [{"isolation_width": 1.2, "scan_count": 3}],
             "scan_count": 3,
             "scans": [5, 11, 17],
             "spectrum": "A@60"

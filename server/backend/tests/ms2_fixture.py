@@ -29,7 +29,7 @@ the shapes, the spectra and what a reader must answer for each shape; this
 module only builds from it. A change to the fixture is a change there.
 
 Importable by the library tests too (``thermo_test_support.ms2_fixture``):
-nothing here imports the backend, except :func:`convert`, which runs the
+nothing here imports the backend, except :func:`converted`, which runs the
 backend's converter and imports it when called.
 """
 

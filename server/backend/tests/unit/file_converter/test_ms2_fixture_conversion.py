@@ -92,9 +92,21 @@ def test_the_stored_copy_reads_as_the_shape(conversion):
     assert summary["ms2_scan_count"] == shape["answers"]["ms2_scan_count"]
     assert summary["isolation_width"] == shape["answers"]["isolation_width"]
     assert [
-        (g["parent_peak_mz"], g["activation"], g["scan_count"], g["isolation_width"])
+        (
+            g["parent_peak_mz"],
+            g["activation"],
+            g["scan_count"],
+            g["isolation_width"],
+            g["isolation_widths"],
+        )
         for g in summary["groups"]
     ] == [
-        (g["parent_peak_mz"], g["activation"], g["scan_count"], g["isolation_width"])
+        (
+            g["parent_peak_mz"],
+            g["activation"],
+            g["scan_count"],
+            g["isolation_width"],
+            g["isolation_widths"],
+        )
         for g in shape["answers"]["groups"]
     ]
