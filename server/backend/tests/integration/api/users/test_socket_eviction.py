@@ -83,9 +83,8 @@ def _cookie_client(token: str) -> AsyncClient:
     )
 
 
-@pytest_asyncio.fixture
-async def person(async_session_factory, roles):
-    """A throwaway editor account with a known password and no cutoff yet."""
+async def _throwaway_account(async_session_factory, roles):
+    """An editor account with a known password and no cutoff yet, then gone."""
     async with async_session_factory() as session:
         user = User(
             email=f"evict-{gen_id()[:8]}@test.com",
@@ -107,6 +106,20 @@ async def person(async_session_factory, roles):
         if stored is not None:
             await session.delete(stored)
         await session.commit()
+
+
+@pytest_asyncio.fixture
+async def person(async_session_factory, roles):
+    """A throwaway editor account with a known password and no cutoff yet."""
+    async for user in _throwaway_account(async_session_factory, roles):
+        yield user
+
+
+@pytest_asyncio.fixture
+async def other_person(async_session_factory, roles):
+    """A second throwaway account, for what must happen once per account."""
+    async for user in _throwaway_account(async_session_factory, roles):
+        yield user
 
 
 @pytest.fixture
@@ -314,25 +327,27 @@ async def test_the_maintenance_script_survives_an_unreachable_redis(
 
 @pytest.mark.asyncio
 async def test_the_maintenance_script_notifies_open_tabs(
-    person, sio, record_sio, script_redis
+    person, other_person, sio, record_sio, script_redis
 ):
     """
     As the owner's route does: each armed account hears on its own room, after
     its sockets are evicted, and open user tables are told to reload once.
     """
     server, calls = record_sio
-    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    issued = datetime.now(timezone.utc) - LONG_AGO
+    await _open_socket("sid-a", person, issued)
+    await _open_socket("sid-b", other_person, issued)
 
     await sweep_script.run_require_password_change()
 
-    own_room = f"user-{person.id}"
-    notices = [c for c in calls if c[0] == "emit" and c[2] == own_room]
-    assert len(notices) == 1
-    _, event, _, payload = notices[0]
-    assert event == "user_me_updated"
-    assert payload["record_id"] == str(person.id)
-    assert payload["record"] == {"id": person.id, "must_change_password": True}
-    assert calls.index(("leave", "sid-a", RESOURCE_ROOM)) < calls.index(notices[0])
+    for sid, user in (("sid-a", person), ("sid-b", other_person)):
+        notices = [c for c in calls if c[0] == "emit" and c[2] == f"user-{user.id}"]
+        assert len(notices) == 1
+        _, event, _, payload = notices[0]
+        assert event == "user_me_updated"
+        assert payload["record_id"] == str(user.id)
+        assert payload["record"] == {"id": user.id, "must_change_password": True}
+        assert calls.index(("leave", sid, RESOURCE_ROOM)) < calls.index(notices[0])
 
     reloads = [c for c in calls if c[0] == "emit" and c[1] == "user_reload"]
     assert len(reloads) == 1
