@@ -55,6 +55,25 @@ On the PXD021080 run, 3.1.0 reads all 4,142 scans as FTMS, and every scan's filt
 Measured with 3.1.0, the check refuses none of 434 Orbitrap files: the demo bundle's 161, the two committed sample files, the 270 Orbitrap files of the internal regression corpus (four of them targeted MS2 with a named inclusion list) and that run.
 `test_named_scan_events.py` gives a committed sample file a named record and asserts the backend reads it as the file without one.
 
+### A profile with no m/z
+
+OpenTFRaw converts a scan's profile from frequency to m/z with the calibration it reads from the scan's event.
+From 3.0.0 on it gives `NaN` for each point of a scan whose calibration layout it does not know, where 2.0.0 gave the frequencies themselves, which Mascope drew as m/z.
+Unchecked, a `NaN` m/z goes without a word: the m/z range mask of `profile_per_scan` drops every such point, so the scan comes back empty, and in `average_profile` it turns the frequency grid's minimum and every cell index `NaN`, so the average of a selection holding the scan comes back as one `NaN` point, every other scan's signal lost with it, and is cached as the file's sum signal.
+
+So the OpenTFRaw backend refuses a file when any point of a scan's profile has an m/z that is not finite (`mascope_thermo.scan_events.refuse_unconverted_profile`).
+The check runs in `OpenTFRawBackend._profile`, which every profile read goes through (`profile_per_scan`, and `average_profile` with `average_centroids` on top of it), and not when the file opens: checking there would decode every profile of the file on every open.
+So a selection without the scan still reads.
+The refusal is `UnconvertedProfileError`; it names the scan, how many of its points have no m/z, and the reader's version.
+It is a `MisreadScanEventsError`, and so a `ValueError`, whose text reaches the file's status: a calibration layout the reader does not know is an event it misread or one newer than it, so every handler that lets a misread file's refusal through, rather than take it for an empty selection, lets this one through too.
+`load_signal` (`mascope_signal.compute`) is the one on a profile path: it raises the refusal rather than answer with an empty signal.
+Ingest meets it in the instrument-function fit, whose file-level sum signal averages the file's MS1 scans, so the file fails there, before anything is cached.
+The converter does not count it a routine failure and logs it with its traceback: such a file needs an OpenTFRaw release that knows its instrument's layout.
+The Thermo backend has no such check, since RawFileReader converts the m/z itself.
+
+Measured with 3.1.0, the check refuses none of 434 Orbitrap files: the demo bundle's 161, the two committed sample files and the 271 Orbitrap files of the internal regression corpus, 14,633 scans in all.
+No file with a layout the reader does not know is in reach, so `test_unconverted_profile.py` gives the backend a stand-in reader that returns `NaN` m/z, as OpenTFRaw documents (GitHub #2518).
+
 ## API Contract: `ReaderBackend`
 
 All implementations must satisfy the `ReaderBackend` protocol, which defines a capability interface rather than emulating specific .NET objects.

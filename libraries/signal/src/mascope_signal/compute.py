@@ -1280,7 +1280,8 @@ def load_signal(
     :raises mascope_thermo.thermo.UnknownStreamError: If the file holds no
         stream under the key asked for
     :raises mascope_thermo.scan_events.MisreadScanEventsError: If the reader
-        refuses a raw Orbitrap file's scan events as misread
+        refuses a raw Orbitrap file's scan events as misread, or a scan's
+        profile it gives no m/z for (``UnconvertedProfileError``)
     :return: The signal with m/z and time coordinates
     :rtype: xr.Dataset
     """
@@ -1361,8 +1362,9 @@ def load_signal(
         # Not an empty range either. The file holds no stream under the key
         # asked for, and answered with an empty signal the caller would read
         # "no data" of a stream that is not there. Or the reader refuses the
-        # file's scan events as misread: a ValueError, but its text is the
-        # one reason the file shows no signal, and the caller answers it.
+        # file's scan events as misread, or a scan's profile as having no m/z:
+        # a ValueError, but its text is the one reason the file shows no
+        # signal, and the caller answers it.
         raise
     except Exception as e:
         # Both paths return an empty dataset (callers render "no data"), but

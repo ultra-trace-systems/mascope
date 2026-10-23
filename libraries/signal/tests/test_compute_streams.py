@@ -19,7 +19,7 @@ from signal_test_support import SIGNAL_TEST_FILENAME
 
 import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
-from mascope_thermo.scan_events import MisreadScanEventsError
+from mascope_thermo.scan_events import MisreadScanEventsError, UnconvertedProfileError
 from mascope_thermo.thermo import UnknownStreamError
 
 
@@ -219,7 +219,7 @@ def test_a_reader_fault_is_still_answered_with_an_empty_signal(
 
 
 @pytest.mark.parametrize("stream", [None, STREAM])
-@pytest.mark.parametrize("refusal", [MisreadScanEventsError])
+@pytest.mark.parametrize("refusal", [MisreadScanEventsError, UnconvertedProfileError])
 def test_a_file_refused_as_misread_is_not_answered_with_an_empty_signal(
     raw_orbitrap, monkeypatch, refusal, stream
 ):
