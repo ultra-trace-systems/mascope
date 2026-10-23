@@ -853,6 +853,7 @@ def _hold_if_failed(
     mascope_path: str,
     *,
     snoozed_code: int,
+    running: bool = False,
 ) -> None:
     """
     Stop an unattended run on a release whose last apply failed.
@@ -863,6 +864,9 @@ def _hold_if_failed(
 
     Exits ``AUTO_ERROR`` so the timer keeps reporting it, or ``snoozed_code``
     while the operator has snoozed it. Returns when nothing is held.
+
+    :param running: The stack still runs ``target``, as the failed apply left
+        it: the run says it is held there rather than "not applying it again".
     """
     if pending is None or pending.version != target or not pending.failed_at:
         return
@@ -874,9 +878,14 @@ def _hold_if_failed(
         runtime.logger.info(message)
         auto_update.record_status(mascope_path, message)
         raise typer.Exit(snoozed_code)
+    held = (
+        "held while this deployment still runs it"
+        if running
+        else "not applying it again"
+    )
     message = (
         f"{pending.kind.capitalize()} update {target} failed to apply at "
-        f"{pending.failed_at}; not applying it again. Retry it with 'mascope prod "
+        f"{pending.failed_at}; {held}. Retry it with 'mascope prod "
         "update --confirm', or silence this with '--snooze <days>'."
     )
     runtime.logger.error(message)
@@ -901,7 +910,8 @@ def _manage_pending(*, confirm: bool, snooze: Optional[int]) -> None:
             runtime.logger.warning("No pending migration update to snooze.")
             raise typer.Exit(0)
         message = (
-            f"Snoozed migration update {pending.version} until {pending.snooze_until}."
+            f"Snoozed {pending.kind} update {pending.version} until "
+            f"{pending.snooze_until}."
         )
         runtime.logger.success(message)
         auto_update.record_status(mascope_path, message)
@@ -1042,6 +1052,22 @@ def _auto(*, pull: bool) -> None:
         raise typer.Exit(auto_update.AUTO_ERROR)
 
     if plan.classification == "up-to-date":
+        # A failed apply leaves the stack on the target's images, so the next
+        # run sees it up to date. Keep the hold: cleared here, the release
+        # would be applied again once the operator rolls back.
+        held = auto_update.load_pending(mascope_path)
+        if held is not None:
+            _hold_if_failed(
+                held,
+                target,
+                mascope_path,
+                snoozed_code=(
+                    auto_update.AUTO_MIGRATION_PENDING
+                    if held.kind == "migration"
+                    else auto_update.AUTO_OK
+                ),
+                running=True,
+            )
         auto_update.clear_pending(mascope_path)
         runtime.logger.success(f"Already up to date ({target}).")
         raise typer.Exit(auto_update.AUTO_OK)
