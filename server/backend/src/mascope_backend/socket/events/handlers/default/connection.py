@@ -92,7 +92,7 @@ async def connect(sid: str, environ: dict) -> bool:
 async def disconnect(sid: str) -> None:
     """
     Handle frontend user socket disconnections.
-    - Remove user from all room memberships (room_tracker)
+    - Remove user from the rooms no other socket of theirs holds (room_tracker)
     - Clear authentication session (session manager)
 
     :param sid: Socket session ID
@@ -104,10 +104,12 @@ async def disconnect(sid: str) -> None:
     )
 
     try:
-        # Clean up room memberships BEFORE clearing session (need user_id)
+        # Clean up room memberships BEFORE clearing session (need user_id) and
+        # the socket's room record (names the rooms it leaves). A room another
+        # tab of the user's still holds stays the user's.
         session = await get_session_user(sid)
         user_id = session["user_id"]
-        await room_tracker.leave_all(user_id)
+        await room_tracker.release_socket(user_id, sid)
 
         runtime.logger.debug(
             f"User session disconnected: cleaned up rooms for user {user_id} (sid={sid}) "

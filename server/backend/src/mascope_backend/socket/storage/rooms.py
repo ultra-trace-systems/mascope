@@ -178,6 +178,100 @@ class RoomTracker:
             )
 
     @staticmethod
+    async def _held_elsewhere(user_id: int, sid: str) -> set[str] | None:
+        """
+        The rooms the user's other web sockets hold, or ``None`` if none is left.
+
+        Only sockets with a live session count: one gone without a disconnect
+        (a worker died) holds nothing.
+
+        :param user_id: User ID
+        :type user_id: int
+        :param sid: The socket to leave out
+        :type sid: str
+        :return: Room identifiers, or ``None`` when the user has no other socket
+        :rtype: set[str] | None
+        """
+        client = redis_storage_client.client
+        others = set(
+            await client.smembers(storage_config.user_sockets_key(user_id))
+        ) - {sid}
+        held: set[str] = set()
+        live = False
+        for other in others:
+            if not await client.exists(storage_config.session_key(other, "/")):
+                continue
+            live = True
+            held |= await RoomTracker.socket_rooms(other)
+        return held if live else None
+
+    @staticmethod
+    async def release(user_id: int, sid: str, room_id: str) -> None:
+        """
+        Drop the user's membership of a room one web socket has left.
+
+        A room another of the user's sockets still holds stays the user's, so
+        closing a room in one tab does not tell notification routing that the
+        user has stopped listening there while a second tab is in it.
+
+        :param user_id: User ID
+        :type user_id: int
+        :param sid: The socket that left the room
+        :type sid: str
+        :param room_id: Room identifier
+        :type room_id: str
+        """
+        try:
+            held = await RoomTracker._held_elsewhere(user_id, sid)
+        except Exception as e:
+            # Leave anyway: a membership left behind would route the user's
+            # notifications to a room nobody of theirs may be listening in.
+            runtime.logger.exception(
+                f"Room tracker: failed to read the other sockets of user {user_id}: {e}"
+            )
+            held = None
+        if held is None or room_id not in held:
+            await RoomTracker.leave(user_id, room_id)
+
+    @staticmethod
+    async def release_socket(user_id: int, sid: str) -> None:
+        """
+        Drop the user's membership of the rooms of a disconnecting web socket.
+
+        As :meth:`release`, for every room the socket's record names. When no
+        other socket of the user is left, every room of the user's goes, as
+        :meth:`leave_all` does, including any no socket record names.
+
+        :param user_id: User ID
+        :type user_id: int
+        :param sid: The socket that disconnected
+        :type sid: str
+        """
+        try:
+            # Out of the user's socket index before the others are read: of
+            # two tabs closing at once, the one that reads second then finds
+            # the first gone and clears every room, where each would otherwise
+            # see the other live and leave none.
+            await redis_storage_client.client.srem(
+                storage_config.user_sockets_key(user_id), sid
+            )
+            held = await RoomTracker._held_elsewhere(user_id, sid)
+            rooms = await RoomTracker.socket_rooms(sid)
+        except Exception as e:
+            # Clean up as before the per-socket record: a membership left
+            # behind would route the user's notifications to a room nobody of
+            # theirs may be listening in.
+            runtime.logger.exception(
+                f"Room tracker: failed to read the sockets of user {user_id}: {e}"
+            )
+            held = None
+        if held is None:
+            await RoomTracker.leave_all(user_id)
+            return
+        for room_id in rooms - held:
+            await RoomTracker.leave(user_id, room_id)
+
+    @staticmethod
     async def join_socket(sid: str, room_id: str) -> None:
         """
         Record that one web socket joined a room.
