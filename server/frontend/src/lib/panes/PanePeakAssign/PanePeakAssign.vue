@@ -726,7 +726,8 @@ const ownerReasons = computed(() => {
 
 // --- Where the mass error sits -------------------------------------------------
 // The ppm error is a distance with no scale. The run measures its own mass
-// calibration over the rows it committed and corroborated, and records every
+// calibration over the rows it committed and corroborated, together with the
+// source's own lines its reagent pre-pass claimed, and records every
 // committed row's distance from it in that calibration's widths (`mass_z`):
 // the number its mass gate judged, and what "off calibration" among the
 // reasons is about. Flattened onto the ledger row, so it shows before the

@@ -14,6 +14,7 @@ exactly what it says.
 from __future__ import annotations
 
 import copy
+from collections.abc import Sequence
 
 import numpy as np
 import pytest
@@ -154,7 +155,12 @@ def on_its_line(**fields) -> dict:
     return commit("pa-y", "C7H11NO4", "C7H12NO4+", 201.0, 150.0, **fields)
 
 
-def judge(rows: list[dict], channel: str = "[M+H]+", second: str = "[M+Na]+"):
+def judge(
+    rows: list[dict],
+    channel: str = "[M+H]+",
+    second: str = "[M+Na]+",
+    reagent_lines: Sequence[dict] = (),
+):
     return judge_commits(
         rows,
         stage_a_accuracy=SampleMassAccuracy(),
@@ -163,7 +169,19 @@ def judge(rows: list[dict], channel: str = "[M+H]+", second: str = "[M+Na]+"):
         mz_tolerance_ppm=5.0,
         abundance_floor=0.01,
         max_alternatives=5,
+        reagent_lines=reagent_lines,
     )
+
+
+def source_line(row_id: str, mz: float, ppm: float, label: str | None = None) -> dict:
+    """A line the reagent pre-pass claimed, as it builds one."""
+    row = commit(row_id, None, "N3+", mz, 1.0e6, role="reagent", ppm=ppm)
+    return row | {
+        "source": "reagent",
+        "isotope_label": label,
+        "tier": "unassigned",
+        "provenance": {"reagent": {"family": "air"}},
+    }
 
 
 def by_id(rows: list[dict]) -> dict[str, dict]:
@@ -257,6 +275,39 @@ class TestAClaimIsJudgedAgain:
             judged.tiering["claimed_with_their_lines"],
             judged.tiering["released"],
         ) == (1, 1, 0)
+
+    def test_the_source_s_lines_anchor_the_calibration_in_every_round(self):
+        # The claim takes one anchor away in the second round; the source's
+        # lines are no commit, so no claim moves them and they anchor both.
+        rows = anchors() + [
+            *owner(),
+            on_its_line(),
+            commit(
+                "pa-y-13c",
+                "C7H11NO4",
+                "C7H12NO4+",
+                202.0,
+                12.0,
+                role="iso_child",
+                owner="pa-y",
+                label="13C",
+            ),
+        ]
+        lines = [
+            source_line("n3", 42.0087, 0.2),
+            source_line("no2", 45.9923, -0.2),
+            source_line("n4", 56.0117, 0.1),
+            source_line("n3-15n", 43.0058, 0.9, label="15N"),
+        ]
+        before = copy.deepcopy(lines)
+
+        judged = judge(rows, reagent_lines=lines)
+
+        assert judged.tiering["claim_rounds"] == 2
+        assert judged.mass_calibration["anchors"] == 12 + 3
+        assert judged.mass_calibration["reagent_anchors"] == 3
+        assert lines == before
+        assert not set(by_id(judged.rows)) & {"n3", "no2", "n4", "n3-15n"}
 
     def test_a_line_the_owner_does_not_predict_leaves_the_ledger(self):
         rows = anchors() + [

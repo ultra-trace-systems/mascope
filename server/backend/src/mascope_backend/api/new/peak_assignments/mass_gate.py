@@ -3,9 +3,10 @@
 A sample's committed rows do not scatter around zero ppm; they scatter around
 whatever offset that acquisition actually sat at, with whatever spread that
 instrument achieved that day. Both are measurable from the run's own output -
-the rows it has more than a mass fit for - and once measured, every committed
-row has a position in that distribution. ``mass_z`` is that position, and this
-is where it is put on the row.
+the rows it has more than a mass fit for, and the source's own lines the reagent
+pre-pass claimed - and once measured, every committed row has a position in
+that distribution. ``mass_z`` is that position, and this is where it is put on
+the row.
 
 The centre is not always one number. On an Orbitrap the calibration's residual
 below about m/z 120 is closer to a constant absolute offset, so in ppm it grows
@@ -66,6 +67,7 @@ import pandas as pd
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
     ROLE_M0,
+    ROLE_REAGENT,
     SampleMassAccuracy,
     is_target_library_row,
 )
@@ -197,7 +199,8 @@ class MassCalibration:
     Distinct from :class:`engine.SampleMassAccuracy`, which is what STAGE A
     measured before the untargeted stage ran and is what that stage was scored
     at. This is measured afterwards, over everything the run went on to commit
-    and corroborate, and it is what a committed row's distance is expressed in.
+    and corroborate and the source's own lines the reagent pre-pass claimed, and
+    it is what a committed row's distance is expressed in.
     The two answer different questions and a run records both: on a sample whose
     curated library holds two targets the first has nothing to say and the
     second has thousands of rows.
@@ -208,7 +211,11 @@ class MassCalibration:
 
     mu_ppm: float | None = None
     sigma_ppm: float | None = None
+    #: Every mass error the centre and width were fitted over.
     anchors: int = 0
+    #: Of :attr:`anchors`, the source's own lines the reagent pre-pass claimed
+    #: (:func:`reagent_line_errors`); the rest are corroborated commits.
+    reagent_anchors: int = 0
     #: The width a row's distance is actually judged in, which is this fit's
     #: own width or the width the SEARCH scored at, whichever is wider. They
     #: differ because the two describe different populations: the anchors are
@@ -270,6 +277,10 @@ class MassCalibration:
                 None if self.sigma_ppm is None else round(float(self.sigma_ppm), 4)
             ),
             "anchors": int(self.anchors),
+            # Of those, the reagent pre-pass's lines: counted apart because they
+            # are not the run's commits, and a source's brightest lines can sit
+            # off its analytes' axis.
+            "reagent_anchors": int(self.reagent_anchors),
             # What the fit measured, and what a row was judged in. Recorded
             # apart because a reader comparing two runs needs to know whether a
             # row escaped the cap on its own accuracy or on the search's.
@@ -664,9 +675,42 @@ def corroboration_of(
     return corroboration
 
 
+def reagent_line_errors(reagent_lines: Sequence[dict]) -> list[float]:
+    """The mass errors of the source's own monoisotopic lines, as anchors.
+
+    A line the reagent pre-pass claimed is the best-known mass in the file: its
+    ion's composition is the source's, so its mass error measures the axis and
+    nothing else. Every family the pre-pass claims counts - the reagent's
+    ladder, the air's ions and the calibrant beam - because on a
+    charge-transfer source the air's ions are the mode's calibration compounds:
+    on the wide-window cylinder set N3+ and NO2+ were the gate's brightest
+    anchors until the pre-pass claimed them as the source's, and four of its
+    seven files then had too few anchors left to fit a centre.
+
+    Monoisotopic lines only, for the reason a committed isotopologue does not
+    anchor the fit (:func:`fit_run_mass_accuracy`): it is the same ion measured
+    on a weaker peak.
+
+    :param reagent_lines: The rows the reagent pre-pass built
+        (``reagent_pass.build_reagent_assignments``). A row of another role is
+        ignored.
+    :return: The mass error of each monoisotopic line, in ppm, non-finite ones
+        left out.
+    """
+    errors: list[float] = []
+    for row in reagent_lines:
+        if row.get("role") != ROLE_REAGENT or row.get("isotope_label") is not None:
+            continue
+        error = row.get("mz_error_ppm")
+        if error is not None and math.isfinite(float(error)):
+            errors.append(float(error))
+    return errors
+
+
 def fit_run_mass_accuracy(
     assignments: list[dict],
     corroboration: dict[str, str | None],
+    reagent_lines: Sequence[dict] = (),
 ) -> MassCalibration:
     """Fit the run's mass accuracy over the rows it corroborated.
 
@@ -679,6 +723,20 @@ def fit_run_mass_accuracy(
     the run's own rather than the library's. A reference mirror's monoisotopic
     row anchors it only when an isotopologue tracks it, because its curation is
     not a second reason (:data:`CORROBORATED_CURATED`).
+
+    The source's own monoisotopic lines anchor it beside the commits
+    (:func:`reagent_line_errors`), pooled with them. The reagent-line offset
+    reads the same pre-pass where a target library is too thin
+    (``engine.reagent_line_offset``), but only the reagent's ladder and the
+    calibrant beam, isotope lines included: it leaves out the air's ions, which
+    sit where the axis bends. Here every family is wanted, monoisotopic lines
+    only: on a charge-transfer source the air's ions are the mode's calibration
+    compounds. On a sample with hundreds of corroborated commits a handful of
+    lines moves neither number; on one whose source's ions are its calibration
+    compounds they are what makes a fit possible at all. They can sit off the
+    analytes' axis: a source's brightest lines read above the weaker lines of
+    their own ladder on the gate's Orbitrap sets, which is the bright-line
+    shift a calibrant cap is for, and which pooling here does not correct.
 
     Only corroborated rows anchor it, and that is the point rather than a
     limitation: fitting over every commit would measure the spread of the rows
@@ -713,10 +771,14 @@ def fit_run_mass_accuracy(
     commits do not demand. That rule is also what keeps a trend off the
     long-range Orbitrap set, whose anchors alone accept a 1/mz line through
     their dip to -0.9 ppm at m/z 300-450, which about 140 commits above m/z
-    450, sitting near 0 ppm, contradict.
+    450, sitting near 0 ppm, contradict. The source's lines are not among those
+    commits: the line describes the rows the gate judges, and the source's lines
+    are none of them.
 
     :param assignments: Every row built for this sample.
     :param corroboration: What :func:`corroboration_of` answered for them.
+    :param reagent_lines: The rows the reagent pre-pass built, read and never
+        modified; empty for a run with no pre-pass.
     :return: The offset and width, each None where too few anchors were found,
         and where both were found, the trend or the rule that refused it.
     """
@@ -727,8 +789,14 @@ def fit_run_mass_accuracy(
         and corroboration.get(str(row.get("peak_assignment_id"))) is not None
         and row.get("mz_error_ppm") is not None
     ]
-    mu, sigma = fit_mass_accuracy(errors)
-    calibration = MassCalibration(mu_ppm=mu, sigma_ppm=sigma, anchors=len(errors))
+    source_errors = reagent_line_errors(reagent_lines)
+    mu, sigma = fit_mass_accuracy(errors + source_errors)
+    calibration = MassCalibration(
+        mu_ppm=mu,
+        sigma_ppm=sigma,
+        anchors=len(errors) + len(source_errors),
+        reagent_anchors=len(source_errors),
+    )
     if not calibration.measured:
         return calibration
     commits = [
@@ -753,6 +821,7 @@ def apply_mass_gate(
     stage_a_accuracy: SampleMassAccuracy | None = None,
     fallback_sigma_ppm: float,
     lines: SpectrumLines | None = None,
+    reagent_lines: Sequence[dict] = (),
 ) -> dict:
     """Record every commit's ``mass_z`` and cap the outliers no envelope confirms.
 
@@ -762,10 +831,10 @@ def apply_mass_gate(
     stage can answer it alone.
 
     Nothing is capped for its distance when the run measured no calibration - a
-    sample with too few corroborated commits to fit an offset and a width has
-    not earned the right to demote anything on it, and standing down is
-    recorded rather than being indistinguishable from a run that found nothing
-    to demote. An isotopologue that does not track its parent is held at
+    sample with too few corroborated commits and source lines to fit an offset
+    and a width has not earned the right to demote anything on it, and standing
+    down is recorded rather than being indistinguishable from a run that found
+    nothing to demote. An isotopologue that does not track its parent is held at
     ``candidate`` either way, since that compares two of the run's own lines
     and needs no calibration.
 
@@ -785,6 +854,10 @@ def apply_mass_gate(
     :param lines: The sample's peaks, read for how well each places its line.
         Without them every line is one the class's precision describes, so no
         isotopologue is in doubt: it tracks or it does not.
+    :param reagent_lines: The rows the reagent pre-pass built, whose
+        monoisotopic lines anchor the calibration beside the corroborated
+        commits (:func:`fit_run_mass_accuracy`). Read only: a reagent row is
+        no commit, so it is neither judged nor modified.
     :return: A JSON-serializable summary for the run's config.
     """
     # The width the untargeted search actually scored a mass error at, rebuilt
@@ -798,7 +871,7 @@ def apply_mass_gate(
     tracking = isotopologue_tracking(
         assignments, precision_ppm=fallback_sigma_ppm, lines=lines
     )
-    calibration = fit_run_mass_accuracy(assignments, corroboration)
+    calibration = fit_run_mass_accuracy(assignments, corroboration, reagent_lines)
     if calibration.sigma_ppm is not None:
         calibration = replace(
             calibration,

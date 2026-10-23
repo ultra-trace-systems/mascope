@@ -693,9 +693,15 @@ What caps a row at candidate:
   of its lines has to sit, so a line of it far off calibration with no isotopologue
   behind it is capped like any other. A formula from a loaded reference list is a prior
   matched against every sample rather than a list assembled for your data, and its
-  matches play no part in measuring the sample's own mass accuracy. The calibration's
-  centre can follow
-  the mass range: where the run's assignments show their mass error changing with m/z the
+  matches play no part in measuring the sample's own mass accuracy. The source's own
+  ions do: the monoisotopic lines the run set aside as *reagent* peaks (*The ions a
+  source makes of itself*, above) are the best-known masses in the file, and they
+  measure the calibration beside the run's corroborated assignments. On a
+  charge-transfer source they are the mode's calibration compounds, and on a sample
+  with few corroborated assignments they can be what lets it measure a calibration
+  at all. A source's brightest lines can read slightly above its analytes, so where
+  they are much of what the run measures on, the constant centre leans toward them.
+  The calibration's centre can follow the mass range: where the run's assignments show their mass error changing with m/z the
   way a fixed offset in millidaltons does, growing in ppm as the mass falls, each ion is
   measured from the centre at its own m/z, so a small ion a couple of ppm out can sit
   exactly on calibration.
