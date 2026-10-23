@@ -102,6 +102,7 @@ def test_the_defaults_are_the_last_seven_days_of_every_file(no_env):
     assert config.series == audit.DEFAULT_CLUSTER_SERIES
     assert config.families is None
     assert config.sets == {}
+    assert (config.family_window_spacing, config.family_peaked_iqr) == (0.5, 0.5)
     assert not config.as_json
 
 
@@ -118,6 +119,8 @@ def test_everything_can_be_set(no_env):
     no_env.setenv("TOF_AUDIT_SERIES", "none")
     no_env.setenv("TOF_AUDIT_FAMILY_SNR", "30")
     no_env.setenv("TOF_AUDIT_FAMILY_WINDOW_PPM", "20")
+    no_env.setenv("TOF_AUDIT_FAMILY_WINDOW_SPACING", "0.25")
+    no_env.setenv("TOF_AUDIT_FAMILY_PEAKED_IQR", "0.3")
     no_env.setenv("TOF_AUDIT_FAMILY_DBE_MAX", "2")
     no_env.setenv("TOF_AUDIT_JSON", "1")
 
@@ -138,6 +141,7 @@ def test_everything_can_be_set(no_env):
         20.0,
         2,
     )
+    assert (config.family_window_spacing, config.family_peaked_iqr) == (0.25, 0.3)
     assert config.as_json
 
 
@@ -418,6 +422,8 @@ def _config(instrument: str, **update) -> script.Config:
         "series": audit.DEFAULT_CLUSTER_SERIES,
         "family_snr": audit.DEFAULT_FAMILY_SNR,
         "family_window_ppm": audit.DEFAULT_FAMILY_WINDOW_PPM,
+        "family_window_spacing": audit.DEFAULT_FAMILY_WINDOW_SPACING,
+        "family_peaked_iqr": audit.DEFAULT_FAMILY_PEAKED_IQR,
         "family_dbe_max": audit.DEFAULT_FAMILY_DBE_MAX,
         "as_json": False,
     }
@@ -773,13 +779,19 @@ async def test_a_file_is_measured_under_every_fit(filestore):
 # --- Adding up ---
 
 
-def _summary(mode_audit, names, edges=audit.DEFAULT_BAND_EDGES):
+def _summary(
+    mode_audit,
+    names,
+    edges=audit.DEFAULT_BAND_EDGES,
+    peaked_iqr=audit.DEFAULT_FAMILY_PEAKED_IQR,
+):
     return script.ModeSummary(
         mode_name="Nitrate",
         polarity="-",
         fit_names=names,
         band_labels=audit.band_labels(edges),
         notes=[],
+        family_peaked_iqr=peaked_iqr,
     )
 
 
@@ -962,6 +974,69 @@ async def test_family_offsets_are_read_per_band_under_each_fit(filestore):
     assert offsets("collection/mode0", "200-300")["n"] == 1
     assert offsets("collection/mode0", "300-500")["n"] == 1
     assert offsets("stored", "150-200")["median"] == pytest.approx(-6.0, abs=0.01)
+    assert offsets("collection/mode0", "150-200")["window_ppm"] == 30.0
+    assert offsets("collection/mode0", "150-200")["peaked"]
+
+
+def _family_file_and_audit(spread_ppm, mz=800.0):
+    """A nitrate family and, near ``mz``, one strong peak per offset."""
+    mechanism = IonizationMechanism(
+        ionization_mechanism_id="nitrate",
+        ionization_mechanism="[M+NO3]-",
+        ionization_mechanism_polarity="-",
+    )
+    family = audit.family_of(mechanism, audit.cho_neutral_masses(3))
+    members = family.lattice[np.searchsorted(family.lattice, mz) :][::7]
+    peaks = support.calibrant_peaks() + [
+        {"mz": member * (1 + offset * 1e-6)}
+        for member, offset in zip(members, spread_ppm)
+    ]
+    return peaks, _mode_audit(families=[family])
+
+
+def _band_families(report, fit="collection/mode0", band="500+"):
+    bands = {b["band"]: b for b in report["fits"][fit]["bands"]}
+    return bands[band]["families"]
+
+
+@pytest.mark.asyncio
+async def test_a_family_offset_that_fills_its_window_is_no_reading(filestore):
+    """Above 500 Th the window is half the spacing, 23 ppm at 800 Th: offsets
+    spread over it are flat, and the report gives no median."""
+    peaks, mode_audit = _family_file_and_audit(np.linspace(-20, 20, 9))
+    file = await _audit(filestore, peaks, support.STORED_FIT, mode_audit)
+    summary = _summary(mode_audit, ["collection/mode0"])
+
+    script.summarise_file(summary, file, mode_audit, _config("AuditTof"))
+    report = script.summary_dict(summary)
+    nitrate = _band_families(report)["[M+NO3]-"]
+
+    assert nitrate["n"] == 9
+    assert nitrate["window_ppm"] == pytest.approx(23.0, abs=1.0)
+    assert not nitrate["peaked"]
+    # Peaked under a looser rule, which the summary takes from the config
+    loose = _summary(mode_audit, ["collection/mode0"], peaked_iqr=1.0)
+    script.summarise_file(loose, file, mode_audit, _config("AuditTof"))
+    assert _band_families(script.summary_dict(loose))["[M+NO3]-"]["peaked"]
+
+
+@pytest.mark.asyncio
+async def test_the_family_window_is_the_config_share_of_the_spacing(filestore):
+    """15 ppm off at 800 Th is inside half the spacing, 23 ppm, and outside a
+    quarter of it."""
+    peaks, mode_audit = _family_file_and_audit([15.0])
+    file = await _audit(filestore, peaks, support.STORED_FIT, mode_audit)
+
+    def families(config):
+        summary = _summary(mode_audit, ["collection/mode0"])
+        script.summarise_file(summary, file, mode_audit, config)
+        bands = script.summary_dict(summary)["fits"]["collection/mode0"]["bands"]
+        return {b["band"]: b["families"] for b in bands}.get("500+", {})
+
+    half = families(_config("AuditTof"))["[M+NO3]-"]
+    assert half["median"] == pytest.approx(15.0, abs=0.1)
+    assert half["window_ppm"] == pytest.approx(22.7, abs=0.1)
+    assert families(_config("AuditTof", family_window_spacing=0.25)) == {}
 
 
 def test_the_reproduction_adds_up_with_the_files_that_missed(filestore):
@@ -1020,6 +1095,29 @@ async def test_a_run_audits_each_mode_and_counts_what_it_could_not_read(
     assert [mode["mode"] for mode in only["modes"]] == [by_mode["Other"]["mode"]]
 
 
+@pytest.mark.asyncio
+async def test_a_run_judges_family_offsets_by_the_config_share(site, filestore):
+    summaries = []
+    mode_summary = script.ModeSummary
+
+    def recording(*args, **kwargs):
+        summaries.append(mode_summary(*args, **kwargs))
+        return summaries[-1]
+
+    with (
+        patch.object(
+            script,
+            "read_instrument_functions",
+            AsyncMock(return_value=({}, support.resolution)),
+        ),
+        patch.object(script, "ModeSummary", recording),
+    ):
+        await script.run_audit(_config(site["instrument"], family_peaked_iqr=0.3))
+
+    assert summaries
+    assert {summary.family_peaked_iqr for summary in summaries} == {0.3}
+
+
 def test_a_record_that_is_not_a_fit_is_not_one():
     assert not script._node_record(None)
     assert not script._node_record({"mode": 0, "par": [1, 2]})
@@ -1052,3 +1150,11 @@ async def test_nothing_is_printed_unless_asked(no_env, capsys):
         await script.run()
 
     assert '{"x": 1}' not in capsys.readouterr().out
+
+
+def test_the_report_gives_a_flat_family_offset_no_median():
+    peaked = audit.family_spread([-1.0, 0.0, 1.0], [30.0] * 3)
+    flat = audit.family_spread(np.linspace(-20, 20, 41), [20.0] * 41)
+    assert script._family(peaked) == "+0.0 (IQR 1.0, n 3) within +-30 ppm"
+    assert script._family(flat) == "no reading: flat within +-20 ppm (IQR 20.0, n 41)"
+    assert script._family(None) == "-"

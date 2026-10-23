@@ -32,6 +32,7 @@ ion's exact m/z.
 import asyncio
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 
 import numpy as np
 import pandas as pd
@@ -84,6 +85,16 @@ DEFAULT_FAMILY_DBE_MAX = 3
 #: A strong peak counts towards a family offset within this of its nearest
 #: member; further off it is taken for something the family does not hold.
 DEFAULT_FAMILY_WINDOW_PPM = 30.0
+#: ...and within this share of that member's distance to its own nearest
+#: member, the spacing: 36.4 mDa, 73 ppm at 500 Th and 36 ppm at 1,000 Th,
+#: closer where the two bromine lattices interleave. A peak further than half
+#: the spacing from a member is nearer the next one, so an offset that large
+#: aliases onto it, and a wider window only adds peaks of no member.
+DEFAULT_FAMILY_WINDOW_SPACING = 0.5
+#: A family offset is a reading only where its distribution is peaked: an IQR
+#: at most this share of the window. Offsets spread evenly over a window of
+#: +-w have an IQR of w, and a median that says nothing.
+DEFAULT_FAMILY_PEAKED_IQR = 0.5
 #: The peaks a family offset is read from: S/N at least this, the plan's
 #: "strong peaks".
 DEFAULT_FAMILY_SNR = 20.0
@@ -455,27 +466,48 @@ class Family:
     #: Sorted m/z of every member, over every adduct line.
     lattice: np.ndarray
 
+    @cached_property
+    def spacing(self) -> np.ndarray:
+        """Each member's distance to its nearest other member, in Da."""
+        if self.lattice.size < 2:
+            return np.full(self.lattice.shape, np.inf)
+        gaps = np.diff(self.lattice)
+        return np.minimum(
+            np.concatenate([[np.inf], gaps]), np.concatenate([gaps, [np.inf]])
+        )
+
     def offsets_ppm(
-        self, mz: np.ndarray, window_ppm: float
-    ) -> tuple[np.ndarray, np.ndarray]:
+        self,
+        mz: np.ndarray,
+        window_ppm: float,
+        spacing_share: float = DEFAULT_FAMILY_WINDOW_SPACING,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Each peak's offset from its nearest member, in ppm.
 
-        :return: The m/z of the peaks within the window of a member, and
-            their offsets.
+        A peak counts within its member's window: ``window_ppm``, or
+        ``spacing_share`` of the member's spacing where that is narrower.
+
+        :return: The m/z of the peaks within the window of a member, their
+            offsets, and the window each was counted in, in ppm.
         """
         mz = np.asarray(mz, dtype=np.float64)
         if mz.size == 0 or self.lattice.size < 2:
-            return np.array([], dtype=np.float64), np.array([], dtype=np.float64)
+            empty = np.array([], dtype=np.float64)
+            return empty, empty, empty
         right = np.clip(np.searchsorted(self.lattice, mz), 1, self.lattice.size - 1)
         left = right - 1
-        nearest = np.where(
+        nearest_index = np.where(
             np.abs(self.lattice[left] - mz) <= np.abs(self.lattice[right] - mz),
-            self.lattice[left],
-            self.lattice[right],
+            left,
+            right,
         )
+        nearest = self.lattice[nearest_index]
         offsets = 1e6 * (mz - nearest) / nearest
-        within = np.abs(offsets) <= window_ppm
-        return mz[within], offsets[within]
+        windows = np.minimum(
+            window_ppm, spacing_share * 1e6 * self.spacing[nearest_index] / nearest
+        )
+        within = np.abs(offsets) <= windows
+        return mz[within], offsets[within], windows[within]
 
 
 def cho_neutral_masses(dbe_max: int, mz_max: float = _FAMILY_MZ_MAX) -> np.ndarray:
@@ -541,6 +573,32 @@ def band_labels(edges: Sequence[float]) -> list[str]:
 def band_of(mz: np.ndarray, edges: Sequence[float]) -> np.ndarray:
     """The index into :func:`band_labels` of each m/z."""
     return np.searchsorted(np.asarray(edges, dtype=np.float64), mz, side="right")
+
+
+def family_spread(
+    offsets: Iterable[float],
+    windows: Iterable[float],
+    peaked_iqr: float = DEFAULT_FAMILY_PEAKED_IQR,
+) -> dict | None:
+    """A family offset's spread, its window, and whether it is a reading.
+
+    :param offsets: The offsets, ppm
+    :param windows: The window each offset was counted in, ppm
+    :param peaked_iqr: The largest IQR, as a share of the median window, of a
+        distribution that is peaked: a reading of the axis. Above it the
+        offsets fill the window, and their median is no reading.
+    :return: :func:`spread` plus ``window_ppm``, the median window, and
+        ``peaked``.
+    """
+    stats = spread(offsets)
+    if stats is None:
+        return None
+    window = float(np.median(np.asarray(list(windows), dtype=np.float64)))
+    return {
+        **stats,
+        "window_ppm": window,
+        "peaked": stats["iqr"] <= peaked_iqr * window,
+    }
 
 
 def spread(values: Iterable[float]) -> dict | None:

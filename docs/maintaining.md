@@ -1740,6 +1740,8 @@ Everything is set through the environment:
 | `TOF_AUDIT_FAMILIES` | Mechanisms whose CHO family is measured, comma-separated (`[M+NO3]-,[M-H]-`); default the mode's |
 | `TOF_AUDIT_SERIES` | Cluster series as JSON, a name to `{"core": "HSO4", "unit": "H2SO4", "n": 4, "charge": "-"}`, or `none`; default the three negative-ion series |
 | `TOF_AUDIT_FAMILY_SNR`, `TOF_AUDIT_FAMILY_WINDOW_PPM`, `TOF_AUDIT_FAMILY_DBE_MAX` | The family yardstick: strong peaks above this S/N (20), within this window (30 ppm), against formulas of up to this many double bonds and rings (3) |
+| `TOF_AUDIT_FAMILY_WINDOW_SPACING` | The family window is at most this share of the distance from a formula to its nearest neighbour (0.5). Above about 600 Th that is narrower than 30 ppm |
+| `TOF_AUDIT_FAMILY_PEAKED_IQR` | A band's family offset is a reading only where its IQR is at most this share of the window (0.5). Where the offsets fill the window, the report says "no reading: flat" instead of a median, and the JSON has `"peaked": false` |
 | `TOF_AUDIT_JSON=1` | Also print the whole result as one JSON document, per-file fits included, as the last line of the output |
 
 The TOF mass calibration plan ([tof_calibration.md](dev/tof_calibration.md))
