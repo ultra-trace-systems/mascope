@@ -1884,6 +1884,7 @@ name = "mascope-thermo"
 version = "0.0.0"
 source = { editable = "libraries/thermo" }
 dependencies = [
+    { name = "jsonschema" },
     { name = "mascope-file" },
     { name = "mascope-runtime" },
     { name = "numpy" },
@@ -1894,6 +1895,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "jsonschema", specifier = ">=4.26,<5" },
     { name = "mascope-file", editable = "libraries/file" },
     { name = "mascope-runtime", editable = "libraries/runtime" },
     { name = "numpy", specifier = "~=2.5" },

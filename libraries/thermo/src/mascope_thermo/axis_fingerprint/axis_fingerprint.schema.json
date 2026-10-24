@@ -1,0 +1,837 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "mascope.axis_fingerprint/1",
+ "title": "Orbitrap axis fingerprint of one sample file (version 1)",
+ "description": "Per sample file: the per-scan calibration census, the lock mass used per scan, and per acquisition mode (FTMS MS1 full scans only) the per-frequency-segment spacing anomaly s_k of the corrected profile m/z (the stored frequency bins converted with B, C plus the per-chunk fudge, as Thermo's RawFileReader and OpenTFRaw >= 1.4.1 return them; s = ((1 + r 1e-6)^-1.5 - 1) 1e6 with r = fudge / law in ppm). Units: law-kHz is f = sqrt((B + sqrt(B^2 + 4 m C)) / (2 m)) with the scan's trailer 'Conversion Parameter B' and 'Conversion Parameter C' (inverse m = B/f^2 + C/f^4); s_ppm is (regular profile-point step / nominal FFT bin - 1) x 1e6. Which keys are required depends on status: ok and no_fingerprint carry the full document; unavailable and missing carry only schema, version and status; error adds 'error'. Unknown keys must be ignored by readers (forward compatible); a reader that meets a higher major version refuses the document.",
+ "type": "object",
+ "required": [
+  "schema",
+  "version",
+  "status"
+ ],
+ "allOf": [
+  {
+   "if": {
+    "properties": {
+     "status": {
+      "const": "ok"
+     }
+    }
+   },
+   "then": {
+    "required": [
+     "extractor",
+     "source",
+     "scan_table",
+     "modes",
+     "dominant_mode",
+     "flags"
+    ],
+    "properties": {
+     "dominant_mode": {
+      "type": "string"
+     },
+     "modes": {
+      "minItems": 1,
+      "contains": {
+       "type": "object",
+       "required": [
+        "segments"
+       ],
+       "properties": {
+        "segments": {
+         "type": "object"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "status": {
+      "const": "no_fingerprint"
+     }
+    }
+   },
+   "then": {
+    "required": [
+     "extractor",
+     "source",
+     "scan_table",
+     "modes",
+     "dominant_mode",
+     "flags"
+    ],
+    "properties": {
+     "modes": {
+      "items": {
+       "properties": {
+        "segments": {
+         "type": "null"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "status": {
+      "const": "error"
+     }
+    }
+   },
+   "then": {
+    "required": [
+     "error"
+    ]
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "status": {
+      "enum": [
+       "unavailable",
+       "missing"
+      ]
+     }
+    }
+   },
+   "then": {
+    "propertyNames": {
+     "enum": [
+      "schema",
+      "version",
+      "status",
+      "sample_file_id"
+     ]
+    }
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "status": {
+      "const": "error"
+     }
+    }
+   },
+   "then": {
+    "propertyNames": {
+     "enum": [
+      "schema",
+      "version",
+      "status",
+      "error",
+      "sample_file_id"
+     ]
+    }
+   }
+  }
+ ],
+ "properties": {
+  "schema": {
+   "const": "mascope.axis_fingerprint"
+  },
+  "version": {
+   "type": "integer",
+   "const": 1
+  },
+  "status": {
+   "enum": [
+    "ok",
+    "no_fingerprint",
+    "unavailable",
+    "missing",
+    "error"
+   ],
+   "description": "ok: at least one mode has a segment table. no_fingerprint: read, but no mode yielded a segment table (centroid-only data, no FTMS MS1 full scans, or no usable profile chunks); the census, scan table and modes are still stored. unavailable: this server's reader cannot return corrected profile m/z (OpenTFRaw older than 1.4.1 returns law(f + fudge), whose s is 0 by construction); nothing else is stored. A file without profile data is not unavailable: it is no_fingerprint with its modes flagged centroid_only. missing: served only, never stored: the fingerprint has not been computed yet and the server does not compute on request. error: the computation raised; 'error' holds '<type>: <message>'."
+  },
+  "error": {
+   "type": "string"
+  },
+  "sample_file_id": {
+   "type": "string",
+   "description": "Mascope sample file id (served documents)."
+  },
+  "extractor": {
+   "type": "object",
+   "required": [
+    "name",
+    "reader",
+    "params"
+   ],
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "reader": {
+     "type": "string"
+    },
+    "created_utc": {
+     "type": "string"
+    },
+    "params": {
+     "type": "object",
+     "description": "Every parameter of the algorithm, as used: reference_impl.PARAMS_OPENTFRAW on OpenTFRaw >= 1.4.1 profile() (stored points only), reference_impl.PARAMS on Thermo RawFileReader's zero-filled profile."
+    }
+   }
+  },
+  "source": {
+   "type": "object",
+   "required": [
+    "raw_name",
+    "first_scan",
+    "last_scan",
+    "n_scans"
+   ],
+   "properties": {
+    "raw_name": {
+     "type": "string"
+    },
+    "raw_size_bytes": {
+     "type": "integer"
+    },
+    "raw_sha1_first_mib": {
+     "type": "string"
+    },
+    "instrument_model": {
+     "type": "string"
+    },
+    "instrument_key": {
+     "type": "string",
+     "description": "sha1(model|serial)[:12]; the serial is not stored in clear"
+    },
+    "software_version": {
+     "type": "string"
+    },
+    "creation_date_raw": {
+     "type": "string"
+    },
+    "creation_date_kind": {
+     "type": "string"
+    },
+    "first_scan": {
+     "type": "integer"
+    },
+    "last_scan": {
+     "type": "integer"
+    },
+    "n_scans": {
+     "type": "integer"
+    },
+    "start_time_min": {
+     "type": "number",
+     "description": "Run start time [min]: OpenTFRaw controllers()[0]['start_time'] (Thermo: RunHeaderEx.StartTime; equal in the 38 files compared)."
+    },
+    "end_time_min": {
+     "type": "number",
+     "description": "Run end time [min]: OpenTFRaw controllers()[0]['end_time'] (Thermo: RunHeaderEx.EndTime; equal in the 38 files compared). Not the last scan's retention time: a trailing scan can carry RT 0.0."
+    }
+   }
+  },
+  "calibration_status": {
+   "type": "object",
+   "properties": {
+    "performance_text_first_last_scan": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "string"
+     }
+    },
+    "last_calibration_from_status": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "required": [
+       "polarity",
+       "time_local"
+      ],
+      "properties": {
+       "polarity": {
+        "enum": [
+         "neg",
+         "pos"
+        ]
+       },
+       "time_local": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   }
+  },
+  "scan_table": {
+   "type": "object",
+   "required": [
+    "columns",
+    "rows"
+   ],
+   "properties": {
+    "columns": {
+     "const": [
+      "scan",
+      "rt_min",
+      "mode",
+      "microscans",
+      "B",
+      "C",
+      "n_lm_found",
+      "lm_correction_ppm",
+      "lock_used"
+     ]
+    },
+    "rows": {
+     "type": "array",
+     "items": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "prefixItems": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "number"
+       },
+       {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       {
+        "type": [
+         "integer",
+         "null"
+        ]
+       },
+       {
+        "type": [
+         "number",
+         "null"
+        ]
+       },
+       {
+        "type": [
+         "number",
+         "null"
+        ]
+       },
+       {
+        "type": [
+         "integer",
+         "null"
+        ]
+       },
+       {
+        "type": [
+         "number",
+         "null"
+        ]
+       },
+       {
+        "type": "string"
+       }
+      ]
+     }
+    }
+   },
+   "description": "One row per scan of the file. mode is null for a scan outside every mode. lock_used: a configured lock as '%.4f', 'both', 'none' or 'ambiguous'."
+  },
+  "modes": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/mode"
+   }
+  },
+  "dominant_mode": {
+   "type": [
+    "string",
+    "null"
+   ],
+   "description": "modes[0].mode_id; null when there are no modes"
+  },
+  "flags": {
+   "type": "array",
+   "items": {
+    "enum": [
+     "mixed_polarity",
+     "mixed_resolution",
+     "scans_outside_modes"
+    ]
+   },
+   "description": "File flags. mixed_polarity: modes of both polarities. mixed_resolution: the dominant mode holds < 90 % of the scans in modes. scans_outside_modes: some scans (MS2/MSn, SIM, ion trap, unparsable filter or missing trailer B/C/resolution) belong to no mode; they keep a scan_table row with mode null."
+  },
+  "cost_seconds": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "number"
+   }
+  },
+  "item": {
+   "type": "object",
+   "description": "Only in documents served by the per-item route.",
+   "required": [
+    "sample_item_id",
+    "sample_file_id",
+    "scans"
+   ],
+   "properties": {
+    "sample_item_id": {
+     "type": "string"
+    },
+    "sample_file_id": {
+     "type": "string"
+    },
+    "polarity": {
+     "enum": [
+      "+",
+      "-",
+      null
+     ]
+    },
+    "t0_s": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "t1_s": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "scans": {
+     "type": "array",
+     "items": {
+      "type": "integer"
+     },
+     "description": "the scan numbers the item's peak list is built from"
+    },
+    "lock": {
+     "type": "object",
+     "description": "used_share, used_count, m_lock_eff and s_lock_eff_ppm recomputed over 'scans'"
+    },
+    "mz_calibration_factor": {
+     "type": [
+      "number",
+      "null"
+     ],
+     "description": "the sample file's .props mz_calibration.par.calibration_factor, which /api/samples/centroids multiplies into every served mass of the file; null when none"
+    }
+   }
+  }
+ },
+ "$defs": {
+  "table": {
+   "type": "object",
+   "required": [
+    "columns",
+    "rows"
+   ],
+   "properties": {
+    "columns": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "rows": {
+     "type": "array",
+     "items": {
+      "type": "array"
+     }
+    }
+   }
+  },
+  "mode": {
+   "type": "object",
+   "required": [
+    "mode_id",
+    "polarity",
+    "resolution",
+    "scan_range",
+    "n_scans",
+    "scan_share",
+    "microscans",
+    "calibration",
+    "profile",
+    "lock",
+    "levels",
+    "brackets",
+    "grid",
+    "segments",
+    "k_range_measured",
+    "flags"
+   ],
+   "properties": {
+    "mode_id": {
+     "type": "string",
+     "description": "'<polarity>|R<resolution>|<low>-<high>' (FTMS MS1 full scans only; scan range from the filter string, 4 decimals)"
+    },
+    "polarity": {
+     "enum": [
+      "+",
+      "-"
+     ]
+    },
+    "resolution": {
+     "type": "integer"
+    },
+    "scan_range": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 2,
+     "maxItems": 2
+    },
+    "n_scans": {
+     "type": "integer"
+    },
+    "scan_share": {
+     "type": "number",
+     "description": "n_scans / number of scans in modes"
+    },
+    "microscans": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "integer"
+     }
+    },
+    "calibration": {
+     "type": "object",
+     "required": [
+      "B_median",
+      "C_median",
+      "C_over_B2",
+      "C_over_B2_min",
+      "C_over_B2_max"
+     ],
+     "properties": {
+      "B_median": {
+       "type": "number"
+      },
+      "C_median": {
+       "type": "number"
+      },
+      "C_over_B2": {
+       "type": "number"
+      },
+      "C_over_B2_min": {
+       "type": "number"
+      },
+      "C_over_B2_max": {
+       "type": "number"
+      }
+     }
+    },
+    "profile": {
+     "type": "object",
+     "required": [
+      "scans_used",
+      "fft_step_hz_measured",
+      "nominal_fft_step_hz",
+      "n_chunks",
+      "scan_check_columns",
+      "scan_check"
+     ],
+     "properties": {
+      "scans_used": {
+       "type": "array",
+       "items": {
+        "type": "integer"
+       }
+      },
+      "fft_step_hz_measured": {
+       "type": "array",
+       "items": {
+        "type": [
+         "number",
+         "null"
+        ]
+       }
+      },
+      "nominal_fft_step_hz": {
+       "type": [
+        "number",
+        "array",
+        "null"
+       ]
+      },
+      "n_chunks": {
+       "type": "integer"
+      },
+      "scan_check_columns": {
+       "const": [
+        "scan",
+        "n_points",
+        "mz_min",
+        "mz_max",
+        "sum_mz"
+       ]
+      },
+      "scan_check": {
+       "type": "array",
+       "items": {
+        "type": "array",
+        "minItems": 5,
+        "maxItems": 5
+       }
+      }
+     }
+    },
+    "lock": {
+     "type": "object",
+     "required": [
+      "used_share",
+      "used_count",
+      "m_lock_eff",
+      "s_lock_eff_ppm",
+      "configured_mz",
+      "method"
+     ],
+     "properties": {
+      "used_share": {
+       "type": "object",
+       "additionalProperties": {
+        "type": "number"
+       }
+      },
+      "used_count": {
+       "type": "object",
+       "additionalProperties": {
+        "type": "integer"
+       }
+      },
+      "m_lock_eff": {
+       "type": [
+        "number",
+        "null"
+       ]
+      },
+      "s_lock_eff_ppm": {
+       "type": [
+        "number",
+        "null"
+       ]
+      },
+      "k_lock": {
+       "type": "object"
+      },
+      "configured_mz": {
+       "type": "array",
+       "items": {
+        "type": "number"
+       }
+      },
+      "method": {
+       "enum": [
+        "reference_flag",
+        "absence_in_centroids"
+       ]
+      },
+      "lm_correction_ppm_median_by_lock": {
+       "type": "object"
+      }
+     }
+    },
+    "levels": {
+     "oneOf": [
+      {
+       "type": "null"
+      },
+      {
+       "allOf": [
+        {
+         "$ref": "#/$defs/table"
+        },
+        {
+         "properties": {
+          "columns": {
+           "const": [
+            "f_lo_khz",
+            "f_hi_khz",
+            "s_ppm",
+            "n_chunks"
+           ]
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "brackets": {
+     "oneOf": [
+      {
+       "type": "null"
+      },
+      {
+       "allOf": [
+        {
+         "$ref": "#/$defs/table"
+        },
+        {
+         "properties": {
+          "columns": {
+           "const": [
+            "f_lo_khz",
+            "f_hi_khz",
+            "step_ppm"
+           ]
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "grid": {
+     "oneOf": [
+      {
+       "type": "null"
+      },
+      {
+       "type": "object",
+       "required": [
+        "source",
+        "period_khz",
+        "phase_khz",
+        "n_brackets",
+        "n_hits",
+        "significant"
+       ],
+       "properties": {
+        "source": {
+         "enum": [
+          "measured",
+          "seed"
+         ]
+        },
+        "period_khz": {
+         "type": "number"
+        },
+        "phase_khz": {
+         "type": "number"
+        },
+        "period_hypothesis": {
+         "enum": [
+          "fixed_frequency",
+          "fixed_bins",
+          null
+         ]
+        },
+        "n_brackets": {
+         "type": "integer"
+        },
+        "n_hits": {
+         "type": "integer"
+        },
+        "hit_fraction": {
+         "type": [
+          "number",
+          "null"
+         ]
+        },
+        "random_hit_fraction_q95": {
+         "type": [
+          "number",
+          "null"
+         ]
+        },
+        "edge_uncertainty_khz": {
+         "type": [
+          "number",
+          "null"
+         ]
+        },
+        "k_hit_range": {
+         "type": [
+          "array",
+          "null"
+         ]
+        },
+        "significant": {
+         "type": "boolean"
+        },
+        "reason": {
+         "type": "string"
+        }
+       }
+      }
+     ]
+    },
+    "segments": {
+     "oneOf": [
+      {
+       "type": "null"
+      },
+      {
+       "allOf": [
+        {
+         "$ref": "#/$defs/table"
+        },
+        {
+         "properties": {
+          "columns": {
+           "const": [
+            "k",
+            "f_lo_khz",
+            "f_hi_khz",
+            "mz_lo",
+            "mz_hi",
+            "s_ppm",
+            "n_chunks",
+            "n_level",
+            "level_share",
+            "n_scans",
+            "scan_sd_ppm",
+            "interp"
+           ]
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "k_range_measured": {
+     "type": [
+      "array",
+      "null"
+     ]
+    },
+    "flags": {
+     "type": "array",
+     "items": {
+      "enum": [
+       "calibration_changes_within_mode",
+       "fft_step_not_power_of_two",
+       "grid_unmeasured",
+       "grid_weak",
+       "sparse_segments",
+       "not_stepwise",
+       "lock_alternates",
+       "lock_missing",
+       "lock_ambiguous",
+       "centroid_only",
+       "no_profile_chunks",
+       "no_segment_table"
+      ]
+     },
+     "description": "grid_weak is advisory (n_hits < 10 or k_max - k_min of the hits < 20) and can occur on a dominant mode."
+    }
+   }
+  }
+ }
+}
