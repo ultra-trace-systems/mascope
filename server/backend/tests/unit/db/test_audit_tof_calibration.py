@@ -612,7 +612,12 @@ async def _audit(
     record is ``database``."""
     filename = support.write_file(filestore, peaks, record=record)
     row = script.FileRow(
-        "sf1", filename, datetime(2026, 10, 20, 12, tzinfo=UTC), "m1", database
+        "sf1",
+        filename,
+        datetime(2026, 10, 20, 12, tzinfo=UTC),
+        "m1",
+        database,
+        instrument_function_id="if1",
     )
     with patch.object(
         script,
@@ -1252,12 +1257,9 @@ async def test_a_run_audits_each_mode_and_counts_what_it_could_not_read(
     assert [mode["mode"] for mode in only["modes"]] == [by_mode["Other"]["mode"]]
 
 
-@pytest.mark.asyncio
-async def test_a_run_counts_each_unreadable_file_by_its_cause(site, filestore):
-    """Read with the real instrument functions: a file the converter stored as
-    a blank has an empty peak store and none, a file with peaks may still
-    have none, and a file's own may not read. Each is counted, and listed,
-    by that cause rather than by the ``ValueError`` all three raise."""
+async def _write_blank_and_peaked(site, filestore) -> dict[str, str]:
+    """Write stores for the mode's first, second and last file, the first the
+    converter's own blank one, and return each file's name by id."""
     files = site["files"]
     async with script.async_session() as session:
         names = dict(
@@ -1275,8 +1277,18 @@ async def test_a_run_counts_each_unreadable_file_by_its_cause(site, filestore):
         support.write_file(
             filestore, support.calibrant_peaks(), filename=names[files[key]]
         )
-    # The converter's own blank store over the first
     await asyncio.to_thread(write_empty_peak_timeseries, names[files["first"]])
+    return names
+
+
+@pytest.mark.asyncio
+async def test_a_run_counts_each_unreadable_file_by_its_cause(site, filestore):
+    """Read with the real instrument functions: a file the converter stored as
+    a blank has an empty peak store and none, a file with peaks may still
+    have none, and a file's own may not read. Each is counted, and listed,
+    by that cause rather than by the ``ValueError`` all three raise."""
+    files = site["files"]
+    await _write_blank_and_peaked(site, filestore)
 
     report = await script.run_audit(_config(site["instrument"]))
 
@@ -1288,13 +1300,26 @@ async def test_a_run_counts_each_unreadable_file_by_its_cause(site, filestore):
         unreadable_functions: 1,
     }
     assert [
-        (entry["sample_file_id"], entry["cause"], entry["mode"].split()[0])
+        (
+            entry["sample_file_id"],
+            entry["acquired"],
+            entry["cause"],
+            entry["mode"].split()[0],
+        )
         for entry in report["unreadable"]
         if entry["mode"] == by_mode["Nitrate"]["mode"]
     ] == [
-        (files["first"], script.STORED_AS_BLANK, "Nitrate"),
-        (files["second"], script.NO_INSTRUMENT_FUNCTIONS, "Nitrate"),
-        (files["last"], unreadable_functions, "Nitrate"),
+        (
+            files[key],
+            datetime(2026, 10, day, 12, tzinfo=UTC).isoformat(),
+            cause,
+            "Nitrate",
+        )
+        for key, day, cause in [
+            ("first", 12, script.STORED_AS_BLANK),
+            ("second", 14, script.NO_INSTRUMENT_FUNCTIONS),
+            ("last", 18, unreadable_functions),
+        ]
     ]
     assert report["files"] == []
 
@@ -1306,6 +1331,28 @@ async def test_a_run_counts_each_unreadable_file_by_its_cause(site, filestore):
         and f"1 ({script.NO_INSTRUMENT_FUNCTIONS})" in line
         for line in lines
     )
+
+
+@pytest.mark.asyncio
+async def test_a_file_without_instrument_functions_is_not_read_for_them(
+    site, filestore
+):
+    """A file whose row has no function id is said from the row: an error the
+    read would raise, such as a dropped connection, is not the file's."""
+    files = site["files"]
+    names = await _write_blank_and_peaked(site, filestore)
+
+    read = AsyncMock(side_effect=ConnectionError("dropped"))
+    with patch.object(script, "read_instrument_functions", read):
+        report = await script.run_audit(_config(site["instrument"]))
+
+    by_mode = {mode["mode"].split()[0]: mode for mode in report["modes"]}
+    assert by_mode["Nitrate"]["unreadable"] == {
+        script.STORED_AS_BLANK: 1,
+        script.NO_INSTRUMENT_FUNCTIONS: 1,
+        "instrument functions unreadable (ConnectionError)": 1,
+    }
+    assert [call.args[0] for call in read.await_args_list] == [names[files["last"]]]
 
 
 @pytest.mark.parametrize(

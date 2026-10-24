@@ -683,18 +683,20 @@ async def audit_file(row: FileRow, mode_audit: ModeAudit, config: Config) -> Fil
     record = (await asyncio.to_thread(m_io.read_props, row.filename)).get(
         "mz_calibration"
     )
+    # The row says it before the read can: a file without a function id has
+    # none to read, and an error the read raises then is not the file's
+    if row.instrument_function_id is None:
+        if stored.peaks.sizes.get("mz", 0) == 0:
+            raise Unreadable(STORED_AS_BLANK)
+        raise Unreadable(NO_INSTRUMENT_FUNCTIONS)
     try:
         _, resolution = await read_instrument_functions(
             row.filename, polarity=mode_audit.polarity
         )
     except Exception as error:  # noqa: BLE001 - said by its cause
-        if row.instrument_function_id is not None:
-            cause = f"instrument functions unreadable ({type(error).__name__})"
-        elif stored.peaks.sizes.get("mz", 0) == 0:
-            cause = STORED_AS_BLANK
-        else:
-            cause = NO_INSTRUMENT_FUNCTIONS
-        raise Unreadable(cause) from error
+        raise Unreadable(
+            f"instrument functions unreadable ({type(error).__name__})"
+        ) from error
 
     fits: dict[str, dict | None] = {}
     warnings: dict[str, str | None] = {}
