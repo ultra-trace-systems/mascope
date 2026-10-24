@@ -187,6 +187,10 @@ def test_an_empty_setting_is_unset(no_env):
 # --- Which files ---
 
 
+#: The database record of the site's second file, which a run carries along.
+SECOND_RECORD = {"mode": 0, "par": [10850.0, -18500.0], "status": "unfitted"}
+
+
 def _row(day: int, hour: int, mode: str | None = "m1") -> script.FileRow:
     acquired = datetime(2026, 10, day, hour, tzinfo=UTC)
     return script.FileRow(f"sf{day}-{hour}", f"f{day}-{hour}", acquired, mode)
@@ -320,6 +324,7 @@ async def site(async_session_factory):
                 length=1.0,
                 range=[10.0, 500.0],
                 polarity="-",
+                mz_calibration=SECOND_RECORD if key == "second" else None,
             )
             session.add(sample_file)
             await session.flush()
@@ -453,6 +458,13 @@ async def test_a_run_reads_the_instrument_tof_files_in_the_range(site):
         site["other_mode_id"],
         site["mode_id"],
     ]
+    assert [row.mz_calibration for row in rows] == [
+        None,
+        None,
+        SECOND_RECORD,
+        None,
+        None,
+    ]
 
 
 @pytest.mark.asyncio
@@ -518,6 +530,14 @@ async def test_named_families_replace_the_mode_mechanisms(site, filestore):
 # --- One file ---
 
 
+#: The database record of a fit applied to the file before fits carried
+#: their ``quality``: the stored axis, 6 ppm low, which ``.props`` holds bare
+#: (``support.STORED_FIT``), in the shape of the converter's own record.
+FITTED = {**support.STORED_FIT, "verified": True}
+#: The database record of a file the node has not fitted: the converter's.
+CONVERTER = {**support.STORED_FIT, "status": "unfitted"}
+
+
 def _mode_audit(sets=None, families=None, series=None) -> script.ModeAudit:
     mode = IonizationMode(
         ionization_mode_id="m1",
@@ -556,9 +576,15 @@ async def _node_record(filestore, peaks, tolerance=15.0) -> dict:
     }
 
 
-async def _audit(filestore, peaks, record, mode_audit=None, config=None):
+async def _audit(
+    filestore, peaks, record, mode_audit=None, config=None, database=FITTED
+):
+    """Audit a file whose ``.props`` holds ``record`` and whose database
+    record is ``database``."""
     filename = support.write_file(filestore, peaks, record=record)
-    row = script.FileRow("sf1", filename, datetime(2026, 10, 20, 12, tzinfo=UTC), "m1")
+    row = script.FileRow(
+        "sf1", filename, datetime(2026, 10, 20, 12, tzinfo=UTC), "m1", database
+    )
     with patch.object(
         script,
         "read_instrument_functions",
@@ -766,6 +792,7 @@ async def test_a_file_is_measured_under_every_fit(filestore):
 
     assert set(file.fits) == {"stored", "collection/mode0", "nitrate/mode0"}
     assert file.fits["stored"] == support.STORED_FIT
+    assert not file.unfitted
     assert len(file.retained["collection/mode0"]) == 5
     assert len(file.retained["nitrate/mode0"]) == 3
     assert len(file.matched["nitrate"]) == 3
@@ -774,6 +801,98 @@ async def test_a_file_is_measured_under_every_fit(filestore):
     assert any(label.startswith("HO4S-") for label in file.readings)
     # The calibrants and the series member, not the two others
     assert file.strong_tofs.size == len(peaks) - 2
+
+
+@pytest.mark.parametrize(
+    "database",
+    [
+        support.STORED_FIT,
+        CONVERTER,
+        {
+            **support.STORED_FIT,
+            "status": "failed",
+            "verified": False,
+            "error": "too few calibrants",
+        },
+    ],
+    ids=["bare", "stamped", "failed fit"],
+)
+@pytest.mark.asyncio
+async def test_a_converter_record_is_no_stored_fit(filestore, database):
+    """The converter's record counts samples from the start of the raw
+    file's axis, not the stored TOF index: read there it puts every peak far
+    off, so it is counted as unfitted and not scored as the stored fit. The
+    database record says which it is: registered as the converter's, bare
+    from before that stamp, or a failed fit's marker over it."""
+    mechanism = IonizationMechanism(
+        ionization_mechanism_id="nitrate",
+        ionization_mechanism="[M+NO3]-",
+        ionization_mechanism_polarity="-",
+    )
+    family = audit.family_of(mechanism, audit.cho_neutral_masses(3))
+    (shift,) = audit.mechanism_shifts(mechanism)
+    member = audit.composition_mass(audit.parse_composition("C10H16O6")) + shift
+    mode_audit = _mode_audit(families=[family])
+    file = await _audit(
+        filestore,
+        support.calibrant_peaks() + [{"mz": member}],
+        support.STORED_FIT,
+        mode_audit,
+        database=database,
+    )
+
+    assert file.unfitted
+    assert "stored" not in file.fits
+    assert file.fits["collection/mode0"] is not None
+    assert file.strong_tofs.size
+
+    summary = _summary(mode_audit, ["stored", "collection/mode0"])
+    script.summarise_file(summary, file, mode_audit, _config("AuditTof"))
+    report = script.summary_dict(summary)
+
+    assert report["unfitted"] == 1
+    stored = report["fits"]["stored"]
+    assert (stored["fitted"], stored["failed"]) == (0, {})
+    assert (stored["ions"], stored["bands"]) == ([], [])
+    assert report["fits"]["collection/mode0"]["fitted"] == 1
+
+
+@pytest.mark.parametrize(
+    "database",
+    [
+        FITTED,
+        {**support.STORED_FIT, "status": "ok", "verified": True, "quality": {}},
+        {**support.STORED_FIT, "status": "poor", "verified": False, "quality": {}},
+        None,
+    ],
+    ids=["legacy fit", "fit", "fit below the bar", "no database record"],
+)
+@pytest.mark.asyncio
+async def test_an_applied_fit_bare_in_props_is_the_stored_fit(filestore, database):
+    """``.props`` holds an applied fit without the stamps the database record
+    has, an older one in the converter's very shape: it is still the stored
+    fit, not the converter's."""
+    file = await _audit(
+        filestore, support.calibrant_peaks(), support.STORED_FIT, database=database
+    )
+
+    assert not file.unfitted
+    assert file.fits["stored"] == support.STORED_FIT
+
+
+def test_the_report_says_how_many_records_were_the_converter(no_env):
+    summary = _summary(_mode_audit(), ["stored"])
+    lines = []
+    with patch.object(script.runtime.logger, "info", lines.append):
+        script.log_summary(script.summary_dict(summary), _config("AuditTof"))
+        assert not any("unfitted" in line for line in lines)
+        summary.unfitted = 2
+        script.log_summary(script.summary_dict(summary), _config("AuditTof"))
+
+    assert any(
+        "2 file(s) carry the converter's own calibration (unfitted)" in line
+        for line in lines
+    )
 
 
 # --- Adding up ---
@@ -1116,6 +1235,39 @@ async def test_a_run_judges_family_offsets_by_the_config_share(site, filestore):
 
     assert summaries
     assert {summary.family_peaked_iqr for summary in summaries} == {0.3}
+
+
+@pytest.mark.asyncio
+async def test_a_run_reports_the_files_whose_record_is_the_converter(site):
+    def audited(unfitted):
+        async def audit_file(row, mode_audit, config):
+            return script.FileAudit(
+                row=row,
+                fits={},
+                warnings={},
+                retained={},
+                matched={},
+                readings={},
+                set_readings={},
+                strong_tofs=np.array([]),
+                estimated=0,
+                reproduction=None,
+                unfitted=unfitted,
+            )
+
+        return audit_file
+
+    config = _config(site["instrument"])
+    with patch.object(script, "audit_file", audited(True)):
+        report = await script.run_audit(config)
+    assert report["files"]
+    assert all(file["unfitted"] for file in report["files"])
+    assert sum(mode["unfitted"] for mode in report["modes"]) == len(report["files"])
+
+    with patch.object(script, "audit_file", audited(False)):
+        report = await script.run_audit(config)
+    assert not any(file["unfitted"] for file in report["files"])
+    assert all(mode["unfitted"] == 0 for mode in report["modes"])
 
 
 def test_a_record_that_is_not_a_fit_is_not_one():
