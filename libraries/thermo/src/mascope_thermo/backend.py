@@ -3440,20 +3440,30 @@ class OpenTFRawBackend:
         return centroids, tic_values
 
 
+def backend_name() -> str:
+    """The reader backend ``MASCOPE_THERMO_BACKEND`` selects.
+
+    :return: ``"opentfraw"`` (the default) or ``"thermo"``
+    :rtype: str
+    :raises ValueError: When the variable names neither.
+    """
+    name = os.environ.get(ENV_BACKEND, "opentfraw").lower()
+    if name not in ("thermo", "opentfraw"):
+        raise ValueError(
+            f"Unknown {ENV_BACKEND}={name!r}; expected 'thermo' or 'opentfraw'."
+        )
+    return name
+
+
 def open_backend(datafile_path: str) -> ReaderBackend:
     """Open ``datafile_path`` with the backend selected by ``MASCOPE_THERMO_BACKEND``.
 
     Returns a context manager. Defaults to the OpenTFRaw backend; set
     ``MASCOPE_THERMO_BACKEND=thermo`` to use the legacy Thermo RawFileReader.
     """
-    name = os.environ.get(ENV_BACKEND, "opentfraw").lower()
-    if name == "thermo":
+    if backend_name() == "thermo":
         return ThermoBackend(datafile_path)
-    if name == "opentfraw":
-        return OpenTFRawBackend(datafile_path)
-    raise ValueError(
-        f"Unknown {ENV_BACKEND}={name!r}; expected 'thermo' or 'opentfraw'."
-    )
+    return OpenTFRawBackend(datafile_path)
 
 
 def averaged_profile_signature() -> str:
@@ -3473,15 +3483,10 @@ def averaged_profile_signature() -> str:
     :return: The signature, e.g. ``"otf2.0.0-g5"``
     :rtype: str
     """
-    name = os.environ.get(ENV_BACKEND, "opentfraw").lower()
-    if name == "thermo":
+    if backend_name() == "thermo":
         return "thermo"
-    if name == "opentfraw":
-        version = _distribution_version("opentfraw")
-        return f"otf{version}-g{AVERAGED_PROFILE_GENERATION}"
-    raise ValueError(
-        f"Unknown {ENV_BACKEND}={name!r}; expected 'thermo' or 'opentfraw'."
-    )
+    version = _distribution_version("opentfraw")
+    return f"otf{version}-g{AVERAGED_PROFILE_GENERATION}"
 
 
 @functools.cache

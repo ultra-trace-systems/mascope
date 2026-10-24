@@ -45,6 +45,25 @@ def test_unknown_backend_raises(monkeypatch):
         m_backend.open_backend("dummy.raw")
 
 
+# What the converter tells the axis fingerprint the file was read with.
+@pytest.mark.parametrize(
+    ("selected", "name"),
+    [(None, "opentfraw"), ("opentfraw", "opentfraw"), ("Thermo", "thermo")],
+)
+def test_backend_name_is_the_selected_reader(monkeypatch, selected, name):
+    if selected is None:
+        monkeypatch.delenv(m_backend.ENV_BACKEND, raising=False)
+    else:
+        monkeypatch.setenv(m_backend.ENV_BACKEND, selected)
+    assert m_backend.backend_name() == name
+
+
+def test_backend_name_rejects_an_unknown_reader(monkeypatch):
+    monkeypatch.setenv(m_backend.ENV_BACKEND, "bogus")
+    with pytest.raises(ValueError, match="bogus"):
+        m_backend.backend_name()
+
+
 # A cached averaged profile is keyed on the signature of what computed it, so a
 # reader upgrade has to change the signature by itself.
 def test_profile_signature_names_the_reader_and_its_version(monkeypatch):
