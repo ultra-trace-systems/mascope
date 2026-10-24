@@ -1625,6 +1625,17 @@ An accepted event's acknowledgement is whatever its handler returns, today nothi
 client that emits with a callback (`sio.emit(..., callback=...)` or `sio.call`) receives it;
 the converter currently emits without one.
 
+**Axis fingerprint** — for every raw Orbitrap file the converter computes its axis
+fingerprint (`mascope_thermo.axis_fingerprint`): the m/z offset the file's mass calibration
+left in each frequency band of the Orbitrap axis, read from the stored profile of at most
+eight scans per acquisition mode. It is stored in the file's `.props` as `axis_fingerprint`,
+a document whose `status` says what it holds: `ok`, `no_fingerprint`, `unavailable` (under
+the Thermo reader backend) or `error`. Nothing in Mascope's processing reads it, and no m/z
+is altered by it. It costs about a second a file and never fails one: a failure stores the
+`error` document and logs a WARNING. The `[backend] axis_fingerprint` setting decides it:
+`"ingest"` (the default) computes it, `"off"` stores `{}`; the converter reads it when it
+starts. A TofDaq file stores `{}`.
+
 ## 💾 Database
 
 Mascope uses **PostgreSQL 16** as its primary database, accessed via **SQLAlchemy 2.x** (async,

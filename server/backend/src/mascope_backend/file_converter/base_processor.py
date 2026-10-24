@@ -65,6 +65,21 @@ def composites_scan_streams() -> bool:
     return bool(backend is not None and backend.composite_scan_streams)
 
 
+def computes_axis_fingerprints() -> bool:
+    """Whether this deployment computes a raw Orbitrap file's axis
+    fingerprint as it converts the file.
+
+    ``axis_fingerprint`` in the runtime ``[backend]`` config
+    (``mascope_runtime.config.BackendConfig``), ``"ingest"`` by default. A
+    config with no ``[backend]`` section computes it, as the default says.
+
+    :return: False only when the deployment sets it ``"off"``.
+    :rtype: bool
+    """
+    backend = runtime.full_config.backend
+    return backend is None or backend.axis_fingerprint != "off"
+
+
 def with_file_context(prop_getter) -> callable:
     """Abstract file context manager decorator
 

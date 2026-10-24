@@ -54,6 +54,29 @@ class SampleFileProps(BaseModel):
         ),
     )
 
+    axis_fingerprint: dict = Field(
+        default_factory=dict,
+        description=(
+            "The axis fingerprint of a raw Orbitrap file: the m/z offset its "
+            "mass calibration stored in each frequency band of the Orbitrap "
+            "axis, read back from the stored profile of at most eight scans "
+            "per acquisition mode (mascope_thermo.axis_fingerprint). A JSON "
+            "document under the schema mascope.axis_fingerprint, whose "
+            "'status' says what it holds: 'ok' or 'no_fingerprint' (the whole "
+            "document: per mode, its frequency bands, the grid of their edges, "
+            "the lock mass each scan used and the Mascope stream_keys of its "
+            "scans; for the file, the census of every scan), 'unavailable' "
+            "(the reader cannot read the stored points) or 'error' (the "
+            "computation failed; 'error' says how). 'version' and "
+            "'extractor.params' say what computed it, so a document computed "
+            "otherwise can be told apart and computed again. A measurement "
+            "stored only in .props: Mascope never alters an m/z with it. "
+            "Empty for TofDaq files, for files converted before it existed or "
+            "with [backend] axis_fingerprint = 'off', and for a file with no "
+            "scans."
+        ),
+    )
+
     interval: float = Field(
         description="Mean measurement interval in seconds, i.e. length of a spectrum in the sample."
     )

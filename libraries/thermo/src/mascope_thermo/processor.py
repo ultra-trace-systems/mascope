@@ -10,6 +10,7 @@ from mascope_backend.api.new.instrument_configs.service import fit_instrument_fu
 from mascope_backend.file_converter.base_processor import (
     BaseFileProcessor,
     SampleFileProps,
+    computes_axis_fingerprints,
     with_file_context,
 )
 from mascope_backend.file_converter.errors import (
@@ -18,7 +19,9 @@ from mascope_backend.file_converter.errors import (
     EmptyAcquisitionError,
 )
 from mascope_signal.instrument_func.fit import ORBI_FIT_DMZ
-from mascope_thermo.backend import open_backend
+from mascope_thermo.axis_fingerprint import compute_axis_fingerprint
+from mascope_thermo.axis_fingerprint.reference import minimal_document
+from mascope_thermo.backend import backend_name, open_backend
 from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_thermo.streams import pooled_ms1_streams, scan_streams
 from mascope_thermo.thermo import (
@@ -198,6 +201,65 @@ class RawProcessor(BaseFileProcessor):
                 "; ".join(keys),
             )
         return streams
+
+    @property
+    @with_file_context
+    def axis_fingerprint(self) -> dict:
+        """The file's axis fingerprint: the m/z offset its mass calibration
+        stored in each frequency band, read back from the stored profile.
+
+        See :func:`mascope_thermo.axis_fingerprint.compute_axis_fingerprint`,
+        which reads the profile of at most eight scans per acquisition mode.
+        Computed unless the deployment sets ``[backend] axis_fingerprint`` to
+        ``"off"``, which stores ``{}``.
+
+        A measurement served to others, like the censuses above, so it must
+        never cost us a file. The library hands back a document whatever
+        fails: its ``error`` document is stored and logged as a warning, and
+        so is any failure around the call. An ``unavailable`` document says
+        that the reader cannot read the stored points, which is how this
+        deployment is set up rather than a fault, and is logged at INFO. A
+        file with no scans stores ``{}``, at INFO as in
+        ``acquisition_params``: it is refused as an empty acquisition by the
+        property that reads its length. A file whose scan events the reader
+        misread does not get here: the census properties ``SampleFileProps``
+        declares before this one refuse it first, where the library would
+        hand back its ``error`` document and this would log a warning.
+
+        :return: The fingerprint document, or {} when not computed
+        :rtype: dict
+        """
+        if not computes_axis_fingerprints():
+            return {}
+        try:
+            reader = backend_name()
+            document = compute_axis_fingerprint(self.file_handle, reader_name=reader)
+        except NoScansFoundError:
+            _log.info(
+                "No scans to compute the axis fingerprint of %s from",
+                self.file_to_process,
+            )
+            return {}
+        except Exception as e:
+            _log.warning(
+                "Could not compute the axis fingerprint of %s",
+                self.file_to_process,
+                exc_info=True,
+            )
+            return minimal_document("error", f"{type(e).__name__}: {e}")
+        if document["status"] == "error":
+            _log.warning(
+                "Could not compute the axis fingerprint of %s: %s",
+                self.file_to_process,
+                document["error"],
+            )
+        elif document["status"] == "unavailable":
+            _log.info(
+                "The axis fingerprint of %s is unavailable under the %s reader",
+                self.file_to_process,
+                reader,
+            )
+        return document
 
     @property
     @with_file_context

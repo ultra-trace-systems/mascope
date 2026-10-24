@@ -144,6 +144,17 @@ filestreams = './filestreams'
 # converted after a restart of the file converter, and to files re-processed
 # after a restart of the backend.
 # composite_scan_streams = false
+# Axis fingerprint: the m/z offset a raw Orbitrap file's mass calibration
+# stored in each frequency band of the Orbitrap axis, read back from the
+# stored profile. "ingest" (the default) computes it as each file is converted
+# and stores it in the file's .props, adding about a second to the conversion;
+# "off" stores {} in its place. It is a measurement for clients that correct
+# the axis themselves: nothing in Mascope's own processing reads it and no m/z
+# is altered by it, so switching it off changes no result. Takes effect on a
+# restart of the file converter, for the files converted from then on;
+# switching it back on does not compute it for the files converted while it
+# was off.
+# axis_fingerprint = "ingest"
 # Reference chemistry: the per-record licence tags peak assignment's database
 # stage is allowed to match against. Unset (the default) means no gating -
 # every active reference source is matched, which is what every deployment did
