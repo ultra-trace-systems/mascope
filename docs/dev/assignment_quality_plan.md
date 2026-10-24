@@ -3,8 +3,8 @@
 # Closing the assignment quality gap: the work, step by step
 
 - **Status:** building
-- **As of:** 2026-10-22
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73 and MAS-408 to MAS-410)
+- **As of:** 2026-10-23
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410 and MAS-443)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -23,10 +23,11 @@ of 2026-09-24 (decision 21). Stage 4 has not started. Of milestone 5, the
 reference's 0.10 review, step 5.5 is built (#2377), 5.3 is measured and
 the rest are planned; a readiness check against the reference's main on
 2026-10-22 (the last section of the review) found nothing new to bin and
-added step 5.9. Every planned step is an issue in the Linear project
-Assignment quality plan (MAS-37 to MAS-73 and MAS-410; step 5.3 is
-MAS-68, in review; decisions 29 and 31 are raised as MAS-408 and
-MAS-409). The measurement log and the specifications of the completed
+added step 5.9. Step 5.10 comes from the instrument's own centroid flags
+(a census of 2026-10-23), not from the review. Every planned step is an
+issue in the Linear project Assignment quality plan (MAS-37 to MAS-73,
+MAS-410 and MAS-443; step 5.3 is MAS-68, in review; decisions 29 and 31
+are raised as MAS-408 and MAS-409). The measurement log and the specifications of the completed
 steps are in
 [`assignment_quality_plan_log.md`](assignment_quality_plan_log.md); the
 table below names each step's PR, its merge date and one line on its state.
@@ -98,6 +99,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - |  | planned; after 3.5; feeds 4.3 and the axis-fingerprint project; the labelled sets wait for a release carrying the reference's #77 |
 | 5.8 - an identification level in Mascope's own vocabulary | - |  | planned 2026-10-14 (decision 30 taken); after 3.7 |
 | 5.9 - the width a run scored at, served on the run and sample records | - |  | planned 2026-10-22, from the readiness check (the digest's one unbinned ask); MAS-410 |
+| 5.10 - the instrument's side-lobe flag: Exception centroids out of the averaged profile, the averaged centroids and peak detection | - |  | planned 2026-10-23, from the centroid-flag census after MAS-6; measured beside 5.4; MAS-443 |
 
 ## Purpose
 
@@ -1170,6 +1172,55 @@ under its milestone 5.
   as a reading, not a target. No run or gate number moves.
 - **Size.** S. Independent; between rounds, with 5.6 at the earliest
   (MAS-410).
+
+### 5.10 The instrument's side-lobe flag: Exception centroids out of the averaged profile and peak detection
+
+- **What.** Measure first. On the demo raws and the gate's Orbitrap sets,
+  take for every peak the picker keeps the share of its per-scan centroids
+  that the instrument flagged Exception (Thermo's `PeakOptions` value 8,
+  `CENTROID_FLAGS["exception"]`, read on both backends by
+  `ReaderBackend.centroid_flags` since MAS-6). Count the Exception-majority
+  peaks the sidelobe flag already takes, those it misses, and the
+  satellites that are not Exception-majority, and read ten of each against
+  the raw profile. The census below read one instrument, so first check
+  that the gate's other instruments flag the same share and shape. If
+  Exception-majority peaks turn out to be ions (an isotopologue, a weak
+  real peak), stop there and report.
+  Otherwise leave every Exception centroid out of the OpenTFRaw backend's
+  `average_profile`, blanking its profile chunk per scan before averaging
+  as the vendor's averaging does, and out of `average_centroids` on both
+  backends, and bump `AVERAGED_PROFILE_GENERATION`. Keep the centroids
+  flagged Reference (the lock mass is an ion and can be the base peak) and
+  the Fragmented and Merged ones that are not also Exception.
+- **Why.** The reader opens a file with `IncludeReferenceAndExceptionData`
+  to keep the lock mass, which lets the Exception centroids in too, and
+  nothing downstream reads the flag. A census on 2026-10-23 read every
+  centroid of 165 Orbitrap files from one instrument: the 161 raws of demo
+  bundle 1.3.1 and the four MS2 raws a 1.4.0 candidate bundle adds, 1.4
+  million centroids. It found Exception on 7.0 % of them, in every file
+  (7.1 % of the MS1 centroids, 5.1 % of the MS2 ones). Read on every 16th
+  file (4,874 of them), 99.7 % sit within 200 ppm of an unflagged, brighter
+  line at under 5 % of its height (a median 0.5 %, 33 ppm away), in
+  clusters, at a per-scan S/N no weak-peak threshold removes. That is the
+  FT side lobe, and at 33 ppm it
+  is resolved, so it reaches the picker as a peak of its own. The ratio
+  test catches part of them: the log ("What the FT sidelobe flag still has
+  to find") records 43-236 peaks per Orbitrap set that the reference labels
+  artifacts and the flag misses, at -56 to +45 ppm around set A's reagent
+  ion, which is where Exception centroids sit. The instrument has already
+  said which centroids they are.
+- **Where.** `libraries/thermo/src/mascope_thermo/backend.py`
+  (`average_profile`, `average_centroids`, `AVERAGED_PROFILE_GENERATION`)
+  and `reader_pipeline.md`; read only, for the measurement,
+  `mascope_signal.peak` and `mascope_tools.alignment.utils`. A change to the
+  averaged profile moves the reproducibility goldens and ships with a new
+  demo bundle.
+- **Verify.** No peak the picker keeps on the demo raws is
+  Exception-majority; every peak lost is one the measurement read as a
+  lobe; no isotopologue of a bright line is lost; both backends leave out
+  the same centroids; G6 and G8 unchanged.
+- **Size.** L. Beside 5.4: the measurement reads what both take, and the
+  two land apart by footprint (MAS-443).
 
 ### Riders written into planned steps
 
