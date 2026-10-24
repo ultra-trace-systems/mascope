@@ -754,6 +754,19 @@ them, touching raw Orbitrap files only.
   centroid intensities in its ppm window per selected scan (vectorized per scan
   via a sorted prefix sum). The Thermo backend uses `GetChromatogramData`;
   parity is asserted by `test_xic_matches_thermo`.
+- **Axis fingerprint** (`axis_fingerprint/__init__.py`): the m/z offset a
+  file's mass calibration left in each frequency band of the Orbitrap axis,
+  read from the spacing of the stored profile points. It reads per-scan
+  profiles, never an average, and only a few of them: at most eight scans per
+  acquisition mode, one at a time through `scan_profile`. `profile_per_scan`
+  and `average_profile` would read every scan selected. It is defined on
+  OpenTFRaw's stored points, so under the Thermo backend the document is
+  `unavailable`. The file converter computes it as it converts a raw file
+  (`processor.py:RawProcessor.axis_fingerprint`) and stores it in the file's
+  `.props` as `axis_fingerprint`. The deployment's `[backend]
+  axis_fingerprint` setting decides that: `"ingest"` (the default) computes
+  it, `"off"` stores `{}`. A failure is stored as the `error` document and
+  never fails the file.
 
 ---
 

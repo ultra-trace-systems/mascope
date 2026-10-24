@@ -501,6 +501,19 @@ class BackendConfig(ModuleConfig):
     # converter for a file's first conversion, and by the backend for a
     # re-processing.
     composite_scan_streams: bool = False
+    # The axis fingerprint of a raw Orbitrap file: the m/z offset its mass
+    # calibration stored in each frequency band of the Orbitrap axis, read
+    # back from the stored profile (mascope_thermo.axis_fingerprint).
+    # "ingest" (the default) computes it as each file is converted and stores
+    # it in the file's .props, adding about a second to the conversion; "off"
+    # stores {} in its place. It is a measurement for clients that correct
+    # the axis themselves: nothing in Mascope's own processing reads it, and
+    # no m/z is altered by it, so switching it off changes no result.
+    #
+    # Read by the file converter: a change takes effect when it restarts, for
+    # the files converted from then on. Switching it back on does not compute
+    # it for the files converted while it was off.
+    axis_fingerprint: Literal["ingest", "off"] = "ingest"
     # Allowlist of per-record reference licences the peak-assignment database
     # stage (Stage A) may match against. The reference mirror carries a
     # licence per record from ingest through to results, and some sources

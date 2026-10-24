@@ -149,6 +149,18 @@ class H5Processor(BaseFileProcessor):
         return []
 
     @property
+    def axis_fingerprint(self) -> dict:
+        """The axis fingerprint: none for TofDaq h5 files.
+
+        It reads the frequency bands of an Orbitrap's m/z axis, which a
+        time-of-flight axis does not have.
+
+        :return: Empty dict
+        :rtype: dict
+        """
+        return {}
+
+    @property
     def _is_blank_measurement(self) -> bool:
         """Determine if the file being processed is a blank/zero measurement
 
