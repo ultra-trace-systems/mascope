@@ -80,7 +80,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.4f - a peak that is not separated | - |  | planned, from the same notes; gate G14; the bimodality criterion of the 0.10 review |
 | 3.4g - the chart draws each peak in the trace's unit, and a lone M0 | #2379 | 2026-10-19 | built: the lone M0 drawn, the envelope in the trace's unit; engine and tiers untouched |
 | 3.4h - the inspector links the other channels, and the listing column folds | - |  | planned, from the same notes |
-| 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - |  | planned |
+| 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | #2593 (the gate's anchors) |  | in two PRs (decided 2026-10-22). Built: the mass gate's fit takes the reagent pass's monoisotopic lines beside its commits; estimated on the pass-10 ledgers, all seven K3 files fit a calibration. Planned: the cap and the offset report (MAS-469), landing with 3.5b |
 | 3.5b - the envelope's tolerance, fitted per run | - |  | planned, from the plan owner's reading of 2026-09-25 and the pass-9 ledgers |
 | 3.6 - priors and the dataset's context | - |  | planned; two riders from the reference's 0.10 line (the review section) |
 | 3.7 - stage 3 gate, engine 0.6.0 | - |  | planned; read against the literature and chemical reasoning, not the reference (decision 27) |
@@ -527,6 +527,39 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   best-known mass in the file; the gate reads the reagent pass's
   monoisotopic hits as anchors beside the committed rows, which is what
   the reagent-line offset of step 2.5e already does for a thin library.
+- **Decided (2026-10-22, the plan owner).** The step lands in two PRs:
+  the gate's anchors first, on their own, then the cap and the offset
+  report together with 3.5b. The cap is two optional node parameters,
+  whichever is lower applying: `calibrant_tic_share_max`, a calibrant
+  line's share of its stream's ion current (the polarity's for a file
+  fit), and `peak_intensity_max`, beside `peak_intensity_min`. TOF off;
+  on the Orbitrap at the knee of each line's error against its TIC share,
+  measured first. The offset is fitted and reported in the fit's quality
+  block, not applied: the record stays a factor until the axis-fingerprint
+  project's reader change (MAS-18) makes the factor a function of m/z, and
+  applying the offset is a follow-up there.
+- **Built: the gate's anchors (#2593).** `fit_run_mass_accuracy` pools
+  every monoisotopic line the pre-pass claims - the reagent's ladder, the
+  air's ions and the calibrant beam; their isotope lines and the analyte
+  fragments claimed after the stages are left out - with the corroborated
+  commits, in a run and in the ingest fold alike. The centre's trend is
+  still fitted over the commits alone. `config.mass_calibration` counts
+  every point fitted in `anchors` and the source's lines among them in
+  `reagent_anchors`. Estimated on the testbed's stored pass-10 ledgers
+  through the branch's code, which reproduces every stored fit: K3 goes
+  from three of seven files with a calibration to seven, 8 or 9 of the 15
+  to 27 anchors the source's lines, each file judged at a trend over its
+  commits, from which the committed analytes' median sits within 0.03 ppm;
+  the constant centre there sits at -0.22 to +0.65 ppm against the
+  analytes' -0.35 to -0.08, 0.02 to 0.82 ppm above them, pulled up by the
+  calibrant beam's lines (+0.8 to +1.0). No K3 row changes tier: the ten
+  that gain a ceiling are all below assignability already. On B the centre does not move (0 to 2
+  lines among 100 to 413 anchors); on C2 it moves up by 0.01 to 0.05 ppm,
+  away from the analytes' median on five of six files, and the fitted
+  width doubles while the width judged at stays at the search's 0.58; on
+  D it moves at most 0.02, toward the analytes. Across all eleven sets
+  three TOF rows would lose a tier and two rows, on K and L, could gain
+  one. Pass 11 measures it on the live engine.
 
 ### 3.5b The envelope's tolerance, fitted per run
 

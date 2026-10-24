@@ -17,7 +17,7 @@ import asyncio
 import copy
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime as dt
 from datetime import timezone
@@ -1521,6 +1521,7 @@ def judge_commits(
     tier_bands: dict[str, float] | None = None,
     minor_channels: frozenset[str] = frozenset(),
     partner_gated_channels: frozenset[str] = frozenset(),
+    reagent_lines: Sequence[dict] = (),
 ) -> JudgedCommits:
     """Run the mass gate, the partner gate, the cross-channel pass and the
     tiering pass, and read the lines they find in doubt as their neighbours'.
@@ -1550,6 +1551,10 @@ def judge_commits(
         (``engine.apply_partner_gates``), read over both stages' rows after
         the mass gate, so a partner is a reading it left committed, and
         before the cross-channel pass, so a reading set aside is no rival.
+    :param reagent_lines: The reagent pre-pass's rows, whose monoisotopic lines
+        anchor the mass gate's calibration beside the commits
+        (``mass_gate.fit_run_mass_accuracy``). Read only, and the same in every
+        round: a claim moves a commit, never one of the source's lines.
     :return: The judged rows and each pass's summary.
     """
     claims: dict[str, EnvelopeClaim] = {}
@@ -1564,6 +1569,7 @@ def judge_commits(
             stage_a_accuracy=stage_a_accuracy,
             fallback_sigma_ppm=fallback_sigma_ppm,
             lines=lines,
+            reagent_lines=reagent_lines,
         )
         partner_gate = apply_partner_gates(
             judged,
@@ -2086,9 +2092,10 @@ def _stored_run_config(
 
     The mass calibration is the fifth, and the only one measured from the run's
     own answers rather than from its inputs: the offset and width its
-    corroborated commits turned out to have, which is what every committed row's
-    ``mass_z`` is stated in and what its gate demoted on. A z without the
-    calibration behind it is a number with no units.
+    corroborated commits and the lines its reagent pre-pass claimed turned out
+    to have, which is what every committed row's ``mass_z`` is stated in and
+    what its gate demoted on. A z without the calibration behind it is a
+    number with no units.
 
     The tiering is the sixth, and it is on the run for the same reason the tier
     BANDS are: a tier is only comparable across two runs together with the rules
@@ -3096,7 +3103,8 @@ async def _run_sample_assignment(
         # - the run's own mass calibration and the gate on it, since the
         #   corroboration it reads is a property of the whole ledger - which
         #   reading kept an isotopologue, and which peak a curated identity
-        #   claimed;
+        #   claimed - with the source's own lines the reagent pre-pass claimed
+        #   among its anchors;
         # - what the sample's other channels say about each committed neutral,
         #   and which readings of one ion nothing measured tells apart;
         # - why every committed row holds the tier it holds, which reads what
@@ -3118,6 +3126,7 @@ async def _run_sample_assignment(
             tier_bands=config.tier_bands(),
             minor_channels=resolved_profile.minor_channels,
             partner_gated_channels=resolved_profile.partner_gated_channels,
+            reagent_lines=reagent_assignments,
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel
@@ -3135,7 +3144,9 @@ async def _run_sample_assignment(
                 f"Sample '{sample.sample_item_name}' calibrates at "
                 f"{mass_calibration['mu_ppm']:+.3f} ppm, width "
                 f"{mass_calibration['sigma_ppm']:.3f} ppm over "
-                f"{mass_calibration['anchors']} corroborated commits, judged at "
+                f"{mass_calibration['anchors']} anchors "
+                f"({mass_calibration['reagent_anchors']} of them the source's own "
+                "lines), judged at "
                 f"{centre}; "
                 f"{mass_calibration['capped']} of "
                 f"{mass_calibration['committed'] - mass_calibration['corroborated']} "
@@ -3145,8 +3156,9 @@ async def _run_sample_assignment(
             runtime.logger.info(
                 f"Sample '{sample.sample_item_name}' corroborated "
                 f"{mass_calibration['corroborated']} of "
-                f"{mass_calibration['committed']} commits, too few to measure a "
-                "mass calibration; no row is gated on one"
+                f"{mass_calibration['committed']} commits and had "
+                f"{mass_calibration['reagent_anchors']} of the source's own lines, "
+                "too few to measure a mass calibration; no row is gated on one"
             )
         followed = mass_calibration["isotopologues"]
         runtime.logger.info(
@@ -3529,12 +3541,14 @@ async def _fold_sample_peaks_without_run(
     # The run's gate over this path's commits, so that a reference mirror's
     # row off calibration is capped here as a run would cap it, and an
     # isotopologue that does not track its parent is held as a run holds it.
+    # The source's lines anchor its calibration as they anchor a run's.
     # Nothing records the summary: there is no run to put it on.
     apply_mass_gate(
         stage_a,
         stage_a_accuracy=mass_accuracy,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
         lines=SpectrumLines.from_peaks(peaks_df, await _resolution_of(sample)),
+        reagent_lines=reagent,
     )
     # ...and the run's same-ion check, through the channels a run would read,
     # so a reference-list row whose ion reads as well another way is not held

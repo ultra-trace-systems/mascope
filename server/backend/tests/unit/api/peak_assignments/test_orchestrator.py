@@ -459,6 +459,38 @@ class TestTheJudgedLedger:
         }
 
     @pytest.mark.asyncio
+    async def test_the_source_s_lines_anchor_the_runs_calibration(self):
+        # The urea source's three ladder ions are claimed before either stage
+        # and are no commit, but their masses are the file's best known: the
+        # gate fits beside the run's one corroborated commit over them.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.reagents import reagent_library
+
+        ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("r1", ladder["[CH4N2O+H]+"], 2.0e6),
+                ("r2", ladder["[(CH4N2O)2+H]+"], 3.0e6),
+                ("r3", ladder["[(CH4N2O)3+H]+"], 1.0e5),
+            ]
+        )
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        await _run(PeakAssignmentConfig(profile="UR", run_untargeted=False))
+
+        calibration = recorder.recorded_configs()[-1]["mass_calibration"]
+        # The library's monoisotopic row and the three lines.
+        assert (calibration["anchors"], calibration["reagent_anchors"]) == (4, 3)
+        assert (calibration["committed"], calibration["corroborated"]) == (2, 2)
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        assert {by_peak[peak]["role"] for peak in ("r1", "r2", "r3")} == {"reagent"}
+
+    @pytest.mark.asyncio
     async def test_the_passes_are_handed_the_runs_own_bands(self):
         # A row under the top band names it among its reasons, so the bands the
         # tiering pass reads are the ones the run tiered on.
