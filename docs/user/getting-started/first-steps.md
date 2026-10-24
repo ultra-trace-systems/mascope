@@ -81,6 +81,12 @@ password**, **[Two-factor authentication](../guides/two-factor.md)**, the
 light/dark **Theme** toggle, and **API Access Tokens** for the
 [SDK](../sdk/index.md) and the [File Agent](../instruments/index.md#the-file-agent).
 
+Its **Deleted datasets** tab (the bin icon) lists the datasets deleted in your
+workspaces, newest first: who deleted each one and when, whether it went alone
+or with its workspace, how many batches, samples and files it held, and, under
+the arrow, how it was described. The data itself is gone; the record stays.
+Administrators see every deleted dataset, those of deleted workspaces included.
+
 ## Create a dataset and a batch
 
 With a workspace selected, the left panel shows its **Datasets**. Data is
