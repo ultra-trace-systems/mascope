@@ -22,6 +22,17 @@ window: ``to_mzml`` writes them over the whole file, which a window's file
 would then contradict. A whole-file export keeps every scan and both
 chromatograms.
 
+**What the instrument is.** ``to_mzml`` describes the instrument from a model
+table of its own, which does not agree with the PSI-MS ontology everywhere
+(an accession of its table can be a term that is no instrument model), and
+with no ion source, no detector and no ``componentList``. Given an
+:class:`InstrumentConfiguration`, the pass replaces every
+``instrumentConfiguration`` the writer declares, under the writer's own ids
+so that the run and each scan still point at one, with the model term and,
+when all three are known, a ``componentList`` of the source, the analyser and
+the detector. The terms are the caller's: this module maps no names to
+accessions.
+
 The pass relies on the layout ``to_mzml`` writes, one element tag per line,
 and checks what it relies on: a spectrum whose scan number it cannot read, or
 a spectrum count that disagrees with the list's, raises :class:`MzMLLayoutError`
@@ -33,6 +44,8 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from typing import NamedTuple
+from xml.sax.saxutils import quoteattr
 
 import opentfraw
 
@@ -46,10 +59,36 @@ _SPECTRUM_LIST = re.compile(r'<spectrumList count="(\d+)"')
 _SPECTRUM_OPEN = re.compile(r"<spectrum\s")
 _SPECTRUM_SCAN = re.compile(r'\bid="[^"]*\bscan=(\d+)[^"]*"')
 _SPECTRUM_INDEX = re.compile(r'\bindex="\d+"')
+_CONFIGURATION_OPEN = re.compile(r'<instrumentConfiguration\s[^>]*\bid="([^"]*)"')
 
 
 class MzMLLayoutError(ValueError):
     """The writer's output is not laid out the way the pass reads it."""
+
+
+class CvParam(NamedTuple):
+    """One PSI-MS ``cvParam``: its accession, its name and its value."""
+
+    accession: str
+    name: str
+    value: str = ""
+
+
+class InstrumentConfiguration(NamedTuple):
+    """What an mzML file says the instrument is, as PSI-MS terms.
+
+    :param model: The instrument model term.
+    :param source: The ion source term, None if unknown.
+    :param analyser: The mass analyser term, None if unknown.
+    :param detector: The detector term, None if unknown. A ``componentList``
+        is written only with all three: mzML requires a source, an analyser
+        and a detector in one.
+    """
+
+    model: CvParam
+    source: CvParam | None = None
+    analyser: CvParam | None = None
+    detector: CvParam | None = None
 
 
 def write_mzml(
@@ -58,6 +97,7 @@ def write_mzml(
     polarity: Polarity | None = None,
     t_min: float | None = None,
     t_max: float | None = None,
+    instrument: InstrumentConfiguration | None = None,
 ) -> int:
     """Write ``datafile_path`` as mzML 1.1.0 to ``out_path``.
 
@@ -70,6 +110,8 @@ def write_mzml(
     :param polarity: ``"+"`` or ``"-"``, the window's polarity.
     :param t_min: The window's start [s], inclusive.
     :param t_max: The window's end [s], inclusive.
+    :param instrument: The instrument, written in place of the writer's
+        ``instrumentConfigurationList``; None keeps the writer's.
     :raises NoScansFoundError: The window holds no scan.
     :raises MzMLLayoutError: The writer's output could not be read.
     :return: The number of spectra written.
@@ -104,7 +146,7 @@ def write_mzml(
             open(full.name, encoding="utf-8") as source,
             open(part, "w", encoding="utf-8") as sink,
         ):
-            written = _filter(source, sink, keep)
+            written = _filter(source, sink, keep, instrument=instrument)
         os.replace(part, out_path)
     finally:
         for leftover in (full.name, part):
@@ -113,9 +155,15 @@ def write_mzml(
     return written
 
 
-def _filter(source, sink, keep: set[int] | None) -> int:
+def _filter(
+    source,
+    sink,
+    keep: set[int] | None,
+    instrument: InstrumentConfiguration | None = None,
+) -> int:
     """Copy ``source`` to ``sink``: the spectra ``keep`` names (every one if
-    ``None``), relabelled and re-indexed, and no chromatogram in a window.
+    ``None``), relabelled and re-indexed, no chromatogram in a window, and the
+    instrument configurations replaced by ``instrument`` when it is given.
 
     :return: The number of spectra written.
     """
@@ -124,8 +172,23 @@ def _filter(source, sink, keep: set[int] | None) -> int:
     in_spectrum = False
     keeping = False
     in_chromatograms = False
+    configurations: list[str] | None = None
+    configurations_written = False
 
     for line in source:
+        if configurations is not None:
+            match = _CONFIGURATION_OPEN.search(line)
+            if match:
+                configurations.append(match.group(1))
+            if "</instrumentConfigurationList>" in line:
+                if not configurations:
+                    raise MzMLLayoutError(
+                        "The writer's instrument configuration list is empty"
+                    )
+                sink.write(_configuration_list(configurations, instrument))
+                configurations = None
+                configurations_written = True
+            continue
         if in_spectrum:
             if keeping:
                 sink.write(line.replace(PROFILE_TERM, CENTROID_TERM))
@@ -149,6 +212,14 @@ def _filter(source, sink, keep: set[int] | None) -> int:
             in_spectrum = "</spectrum>" not in line
             continue
 
+        if instrument is not None and "<instrumentConfigurationList" in line:
+            if "</instrumentConfigurationList>" in line:
+                raise MzMLLayoutError(
+                    f"An instrument configuration list on one line: {line!r}"
+                )
+            configurations = []
+            continue
+
         if keep is not None and "<chromatogramList" in line:
             in_chromatograms = "</chromatogramList>" not in line
             continue
@@ -162,6 +233,10 @@ def _filter(source, sink, keep: set[int] | None) -> int:
                 )
         sink.write(line)
 
+    if instrument is not None and not configurations_written:
+        raise MzMLLayoutError(
+            "The writer's output has no instrument configuration list"
+        )
     if listed is None:
         raise MzMLLayoutError("The writer's output has no spectrum list")
     expected = listed if keep is None else len(keep)
@@ -170,3 +245,35 @@ def _filter(source, sink, keep: set[int] | None) -> int:
             f"{written} spectra written where {expected} were expected"
         )
     return written
+
+
+def _cv_param(term: CvParam, indent: str) -> str:
+    return (
+        f'{indent}<cvParam cvRef="MS" accession={quoteattr(term.accession)}'
+        f" name={quoteattr(term.name)} value={quoteattr(term.value)}/>\n"
+    )
+
+
+def _configuration_list(ids: list[str], instrument: InstrumentConfiguration) -> str:
+    """The ``instrumentConfigurationList`` for ``instrument``, one
+    ``instrumentConfiguration`` under each of the writer's ``ids``."""
+    components = [
+        ("source", instrument.source),
+        ("analyzer", instrument.analyser),
+        ("detector", instrument.detector),
+    ]
+    complete = all(term is not None for _tag, term in components)
+    lines = [f'  <instrumentConfigurationList count="{len(ids)}">\n']
+    for id_ in ids:
+        lines.append(f"    <instrumentConfiguration id={quoteattr(id_)}>\n")
+        lines.append(_cv_param(instrument.model, " " * 6))
+        if complete:
+            lines.append(f'      <componentList count="{len(components)}">\n')
+            for order, (tag, term) in enumerate(components, start=1):
+                lines.append(f'        <{tag} order="{order}">\n')
+                lines.append(_cv_param(term, " " * 10))
+                lines.append(f"        </{tag}>\n")
+            lines.append("      </componentList>\n")
+        lines.append("    </instrumentConfiguration>\n")
+    lines.append("  </instrumentConfigurationList>\n")
+    return "".join(lines)
