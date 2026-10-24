@@ -172,7 +172,7 @@ def stubbed_scorer(monkeypatch):
     async def match_params(sample_item_id):
         return SimpleNamespace(isotope_abundance_threshold=0.01)
 
-    async def seeded(sample, seeds, params):
+    async def seeded(sample, seeds, params, *, config=None):
         calls.append((sample.sample_item_id, set(seeds)))
         ion_by_seed = {("C6H12O6", "mech-h"): "ion-glc"}
         fit_by_ion = {"ion-glc": 0.81}
@@ -439,7 +439,7 @@ async def test_a_sample_that_cannot_be_measured_is_skipped_and_the_rest_are_meas
     batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
     scorer = batch_untargeted.score_seeds  # the fixture's canned pairing
 
-    async def failing(sample, seeds, params):
+    async def failing(sample, seeds, params, *, config=None):
         if sample.sample_item_id == samples["S2"]:
             raise FileNotFoundError("S2's peak file has moved")
         return await scorer(sample, seeds, params)
@@ -488,7 +488,7 @@ async def test_a_cancellation_mid_import_still_recomputes_and_stays_a_cancellati
     batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
     scorer = batch_untargeted.score_seeds
 
-    async def cancelled(sample, seeds, params):
+    async def cancelled(sample, seeds, params, *, config=None):
         if sample.sample_item_id == samples["S2"]:
             raise asyncio.CancelledError()
         return await scorer(sample, seeds, params)

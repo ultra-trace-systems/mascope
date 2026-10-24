@@ -92,6 +92,7 @@ from mascope_backend.api.new.peak_assignments.service import (
     fetch_mechanisms_by_notation,
     fetch_sample_mechanisms,
     load_sample_peaks,
+    sample_reagent_offset,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_RANK, TIER_UNASSIGNED
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
@@ -567,6 +568,12 @@ async def _search_sample(
         untargeted_seeds(
             matches_df, mechanism_id_by_notation, to_custom_element_format
         ),
+        # No Stage A ran on this path, so the centre is the one a run of the
+        # sample scored at, or the lines this search's profile claims off the
+        # whole peak list where no run recorded one.
+        reagent_offset=await sample_reagent_offset(
+            sample, peaks_df=peaks_df, resolved_profile=resolved_profile
+        ),
     )
     rows = untargeted_matches_to_peak_assignments(
         matches_df,
@@ -741,8 +748,10 @@ async def _propagate_to_sample(
         return 0
     sample = await fetch_sample(sample_item_id)
     match_params = await default_match_params(sample_item_id)
+    # Centred where this search's own re-score centres the searched sample:
+    # the reagent lines its configuration's profile claims.
     ion_by_seed, fit_by_ion, errors_by_pairing, _ = await score_seeds(
-        sample, seeds, match_params
+        sample, seeds, match_params, config=config
     )
     if not ion_by_seed:
         return 0

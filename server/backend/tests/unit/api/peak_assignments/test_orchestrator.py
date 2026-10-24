@@ -1508,6 +1508,11 @@ class TestResolvedProfile:
             offset = mocks["fit"].call_args.kwargs["reagent_offset"]
             assert (offset.lines, offset.beyond_width) == (3, True)
             assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+        # The search's commits are measured again as ions at the same offset,
+        # so a seed list too short to fit one is centred where Stage A was.
+        seeded = mocks["seeded"].call_args.kwargs["reagent_offset"]
+        assert (seeded.lines, seeded.beyond_width) == (3, True)
+        assert seeded.mu_ppm == pytest.approx(-1.3, abs=1e-6)
         scoring = mocks["compositions"].call_args.kwargs["scoring"]
         assert scoring.mu_ppm == pytest.approx(-1.3, abs=1e-6)
         recorded = recorder.recorded_configs()[-1]["pattern_scoring"]
@@ -1521,6 +1526,55 @@ class TestResolvedProfile:
         assert searched == (
             {181.0707, 300.1234} if library else {181.0707, 182.0741, 300.1234}
         )
+
+    @pytest.mark.asyncio
+    async def test_the_re_score_is_centred_where_the_library_fitted(self):
+        # A library that fits an offset of its own scores Stage A and the
+        # search there, wherever the reagent lines sit. The re-score the rows
+        # are tiered on is centred there too, not on the lines' -1.3.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.engine import (
+            SampleMassAccuracy,
+        )
+        from mascope_tools.composition.reagents import reagent_library
+
+        ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+        low = 1.0 - 1.3e-6
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 300.1234, 500.0),
+                ("r1", ladder["[CH4N2O+H]+"] * low, 2.0e6),
+                ("r2", ladder["[(CH4N2O)2+H]+"] * low, 3.0e6),
+                ("r3", ladder["[(CH4N2O)3+H]+"] * low, 1.0e5),
+            ]
+        )
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        _start(
+            {
+                "accuracy": patch(
+                    f"{_MOD}.sample_mass_accuracy",
+                    side_effect=lambda df, reagent: SampleMassAccuracy(
+                        mu_ppm=0.2, sigma_ppm=0.3, anchors=9, reagent=reagent
+                    ),
+                )
+            }
+        )
+
+        await _run(PeakAssignmentConfig(profile="UR"))
+
+        assert mocks["fit"].call_args.kwargs["reagent_offset"].mu_ppm == (
+            pytest.approx(-1.3, abs=1e-6)
+        )
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        assert scoring.mu_ppm == pytest.approx(0.2)
+        seeded = mocks["seeded"].call_args.kwargs["reagent_offset"]
+        assert seeded.mu_ppm == pytest.approx(0.2)
+        assert seeded.beyond_width
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

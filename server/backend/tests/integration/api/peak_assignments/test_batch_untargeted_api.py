@@ -10,7 +10,7 @@ anchor, the other sample is measured and takes a fit of its own or stays
 unassigned, and the consensus follows. See ``batch_untargeted.py``.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pandas as pd
@@ -18,7 +18,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from mascope_backend.api.new.peak_assignments import batch_untargeted
+from mascope_backend.api.new.peak_assignments import batch_untargeted, service
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     resolve_candidate,
     role_name,
@@ -31,17 +31,22 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     run_batch_untargeted_search,
     search_outcome,
 )
-from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.config import (
+    IN_APP_ENGINE,
+    PeakAssignmentConfig,
+)
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
     IonizationMechanism,
+    PeakAssignmentRun,
     SampleBatch,
     SampleFile,
     SampleItem,
 )
 from mascope_backend.db.id import gen_id
+from mascope_tools.composition.reagents import reagent_library
 
 
 pytestmark = pytest.mark.asyncio
@@ -232,7 +237,14 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
         with) in whichever sample the seeded scorer measures it.
     """
     by_id = {sample_id: name for name, sample_id in samples.items()}
-    calls = {"search": [], "score": [], "seeded_fits": [], "scoring": []}
+    calls = {
+        "search": [],
+        "score": [],
+        "seeded_fits": [],
+        "scoring": [],
+        "seeded_offsets": [],
+        "score_configs": [],
+    }
 
     def load_peaks(sample):
         return _frame(peaks[by_id[sample.sample_item_id]])
@@ -261,15 +273,17 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
     async def match_params(sample_item_id):
         return SimpleNamespace(isotope_abundance_threshold=0.01, mz_tolerance=5)
 
-    async def seeded_fits(sample, params, seeds):
+    async def seeded_fits(sample, params, seeds, *, reagent_offset):
         # The search's own re-score: the finder's reading measured again as an
         # ion, which is what the rows are tiered on. Canned here for the same
         # reason the finder is - these tests are about the pass, not the fit.
         calls["seeded_fits"].append((by_id[sample.sample_item_id], set(seeds)))
+        calls["seeded_offsets"].append(reagent_offset)
         return {seed: 0.88 for seed in seeds}
 
-    async def seeded(sample, seeds, params):
+    async def seeded(sample, seeds, params, *, config=None):
         calls["score"].append((by_id[sample.sample_item_id], set(seeds)))
+        calls["score_configs"].append((sample, config))
         ion_by_seed, fit_by_ion, errors = {}, {}, {}
         for formula, mechanism in seeds:
             if formula not in pairings:
@@ -402,6 +416,153 @@ async def test_a_secondary_channel_the_mode_declares_is_searched_once(
     assert all(ids.count("mech-nh4") == 1 for ids in searched)
 
 
+async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
+    folded_batch, stubbed_engine, monkeypatch
+):
+    # No run's pre-pass is on this path, so the search reads the sample's
+    # reagent lines off its own peak list and the re-score of its commits is
+    # centred there, as a run of the sample centres its own.
+    ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+    low = 1.0 - 1.3e-6
+    urea = [
+        ("r1", ladder["[CH4N2O+H]+"] * low, 2.0e6),
+        ("r2", ladder["[(CH4N2O)2+H]+"] * low, 3.0e6),
+        ("r3", ladder["[(CH4N2O)3+H]+"] * low, 1.0e5),
+    ]
+    monkeypatch.setattr(
+        batch_untargeted,
+        "load_sample_peaks",
+        lambda sample: _frame(_PEAKS["S1"] + urea),
+    )
+
+    await run_batch_untargeted_search(
+        folded_batch["batch_id"], PeakAssignmentConfig(profile="UR")
+    )
+
+    [offset] = stubbed_engine["seeded_offsets"]
+    assert (offset.lines, offset.beyond_width) == (3, True)
+    assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+
+    # The propagation of the same run measures the other sample under the
+    # search's own configuration, so it resolves the same lines to the same
+    # offset rather than the auto profile, whose mechanisms name no reagent.
+    monkeypatch.setattr(
+        service, "load_sample_peaks", batch_untargeted.load_sample_peaks
+    )
+    monkeypatch.setattr(
+        service, "fetch_sample_mechanisms", batch_untargeted.fetch_sample_mechanisms
+    )
+    propagated = stubbed_engine["score_configs"]
+    assert propagated
+    for sample, config in propagated:
+        assert config.profile == "UR"
+        assert await service.sample_reagent_offset(sample, config) == offset
+    assert await service.sample_reagent_offset(propagated[0][0]) is None
+
+
+async def _record_run(
+    session_factory, sample_item_id, status, minutes_ago, scoring, engine=IN_APP_ENGINE
+):
+    now = datetime.now(timezone.utc)
+    async with session_factory() as session:
+        session.add(
+            PeakAssignmentRun(
+                peak_assignment_run_id=gen_id(),
+                sample_item_id=sample_item_id,
+                engine=engine,
+                engine_version="0.1.0-test",
+                status=status,
+                config={"run_untargeted": True, "pattern_scoring": scoring},
+                peak_assignment_run_utc_created=now - timedelta(minutes=minutes_ago),
+            )
+        )
+        await session.commit()
+
+
+def _scoring(mu_ppm, mu_source):
+    return {
+        "sigma_ppm": 0.583,
+        "mu_ppm": mu_ppm,
+        "sigma_source": "fitted",
+        "mu_source": mu_source,
+        "fitted_anchors": 12,
+        "reagent_lines": 3,
+        "reagent_mu_ppm": -1.3,
+    }
+
+
+async def test_a_sample_with_a_run_is_re_scored_where_that_run_scored(
+    async_session_factory, folded_batch, stubbed_engine, monkeypatch
+):
+    # The uronium case: the sample's library fitted its own offset near zero,
+    # and its reagent lines sit beyond the width at -1.3 ppm. A run scored it
+    # at the library's fit, so the search's re-score is centred there too.
+    samples = folded_batch["samples"]
+    ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+    low = 1.0 - 1.3e-6
+    urea = [
+        ("r1", ladder["[CH4N2O+H]+"] * low, 2.0e6),
+        ("r2", ladder["[(CH4N2O)2+H]+"] * low, 3.0e6),
+        ("r3", ladder["[(CH4N2O)3+H]+"] * low, 1.0e5),
+    ]
+    monkeypatch.setattr(
+        batch_untargeted,
+        "load_sample_peaks",
+        lambda sample: _frame(_PEAKS["S1"] + urea),
+    )
+    # The latest completed in-app run is the one read: not an older one, nor
+    # one still running or failed since, nor a newer import, whose config is
+    # the client's own and need not hold a well-formed snapshot.
+    await _record_run(
+        async_session_factory, samples["S1"], "completed", 60, _scoring(-0.5, "fitted")
+    )
+    await _record_run(
+        async_session_factory, samples["S1"], "completed", 30, _scoring(-0.05, "fitted")
+    )
+    await _record_run(
+        async_session_factory,
+        samples["S1"],
+        "completed",
+        10,
+        {"mu_source": "fitted", "mu_ppm": None},
+        engine="ext",
+    )
+    await _record_run(
+        async_session_factory, samples["S1"], "running", 5, _scoring(-2.0, "fitted")
+    )
+    await _record_run(
+        async_session_factory, samples["S1"], "failed", 1, _scoring(-2.0, "fitted")
+    )
+
+    await run_batch_untargeted_search(
+        folded_batch["batch_id"], PeakAssignmentConfig(profile="UR")
+    )
+
+    [offset] = stubbed_engine["seeded_offsets"]
+    assert offset == service.ReagentOffset(mu_ppm=-0.05, lines=12, beyond_width=True)
+
+    # The other sample has no run, so its propagation claims its lines under
+    # the search's configuration; once a run records a centre, that is read.
+    monkeypatch.setattr(
+        service, "load_sample_peaks", batch_untargeted.load_sample_peaks
+    )
+    monkeypatch.setattr(
+        service, "fetch_sample_mechanisms", batch_untargeted.fetch_sample_mechanisms
+    )
+    sample, config = next(
+        (sample, config)
+        for sample, config in stubbed_engine["score_configs"]
+        if sample.sample_item_id == samples["S2"]
+    )
+    claimed = await service.sample_reagent_offset(sample, config)
+    assert (claimed.lines, claimed.beyond_width) == (3, True)
+    assert claimed.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+    await _record_run(
+        async_session_factory, samples["S2"], "completed", 1, _scoring(0.0, "none")
+    )
+    assert await service.sample_reagent_offset(sample, config) is None
+
+
 async def test_the_other_sample_is_measured_and_takes_a_fit_of_its_own(
     async_session_factory, folded_batch, stubbed_engine
 ):
@@ -487,7 +648,7 @@ async def test_a_sample_that_cannot_be_measured_is_skipped_and_the_pass_finishes
     batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
     scorer = batch_untargeted.score_seeds  # the fixture's canned pairing
 
-    async def failing(sample, seeds, params):
+    async def failing(sample, seeds, params, *, config=None):
         if sample.sample_item_id == samples["S2"]:
             raise FileNotFoundError("S2's peak file has moved")
         return await scorer(sample, seeds, params)
