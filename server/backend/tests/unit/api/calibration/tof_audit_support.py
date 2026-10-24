@@ -82,6 +82,7 @@ def write_file(
     *,
     sparsity: bool = True,
     record: dict | None = None,
+    filename: str = FILENAME,
 ) -> str:
     """Write a TOF sample file whose store holds these peaks.
 
@@ -93,9 +94,10 @@ def write_file(
     :param sparsity: Whether the store has the ``sparsity`` variable, which
         stores written before it existed lack
     :param record: The stored calibration record; :data:`STORED_FIT`
+    :param filename: The file's name, which places it in the filestore
     :return: The file's name
     """
-    path = os.path.join(root, *_relative_path())
+    path = os.path.join(root, *_relative_path(filename))
     os.makedirs(path, exist_ok=True)
     peaks = sorted(peaks, key=lambda peak: peak["mz"])
     tof = np.array(
@@ -136,14 +138,14 @@ def write_file(
             },
             props,
         )
-    return FILENAME
+    return filename
 
 
-def _relative_path() -> list[str]:
+def _relative_path(filename: str = FILENAME) -> list[str]:
     return [
-        m_name.get_instrument_name(FILENAME),
-        "2026.10.20",
-        FILENAME,
+        m_name.get_instrument_name(filename),
+        m_name.timestamp_from_filename(filename).strftime("%Y.%m.%d"),
+        filename,
     ]
 
 

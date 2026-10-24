@@ -28,6 +28,14 @@ on the database record, or a failed fit's marker) is not evaluated: its coeffici
 file's mass axis, not the peak store's TOF index, so read at that index they
 put every peak far off. The report counts such files as ``unfitted`` instead.
 
+A file it cannot audit is counted as ``unreadable`` by its cause, and listed
+with it: no peak store; stored as a blank, which is how the converter stores
+a file it classified as blank or one too weak to fit instrument functions
+on (an empty peak store and no instrument functions); no instrument
+functions on a file that has peaks; or instrument functions it could not
+read. Anything else is counted by the exception's type, as the debug log's
+traceback tells.
+
 It reports, per mode and per fit:
 
 - each ion line's median and IQR error where the fit used it, and where it
@@ -78,7 +86,8 @@ Configuration, all through the environment:
   only where its IQR is at most this share of the window; elsewhere the
   offsets fill the window and the report says so instead of a median.
 - ``TOF_AUDIT_JSON=1``: also print the whole result as one JSON document,
-  per-file fits included, as the last line of stdout.
+  per-file fits and each unreadable file's cause included, as the last line
+  of stdout.
 
 Usage:
     TOF_AUDIT_INSTRUMENT=<name> mascope dev db script run audit_tof_calibration
@@ -355,6 +364,8 @@ class FileRow:
     #: The database's record (``sample_file.mz_calibration``), which says what
     #: the record in ``.props`` is: that one carries no stamp.
     mz_calibration: dict | None = None
+    #: None for a file the converter stored without instrument functions.
+    instrument_function_id: str | None = None
 
 
 def sample_per_day(rows: list[FileRow], per_day: int) -> list[FileRow]:
@@ -387,6 +398,7 @@ async def select_files(config: Config) -> list[FileRow]:
                 SampleFile.datetime_utc,
                 SampleItem.ionization_mode_id,
                 SampleFile.mz_calibration,
+                SampleFile.instrument_function_id,
             )
             .join(SampleItem, SampleItem.sample_file_id == SampleFile.sample_file_id)
             .where(
@@ -398,11 +410,18 @@ async def select_files(config: Config) -> list[FileRow]:
             .order_by(SampleFile.datetime_utc, SampleFile.filename)
         )
         rows = {}
-        for sample_file_id, filename, acquired, mode_id, record in result.all():
+        for (
+            sample_file_id,
+            filename,
+            acquired,
+            mode_id,
+            record,
+            function_id,
+        ) in result.all():
             known = rows.get(sample_file_id)
             if known is None or (known.ionization_mode_id is None and mode_id):
                 rows[sample_file_id] = FileRow(
-                    sample_file_id, filename, acquired, mode_id, record
+                    sample_file_id, filename, acquired, mode_id, record, function_id
                 )
     return sample_per_day(list(rows.values()), config.per_day)
 
@@ -571,6 +590,26 @@ async def prepare_mode(
 
 # --- One file ---
 
+#: Why a file could not be audited, as the report counts it.
+NO_PEAK_STORE = "no peak store"
+#: The converter's blank: an empty peak store and no instrument functions,
+#: for a file classified as blank or too weak to fit instrument functions on.
+STORED_AS_BLANK = "stored as a blank (no peaks, no instrument functions)"
+NO_INSTRUMENT_FUNCTIONS = "no instrument functions"
+
+
+class Unreadable(Exception):
+    """A file the audit cannot read, and why."""
+
+    def __init__(self, cause: str):
+        super().__init__(cause)
+        self.cause = cause
+
+
+def unreadable_cause(error: Exception) -> str:
+    """What the report counts a file that could not be audited by."""
+    return error.cause if isinstance(error, Unreadable) else type(error).__name__
+
 
 @dataclass
 class FileAudit:
@@ -632,14 +671,30 @@ def _node_record(record: dict | None) -> bool:
 
 
 async def audit_file(row: FileRow, mode_audit: ModeAudit, config: Config) -> FileAudit:
-    """Refit one file under every set and model, and read what each says."""
-    stored = await asyncio.to_thread(audit.read_stored_peaks, row.filename)
+    """Refit one file under every set and model, and read what each says.
+
+    :raises Unreadable: When the file has no peak store or no instrument
+        functions to refit with.
+    """
+    try:
+        stored = await asyncio.to_thread(audit.read_stored_peaks, row.filename)
+    except FileNotFoundError as error:
+        raise Unreadable(NO_PEAK_STORE) from error
     record = (await asyncio.to_thread(m_io.read_props, row.filename)).get(
         "mz_calibration"
     )
-    _, resolution = await read_instrument_functions(
-        row.filename, polarity=mode_audit.polarity
-    )
+    try:
+        _, resolution = await read_instrument_functions(
+            row.filename, polarity=mode_audit.polarity
+        )
+    except Exception as error:  # noqa: BLE001 - said by its cause
+        if row.instrument_function_id is not None:
+            cause = f"instrument functions unreadable ({type(error).__name__})"
+        elif stored.peaks.sizes.get("mz", 0) == 0:
+            cause = STORED_AS_BLANK
+        else:
+            cause = NO_INSTRUMENT_FUNCTIONS
+        raise Unreadable(cause) from error
 
     fits: dict[str, dict | None] = {}
     warnings: dict[str, str | None] = {}
@@ -1176,6 +1231,7 @@ async def run_audit(config: Config) -> dict:
         "models": list(config.models),
         "modes": [],
         "files": [],
+        "unreadable": [],
     }
     report["without_mode"] = len(by_mode.pop(None, []))
     if report["without_mode"]:
@@ -1200,19 +1256,30 @@ async def run_audit(config: Config) -> dict:
             family_peaked_iqr=config.family_peaked_iqr,
         )
 
-        async def one(row: FileRow) -> FileAudit | None:
+        async def one(row: FileRow) -> FileAudit | str:
+            """The file's audit, or why it could not be read."""
             async with gate:
                 try:
                     return await audit_file(row, mode_audit, config)
                 except Exception as error:  # noqa: BLE001 - one file's failure
-                    summary.unreadable[type(error).__name__] += 1
+                    cause = unreadable_cause(error)
                     runtime.logger.opt(exception=True).debug(
-                        f"Could not audit {row.filename}"
+                        f"Could not audit {row.filename}: {cause}"
                     )
-                    return None
+                    return cause
 
-        for file in await asyncio.gather(*(one(row) for row in mode_rows)):
-            if file is None:
+        audited = await asyncio.gather(*(one(row) for row in mode_rows))
+        for row, file in zip(mode_rows, audited):
+            if isinstance(file, str):
+                summary.unreadable[file] += 1
+                report["unreadable"].append(
+                    {
+                        "sample_file_id": row.sample_file_id,
+                        "acquired": row.acquired.isoformat(),
+                        "mode": mode.ionization_mode_name,
+                        "cause": file,
+                    }
+                )
                 continue
             summarise_file(summary, file, mode_audit, config)
             report["files"].append(
