@@ -1798,6 +1798,13 @@ samples from the start of the raw file's axis, not the stored TOF index the
 audit reads at. The report counts such files as `unfitted` instead. The audit
 tells them from an applied fit by the file's database record, since `.props`
 holds both bare.
+A file it cannot audit is counted as unreadable by its cause, and listed with
+it in the JSON. "Stored as a blank" is a file the converter took for a blank,
+or found too weak to fit instrument functions on: it has an empty peak store
+and no instrument functions, so there is nothing to refit. The other causes
+are no peak store, no instrument functions on a file that has peaks, and
+instrument functions that could not be read. Anything else is counted by the
+error's type, and the debug log has its traceback.
 
 Everything is set through the environment:
 
@@ -1815,7 +1822,7 @@ Everything is set through the environment:
 | `TOF_AUDIT_FAMILY_SNR`, `TOF_AUDIT_FAMILY_WINDOW_PPM`, `TOF_AUDIT_FAMILY_DBE_MAX` | The family yardstick: strong peaks above this S/N (20), within this window (30 ppm), against formulas of up to this many double bonds and rings (3) |
 | `TOF_AUDIT_FAMILY_WINDOW_SPACING` | The family window is at most this share of the distance from a formula to its nearest neighbour (0.5). Above about 600 Th, and under `[M+Br]-` from about 300 Th, where the two bromine lattices interleave 17.7 mDa apart, that is narrower than 30 ppm |
 | `TOF_AUDIT_FAMILY_PEAKED_IQR` | A band's family offset is a reading only where its IQR is at most this share of the window (0.5). Where the offsets fill the window, the report says "no reading: flat" instead of a median, and the JSON has `"peaked": false` |
-| `TOF_AUDIT_JSON=1` | Also print the whole result as one JSON document, per-file fits included, as the last line of the output |
+| `TOF_AUDIT_JSON=1` | Also print the whole result as one JSON document, per-file fits and each unreadable file's cause included, as the last line of the output |
 
 The TOF mass calibration plan ([tof_calibration.md](dev/tof_calibration.md))
 is where the audit's readings go and what they decide.

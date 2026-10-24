@@ -9,6 +9,7 @@ from the database, one file's audit end to end on a sample file on disk, and
 how files add up to a report. The database is the unit tests' own.
 """
 
+import asyncio
 import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -32,6 +33,7 @@ from mascope_backend.api.models.target.compounds.target_compound_pydantic_model 
 )
 from mascope_backend.db import (
     Dataset,
+    InstrumentFunction,
     IonizationMechanism,
     IonizationMode,
     SampleBatch,
@@ -45,6 +47,7 @@ from mascope_backend.db import (
     Workspace,
 )
 from mascope_backend.db.scripts import audit_tof_calibration as script
+from mascope_signal.peak import write_empty_peak_timeseries
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api" / "calibration"))
@@ -215,9 +218,11 @@ def test_no_sample_is_every_file():
 @pytest_asyncio.fixture
 async def site(async_session_factory):
     """An instrument's TOF files around a week, in a mode with a collection
-    of three nitrate calibrants."""
+    of three nitrate calibrants. The last file's instrument functions are
+    stored in a shape that cannot be read; the other files have none."""
     instrument = f"AuditTof{gen_test_id()[:6]}"
     workspace_id, dataset_id, batch_id = gen_test_id(), gen_test_id(), gen_test_id()
+    function_id = gen_test_id()
     collection_id, mode_id, other_mode_id = gen_test_id(), gen_test_id(), gen_test_id()
     added = []
 
@@ -300,6 +305,16 @@ async def site(async_session_factory):
             polarity="-",
         )
         session.add(batch)
+        session.add(
+            InstrumentFunction(
+                instrument_function_id=function_id,
+                instrument=instrument,
+                method_file="audit",
+                datetime_utc=datetime(2026, 10, 18, 12, tzinfo=UTC),
+                peakshape=None,
+                resolution_function=None,
+            )
+        )
         await session.flush()
 
         files = {}
@@ -325,6 +340,7 @@ async def site(async_session_factory):
                 range=[10.0, 500.0],
                 polarity="-",
                 mz_calibration=SECOND_RECORD if key == "second" else None,
+                instrument_function_id=function_id if key == "last" else None,
             )
             session.add(sample_file)
             await session.flush()
@@ -359,6 +375,7 @@ async def site(async_session_factory):
         "other_mode_id": other_mode_id,
         "collection_id": collection_id,
         "mechanism": mechanism,
+        "function_id": function_id,
     }
 
     async with async_session_factory() as session:
@@ -368,6 +385,11 @@ async def site(async_session_factory):
         await session.execute(
             delete(SampleFile).where(
                 SampleFile.instrument.in_([instrument, f"{instrument}B"])
+            )
+        )
+        await session.execute(
+            delete(InstrumentFunction).where(
+                InstrumentFunction.instrument_function_id == function_id
             )
         )
         await session.execute(
@@ -464,6 +486,13 @@ async def test_a_run_reads_the_instrument_tof_files_in_the_range(site):
         SECOND_RECORD,
         None,
         None,
+    ]
+    assert [row.instrument_function_id for row in rows] == [
+        None,
+        None,
+        None,
+        None,
+        site["function_id"],
     ]
 
 
@@ -1200,8 +1229,17 @@ async def test_a_run_audits_each_mode_and_counts_what_it_could_not_read(
         report = await script.run_audit(config)
 
     by_mode = {mode["mode"].split()[0]: mode for mode in report["modes"]}
-    assert by_mode["Nitrate"]["unreadable"] == {"FileNotFoundError": 3}
-    assert by_mode["Other"]["unreadable"] == {"FileNotFoundError": 1}
+    assert by_mode["Nitrate"]["unreadable"] == {script.NO_PEAK_STORE: 3}
+    assert by_mode["Other"]["unreadable"] == {script.NO_PEAK_STORE: 1}
+    files = site["files"]
+    assert [
+        (entry["sample_file_id"], entry["cause"]) for entry in report["unreadable"]
+    ] == [
+        (files["first"], script.NO_PEAK_STORE),
+        (files["second"], script.NO_PEAK_STORE),
+        (files["last"], script.NO_PEAK_STORE),
+        (files["other mode"], script.NO_PEAK_STORE),
+    ]
     assert "collection/mode0" in by_mode["Nitrate"]["fits"]
     assert "collection/mode0" not in by_mode["Other"]["fits"]
     assert "nitrate/mode0" in by_mode["Other"]["fits"]
@@ -1212,6 +1250,70 @@ async def test_a_run_audits_each_mode_and_counts_what_it_could_not_read(
         _config(site["instrument"], mode=by_mode["Other"]["mode"])
     )
     assert [mode["mode"] for mode in only["modes"]] == [by_mode["Other"]["mode"]]
+
+
+@pytest.mark.asyncio
+async def test_a_run_counts_each_unreadable_file_by_its_cause(site, filestore):
+    """Read with the real instrument functions: a file the converter stored as
+    a blank has an empty peak store and none, a file with peaks may still
+    have none, and a file's own may not read. Each is counted, and listed,
+    by that cause rather than by the ``ValueError`` all three raise."""
+    files = site["files"]
+    async with script.async_session() as session:
+        names = dict(
+            (
+                await session.execute(
+                    select(SampleFile.sample_file_id, SampleFile.filename).where(
+                        SampleFile.sample_file_id.in_(
+                            [files["first"], files["second"], files["last"]]
+                        )
+                    )
+                )
+            ).all()
+        )
+    for key in ("first", "second", "last"):
+        support.write_file(
+            filestore, support.calibrant_peaks(), filename=names[files[key]]
+        )
+    # The converter's own blank store over the first
+    await asyncio.to_thread(write_empty_peak_timeseries, names[files["first"]])
+
+    report = await script.run_audit(_config(site["instrument"]))
+
+    by_mode = {mode["mode"].split()[0]: mode for mode in report["modes"]}
+    unreadable_functions = "instrument functions unreadable (ValueError)"
+    assert by_mode["Nitrate"]["unreadable"] == {
+        script.STORED_AS_BLANK: 1,
+        script.NO_INSTRUMENT_FUNCTIONS: 1,
+        unreadable_functions: 1,
+    }
+    assert [
+        (entry["sample_file_id"], entry["cause"], entry["mode"].split()[0])
+        for entry in report["unreadable"]
+        if entry["mode"] == by_mode["Nitrate"]["mode"]
+    ] == [
+        (files["first"], script.STORED_AS_BLANK, "Nitrate"),
+        (files["second"], script.NO_INSTRUMENT_FUNCTIONS, "Nitrate"),
+        (files["last"], unreadable_functions, "Nitrate"),
+    ]
+    assert report["files"] == []
+
+    lines = []
+    with patch.object(script.runtime.logger, "info", lines.append):
+        script.log_summary(by_mode["Nitrate"], _config(site["instrument"]))
+    assert any(
+        f"1 ({script.STORED_AS_BLANK})" in line
+        and f"1 ({script.NO_INSTRUMENT_FUNCTIONS})" in line
+        for line in lines
+    )
+
+
+@pytest.mark.parametrize(
+    "error", [FileNotFoundError("store"), ValueError("no peaks")], ids=["io", "value"]
+)
+def test_any_other_failure_is_counted_by_its_type(error):
+    assert script.unreadable_cause(error) == type(error).__name__
+    assert script.unreadable_cause(script.Unreadable("why")) == "why"
 
 
 @pytest.mark.asyncio
