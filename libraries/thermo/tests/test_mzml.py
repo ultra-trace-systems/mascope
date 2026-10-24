@@ -3,9 +3,10 @@
 The A/B the export rests on: every spectrum of the file it writes is read back
 with the standard library and held to the reader's own centroids for the same
 scan, through each backend available, so the peaks a third party reads are the
-peaks Mascope calibrates and assigns from. The window and the streaming pass
-are tested on the committed files (two MS1 scans each, at about 8 s and 16 s)
-and on hand-made writer output for the layouts they refuse.
+peaks Mascope calibrates and assigns from. The window, the streaming pass and the
+instrument it writes are tested on the committed files (an Orbitrap Exploris
+120, two MS1 scans each, at about 8 s and 16 s) and on hand-made writer output
+for the layouts they refuse.
 """
 
 import base64
@@ -19,7 +20,13 @@ import pytest
 from thermo_test_support import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
 
 from mascope_thermo.backend import open_backend
-from mascope_thermo.mzml import MzMLLayoutError, _filter, write_mzml
+from mascope_thermo.mzml import (
+    CvParam,
+    InstrumentConfiguration,
+    MzMLLayoutError,
+    _filter,
+    write_mzml,
+)
 from mascope_thermo.thermo import NoScansFoundError
 
 
@@ -173,7 +180,7 @@ def test_an_empty_window_writes_nothing(tmp_path):
 def test_a_failed_write_leaves_no_file(tmp_path, monkeypatch):
     import mascope_thermo.mzml as m_mzml
 
-    def broken(_source, _sink, _keep):
+    def broken(_source, _sink, _keep, **_kwargs):
         raise MzMLLayoutError("broken")
 
     monkeypatch.setattr(m_mzml, "_filter", broken)
@@ -193,11 +200,11 @@ def test_two_writes_of_one_output_do_not_share_a_staging_file(tmp_path, monkeypa
     real_filter = m_mzml._filter
     nested = []
 
-    def filter_then_write_again(source, sink, keep):
+    def filter_then_write_again(source, sink, keep, **kwargs):
         if not nested:
             nested.append(None)
             nested[0] = write_mzml(POS_ORBI_FILE_PATH, str(out), t_max=12.0)
-        return real_filter(source, sink, keep)
+        return real_filter(source, sink, keep, **kwargs)
 
     monkeypatch.setattr(m_mzml, "_filter", filter_then_write_again)
     written = write_mzml(POS_ORBI_FILE_PATH, str(out))
@@ -206,6 +213,90 @@ def test_two_writes_of_one_output_do_not_share_a_staging_file(tmp_path, monkeypa
     assert written == 2
     assert [s["scan"] for s in _spectra(out)] == [1, 2]
     assert os.listdir(tmp_path) == ["out.mzML"]
+
+
+EXPLORIS_120 = InstrumentConfiguration(
+    model=CvParam("MS:1003095", "Orbitrap Exploris 120"),
+    source=CvParam("MS:1000071", "chemical ionization"),
+    analyser=CvParam("MS:1000484", "orbitrap"),
+    detector=CvParam("MS:1000624", "inductive detector"),
+)
+
+
+def _terms(element) -> list[tuple[str, str]]:
+    return [
+        (p.get("accession"), p.get("name")) for p in element.findall("m:cvParam", NS)
+    ]
+
+
+def _configurations(path) -> dict[str, dict]:
+    """Each instrument configuration of an mzML file, by its id: its own
+    terms and its components' (tag, order, terms)."""
+    root = ET.parse(path).getroot()
+    configuration_list = root.find("m:instrumentConfigurationList", NS)
+    configurations = {}
+    for configuration in configuration_list.findall("m:instrumentConfiguration", NS):
+        component_list = configuration.find("m:componentList", NS)
+        components = None
+        if component_list is not None:
+            components = [
+                (child.tag.split("}")[1], child.get("order"), _terms(child))
+                for child in component_list
+            ]
+            assert int(component_list.get("count")) == len(components)
+        configurations[configuration.get("id")] = {
+            "terms": _terms(configuration),
+            "components": components,
+        }
+    assert int(configuration_list.get("count")) == len(configurations)
+    return configurations
+
+
+@pytest.mark.parametrize("window", [{}, {"t_min": 12.0}])
+def test_the_instrument_is_the_callers_terms(tmp_path, window):
+    out = tmp_path / "out.mzML"
+    write_mzml(POS_ORBI_FILE_PATH, str(out), instrument=EXPLORIS_120, **window)
+
+    configurations = _configurations(out)
+    expected = {
+        "terms": [("MS:1003095", "Orbitrap Exploris 120")],
+        "components": [
+            ("source", "1", [("MS:1000071", "chemical ionization")]),
+            ("analyzer", "2", [("MS:1000484", "orbitrap")]),
+            ("detector", "3", [("MS:1000624", "inductive detector")]),
+        ],
+    }
+    assert configurations and all(c == expected for c in configurations.values())
+
+    # The run and every scan still point at a configuration the file declares.
+    root = ET.parse(out).getroot()
+    refs = {root.find("m:run", NS).get("defaultInstrumentConfigurationRef")}
+    refs |= {
+        scan.get("instrumentConfigurationRef")
+        for scan in root.iter("{http://psi.hupo.org/ms/mzml}scan")
+    }
+    assert refs - {None} <= set(configurations)
+    assert None not in refs
+
+
+def test_without_an_instrument_the_writers_configurations_stay(tmp_path):
+    out = tmp_path / "out.mzML"
+    write_mzml(POS_ORBI_FILE_PATH, str(out))
+
+    configurations = _configurations(out)
+    assert all(c["components"] is None for c in configurations.values())
+
+
+def test_an_instrument_short_of_a_component_has_no_component_list(tmp_path):
+    out = tmp_path / "out.mzML"
+    instrument = EXPLORIS_120._replace(detector=None)
+    write_mzml(POS_ORBI_FILE_PATH, str(out), instrument=instrument)
+
+    for configuration in _configurations(out).values():
+        assert configuration == {
+            "terms": [("MS:1003095", "Orbitrap Exploris 120")],
+            "components": None,
+        }
 
 
 WRITER_OUTPUT = """\
@@ -258,3 +349,67 @@ def test_the_pass_refuses_a_count_it_did_not_write():
 def test_the_pass_refuses_output_without_a_spectrum_list():
     with pytest.raises(MzMLLayoutError, match="no spectrum list"):
         _filtered("<run>\n</run>\n", None)
+
+
+CONFIGURED_OUTPUT = (
+    """\
+  <instrumentConfigurationList count="2">
+    <instrumentConfiguration id="IC1">
+      <cvParam cvRef="MS" accession="MS:1003199" name="Orbitrap Exploris 120"/>
+    </instrumentConfiguration>
+    <instrumentConfiguration id="IC2">
+      <cvParam cvRef="MS" accession="MS:1003199" name="Orbitrap Exploris 120"/>
+      <cvParam cvRef="MS" accession="MS:1000484" name="orbitrap"/>
+    </instrumentConfiguration>
+  </instrumentConfigurationList>
+"""
+    + WRITER_OUTPUT
+)
+
+
+def test_the_pass_replaces_every_configuration_under_its_id():
+    text, _written = _filtered_with(CONFIGURED_OUTPUT, EXPLORIS_120)
+
+    assert "MS:1003199" not in text
+    assert '<instrumentConfigurationList count="2">' in text
+    assert text.count('<instrumentConfiguration id="IC1">') == 1
+    assert text.count('<instrumentConfiguration id="IC2">') == 1
+    assert text.count('accession="MS:1003095"') == 2
+
+
+def test_the_pass_quotes_the_terms_it_writes():
+    instrument = InstrumentConfiguration(CvParam("MS:0000000", 'A & "B" <C>'))
+    text, _written = _filtered_with(CONFIGURED_OUTPUT, instrument)
+
+    root = ET.fromstring(f'<mzML xmlns="{NS["m"]}">{text}</mzML>')
+    names = {p.get("name") for p in root.iter(f"{{{NS['m']}}}cvParam")}
+    assert 'A & "B" <C>' in names
+
+
+def test_the_pass_refuses_output_without_a_configuration_list():
+    with pytest.raises(MzMLLayoutError, match="no instrument configuration list"):
+        _filtered_with(WRITER_OUTPUT, EXPLORIS_120)
+
+
+def test_the_pass_refuses_an_empty_configuration_list():
+    text = (
+        '  <instrumentConfigurationList count="0">\n'
+        "  </instrumentConfigurationList>\n" + WRITER_OUTPUT
+    )
+    with pytest.raises(MzMLLayoutError, match="list is empty"):
+        _filtered_with(text, EXPLORIS_120)
+
+
+def test_the_pass_refuses_a_configuration_list_on_one_line():
+    text = (
+        '  <instrumentConfigurationList count="0"></instrumentConfigurationList>\n'
+        + WRITER_OUTPUT
+    )
+    with pytest.raises(MzMLLayoutError, match="on one line"):
+        _filtered_with(text, EXPLORIS_120)
+
+
+def _filtered_with(text: str, instrument) -> tuple[str, int]:
+    sink = io.StringIO()
+    written = _filter(io.StringIO(text), sink, None, instrument=instrument)
+    return sink.getvalue(), written

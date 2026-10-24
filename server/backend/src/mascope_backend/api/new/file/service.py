@@ -6,6 +6,7 @@ import tempfile
 
 from sqlalchemy import select
 
+from mascope_backend import vocabulary
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
@@ -20,7 +21,8 @@ from mascope_file.name import (
     get_sample_file_type,
     parse_path_from_item_filename,
 )
-from mascope_thermo.mzml import write_mzml
+from mascope_thermo.backend import open_backend
+from mascope_thermo.mzml import CvParam, InstrumentConfiguration, write_mzml
 from mascope_thermo.thermo import NoScansFoundError
 
 
@@ -181,7 +183,9 @@ async def export_mzml(
     (:func:`mascope_thermo.mzml.write_mzml`). One result is offered as the file
     itself, more than one as a zip. Only a Thermo raw file can be written: a
     TOF file, or a file whose raw data is not in the filestore, is skipped, and
-    so is a sample whose window holds no scan.
+    so is a sample whose window holds no scan. The instrument a file names is
+    written in the terms of :mod:`mascope_backend.vocabulary`, the batch
+    spreadsheet's, not in the reader's own (:func:`_instrument_configuration`).
 
     :param sample_file_ids: The sample files to write whole.
     :param sample_item_ids: The samples to write the windows of.
@@ -260,16 +264,21 @@ async def export_mzml(
             if get_sample_file_type(filename) != "orbi_raw":
                 not_found.append(name)
                 continue
+            datafile_path = filename_to_datafile_path(filename)
             try:
+                instrument = await asyncio.to_thread(
+                    _instrument_configuration, datafile_path
+                )
                 await asyncio.to_thread(
                     write_mzml,
-                    filename_to_datafile_path(filename),
+                    datafile_path,
                     user_temp_path(user_id, name)
                     if single
                     else os.path.join(out_dir, name),
                     polarity=polarity,
                     t_min=t0,
                     t_max=t1,
+                    instrument=instrument,
                 )
             except NoScansFoundError:
                 not_found.append(name)
@@ -321,3 +330,33 @@ async def export_mzml(
         "data": {"found": found, "not_found": not_found},
         "_notification_data": {"download": download},
     }
+
+
+def _instrument_configuration(datafile_path: str) -> InstrumentConfiguration:
+    """
+    The instrument an Orbitrap raw file names, as its mzML writes it.
+
+    The model is the vocabulary's term for the model the raw file names, as
+    the batch spreadsheet's is, or the ontology's Thermo parent term for a
+    model the vocabulary does not know; source, analyser and detector are the
+    vocabulary's terms for an Orbitrap.
+
+    :param datafile_path: The Orbitrap raw file.
+    :return: Its instrument configuration.
+    :rtype: InstrumentConfiguration
+    """
+    with open_backend(datafile_path) as backend:
+        model = backend.instrument_details().get("Model")
+    model_term = (
+        vocabulary.instrument_model_term(model) or vocabulary.THERMO_INSTRUMENT_MODEL
+    )
+
+    def param(term: vocabulary.CvTerm | None) -> CvParam | None:
+        return CvParam(term.accession, term.name) if term else None
+
+    return InstrumentConfiguration(
+        model=param(model_term),
+        source=param(vocabulary.source_term("orbi")),
+        analyser=param(vocabulary.analyser_term("orbi")),
+        detector=param(vocabulary.detector_term("orbi")),
+    )

@@ -5,7 +5,8 @@ The route is held to the access its two kinds of id need: a sample file the
 access downloading it needs, a sample guest access to its workspace. The task
 then writes real files: every sample file of this module resolves to the
 committed KORBI raw file (two positive MS1 scans, at about 8 s and 16 s), so a
-sample's window is seen to pick its scans by its own t0, t1 and polarity. What
+sample's window is seen to pick its scans by its own t0, t1 and polarity, and
+the file is seen to name the instrument in the vocabulary's terms. What
 a spectrum holds is ``mascope_thermo``'s to test (``tests/test_mzml.py``).
 
 Fixtures used:
@@ -53,6 +54,36 @@ def _scans(path) -> list[int]:
         int(spectrum.get("id").rsplit("scan=", 1)[1])
         for spectrum in root.findall("m:run/m:spectrumList/m:spectrum", NS)
     ]
+
+
+def _instrument_configurations(path) -> list[dict]:
+    """Each instrument configuration of an mzML file: its model's accession
+    and its components' (tag, accession)."""
+    root = ET.parse(path).getroot()
+    return [
+        {
+            "model": [p.get("accession") for p in ic.findall("m:cvParam", NS)],
+            "components": [
+                (c.tag.split("}")[1], c.find("m:cvParam", NS).get("accession"))
+                for c in ic.findall("m:componentList/*", NS)
+            ],
+        }
+        for ic in root.findall(
+            "m:instrumentConfigurationList/m:instrumentConfiguration", NS
+        )
+    ]
+
+
+#: The committed raw file's instrument, an Orbitrap Exploris 120, as the
+#: vocabulary gives it (OpenTFRaw's own table once wrote MS:1003199 for it).
+EXPLORIS_120 = {
+    "model": ["MS:1003095"],
+    "components": [
+        ("source", "MS:1000071"),
+        ("analyzer", "MS:1000484"),
+        ("detector", "MS:1000624"),
+    ],
+}
 
 
 # ============= The route: access =============
@@ -194,6 +225,8 @@ async def test_a_file_is_written_whole(raw_file, async_session_factory, sample_f
     assert result["_notification_data"]["download"] == name
     assert result["data"] == {"found": [name], "not_found": []}
     assert _scans(raw_file / name) == [1, 2]
+    configurations = _instrument_configurations(raw_file / name)
+    assert configurations and all(c == EXPLORIS_120 for c in configurations)
 
 
 @pytest.mark.asyncio
@@ -211,6 +244,8 @@ async def test_a_sample_is_written_as_its_window(
     name = f"{await _filename(async_session_factory, sample_file)}.{item_id}.mzML"
     assert result["_notification_data"]["download"] == name
     assert _scans(raw_file / name) == scans
+    configurations = _instrument_configurations(raw_file / name)
+    assert configurations and all(c == EXPLORIS_120 for c in configurations)
 
 
 @pytest.mark.asyncio

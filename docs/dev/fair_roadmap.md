@@ -301,6 +301,11 @@ the reasoning.
     ([#2596](https://github.com/ultra-trace-systems/mascope/issues/2596)), and
     no web app or SDK action yet
     ([#2595](https://github.com/ultra-trace-systems/mascope/issues/2595)).
+    The instrument is item 10's terms, not `to_mzml`'s (MAS-352): the export
+    replaces the writer's `instrumentConfigurationList` with the
+    vocabulary's model term and a `componentList` of source, analyser and
+    detector, and writes the ontology's Thermo parent term for a model the
+    vocabulary does not know.
 12. **Schymanski/MSI levels** alongside the private tier vocabulary. Already
     planned as [assignment_confidence.md](assignment_confidence.md) P4; this
     document only adds that it is also R1.3, and that the level belongs in the

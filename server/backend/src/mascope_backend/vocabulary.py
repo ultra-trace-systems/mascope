@@ -9,8 +9,8 @@ Mascope's own words: an instrument's name is what its site calls it, its
 class is ``"orbi"`` or ``"tof"``, a polarity is ``"+"`` or ``"-"``.
 
 This module is the one place the terms are written down. The batch export
-reads them from here; an ``Instrument`` row is meant to take its term from
-here as well, and an mzML writer its ``instrumentConfiguration``. Nothing
+and the mzML export's ``instrumentConfiguration`` read them from here; an
+``Instrument`` row is meant to take its term from here as well. Nothing
 here touches the database or a file: it maps values already recorded to
 terms, and a value it cannot map gives None, never a nearby term.
 
@@ -82,6 +82,15 @@ ORBITRAP_MODELS: tuple[CvTerm, ...] = (
     CvTerm("MS:1003499", "LTQ Orbitrap Velos/ETD"),
     CvTerm("MS:1003987", "Orbitrap Tribrid Apex"),
     CvTerm("MS:1003990", "Orbitrap Excedion"),
+)
+
+#: The ontology's parent of every Thermo model: what an mzML file of a
+#: Thermo raw file says the instrument is when :func:`instrument_model_term`
+#: does not know its model, since mzML asks for a model term and this one is
+#: true of any Thermo instrument. Not a model of :data:`ORBITRAP_MODELS`: a
+#: column or a field that wants the model stays empty instead.
+THERMO_INSTRUMENT_MODEL = CvTerm(
+    "MS:1000483", "Thermo Fisher Scientific instrument model"
 )
 
 #: Names the Thermo reader reports for a model that are not its PSI-MS name,
