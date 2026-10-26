@@ -162,3 +162,15 @@ MASCOPE_SDK_CONTRACT=1 uv run pytest libraries/ai/tests/  # + the demo stack
 The contract tests use the SDK's (`libraries/sdk/tests/test_contract.py`)
 settings: `MASCOPE_SDK_TEST_URL`, `MASCOPE_SDK_TEST_TOKEN` and
 `MASCOPE_SDK_TEST_WORKSPACE`.
+
+`tests/ai_golden.py` is the evaluation fixture: golden questions over the
+demo dataset, each answered through the tool surface by a solver and checked
+against its known answer (`docs/dev/ai_layer.md`, "The evaluation
+fixture"). Under the same switch, `test_ai_golden.py` runs them on the demo
+stack and ends with a report of what the surface answered and what it
+cannot. Outside pytest:
+
+```bash
+uv run python libraries/ai/tests/ai_golden.py run --url http://127.0.0.1:8080
+uv run python libraries/ai/tests/ai_golden.py list   # the question set
+```
