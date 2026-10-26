@@ -233,6 +233,60 @@ async def test_stage_a_is_told_where_the_reagent_lines_put_the_axis():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("read", [True, False], ids=["read", "none"])
+async def test_the_fold_claims_the_source_s_lines_at_the_files_resolution(read):
+    """The pre-pass reads an isotope line as one peak of the file here as a run
+    does, or the two ledgers disagree about which peaks are the source's."""
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+    from mascope_tools.composition.heuristic_filter import predict_resolved_isotopes
+    from mascope_tools.composition.reagents import reagent_library
+
+    def tof(mz):
+        return 5000.0
+
+    ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+    # The urea dimer's peak one mass unit up on a TOF, 19 ppm under its 13C line.
+    mzs, _, labels = predict_resolved_isotopes("C2H9N4O2", 1, 1e-3, tof)
+    stack, mocks = _patched()
+    stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    mocks["peaks"].return_value = pd.DataFrame(
+        {
+            "sample_peak_id": ["p1", "r1", "r2", "r2-m1"],
+            "mz": [
+                181.0707,
+                ladder["[CH4N2O+H]+"],
+                ladder["[(CH4N2O)2+H]+"],
+                float(mzs[labels.index("13C")]),
+            ],
+            "intensity": [5000.0, 2.0e6, 3.0e6, 1.1e5],
+        }
+    )
+    mocks["mechanisms"].return_value = (
+        ["m-h", "m-urea"],
+        [
+            SimpleNamespace(
+                ionization_mechanism_id=mechanism_id,
+                ionization_mechanism=notation,
+                ionization_mechanism_polarity="+",
+            )
+            for mechanism_id, notation in (
+                ("m-h", "[M+H]+"),
+                ("m-urea", "[M+CH4N2O+H]+"),
+            )
+        ],
+    )
+    mocks["resolution"].return_value = tof if read else None
+    with stack:
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    mocks["resolution"].assert_awaited_once()
+    folded = {row.sample_peak_id: row for row in mocks["fold"].call_args.kwargs["rows"]}
+    assert (folded["r2-m1"].role == "reagent") is read
+
+
+@pytest.mark.asyncio
 async def test_the_fold_gates_its_stage_a_rows_as_a_run_does():
     """A Stage A row off calibration is capped on this ledger too.
 

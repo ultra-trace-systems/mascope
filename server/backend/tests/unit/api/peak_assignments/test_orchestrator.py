@@ -511,6 +511,45 @@ class TestTheJudgedLedger:
         assert {by_peak[peak]["role"] for peak in ("r1", "r2", "r3")} == {"reagent"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("read", [True, False], ids=["read", "none"])
+    async def test_the_source_s_isotope_lines_are_claimed_at_the_files_resolution(
+        self, read
+    ):
+        # On a TOF the urea dimer's peak one mass unit up holds its 13C and 15N
+        # lines, and sits 19 ppm under the 13C line: the pre-pass finds it only
+        # where the run hands it the file's resolving power.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.heuristic_filter import (
+            predict_resolved_isotopes,
+        )
+        from mascope_tools.composition.reagents import reagent_library
+
+        def tof(mz):
+            return 5000.0
+
+        ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+        mzs, _, labels = predict_resolved_isotopes("C2H9N4O2", 1, 1e-3, tof)
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("r1", ladder["[CH4N2O+H]+"], 2.0e6),
+                ("r2", ladder["[(CH4N2O)2+H]+"], 3.0e6),
+                ("r2-m1", float(mzs[labels.index("13C")]), 1.1e5),
+            ]
+        )
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        mocks["resolution"].return_value = tof if read else None
+
+        await _run(PeakAssignmentConfig(profile="UR", run_untargeted=False))
+
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        assert (by_peak["r2-m1"]["role"] == "reagent") is read
+
+    @pytest.mark.asyncio
     async def test_the_passes_are_handed_the_runs_own_bands(self):
         # A row under the top band names it among its reasons, so the bands the
         # tiering pass reads are the ones the run tiered on.

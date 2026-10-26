@@ -718,7 +718,9 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   resolving power holds, so a TOF centre fitted after it no longer
   carries that bias. MAS-438 reads a neighbour's envelope the same way
   in the tiering pass's envelope rule and in the claims that read a
-  peak as the neighbour's line (tiering rule set 10).
+  peak as the neighbour's line (tiering rule set 10), and the reagent
+  pre-pass claims the source's own lines one per peak the file
+  resolves.
 - **Where.** `score_pattern_v2` in `heuristic_filter.py`: a matched
   line's band (a lower end and the natural share, with a centre and a
   floor for the TOF's form) and the absent line's detectability
