@@ -43,7 +43,20 @@ from mascope_backend.db import IonizationMechanism, async_session
 from mascope_backend.runtime import runtime
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
+from mascope_tools.composition.mass_accuracy import MASS_ACCURACY_MIN_ANCHORS
 from mascope_tools.composition.profiles import resolve_fallback_sigma_ppm
+
+
+#: The distinct ions a seeded frame's anchors must come from before its own
+#: width and offset are fitted. One ion's lines are one measurement of the
+#: axis, not several: they share the ion's own mass error. A bright ion that
+#: matches eight of its lines alone - a large carbon count, S, Cl, Br - would
+#: otherwise fit its own error as the offset and its lines' agreement as the
+#: width, at the 0.05 ppm floor, and read as a near-perfect fit wherever it sat
+#: inside the tolerance. So the fit asks for as many ions as it asks for lines;
+#: a seed list of fewer is scored as a lone seed is, at the class's width and
+#: the centre a run of the sample scores at.
+SEEDED_FIT_MIN_IONS = MASS_ACCURACY_MIN_ANCHORS
 
 
 def finite_or_none(value) -> float | None:
@@ -201,7 +214,10 @@ def gate_and_score(
     no width. Such a frame is scored at the instrument class's width, the one
     Stage A and the untargeted search stand in with, rather than at
     ``score_pattern_v2``'s generic 2 ppm, so one ion in one sample reads alike
-    alone and among many seeds.
+    alone and among many seeds. Lines are not enough on their own: below
+    :data:`SEEDED_FIT_MIN_IONS` distinct ions the frame is scored the same way
+    however many lines its ions matched, or a bright ion would be fitted on its
+    own lines and judged against itself.
 
     Nor can it fit an offset, below
     :data:`mass_accuracy.MASS_OFFSET_MIN_ANCHORS` lines, and an Orbitrap
@@ -222,7 +238,10 @@ def gate_and_score(
     """
     gated = apply_match_params(match_isotope_df, match_params)
     return score_ions_by_fit(
-        gated, fallback_sigma_ppm=fallback_sigma_ppm, reagent_offset=reagent_offset
+        gated,
+        fallback_sigma_ppm=fallback_sigma_ppm,
+        reagent_offset=reagent_offset,
+        min_anchor_ions=SEEDED_FIT_MIN_IONS,
     )
 
 
