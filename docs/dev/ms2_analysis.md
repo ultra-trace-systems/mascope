@@ -3,7 +3,7 @@
 # MS2 analysis: fragmentation spectra as a stored, assigned and served object
 
 - **Status:** design
-- **As of:** 2026-10-23
+- **As of:** 2026-10-26
 - **Tracked in:** [MS2 analysis](https://linear.app/ultra-trace/project/ms2-analysis-7fdc525bca51)
   (Linear, MAS-380 to MAS-407)
 - **What:** Fragmentation spectra as a stored, assigned and served object: the MS2 store, the fragment composition core shared with peaky, MS2 evidence on ledger rows, the MS2 tab, energy-resolved analysis.
@@ -220,8 +220,9 @@ The identification claims design maps `msms` evidence to Schymanski level 2
 for a *structure* and leaves the engine's own level at 4 at best
 ([identification_claims.md, section 5.4](identification_claims.md)); its
 MS/MS path is a library spectral match (phase 4 of
-[public_database_integration.md](public_database_integration.md), MAS-360),
-which has no project yet.
+[public_database_integration.md](public_database_integration.md)), tracked in
+this project's milestone 6, "Spectral library matching" (MAS-429 the reference
+spectra and library adapters, MAS-360 the ranking).
 
 ### 1.6 What peaky built, and what it had to work around
 
@@ -260,7 +261,8 @@ plan's phase 0 and 1:
 - GitHub #2391: OpenTFRaw's misread of version-66 scan-event records. The
   interim reader in Mascope stands; not this project's.
 - MAS-360: MS/MS candidate ranking by spectral similarity over library
-  spectra. A structure-level question; stays in the assignment quality plan.
+  spectra. A structure-level question; moved here on 2026-10-23, into
+  milestone 6, "Spectral library matching", after MAS-429.
 - Ingest decision 6: items per (precursor, activation) stream. Not needed
   by this design; left open.
 
