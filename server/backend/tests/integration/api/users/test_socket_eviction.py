@@ -725,6 +725,34 @@ async def test_a_disconnect_drops_the_socket_s_worker_record(person, sio):
 
 
 @pytest.mark.asyncio
+async def test_a_socket_signing_in_after_a_day_signed_out_is_held(
+    person, sio, monkeypatch
+):
+    """
+    The holding worker writes the socket's worker record again on every tick.
+
+    A tab signed out for longer than the record's TTL loses it, and a session
+    read can only refresh a key that is there. Without the re-write, signing in
+    again through the login route would leave a live socket reading as a ghost.
+    """
+    monkeypatch.setattr(storage_config, "session_renewal_interval", 0.01)
+    assert await connect("sid-late", {})
+    # The day passes with no session to refresh anything.
+    await redis_storage_client.client.delete(
+        storage_config.socket_worker_key("sid-late")
+    )
+    await authenticate_socket_connection(
+        sid="sid-late",
+        token=_token(person, datetime.now(timezone.utc)),
+        minimum_role="guest",
+    )
+
+    await asyncio.sleep(0.05)
+
+    assert await socket_is_held("sid-late")
+
+
+@pytest.mark.asyncio
 async def test_the_worker_heartbeat_is_renewed_and_removed_on_shutdown(
     person, sio, live_rate_limiter, monkeypatch
 ):

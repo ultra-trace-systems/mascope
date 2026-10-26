@@ -101,6 +101,23 @@ async def claim_socket(sid: str) -> None:
     await _beat()
     if not _heartbeat_running():
         _heartbeat = asyncio.create_task(_keep_beating())
+    await renew_socket_claim(sid)
+
+
+async def renew_socket_claim(sid: str) -> None:
+    """
+    Write (again) that this worker holds a web socket.
+
+    Call only on the worker holding the connection: from :func:`claim_socket`,
+    and from the socket's session renewal on every tick, whether or not it has
+    a session. A socket that sat signed out for longer than ``session_ttl``
+    would otherwise have lost its record by the time it signs in, and read as
+    a ghost for the rest of its connection; an EXPIRE cannot bring back a key
+    that has lapsed.
+
+    :param sid: Socket.IO session ID
+    :type sid: str
+    """
     try:
         await redis_storage_client.client.setex(
             storage_config.socket_worker_key(sid),
