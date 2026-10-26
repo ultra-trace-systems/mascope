@@ -23,6 +23,7 @@ import os
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage.client import redis_storage_client
 from mascope_backend.socket.storage.config import storage_config
+from mascope_backend.socket.storage.workers import socket_is_held
 
 
 class RoomTracker:
@@ -182,8 +183,9 @@ class RoomTracker:
         """
         The rooms the user's other web sockets hold, or ``None`` if none is left.
 
-        Only sockets with a live session count: one gone without a disconnect
-        (a worker died) holds nothing.
+        Only sockets with a live session on a running worker count: one gone
+        without a disconnect (its worker died) holds nothing, though its
+        session may outlive the worker by a day.
 
         :param user_id: User ID
         :type user_id: int
@@ -199,7 +201,9 @@ class RoomTracker:
         held: set[str] = set()
         live = False
         for other in others:
-            if not await client.exists(storage_config.session_key(other, "/")):
+            if not await client.exists(
+                storage_config.session_key(other, "/")
+            ) or not await socket_is_held(other):
                 continue
             live = True
             held |= await RoomTracker.socket_rooms(other)

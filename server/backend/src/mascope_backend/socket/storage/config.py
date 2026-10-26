@@ -36,6 +36,13 @@ class SocketStorageConfig(BaseModel):
     service_ttl: int = 30  # Presence key lifetime absent renewal
     service_renewal_interval: int = 10  # How often a connected service refreshes it
 
+    # A worker's heartbeat key tells a web socket it still holds from one a
+    # dead worker left behind (see storage/workers.py): the session above
+    # outlives its worker by up to a day, the heartbeat by worker_ttl. As for
+    # services, the renewal interval stays well under the TTL.
+    worker_ttl: int = 30  # Heartbeat key lifetime absent renewal
+    worker_renewal_interval: int = 10  # How often a running worker refreshes it
+
     # Redis key prefixes
     session_key_prefix: str = "mascope:session:"  # Session storage keys
     room_members_key_prefix: str = "mascope:rooms:members:"  # Users in room
@@ -43,6 +50,8 @@ class SocketStorageConfig(BaseModel):
     service_key_prefix: str = "mascope:service:"  # Service presence keys
     user_sockets_key_prefix: str = "mascope:sockets:user:"  # A user's web sockets
     socket_rooms_key_prefix: str = "mascope:sockets:rooms:"  # Rooms a socket is in
+    worker_key_prefix: str = "mascope:workers:"  # Worker heartbeat keys
+    socket_worker_key_prefix: str = "mascope:sockets:worker:"  # A socket's worker
 
     def session_key(self, sid: str, namespace: str) -> str:
         """
@@ -108,6 +117,28 @@ class SocketStorageConfig(BaseModel):
         :rtype: str
         """
         return f"{self.socket_rooms_key_prefix}{sid}"
+
+    def worker_key(self, worker_id: str) -> str:
+        """
+        Build Redis key for a worker's heartbeat.
+
+        :param worker_id: Worker identifier
+        :type worker_id: str
+        :return: Full Redis key (e.g., "mascope:workers:4f1c...")
+        :rtype: str
+        """
+        return f"{self.worker_key_prefix}{worker_id}"
+
+    def socket_worker_key(self, sid: str) -> str:
+        """
+        Build Redis key for the worker holding one web socket.
+
+        :param sid: Socket.IO session ID
+        :type sid: str
+        :return: Full Redis key (e.g., "mascope:sockets:worker:abc123")
+        :rtype: str
+        """
+        return f"{self.socket_worker_key_prefix}{sid}"
 
 
 # Global storage config instance

@@ -7,6 +7,7 @@ Components:
 - RedisStorageClient: Shared Redis connection
 - Room tracking: Cross-worker room membership queries
 - Session management: Authentication session CRUD operations
+- Worker liveness: which running worker holds a web socket
 """
 
 from mascope_backend.socket.storage.client import (
@@ -28,9 +29,16 @@ from mascope_backend.socket.storage.sessions import (
     forget_user_socket,
     get_session_user,
     get_user_socket_sids,
+    has_session,
     save_user_session,
     start_session_renewal,
     stop_session_renewal,
+)
+from mascope_backend.socket.storage.workers import (
+    claim_socket,
+    release_socket_claim,
+    socket_is_held,
+    stop_worker_heartbeat,
 )
 
 
@@ -41,6 +49,7 @@ __all__ = [
     "clear_user_session",
     "get_session_user",
     "get_user_socket_sids",
+    "has_session",
     "forget_user_socket",
     "start_session_renewal",
     "stop_session_renewal",
@@ -50,4 +59,8 @@ __all__ = [
     "is_service_connected",
     "start_presence_renewal",
     "stop_presence_renewal",
+    "claim_socket",
+    "release_socket_claim",
+    "socket_is_held",
+    "stop_worker_heartbeat",
 ]

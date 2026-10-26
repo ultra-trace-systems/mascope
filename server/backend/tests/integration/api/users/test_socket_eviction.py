@@ -50,9 +50,12 @@ from mascope_backend.socket.storage import (
     redis_storage_client,
     room_tracker,
     save_user_session,
+    socket_is_held,
     stop_session_renewal,
+    stop_worker_heartbeat,
 )
 from mascope_backend.socket.storage import sessions as session_store
+from mascope_backend.socket.storage import workers as worker_store
 from mascope_backend.socket.storage.config import storage_config
 
 
@@ -159,6 +162,7 @@ async def stop_renewals():
     yield
     for sid in list(session_store._renewal_tasks):
         await stop_session_renewal(sid)
+    await stop_worker_heartbeat()
 
 
 async def _open_socket(sid: str, user: User, issued: datetime) -> None:
@@ -749,6 +753,112 @@ async def test_a_socket_gone_without_a_disconnect_holds_no_room(person, sio):
     assert not await room_tracker.is_in_room(person.id, f"user-{person.id}")
 
 
+async def _strand(sid: str, worker: str = "a-worker-that-died") -> None:
+    """
+    Leave ``sid`` as an unclean worker death does: session and records intact.
+
+    Its worker ran no disconnect, so only the worker's heartbeat is gone.
+    """
+    await stop_session_renewal(sid)
+    await redis_storage_client.client.setex(
+        storage_config.socket_worker_key(sid), storage_config.session_ttl, worker
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_socket_its_dead_worker_left_holds_no_room(person, sio):
+    """
+    A dead worker's sockets keep their sessions for up to a day.
+
+    The user's last real tab closing must still clear every room, or
+    notification routing keeps emitting to rooms no tab of theirs is in.
+    """
+    await _open_socket("sid-ghost", person, datetime.now(timezone.utc))
+    await subscribe("sid-ghost", OTHER_ROOM)
+    await _strand("sid-ghost")
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    assert await get_session_user("sid-ghost"), "the ghost lost its session"
+
+    await disconnect("sid-a")
+
+    assert not await room_tracker.is_in_room(person.id, OTHER_ROOM)
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    assert not await room_tracker.is_in_room(person.id, f"user-{person.id}")
+
+
+@pytest.mark.asyncio
+async def test_leaving_a_room_a_dead_worker_s_socket_was_in_leaves_it(person, sio):
+    await _open_socket("sid-ghost", person, datetime.now(timezone.utc))
+    await _strand("sid-ghost")
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+
+    await unsubscribe("sid-a", RESOURCE_ROOM)
+
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+
+
+@pytest.mark.asyncio
+async def test_a_socket_on_another_running_worker_holds_its_rooms(person, sio):
+    """Liveness is the holding worker's heartbeat, not this worker's."""
+    await _open_socket("sid-b", person, datetime.now(timezone.utc))
+    await subscribe("sid-b", OTHER_ROOM)
+    await _strand("sid-b", worker="another-worker")
+    await redis_storage_client.client.setex(
+        storage_config.worker_key("another-worker"), storage_config.worker_ttl, "1"
+    )
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+
+    await disconnect("sid-a")
+
+    assert await room_tracker.is_in_room(person.id, OTHER_ROOM)
+    assert await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+
+
+@pytest.mark.asyncio
+async def test_a_disconnect_drops_the_socket_s_worker_record(person, sio):
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    assert await socket_is_held("sid-a")
+
+    await disconnect("sid-a")
+
+    assert not await redis_storage_client.client.exists(
+        storage_config.socket_worker_key("sid-a")
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_worker_heartbeat_is_renewed_and_removed_on_shutdown(
+    person, sio, live_rate_limiter, monkeypatch
+):
+    """
+    The heartbeat lives exactly as long as the worker.
+
+    It is refreshed while the worker runs, well inside its TTL, and a clean
+    shutdown removes it, so a socket whose disconnect did not run reads as
+    gone at once.
+    """
+    monkeypatch.setattr(storage_config, "worker_renewal_interval", 0.01)
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    beats: list[str] = []
+    setex = live_rate_limiter.setex
+
+    async def recording_setex(key: str, seconds: int, value: str) -> bool:
+        beats.append(key)
+        return await setex(key, seconds, value)
+
+    live_rate_limiter.setex = recording_setex
+    await asyncio.sleep(0.05)
+
+    worker_key = storage_config.worker_key(worker_store.worker_id())
+    assert beats.count(worker_key) >= 2
+    assert await socket_is_held("sid-a")
+
+    await stop_worker_heartbeat()
+
+    assert not await live_rate_limiter.exists(worker_key)
+    assert not await socket_is_held("sid-a")
+
+
 @pytest.mark.asyncio
 async def test_the_last_tab_closing_clears_every_room_of_the_user(person, sio):
     """Including a membership no socket's room record names (a lapsed record)."""
@@ -849,6 +959,30 @@ async def test_a_socket_gone_without_a_disconnect_is_dropped_from_the_index(
     assert await evict_ended_sessions(person.id) == 1
     assert await get_user_socket_sids(person.id) == {"sid-a"}
     assert _left(sio, "sid-dead") == set()
+
+
+@pytest.mark.asyncio
+async def test_eviction_drops_a_socket_its_dead_worker_left(person, sio):
+    """
+    A dead worker's socket keeps a session subscribe would still admit.
+
+    It holds no room for the user all the same: the room the evicted tab
+    leaves goes from the user's membership. The ghost is evicted with it, and
+    stays indexed: a worker that only stalled past its heartbeat still holds
+    its socket, which the next eviction must find.
+    """
+    now = datetime.now(timezone.utc)
+    await _open_socket("sid-ghost", person, now)
+    await _strand("sid-ghost")
+    await _open_socket("sid-old", person, now - LONG_AGO)
+
+    async with _cookie_client(_token(person, now)) as client:
+        resp = await client.post("/api/users/me/sign-out-everywhere")
+    assert resp.status_code == 200, resp.text
+
+    await _assert_evicted(sio, "sid-old", person)
+    assert _left(sio, "sid-ghost") == {RESOURCE_ROOM, SIGNED_IN_ROOM}
+    assert await get_user_socket_sids(person.id) == {"sid-old", "sid-ghost"}
 
 
 @pytest.mark.asyncio
@@ -977,3 +1111,4 @@ async def test_a_long_lived_socket_stays_on_record(person, sio, live_rate_limite
 
     assert storage_config.user_sockets_key(person.id) in refreshed
     assert storage_config.socket_rooms_key("sid-a") in refreshed
+    assert storage_config.socket_worker_key("sid-a") in refreshed
