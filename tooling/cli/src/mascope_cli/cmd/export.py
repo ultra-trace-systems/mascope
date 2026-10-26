@@ -303,10 +303,12 @@ def package(
 
     The archive holds one directory: a README.md that says what was measured,
     how, under what licence, by whom and with which software; DATA_LICENSE;
-    each sample file's raw file and the acquisition record it came with; each
-    batch's spreadsheet; the target collections matched and calibrated
-    against; the instrument functions; manifest.json, which says all of it
-    for a program; and SHA256SUMS, which `sha256sum -c` checks.
+    each sample file's raw file, packed as it was uploaded, and the
+    acquisition record it came with, less its machine block (the instrument
+    computer's host name and machine GUID); each batch's spreadsheet; the
+    target collections matched and calibrated against; the instrument
+    functions; manifest.json, which says all of it for a program; and
+    SHA256SUMS, which `sha256sum -c` checks.
 
     On a server the package is built inside the running prod backend
     container, from that stack's env, and copied out. A source checkout

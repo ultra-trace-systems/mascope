@@ -293,7 +293,10 @@ Not built:
 For the deposit-ready package of the FAIR roadmap's phase 3. The package is
 built (MAS-33): it carries each file's record as the sidecar beside its raw
 file, `raw/<file>.mascope.json`, and the record's four identifiers in the
-manifest's entry for the file, as they are stored. Its JSON-LD view on
+manifest's entry for the file, as they are stored. The sidecar it publishes
+leaves out the record's `machine` block, the instrument computer's host name
+and Windows machine GUID (MAS-482); the database keeps it, and nothing below
+reads it. Its JSON-LD view on
 schema.org and PROV is MAS-34's to write; this is the reading both sides hold
 to, so that the view has what it needs from the instrument side. There the
 identifiers export as `urn:uuid:<id>`.
