@@ -23,6 +23,9 @@ from .exceptions import ConfigurationError, MascopeAPIError, NotFoundError
 # Track whether we've already configured the SDK's loguru handler
 _log_handler_id: int | None = None
 
+#: The ID loguru gives the stderr handler it installs on import
+_DEFAULT_HANDLER_ID = 0
+
 #: (connect, read) timeout of the provenance request a loader makes once it
 #: has its frame. Its failure is tolerated, so it gets this and one attempt
 #: rather than the load's own budget, and cannot hold a finished frame back.
@@ -39,16 +42,17 @@ def _configure_logging(env_vars: dict[str, str | None]) -> None:
         or "INFO"
     ).upper()
 
-    if _log_handler_id is not None:
-        try:
-            logger.remove(_log_handler_id)
-        except ValueError:
-            # Already gone: something in the process removed every handler
-            # (``logger.remove()``) since the last client was made
-            pass
-    else:
-        # First call: remove loguru's default handler to avoid double logging
-        logger.remove()
+    # The first call drops loguru's default stderr handler (ID 0), which would
+    # print every SDK line a second time; a later one drops the handler the
+    # last client added. Either may be gone already: the application removed
+    # it, or every handler (``logger.remove()``). Handlers the application
+    # added itself are left in place.
+    try:
+        logger.remove(
+            _DEFAULT_HANDLER_ID if _log_handler_id is None else _log_handler_id
+        )
+    except ValueError:
+        pass
 
     _log_handler_id = logger.add(
         lambda msg: tqdm.write(

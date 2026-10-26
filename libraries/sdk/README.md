@@ -973,6 +973,11 @@ os.environ["MASCOPE_SDK_LOG_LEVEL"] = "DEBUG"
 from mascope_sdk import MascopeClient
 ```
 
+The SDK writes its lines to stderr through a handler of its own, filtered to
+`mascope_sdk`. The first client removes loguru's default stderr handler, so
+those lines are not printed twice. Handlers your application added, before or
+after, stay in place and receive the SDK's lines too.
+
 ### SSL Verification
 
 By default the SDK verifies SSL certificates. To disable verification (e.g. for local development with a self-signed certificate), set:
