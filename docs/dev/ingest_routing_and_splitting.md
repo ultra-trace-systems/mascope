@@ -1,7 +1,7 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-10-27
 - **Tracked in:** [Automatic ingest: routing and splitting](https://linear.app/ultra-trace/project/automatic-ingest-routing-and-splitting-68acd9575fa9) (Linear) and GitHub #2098
 - **Supersedes:** `ionization_method_config.md` (retired 2026-10-22; its target model is in phase 8 of section 10)
 - **What:** Automatic ingest: binding a file's chemistry by evidence and splitting it into streams, segments and windows.
@@ -104,7 +104,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is built with the composite cut (#2332) and shown with it (#2333), and so is its instrument function per segment; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
-| 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open; its first declaration channel is built: a record of the whole file that the control program writes and the File Agent sends, which binds the file at rung 0 ([acquisition_sidecar.md](acquisition_sidecar.md)); MS2 parts: first cut built (4.2) - a file with no MS1 scans is stored and, where nothing binds it, filed as an MS2 part |
+| 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open; its first declaration channel is built: a record of the whole file that the control program writes and the File Agent sends, which binds the file at rung 0 ([acquisition_sidecar.md](acquisition_sidecar.md)); MS2 parts: first cut built (4.2) - a file with no MS1 scans is stored and, where nothing binds it, filed as an MS2 part; centroid-only scans built (#1241): scans that stored their centroids alone are summed as their centroids, and their peaks are the instrument's |
 
 Related designs, and how this one relates to them (section 13):
 
@@ -3425,6 +3425,17 @@ Polarity always comes from the file, never from the filename.
   browser's side. A sample with no MS1 scans opens there with an empty
   spectrum and no peaks, and nothing yet shows its fragmentation scans or
   says that they exist; they are read with the SDK.
+- **Centroid-only scans (#1241).** Built: scans that stored their
+  centroids alone (`c` in the filter, 4.1) have no profile to average. Their
+  summed signal is their centroids, averaged as the peaks are and drawn as
+  sticks, and it says so, so the instrument-function fit reads no peak shape
+  off a stick: the resolution function is read off the resolution each
+  scan's centroids report, the strong ones where there are enough and never
+  a merged or side-lobe centroid, and the peak shape is a Gaussian. Their
+  peaks are the instrument's centroids, as every Orbitrap file's already
+  were. A selection that mixes profile and centroid scans is summed as a
+  profile, as before; the corpus holds no such file. A file converted before
+  stays the blank measurement it was filed as (9.1).
 - **Adduct-pair evidence** for methods without reagent ions in range.
 - **Manual acquisitions.** A file started with no method loaded records no
   scan event - 14 of the corpus's 182 - and a setting changed by hand part

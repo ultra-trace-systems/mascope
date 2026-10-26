@@ -29,7 +29,7 @@ the shapes, the spectra and what a reader must answer for each shape; this
 module only builds from it. A change to the fixture is a change there.
 
 Importable by the library tests too (``thermo_test_support.ms2_fixture``):
-nothing here imports the backend, except :func:`converted`, which runs the
+nothing here imports the backend, except :func:`convert`, which runs the
 backend's converter and imports it when called.
 """
 
@@ -301,17 +301,36 @@ def presented(shape: str) -> Iterator[Path]:
 def converted(shape: str, filestore: Path) -> Iterator[SimpleNamespace]:
     """Run the backend's converter over ``shape`` into ``filestore``.
 
-    The converter as it runs on an upload - the properties and the census,
-    the filestore directory and its copy of the file, the instrument-function
-    fit and peak detection - with the two calls to the server answered here:
-    the instrument config gets the id ``"instrument-config"``, and the
-    sample-file record is recorded instead of made.
-    The shape stays presented, and the filestore in place, while entered, so
-    what reads the stored file afterwards reads the shape.
+    :func:`convert`, with the shape presented. The shape stays presented, and
+    the filestore in place, while entered, so what reads the stored file
+    afterwards reads the shape.
 
     Backend only: imports the converter when called.
 
     :param shape: One of :data:`SHAPES`.
+    :param filestore: An empty directory to stand for the filestore.
+    :return: What :func:`convert` returns.
+    """
+    with presented(shape) as source, convert(source, filestore) as done:
+        yield done
+
+
+@contextmanager
+def convert(source: Path, filestore: Path) -> Iterator[SimpleNamespace]:
+    """Run the backend's converter over the raw file ``source`` into ``filestore``.
+
+    The converter as it runs on an upload - the properties and the census,
+    the filestore directory and its copy of the file, the instrument-function
+    fit and peak detection - with the two calls to the server answered here:
+    the instrument config gets the id ``"instrument-config"``, and the
+    sample-file record is recorded instead of made. The file is read as it
+    reads while this is entered: a presentation entered around it, a shape of
+    this fixture or another reading of a committed file, is what the
+    converter reads.
+
+    Backend only: imports the converter when called.
+
+    :param source: The raw file to convert.
     :param filestore: An empty directory to stand for the filestore.
     :return: ``props`` (the extracted ``SampleFileProps``), ``sample_dir``
         and ``records``: the record the converter asked the server for, as
@@ -329,7 +348,6 @@ def converted(shape: str, filestore: Path) -> Iterator[SimpleNamespace]:
 
     records = []
     with ExitStack() as stack:
-        source = stack.enter_context(presented(shape))
         for module in ("mascope_file.name", "mascope_file.io"):
             runtime = stack.enter_context(patch(f"{module}.runtime"))
             runtime.filestore = in_filestore
