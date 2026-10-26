@@ -75,6 +75,9 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
 from mascope_backend.api.new.auth.access_token.service import get_access_token
 from mascope_backend.api.new.auth.dependencies import current_active_user
 from mascope_backend.api.new.auth.devices.service import record_reported_instrument
+from mascope_backend.api.new.axis_fingerprint.routes import (
+    sample_file_axis_fingerprint_router,
+)
 from mascope_backend.api.new.workspaces.dependencies import (
     accessible_acquisition_instruments,
     check_instrument_workspace_access,
@@ -92,6 +95,7 @@ from mascope_file.name import (
 
 
 sample_files_router = APIRouter(prefix="/api/sample/files", tags=["Sample Files"])
+sample_files_router.include_router(sample_file_axis_fingerprint_router)
 
 
 @sample_files_router.get("")
