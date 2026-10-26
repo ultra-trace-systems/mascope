@@ -139,7 +139,7 @@ class Close:
         spread = f"{self.rel:.0%}" if self.rel else f"{self.abs:g}"
         if self.rel and self.rel < 0.01:
             spread = f"{self.rel * 1e6:g} ppm"
-        return f"{self.value:.6g} (within {spread})"
+        return f"{self.value:.10g} (within {spread})"
 
 
 @dataclass(frozen=True)
