@@ -31,7 +31,7 @@ another (MAS-388); this one reads every peak it is given.
 ```
 MS2 peaks (m/z [+ intensity])           window ions {label: ion formula}
         |  apply_offset: mz_cal = mz / (1 + offset_ppm * 1e-6)
-        v                                         | per parent, once (cached):
+        v                                         | per parent, once per call:
    for each peak x parent <-----------------------+ all sub-formulas -> fragment gate
         |  bisect the parent's sorted sub-formula masses
         v  within max(ppm * mz_cal * 1e-6, mda * 1e-3)
@@ -54,13 +54,17 @@ MS2 peaks (m/z [+ intensity])           window ions {label: ion formula}
   itself), or an ordered mapping `label -> ion formula`: the target plus the
   co-isolated window ions. Only strings: every one goes through `parse_ion`'s
   checks. Labels must be unique after `str()`, and all ions must share one
-  polarity. Which ions are a window's is the caller's to say: they are named,
-  never guessed (the note's decision 4).
+  polarity. Each ion is given once: one ion under two labels or two spellings
+  (`C10H17+` and `H17C10+`, `C7H8+` and `C7H8+.`, `[15N]` and `^N`) raises, as
+  it would be read as two parents and composition cannot tell isomers apart.
+  Which ions are a window's is the caller's to say: they are named, never
+  guessed (the note's decision 4).
 - **`offset_ppm`** (default `0.0`): the spectrum's constant-ppm axis offset,
   usually `mass_offset` on the surviving precursor.
 - **`tolerance`** (`Tolerance(ppm=READING_TOLERANCE_PPM, mda=READING_TOLERANCE_MDA)`),
   **`k_max`** (`K_MAX_DEFAULT`), **`allow_radical`** (`True`), **`spectrum`**
-  (`''`, the caller's key for the spectrum, which `ladder_gate` groups by).
+  (`''`, the caller's key for the spectrum, which `ladder_gate` groups by:
+  give each spectrum of a window its own).
 
 **Notation.** Formulas are written in Mascope's notation: Hill order as
 `utils.to_hill_order` writes it (C first, H second, the rest alphabetically),
@@ -98,7 +102,9 @@ I and [15N]; any other symbol, another isotope label included, raises.
 
 3. **The sub-formula grid of a parent** (`_parent_grid`, cached per
    composition AND charge - one formula as a cation and as an anion is two
-   grids). All element-wise sub-formulas (one numpy meshgrid over `0..count` per
+   grids). `read_fragments` fetches each window ion's grid once per call, so a
+   window of more ions than the cache holds does not rebuild them peak by peak.
+   All element-wise sub-formulas (one numpy meshgrid over `0..count` per
    element), then the **fragment gate**, one vectorised function that both the
    grid and `fragment_ok` call:
    - at least one non-H atom;
@@ -230,6 +236,12 @@ closed-shell library molecule**, whichever pieces the decomposition prints.
   `n_candidates` within (spectrum, peak, parent), `n_parents` within
   (spectrum, peak); a peak whose every reading was dropped becomes one
   unexplained row at its place.
+- The rows must be in `read_fragments`' order, and anything else raises: each
+  (spectrum, peak) together and at one m/z, an unexplained row alone, the ranks
+  of each (spectrum, peak, parent) 1, 2, ... in row order. Two spectra under
+  one `spectrum` key (the default `''`), or a table re-sorted by ppm or
+  intensity before the gate, would be read with the wrong steps and re-ranked
+  across spectra.
 
 Example: the hexose [M+NH4]+ C6H16NO6+ -> C6H7O3+ (loss H9NO3,
 `H2O + H2O + H2O + H3N`) is read only when C6H9O4+ (loss H7NO2) or C6H10NO3+
@@ -260,7 +272,7 @@ All in `mascope_tools.composition.ms2.readings`.
 | `CLOSED_SHELL_LOSSES` | 43 formulas | section 6 |
 | `RADICAL_LOSSES` | 16 formulas | section 6 |
 | `DEFAULT_TOLERANCE` | `Tolerance(5.0, 0.3)` | the documented window |
-| `_GRID_CACHE` | `32` | sub-formula grids cached, per (composition, charge) |
+| `_GRID_CACHE` | `32` | sub-formula grids cached, per (composition, charge); `read_fragments` holds its window's grids for the call, so a larger window builds each once a call, not at every peak |
 | `_LOSS_CACHE` | `65536` | loss decompositions cached, per (loss, `k_max`) |
 
 ## 6. The loss library (priority order)

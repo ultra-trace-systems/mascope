@@ -817,6 +817,18 @@ def test_radical_losses_are_flagged_ranked_last_and_optional():
     rd = M.read_fragments([_mz(oe)], p, tolerance=wide)
     assert _col(rd, "rank") == [1, 2] and _col(rd, "radical_loss") == [False, True]
     assert _col(rd, "parity") == ["EE", "OE"] and _col(rd, "dbe") == [3.5, 3.0]
+    # ... and before rule (b) (fewer pieces) and rule (d): at CH2O3-'s own m/z
+    # the radical reading is one piece at 0 ppm, yet comes after the closed-shell
+    # C4N-, two pieces at -43 ppm
+    cands = M.fragment_candidates(p, _mz("CH2O3-"), tolerance=wide)
+    assert [
+        (c.formula, c.loss_name, c.loss_pieces, c.radical_loss, round(c.ppm))
+        for c in cands
+    ] == [
+        ("NO3-", "C10H16O4", 1, False, 203),
+        ("C4N-", "H2O + C6H14O6", 2, False, -43),
+        ("CH2O3-", "C9H14NO4", 1, True, 0),
+    ]
     # the OE precursor's reading: an EE fragment by a radical loss
     rd = M.read_fragments([_mz("C7H7+")], "C7H8+.")
     assert (_col(rd, "parity"), _col(rd, "loss"), _col(rd, "radical_loss")) == (
@@ -1541,6 +1553,10 @@ def test_read_fragments_defaults_and_arguments_reach_the_reading():
         lambda: M.ladder_gate([], k=1),
         lambda: M.ladder_gate([], k=7),
         lambda: M.ladder_gate([], k=4.0),
+        lambda: M.ladder_gate(
+            M.read_fragments([_mz(HEX), _mz(CHAIN[1])], HEX, k_max=M.LADDER_K)
+            + M.read_fragments([_mz(HEX), _mz(CHAIN[4])], HEX, k_max=M.LADDER_K)
+        ),
     ],
 )
 def test_bad_inputs_are_refused(call):
@@ -1644,13 +1660,50 @@ def test_formula_strings_are_parsed_strictly():
     assert M.decompose_loss({"^N": 1, "H": 3}).pieces == ("H3[15N]",)
 
 
-def test_duplicate_window_ion_labels_are_refused():
-    """Also after str(): a sequence, and a mapping {1, '1'}. peaky:
+def test_duplicate_window_ions_and_labels_are_refused():
+    """Labels also after str(): a sequence, and a mapping {1, '1'}. Ions after
+    normalisation: one ion under two labels or two spellings would be read as
+    two parents (n_parents 2), and composition cannot tell isomers apart. Both
+    refused with or without peaks. peaky:
     test_parents_are_checked_ion_formula_strings."""
-    with pytest.raises(ValueError, match="duplicate"):
+    with pytest.raises(ValueError, match="duplicate window ion labels"):
         M.read_fragments([81.0698], ["C10H17+", "C10H17+"])
-    with pytest.raises(ValueError, match="duplicate"):
+    with pytest.raises(ValueError, match="duplicate window ion labels"):
         M.read_fragments([81.0698], {1: "C10H17+", "1": "C10H20[15N]+"})
+    for peaks in ([], [_mz("C6H9+")]):
+        with pytest.raises(
+            ValueError, match=r"duplicate window ion C10H17\+: labels 't' and 'x'"
+        ):
+            M.read_fragments(peaks, {"t": "C10H17+", "x": "H17C10+"})
+    with pytest.raises(ValueError, match=r"duplicate window ion C7H8\+: labels"):
+        M.read_fragments([_mz("C7H8+")], ["C7H8+", "C7H8+."])
+    with pytest.raises(ValueError, match=r"duplicate window ion C10H20\[15N\]\+"):
+        M.read_fragments([81.0698], {"a": "C10H20[15N]+", "b": "C10H20^N+"})
+    # one formula as a cation and an anion is two ions (and two polarities)
+    with pytest.raises(ValueError, match="both polarities"):
+        M.read_fragments([81.0698], ["C10H17O5+", "C10H17O5-"])
+
+
+def test_each_window_ion_grid_is_fetched_once_per_call(monkeypatch):
+    """read_fragments takes each window ion's grid once per call, not once per
+    peak: a window of more ions than the grid cache holds would otherwise miss
+    the cache at every peak and rebuild every grid (20x slower at 33 ions). No
+    peaks, no grid."""
+    calls = []
+    real = R._parent_grid
+
+    def counting(key, charge):
+        calls.append(key)
+        return real(key, charge)
+
+    monkeypatch.setattr(R, "_parent_grid", counting)
+    ions = [f"C{n}H{2 * n + 1}+" for n in range(1, R._GRID_CACHE + 2)]
+    peaks = [_mz(i) for i in ions[:6]]
+    rd = M.read_fragments(peaks, ions)
+    assert len(calls) == len(set(calls)) == len(ions)
+    assert sorted({r.peak for r in rd}) == list(range(6))
+    calls.clear()
+    assert M.read_fragments([], ions) == () and calls == []
 
 
 def test_oversize_parent_grid_is_refused_up_front():
@@ -2354,6 +2407,62 @@ def test_re_ranking_is_within_each_window_ion():
         r = [x for x in rd if x.spectrum == spec and x.formula == CHAIN[2]]
         assert _col(r, "parent") == ["hex", "w"] and _col(r, "rank") == [1, 1]
         assert _col(r, "n_parents") == [2, 2]
+
+
+def test_the_gate_refuses_rows_out_of_read_order():
+    """ladder_gate reads read_fragments' row order: each (spectrum, peak)
+    together at one m/z, an unexplained row alone, ranks 1, 2, ... within each
+    (spectrum, peak, parent). Two spectra under one key (the default
+    spectrum='') or a table re-sorted before the gate are refused: merged, a
+    peak's row disappeared and the ranks ran across spectra."""
+    k4 = M.LADDER_K
+    s1 = M.read_fragments([_mz(HEX), _mz(CHAIN[1])], HEX, k_max=k4)
+    s10 = M.read_fragments([_mz(HEX), _mz(CHAIN[4])], HEX, k_max=k4)
+    with pytest.raises(ValueError, match="spectrum '' peak 0 are not together"):
+        M.ladder_gate(s1 + s10)
+    # a key each: every peak stays, s10's unsupported four-piece reading
+    # becomes its peak's unexplained row
+    keyed = [dataclasses.replace(r, spectrum="a") for r in s1] + [
+        dataclasses.replace(r, spectrum="b") for r in s10
+    ]
+    assert [(r.spectrum, r.peak, r.rank) for r in M.ladder_gate(keyed)] == [
+        ("a", 0, 1),
+        ("a", 1, 1),
+        ("b", 0, 1),
+        ("b", 1, 0),
+    ]
+    # one peak each: the key does not come back, the parent's ranks restart
+    one = M.read_fragments([_mz(HEX)], HEX, k_max=k4)
+    with pytest.raises(ValueError, match="rank 1 where 2 belongs"):
+        M.ladder_gate(one + one)
+    # a table re-sorted by |ppm|: rank 2 comes before rank 1
+    p = "C6H16[15N]O6+"
+    rd = M.read_fragments(
+        [_mz(p), 113.02332], p, k_max=k4, tolerance=M.Tolerance(ppm=20.0)
+    )
+    assert [(r.peak, r.rank) for r in rd] == [(0, 1), (1, 1), (1, 2)]
+    with pytest.raises(ValueError, match="rank 2 where 1 belongs"):
+        M.ladder_gate(sorted(rd, key=lambda r: abs(r.ppm)))
+    # an unexplained row beside readings of one (spectrum, peak), either way
+    blank, read = _table(
+        [
+            ("s1", 0, "", "", "", "", 0, False, 0),
+            ("s1", 0, "A", "C5H7O3+", "H2O", "H2O", 1, False, 1),
+        ]
+    )
+    for rows in ([blank, read], [read, blank]):
+        with pytest.raises(ValueError, match="unexplained row beside readings"):
+            M.ladder_gate(rows)
+    # two parents of one (spectrum, peak) at two m/z: two spectra under one key
+    b, a = _table(
+        [
+            ("s1", 0, "B", "C5H7O3+", "H2O", "H2O", 1, False, 1),
+            ("s1", 0, "A", "C4H5O3+", "H2O", "H2O", 1, False, 1),
+        ]
+    )
+    assert M.ladder_gate([b, a]) == (b, a)
+    with pytest.raises(ValueError, match="peak 0 has two m/z"):
+        M.ladder_gate([b, dataclasses.replace(a, mz=a.mz + 1.0)])
 
 
 # ------------------------------------------------------------------ (D) ----
