@@ -189,7 +189,9 @@ def status():
     ``status.declares``, and the rung that reads it is covered in
     test_auto_process_declared.py. So is the count of the samples an earlier
     run made, which a park reads: none, unless ``status.samples`` says
-    otherwise. Request the fixture by name to read what
+    otherwise. And the chemistry detector, which would read the file's peak
+    store: ``status.detect`` gives what it was asked to read. Request the
+    fixture by name to read what
     was recorded:
     ``[(status, detail), ...]`` in order via :func:`_recorded`.
     """
@@ -208,6 +210,7 @@ def status():
         patch(
             f"{_SVC}._pipeline_item_count", new_callable=AsyncMock, return_value=0
         ) as samples,
+        patch(f"{_SVC}.record_chemistry_detection", new_callable=AsyncMock) as detect,
     ):
         census.return_value = []
         stitched.return_value = StoreStitch()
@@ -219,6 +222,7 @@ def status():
         record.stitched = stitched
         record.learn = learn
         record.samples = samples
+        record.detect = detect
         yield record
 
 
@@ -3318,3 +3322,130 @@ async def test_a_blank_whose_file_also_fragments_is_still_a_blank(status):
         "done",
         "Blank measurement: no peaks to calibrate, match or assign.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Chemistry detection: rung 5, as an audit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chosen, kept, rung",
+    [
+        (None, None, "token"),
+        (["im-001"], None, "explicit"),
+        (["im-001"], {"im-001": ItemProvenance("token", "mb-000000000001")}, "token"),
+        (["im-001"], {"im-001": ItemProvenance()}, None),
+    ],
+    ids=["a token", "a person", "a kept token", "a kept mode of no rung"],
+)
+async def test_the_detector_reads_each_bound_polarity_beside_its_rung(
+    status, chosen, kept, rung
+):
+    """What is stored beside the call is the rung the polarity's sample
+    records, so the audit and a count of samples by rung read one column."""
+    from mascope_backend.api.controllers.sample.files.process.detection import (
+        PolarityBinding,
+    )
+
+    mocks, sample_file = _start_single()
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=mocks["resolve"].return_value,
+    ):
+        await _run_pipeline(ionization_mode_ids=chosen, kept_provenance=kept)
+
+    status.detect.assert_awaited_once_with(
+        sample_file, [], ["-"], {"-": PolarityBinding("im-001", rung)}
+    )
+    assert _recorded_provenance(mocks)["im-001"].bound_by == rung
+
+
+@pytest.mark.asyncio
+async def test_the_detector_reads_a_file_its_method_bound(status):
+    from mascope_backend.api.controllers.sample.files.process.detection import (
+        PolarityBinding,
+    )
+
+    mocks, sample_file = _start_single()
+    mode = mocks["resolve"].return_value[0]
+    mocks["resolve"].side_effect = _no_token()
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=True):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=([_routing(mode)], None),
+        ):
+            await _run_pipeline()
+
+    status.detect.assert_awaited_once_with(
+        sample_file, [], ["-"], {"-": PolarityBinding("im-001", "method")}
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_detector_reads_the_store_the_clearing_left_before_any_sample(
+    status,
+):
+    """After the clearing, which can detect the file's peaks again under
+    another stitch, and before the samples are made, so a run that fails
+    later has still stored what the spectrum names."""
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        _auto_process_sample_file,
+        _Cleared,
+    )
+
+    mocks, sample_file = _start_single()
+    before = [{"key": "before", "signature": {"polarity": "-", "ms_order": 1}}]
+    after = [{"key": "after", "signature": {"polarity": "-", "ms_order": 1}}]
+    status.census.return_value = before
+    order = []
+
+    async def rebuild(_sample_file):
+        order.append("clear")
+        status.census.return_value = after
+        return _Cleared(rebuilt=True)
+
+    status.detect.side_effect = lambda *args: order.append("detect")
+    made = mocks["create_batches"].return_value
+
+    def create(**kwargs):
+        order.append("create")
+        return made
+
+    mocks["create_batches"].side_effect = create
+
+    await _auto_process_sample_file(sample_file_id="sf-001", clear_earlier_run=rebuild)
+
+    assert order == ["clear", "detect", "create"]
+    assert status.detect.await_args.args[:3] == (sample_file, after, ["-"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unbound",
+    [_no_token(), ValueError("Found too many matching ionization modes")],
+    ids=["no token", "an ambiguous name"],
+)
+async def test_a_parked_file_is_read_with_nothing_beside_it(status, unbound):
+    """The spectrum of a file no rung binds is read too: what it names is
+    the suggestion rung 5 makes once it is measured."""
+    mocks, sample_file = _start_single()
+    census = [
+        {"key": "A", "signature": {"polarity": "-", "ms_order": 1}},
+        {"key": "B", "signature": {"polarity": "+", "ms_order": 2}},
+    ]
+    status.census.return_value = census
+    sample_file.polarity = "+-"
+    mocks["resolve"].side_effect = unbound
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=False):
+        result = await _run_pipeline()
+
+    assert result["status"] == "parked"
+    # Its MS1 polarity only, and no binding beside it.
+    status.detect.assert_awaited_once_with(sample_file, census, ["-"])

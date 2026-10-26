@@ -116,6 +116,14 @@ filestreams = './filestreams'
 # what `db script run report_method_binding_disagreements` reports. It writes
 # nothing, so it is worth reading before and after a change here.
 # method_binding = "shadow"
+# Chemistry detection: what each MS1 polarity's spectrum names by its reagent
+# ions, read as a file is bound or parked. "audit" (the default) stores the
+# detector's call on the file beside the rung and mode that bound it, and
+# binds nothing: no file is routed, calibrated or matched any differently.
+# "off" stores nothing. It reads the polarity's peak list once more per file,
+# a fraction of a second. Takes effect on restart, for files bound from then
+# on.
+# chemistry_detection = "audit"
 # Composite scan streams: how a raw Orbitrap file is processed whose
 # acquisition method runs more than one experiment in a polarity, most often
 # several scan ranges of one chemistry. false (the default) pools every MS1

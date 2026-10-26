@@ -79,6 +79,7 @@ def pipeline():
         ) as create,
         patch(f"{_SVC}.record_processing_status", new_callable=AsyncMock) as status,
         patch(f"{_SVC}._pipeline_item_count", new_callable=AsyncMock, return_value=0),
+        patch(f"{_SVC}.record_chemistry_detection", new_callable=AsyncMock) as detect,
     ):
         fetch.return_value = _sample_file()
         census.return_value = []
@@ -92,6 +93,7 @@ def pipeline():
             learn=learn,
             create=create,
             status=status,
+            detect=detect,
         )
 
 

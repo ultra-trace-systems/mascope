@@ -897,6 +897,13 @@ def _instrument_type_from_name(context) -> str | None:
     return resolve_instrument_type(instrument, throw=False)
 
 
+#: The sample file's deferred columns, which ``SampleFile.to_dict`` leaves out
+#: unless they were loaded. Named rather than read off the instance's unloaded
+#: set: after a commit every column of a row is unloaded, and to_dict reads
+#: those back as it always has.
+_DEFERRED_FILE_COLUMNS = frozenset({"acquisition", "binding_evidence"})
+
+
 class SampleFile(Base):
     """
     Represents raw acquisition files.
@@ -1020,6 +1027,17 @@ class SampleFile(Base):
     processing_updated_utc: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    # What the chemistry detector read off each MS1 polarity's spectrum, beside
+    # the rung and mode that bound it, written by every run that binds or
+    # parks the file (``process/detection.py``; the design note's section
+    # 5.4). An audit: nothing routes on it. Keyed by polarity; NULL on a file
+    # no run has read since the column existed, a blank, and a file of
+    # fragmentation scans alone. Deferred like the acquisition record: it
+    # holds every candidate's evidence, a kilobyte or two, and no listing
+    # reads it.
+    binding_evidence: Mapped[Optional[dict]] = mapped_column(
+        JSON(none_as_null=True), nullable=True, deferred=True
+    )
 
     # The Raw files list (`get_sample_files`): a look-back on acquisition time,
     # of every instrument or one, or on when processing was last recorded,
@@ -1040,14 +1058,15 @@ class SampleFile(Base):
     )
 
     def to_dict(self):
-        """The row's columns, without the acquisition record unless it was
-        loaded: asking for a deferred column here would fetch it for every
-        row of a listing, which is what deferring it is there to avoid."""
+        """The row's columns, without a deferred one unless it was loaded -
+        the acquisition record and the binding evidence: asking for one here
+        would fetch it for every row of a listing, which is what deferring it
+        is there to avoid."""
         unloaded = sa_inspect(self).unloaded
         return {
             c.name: getattr(self, c.name)
             for c in self.__table__.columns
-            if not (c.name == "acquisition" and "acquisition" in unloaded)
+            if not (c.name in _DEFERRED_FILE_COLUMNS and c.name in unloaded)
         }
 
     # Relationships
