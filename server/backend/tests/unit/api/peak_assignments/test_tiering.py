@@ -146,6 +146,7 @@ def run(rows: list[dict], **kwargs) -> dict:
         abundance_floor=kwargs.pop("abundance_floor", 0.01),
         notation_by_id=kwargs.pop("notation_by_id", None),
         tier_bands=kwargs.pop("tier_bands", None),
+        resolution=kwargs.pop("resolution", None),
     )
 
 
@@ -744,14 +745,14 @@ class TestTheNeighboursEnvelope:
 
         from mascope_backend.api.new.peak_assignments import tiering as module
 
-        def lighter(ion_formula, charge, threshold=None):
+        def lighter(ion_formula, charge, threshold, resolution):
             return (
                 np.array([181.0707, 181.0707]),
                 np.array([1.0, 1.0]),
                 ["M0", "impossible"],
             )
 
-        monkeypatch.setattr(module, "predict_isotopes", lighter)
+        monkeypatch.setattr(module, "predict_resolved_isotopes", lighter)
         monkeypatch.setattr(
             module,
             "anchor_on_monoisotopic",
@@ -769,14 +770,14 @@ class TestTheNeighboursEnvelope:
 
         from mascope_backend.api.new.peak_assignments import tiering as module
 
-        def lighter(ion_formula, charge, threshold=None):
+        def lighter(ion_formula, charge, threshold, resolution):
             return (
                 np.array([181.0707, 181.0707]),
                 np.array([1.0, 1.0]),
                 ["M0", "impossible"],
             )
 
-        monkeypatch.setattr(module, "predict_isotopes", lighter)
+        monkeypatch.setattr(module, "predict_resolved_isotopes", lighter)
         monkeypatch.setattr(
             module,
             "anchor_on_monoisotopic",
@@ -1180,11 +1181,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_9(self):
+    def test_the_rule_set_is_10(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 9
+        assert run([row("pa-1")])["version"] == 10
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])
@@ -2023,3 +2024,141 @@ class TestReadingALineAsTheNeighbours:
     def test_a_row_the_rule_did_not_flag_is_not_asked(self):
         rows = [claiming_owner(), on_the_line("pa-child", intensity=1000.0)]
         assert claims_in(rows) == ([], {})
+
+
+def tof(mz: float) -> float:
+    """A TOF's resolving power: its peak one mass unit up holds every line there."""
+    return 5000.0
+
+
+#: Two carbons and four nitrogens, so the 15N lines are two fifths of what its
+#: M+1 peak holds on a TOF, and pull that peak 20 ppm under its 13C line.
+NITROGEN_RICH, NITROGEN_RICH_ION = "C2H8N4O2", "C2H9N4O2+"
+
+
+def line_at(ion: str, label: str, resolution=None) -> tuple[float, float]:
+    """Where an ion's envelope puts a line, and how tall, at a resolution."""
+    mzs, shares, labels = predicted_envelope(ion, FLOOR, resolution)
+    index = labels.index(label)
+    return float(mzs[index]), float(shares[index])
+
+
+def nitrogen_rich_owner() -> dict:
+    m0_mz, _ = line_at(NITROGEN_RICH_ION, "M0")
+    return row(
+        "pa-owner",
+        NITROGEN_RICH,
+        ion=NITROGEN_RICH_ION,
+        mz=m0_mz,
+        intensity=1000.0,
+        channels=SEEN_TWICE,
+    )
+
+
+class TestALineIsAPeakTheFileResolves:
+    """A neighbour's line is what one peak of the file holds, as in the envelope
+    match: on a TOF its M+1 peak is its 13C, 15N, 2H and 17O lines together."""
+
+    def test_a_tof_s_m1_line_is_taller_and_lighter_than_the_13c_line(self):
+        c13_mz, c13_share = line_at(NITROGEN_RICH_ION, "13C")
+        n15_mz, n15_share = line_at(NITROGEN_RICH_ION, "15N")
+        merged_mz, merged_share = line_at(NITROGEN_RICH_ION, "13C", tof)
+
+        assert "15N" not in predicted_envelope(NITROGEN_RICH_ION, FLOOR, tof)[2]
+        assert merged_share > c13_share + n15_share
+        assert n15_mz < merged_mz < c13_mz
+        assert (c13_mz - merged_mz) / c13_mz * 1e6 == pytest.approx(20, abs=1)
+
+    def test_a_peak_where_the_tof_puts_the_m1_line_is_read_as_it(self):
+        # At the merged line's centre, 20 ppm from the 13C line and further
+        # from the 15N one: in neither's 5 ppm window, and on the peak's.
+        merged_mz, merged_share = line_at(NITROGEN_RICH_ION, "13C", tof)
+
+        def ledger():
+            return [
+                nitrogen_rich_owner(),
+                row("pa-child", mz=merged_mz, intensity=30.0, channels=SEEN_TWICE),
+            ]
+
+        unresolved = ledger()
+        run(unresolved, abundance_floor=FLOOR)
+        resolved = ledger()
+        run(resolved, abundance_floor=FLOOR, resolution=tof)
+
+        assert tier_of(unresolved, "pa-child") == "assigned"
+        assert tier_of(resolved, "pa-child") == "candidate"
+        entry = envelope_entry(resolved, "pa-child")
+        assert (entry["neighbour"], entry["line"]) == ("pa-owner", "13C")
+        assert entry["line_mz"] == pytest.approx(merged_mz, abs=1e-6)
+        assert entry["predicted_share"] == pytest.approx(merged_share, abs=1e-6)
+
+    def test_the_height_the_line_accounts_for_is_every_line_s_on_the_peak(self):
+        # Between what the 13C line alone and the whole peak could make: too
+        # tall for the one, inside the other.
+        c13_mz, c13_share = line_at(CLAIMING_ION, "13C")
+        merged_mz, merged_share = line_at(CLAIMING_ION, "13C", tof)
+        height = 1000.0 * ENVELOPE_HEIGHT_TOLERANCE * (c13_share + merged_share) / 2
+
+        def ledger():
+            return [
+                claiming_owner(),
+                row("pa-child", mz=merged_mz, intensity=height, channels=SEEN_TWICE),
+            ]
+
+        unresolved = ledger()
+        run(unresolved, abundance_floor=FLOOR)
+        resolved = ledger()
+        run(resolved, abundance_floor=FLOOR, resolution=tof)
+
+        assert tier_of(unresolved, "pa-child") == "assigned"
+        assert tier_of(resolved, "pa-child") == "candidate"
+
+    @pytest.mark.parametrize("read", [True, False], ids=["read", "none"])
+    def test_the_run_says_whether_the_lines_were_one_per_peak(self, read):
+        summary = run([row("pa-1")], resolution=tof if read else None)
+        assert summary["lines_merged_at_resolution"] is read
+
+    def test_a_claim_carries_the_row_s_line_the_peak_s_envelope_accounts_for(self):
+        # The row's own line sits on the neighbour's 18O peak, taller than its
+        # 18O line alone could make it and inside what that peak holds on a TOF.
+        c13_mz, _ = line_at(CLAIMING_ION, "13C", tof)
+        o18_mz, o18_share = line_at(CLAIMING_ION, "18O")
+        merged_mz, merged_share = line_at(CLAIMING_ION, "18O", tof)
+        height = 1000.0 * ENVELOPE_HEIGHT_TOLERANCE * (o18_share + merged_share) / 2
+
+        def claims(resolution):
+            rows = [
+                claiming_owner(),
+                row("pa-child", ELSEWHERE, mz=c13_mz, intensity=40.0, ppm=0.1),
+                row(
+                    "pa-child-18o",
+                    ELSEWHERE,
+                    role="iso_child",
+                    owner="pa-child",
+                    mz=merged_mz,
+                    intensity=height,
+                    ppm=0.0,
+                ),
+            ]
+            run(rows, abundance_floor=FLOOR, resolution=tof)
+            (claim,), _ = find_envelope_claims(
+                rows,
+                mz_tolerance_ppm=5.0,
+                abundance_floor=FLOOR,
+                precision_ppm=0.3,
+                resolution=resolution,
+            )
+            return claim
+
+        resolved = claims(tof)
+        assert resolved.carried == (
+            ClaimedLine(
+                row_id="pa-child-18o",
+                label="18O",
+                line_mz=pytest.approx(merged_mz),
+                share=pytest.approx(merged_share, abs=1e-6),
+                tracking=TRACKING_TRACKS,
+            ),
+        )
+        assert resolved.released == ()
+        assert claims(None).released == ("pa-child-18o",)

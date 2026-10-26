@@ -459,6 +459,26 @@ class TestTheJudgedLedger:
         }
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("read", [True, False], ids=["read", "none"])
+    async def test_a_neighbour_s_lines_are_read_at_the_files_resolution(self, read):
+        # The resolving power the mass gate reads the lines at is the one the
+        # envelope rule and the claims predict a neighbour's lines at: on a TOF
+        # its M+1 peak holds its 13C, 15N, 2H and 17O lines together.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        mocks["resolution"].return_value = (lambda mz: 5000.0) if read else None
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        tiering = recorder.recorded_configs()[-1]["tiering"]
+        assert tiering["lines_merged_at_resolution"] is read
+
+    @pytest.mark.asyncio
     async def test_the_source_s_lines_anchor_the_runs_calibration(self):
         # The urea source's three ladder ions are claimed before either stage
         # and are no commit, but their masses are the file's best known: the

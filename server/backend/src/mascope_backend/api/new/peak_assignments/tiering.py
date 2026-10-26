@@ -82,6 +82,10 @@ account for the peak, is more likely to be that line than a compound of its own.
 The neighbour has to be a formula the run stands behind - candidate tier or
 above - because the line is predicted FROM its formula, and a reading the run
 itself calls below assignability is no ground for taking another row's tier.
+A line is a peak the file can resolve, as in the envelope match: where the run
+read the file's resolving power, the lines one peak of that width holds are
+one line, so a TOF neighbour's M+1 peak is its 13C, 15N, 2H and 17O lines
+together (:func:`predicted_envelope`).
 
 ``envelope_claim`` - where that neighbour is held at ``assigned``, the peak is
 read as its line (:func:`find_envelope_claims`, :mod:`envelope_claims`): an
@@ -135,6 +139,7 @@ from __future__ import annotations
 import bisect
 import math
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from typing import Any, Iterable, Sequence
 
 import numpy as np
@@ -185,7 +190,7 @@ from mascope_tools.composition.heuristic_filter import (
     neutral_is_closed_shell,
     oxygen_free_cluster,
     polyhalide_cluster,
-    predict_isotopes,
+    predict_resolved_isotopes,
 )
 from mascope_tools.composition.implausibility import implausible_signatures
 
@@ -194,7 +199,7 @@ from mascope_tools.composition.implausibility import implausible_signatures
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 9
+TIERING_RULES_VERSION = 10
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -915,6 +920,7 @@ def envelope_neighbours(
     *,
     mz_tolerance_ppm: float,
     abundance_floor: float,
+    resolution: Callable[[float], float] | None = None,
 ) -> dict[str, dict]:
     """Which committed rows sit on a line another committed row predicts.
 
@@ -941,6 +947,9 @@ def envelope_neighbours(
         would have been claimed by the targeted matcher too.
     :param abundance_floor: How deep an envelope is predicted, relative to the
         ion's own line - the run's own floor.
+    :param resolution: The file's resolving power as a function of m/z, or None
+        where the run could read none; with it a line is one peak of the file
+        (:func:`predicted_envelope`).
     :return: Peak assignment id -> the neighbour and line explaining it.
     """
     ordered = sorted(m0_rows, key=lambda row: float(row.get("sample_peak_mz") or 0.0))
@@ -959,7 +968,9 @@ def envelope_neighbours(
         owner_intensity = float(owner.get("sample_peak_intensity") or 0.0)
         if owner_intensity <= 0:
             continue
-        envelope = predicted_envelope(owner.get("ion_formula"), abundance_floor)
+        envelope = predicted_envelope(
+            owner.get("ion_formula"), abundance_floor, resolution
+        )
         if envelope is None:
             continue
         predicted_mzs, shares, labels = envelope
@@ -997,12 +1008,24 @@ def envelope_neighbours(
 
 
 def predicted_envelope(
-    ion_formula, abundance_floor: float
+    ion_formula,
+    abundance_floor: float,
+    resolution: Callable[[float], float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[str]] | None:
     """An ion's predicted lines, its own first, with heights relative to it.
 
+    A line is a peak the file can resolve, as the envelope match predicts one
+    (``heuristic_filter.predict_resolved_isotopes``): what both rules that read
+    this compare with a line is one measured peak. On a TOF the neighbour's
+    peak one mass unit up holds its 13C, 15N, 2H and 17O lines, and read
+    against the 13C line alone it sits over the line's share and off its mass:
+    by 6% for C10H16NO3+, and for C2H9N4O2+, two carbons and four nitrogens,
+    by over 70% and 20 ppm at a resolving power of 5000.
+
     :param ion_formula: The ion, charge last (``C6H13O6+``).
     :param abundance_floor: How deep to predict, relative to the ion's own line.
+    :param resolution: The file's resolving power as a function of m/z, or None,
+        which predicts one line per isotopologue.
     :return: The lines' m/z, relative heights and labels, or None for an ion
         with nothing beyond its own line, or none the predictor can read.
     """
@@ -1010,8 +1033,8 @@ def predicted_envelope(
     if len(ion) < 2 or ion[-1] not in "+-":
         return None
     try:
-        mzs, intensities, labels = predict_isotopes(
-            ion[:-1], 1 if ion[-1] == "+" else -1, threshold=abundance_floor
+        mzs, intensities, labels = predict_resolved_isotopes(
+            ion[:-1], 1 if ion[-1] == "+" else -1, abundance_floor, resolution
         )
     except Exception:  # noqa: BLE001 - an unpredictable ion predicts nothing
         return None
@@ -1150,6 +1173,7 @@ def apply_tiering(
     abundance_floor: float,
     notation_by_id: dict[str, str] | None = None,
     tier_bands: dict[str, float] | None = None,
+    resolution: Callable[[float], float] | None = None,
 ) -> dict:
     """Give every committed row its reasons, and cap the rows that earned it.
 
@@ -1167,6 +1191,8 @@ def apply_tiering(
     :param tier_bands: The run's evidence bands, ``assigned`` and ``candidate``,
         which a row under the top one names first (:func:`band_reason`). Without
         them no row names its band.
+    :param resolution: The file's resolving power as a function of m/z, for the
+        envelope rule's lines; None where the run could read none.
     :return: What the run should record about this pass: its rule version, what
         each rule capped, and the thresholds it capped on - a tier is only
         comparable across runs together with the rules that produced it.
@@ -1177,7 +1203,10 @@ def apply_tiering(
     m0 = [row for row in committed if row.get("role") == ROLE_M0]
 
     on_a_neighbours_line = envelope_neighbours(
-        m0, mz_tolerance_ppm=mz_tolerance_ppm, abundance_floor=abundance_floor
+        m0,
+        mz_tolerance_ppm=mz_tolerance_ppm,
+        abundance_floor=abundance_floor,
+        resolution=resolution,
     )
     lines_of = isotope_lines(committed)
 
@@ -1295,6 +1324,10 @@ def apply_tiering(
 
     return {
         "version": TIERING_RULES_VERSION,
+        # Whether the envelope rule read a neighbour's lines one per peak the
+        # file resolves, or one per isotopologue because the run could read no
+        # resolution for the file.
+        "lines_merged_at_resolution": resolution is not None,
         "committed_m0": len(m0),
         "capped": capped,
         "capped_isotopologues": capped_isotopologues,
@@ -1350,6 +1383,7 @@ def find_envelope_claims(
     abundance_floor: float,
     precision_ppm: float,
     lines: SpectrumLines | None = None,
+    resolution: Callable[[float], float] | None = None,
 ) -> tuple[list[EnvelopeClaim], dict[str, int]]:
     """The rows on a neighbour's line that are read as that line.
 
@@ -1379,6 +1413,10 @@ def find_envelope_claims(
     :param abundance_floor: The run's own envelope floor.
     :param precision_ppm: The instrument class's precision.
     :param lines: The sample's peaks, read for how well each places its line.
+    :param resolution: The file's resolving power as a function of m/z, the
+        one :func:`apply_tiering` read the lines at. The row's own line is the
+        one that pass found; its isotopologues are read against the same
+        envelope, so a line is one peak of the file for both.
     :return: The claims, and how many rows each reason held back.
     """
     committed = [row for row in assignments if row.get("assigned_formula")]
@@ -1448,7 +1486,7 @@ def find_envelope_claims(
         taken.add((owner_id, line.label))
         if owner_id not in envelopes:
             envelopes[owner_id] = predicted_envelope(
-                owner.get("ion_formula"), abundance_floor
+                owner.get("ion_formula"), abundance_floor, resolution
             )
         carried: list[ClaimedLine] = []
         released: list[str] = []

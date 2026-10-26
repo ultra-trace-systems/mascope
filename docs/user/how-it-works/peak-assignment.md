@@ -431,8 +431,9 @@ ions'. An imported run does not count. A sample with no such run is centred on i
 A predicted line is a peak your instrument can resolve, not a single isotopologue. On a
 TOF, the peak one mass unit above a compound holds its 13C line and also its 15N, 2H and
 17O lines, a few mDa apart. The untargeted search reads that peak against the sum of all
-four, at the resolving power recorded for the file. A file with no recorded resolving
-power is read one isotopologue per line.
+four, at the resolving power recorded for the file, and so does the check that reads a
+peak as a neighbour's isotope line (*a neighbour's isotope line*, below). A file with no
+recorded resolving power is read one isotopologue per line.
 
 **A consequence users see:** a lone mass-only match (one peak, no isotopic corroboration)
 scores *low* by design, while a fully corroborated isotope envelope scores near 1.0. This
@@ -624,7 +625,9 @@ What caps a row at candidate:
 - **a neighbour's isotope line** — a committed neighbouring compound's isotope pattern
   predicts a line on this peak, and the peak is no more than twice as tall as that line,
   so the line could account for all of it. The neighbour must itself be a reading the
-  run stands behind, at *candidate* or above.
+  run stands behind, at *candidate* or above. A line is one peak of the file: on a TOF,
+  the neighbour's 13C, 15N, 2H and 17O lines one mass unit up are one line, at their
+  combined height.
 - **read as a neighbour's line** — where that neighbour is held at *assigned*, the peak
   is read as its isotopologue instead, at *candidate*: the run first committed it as a
   compound of its own, which is exactly the doubt. The formula it held before is the

@@ -1525,6 +1525,7 @@ def judge_commits(
     minor_channels: frozenset[str] = frozenset(),
     partner_gated_channels: frozenset[str] = frozenset(),
     reagent_lines: Sequence[dict] = (),
+    resolution: Callable[[float], float] | None = None,
 ) -> JudgedCommits:
     """Run the mass gate, the partner gate, the cross-channel pass and the
     tiering pass, and read the lines they find in doubt as their neighbours'.
@@ -1558,6 +1559,9 @@ def judge_commits(
         anchor the mass gate's calibration beside the commits
         (``mass_gate.fit_run_mass_accuracy``). Read only, and the same in every
         round: a claim moves a commit, never one of the source's lines.
+    :param resolution: The file's resolving power as a function of m/z, at
+        which the tiering pass and the claims read a neighbour's envelope, one
+        line per peak the file resolves; None where the run could read none.
     :return: The judged rows and each pass's summary.
     """
     claims: dict[str, EnvelopeClaim] = {}
@@ -1590,6 +1594,7 @@ def judge_commits(
             abundance_floor=abundance_floor,
             notation_by_id=notation_by_id,
             tier_bands=tier_bands,
+            resolution=resolution,
         )
         found, held = find_envelope_claims(
             judged,
@@ -1597,6 +1602,7 @@ def judge_commits(
             abundance_floor=abundance_floor,
             precision_ppm=fallback_sigma_ppm,
             lines=lines,
+            resolution=resolution,
         )
         if not found or claim_round >= MAX_CLAIM_ROUNDS:
             tiering.update(
@@ -3322,6 +3328,7 @@ async def _run_sample_assignment(
             minor_channels=resolved_profile.minor_channels,
             partner_gated_channels=resolved_profile.partner_gated_channels,
             reagent_lines=reagent_assignments,
+            resolution=resolution,
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel
