@@ -9,7 +9,9 @@ and their ``sample_batch_id`` filter those of a batch's collections, so a
 guest could read another workspace's collection through them. Now a named
 collection needs the guest role on its workspace, as
 ``GET /api/target/collections/{id}`` does, and a named batch the guest role on
-its workspace, as the association routes do.
+its workspace, as the association routes do. ``show_target_collection`` tags
+each row with its collections, so it lists only the collections the caller
+can read: the global ones and those of their workspaces.
 
 Fixtures used:
 - ``alpha_batch`` in ``ws_alpha`` (every test user is a member)
@@ -233,3 +235,43 @@ async def test_the_unfiltered_library_stays_open_to_a_guest(guest_client, scope,
         *_expected(url, scope, "alpha"),
         *_expected(url, scope, "beta"),
     }
+
+
+# --- show_target_collection -------------------------------------------------
+
+
+def _collections(url: str, scope, resp) -> set[str]:
+    """The fixture's collections the rows are tagged with."""
+    ours = set(scope.collection.values())
+    return {
+        row["target_collection_id"]
+        for row in resp.json()["data"]
+        if row.get("target_collection_id") in ours
+    }
+
+
+@pytest.mark.asyncio
+@BOTH_LISTS
+async def test_show_target_collection_hides_another_workspaces_collection(
+    guest_client, scope, url
+):
+    """Grouping the rows by collection must not give what the filter refuses."""
+    resp = await guest_client.get(url, params={"show_target_collection": "true"})
+
+    assert resp.status_code == 200, resp.text
+    assert _collections(url, scope, resp) == {
+        scope.collection["alpha"],
+        scope.collection["global"],
+    }
+    assert not set(_ids(url, resp)) & set(_expected(url, scope, "beta"))
+
+
+@pytest.mark.asyncio
+@BOTH_LISTS
+async def test_show_target_collection_lists_every_collection_to_a_superuser(
+    owner_client, scope, url
+):
+    resp = await owner_client.get(url, params={"show_target_collection": "true"})
+
+    assert resp.status_code == 200, resp.text
+    assert _collections(url, scope, resp) == set(scope.collection.values())
