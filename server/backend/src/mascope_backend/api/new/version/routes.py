@@ -53,7 +53,8 @@ async def get_version_route(user=Depends(guest_user)):
     version on the login screen, and the OpenAPI document published with the
     docs (``/docs/openapi.json``) names the version its image was built for, so
     the value is not secret. Signing in is asked for as least privilege for an
-    operational endpoint, not to keep the version from anyone.
+    operational endpoint, not to keep the version from anyone. A caller with no
+    account reads the version alone from ``GET /api/version/public``.
 
     The capabilities (``mascope_backend.capabilities``) are the behaviours a
     client may rely on only once the server announces them. The web app reads
@@ -71,6 +72,38 @@ async def get_version_route(user=Depends(guest_user)):
     return {
         "message": f"Mascope version '{version}'.",
         "data": {"version": version, "capabilities": dict(SERVER_CAPABILITIES)},
+    }
+
+
+@version_router.get("/public")
+@api_route(public=True)
+async def get_public_version_route():
+    """
+    Report the version of the running deployment to anyone, and nothing else.
+
+    For a caller with no account on the server: a monitoring host that checks
+    which servers of a fleet run a release older than the latest. It gets the
+    same string ``GET /api/version`` reports, and no capabilities.
+
+    Safe to answer without signing in because it discloses nothing new: the
+    login screen renders this version to every visitor, and the OpenAPI
+    document published with the docs names it too. The capabilities stay
+    behind ``GET /api/version``: they describe what the server does with
+    uploads, which only a signed-in user or a paired agent has any use for.
+
+    A route of its own rather than an anonymous answer on ``GET /api/version``.
+    That route keeps its authentication as it is, so a browser whose session
+    expired, or a File Agent whose device token was revoked, is still told so
+    with a 401. An anonymous branch there would hand either one a 200 without
+    capabilities instead, which reads as an older server that announces none.
+
+    :return: A message and the running version.
+    :rtype: dict
+    """
+    version = runtime.version or "unknown"
+    return {
+        "message": f"Mascope version '{version}'.",
+        "data": {"version": version},
     }
 
 

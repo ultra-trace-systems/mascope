@@ -75,9 +75,9 @@ EXPECTED_MFA_GATE_EXEMPT_ROUTES = {
 #: reasons are mixed here, and only the first is settled:
 #:
 #: - Anonymous or externally authenticated by design: login, the first-owner
-#:   bootstrap, instrument-agent pairing, and logout (authenticated by
-#:   fastapi-users' own token dependency, and reachable by a gated account
-#:   because the password screen offers Log out).
+#:   bootstrap, the public version, instrument-agent pairing, and logout
+#:   (authenticated by fastapi-users' own token dependency, and reachable by a
+#:   gated account because the password screen offers Log out).
 #: - The three tus methods, which **are** authenticated - by a dependency on the
 #:   router that wraps the generated one, which this test cannot see. That is the
 #:   whole reason they appear here: the walk below inspects each route's own
@@ -110,6 +110,10 @@ KNOWN_UNGATED_ROUTES = {
     ("POST", "/pairing/start"),
     ("POST", "/pairing/poll"),
     ("GET", "/api/users/first-owner/status"),
+    # The running version alone, for a monitoring host with no account. The
+    # login screen renders the same string to anyone; the capabilities stay
+    # behind GET /api/version.
+    ("GET", "/api/version/public"),
     ("POST", "/api/users/first-owner"),
     ("HEAD", "/api/sample/files/upload/tus/{uuid}"),
     ("OPTIONS", "/api/sample/files/upload/tus/"),
