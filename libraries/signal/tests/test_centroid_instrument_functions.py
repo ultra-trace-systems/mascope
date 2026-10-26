@@ -95,6 +95,18 @@ class TestTheResolutionFunction:
         assert resolution_function.keywords["a"] == pytest.approx(1.0e6)
         assert stats["resolution_function"]["n_points"] == 5
 
+    def test_exactly_three_strong_centroids_are_enough(self, reader):
+        reader(
+            _scan([100.0, 200.0, 300.0], 2.0e6, m_fit.CENTROID_MIN_SNR),
+            _scan([110.0, 120.0, 130.0, 140.0], 1.0e6, 2.0),
+        )
+
+        _, resolution_function, stats = m_fit.centroid_instrument_functions(FILENAME)
+
+        assert m_fit.MIN_NUM_PEAKS == 3
+        assert resolution_function.keywords["a"] == pytest.approx(2.0e6)
+        assert stats["resolution_function"]["n_points"] == 3
+
     def test_a_centroid_with_no_resolution_does_not_count(self, reader):
         scan = _scan([100.0, 200.0, 300.0, 400.0, 500.0], 2.0e6, 50.0)
         scan["resolutions"] = np.array([np.nan, 0.0, -1.0, 2.0e6 / 20, 2.0e6 / 20])
@@ -106,6 +118,21 @@ class TestTheResolutionFunction:
         assert resolution_function.keywords["a"] == pytest.approx(
             np.median([2.0e6 / 20 * 20, 2.0e6 / 20 * np.sqrt(500), 2.0e6])
         )
+
+    def test_a_centroid_with_no_mz_does_not_count(self, reader):
+        # Each reports a resolution; only those at a positive m/z can be scaled
+        reader(
+            {
+                "masses": np.array([100.0, 400.0, 900.0, 0.0, -1.0, np.nan, np.inf]),
+                "resolutions": np.array([2.0e5, 1.0e5, 2.0e6 / 30, *[2.0e5] * 4]),
+                "signal_to_noise": np.full(7, 50.0),
+            }
+        )
+
+        _, resolution_function, stats = m_fit.centroid_instrument_functions(FILENAME)
+
+        assert stats["resolution_function"]["n_points"] == 3
+        assert resolution_function.keywords["a"] == pytest.approx(2.0e6)
 
     def test_fewer_than_three_centroids_with_a_resolution_are_too_few(self, reader):
         reader(_scan([100.0, 200.0], 2.0e6, 50.0), _scan([], 2.0e6, 50.0))
