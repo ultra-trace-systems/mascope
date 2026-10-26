@@ -2961,8 +2961,12 @@ class OpenTFRawBackend:
         #      native-density (FFT-bin) grid -- occupied cells only, so it is
         #      bounded and matches the density Thermo emits (~30k points).
         #   3. Linear-interpolate each scan onto the freq grid and sum. The peaks
-        #      are aligned, so this reproduces Thermo's apex (= mean *
-        #      ScansCombined) and FWHM; no integral rescale is needed.
+        #      are aligned, so the sum keeps a single scan's FWHM and its apex is
+        #      the scans' apexes summed; no integral rescale is needed. Thermo's
+        #      own AverageScans keeps the peak area but widens the peaks past
+        #      its single scans' FWHM (a few to several tens of percent), so do
+        #      not tune this toward its shape: the test_backend_parity
+        #      averaged-profile test measures the shape against single scans.
         #   4. Convert the freq grid back to m/z, each profile peak on the
         #      intensity-weighted mean of the scans' calibrations, the one its
         #      averaged centroid sits on.

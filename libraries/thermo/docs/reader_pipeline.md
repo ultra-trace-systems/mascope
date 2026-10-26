@@ -103,8 +103,9 @@ whole file.
 
 ## 3. Multi-scan profile averaging (the core)
 
-`OpenTFRawBackend.average_profile()` reproduces Thermo's `AverageScans` over
-profile data. A naive "put every scan on a common m/z grid and sum" is **wrong**,
+`OpenTFRawBackend.average_profile()` stands in for Thermo's `AverageScans` over
+profile data: the same grid and peak area, but each peak keeps its single-scan
+shape, which Thermo's widens (end of 3.1). A naive "put every scan on a common m/z grid and sum" is **wrong**,
 and understanding why is the crux of the whole pipeline.
 
 ### 3.1 Why average in the frequency domain
@@ -119,8 +120,17 @@ calibration. So:
 - Averaging on a **frequency** grid aligns the peaks exactly: no broadening
   (averaged FWHM == single-scan FWHM) and the apex equals `mean * scans_combined`.
 
-This is exactly what Thermo does, and it is why the implementation goes back to
-frequency. The steps (`average_profile`, the frequency branch):
+This is why the implementation goes back to frequency. Thermo averages in
+frequency too, but its `AverageScans` does not keep the single-scan shape: its
+averaged peaks are wider than its own scans' (1-8 % on the demo dataset, up to
+about 90 % on other Orbitrap files) with the apex lower by the same factor, so
+the peak area agrees and the shape does not. The peaks do not drift between
+scans enough to explain it (about 0.1 ppm against a 7 ppm FWHM), so the
+widening is Thermo's own. Do not tune `average_profile` toward Thermo's shape:
+`test_sum_signal_matches_thermo` (`tests/test_backend_parity.py`) measures the
+averaged FWHM and apex against Thermo's single scans, and only the integrated
+peak area against Thermo's average. The steps (`average_profile`, the
+frequency branch):
 
 1. Convert each scan's profile m/z back to frequency with that scan's Orbitrap
    conversion parameters B and C: `m/z = B/f^2 + C/f^4` (inverted by Newton's
@@ -781,6 +791,7 @@ them, touching raw Orbitrap files only.
 | Averaged centroid intensity (profile-apex) | ~3% high, and flat across the intensity range (section 6, step 6) |
 | Single-scan centroid intensity (profile-apex) | 0.8% of the instrument's own label |
 | Averaged S:N above-threshold count | Tracks Thermo (via n/sqrt(N)) |
+| Averaged profile peak area | Within a percent of Thermo's `AverageScans` (FWHM and apex match Thermo's single scans instead; section 3.1) |
 | Averaged profile peak vs its own averaged centroid | 0.053 ppm median absolute (section 5.1); exact under Thermo |
 | XIC | rtol 1e-4 |
 
