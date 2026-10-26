@@ -258,5 +258,11 @@ def verify_manifest(version: Optional[str] = None) -> list[str]:
     expected = manifest.get("expected", {})
     if expected.get("peaks"):
         _check(expected["peaks"], expected.get("sha256"))
+    # The other goldens carry their checksum under a key of their own. The
+    # MS2 spectra are compared as the peaks are, so they are verified as the
+    # peaks are: a truncated or edited file in a cached bundle is a problem.
+    for golden in ("ions", "ms2"):
+        if expected.get(golden):
+            _check(expected[golden], expected.get(f"{golden}_sha256"))
 
     return problems
