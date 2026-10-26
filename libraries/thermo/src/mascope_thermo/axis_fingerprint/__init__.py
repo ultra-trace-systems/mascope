@@ -28,6 +28,10 @@ the reference documents, so it is not edited here; where its comments cite
 measurements behind it, which are not in this repository. This module reads
 its input through a reader backend and assembles the document as the
 reference documents were built.
+
+A sample is built from some of its file's scans, so a client of one sample
+needs the document read for those: :func:`describe_scans` names the mode they
+belong to and recomputes its lock summary over them.
 """
 
 from __future__ import annotations
@@ -38,7 +42,8 @@ import json
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Iterable
 from importlib.resources import files
 
 import numpy as np
@@ -143,6 +148,105 @@ def compute_axis_fingerprint(backend: ReaderBackend, *, reader_name: str) -> dic
         raise
     except Exception as e:  # noqa: BLE001 - a fingerprint never costs a file
         return reference.minimal_document("error", f"{type(e).__name__}: {e}")
+
+
+#: The scan table's columns :func:`describe_scans` reads: a scan's number,
+#: its mode and the lock mass it was corrected with.
+_ITEM_COLUMNS = ("scan", "mode", "lock_used")
+
+#: What :func:`describe_scans` gives of a mode's lock summary: the shares of
+#: the locks used, and the effective lock m/z and spacing deviation they weigh.
+LOCK_KEYS = ("used_share", "used_count", "m_lock_eff", "s_lock_eff_ppm")
+
+
+def describe_scans(
+    document: dict,
+    scans: Iterable[int],
+    *,
+    polarity: str | None = None,
+    stream_keys: Iterable[str] = (),
+) -> dict:
+    """What a document says of some of its file's scans: those a sample's
+    peak list is built from.
+
+    The document's lock summary is per mode, over every scan of the mode.
+    Recomputed here over the scans given that belong to one mode, with the
+    mode's own calibration, frequency bands and grid
+    (``reference.lock_summary``), it is the lock those scans were corrected
+    with; given every scan of a mode, it is the mode's.
+
+    :param document: A document of status ``ok`` or ``no_fingerprint``, with
+        its scan table and modes.
+    :param scans: The scan numbers. A scan the scan table does not hold, or
+        that belongs to no mode, adds to nothing.
+    :param polarity: The polarity the scans were selected by, ``"+"`` or
+        ``"-"``; None for both.
+    :param stream_keys: The streams they were selected from, as a mode's
+        ``stream_keys`` names them; none for every stream of the polarity.
+    :return: ``mode_id``, the mode most of the scans belong to, the first of
+        those in the document's order on a tie, None when none belongs to a
+        mode; ``lock``, that mode's :data:`LOCK_KEYS` over the scans in it,
+        empty shares and None without a mode; and ``modes``, the document's
+        modes with that one first, then the other modes of the polarity and
+        streams, then the rest, each group in the document's order.
+    """
+    columns = document["scan_table"]["columns"]
+    at_scan, at_mode, at_lock = (columns.index(name) for name in _ITEM_COLUMNS)
+    taken = set(scans)
+    rows = [row for row in document["scan_table"]["rows"] if row[at_scan] in taken]
+    counts = Counter(row[at_mode] for row in rows)
+    modes = document["modes"]
+    # min() keeps the first of equals, so the document's order breaks a tie.
+    mode_id = min(
+        (mode["mode_id"] for mode in modes if counts[mode["mode_id"]]),
+        key=lambda name: -counts[name],
+        default=None,
+    )
+    streams = set(stream_keys)
+
+    def elsewhere(mode: dict) -> bool:
+        """Whether a mode is of another polarity, or of other streams."""
+        return (polarity is not None and mode["polarity"] != polarity) or bool(
+            streams and not streams & set(mode.get("stream_keys") or ())
+        )
+
+    return {
+        "mode_id": mode_id,
+        "lock": _lock_over(
+            next((mode for mode in modes if mode["mode_id"] == mode_id), None),
+            [row[at_lock] for row in rows if row[at_mode] == mode_id],
+        ),
+        # sorted() is stable: within each group the document's order stays.
+        "modes": sorted(
+            modes, key=lambda mode: (mode["mode_id"] != mode_id, elsewhere(mode))
+        ),
+    }
+
+
+def _lock_over(mode: dict | None, labels: list[str]) -> dict:
+    """A mode's lock summary over the scans whose lock used is ``labels``,
+    computed as ``reference.fingerprint_mode`` computes the mode's own."""
+    if mode is None:
+        return {
+            "used_share": {},
+            "used_count": {},
+            "m_lock_eff": None,
+            "s_lock_eff_ppm": None,
+        }
+    # Both None where the mode read no profile chunk; its lock is then
+    # computed without a table, at any grid.
+    grid = mode["grid"] or {}
+    segments = mode["segments"]
+    summary = reference.lock_summary(
+        labels,
+        mode["lock"]["configured_mz"],
+        mode["calibration"]["B_median"],
+        mode["calibration"]["C_median"],
+        segments["rows"] if segments else [],
+        grid.get("period_khz", 1.0),
+        grid.get("phase_khz", 0.0),
+    )
+    return {key: summary[key] for key in LOCK_KEYS}
 
 
 def validate_document(document: dict) -> None:

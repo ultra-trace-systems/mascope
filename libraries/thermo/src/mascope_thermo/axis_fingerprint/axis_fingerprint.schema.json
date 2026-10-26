@@ -357,7 +357,7 @@
     "string",
     "null"
    ],
-   "description": "modes[0].mode_id; null when there are no modes"
+   "description": "the file's dominant mode: modes[0].mode_id of the document the file stores; null when there are no modes. The per-item route lists item.mode_id first in 'modes' and leaves dominant_mode the file's"
   },
   "flags": {
    "type": "array",
@@ -410,18 +410,39 @@
       "null"
      ]
     },
+    "stream_key": {
+     "type": [
+      "string",
+      "null"
+     ],
+     "description": "the Mascope scan stream the item reads (a mode's stream_keys name the streams of its scans): a stream's key, or 'composite <polarity>' for an item stitched from several streams; null when the item reads every MS1 scan of its polarity"
+    },
     "scans": {
      "type": "array",
      "items": {
       "type": "integer"
      },
-     "description": "the scan numbers the item's peak list is built from"
+     "description": "the scan numbers the item's peak list is built from: the MS1 scans of its polarity and stream starting in [t0_s, t1_s], without a stream's outlier first scan; for a stitched item, those of the streams that own some m/z of it"
+    },
+    "mode_id": {
+     "type": [
+      "string",
+      "null"
+     ],
+     "description": "the mode most of 'scans' belong to, listed first in 'modes'; null when none belongs to a mode"
     },
     "lock": {
      "type": "object",
-     "description": "used_share, used_count, m_lock_eff and s_lock_eff_ppm recomputed over 'scans'"
+     "description": "used_share, used_count, m_lock_eff and s_lock_eff_ppm of the mode 'mode_id' recomputed over the scans of 'scans' in it; over every scan of the mode, the mode's own"
     },
     "mz_calibration_factor": {
+     "type": [
+      "number",
+      "null"
+     ],
+     "description": "the factor the sample file's mass calibration (.props mz_calibration) gives the item's stream: mz_calibration.streams[stream_key].calibration_factor where the record names the stream, else mz_calibration.par.calibration_factor; null when the file has no calibration. A record never names a composite, so for a stitched item this is the file's factor, while its peaks carry the factor of each stream that owns a run of it, which this block does not list"
+    },
+    "file_mz_calibration_factor": {
      "type": [
       "number",
       "null"
