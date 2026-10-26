@@ -23,8 +23,10 @@ import pytest
 
 import mascope_thermo.axis_fingerprint as m_fingerprint
 from mascope_thermo.axis_fingerprint import (
+    LOCK_KEYS,
     PARAMS,
     compute_axis_fingerprint,
+    describe_scans,
     reference,
     validate_document,
 )
@@ -579,6 +581,189 @@ def test_the_configured_locks_are_every_scans(raw_path):
     document, _ = fingerprint(raw_path, scans)
     (mode,) = document["modes"]
     assert mode["lock"]["configured_mz"] == [LOCK, SECOND_LOCK]
+
+
+# ---- the scans of a sample ---------------------------------------------------
+
+#: The centroids of a scan corrected with each lock, both or neither.
+CORRECTED_WITH = {
+    "first": ((LOCK, True), (200.0, False)),
+    "second": ((SECOND_LOCK, True), (200.0, False)),
+    "both": ((LOCK, True), (SECOND_LOCK, True)),
+    "none": ((LOCK, False), (SECOND_LOCK, False)),
+}
+
+NO_LOCK = {
+    "used_share": {},
+    "used_count": {},
+    "m_lock_eff": None,
+    "s_lock_eff_ppm": None,
+}
+
+
+def lock_band(lock):
+    """The frequency band a lock mass sits in."""
+    return int(np.floor((reference.law_khz(lock, B, C) - PHASE_KHZ) / PERIOD_KHZ))
+
+
+@pytest.fixture(scope="module")
+def alternating(tmp_path_factory):
+    """The document of eight scans corrected with either lock, both or none:
+    scans 2, 5 and 8 with the second."""
+    path = tmp_path_factory.mktemp("alternating") / "alternating.raw"
+    path.write_bytes(b"\0" * 4096)
+    profile = band_profile()
+    used = ["first", "second", "first", "both", "second", "none", "first", "second"]
+    document, _ = fingerprint(
+        path, [Scan(centroids=CORRECTED_WITH[name], profile=profile) for name in used]
+    )
+    return document
+
+
+@pytest.fixture(scope="module")
+def two_resolutions(tmp_path_factory):
+    """The document of five scans in two modes: scans 2, 3 and 5 at 280k,
+    1 and 4 at 70k, each its own stream."""
+    path = tmp_path_factory.mktemp("two_resolutions") / "two_resolutions.raw"
+    path.write_bytes(b"\0" * 4096)
+    profile = band_profile()
+    low = ms1_trailer(resolution=70000)
+    document, _ = fingerprint(
+        path,
+        [
+            Scan(profile=profile, trailer=low),
+            Scan(profile=profile),
+            Scan(profile=profile),
+            Scan(profile=profile, trailer=low),
+            Scan(profile=profile),
+        ],
+    )
+    return document
+
+
+def test_every_scan_of_a_mode_has_the_modes_lock(alternating):
+    (mode,) = alternating["modes"]
+    # Every share, and an effective lock weighed over both locks
+    assert set(mode["lock"]["used_share"]) == {"61.9884", "124.9840", "both", "none"}
+    assert mode["lock"]["s_lock_eff_ppm"] is not None
+
+    every = [row[0] for row in alternating["scan_table"]["rows"]]
+    described = describe_scans(alternating, every, polarity="-", stream_keys=[STREAM])
+
+    assert described["mode_id"] == MODE
+    assert described["lock"] == {key: mode["lock"][key] for key in LOCK_KEYS}
+    assert described["modes"] == alternating["modes"]
+
+
+def test_some_scans_weigh_the_locks_they_used(alternating):
+    described = describe_scans(alternating, [2, 5, 8])
+
+    assert described["mode_id"] == MODE
+    assert described["lock"]["used_share"] == {"124.9840": 1.0}
+    assert described["lock"]["used_count"] == {"124.9840": 3}
+    assert described["lock"]["m_lock_eff"] == 124.984
+    expected = s_of_ratio(stepped_ratio(lock_band(SECOND_LOCK), 0))
+    assert abs(described["lock"]["s_lock_eff_ppm"] - expected) < 1e-3
+    # The other lock sits in another band, at another deviation
+    assert lock_band(LOCK) != lock_band(SECOND_LOCK)
+    assert abs(described["lock"]["s_lock_eff_ppm"] - expected) < abs(
+        s_of_ratio(stepped_ratio(lock_band(LOCK), 0)) - expected
+    )
+
+
+def test_a_scan_of_each_lock_shares_them(alternating):
+    lock = describe_scans(alternating, [1, 2, 4, 6])["lock"]
+
+    assert lock["used_share"] == {
+        "124.9840": 0.25,
+        "61.9884": 0.25,
+        "both": 0.25,
+        "none": 0.25,
+    }
+    assert lock["used_count"] == {"124.9840": 1, "61.9884": 1, "both": 1, "none": 1}
+    assert LOCK < lock["m_lock_eff"] < SECOND_LOCK
+
+
+def test_a_scan_of_both_locks_weighs_the_configured_ones_half_each(alternating):
+    # Scan 1 used the first lock and scan 4 both: the first weighs one and
+    # a half, the second a half, as the mode's configured locks name them
+    lock = describe_scans(alternating, [1, 4])["lock"]
+
+    assert lock["used_count"] == {"61.9884": 1, "both": 1}
+    assert lock["m_lock_eff"] == pytest.approx(0.75 * LOCK + 0.25 * SECOND_LOCK)
+    expected = 0.75 * s_of_ratio(stepped_ratio(lock_band(LOCK), 0))
+    expected += 0.25 * s_of_ratio(stepped_ratio(lock_band(SECOND_LOCK), 0))
+    assert abs(lock["s_lock_eff_ppm"] - expected) < 1e-3
+
+
+def test_scans_of_no_mode_have_no_lock(raw_path):
+    scans = profile_scans(4)
+    scans.insert(2, Scan(MS2, profile=scans[0].profile))
+    scans.insert(4, Scan(SIM, profile=scans[0].profile))
+    document, _ = fingerprint(raw_path, scans)
+
+    # The MS2 and the SIM scan, and a scan the file does not hold
+    for some in ([3, 5], [99], []):
+        described = describe_scans(document, some)
+        assert described["mode_id"] is None
+        assert described["lock"] == NO_LOCK
+        assert described["modes"] == document["modes"]
+    # Beside a scan of the mode, they add nothing
+    lock = describe_scans(document, [3, 4, 5])["lock"]
+    assert lock["used_count"] == {"61.9884": 1}
+
+
+def test_the_mode_most_of_the_scans_belong_to_is_named_and_first(two_resolutions):
+    low = "-|R70000|50.0000-750.0000"
+    assert [m["mode_id"] for m in two_resolutions["modes"]] == [MODE, low]
+
+    described = describe_scans(two_resolutions, [1, 4, 5])
+
+    assert described["mode_id"] == low
+    assert [m["mode_id"] for m in described["modes"]] == [low, MODE]
+    # Over the scans of that mode alone
+    assert described["lock"]["used_count"] == {"61.9884": 2}
+    # The document's own order is left as it was
+    assert [m["mode_id"] for m in two_resolutions["modes"]] == [MODE, low]
+
+
+def test_a_tie_names_the_mode_listed_first(two_resolutions):
+    described = describe_scans(two_resolutions, [1, 2])
+
+    assert described["mode_id"] == MODE
+    assert described["lock"]["used_count"] == {"61.9884": 1}
+
+
+def test_the_modes_of_the_streams_come_before_the_rest(two_resolutions):
+    low = "-|R70000|50.0000-750.0000"
+    (low_stream,) = two_resolutions["modes"][1]["stream_keys"]
+
+    described = describe_scans(two_resolutions, [], stream_keys=[low_stream])
+    assert described["mode_id"] is None
+    assert [m["mode_id"] for m in described["modes"]] == [low, MODE]
+
+    # A stream of none of them reorders nothing
+    described = describe_scans(two_resolutions, [], stream_keys=["no such stream"])
+    assert [m["mode_id"] for m in described["modes"]] == [MODE, low]
+
+
+def test_the_modes_of_the_polarity_come_before_the_rest(raw_path):
+    profile = band_profile()
+    positive = "FTMS + p NSI Full ms [50.0000-750.0000]"
+    plus = "+|R280000|50.0000-750.0000"
+    scans = [Scan(profile=profile) for _ in range(4)]
+    scans.append(Scan(positive, profile=profile))
+    document, _ = fingerprint(raw_path, scans)
+    assert [m["mode_id"] for m in document["modes"]] == [MODE, plus]
+
+    for some in ([], [5]):
+        described = describe_scans(document, some, polarity="+")
+        assert [m["mode_id"] for m in described["modes"]] == [plus, MODE]
+    assert describe_scans(document, [5], polarity="+")["mode_id"] == plus
+    assert describe_scans(document, [], polarity="+")["mode_id"] is None
+    for polarity in ("-", None):
+        described = describe_scans(document, [], polarity=polarity)
+        assert [m["mode_id"] for m in described["modes"]] == [MODE, plus]
 
 
 # ---- the reader --------------------------------------------------------------
