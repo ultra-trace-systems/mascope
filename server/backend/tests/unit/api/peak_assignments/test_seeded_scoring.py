@@ -5,7 +5,8 @@ short seed list - a pin, the inspector's evidence for one family - cannot do.
 Such a list is scored at the instrument class's width, the one Stage A and the
 untargeted search stand in with, so one ion in one sample reads alike alone and
 among many seeds. Nor can it fit an offset, and it is centred where the
-sample's reagent lines put the axis, as Stage A centres one. The matcher, the
+sample's reagent lines put the axis, as Stage A centres one. A bright ion that
+matches eight lines alone is such a list too: its lines measure only itself. The matcher, the
 mechanism read and the reagent pre-pass are stubbed; the ions, the gating and
 the fit are the real ones. See ``seeded_scoring.py``.
 """
@@ -23,8 +24,14 @@ from mascope_backend.api.new.peak_assignments.engine import (
     SampleMassAccuracy,
     score_ions_by_fit,
 )
-from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
-from mascope_match.params import OrbiMatchParams
+from mascope_backend.api.new.peak_assignments.seeded_scoring import (
+    SEEDED_FIT_MIN_IONS,
+    score_seeds,
+)
+from mascope_match.params import (
+    ORBI_DEFAULT_ISOTOPE_ABUNDANCE_THRESHOLD,
+    OrbiMatchParams,
+)
 from mascope_tools.composition.mass_accuracy import fit_sample_mass_accuracy
 from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
@@ -52,16 +59,19 @@ AXIS_PPM = -1.26
 
 
 def _matched(
-    target_isotopes_df: pd.DataFrame, target_error_ppm: float = TARGET_ERROR_PPM
+    target_isotopes_df: pd.DataFrame,
+    target_error_ppm: float = TARGET_ERROR_PPM,
+    found_abundance: float = FOUND_ABUNDANCE,
+    others_centre_ppm: float = 0.0,
 ) -> pd.DataFrame:
-    """The lines a spectrum shows found at their predicted height, the target's
-    ``target_error_ppm`` off and the others' spread about zero; the rest
-    absent."""
+    """The lines a spectrum shows - those at ``found_abundance`` and above -
+    found at their predicted height, the target's ``target_error_ppm`` off and
+    the others' spread about ``others_centre_ppm``; the rest absent."""
     frame = target_isotopes_df.copy().reset_index(drop=True)
-    found = frame["relative_abundance"] >= FOUND_ABUNDANCE
+    found = frame["relative_abundance"] >= found_abundance
     target = frame["target_compound_formula"] == TARGET[0]
     others = frame.index[found & ~target]
-    pattern = [-SPREAD_PPM, 0.0, SPREAD_PPM]
+    pattern = [others_centre_ppm + e for e in (-SPREAD_PPM, 0.0, SPREAD_PPM)]
     frame["match_mz_error"] = np.where(found, target_error_ppm, np.nan)
     frame.loc[others, "match_mz_error"] = [pattern[i % 3] for i in range(len(others))]
     frame["sample_peak_id"] = [
@@ -93,10 +103,13 @@ def reagent(monkeypatch):
 
 
 class _Frames(list):
-    """The frames the stubbed matcher returned, and the target's lines' error
-    it places them at, which a test moves."""
+    """The frames the stubbed matcher returned, and the target's lines' error,
+    the faintest line found and the others' centre it places them at, which a
+    test moves."""
 
     target_error_ppm = TARGET_ERROR_PPM
+    found_abundance = FOUND_ABUNDANCE
+    others_centre_ppm = 0.0
 
 
 @pytest.fixture
@@ -113,7 +126,14 @@ def stubbed(monkeypatch, reagent):
         }
 
     async def match(filename, target_isotopes_df, polarity):
-        frames.append(_matched(target_isotopes_df, frames.target_error_ppm))
+        frames.append(
+            _matched(
+                target_isotopes_df,
+                frames.target_error_ppm,
+                frames.found_abundance,
+                frames.others_centre_ppm,
+            )
+        )
         return frames[-1]
 
     monkeypatch.setattr(seeded_scoring, "fetch_mechanisms_by_id", mechanisms)
@@ -153,6 +173,44 @@ async def test_the_generic_width_would_read_the_lone_seed_otherwise(stubbed):
     lone = await _fit({TARGET})
     generic = score_ions_by_fit(stubbed[-1])["match_score"].iloc[0]
     assert generic - lone > 0.05
+
+
+async def test_a_lone_bright_seed_is_not_calibrated_on_its_own_lines(stubbed):
+    """A bright ion found in every line above the match floor matches more than
+    the eight lines a fit needs, all of them its own. Fitted on them it would
+    be judged against itself: its own error as the offset, the floor as the
+    width. It reads as it does among twenty others instead."""
+    stubbed.found_abundance = ORBI_DEFAULT_ISOTOPE_ABUNDANCE_THRESHOLD
+    bright = await _fit({TARGET})
+    alone = stubbed[-1]
+    crowd = await _fit({TARGET} | OTHERS)
+
+    # The premise: the lone ion's own lines are enough to fit, and fitted they
+    # put the offset at its error and the width at the floor.
+    mu, sigma = fit_sample_mass_accuracy(alone)
+    assert mu == pytest.approx(TARGET_ERROR_PPM)
+    assert sigma == pytest.approx(0.05)
+    assert alone["target_ion_id"].nunique() < SEEDED_FIT_MIN_IONS
+    self_calibrated = score_ions_by_fit(
+        seeded_scoring.apply_match_params(alone, OrbiMatchParams()),
+        fallback_sigma_ppm=ORBI_WIDTH,
+    )["match_score"].iloc[0]
+
+    assert bright == pytest.approx(crowd, abs=0.01)
+    assert self_calibrated - bright > 0.2
+
+
+async def test_a_long_seed_list_still_fits_its_own_offset(stubbed):
+    """Twenty-one ions are enough: their lines measure the axis, not one ion,
+    and the frame is centred where they put it."""
+    stubbed.target_error_ppm = 0.0
+    centred = await _fit({TARGET})
+    stubbed.target_error_ppm = AXIS_PPM
+    stubbed.others_centre_ppm = AXIS_PPM
+    crowd = await _fit({TARGET} | OTHERS)
+
+    assert stubbed[-1]["target_ion_id"].nunique() >= SEEDED_FIT_MIN_IONS
+    assert crowd == pytest.approx(centred, abs=0.01)
 
 
 async def test_a_lone_seed_is_centred_where_the_reagent_lines_put_the_axis(

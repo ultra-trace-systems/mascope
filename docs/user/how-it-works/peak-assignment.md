@@ -421,8 +421,10 @@ ions the run claimed, if it claimed at least three and their offset exceeds that
 otherwise the sample is scored on its nominal masses. The reagent ions stand in only
 there: they sit at the low end of the mass range and need not agree with the offset
 your library measures. A formula measured on its own - a batch peak's *Use this*, the
-inspector's measured evidence and its alternatives - matches too few lines to measure
-either. It is scored at the instrument class's width and at the centre the sample's
+inspector's measured evidence and its alternatives - holds too few ions to measure
+either. A bright ion can match eight lines alone, but they all share its own mass
+error, so these are measured only from lines of at least eight different ions. Below
+that, the formula is scored at the instrument class's width and at the centre the sample's
 latest run in Mascope scored at, whether that was your library's offset or the reagent
 ions'. An imported run does not count. A sample with no such run is centred on its own reagent ions, as a run would be.
 
