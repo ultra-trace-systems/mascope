@@ -55,6 +55,7 @@ async def get_target_compounds(
     sample_batch_id: Optional[str] = None,
     target_collection_id: Optional[str] = None,
     show_target_collection: bool = False,
+    accessible_workspace_ids: set[str] | None = None,
     sort: str = None,
     order: str = None,
     page: int | None = None,
@@ -84,6 +85,10 @@ async def get_target_compounds(
     :type target_collection_id: str | None, optional
     :param show_target_collection: Include target collection data in the response, defaults to False.
     :type show_target_collection: bool, optional
+    :param accessible_workspace_ids: With ``show_target_collection``, list only the
+        collections of these workspaces and the global ones; None lists every
+        collection (superusers and internal callers), defaults to None.
+    :type accessible_workspace_ids: set[str] | None, optional
     :param sort: Column name to sort by, defaults to None.
     :type sort: str, optional
     :param order: Direction to sort the results ('asc' or 'desc'), defaults to None.
@@ -145,6 +150,14 @@ async def get_target_compounds(
                     TargetCollection.target_collection_id
                     == TargetCompoundInTargetCollection.target_collection_id,
                 )
+                # Restrict to collections the caller can see (workspace ACL).
+                if accessible_workspace_ids is not None:
+                    stmt = stmt.where(
+                        or_(
+                            TargetCollection.workspace_id.in_(accessible_workspace_ids),
+                            TargetCollection.workspace_id.is_(None),
+                        )
+                    )
                 stmt = stmt.add_columns(
                     TargetCompoundInTargetCollection.target_collection_id,
                     TargetCollection.target_collection_name,
