@@ -138,9 +138,12 @@ class TestTheKnownAnswersAreTheGoldens:
     )
     def test_the_answer_agrees_with_the_goldens(self, goldens, question):
         from_goldens = question.golden(goldens)
+        held_to = (
+            question.expected if question.near_golden is None else question.near_golden
+        )
 
         assert from_goldens, question.id
-        assert compare(question.expected, from_goldens, partial=True) == []
+        assert compare(held_to, from_goldens, partial=True) == []
 
 
 def _bundle(root: Path, peaks: list[dict], ions: list[dict]) -> Path:
@@ -363,8 +366,13 @@ class TestTheHarness:
         assert outcome.problems == ["no"]
 
     def test_each_outcome_closes_an_answer_in_the_manifest(self, kit):
-        ai_golden.run(kit, [_asked(_samples_in_spring, 3), _asked(_cannot, 1)])
+        report = ai_golden.run(kit, [_asked(_samples_in_spring, 3), _asked(_cannot, 1)])
 
+        # Each outcome's tools are its own question's calls, not the session's
+        assert [outcome.tools for outcome in report.outcomes] == [
+            ("describe", "resolve"),
+            ("find",),
+        ]
         answers = kit.session.manifest.records("answer")
         calls = {
             call["seq"]: call["op"] for call in kit.session.manifest.records("call")
