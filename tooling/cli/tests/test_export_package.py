@@ -25,7 +25,18 @@ from mascope_cli.runtime import runtime
 
 
 CONTAINER_PYTHON = "/opt/uv/tools/mascope/bin/python"
-INSIDE = "/app/.runtime/env/default/temp/packages/mascope-package_ds1_Air.zip"
+PACKAGES = "/app/.runtime/env/default/temp/packages"
+INSIDE = f"{PACKAGES}/mascope-package_ds1_Air.zip"
+
+
+def _run(command) -> str:
+    """The run a container build was started as."""
+    return command[command.index("--run") + 1]
+
+
+def _inside(command) -> str:
+    """Where the builder in the container writes the archive of ``command``."""
+    return f"{PACKAGES}/{_run(command)}/mascope-package_ds1_Air.zip"
 
 
 def _write_archive(path, **dataset) -> None:
@@ -55,18 +66,24 @@ def _package(archive, **counts) -> dict:
 
 class FakeBuilder:
     """Stand in for :func:`export_cmd._stream`: records the command line and
-    the environment, and makes the archive the builder would have."""
+    the environment, and makes the archive the builder would have. An
+    outcome may be a function of the command line."""
 
-    def __init__(self, *, status=0, outcome=None, make=None):
+    def __init__(self, *, status=0, outcome=None, make=None, interrupt=False):
         self.status = status
         self.outcome = outcome
         self.make = make
+        self.interrupt = interrupt
         self.calls: list[tuple[list[str], dict | None]] = []
 
     def __call__(self, command, env=None):
         self.calls.append((list(command), env))
+        if self.interrupt:
+            raise KeyboardInterrupt
         if self.make is not None:
             self.make(command)
+        if callable(self.outcome):
+            return self.status, self.outcome(command)
         return self.status, self.outcome
 
 
@@ -74,15 +91,20 @@ class FakeDocker:
     """Stand in for ``subprocess.run`` against the prod backend container:
     the interpreter probe, the copy out and the removal."""
 
-    def __init__(self, *, python=CONTAINER_PYTHON, copy_exit=0, dataset=None):
+    def __init__(
+        self, *, python=CONTAINER_PYTHON, copy_exit=0, dataset=None, interrupt=False
+    ):
         self.python = python
         self.copy_exit = copy_exit
         self.dataset = dataset or {}
+        self.interrupt = interrupt
         self.calls: list[list[str]] = []
 
     def __call__(self, cmd, capture_output=False, text=False, check=False):  # noqa: ARG002
         self.calls.append(list(cmd))
         if cmd[:2] == ["docker", "cp"]:
+            if self.interrupt:
+                raise KeyboardInterrupt
             if self.copy_exit == 0:
                 _write_archive(cmd[3], **self.dataset)
             return subprocess.CompletedProcess(cmd, self.copy_exit, "", "no space left")
@@ -90,7 +112,7 @@ class FakeDocker:
             if self.python is None:
                 return subprocess.CompletedProcess(cmd, 1, "", "")
             return subprocess.CompletedProcess(cmd, 0, self.python + "\n", "")
-        if cmd[:2] == ["docker", "exec"] and "rm" in cmd:
+        if cmd[:2] == ["docker", "exec"] and ("rm" in cmd or "pkill" in cmd):
             return subprocess.CompletedProcess(cmd, 0, "", "")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -136,7 +158,9 @@ def checkout(monkeypatch, tmp_path):
 def operator_install(monkeypatch):
     """An install that is not a source checkout: a server's, or the
     standalone CLI. The prod backend container builds the package."""
-    builder = FakeBuilder(outcome={"package": _package(INSIDE)})
+    builder = FakeBuilder(
+        outcome=lambda command: {"package": _package(_inside(command))}
+    )
     docker = FakeDocker()
     monkeypatch.setattr(export_cmd, "source_checkout", lambda: None)
     monkeypatch.setattr(export_cmd, "_stream", builder)
@@ -195,6 +219,7 @@ def test_the_operator_cli_builds_in_the_container_and_copies_the_archive_out(
     assert result.exit_code == 0, result.output
     container = runtime.full_config.backend.get_backend_container_name("prod")
     ((command, _),) = builder.calls
+    run = _run(command)
     assert command == [
         "docker",
         "exec",
@@ -203,14 +228,87 @@ def test_the_operator_cli_builds_in_the_container_and_copies_the_archive_out(
         "-m",
         "mascope_backend.deposit",
         "ds1",
+        "--run",
+        run,
     ]
     target = tmp_path.resolve() / "mascope-package_ds1_Air.zip"
     assert docker.commands("cp") == [
-        ["docker", "cp", f"{container}:{INSIDE}", str(target)]
+        ["docker", "cp", f"{container}:{_inside(command)}", str(target)]
     ]
-    assert docker.commands("rm") == [["docker", "exec", container, "rm", "-f", INSIDE]]
+    assert docker.commands("rm") == [
+        ["docker", "exec", container, "rm", "-rf", f"{PACKAGES}/{run}"]
+    ]
+    assert docker.commands("pkill") == []
     assert target.is_file()
     assert str(target) in result.output
+
+
+def test_two_runs_build_into_directories_of_their_own(
+    cli_runner, operator_install, tmp_path
+):
+    """Two operators, or a retry while the first build still runs, must not
+    copy out or remove each other's archive."""
+    builder, docker = operator_install
+    for _ in range(2):
+        result = cli_runner.invoke(
+            app, ["export", "package", "ds1", "-o", str(tmp_path)]
+        )
+        assert result.exit_code == 0, result.output
+    first, second = (_run(command) for command, _ in builder.calls)
+    assert first != second
+    assert [cmd[-1] for cmd in docker.commands("rm")] == [
+        f"{PACKAGES}/{first}",
+        f"{PACKAGES}/{second}",
+    ]
+
+
+def test_an_interrupted_build_is_stopped_in_the_container(
+    cli_runner, operator_install, tmp_path
+):
+    """``docker exec`` passes no signal on, so the builder would go on
+    writing the archive: it is sent SIGINT, and removes its directory."""
+    builder, docker = operator_install
+    builder.interrupt = True
+    result = cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
+    # The interrupt is not swallowed: the command ends as interrupted.
+    assert result.exit_code == 130
+    container = runtime.full_config.backend.get_backend_container_name("prod")
+    ((command, _),) = builder.calls
+    assert docker.commands("pkill") == [
+        ["docker", "exec", container, "pkill", "-INT", "-f", _run(command)]
+    ]
+    assert docker.commands("cp") == []
+    assert docker.commands("rm") == []
+
+
+def test_an_interrupted_copy_still_removes_the_archive_from_the_container(
+    cli_runner, operator_install, tmp_path
+):
+    """The builder is done by then: there is nothing to stop."""
+    builder, docker = operator_install
+    docker.interrupt = True
+    result = cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
+    # The interrupt is not swallowed: the command ends as interrupted.
+    assert result.exit_code == 130
+    container = runtime.full_config.backend.get_backend_container_name("prod")
+    ((command, _),) = builder.calls
+    assert docker.commands("rm") == [
+        ["docker", "exec", container, "rm", "-rf", f"{PACKAGES}/{_run(command)}"]
+    ]
+    assert docker.commands("pkill") == []
+
+
+def test_an_archive_outside_the_runs_directory_is_not_removed(
+    cli_runner, operator_install, tmp_path
+):
+    """Only the directory this run named is removed with ``rm -rf``, whatever
+    the builder reports."""
+    builder, docker = operator_install
+    builder.outcome = {"package": _package(INSIDE)}
+    result = cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert docker.commands("cp") != []
+    assert docker.commands("rm") == []
 
 
 def test_a_path_with_brackets_is_shown_as_it_is(cli_runner, operator_install, tmp_path):
@@ -371,8 +469,8 @@ def test_the_operator_is_told_what_to_check_before_depositing(
     cli_runner, operator_install, tmp_path, warnings
 ):
     builder, docker = operator_install
-    builder.outcome = {
-        "package": _package(INSIDE, raw_files_included=2, raw_files_changed=1)
+    builder.outcome = lambda command: {
+        "package": _package(_inside(command), raw_files_included=2, raw_files_changed=1)
     }
     docker.dataset = {"license": None, "authors": None}
     result = cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
