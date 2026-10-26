@@ -44,6 +44,7 @@ from mascope_backend.socket.events.handlers.default.subscription import (
 from mascope_backend.socket.eviction import evict_ended_sessions
 from mascope_backend.socket.signed_in import SIGNED_IN_ROOM
 from mascope_backend.socket.storage import (
+    SocketSessionError,
     get_session_user,
     get_user_socket_sids,
     redis_storage_client,
@@ -62,6 +63,7 @@ COMPLIANT_PASSWORD = "sixteen tonnes of quartz"
 LONG_AGO = timedelta(minutes=10)
 
 RESOURCE_ROOM = "some-sample-batch-id"
+OTHER_ROOM = "another-sample-batch-id"
 
 
 def _token(user: User, issued: datetime) -> str:
@@ -430,6 +432,108 @@ async def test_an_update_that_ends_nothing_evicts_nothing(owner_client, person, 
     assert await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
 
 
+# --- Signing out of one tab signs out its socket ---
+
+
+async def _logout(user: User, sid: str | None):
+    """Sign out through the logout route, as the SPA does, naming its socket."""
+    headers = {"X-SID": sid} if sid else None
+    async with _cookie_client(_token(user, datetime.now(timezone.utc))) as client:
+        resp = await client.post("/api/auth/logout", headers=headers)
+    assert resp.status_code == 204, resp.text
+    # The session cookie is cleared whatever happened to the socket.
+    assert f'{auth_settings.COOKIE_NAME}=""' in resp.headers["set-cookie"]
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_signing_out_signs_the_tab_socket_out(person, sio):
+    """
+    Clearing the cookie used to be all: the tab's socket kept its rooms, the
+    signed-in room among them, and its session still named the account.
+    """
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+
+    await _logout(person, "sid-a")
+
+    # Every room, its own user room and the signed-in room included.
+    assert _left(sio, "sid-a") == {RESOURCE_ROOM, SIGNED_IN_ROOM, f"user-{person.id}"}
+    assert await room_tracker.socket_rooms("sid-a") == set()
+    # The session is gone, so the socket can no longer subscribe as the account.
+    with pytest.raises(SocketSessionError):
+        await get_session_user("sid-a")
+    assert "sid-a" not in await get_user_socket_sids(person.id)
+    sio.enter_room.reset_mock()
+    await subscribe("sid-a", OTHER_ROOM)
+    sio.enter_room.assert_not_awaited()
+    # Notification routing no longer counts the user as listening anywhere.
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    assert not await room_tracker.is_in_room(person.id, f"user-{person.id}")
+
+
+@pytest.mark.asyncio
+async def test_signing_out_of_one_tab_keeps_the_other_tab(person, sio):
+    """The other tab's session goes on; only the rooms no other tab holds go."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await subscribe("sid-a", OTHER_ROOM)
+    await _open_socket("sid-b", person, datetime.now(timezone.utc))
+
+    await _logout(person, "sid-a")
+
+    assert _left(sio, "sid-b") == set()
+    assert (await get_session_user("sid-b"))["user_id"] == person.id
+    assert await get_user_socket_sids(person.id) == {"sid-b"}
+    assert await room_tracker.socket_rooms("sid-b") == {
+        RESOURCE_ROOM,
+        SIGNED_IN_ROOM,
+        f"user-{person.id}",
+    }
+    assert await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    assert await room_tracker.is_in_room(person.id, f"user-{person.id}")
+    assert not await room_tracker.is_in_room(person.id, OTHER_ROOM)
+
+
+@pytest.mark.asyncio
+async def test_signing_out_leaves_another_accounts_socket_alone(
+    person, other_person, sio
+):
+    """X-SID is the client's to send: a sid of another account changes nothing."""
+    await _open_socket("sid-b", other_person, datetime.now(timezone.utc))
+
+    await _logout(person, "sid-b")
+
+    sio.leave_room.assert_not_awaited()
+    assert (await get_session_user("sid-b"))["user_id"] == other_person.id
+    assert await room_tracker.socket_rooms("sid-b") == {
+        RESOURCE_ROOM,
+        SIGNED_IN_ROOM,
+        f"user-{other_person.id}",
+    }
+    assert await room_tracker.is_in_room(other_person.id, RESOURCE_ROOM)
+
+
+@pytest.mark.asyncio
+async def test_signing_out_without_a_socket_touches_none(person, sio):
+    """An API sign-out names no socket; the account's tabs stay signed in."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+
+    await _logout(person, None)
+
+    sio.leave_room.assert_not_awaited()
+    assert (await get_session_user("sid-a"))["user_id"] == person.id
+
+
+@pytest.mark.asyncio
+async def test_signing_out_survives_a_failing_socket_store(person, sio):
+    """The session has ended either way; the socket's cleanup is best effort."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+
+    with patch.object(
+        room_tracker, "release_socket", AsyncMock(side_effect=RuntimeError("down"))
+    ):
+        await _logout(person, "sid-a")
+
+
 # --- The signed-in room the room-less broadcasts go to ---
 
 
@@ -572,8 +676,6 @@ async def test_the_index_follows_connect_and_disconnect(person, sio):
 
 
 # --- The user's membership follows the sockets that hold the room ---
-
-OTHER_ROOM = "another-sample-batch-id"
 
 
 @pytest.mark.asyncio
