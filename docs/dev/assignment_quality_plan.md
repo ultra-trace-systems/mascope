@@ -716,7 +716,9 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   and 17O lines too, until that follow-up lands. It landed with MAS-371:
   the envelope match now merges the lines one peak of the file's
   resolving power holds, so a TOF centre fitted after it no longer
-  carries that bias.
+  carries that bias. MAS-438 reads a neighbour's envelope the same way
+  in the tiering pass's envelope rule and in the claims that read a
+  peak as the neighbour's line (tiering rule set 10).
 - **Where.** `score_pattern_v2` in `heuristic_filter.py`: a matched
   line's band (a lower end and the natural share, with a centre and a
   floor for the TOF's form) and the absent line's detectability

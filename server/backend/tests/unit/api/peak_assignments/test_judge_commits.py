@@ -54,14 +54,23 @@ ENVELOPES = {
     "C3H7O3": ([150.8, 151.3], [1.0, 0.5], ["M0", "13C"]),
 }
 
+#: The owner's lines where the run read the file's resolving power: one per
+#: peak of the file, each taller than the isotopologue it is named for.
+RESOLVED_ENVELOPES = {
+    "C6H13O6": ([200.0, 201.0, 202.0], [1.0, 0.15, 0.05], ["M0", "13C", "13C2"]),
+}
+
 
 @pytest.fixture(autouse=True)
 def stated_envelopes(monkeypatch):
-    def predict(ion_formula, charge, threshold=None):
-        mzs, heights, labels = ENVELOPES.get(ion_formula, ([0.0], [1.0], ["M0"]))
+    def predict(ion_formula, charge, threshold, resolution):
+        stated = ENVELOPES if resolution is None else RESOLVED_ENVELOPES
+        mzs, heights, labels = stated.get(
+            ion_formula, ENVELOPES.get(ion_formula, ([0.0], [1.0], ["M0"]))
+        )
         return np.array(mzs), np.array(heights), list(labels)
 
-    monkeypatch.setattr(tiering_module, "predict_isotopes", predict)
+    monkeypatch.setattr(tiering_module, "predict_resolved_isotopes", predict)
 
 
 def commit(
@@ -160,6 +169,7 @@ def judge(
     channel: str = "[M+H]+",
     second: str = "[M+Na]+",
     reagent_lines: Sequence[dict] = (),
+    resolution=None,
 ):
     return judge_commits(
         rows,
@@ -170,6 +180,7 @@ def judge(
         abundance_floor=0.01,
         max_alternatives=5,
         reagent_lines=reagent_lines,
+        resolution=resolution,
     )
 
 
@@ -227,6 +238,50 @@ class TestAClaimIsJudgedAgain:
         }
         # What it was given is left as the stages built it.
         assert rows == before
+
+    def test_both_passes_read_the_owner_s_lines_at_the_files_resolution(self):
+        # A row 2.5 times the owner's 13C line is taller than that line can
+        # make it, and its own line 3% of the owner taller than the owner's
+        # 13C2 line; the peaks the file resolves hold more, and account for
+        # both.
+        def ledger():
+            return anchors() + [
+                *owner(),
+                commit("pa-y", "C7H11NO4", "C7H12NO4+", 201.0, 250.0),
+                commit(
+                    "pa-y-13c",
+                    "C7H11NO4",
+                    "C7H12NO4+",
+                    202.0,
+                    30.0,
+                    role="iso_child",
+                    owner="pa-y",
+                    label="13C",
+                ),
+            ]
+
+        def resolution(mz):
+            return 5000.0
+
+        unresolved = judge(ledger())
+        judged = judge(ledger(), resolution=resolution)
+
+        assert unresolved.tiering["claimed"] == 0
+        assert by_id(unresolved.rows)["pa-y"]["role"] == "M0"
+        assert unresolved.tiering["lines_merged_at_resolution"] is False
+        line = by_id(judged.rows)["pa-y"]
+        assert (line["owner_peak_assignment_id"], line["isotope_label"]) == (
+            "pa-x",
+            "13C",
+        )
+        assert line["provenance"][ENVELOPE_CLAIM]["predicted_share"] == 0.15
+        carried = by_id(judged.rows)["pa-y-13c"]
+        assert (carried["owner_peak_assignment_id"], carried["isotope_label"]) == (
+            "pa-x",
+            "13C2",
+        )
+        assert carried["provenance"][ENVELOPE_CLAIM]["predicted_share"] == 0.05
+        assert judged.tiering["lines_merged_at_resolution"] is True
 
     def test_a_ledger_with_nothing_to_claim_is_judged_once(self):
         rows = anchors() + owner()
