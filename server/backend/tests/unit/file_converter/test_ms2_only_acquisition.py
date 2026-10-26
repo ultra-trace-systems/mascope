@@ -201,6 +201,7 @@ def _routed(monkeypatch, *, blank=False, survey_scans=True, fit=None):
 
     monkeypatch.setattr(processor, "_create_filestore_directory", lambda *_: None)
     monkeypatch.setattr(processor, "_emit_progress_notification", lambda *_: None)
+    monkeypatch.setattr(processor, "_store_ms2", lambda _props: calls.append("ms2"))
     monkeypatch.setattr(processor, "_create_instrument_config", _fit)
     monkeypatch.setattr(
         processor, "_compute_peaks", lambda *_: calls.append("peak detection")
@@ -246,13 +247,19 @@ class TestHowAFileIsStored:
     def test_an_ordinary_file_is_fitted_and_detected_as_before(self, monkeypatch):
         calls = _routed(monkeypatch)
 
-        assert calls == ["fit", "peak detection", ("record", "ifunc-001")]
+        assert calls == ["ms2", "fit", "peak detection", ("record", "ifunc-001")]
 
     def test_a_blank_keeps_its_own_path(self, monkeypatch):
         """A blank's store keeps the default axis: its scans are the MS1 kind."""
         calls = _routed(monkeypatch, blank=True)
 
-        assert calls == [("empty store", {}), ("record", None)]
+        assert calls == ["ms2", ("empty store", {}), ("record", None)]
+
+    def test_its_ms2_store_is_written_first_as_any_files(self, monkeypatch):
+        """Before the path that skips the fit, as before every other one."""
+        calls = _routed(monkeypatch, survey_scans=False)
+
+        assert calls == ["ms2", ("empty store", {"scan_type": None}), ("record", None)]
 
     def test_a_blank_is_classified_before_the_survey_scans_are_asked_about(
         self, monkeypatch
@@ -266,7 +273,7 @@ class TestHowAFileIsStored:
     def test_a_file_too_weak_to_fit_is_still_stored_as_a_blank(self, monkeypatch):
         calls = _routed(monkeypatch, fit=InsufficientPeaksError("too few peaks"))
 
-        assert calls == ["fit", ("empty store", {}), ("record", None)]
+        assert calls == ["ms2", "fit", ("empty store", {}), ("record", None)]
 
 
 @pytest.fixture

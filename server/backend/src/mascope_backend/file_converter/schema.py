@@ -77,6 +77,26 @@ class SampleFileProps(BaseModel):
         ),
     )
 
+    ms2_store: dict = Field(
+        default_factory=dict,
+        description=(
+            "The file's MS2 store (mascope_signal.ms2_store), 'ms2.zarr' in its "
+            "sample directory: its fragmentation scans read once, which the MS2 "
+            "routes read instead of the raw file. What it is: 'layout' and "
+            "'version' (a store of another is not read), "
+            "'parent_peak_tolerance' (the tolerance [Da] its groups were made "
+            "at), 'ppm' (the bin its averages were made in), 'reader' (the "
+            "reader backend that read the raw file) and 'groups', each "
+            "(polarity, parent peak, activation) group's 'polarity', 'key' "
+            "('137.0960@hcd25.00') and 'scan_count'. Written after the rest of "
+            "the props, once the file is in the filestore, for a file whose "
+            "scan_streams census holds a fragmentation stream, and again when "
+            "the file is re-processed. Empty for any other file, for a file "
+            "converted before the store existed, and for one whose store could "
+            "not be written: their MS2 routes read the raw file."
+        ),
+    )
+
     interval: float = Field(
         description="Mean measurement interval in seconds, i.e. length of a spectrum in the sample."
     )

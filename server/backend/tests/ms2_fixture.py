@@ -59,6 +59,10 @@ SOURCE_FILE = (
 
 #: What the scan index holds for an event or segment that was never set.
 _UNSET = 0xFFFF
+#: The backend's own opening of a file. A shape wraps this one and not
+#: whatever is in its place, so a shape presented inside another reads as
+#: itself rather than as the one wrapped in the other.
+_OPEN = OpenTFRawBackend.__enter__
 _SECONDS_PER_MINUTE = 60.0
 
 
@@ -280,10 +284,9 @@ def presented(shape: str) -> Iterator[Path]:
     """
     if shape not in SHAPES:
         raise ValueError(f"no MS2 fixture shape {shape!r}; the shapes are {SHAPES}")
-    enter = OpenTFRawBackend.__enter__
 
     def entered(self):
-        backend = enter(self)
+        backend = _OPEN(self)
         backend._raw = Ms2Acquisition(backend._raw, shape)
         return backend
 

@@ -3176,7 +3176,7 @@ async def test_a_reprocessing_rebuild_does_each_step_once():
     from mascope_backend.api.controllers.sample.files.process import service
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
-    reset, detect = AsyncMock(), AsyncMock()
+    reset, detect, ms2 = AsyncMock(), AsyncMock(), AsyncMock()
     clear = AsyncMock(side_effect=[ApiException("busy", {}, 503), {"batch-1"}])
     affected: set[str] = set()
     rebuild = service._reprocessing_rebuild(True, False, affected)
@@ -3184,6 +3184,7 @@ async def test_a_reprocessing_rebuild_does_each_step_once():
     with (
         patch(f"{_SVC}.reset_mz_calibration", reset),
         patch(f"{_SVC}.redetect_peaks", detect),
+        patch(f"{_SVC}._rewrite_ms2_store", ms2),
         patch(f"{_SVC}._clear_sample_items_for_reprocessing", clear),
     ):
         with pytest.raises(ApiException):
@@ -3192,12 +3193,63 @@ async def test_a_reprocessing_rebuild_does_each_step_once():
 
     reset.assert_awaited_once_with(sample_file)
     detect.assert_awaited_once_with(sample_file, True)
+    ms2.assert_awaited_once_with(sample_file)
     assert clear.await_count == 2
     assert clear.await_args.kwargs == {
         "sample_file_id": "sf-rebuilt",
         "independent_transaction": False,
     }
     assert affected == {"batch-1"}
+
+
+@pytest.mark.asyncio
+async def test_a_reprocessing_rebuild_writes_the_ms2_store_from_the_file():
+    """By the file's name, from its raw file and its census
+    (``refresh_ms2_store``); its peaks are detected first, and its samples
+    cleared after."""
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    calls = []
+    rebuild = service._reprocessing_rebuild(True, True, set())
+    with (
+        patch(f"{_SVC}.reset_mz_calibration", AsyncMock()),
+        patch(
+            f"{_SVC}.redetect_peaks",
+            AsyncMock(side_effect=lambda *_: calls.append("peaks")),
+        ),
+        patch(
+            f"{_SVC}.refresh_ms2_store",
+            side_effect=lambda filename: calls.append(("ms2", filename)),
+        ),
+        patch(
+            f"{_SVC}._clear_sample_items_for_reprocessing",
+            AsyncMock(side_effect=lambda **_: calls.append("clear") or set()),
+        ),
+    ):
+        assert await rebuild(_make_sample_file(filename="ORBI-1_ms2")) is None
+
+    assert calls == ["peaks", ("ms2", "ORBI-1_ms2"), "clear"]
+
+
+@pytest.mark.asyncio
+async def test_an_ms2_store_that_cannot_be_written_does_not_stop_the_rebuild():
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    rebuild = service._reprocessing_rebuild(None, True, set())
+    with (
+        patch(f"{_SVC}.reset_mz_calibration", AsyncMock()),
+        patch(f"{_SVC}.refresh_ms2_store", side_effect=OSError("disk full")),
+        patch(
+            f"{_SVC}._clear_sample_items_for_reprocessing",
+            AsyncMock(return_value=set()),
+        ) as clear,
+        captured_logs() as records,
+    ):
+        assert await rebuild(_make_sample_file(filename="ORBI-1_ms2")) is None
+
+    clear.assert_awaited_once()
+    (warning,) = [r for r in records if r["level"].name == "WARNING"]
+    assert "Could not write the MS2 store of ORBI-1_ms2" in warning["message"]
 
 
 @pytest.mark.asyncio

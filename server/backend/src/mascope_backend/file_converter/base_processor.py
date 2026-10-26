@@ -680,6 +680,27 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         return zone.key if zone is not None else None
 
     @property
+    def ms2_store(self) -> dict:
+        """The file's MS2 store, which is not written yet when the properties
+        are read: ``{}``, filled in by :meth:`_store_ms2` once the file is in
+        the filestore."""
+        return {}
+
+    def _store_ms2(self, sample_file_props: SampleFileProps) -> None:
+        """Write the file's MS2 store, if its kind of file has one.
+
+        Called once the file is in the filestore, before whatever path it
+        takes after - a blank, an acquisition with no scans to detect peaks
+        in, an ordinary one - so each of them gets it; a file that fails later
+        loses it with its sample directory. Only a raw Orbitrap file records
+        fragmentation scans (``RawProcessor``): a processor of any other kind
+        writes nothing, as here.
+
+        :param sample_file_props: The file's properties, as written.
+        :type sample_file_props: SampleFileProps
+        """
+
+    @property
     def instrument_type(self) -> str:
         """The instrument class, from the reader that opened the file.
 
@@ -780,6 +801,8 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         self._record_created = False
         try:
             self._emit_progress_notification(10)
+
+            self._store_ms2(sample_file_props)
 
             if self._is_blank_measurement:
                 # Routine classification of a measurement, not a fault

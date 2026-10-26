@@ -97,3 +97,34 @@ class GetMs2TimeseriesQueryParams(QueryParamsModel):
         gt=0,
         le=600,
     )
+
+
+class GetMs2ScansQueryParams(QueryParamsModel):
+    """Query parameters for retrieving the scans of one MS2 group."""
+
+    group: str = Field(
+        ...,
+        description=(
+            "The group's key: its parent peak m/z with four decimals, '@', its "
+            "activation, e.g. '137.0960@hcd25.00'. Any spelling of the same "
+            "m/z reads, so a key of the centroids route's 'by_activation' "
+            "spectra ('137.096@hcd25.00') names the same group"
+        ),
+    )
+    noise_threshold: float = Field(
+        DEFAULT_NOISE_THRESHOLD,
+        description="Minimum signal-to-noise ratio of the centroids returned",
+    )
+    parent_peak_tolerance: float = Field(
+        DEFAULT_PARENT_PEAK_TOLERANCE,
+        description=(
+            "Tolerance in Da for merging near-duplicate parent peaks, for a "
+            "file read raw; a file's MS2 store answers from its own grouping"
+        ),
+    )
+    timeout: float = Field(
+        DEFAULT_TIMEOUT,
+        description="Maximum seconds to wait for the computation before returning 504",
+        gt=0,
+        le=600,
+    )

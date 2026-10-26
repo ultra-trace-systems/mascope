@@ -19,6 +19,7 @@ from mascope_backend.file_converter.errors import (
     EmptyAcquisitionError,
 )
 from mascope_signal.instrument_func.fit import ORBI_FIT_DMZ
+from mascope_signal.ms2_store import holds_fragmentation, write_ms2_store
 from mascope_thermo.axis_fingerprint import compute_axis_fingerprint
 from mascope_thermo.axis_fingerprint.reference import minimal_document
 from mascope_thermo.backend import backend_name, open_backend
@@ -291,6 +292,34 @@ class RawProcessor(BaseFileProcessor):
                 raise
             return False
         return True
+
+    def _store_ms2(self, sample_file_props: SampleFileProps) -> None:
+        """Write the file's MS2 store, when its census holds fragmentation
+        scans.
+
+        Its fragmentation scans read once into a store beside the peak store,
+        which the MS2 routes read instead of the raw file
+        (:mod:`mascope_signal.ms2_store`), and recorded in the props and in
+        ``sample_file_props`` (``ms2_store``). A file whose census holds no
+        fragmentation stream, or holds no census, has none.
+
+        Like the censuses, it must never cost us a file: a store that cannot
+        be written is logged as a warning, and the file is stored without
+        one, its MS2 routes reading the raw file as before the store existed.
+
+        :param sample_file_props: The file's properties, as written.
+        :type sample_file_props: SampleFileProps
+        """
+        if not holds_fragmentation(sample_file_props.scan_streams):
+            return
+        try:
+            sample_file_props.ms2_store = write_ms2_store(sample_file_props.filename)
+        except Exception:
+            _log.warning(
+                "Could not write the MS2 store of %s; its MS2 routes read the raw file",
+                sample_file_props.filename,
+                exc_info=True,
+            )
 
     def _get_sample_file_props(self) -> SampleFileProps:
         """Extract the sample file properties, naming as data what is data.
