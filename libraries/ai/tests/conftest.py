@@ -28,6 +28,7 @@ recorded candidates whatever is asked.
 import copy
 import json
 import re
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -372,3 +373,13 @@ def _drop_the_sdks_log_handler() -> None:
         except ValueError:
             pass
         sdk_client._log_handler_id = None
+
+
+def pytest_terminal_summary(terminalreporter) -> None:
+    """The golden questions' report after a run on a demo stack
+    (``test_ai_golden.py``): what the tool surface answered, and what it
+    cannot."""
+    golden = sys.modules.get("ai_golden")
+    if golden is not None and golden.OUTCOMES:
+        terminalreporter.section("golden questions")
+        terminalreporter.write_line(golden.Report(golden.OUTCOMES).table())
