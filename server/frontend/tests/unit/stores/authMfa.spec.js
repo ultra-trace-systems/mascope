@@ -6,7 +6,13 @@ import { createPinia, setActivePinia } from 'pinia'
 // setup and reads the profile over http. Declared through vi.hoisted because
 // vi.mock is lifted above ordinary top-level declarations.
 const { socket, http } = vi.hoisted(() => ({
-  socket: { on: vi.fn(), addSubscription: vi.fn(), removeSubscription: vi.fn() },
+  socket: {
+    on: vi.fn(),
+    addSubscription: vi.fn(),
+    removeSubscription: vi.fn(),
+    resubscribe: vi.fn(),
+    renew: vi.fn()
+  },
   http: { get: vi.fn(), post: vi.fn() }
 }))
 
