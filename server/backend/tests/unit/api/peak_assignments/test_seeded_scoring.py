@@ -63,15 +63,19 @@ def _matched(
     target_error_ppm: float = TARGET_ERROR_PPM,
     found_abundance: float = FOUND_ABUNDANCE,
     others_centre_ppm: float = 0.0,
+    others_spread_ppm: float = SPREAD_PPM,
 ) -> pd.DataFrame:
     """The lines a spectrum shows - those at ``found_abundance`` and above -
     found at their predicted height, the target's ``target_error_ppm`` off and
-    the others' spread about ``others_centre_ppm``; the rest absent."""
+    the others' ``others_spread_ppm`` about ``others_centre_ppm``; the rest
+    absent."""
     frame = target_isotopes_df.copy().reset_index(drop=True)
     found = frame["relative_abundance"] >= found_abundance
     target = frame["target_compound_formula"] == TARGET[0]
     others = frame.index[found & ~target]
-    pattern = [others_centre_ppm + e for e in (-SPREAD_PPM, 0.0, SPREAD_PPM)]
+    pattern = [
+        others_centre_ppm + e for e in (-others_spread_ppm, 0.0, others_spread_ppm)
+    ]
     frame["match_mz_error"] = np.where(found, target_error_ppm, np.nan)
     frame.loc[others, "match_mz_error"] = [pattern[i % 3] for i in range(len(others))]
     frame["sample_peak_id"] = [
@@ -104,12 +108,13 @@ def reagent(monkeypatch):
 
 class _Frames(list):
     """The frames the stubbed matcher returned, and the target's lines' error,
-    the faintest line found and the others' centre it places them at, which a
-    test moves."""
+    the faintest line found and the others' centre and spread it places them
+    at, which a test moves."""
 
     target_error_ppm = TARGET_ERROR_PPM
     found_abundance = FOUND_ABUNDANCE
     others_centre_ppm = 0.0
+    others_spread_ppm = SPREAD_PPM
 
 
 @pytest.fixture
@@ -132,6 +137,7 @@ def stubbed(monkeypatch, reagent):
                 frames.target_error_ppm,
                 frames.found_abundance,
                 frames.others_centre_ppm,
+                frames.others_spread_ppm,
             )
         )
         return frames[-1]
@@ -198,6 +204,38 @@ async def test_a_lone_bright_seed_is_not_calibrated_on_its_own_lines(stubbed):
 
     assert bright == pytest.approx(crowd, abs=0.01)
     assert self_calibrated - bright > 0.2
+
+
+async def test_a_few_bright_seeds_sharing_an_offset_are_not_fitted(stubbed):
+    """Seven ions, each bright enough to match eight lines alone and all at one
+    offset: their lines agree as one ion's do, so fitted they would set the
+    offset at that error and the width at the floor. Seven is short of the
+    eight ions a seeded fit asks for, and they are scored at the class's
+    width, as the target is alone."""
+    stubbed.found_abundance = ORBI_DEFAULT_ISOTOPE_ABUNDANCE_THRESHOLD
+    stubbed.others_centre_ppm = TARGET_ERROR_PPM
+    stubbed.others_spread_ppm = 0.0
+    few = {TARGET} | set(sorted(OTHERS)[:6])
+    alone = await _fit({TARGET})
+    together = await _fit(few)
+    frame = stubbed[-1]
+
+    # The premise: every ion matched eight lines or more, at one offset, so a
+    # fit counting lines would measure that offset at the floor's width.
+    gated = seeded_scoring.apply_match_params(frame, OrbiMatchParams())
+    lines = gated[gated["sample_peak_intensity"] > 0].groupby("target_ion_id")
+    assert lines.size().size == 7
+    assert lines.size().min() >= 8
+    mu, sigma = fit_sample_mass_accuracy(frame)
+    assert mu == pytest.approx(TARGET_ERROR_PPM)
+    assert sigma == pytest.approx(0.05)
+    self_calibrated = score_ions_by_fit(gated, fallback_sigma_ppm=ORBI_WIDTH)
+    self_calibrated = self_calibrated.loc[
+        self_calibrated["target_compound_formula"] == TARGET[0], "match_score"
+    ].iloc[0]
+
+    assert together == pytest.approx(alone, abs=0.01)
+    assert self_calibrated - together > 0.2
 
 
 async def test_a_long_seed_list_still_fits_its_own_offset(stubbed):
