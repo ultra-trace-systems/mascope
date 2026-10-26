@@ -296,6 +296,10 @@ class Question:
     :ivar summary: The known answer in a few words, for the note.
     :ivar tools: The surface's calls the solver makes.
     :ivar golden: Part of the known answer, from the bundle's goldens.
+    :ivar near_golden: What the goldens' part is held to, when the known
+        answer is near them rather than theirs: a spectrum's apex is near
+        the fitted peak the goldens hold, not at it. None holds it to
+        *expected*.
     :ivar check: More it asks of the answer, given the answer and the
         manifest's record of it: the problems, one line each.
     """
@@ -308,6 +312,7 @@ class Question:
     summary: str
     tools: tuple[str, ...]
     golden: Callable[[Goldens], Any] | None = None
+    near_golden: Any = None
     check: Callable[[Any, dict[str, Any]], list[str]] | None = None
 
 
@@ -824,16 +829,21 @@ QUESTIONS: tuple[Question, ...] = (
         "m/z 169.10 and 169.15, how intense is it, and how many points has "
         "the window?",
         _spectrum_apex,
-        # The profile's highest point, not the fitted peak the goldens hold:
-        # within 5 ppm and 2% of it
+        # The profile's highest point
         {
-            "mz": Close(169.122318, rel=5e-6),
-            "intensity": Close(1176170.32, rel=0.02),
+            "mz": _peak_mz(169.1222414),
+            "intensity": _height(1166294.7),
             "n_points": 102,
         },
-        "m/z 169.1223, about the peak's height (1.18e6); 102 points in the window",
+        "m/z 169.1222 at 1.166e6, near the fitted peak; 102 points in the window",
         ("find", "load_spectrum", "resolve"),
         golden=_golden_spectrum_apex,
+        # The goldens hold the fitted peak, not the profile's highest point:
+        # the apex is within 5 ppm and 2% of it
+        near_golden={
+            "mz": Close(169.1222414, rel=5e-6),
+            "intensity": Close(1166294.7, rel=0.02),
+        },
     ),
     Question(
         "A5",

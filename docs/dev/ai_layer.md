@@ -588,10 +588,11 @@ answered wrongly, failed, or **not answerable**: a solver raises
   Where a question can be checked against them, a hermetic test holds the
   known answer to the goldens whenever the bundle is on disk. Tolerances are
   the bundle's own: an intensity within 1% (a ratio of two within 2%), an
-  m/z within 0.1 ppm. A4 compares the profile spectrum's apex with the
-  fitted peak, so within 2% and 5 ppm. A test fails when the registry's
-  default bundle changes: re-run the questions on the new bundle before
-  moving the fixture to it.
+  m/z within 0.1 ppm. A4's answer is the profile spectrum's highest point,
+  held to those tolerances too. The goldens hold the fitted peak instead, so
+  the goldens test holds the apex within 5 ppm and 2% of it. A test fails
+  when the registry's default bundle changes: re-run the questions on the
+  new bundle before moving the fixture to it.
 - **A stack that is not pristine.** CI's demo-stack job runs the
   end-to-end suite first, and its upload test leaves a second sample of one
   demo raw file, whichever it took (`upload.spec.js`). A demo sample is named
@@ -631,7 +632,7 @@ answered wrongly, failed, or **not answerable**: a solver raises
 | A1 | analysis | When did C10H16O2's protonated ion (C10H17O2+) peak in the 2025 uronium batch's time series, and how high? | at the 14:34:03 sample, height 1.176e6 | `derive`, `load_timeseries`, `resolve` |
 | A2 | analysis | In the 2025 bromide batch, what is formic acid's signal (CH2BrO2-) normalised to the reagent ion Br3- (its [81Br]Br2- line): its mean, and its maximum and where? | mean 0.0959 over 80 samples, maximum 0.1074 at 15:21:13 | `derive`, `load_peaks`, `resolve` |
 | A3 | analysis | How far above its background did C10H17O2+ rise in the 2025 uronium batch, the background being the mean of the batch's first five samples? | 1.130e6 above a background of 4.59e4, at 14:34:03 | `derive`, `load_peaks`, `resolve` |
-| A4 | analysis | Where is the apex of the 14:34:03 uronium sample's spectrum between m/z 169.10 and 169.15, how intense is it, and how many points has the window? | m/z 169.1223, about the peak's height (1.18e6); 102 points in the window | `find`, `load_spectrum`, `resolve` |
+| A4 | analysis | Where is the apex of the 14:34:03 uronium sample's spectrum between m/z 169.10 and 169.15, how intense is it, and how many points has the window? | m/z 169.1222 at 1.166e6, near the fitted peak; 102 points in the window | `find`, `load_spectrum`, `resolve` |
 | A5 | analysis | Read as one stage over its whole acquisition, how high is C10H17O2+ in the 14:34:03 uronium sample? | 1.176e6, the averaged peak list's height | `describe`, `find`, `load_peaks_by_stage`, `load_timeseries`, `resolve` |
 | I1 | interpretation | What is the peak at m/z 124.9244 in the bromide sample measured at 14:34:57? | formic acid, CH2O2 as CH2BrO2- [M+Br]-, probable; the 13C-labelled suggestion unscored | `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |
 | I2 | interpretation | What is the peak at m/z 169.1223 in the uronium sample measured at 14:34:03? | C10H16O2 as C10H17O2+ [M+H]+, probable; three other candidates unmatched; the numeric-mass suggestion unscored | `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |
