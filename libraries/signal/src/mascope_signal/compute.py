@@ -1850,25 +1850,57 @@ async def get_orbi_ms2_centroids_by_parent(
                 average=average,
                 by_activation=by_activation,
             )
-            props = m_io.read_props(base_filename)
-            calibration = props["mz_calibration"]
-            factor = calibration["par"]["calibration_factor"] if calibration else None
-
-            if factor is not None:
-                mapped_ms2_centroids = {
-                    key: (masses * factor, intensities, resolutions, signal_to_noise)
-                    for key, (
-                        masses,
-                        intensities,
-                        resolutions,
-                        signal_to_noise,
-                    ) in mapped_ms2_centroids.items()
-                }
-            return mapped_ms2_centroids
+            return ms2_centroids_on_file_axis(base_filename, mapped_ms2_centroids)
         case _:
             raise NotImplementedError(
                 "MS2 centroid extraction is only implemented for Orbitrap raw files."
             )
+
+
+def ms2_calibration_factor(base_filename: str) -> float | None:
+    """The factor a file's MS2 m/z are put on its calibrated axis by.
+
+    The calibration factor of the file's MS1 calibration, applied to the
+    fragment m/z on every MS2 read, from the raw file or from the MS2 store
+    (:mod:`mascope_signal.ms2_store`) alike.
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :return: The factor, or None for a file with no calibration.
+    :rtype: float | None
+    """
+    calibration = m_io.read_props(base_filename)["mz_calibration"]
+    return calibration["par"]["calibration_factor"] if calibration else None
+
+
+def ms2_centroids_on_file_axis(
+    base_filename: str,
+    mapped_ms2_centroids: dict[tuple[float, str], tuple[np.ndarray, ...]],
+) -> dict[tuple[float, str], tuple[np.ndarray, ...]]:
+    """Averaged MS2 centroids on the file's calibrated axis.
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :param mapped_ms2_centroids: Mapping of (parent peak m/z, activation) to
+        (masses, intensities, resolutions, signal_to_noise) on the
+        instrument's axis.
+    :type mapped_ms2_centroids: dict
+    :return: The same mapping, its masses times
+        :func:`ms2_calibration_factor`.
+    :rtype: dict
+    """
+    factor = ms2_calibration_factor(base_filename)
+    if factor is None:
+        return mapped_ms2_centroids
+    return {
+        key: (masses * factor, intensities, resolutions, signal_to_noise)
+        for key, (
+            masses,
+            intensities,
+            resolutions,
+            signal_to_noise,
+        ) in mapped_ms2_centroids.items()
+    }
 
 
 async def get_ms2_summary(
@@ -1975,13 +2007,47 @@ async def get_ms2_fragment_timeseries(
                 "MS2 timeseries extraction is only for Orbitrap raw files."
             )
 
+    return ms2_fragment_timeseries(
+        base_filename, centroids, tic_values, noise_threshold, normalize_by
+    )
+
+
+def ms2_fragment_timeseries(
+    base_filename: str,
+    centroids: list[dict],
+    tic_values: list[float],
+    noise_threshold: float = 10.0,
+    normalize_by: Literal["tic"] | None = None,
+) -> dict:
+    """The fragment timeseries of one parent peak's scans.
+
+    Applies noise filtering and the calibration factor to each scan's
+    centroids, builds timeseries via peak clustering, and optionally
+    normalizes by TIC. The scans are read from the raw file
+    (:func:`get_ms2_fragment_timeseries`) or from the MS2 store
+    (:mod:`mascope_signal.ms2_store`).
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :param centroids: Per-scan centroid dicts on the instrument's axis, in
+        scan order: masses, intensities, resolutions, signal_to_noise,
+        timestamp.
+    :type centroids: list[dict]
+    :param tic_values: Each scan's TIC.
+    :type tic_values: list[float]
+    :param noise_threshold: Minimum signal-to-noise ratio threshold.
+    :type noise_threshold: float
+    :param normalize_by: Normalization mode. ``"tic"`` normalizes by scan TIC,
+        ``None`` returns raw intensities.
+    :type normalize_by: Literal["tic"] | None, optional
+    :return: Dictionary with mz_values, time, and values arrays.
+    :rtype: dict
+    """
     if not centroids:
         return {"mz_values": [], "time": [], "values": []}
 
     # Apply calibration factor to fragment masses
-    props = m_io.read_props(base_filename)
-    calibration = props["mz_calibration"]
-    factor = calibration["par"]["calibration_factor"] if calibration else None
+    factor = ms2_calibration_factor(base_filename)
 
     # Apply noise filtering and calibration, build Spectra
     spectra_list = []
