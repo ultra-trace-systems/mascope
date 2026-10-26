@@ -138,9 +138,12 @@ async def get_ms2_averaged_centroids(
     instrument's own scan-filter notation.
 
     The file's MS2 store holds each group's average over all of its scans,
-    so it answers a sample whose window holds every scan of each group it
-    holds a scan of - a sample of the whole acquisition does. A sample whose
-    window cuts a group is averaged from the raw file, over its own scans.
+    and each parent peak's over all of its activations, so it answers a
+    sample whose window holds every scan of each group it holds a scan of -
+    a sample of the whole acquisition does - and, by parent peak, every
+    activation of each one or one alone. A sample whose window cuts a group,
+    or holds several activations of a parent peak and not all when they are
+    merged, is averaged from the raw file, over its own scans.
 
     :param sample_item_id: Unique identifier for the sample.
     :param noise_threshold: Minimum signal-to-noise ratio threshold.
