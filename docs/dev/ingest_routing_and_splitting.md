@@ -18,7 +18,8 @@ and layout override, the per-stream stale rebuild (step 6) and MS2 routes
 taking the stream; phase 8, the profiles, is unbuilt and filed as
 milestone 9 of the Linear project (MAS-300, MAS-312, MAS-313, MAS-337,
 MAS-344);
-detection deferred** (2026-10-22). Written for issue #2098 ("Split files into
+detection is built as an audit: it reads each file's chemistry off its
+reagent ions and binds nothing** (2026-10-26). Written for issue #2098 ("Split files into
 samples by scan attributes"), which carries the checklist of pull
 requests. Decisions 1 to 5, 7, 9, 11 to 16 and 18 in section 12 are settled;
 6, 8 and 10 are open; 17 was decided on 2026-10-10 (a layout override is
@@ -84,9 +85,10 @@ learned and yields to what a person has confirmed. (Rung 4 once held an
 instrument default, since dropped - section 5.2 says why.)
 
 Anything unresolved is parked as "needs a chemistry", visibly, instead of
-failing silently. Detection, when it comes, audits every rung and adds a
-suggestion to the parked file; it is deferred behind the stream and profile
-work (decision 3).
+failing silently. Detection reads every bound or parked file's chemistry
+off its reagent ions and stores the call beside the rung that bound it, as
+an audit; it binds nothing until it is measured on production, and then
+suggests a chemistry for the parked file (5.4, decision 3).
 
 Read sections 1 and 2 for the problem and the evidence, 3 for the model, 4.5
 for the composite cut, 5.1 for the profile, 5.3 for the catalogue, and 10
@@ -102,7 +104,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
 | 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the item TIC and the per-scan export read the scans the store holds, an item made by hand reads the row the pipeline's item reads, and a spectrum that meets a stale store asks for its rebuild (#2329); the spectrum and the peak listing name each segment, and the sample's views draw the scan ranges apart (#2330); each segment is calibrated by a factor of its own, fitted on the calibrants it holds or taken from a neighbour (#2332), and the calibration dialog and the sample's badge say which (#2333); a stitched file's processing detail says what its ranges read where they overlap and which have no fit of their own (#2334); each segment is fitted an instrument function of its own, which its peaks are read under and the detail states (4.3); **phase 8 run** on the two sites that acquire composites (2026-10-15 and 16): one site's 7,312 pooled files from before its switch re-processed and stitched in ten hours, 2.5 s a file inside batches of 25 paced against the live ingest, leaving 45 files parked without a chemistry and one single-stream file; the other site's 889 files, stitched on arrival under 1.11.0, re-processed in 81 minutes at 3.0 s a file for their calibration per range; the ingest, the pipeline and error tracking undisturbed throughout - the operator's steps are in [maintaining.md](../maintaining.md#the-composite-cut) |
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is built with the composite cut (#2332) and shown with it (#2333), and so is its instrument function per segment; follows 3 on the same track; no rebuild script (4.5, 9.1) |
-| 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
+| 5 | Chemistry detection: audit first, then provisional binding | **audit built** (MAS-92, #2649): the detector reads each bound or parked file's MS1 polarities off the reagent libraries and stores its call beside the rung that bound them (`sample_file.binding_evidence`); on the labelled corpus 92 calls, none wrong, 53% no call, in-sample (5.4). The rung waits for a release in audit and a production shadow read per site |
 | 6 | Recipes: time and trace windows, preview and apply | open |
 | 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open; its first declaration channel is built: a record of the whole file that the control program writes and the File Agent sends, which binds the file at rung 0 ([acquisition_sidecar.md](acquisition_sidecar.md)); MS2 parts: first cut built (4.2) - a file with no MS1 scans is stored and, where nothing binds it, filed as an MS2 part; centroid-only scans built (#1241): scans that stored their centroids alone are summed as their centroids, and their peaks are the instrument's |
 
@@ -1179,7 +1181,7 @@ throughout, because nothing here cuts a file into items, and it writes no
 | `scan_count`, `blocks`, `t_first`, `t_last` | census; NULL on a composite, which has no scans of its own |
 | `instrument_function_id` | per-stream fit |
 | `mz_calibration` (JSON) | per-stream calibration |
-| `ionization_mode_id`, `binding_source`, `binding_state`, `binding_evidence` (JSON) | the chemistry binding (section 5) |
+| `ionization_mode_id`, `binding_source`, `binding_state`, `binding_evidence` (JSON) | the chemistry binding (section 5). The detector's evidence is built on the file for now, `sample_file.binding_evidence` per polarity, since TOF and parked files have no stream rows (5.4) |
 | `state`, `state_detail`, `state_updated_utc` | processing state (section 5.6) |
 
 A composite is a row like any stream, with no scan event of its own and
@@ -2007,10 +2009,12 @@ A site that genuinely runs one chemistry per instrument is served by rung 4
 once its method has been seen once, which is the same outcome without a
 standing setting to go stale.
 
-**Detection, once built, runs on every MS1 stream, whatever rung bound it.**
-It stores its evidence on the stream. A strong disagreement with the binding raises a
-review item. Examples: "bound to bromide by method, no Br- or Br2- found"; "a
-nitrate method, but the 15N/14N anchor ratio says labelled".
+**Detection runs on every MS1 polarity, whatever rung bound it** (built as an
+audit, 5.4). It stores its evidence on the file, per polarity, beside the
+rung and the mode. A disagreement with the binding is logged now; once the
+rung binds, a strong one raises a review item. Examples: "bound to bromide
+by method, no Br- or Br2- found"; "a nitrate method, but the 15N/14N anchor
+ratio says labelled".
 
 ### 5.3 Method bindings
 
@@ -2216,38 +2220,193 @@ token.
 
 ### 5.4 Detection
 
-Detection builds on the reagent cluster libraries of the epic
-(`mascope_tools.composition.reagents`: `REAGENT_CLUSTERS` with anchor flags,
-`match_reagent_clusters`, `detect_channels`). The scorer does not exist yet;
-it is new work.
+**Built as an audit** (MAS-92, #2649, 2026-10-26). Each MS1 polarity of a file the
+pipeline binds or parks is read for its reagent ions
+(`mascope_tools.composition.chemistry_detection`), and what the detector
+calls is stored on the file beside what bound the polarity
+(`process/detection.py`). It binds nothing. What follows is the design as
+built, then what it measured on the corpus, then what it takes to bind.
 
-- **Input:**
-  - the stream's strongest peaks on the uncalibrated axis;
-  - the stream's scan ranges;
-  - the instrument class window, widened for TOF, whose uncalibrated axis
-    can be tens of ppm off.
-- **Coverage.** A library whose anchors all fall outside the scan ranges is
-  *unobservable*, not absent. Only observable libraries compete.
-- **Dominance.** A reagent system is by far the brightest thing in its
-  spectrum. The score is the share of the top-N intensity the library
-  explains, and a primary anchor must rank near the top. This rule separates
-  nitrate CIMS from the natural NO3- of an ambient-ion spectrum.
-- **Margin.** The winner must beat the runner-up by a set factor.
-- **Label ratio.** The labelled and unlabelled forms of a reagent (15N- and
-  14N-nitrate) both show both anchors. The decision rests on their intensity
-  ratio, not on presence.
-- **Output:**
-  - per profile: score, coverage and anchors found;
-  - a decision: profile, ambiguous, unobservable or none;
-  - the reasons.
-  All of it is stored as `binding_evidence`.
-- **Authority.**
-  - Detection ships **audit-only** for at least one release.
-  - It becomes rung 5 only when, on the labelled corpus and on production
-    shadow data, wrong calls stay at or below 1% of its decisions.
-  - The naive probe in 2.3 got 6 of its 70 calls wrong or doubtful (one of
-    them a labelling artefact), 7-9%. The guards above have to close that
-    whole gap.
+**The fingerprint** is each shipped profile's own ions. They are read off
+the reagent libraries of the assignment plan's step 3.3
+(`mascope_tools.composition.reagents.REAGENT_CLUSTERS`), their reagent and
+calibrant families, so the fingerprint, the calibration anchors and the
+adduct panel stay one table.
+
+| Profile | Anchors | The rest of the fingerprint |
+|---|---|---|
+| bromide | Br-, Br2- | its hydrates, Br3-, HBr.Br-, BrO-, BrO3- |
+| iodide | I-, I2- | its hydrate, I3- |
+| nitrate | NO3-, HNO3.NO3- | (HNO3)2.NO3-, the hydrates |
+| 15N-nitrate | the same, labelled | the same, labelled |
+| uronium | urea.H+, (urea)2.H+ | (urea)3.H+ |
+| fluoranthene beam, + and - (Orbitrap only) | C16H10+, C16H10- | the cation's satellites and fragments, two PAH ions it carries |
+
+- **The air's ions are left out.** Every negative library carries the air's
+  nitrate and carbonate, and every positive one protonated water, NO+ and
+  O2+: they say a discharge was there, not which reagent it ran.
+- **An ion's isotope lines count with it.** Bromide's 81Br line is half of
+  its monomer's signal.
+- **A chemistry without a reagent ion has no fingerprint**: protonation,
+  deprotonation, ammonium, an ambient-ion mode. It is never called, and no
+  call is its spectrum's correct answer.
+
+**Input.**
+
+- The polarity's peak list, as its sample reads it. A stitched polarity
+  reads its composite, each peak averaged over its own segment's scans, so a
+  reagent window and the analyte windows of one method are one spectrum.
+  Heights on an Orbitrap, areas on a TOF; the axis as acquired, before the
+  file's m/z calibration is applied.
+- The polarity's scan ranges: its MS1 streams' in the census, else the
+  file's own m/z range.
+- Windows per instrument class. The anchors are found within 50 ppm on an
+  Orbitrap and 200 ppm on a TOF, and say where the spectrum puts the
+  reagent's masses; every other ion is claimed within 5 or 20 ppm of the
+  mass they correct (`match_reagent_clusters`). Wide because the axis is
+  read as acquired: a file nothing binds has no calibration, which needs a
+  chemistry. The corpus holds Orbitrap files up to 31 ppm out before
+  calibration and TOF files up to 160 ppm out; a TOF's peaks are about
+  200 ppm wide, so its window is no wider than one peak.
+
+**The decision**, in order (rules version 1):
+
+1. **Coverage, the no-call rule.** A fingerprint none of whose anchors is
+   inside the scan ranges is *unobservable*, not absent. Only observable
+   fingerprints compete. With none observable the answer is `unobservable`.
+2. **Size.** A spectrum of fewer than 30 peaks is not read (`none`): an
+   ambient acquisition at its noise floor holds two or three, and whatever
+   claims one of them explains it all.
+3. **Label ratio.** Where 15N- and 14N-nitrate are both observable, the
+   labelled anchors' intensity is divided by the unlabelled ones', over the
+   anchor pairs whose two masses were both recorded. At 5 or more the
+   labelled profile stays and the other leaves the field; at 0.1 or less
+   the unlabelled one does - natural abundance puts nitrate's 15N line at
+   0.4% of it. Anything between is a mixture: `ambiguous` where either
+   form claims 20% of the spectrum, the bar of step 4. A weaker mixture,
+   traces of both nitrates, decides nothing here: both forms stay in the
+   field, and another reagent can still be called.
+4. **Dominance.** The score is the share of the spectrum's whole peak
+   intensity the fingerprint claims. The leader's must reach 20%, it must
+   have found an anchor, and its brightest ion must rank in the top 5 of
+   the spectrum's peaks. Otherwise `none`.
+5. **Margin.** The leader's score must be twice every other's. Otherwise
+   `ambiguous`.
+6. Otherwise the profile.
+
+**What is stored, and where.** `sample_file.binding_evidence`, one entry per
+polarity:
+
+- `bound`: the mode that bound the polarity, the rung its sample records
+  (`bound_by`), and the profile that mode's mechanisms name, read as
+  assignment reads a sample's (`detect_reagent_profile`). Null on a parked
+  file.
+- `agrees`: whether the call names that profile. Null where there is no
+  call or nothing was bound.
+- `detection`: the rules' version, every threshold and both windows of
+  each instrument class, the decision, the profile, the score, the reasons
+  in words, the peak count and scan ranges, and per candidate its score,
+  its anchors in range and found, and its brightest ion, each with its
+  rank.
+
+On the file, not on the stream rows the table of 4.4 plans it on: a TOF file
+and a parked file have no stream rows, and a binding is made per polarity
+until phase 4 carries it to the stream. Deferred like the acquisition
+record, so no listing, route or sample view carries it. Every run that binds
+or parks a file writes it, and a run that cannot read the spectrum clears
+it, so an earlier run's evidence never stands beside another binding. A call
+that disagrees with the binding is an INFO line in the log; nothing else
+reads it. `backend.chemistry_detection = "off"` stores nothing; the default
+is `"audit"`.
+
+**Measured on the corpus** (2026-10-26), the core and heavy tiers, 249
+files, with the composite cut on. The rules were worked out on develop at
+`3c2097f1b`, replayed and kept, the detector reading every file polarity's
+stored peak list; the figures below are what a replay of the branch stored
+in `binding_evidence`, on the axis as acquired. That replay's peaks, matches
+and routing are bit-identical to develop's (`corpus compare`), and its
+`corpus check` passes.
+
+- **Labels**, as in 2.3: a file its token routes has the chemistry its
+  mode's mechanisms name. The eleven polarities whose mode is named ambient
+  count as ambient, whatever their mechanisms: on an Orbitrap an ambient
+  mode declaring electron transfer would otherwise read as the
+  charge-transfer source.
+- **The unit is a file's polarity**, which is what a binding binds. 196 are
+  labelled: 182 of a chemistry with a fingerprint and 14 without (eight
+  ambient negative, three ambient positive, three protonation). 45 more
+  belong to parked files and carry no label.
+
+| On the 196 labelled polarities | Rules as first written, read off develop's calibrated peak lists | As built, as the pipeline stored it |
+|---|---|---|
+| Calls | 96 | 92 |
+| Wrong calls | 6 | 0 |
+| Precision | 93.8% | 100% |
+| No call | 100 (51%) | 104 (53%) |
+| Ambient negative called nitrate | 5 of 8 | 0 of 8 |
+| 15N-nitrate called 14N | 1 | 0 |
+| The 2.3 probe, for scale | 70 calls, 6 wrong or doubtful, 54% no call | |
+
+- **Why there is no call.** Of the 90 polarities of a fingerprinted
+  chemistry left uncalled, eight held no peaks, and 70 recorded none of
+  that fingerprint's anchors: the EASY-IC methods scanning m/z 40-160 or
+  40-200, below the beam ion at 202; the uronium methods starting at m/z
+  122 or 125, above both urea ions; the 15N-nitrate methods starting at
+  128; the nitrate windows of m/z 65-120 and 150-800. Of the 104 left, 92
+  were called; three were too thin, three were 15N mixtures, and six fell
+  short of the bar.
+- **What changed from the rules as first written:**
+  - four of the five ambient negative spectra called nitrate held one to
+    three peaks, nitrate and its dimer at the noise floor: the size rule;
+  - the fifth, a TOF spectrum, spread its signal over 1,392 peaks. Its
+    nitrate ions were 44% of the 30 brightest peaks' intensity, which is
+    where the first rules read the score, among correct uronium and
+    15N-nitrate calls at 44% to 50%; they are 17% of the whole spectrum,
+    against 26% for the lowest correct call: the score over the whole peak
+    list;
+  - the 15N file called 14N carries 15N at 19% of its 14N, fifty times
+    natural abundance - a mixture, not a 14N source: the asymmetric label
+    ratio;
+  - two bromide spectra went uncalled, not wrong: in one the range starts
+    at m/z 82, above the monomer, and the dimer ranks 18th; in the other
+    the monomer ranks 6th. Br3- ranks 3rd in both: the rank is now the
+    brightest ion's, not an anchor's;
+  - the first replay of the branch, reading the axis as acquired as the
+    pipeline does, lost nine correct calls the calibrated peak lists had
+    given, and two on parked files: six Orbitrap spectra whose anchors sat
+    20 to 31 ppm out and five TOF spectra 70 to 160 ppm out, outside anchor
+    windows of 20 and 50 ppm. The windows are 50 and 200 ppm since. Every
+    call of the corpus survives a shift of its whole calibrated spectrum by
+    30 ppm (Orbitrap) or 150 ppm (TOF) either way.
+- **These are in-sample figures.** The thresholds were set on the spectra
+  they are measured on, and the corpus has one ambient TOF spectrum and one
+  15N mixture. Two thresholds sit close to the confusions they hold off:
+  a score bar of 15% calls that TOF spectrum nitrate, and a natural ratio of
+  0.2 calls that mixture 14N. Moving any other threshold to about half or
+  twice its value (30 peaks to 10 or 100, rank 5 to 3 or 10, margin 2 to
+  1.5 or 3, labelled ratio 5 to 3 or 10) loses at most nine calls and makes
+  none wrong.
+- **On parked files** it calls 19 of the 45 polarities - nitrate 7,
+  bromide 6, uronium 2, 15N-nitrate 2 and the beam once in each polarity.
+  Nothing labels them, so their accuracy is not known.
+- **Against method binding.** On the same replay the learned bindings agree
+  with every token on all 182 files their methods could place, and 34 files
+  report no method name to place them by. That is in-sample too: the
+  bindings were learned from those files. On the corpus the detector ties
+  method binding's precision; it does not beat it.
+
+**Authority.**
+
+- Detection stays **audit-only**, for at least one release and until both
+  gates hold: wrong calls at or below 1% of calls on the labelled corpus,
+  and on a production shadow read per site - the stored evidence of every
+  file bound while the audit ran, read where `agrees` is false (MAS-501).
+- Then **rung 5 binds** a polarity no higher rung binds, where the call is
+  a profile under the rules version measured and its score is at least
+  **0.4**. That is twice the call bar, and more than twice the highest score
+  any spectrum without a reagent reached on the corpus once it held 30
+  peaks: 0.17, the ambient TOF one. 84 of the 92 corpus calls clear it.
+  The binding is provisional and raises a review item (5.5) (MAS-502).
 - **Later evidence** for the many methods that exclude their reagent ions:
   - adduct-pair consistency, i.e. the same neutral seen through two channels
     of one profile;
@@ -3371,16 +3530,25 @@ Polarity always comes from the file, never from the filename.
   - the internal MS2 acquisitions keep their spectra;
   - the dual-polarity match loss of 2.1 does not reproduce.
 
-### Phase 5: chemistry detection (deferred; 2-3 weeks, plus a release in audit mode)
+### Phase 5: chemistry detection (audit built; the rung after a release in audit mode)
 
-- **Deferred (decision 3):** the catalogue and the one-click park cover the
-  cold start, so detection follows phases 3, 4 and 8 and ships as an audit
-  first. Its value then is a reagent changed under an unchanged method, and
-  the suggestion on a parked file.
+- **Deferred (decision 3)** behind phases 3, 4 and 8, as the catalogue and
+  the one-click park cover the cold start; built as an audit ahead of phase
+  8 all the same (MAS-92), since it binds nothing and needs nothing of the
+  profiles but their reagent libraries. Its value is a reagent changed
+  under an unchanged method, and the suggestion on a parked file.
 - **Dependency:** the epic's reagent libraries, on `develop` since the
   assignment plan's stage 3 merged.
-- **Build:** the scorer with its four guards, stored evidence, and
-  disagreement review items.
+- **Built (MAS-92, #2649):** the scorer with its four guards
+  (`mascope_tools.composition.chemistry_detection`), run on every bound or
+  parked file, and its evidence stored beside the rung
+  (`sample_file.binding_evidence`, `backend.chemistry_detection`). Measured
+  on the labelled corpus: 92 calls, none wrong, 53% no call (5.4).
+- **Remaining:**
+  - a release in audit mode, and a production shadow read per site over
+    the stored evidence (MAS-501);
+  - the rung: a provisional binding where no higher rung binds and the score
+    reaches 0.4, with its review item (5.5) (MAS-502, blocked by MAS-501).
 - **Gates:**
   - confusion on the labelled corpus, and a production shadow read per site;
   - rung 5 switched on only at or below 1% wrong calls.
@@ -3462,7 +3630,7 @@ graph LR
     P2 --> P8[8 profiles + standard methods]
     P2 -.one migration at a time.-> P3
     P3 --> P4[4 per-stream state]
-    P8 --> P5[5 detection, deferred]
+    P8 --> P5[5 detection, audit built]
     P4 --> P5
     E[reagent libraries, on develop] --> P5
     P3 --> P6[6 recipes + windows]
@@ -3510,7 +3678,7 @@ is no epic branch.
     first cut on, `backend.composite_scan_streams`, off by default until the
     cut is complete;
   - **phase 5:** detection runs check-only for a release before it may bind
-    anything.
+    anything (`backend.chemistry_detection = "audit"`, the default).
 
   Phases 6 and 8 need no flag: the default recipe splits nothing, a
   profile's seeded rows are inert until a file is bound to one, and naming
@@ -3553,7 +3721,8 @@ through a short-lived stacked branch, merged as one unit.
     rule, which drops no opening scan of any stream of any layout when
     compared within the stream (4.3), and the stitch itself, end to end
     on two files of each layout that runs more than one experiment (4.5);
-  - the labelled streams (detection confusion);
+  - the labelled streams (detection confusion; measured per file polarity
+    on 2026-10-26, 5.4);
   - the exposure file (trace windows).
   The corpus is internal. Anything committed as a fixture must be synthetic
   or published.
@@ -3597,7 +3766,8 @@ through a short-lived stacked branch, merged as one unit.
    **Decided 2026-10-01:** deferred. The standard-method catalogue and the
    one-click park cover the cold start, so detection follows phases 3, 4 and
    8 and ships audit-only first, as recommended; never final without a
-   person.
+   person. **Built as an audit on 2026-10-26** (MAS-92, 5.4); its binding
+   threshold is set there.
 4. **Default stream key.** ~~The full signature including resolution
    (recommended), or polarity plus scan range only.~~ **Decided 2026-09-24:**
    the full signature, resolution included, though resolution is not expected
@@ -3876,6 +4046,7 @@ Function names are the stable reference; line numbers drift.
 | Notifications | `socket/notifications/service.py`; the background-task decorator in `api/lib/api_features.py` | 0, 1 |
 | Models | `db/models.py` (`SampleFile`, `SampleItem`, `IonizationMode`); new `AcquisitionStream`, `MethodBinding`, `IngestRecipe`, `Notification` | 1-6 |
 | Reagent libraries (on `develop`) | `libraries/tools/src/mascope_tools/composition/reagents.py` (`REAGENT_CLUSTERS`, `match_reagent_clusters`, `detect_channels`); `profiles.py` | 5, 8 |
+| Chemistry detection (audit) | `libraries/tools/src/mascope_tools/composition/chemistry_detection.py` (`detect_chemistry`, `fingerprint`, `DetectionRules`); `api/controllers/sample/files/process/detection.py` (`record_chemistry_detection`), called from `process/service.py` once a file is bound and from `_park_needing_chemistry`; `db/models.py` `SampleFile.binding_evidence` | 5 |
 | Changepoints | `libraries/tools/src/mascope_tools/stats/peak.py` (ruptures) | 6 |
 | External traces | `libraries/signal/src/mascope_signal/kecu.py` `csv_to_xarr` | 7 |
 | Agent | `agents/file/src/mascope_file_agent/main.py`; `libraries/sdk/src/mascope_sdk/_agents.py` | 1, 7 |
