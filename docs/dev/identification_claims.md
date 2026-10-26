@@ -1,14 +1,16 @@
 # Identification claims: identifiers, candidates and levels
 
 - **Status:** design
-- **As of:** 2026-10-22
+- **As of:** 2026-10-26
 - **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea)
   (Linear: MAS-357 the structure lookup, MAS-363 the exports, MAS-361 the
-  decision on the classic sheet; MAS-31 is the level's FAIR export) and
+  decision on the classic sheet; MAS-31 is the level's FAIR export),
   [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c)
-  (MAS-358 the target as a candidate, MAS-359 the claim, MAS-360 the MS/MS
-  ranking, MAS-362 the decision on the targeted path; MAS-73 carries the
-  engine's level); filed 2026-10-22
+  (MAS-358 the target as a candidate, MAS-359 the claim, MAS-362 the decision
+  on the targeted path; MAS-73 carries the engine's level) and
+  [MS2 analysis](https://linear.app/ultra-trace/project/ms2-analysis-7fdc525bca51)
+  milestone 6, "Spectral library matching" (MAS-360 the MS/MS ranking, after
+  MAS-429 the reference spectra); filed 2026-10-22
 - **What:** Identifiers as candidates and an identification as a separate, evidenced claim with a Schymanski level: where each lives, who may state what.
 
 ## 1. Purpose
@@ -413,8 +415,8 @@ names the mapping version; the *Match compounds* sheet is left as decision 2
 says. Verify: the traceability test reads the four columns back; a claimed row
 exports its claim's level, an unclaimed one the engine's. Size: S.
 
-**E. MS/MS candidate ranking** (MAS-360; in the Assignment quality plan until
-the public-database phase 4 project, which the owner has not opened, exists). Context: section 5.5. Task: the scorer ranks the row's
+**E. MS/MS candidate ranking** (MAS-360; MS2 analysis milestone 6, "Spectral
+library matching", with MAS-429 the reference spectra it ranks against). Context: section 5.5. Task: the scorer ranks the row's
 candidates by spectral similarity and writes the ranking to provenance; a
 claim is written only if decision 3 says so. Verify: on the decoy harness the
 true structure ranks first at a measured rate. Size: L.
