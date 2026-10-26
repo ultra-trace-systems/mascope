@@ -870,12 +870,14 @@ and an archive already at the output path is replaced. An output path that
 ends in `/` is a directory, made if it is missing; its parent must exist.
 
 The archive is built inside the running backend container, from the database
-and filestore of the env the stack runs, in that env's `temp/packages/`. Then
-it is copied to the output path and removed from the container. The stack must
-be up. While the archive is built it needs the archive's size free on the
-env's disk, and again where it is copied. A developer's source checkout builds
-the package itself instead, from the active env's dev database and filestore;
-`--in-container` asks for the container there too.
+and filestore of the env the stack runs, in a directory of the run's own under
+that env's `temp/packages/`. Then it is copied to the output path and removed
+from the container. Two runs at once, of one dataset too, do not meet. Ctrl-C
+stops the build in the container as well, and it removes what it had written.
+The stack must be up. While the archive is built it needs the archive's size
+free on the env's disk, and again where it is copied. A developer's source
+checkout builds the package itself instead, from the active env's dev database
+and filestore; `--in-container` asks for the container there too.
 
 The archive holds every raw file of the dataset, deflated: plan for most of
 the raw files' size, and a few seconds per hundred megabytes. Zenodo takes

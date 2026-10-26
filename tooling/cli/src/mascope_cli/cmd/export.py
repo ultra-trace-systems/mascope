@@ -11,16 +11,18 @@ filestore of the stack that holds the dataset. In a source checkout, a
 developer's, that is the dev stack: the package is built in a process of its
 own on this machine, from the active env's dev database. Anywhere else it is
 the prod stack, whose database is reachable only from its containers, so the
-package is built inside the prod backend container, into the env's temp
-directory, and copied out with `docker cp`. That holds for a server's install
-built from its clone too, which has the backend's code but not the database's
-port. `--in-container` asks for the container from a checkout.
+package is built inside the prod backend container, into a directory of the
+run's own in the env's temp directory, and copied out with `docker cp`. That
+holds for a server's install built from its clone too, which has the
+backend's code but not the database's port. `--in-container` asks for the
+container from a checkout.
 """
 
 import json
 import os
 import subprocess
 import sys
+import uuid
 import zipfile
 from pathlib import Path
 from typing import Annotated
@@ -128,39 +130,69 @@ def _build_in_container(dataset_id: str, output: Path) -> dict:
         )
         raise typer.Exit(1)
 
-    status, outcome = _stream(
-        ["docker", "exec", container, python, "-m", _BUILDER, dataset_id]
-    )
-    package = _checked(
-        status,
-        outcome,
-        hint=" If it says there is no module mascope_backend.deposit, the "
-        "release deployed predates the package: update the deployment.",
-    )
-    inside = package["archive"]
-    target = output / os.path.basename(inside) if output.is_dir() else output
+    # Each run builds into a directory of its own, named by this, so that
+    # two runs of one dataset share no path, and an interrupted run's builder
+    # can be found and stopped.
+    run = f"export-{uuid.uuid4().hex}"
+    inside = None
     try:
+        status, outcome = _stream(
+            ["docker", "exec", container, python, "-m", _BUILDER, dataset_id]
+            + ["--run", run]
+        )
+        package = _checked(
+            status,
+            outcome,
+            hint=" If it says there is no module mascope_backend.deposit, or "
+            "no argument --run, the release deployed predates the package: "
+            "update the deployment.",
+        )
+        inside = package["archive"]
+        target = output / os.path.basename(inside) if output.is_dir() else output
         copied = subprocess.run(
             ["docker", "cp", f"{container}:{inside}", str(target)],
             capture_output=True,
             text=True,
             check=False,
         )
+    except KeyboardInterrupt:
+        if inside is None:
+            _stop_builder(container, run)
+        raise
     finally:
         # The container's temp directory is emptied when the backend starts;
-        # a package is not left there until then.
-        subprocess.run(
-            ["docker", "exec", container, "rm", "-f", inside],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        # a package is not left there until then. Only the directory this
+        # run named is removed.
+        if inside is not None and os.path.basename(os.path.dirname(inside)) == run:
+            subprocess.run(
+                ["docker", "exec", container, "rm", "-rf", os.path.dirname(inside)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
     if copied.returncode != 0:
         runtime.logger.error(
             f"Could not copy the package out of '{container}': {copied.stderr.strip()}"
         )
         raise typer.Exit(1)
     return {**package, "archive": str(target)}
+
+
+def _stop_builder(container: str, run: str) -> None:
+    """
+    Stop the builder of an interrupted run in the container.
+
+    ``docker exec`` without a TTY passes no signal on: the interrupt stops
+    this process and its ``docker exec``, but the builder would go on writing
+    the archive. Sent SIGINT, the builder removes its run's directory itself.
+    """
+    runtime.logger.warning(f"Interrupted: stopping the build in '{container}'.")
+    subprocess.run(
+        ["docker", "exec", container, "pkill", "-INT", "-f", run],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def _checked(status: int, outcome: dict | None, hint: str = "") -> dict:
