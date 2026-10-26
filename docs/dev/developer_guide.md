@@ -529,7 +529,10 @@ automatically. It binds the current worktree to a **slot** and derives everythin
 | Frontend port   | 5173   | 5174   | `5173 + N`      |
 
 Bindings are allocated first-come and stored in `.runtime/instances.json` under the shared
-`MASCOPE_PATH`, so a worktree always resolves to the same slot. Env selection flows through the
+`MASCOPE_PATH`, so a worktree always resolves to the same slot. A new binding skips any slot
+whose backend or frontend port another process already listens on (a bare `mascope dev run`,
+or another service on 8090), so the first instance on a shared machine may get slot 1; the
+skipped slot is not recorded and is offered again once its ports are free. Env selection flows through the
 `MASCOPE_ENV` environment variable (never persisted `state.json`), so concurrent runs never
 clobber each other.
 

@@ -13,7 +13,11 @@ a worktree to a slot ``N``, from which everything else is derived:
 
 Bindings are allocated first-come and persisted to a registry under the shared
 ``MASCOPE_PATH`` so they are stable across runs and collision-free across
-worktrees. The registry is the source of truth for the slot->ports mapping; the
+worktrees. A new binding also skips any slot whose API or frontend port another
+process already listens on (a bare ``mascope dev run``, or a service outside the
+registry), so an instance never shares a port with it; the skipped slot is not
+recorded and is offered again once its ports are free. An existing binding is
+never probed: a worktree keeps its slot whether its stack runs or not. The registry is the source of truth for the slot->ports mapping; the
 runtime honours the ``MASCOPE_ENV`` / ``MASCOPE_API_PORT`` / ``MASCOPE_FRONTEND_PORT``
 env vars this module sets, so nothing is written into config files.
 
@@ -26,18 +30,21 @@ import hashlib
 import json
 import os
 import re
+import socket
 import subprocess
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from loguru import logger
 
 
-# Slot 0 maps to the default single-dev ports (8090/5173); on a shared box use
-# instances consistently rather than mixing a bare `mascope dev run` with them.
+# Slot N maps to API_PORT_BASE + N and FRONTEND_PORT_BASE + N, so slot 0 has
+# the default single-dev ports (8090/5173). Allocation skips a slot whose ports
+# something already listens on, a bare `mascope dev run` or any other service,
+# so the first instance on a shared box may get slot 1 or higher.
 API_PORT_BASE = 8090
 FRONTEND_PORT_BASE = 5173
 # Ceiling on concurrent instances. A guard against runaway allocation, not a
@@ -207,21 +214,56 @@ def _lowest_free_slot(used: set[int]) -> int:
     return slot
 
 
+# --- port probe ---
+
+_PROBE_HOSTS = ("127.0.0.1", "::1")
+
+
+def _port_in_use(port: int, timeout: float = 0.2) -> bool:
+    """
+    Whether something on this host accepts connections on ``port``.
+
+    Connects over loopback, IPv4 and IPv6, rather than trying to bind: a
+    listener on 127.0.0.1 alone or on a wildcard address answers either way,
+    Vite's ``localhost`` may be ``::1`` only, and a connect means the same on
+    POSIX and Windows, where bind semantics differ.
+    """
+    for host in _PROBE_HOSTS:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            continue  # refused, unreachable, or no IPv6 on this host
+    return False
+
+
+def _busy_ports(slot: int, port_in_use: Callable[[int], bool]) -> list[int]:
+    """The slot's API and frontend ports that are already taken on the host."""
+    ports = (API_PORT_BASE + slot, FRONTEND_PORT_BASE + slot)
+    return [port for port in ports if port_in_use(port)]
+
+
 # --- public api ---
 
 
 def resolve_or_allocate(
     worktree: str | None = None,
     home: Path | str | None = None,
+    port_in_use: Callable[[int], bool] | None = None,
 ) -> Instance:
     """
     Return the current worktree's instance, allocating one on first call.
 
-    Idempotent: the same worktree always resolves to the same slot/env/ports.
-    Allocation takes the lowest free slot and derives the env name and ports
-    from it, then persists the binding under the registry lock.
+    Idempotent: the same worktree always resolves to the same slot/env/ports,
+    without probing them. Allocation takes the lowest slot that is free both in
+    the registry and on the host (neither of its ports is listened on), derives
+    the env name and ports from it, then persists the binding under the
+    registry lock. Slots skipped for their ports are not recorded.
 
-    :raises InstanceError: When all slots (``MAX_SLOTS``) are in use.
+    :param port_in_use: Port probe, ``_port_in_use`` by default; tests pass
+        their own so they need no real listener.
+    :raises InstanceError: When every slot below ``MAX_SLOTS`` is taken in the
+        registry or on the host.
     """
     home = _home(home)
     key = worktree or worktree_key()
@@ -231,12 +273,29 @@ def resolve_or_allocate(
         if key in instances:
             return Instance(worktree=key, **instances[key])
 
+        probe = port_in_use or _port_in_use
         used_slots = {rec["slot"] for rec in instances.values()}
+        skipped: list[int] = []
         slot = _lowest_free_slot(used_slots)
+        while slot < MAX_SLOTS:
+            busy = _busy_ports(slot, probe)
+            if not busy:
+                break
+            logger.info(
+                f"Skipping instance slot {slot}: port(s) "
+                f"{', '.join(map(str, busy))} already in use on this host"
+            )
+            skipped.append(slot)
+            slot = _lowest_free_slot(used_slots | set(skipped))
         if slot >= MAX_SLOTS:
+            message = f"No free instance slots (max {MAX_SLOTS})."
+            if skipped:
+                message += (
+                    f" Slot(s) {', '.join(map(str, skipped))} were skipped "
+                    "because their ports are in use by another process."
+                )
             raise InstanceError(
-                f"No free instance slots (max {MAX_SLOTS}). "
-                "Release one with `mascope instance rm <env>`."
+                f"{message} Release one with `mascope instance rm <env>`."
             )
         env = _env_name_for(key, {rec["env"] for rec in instances.values()})
         inst = Instance(
