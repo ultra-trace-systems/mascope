@@ -616,6 +616,11 @@ class _RecordingBackend:
     def scan_indices(self, **kwargs):
         return self._answer("scan_indices", kwargs, [1])
 
+    def scan_filters(self):
+        """Its one scan, a profile scan: what the sum signal asks to tell
+        a profile from centroids by, which selects nothing."""
+        return [{"scan": 1, "filter": "FTMS + p NSI Full ms [50.0000-500.0000]"}]
+
     def average_profile(self, indices, ppm=1, average=False):
         return np.array([100.0]), np.array([1.0]), len(indices)
 
