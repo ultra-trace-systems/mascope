@@ -190,8 +190,8 @@ async def get_session_user(sid: str, namespace: str = "/") -> dict[str, Any]:
             session_key, storage_config.session_ttl
         )
         if namespace == WEB_NAMESPACE:
-            # And what eviction finds the socket by, so the index and the
-            # room record live as long as the session (see
+            # And what eviction finds the socket by, so the index, the room
+            # record and the worker record live as long as the session (see
             # start_session_renewal for a socket that never emits).
             await redis_storage_client.client.expire(
                 storage_config.user_sockets_key(session["user_id"]),
@@ -199,6 +199,9 @@ async def get_session_user(sid: str, namespace: str = "/") -> dict[str, Any]:
             )
             await redis_storage_client.client.expire(
                 storage_config.socket_rooms_key(sid), storage_config.room_ttl
+            )
+            await redis_storage_client.client.expire(
+                storage_config.socket_worker_key(sid), storage_config.session_ttl
             )
 
         runtime.logger.trace(
@@ -220,6 +223,24 @@ async def get_session_user(sid: str, namespace: str = "/") -> dict[str, Any]:
             f"Redis session storage client: session error for {sid}: {e} [Worker {worker_pid}]"
         )
         raise SocketSessionError(f"Session error: {e}") from e
+
+
+async def has_session(sid: str, namespace: str = "/") -> bool:
+    """
+    Whether a socket has a session, without refreshing it as a read does.
+
+    :param sid: Socket.IO session ID
+    :type sid: str
+    :param namespace: Socket.IO namespace
+    :type namespace: str
+    :return: True if the session key exists
+    :rtype: bool
+    """
+    return bool(
+        await redis_storage_client.client.exists(
+            storage_config.session_key(sid, namespace)
+        )
+    )
 
 
 async def get_user_socket_sids(user_id: int) -> set[str]:

@@ -35,7 +35,7 @@ from mascope_backend.origins import (
     own_request_origins,
 )
 from mascope_backend.runtime import runtime
-from mascope_backend.socket.storage import redis_storage_client
+from mascope_backend.socket.storage import redis_storage_client, stop_worker_heartbeat
 
 
 @asynccontextmanager
@@ -53,6 +53,7 @@ async def lifespan(app: FastAPI):
     Worker shutdown tasks:
     - Drain detached auto-processing pipelines (waits, then cancels what
       overruns, so a truncated pipeline still names its file)
+    - Stop this worker's socket heartbeat
     - Disconnect Redis client
 
     :param app: FastAPI application instance
@@ -98,6 +99,10 @@ async def lifespan(app: FastAPI):
         f"Fast App shutdown: draining background tasks [Worker {worker_pid}]"
     )
     await drain_auto_process_tasks()
+
+    # A socket of this worker whose disconnect does not run reads as gone at
+    # once, not when the heartbeat would have lapsed.
+    await stop_worker_heartbeat()
 
     runtime.logger.info(
         f"Fast App shutdown: closing Redis storage client [Worker {worker_pid}]"

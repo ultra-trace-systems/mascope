@@ -15,8 +15,10 @@ from mascope_backend.socket.auth.exceptions import (
 from mascope_backend.socket.auth.token import get_jwt_from_cookies
 from mascope_backend.socket.storage import (
     SocketSessionError,
+    claim_socket,
     clear_user_session,
     get_session_user,
+    release_socket_claim,
     room_tracker,
     start_session_renewal,
     stop_session_renewal,
@@ -55,6 +57,9 @@ async def connect(sid: str, environ: dict) -> bool:
     # to live on the worker holding the connection, and a tick with no
     # session yet simply finds nothing to refresh.
     start_session_renewal(sid)
+    # Names this worker as the socket's holder, so the user's other tabs can
+    # tell it from a socket a dead worker left (see storage/workers.py).
+    await claim_socket(sid)
     try:
         # --- Get cookies from environment ---
         cookies = environ.get("HTTP_COOKIE")
@@ -127,4 +132,5 @@ async def disconnect(sid: str) -> None:
         # once nothing can refresh them any more
         await stop_session_renewal(sid)
         await room_tracker.forget_socket(sid)
+        await release_socket_claim(sid)
         await clear_user_session(sid)

@@ -38,7 +38,9 @@ from mascope_backend.socket.storage import (
     forget_user_socket,
     get_session_user,
     get_user_socket_sids,
+    has_session,
     room_tracker,
+    socket_is_held,
 )
 
 
@@ -100,8 +102,18 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
         evicted = 0
         for sid in sids:
             rooms = await room_tracker.socket_rooms(sid)
+            # A socket its dead worker left may keep its session for up to a
+            # day, but no room: it is evicted as one without a session. While
+            # the session lasts it stays indexed, as a worker that only
+            # stalled past its heartbeat still holds it and the next eviction
+            # must find it. Asked first, so reading the session does not
+            # refresh a ghost's records.
+            session = None
             try:
-                session = await get_session_user(sid)
+                if await socket_is_held(sid):
+                    session = await get_session_user(sid)
+                elif not await has_session(sid):
+                    raise SocketSessionError("No session found")
             except SocketSessionError:
                 # Gone without a disconnect (a worker died), or alive with its
                 # session lost: either way nothing says it may keep its rooms.
