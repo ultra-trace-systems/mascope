@@ -20,6 +20,10 @@ from mascope_backend.api.models.target.compounds.target_compound_pydantic_model 
     TargetCompoundUpdate,
 )
 from mascope_backend.api.new.auth.dependencies import editor_user, guest_user
+from mascope_backend.api.new.workspaces.dependencies import (
+    check_batch_access,
+    check_target_collection_access,
+)
 
 
 # TODO_target_compound_management refactor to send the same result as as other routes
@@ -37,10 +41,21 @@ async def get_target_compounds_route(
 ):
     """Retrieve a list of target compounds with optional filters and pagination.
 
+    A named ``sample_batch_id`` or ``target_collection_id`` needs the guest
+    role on its workspace, as the collection and association routes do; a
+    global collection is readable by anyone signed in. Without either filter
+    the list is the shared compound and ion library.
+
     :param query_params: Query parameters for filtering, sorting, and pagination.
     :param user: The authenticated user, defaults to Depends(guest_user).
     :return: Dictionary with total results and data list of target compounds.
     """
+    if query_params.sample_batch_id:
+        await check_batch_access(query_params.sample_batch_id, user, "guest")
+    if query_params.target_collection_id:
+        await check_target_collection_access(
+            query_params.target_collection_id, user, "guest"
+        )
     return await get_target_compounds(**query_params.model_dump())
 
 
