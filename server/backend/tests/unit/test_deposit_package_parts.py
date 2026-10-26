@@ -10,6 +10,10 @@ The package as a whole, built from a dataset, is tested in
 import copy
 import hashlib
 import json
+import signal
+import subprocess
+import sys
+import textwrap
 import zipfile
 import zlib
 from datetime import datetime, timezone
@@ -367,6 +371,117 @@ def test_the_command_reports_a_failure_on_its_last_line(
     monkeypatch.setattr(deposit_main, "_build", build)
     assert deposit_main.main(["nope", "--output", "/somewhere"]) == 1
     assert _outcome(capsys) == {"error": reported}
+
+
+def test_a_run_builds_into_a_directory_of_its_own(monkeypatch, tmp_path, capsys):
+    """The operator command names each container build a run, so that two
+    builds of one dataset share no path."""
+    built = []
+
+    async def build(dataset_id, output):
+        built.append(output)
+        return {"archive": f"{output}/p.zip", "files": 4, "bytes": 10}
+
+    monkeypatch.setattr(deposit_main, "_build", build)
+    monkeypatch.setattr(
+        runtime.env, "path", lambda *parts: str(tmp_path.joinpath(*parts))
+    )
+    assert deposit_main.main(["ds1", "--run", "export-1a"]) == 0
+    run = tmp_path / "temp" / "packages" / "export-1a"
+    assert built == [str(run)]
+    assert run.is_dir()
+
+
+@pytest.mark.parametrize(
+    "error", [DatasetNotFound("There is no dataset 'nope'"), OSError("disk full")]
+)
+def test_a_run_that_fails_removes_its_directory(monkeypatch, tmp_path, error):
+    async def build(dataset_id, output):
+        (tmp_path / "temp" / "packages" / "export-1a" / "p.zip.part").write_text("")
+        raise error
+
+    monkeypatch.setattr(deposit_main, "_build", build)
+    monkeypatch.setattr(
+        runtime.env, "path", lambda *parts: str(tmp_path.joinpath(*parts))
+    )
+    assert deposit_main.main(["nope", "--run", "export-1a"]) == 1
+    assert not (tmp_path / "temp" / "packages" / "export-1a").exists()
+    assert (tmp_path / "temp" / "packages").is_dir()
+
+
+def test_a_failure_with_an_output_removes_nothing(monkeypatch, tmp_path):
+    """Only a run's own directory is removed, never one it was given."""
+
+    async def build(dataset_id, output):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(deposit_main, "_build", build)
+    assert deposit_main.main(["ds1", "--output", str(tmp_path)]) == 1
+    assert tmp_path.is_dir()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["ds1", "--run", "../packages"],
+        ["ds1", "--run", "a/b"],
+        ["ds1", "--run", ""],
+        ["ds1", "--run", "r1", "--output", "/somewhere"],
+    ],
+)
+def test_a_run_is_one_directorys_name_and_no_output(monkeypatch, argv):
+    built = []
+
+    async def build(dataset_id, output):
+        built.append(output)
+
+    monkeypatch.setattr(deposit_main, "_build", build)
+    with pytest.raises(SystemExit) as exit_:
+        deposit_main.main(argv)
+    assert exit_.value.code == 2
+    assert built == []
+
+
+_INTERRUPTED_BUILD = textwrap.dedent(
+    """
+    import asyncio, os, sys
+    import mascope_backend.deposit.__main__ as deposit_main
+    from mascope_backend.runtime import runtime
+
+    root = sys.argv[1]
+    runtime.env.path = lambda *parts: os.path.join(root, *parts)
+
+    async def build(dataset_id, output):
+        with open(os.path.join(output, "p.zip.part"), "w") as part:
+            part.write("half an archive")
+        sys.stderr.write("writing\\n")
+        sys.stderr.flush()
+        await asyncio.sleep(60)
+
+    deposit_main._build = build
+    sys.exit(deposit_main.main(["ds1", "--run", "export-1a"]))
+    """
+)
+
+
+def test_an_interrupted_run_removes_its_directory(tmp_path):
+    """What the operator command sends a container build it was interrupted
+    in: ``docker exec`` passes no signal on, so ``pkill -INT`` does."""
+    with subprocess.Popen(
+        [sys.executable, "-c", _INTERRUPTED_BUILD, str(tmp_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as builder:
+        for line in builder.stderr:
+            if line.strip() == "writing":
+                break
+        run = tmp_path / "temp" / "packages" / "export-1a"
+        assert (run / "p.zip.part").is_file()
+        builder.send_signal(signal.SIGINT)
+        builder.stderr.read()
+        assert builder.wait(timeout=30) != 0
+    assert not run.exists()
 
 
 def _sample_file(sample_file_id: str, filename: str) -> SimpleNamespace:
