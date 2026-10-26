@@ -7,6 +7,7 @@ from sqlalchemy import (
 )
 
 from mascope_backend.api.lib.api_features import api_controller
+from mascope_backend.api.lib.datetimes import as_utc
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.match_rating.match_rating_pydantic_model import (
@@ -79,9 +80,13 @@ async def get_match_ratings(
         if rating is not None:
             stmt = stmt.filter(MatchRating.rating == rating)
         if datetime_min:
-            stmt = stmt.where(MatchRating.match_rating_utc_created >= datetime_min)
+            stmt = stmt.where(
+                MatchRating.match_rating_utc_created >= as_utc(datetime_min)
+            )
         if datetime_max:
-            stmt = stmt.where(MatchRating.match_rating_utc_created <= datetime_max)
+            stmt = stmt.where(
+                MatchRating.match_rating_utc_created <= as_utc(datetime_max)
+            )
 
         # Step 3: Apply sorting
         if sort:
