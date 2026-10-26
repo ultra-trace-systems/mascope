@@ -106,6 +106,7 @@ def test_the_defaults_are_the_last_seven_days_of_every_file(no_env):
     assert config.families is None
     assert config.sets == {}
     assert (config.family_window_spacing, config.family_peaked_iqr) == (0.5, 0.5)
+    assert config.family_min_peaks == 10
     assert not config.as_json
 
 
@@ -124,6 +125,7 @@ def test_everything_can_be_set(no_env):
     no_env.setenv("TOF_AUDIT_FAMILY_WINDOW_PPM", "20")
     no_env.setenv("TOF_AUDIT_FAMILY_WINDOW_SPACING", "0.25")
     no_env.setenv("TOF_AUDIT_FAMILY_PEAKED_IQR", "0.3")
+    no_env.setenv("TOF_AUDIT_FAMILY_MIN_PEAKS", "4")
     no_env.setenv("TOF_AUDIT_FAMILY_DBE_MAX", "2")
     no_env.setenv("TOF_AUDIT_JSON", "1")
 
@@ -145,6 +147,7 @@ def test_everything_can_be_set(no_env):
         2,
     )
     assert (config.family_window_spacing, config.family_peaked_iqr) == (0.25, 0.3)
+    assert config.family_min_peaks == 4
     assert config.as_json
 
 
@@ -155,6 +158,7 @@ def test_everything_can_be_set(no_env):
         ("TOF_AUDIT_FROM", "12.10.2026", "not a date"),
         ("TOF_AUDIT_PER_DAY", "ten", "not a number"),
         ("TOF_AUDIT_PER_DAY", "-1", "below"),
+        ("TOF_AUDIT_FAMILY_MIN_PEAKS", "0", "below"),
         ("TOF_AUDIT_SETS", "{proposed", "not valid JSON"),
         ("TOF_AUDIT_SETS", '{"stored": ["C3H9N"]}', "reserved"),
         ("TOF_AUDIT_SETS", '{"collection": ["C3H9N"]}', "reserved"),
@@ -451,6 +455,7 @@ def _config(instrument: str, **update) -> script.Config:
         "family_window_ppm": audit.DEFAULT_FAMILY_WINDOW_PPM,
         "family_window_spacing": audit.DEFAULT_FAMILY_WINDOW_SPACING,
         "family_peaked_iqr": audit.DEFAULT_FAMILY_PEAKED_IQR,
+        "family_min_peaks": audit.DEFAULT_FAMILY_MIN_PEAKS,
         "family_dbe_max": audit.DEFAULT_FAMILY_DBE_MAX,
         "as_json": False,
     }
@@ -937,6 +942,7 @@ def _summary(
     names,
     edges=audit.DEFAULT_BAND_EDGES,
     peaked_iqr=audit.DEFAULT_FAMILY_PEAKED_IQR,
+    min_peaks=audit.DEFAULT_FAMILY_MIN_PEAKS,
 ):
     return script.ModeSummary(
         mode_name="Nitrate",
@@ -945,6 +951,7 @@ def _summary(
         band_labels=audit.band_labels(edges),
         notes=[],
         family_peaked_iqr=peaked_iqr,
+        family_min_peaks=min_peaks,
     )
 
 
@@ -1112,7 +1119,8 @@ async def test_family_offsets_are_read_per_band_under_each_fit(filestore):
     mode_audit = _mode_audit(families=[family])
     names = ["stored", "collection/mode0"]
     file = await _audit(filestore, peaks, support.STORED_FIT, mode_audit)
-    summary = _summary(mode_audit, names)
+    # A peak or two per band, each a reading here
+    summary = _summary(mode_audit, names, min_peaks=1)
 
     script.summarise_file(summary, file, mode_audit, _config("AuditTof"))
     report = script.summary_dict(summary)
@@ -1156,7 +1164,7 @@ def _band_families(report, fit="collection/mode0", band="500+"):
 async def test_a_family_offset_that_fills_its_window_is_no_reading(filestore):
     """Above 500 Th the window is half the spacing, 23 ppm at 800 Th: offsets
     spread over it are flat, and the report gives no median."""
-    peaks, mode_audit = _family_file_and_audit(np.linspace(-20, 20, 9))
+    peaks, mode_audit = _family_file_and_audit(np.linspace(-20, 20, 11))
     file = await _audit(filestore, peaks, support.STORED_FIT, mode_audit)
     summary = _summary(mode_audit, ["collection/mode0"])
 
@@ -1164,13 +1172,35 @@ async def test_a_family_offset_that_fills_its_window_is_no_reading(filestore):
     report = script.summary_dict(summary)
     nitrate = _band_families(report)["[M+NO3]-"]
 
-    assert nitrate["n"] == 9
+    assert nitrate["n"] == 11
     assert nitrate["window_ppm"] == pytest.approx(23.0, abs=1.0)
     assert not nitrate["peaked"]
     # Peaked under a looser rule, which the summary takes from the config
     loose = _summary(mode_audit, ["collection/mode0"], peaked_iqr=1.0)
     script.summarise_file(loose, file, mode_audit, _config("AuditTof"))
     assert _band_families(script.summary_dict(loose))["[M+NO3]-"]["peaked"]
+
+
+@pytest.mark.asyncio
+async def test_a_family_offset_of_too_few_peaks_is_no_reading(filestore):
+    """Three peaks within 1 ppm of each other at 800 Th have a small IQR by
+    chance: below the minimum count the report gives no median."""
+    peaks, mode_audit = _family_file_and_audit([-16.0, -15.0, -14.0])
+    file = await _audit(filestore, peaks, support.STORED_FIT, mode_audit)
+
+    def nitrate(summary):
+        script.summarise_file(summary, file, mode_audit, _config("AuditTof"))
+        return _band_families(script.summary_dict(summary))["[M+NO3]-"]
+
+    few = nitrate(_summary(mode_audit, ["collection/mode0"]))
+    assert few["n"] == 3
+    assert few["iqr"] == pytest.approx(1.0, abs=0.1)
+    assert few["min_peaks"] == audit.DEFAULT_FAMILY_MIN_PEAKS
+    assert not few["peaked"]
+    # A reading under a lower minimum, which the summary takes from the config
+    enough = nitrate(_summary(mode_audit, ["collection/mode0"], min_peaks=3))
+    assert enough["peaked"]
+    assert enough["median"] == pytest.approx(-15.0, abs=0.1)
 
 
 @pytest.mark.asyncio
@@ -1364,7 +1394,7 @@ def test_any_other_failure_is_counted_by_its_type(error):
 
 
 @pytest.mark.asyncio
-async def test_a_run_judges_family_offsets_by_the_config_share(site, filestore):
+async def test_a_run_judges_family_offsets_by_the_config_rule(site, filestore):
     summaries = []
     mode_summary = script.ModeSummary
 
@@ -1380,10 +1410,13 @@ async def test_a_run_judges_family_offsets_by_the_config_share(site, filestore):
         ),
         patch.object(script, "ModeSummary", recording),
     ):
-        await script.run_audit(_config(site["instrument"], family_peaked_iqr=0.3))
+        await script.run_audit(
+            _config(site["instrument"], family_peaked_iqr=0.3, family_min_peaks=4)
+        )
 
     assert summaries
     assert {summary.family_peaked_iqr for summary in summaries} == {0.3}
+    assert {summary.family_min_peaks for summary in summaries} == {4}
 
 
 @pytest.mark.asyncio
@@ -1454,8 +1487,12 @@ async def test_nothing_is_printed_unless_asked(no_env, capsys):
 
 
 def test_the_report_gives_a_flat_family_offset_no_median():
-    peaked = audit.family_spread([-1.0, 0.0, 1.0], [30.0] * 3)
+    peaked = audit.family_spread([-1.0, 0.0, 1.0], [30.0] * 3, min_peaks=3)
     flat = audit.family_spread(np.linspace(-20, 20, 41), [20.0] * 41)
+    few = audit.family_spread([-17.0, -15.3], [30.0] * 2)
     assert script._family(peaked) == "+0.0 (IQR 1.0, n 3) within +-30 ppm"
     assert script._family(flat) == "no reading: flat within +-20 ppm (IQR 20.0, n 41)"
+    assert script._family(few) == (
+        "no reading: too few peaks within +-30 ppm (n 2, fewer than 10)"
+    )
     assert script._family(None) == "-"
