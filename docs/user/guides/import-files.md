@@ -282,6 +282,18 @@ Which sample that is depends on whether the file records MS1 scans:
   dataset, and ends
   **Done**.
 
+### Files stored as centroids
+
+An Orbitrap method can store each scan's centroids alone, without the
+profile they were found in: the scan filter then reads `c` where it reads
+`p` otherwise (`FTMS + c NSI Full ms [50.0000-750.0000]`). Such a file is
+processed like any other. Its peaks are the instrument's own centroids,
+averaged over the file's scans, and its spectrum shows each centroid as a
+line. With no profile there is no peak shape to fit, so the file's instrument
+function is a Gaussian at the resolution its centroids report. A file of
+this kind converted before Mascope read it this way stays a blank
+measurement, with no peaks, until it is deleted and uploaded again.
+
 !!! tip "Finding files after upload"
     The table shows one time window at a time (default: the last 7 days; **All
     time** lists every file). Use the time-range, status and polarity filters

@@ -8,7 +8,8 @@ from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 from scipy.stats import linregress
 
-from mascope_file.name import get_instrument_type
+import mascope_thermo.thermo as m_thermo
+from mascope_file.name import filename_to_datafile_path, get_instrument_type
 from mascope_signal.compute import get_sum_signal
 from mascope_signal.noise import max_peak_snr
 from mascope_signal.runtime import runtime
@@ -43,6 +44,19 @@ AMBIENT_R_SQ_THRESHOLD = 0.85
 #: settings (``mascope_signal.instrument_func.streams``).
 ORBI_FIT_DMZ = 0.01
 FIT_R_SQ_THRESHOLD = 0.95
+
+#: The signal-to-noise a scan's centroid has to reach for its resolution to
+#: count in :func:`centroid_instrument_functions`, where enough centroids do.
+#: A weak peak reports itself broader than it is: over forty corpus files of
+#: profile scans, the median of what their centroids at 10 and above report
+#: lay within a few percent of the profile fit, and over every centroid a
+#: quarter below it.
+CENTROID_MIN_SNR = 10
+
+#: The centroids whose resolution is not a peak's own width: two peaks
+#: merged into one, the lobes of a split weak peak, and a strong peak's
+#: side lobe (``mascope_thermo.backend.CENTROID_FLAGS``).
+CENTROID_FIT_EXCLUDE = ("merged", "fragmented", "exception")
 
 
 def r_tof(mz: float | np.ndarray, a: float, b: float):
@@ -117,12 +131,21 @@ def resolution_function_of(coefficients: list[float]):
 
 
 def fit_instrument_functions(
-    filename: str, dmz=0.5, r_sq_thres=FIT_R_SQ_THRESHOLD, sum_signal=None
+    filename: str,
+    dmz=0.5,
+    r_sq_thres=FIT_R_SQ_THRESHOLD,
+    sum_signal=None,
+    stream: str | None = None,
 ) -> tuple:
     """Calculate instrument functions
 
     Compute the median peak shape from the normalized peak shapes (p_ys).
     Calculate the resolution function from pairs of peak positions (p_mzs) and FWHM (p_fwhms).
+
+    A raw Orbitrap file's scans that stored their centroids alone have no
+    profile to fit: their summed signal is drawn from the centroids, and
+    says so (``mascope_thermo.thermo.SPECTRUM_ATTR``). Their functions are
+    read off the centroids instead (:func:`centroid_instrument_functions`).
 
     Structure of the returned statistics:
     stats
@@ -142,6 +165,11 @@ def fit_instrument_functions(
         file - one scan stream's; None fits the file's whole, as its cached
         sum signal reads
     :type sum_signal: xr.DataArray, optional
+    :param stream: Key of the scan stream ``sum_signal`` was summed over, for
+        a raw Orbitrap file; None for the whole file. Read only where the
+        signal was drawn from centroids, whose functions are read off the
+        same scans' centroids
+    :type stream: str, optional
     :raises ValueError: Not enough peaks for instrument function estimation
     :return: Tuple containing the peak shape as dict, resolution function as partial, statistics as dict
     :rtype: tuple
@@ -150,6 +178,8 @@ def fit_instrument_functions(
 
     if sum_signal is None:
         sum_signal = get_sum_signal(filename)
+    if sum_signal.attrs.get(m_thermo.SPECTRUM_ATTR) == m_thermo.CENTROID_SPECTRUM:
+        return centroid_instrument_functions(filename, stream=stream)
     spec = sum_signal.values
     mz = sum_signal.mz.values
 
@@ -186,6 +216,83 @@ def fit_instrument_functions(
     stats = ps_stats | resfun_stats
 
     return peak_shape, resolution_function, stats
+
+
+def centroid_instrument_functions(filename: str, stream: str | None = None) -> tuple:
+    """The instrument functions of a raw Orbitrap file's centroid scans.
+
+    Scans that stored their centroids alone keep no profile, so no peak
+    shape can be fitted on them. The instrument measured each peak when it
+    centroided a scan, and reports its width as the centroid's resolution,
+    so the resolution function is read off those: ``r = a / sqrt(m/z)``,
+    ``a`` the median of what the scans' centroids report, each scaled to m/z
+    1. The centroids counted are those at :data:`CENTROID_MIN_SNR` and above,
+    where at least :data:`MIN_NUM_PEAKS` are, else every one; a centroid
+    whose width is not a peak's own (:data:`CENTROID_FIT_EXCLUDE`) never.
+    Each scan's own centroids are read, not the averaged ones: averaging
+    pools a peak's centroids from scans where it sits a little apart, and
+    reports it broader than any scan saw it.
+
+    The peak shape is a Gaussian, normalised as a fitted one is: the shape
+    an Orbitrap file's fit is held to (:func:`_fit_gaussian` keeps it
+    symmetric).
+
+    :param filename: Sample file name, of a raw Orbitrap file
+    :type filename: str
+    :param stream: Key of the scan stream to read; None for every MS1 scan
+    :type stream: str, optional
+    :raises InsufficientPeaksError: When fewer than :data:`MIN_NUM_PEAKS`
+        centroids report a resolution
+    :return: The peak shape, the resolution function and the statistics, as
+        :func:`fit_instrument_functions` returns them, the statistics
+        without the per-peak lists: a long file has millions of centroids
+    :rtype: tuple
+    """
+    scans = m_thermo.get_centroids_per_scan(
+        filename_to_datafile_path(filename),
+        scan_type="Ms",
+        stream=stream,
+        exclude=CENTROID_FIT_EXCLUDE,
+    )
+
+    def pooled(name: str) -> np.ndarray:
+        return np.concatenate(
+            [np.asarray(scan[name], dtype=np.float64) for scan in scans] or [[]]
+        )
+
+    masses, resolutions = pooled("masses"), pooled("resolutions")
+    usable = (
+        np.isfinite(masses)
+        & (masses > 0)
+        & np.isfinite(resolutions)
+        & (resolutions > 0)
+    )
+    strong = usable & (pooled("signal_to_noise") >= CENTROID_MIN_SNR)
+    counted = strong if np.count_nonzero(strong) >= MIN_NUM_PEAKS else usable
+    if np.count_nonzero(counted) < MIN_NUM_PEAKS:
+        # No log here, as for a profile: the caller handles the condition
+        raise InsufficientPeaksError(
+            "Not enough centroids with a resolution to evaluate instrument functions"
+        )
+    a = float(np.median(resolutions[counted] * np.sqrt(masses[counted])))
+    points = int(np.count_nonzero(counted))
+    runtime.logger.info(f"Orbi resolution from centroids a={a:.3e} points={points}")
+
+    x = np.linspace(-10, 10, 101)
+    y = np.exp(-(x**2) / 2)
+    y = y / (_calculate_fwhm(x, y) / SIGMA_MULTIPLIER)
+
+    stats = {
+        "peakshape": {"num_of_peaks": points, "source": "centroids"},
+        "resolution_function": {
+            "model": "inverse_sqrt",
+            "coefficients": [a],
+            "method": "centroid_resolution",
+            "dynamic_range": None,
+            "n_points": points,
+        },
+    }
+    return {"x": x, "y": y}, partial(r_orbi, a=a), stats
 
 
 def _is_ambient_tof_spectrum(spec: np.ndarray) -> tuple[bool, float]:

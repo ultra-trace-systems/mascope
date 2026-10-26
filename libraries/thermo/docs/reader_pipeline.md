@@ -714,6 +714,14 @@ cluster, which the open reader omits (and which `_zerofill_baseline` puts back).
 - Computes via `m_thermo.compute_sum_signal(...)` -> `average_profile(...,
   average=False)` (sum, i.e. apex = mean * scans_combined), optionally dividing
   by an averaging factor for the averaged view.
+- Sums scans that stored their centroids alone (`c` in the filter,
+  `holds_centroids_only`) as their centroids instead: they have no profile,
+  which OpenTFRaw reads as empty and the Thermo library as the centroids
+  standing in for one. `average_centroids(..., average=False)` is drawn as
+  sticks at zero either side (`centroid_spectrum`), and the signal carries
+  `attrs["spectrum"] = "centroids"`, which the instrument-function fit reads
+  (section 7). A selection of profile scans, or one that mixes the two, is
+  averaged as a profile and carries no attribute.
 - Puts a raw Orbitrap file's signal on its calibrated m/z axis, the full one as
   well as a filtered window. Applying a calibration rescales every stored sum
   signal in place (`OrbiCalibrationHandler`), so a stored axis is the
@@ -733,6 +741,10 @@ reader's profile after the upgrade - averaged on the old grid (3.1.1) - to the
 instrument-function fit, and to peak detection when it was re-run. A reader
 upgrade now changes the name by itself. A change to `average_profile` that
 alters its output for the same samples has to bump `AVERAGED_PROFILE_GENERATION`.
+Summing centroid scans as their centroids did not: no profile scan's signal
+moved, and a file of centroid scans converted before was filed as a blank
+measurement, which keeps the signal it cached and the empty store
+beside it, as before.
 The entries left behind are never read again;
 `python -m mascope_backend.db.admin.filestore delete-stale-sum-signal` deletes
 them, touching raw Orbitrap files only.
@@ -746,7 +758,11 @@ them, touching raw Orbitrap files only.
   measures per-peak FWHM; `_fit_resolution_function` fits the Orbitrap
   resolution law `R = a / sqrt(m)`. The coefficient `a` is the acceptance metric
   for the whole averaging path -- `test_instrument_fit_parity.py` asserts it
-  agrees across backends.
+  agrees across backends. A signal drawn from centroids has no peak shape to
+  fit: `centroid_instrument_functions` takes `a` as the median of what the
+  scans' own centroids report (`resolution * sqrt(m)`), those at S:N >= 10
+  where at least three are, else every one, never a merged, fragmented or
+  side-lobe centroid; and a Gaussian peak shape.
 - **Peak detection** uses the averaged-centroid S:N against a weak-peak
   threshold (S:N >= 3); this is why the `n/sqrt(N)` S:N scaling (section 4.5)
   matters -- it keeps/drops the same near-threshold peaks as Thermo.

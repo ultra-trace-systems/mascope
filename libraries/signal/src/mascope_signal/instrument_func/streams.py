@@ -82,6 +82,7 @@ def _fit_stream(filename: str, key: str) -> tuple:
         dmz=m_fit.ORBI_FIT_DMZ,
         r_sq_thres=m_fit.FIT_R_SQ_THRESHOLD,
         sum_signal=sum_signal,
+        stream=key,
     )
 
 
