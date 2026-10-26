@@ -262,13 +262,21 @@ def _files(manifest: dict) -> list[str]:
         ),
     ]
     if any(entry["included"] for entry in manifest["raw"]):
-        rows.append(("`raw/`", "Each sample file's raw file, as it was uploaded."))
+        rows.append(
+            (
+                "`raw/`",
+                "Each sample file's raw file, as it was uploaded. Its header is "
+                "unchanged and may name the instrument and the computer that "
+                "acquired it.",
+            )
+        )
     if any(entry["acquisition"] for entry in manifest["raw"]):
         rows.append(
             (
                 "`raw/*.mascope.json`",
                 "The acquisition record the instrument's control program wrote "
-                "beside a raw file (schema `mascope-acquisition/1`).",
+                "beside a raw file (schema `mascope-acquisition/1`), without "
+                "the computer it names (`machine`).",
             )
         )
     if manifest["batches"]:

@@ -132,8 +132,8 @@ Unzipped, it is one folder, `mascope-package_<dataset id>_<dataset name>`:
 |---|---|
 | `README.md` | The dataset for a person: its name, description, licence, authors, keywords, related identifiers and funding; the instruments and what they measured, in PSI-MS terms; the ionization modes, batches and target collections; the software versions; and what each file holds |
 | `DATA_LICENSE` | The dataset's licence, with a link for a Creative Commons one. A dataset without a licence says so: nobody but its authors may reuse it |
-| `raw/` | Each sample file's raw file, `.raw` or `.h5`, as it was uploaded |
-| `raw/<file>.mascope.json` | Beside a raw file, the [acquisition record](../instruments/acquisition-records.md) the instrument's control program sent with it, where it sent one |
+| `raw/` | Each sample file's raw file, `.raw` or `.h5`, as it was uploaded. Its header is unchanged, and may name the instrument and the computer that acquired it |
+| `raw/<file>.mascope.json` | Beside a raw file, the [acquisition record](../instruments/acquisition-records.md) the instrument's control program sent with it, where it sent one. Its `machine`, the computer's host name and Windows machine GUID, is left out; Mascope keeps the record whole |
 | `batches/` | Each batch's [batch data spreadsheet](#the-batch-data-spreadsheet), the same file *Download > Batch data* gives |
 | `target_collections/` | Each collection a batch was matched against, or an ionization mode calibrates with: its compounds with their CAS number, InChIKey, InChI and SMILES where recorded, and the ions formed from them |
 | `instrument_functions.json` | The peak shape and resolution each raw file was processed with |

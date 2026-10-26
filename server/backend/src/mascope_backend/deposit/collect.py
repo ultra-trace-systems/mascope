@@ -525,11 +525,21 @@ def _raw_files(
             package_files.append(
                 PackageFile(
                     path=record_path,
-                    data=_json(sample_file.acquisition),
+                    data=_json(_published_record(sample_file.acquisition)),
                     entry=entry["acquisition"],
                 )
             )
     return entries, package_files
+
+
+def _published_record(record: dict) -> dict:
+    """
+    An acquisition record as a deposit publishes it: without its ``machine``,
+    the host name and Windows machine GUID of the computer that wrote it. The
+    manifest's identifiers still tie the file to the record kept whole in the
+    database.
+    """
+    return {key: value for key, value in record.items() if key != "machine"}
 
 
 def _batch(

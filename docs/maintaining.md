@@ -895,6 +895,13 @@ warns when the archive is not ready to deposit as it stands:
   when they were uploaded. The manifest gives both. A file that changed on the
   server's disk is worth looking into before it is published.
 
+A deposit is public once uploaded. The acquisition records beside the raw
+files go out without their `machine`, the host name and Windows machine GUID
+of the instrument computer. The raw files themselves are packed as they were
+uploaded, and a Thermo `.raw` file's header can still name the instrument and
+its computer: a user who must not publish those de-identifies the raw files
+before depositing.
+
 Hand the archive to the user to check its README and upload it. Once the
 repository has minted a DOI, it goes into the dataset's related identifiers,
 so that a package built later points at the deposit.
