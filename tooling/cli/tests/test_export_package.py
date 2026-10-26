@@ -92,9 +92,16 @@ class FakeDocker:
     the interpreter probe, the copy out and the removal."""
 
     def __init__(
-        self, *, python=CONTAINER_PYTHON, copy_exit=0, dataset=None, interrupt=False
+        self,
+        *,
+        python=CONTAINER_PYTHON,
+        copy_exit=0,
+        pkill_exit=0,
+        dataset=None,
+        interrupt=False,
     ):
         self.python = python
+        self.pkill_exit = pkill_exit
         self.copy_exit = copy_exit
         self.dataset = dataset or {}
         self.interrupt = interrupt
@@ -112,7 +119,11 @@ class FakeDocker:
             if self.python is None:
                 return subprocess.CompletedProcess(cmd, 1, "", "")
             return subprocess.CompletedProcess(cmd, 0, self.python + "\n", "")
-        if cmd[:2] == ["docker", "exec"] and ("rm" in cmd or "pkill" in cmd):
+        if cmd[:2] == ["docker", "exec"] and "pkill" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, self.pkill_exit, "", "pkill: not found"
+            )
+        if cmd[:2] == ["docker", "exec"] and "rm" in cmd:
             return subprocess.CompletedProcess(cmd, 0, "", "")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -279,6 +290,24 @@ def test_an_interrupted_build_is_stopped_in_the_container(
     ]
     assert docker.commands("cp") == []
     assert docker.commands("rm") == []
+
+
+@pytest.mark.parametrize(("pkill_exit", "said"), [(0, False), (1, False), (127, True)])
+def test_a_failed_stop_in_the_container_is_reported(
+    cli_runner, operator_install, warnings, tmp_path, pkill_exit, said
+):
+    """pkill exits 1 when the builder had already ended; anything else but 0
+    means it may still be writing the archive, which nothing else would show."""
+    builder, docker = operator_install
+    builder.interrupt = True
+    docker.pkill_exit = pkill_exit
+    result = cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
+    assert result.exit_code == 130
+    failed = [w for w in warnings if "Could not stop the build" in w]
+    assert bool(failed) is said
+    if said:
+        assert f"exit {pkill_exit}" in failed[0]
+        assert "until the backend restarts" in failed[0]
 
 
 def test_an_interrupted_copy_still_removes_the_archive_from_the_container(

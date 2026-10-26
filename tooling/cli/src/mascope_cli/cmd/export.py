@@ -187,12 +187,20 @@ def _stop_builder(container: str, run: str) -> None:
     the archive. Sent SIGINT, the builder removes its run's directory itself.
     """
     runtime.logger.warning(f"Interrupted: stopping the build in '{container}'.")
-    subprocess.run(
+    stopped = subprocess.run(
         ["docker", "exec", container, "pkill", "-INT", "-f", run],
         capture_output=True,
         text=True,
         check=False,
     )
+    # pkill exits 1 when no process matched: the builder had already ended.
+    if stopped.returncode not in (0, 1):
+        runtime.logger.warning(
+            f"Could not stop the build in '{container}' "
+            f"(exit {stopped.returncode}), so its archive may stay in the "
+            f"container's temp directory until the backend restarts. "
+            f"{stopped.stderr.strip()}".rstrip()
+        )
 
 
 def _checked(status: int, outcome: dict | None, hint: str = "") -> dict:
