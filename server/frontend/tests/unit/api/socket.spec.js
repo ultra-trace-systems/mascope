@@ -44,6 +44,14 @@ function makeFakeSocket() {
     connected: true,
     on: add,
     once: add,
+    off(event, fn) {
+      handlers.set(
+        event,
+        (handlers.get(event) ?? []).filter((known) => known !== fn)
+      )
+    },
+    connect: vi.fn(),
+    disconnect: vi.fn(),
     onAny: () => {},
     emit: vi.fn(),
     io: { on: addManager },
@@ -133,5 +141,63 @@ describe('initSocket', () => {
     socket.fireManager('reconnect_attempt', 1)
 
     expect(reconnectNotices()).toHaveLength(2)
+  })
+
+  describe('renew', () => {
+    it('replaces the connection', async () => {
+      const renewed = socket.renew()
+      expect(socket.disconnect).toHaveBeenCalledTimes(1)
+      expect(socket.connect).toHaveBeenCalledTimes(1)
+      socket.fire('disconnect', 'io client disconnect')
+      socket.fire('connect')
+
+      await renewed
+    })
+
+    it('neither reloads, reports nor re-subscribes on the new connection', async () => {
+      socket.addSubscription('some-room')
+      socket.emit.mockClear()
+
+      const renewed = socket.renew()
+      socket.fire('disconnect', 'io client disconnect')
+      socket.fire('connect')
+      await renewed
+
+      expect(reloadSpy).not.toHaveBeenCalled()
+      expect(pushSpy).not.toHaveBeenCalled()
+      expect(socket.emit).not.toHaveBeenCalled()
+    })
+
+    it('settles when the new connection fails', async () => {
+      const renewed = socket.renew()
+      socket.fire('connect_error', new Error('unreachable'))
+
+      await renewed
+    })
+
+    it('recovers from a later drop as before', async () => {
+      const renewed = socket.renew()
+      socket.fire('connect')
+      await renewed
+
+      socket.fire('disconnect', 'transport close')
+      socket.fire('connect')
+
+      expect(reloadSpy).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('asks again for every room the app wants', async () => {
+    socket.addSubscription('room-a')
+    socket.addSubscription('room-b')
+    socket.removeSubscription('room-b')
+    const renewed = socket.renew()
+    socket.fire('connect')
+    await renewed
+    socket.emit.mockClear()
+
+    socket.resubscribe()
+
+    expect(socket.emit.mock.calls).toEqual([['subscribe', 'room-a']])
   })
 })
