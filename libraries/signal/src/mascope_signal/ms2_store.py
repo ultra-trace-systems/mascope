@@ -33,11 +33,17 @@ at :data:`PARENT_PEAK_TOLERANCE` as the raw read makes it, and keyed one way
 everywhere (:func:`group_key`). The calibration factor of the file is applied
 on read, as for the raw read, so a recalibration never rewrites the store.
 
-**What a sample reads.** The groups whose scans fall in its window, in its
-polarity. Its summary, the per-scan centroids of a group and a parent peak's
-fragment scans are exact for any window. An averaged spectrum is stored over
-a group's every scan, so it is the sample's only when the sample's window
-holds every scan of the group; for a window that cuts a group,
+**What a sample reads.** Its file's groups whose scans fall in its window,
+in its polarity, as section 2.2 of the note has it. A group is made over the
+whole file, so for a window its parent m/z and its scans can differ from what
+a raw read of that window alone would group, when a precursor's m/z drifts
+from scan to scan: the raw read clusters only the scans it selects. The
+summary, the per-scan centroids of a group and a parent peak's fragment scans
+are read from the store for any window. An averaged spectrum is stored over a
+group's every scan, and a parent peak's merged one over every scan of it, so
+the store answers a window that holds every scan of each group it touches;
+merged over the activations, the window also has to hold every group of each
+parent peak, or one alone. For any other window
 :meth:`Ms2Store.averaged_centroids` answers None and the caller reads the raw
 file.
 
@@ -53,6 +59,7 @@ import dataclasses
 import math
 import os
 import shutil
+from collections import Counter
 from functools import cached_property
 from typing import Literal
 
@@ -449,8 +456,9 @@ class Ms2Store:
     window and its polarity - and answers None for one it cannot answer, so
     the caller reads the raw file instead: a selection with no polarity (the
     store's groups are per polarity), and an averaged spectrum over a window
-    that cuts a group. Arrays are read when first needed, and only those a
-    read needs.
+    that cuts a group or, merged over the activations, holds several of a
+    parent peak's groups and not all. Arrays are read when first needed, and
+    only those a read needs.
     """
 
     base_filename: str
@@ -674,13 +682,16 @@ class Ms2Store:
         store's grouping tolerance, ``ppm`` and ``average=True``, on the
         instrument's axis and at no S/N floor: the caller applies the
         calibration factor and its floor. With ``by_activation`` False, one
-        spectrum per parent peak over all of its scans, keyed with an empty
-        activation.
+        spectrum per parent peak over all of its scans in the window, keyed
+        with an empty activation.
 
         :return: ``{(parent peak m/z, activation): (masses, intensities,
             resolutions, signal_to_noise)}``, or None for a selection with
             no polarity, or whose window holds some of a group's scans and
-            not all: the stored average is over all of them.
+            not all: the stored average is over all of them. With
+            ``by_activation`` False, None as well for a window that holds
+            several of a parent peak's groups and not all: the store holds
+            the average over every group of it and over each one alone.
         :raises NoScansFoundError: When the selection holds no MS2 scan.
         """
         if polarity not in _POLARITY_CODES:
@@ -696,13 +707,35 @@ class Ms2Store:
                 )
                 for _, group, _ in held
             }
-        spectrum_of = {
+        merged = {
             precursor["parent_peak_mz"]: precursor["spectrum"]
             for precursor in self.attrs["precursors"]
             if precursor["polarity"] == polarity
         }
-        parent_peaks = dict.fromkeys(group["parent_peak_mz"] for _, group, _ in held)
-        return {(pp, ""): self._spectrum(spectrum_of[pp]) for pp in parent_peaks}
+        activations = Counter(
+            group["parent_peak_mz"]
+            for group in self.attrs["groups"]
+            if group["polarity"] == polarity
+        )
+        held_of: dict[float, list[dict]] = {}
+        for _, group, _ in held:
+            held_of.setdefault(group["parent_peak_mz"], []).append(group)
+        spectra = {}
+        for parent_peak_mz, groups in held_of.items():
+            if len(groups) == activations[parent_peak_mz]:
+                # Every scan of it: its merged spectrum
+                spectrum = merged[parent_peak_mz]
+            elif len(groups) == 1:
+                # Every scan of one activation and none of another: that
+                # group's scans, in the same order, so its own spectrum
+                (group,) = groups
+                spectrum = group["spectrum"]
+            else:
+                # Several activations of it and not all: no stored average is
+                # over just their scans
+                return None
+            spectra[(parent_peak_mz, "")] = self._spectrum(spectrum)
+        return spectra
 
     def _scan_centroids(self, rows: np.ndarray) -> list[dict]:
         """The centroids of the scan-table ``rows``, as the reader gives them

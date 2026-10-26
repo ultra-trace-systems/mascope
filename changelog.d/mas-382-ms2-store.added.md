@@ -11,7 +11,9 @@
   0.001 Da: a request at another `parent_peak_tolerance` is answered from
   them, and the response gives the tolerance its groups were made at. A
   sample whose time window holds only some of a group's scans has its
-  averaged spectra read from the raw file.
+  averaged spectra read from the raw file, and so does one whose window
+  holds several of a precursor's collision energies but not all, when they
+  are averaged together.
 
 - **The scans behind an MS2 spectrum can be read.**
   `GET /api/samples/{id}/ms2/scans?group=137.0960@hcd25.00` returns each scan
