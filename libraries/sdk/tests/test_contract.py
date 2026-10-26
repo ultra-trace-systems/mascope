@@ -903,6 +903,40 @@ class TestSampleFileContract:
     def test_a_window_no_scan_is_in_is_none(self, mascope, sample_file_id):
         assert mascope.sample_files.get_scans(sample_file_id, first_scan=10**9) is None
 
+    def test_the_axis_fingerprint_is_the_files_document(self, mascope, sample_file_id):
+        _skip_unless_attr(mascope.sample_files, "get_axis_fingerprint")
+        document = mascope.sample_files.get_axis_fingerprint(sample_file_id)
+
+        assert document["schema"] == "mascope.axis_fingerprint"
+        assert document["version"] == 1
+        # Missing where the stack's files were converted before the
+        # fingerprint existed
+        assert document["status"] in {
+            "ok",
+            "no_fingerprint",
+            "unavailable",
+            "missing",
+            "error",
+        }
+        assert document["sample_file_id"] == sample_file_id
+        assert "item" not in document
+
+    def test_a_samples_axis_fingerprint_names_its_scans(self, mascope, sample_file_id):
+        _skip_unless_attr(mascope.samples, "get_axis_fingerprint")
+        sample_id = _first_sample_id(mascope)
+        document = mascope.samples.get_axis_fingerprint(sample_id)
+
+        assert document["sample_file_id"] == sample_file_id
+        if document["status"] not in ("ok", "no_fingerprint"):
+            # A document of no scans has nothing to say of the sample's
+            assert "item" not in document
+            return
+        item = document["item"]
+        assert item["sample_item_id"] == sample_id
+        assert item["scans"] and item["scans"] == sorted(item["scans"])
+        if item["mode_id"] is not None:
+            assert document["modes"][0]["mode_id"] == item["mode_id"]
+
 
 @requires_stack
 class TestSeriesContract:

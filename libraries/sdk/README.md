@@ -725,6 +725,7 @@ workspaces, not only the client's.
 | `get_spectrum(sample_id, ...)`                  | Get averaged spectrum                                | `pd.DataFrame│None` |
 | `get_spectra(sample_ids, ...)`                  | Get spectra for multiple samples                     | `pd.DataFrame│None` |
 | `get_centroids(sample_ids)`                     | Get centroid data                                    | `dict│None`         |
+| `get_axis_fingerprint(sample_id)`               | Its file's axis fingerprint, with the sample's scans | `dict`              |
 | `update(sample_id, sample_item)`                | Update a sample's fields (the whole sample)          | `dict`              |
 | `move(sample_ids, batch_id)`                    | Move samples into a batch, in the background         | `dict`              |
 | `copy(sample_ids, batch_id)`                    | Copy samples into a batch, in the background         | `dict`              |
@@ -739,6 +740,7 @@ A `get_peaks` over a time range (`t_min` / `t_max`) leaves out the peaks whose t
 | ------------------------------------------------------------------- | ----------------------------------------------------- | ------------------- |
 | `get_scans(sample_file_id, fields=, first_scan=, last_scan=, ...)`  | A file's scan table: one row per scan, no centroids   | `pd.DataFrame│None` |
 | `download_raw(sample_file_id, path)`                                | The file's source `.raw` / `.h5`, streamed to disk    | `Path`              |
+| `get_axis_fingerprint(sample_file_id)`                              | A raw Orbitrap file's axis fingerprint                | `dict`              |
 | `list(datetime_min=, datetime_max=, instrument=, page=, limit=)`   | The files acquired in a time range, in a batch or not | `pd.DataFrame`      |
 
 `list` pages through the whole range unless `page` is given (pages count from 0, `limit` files each, 1000 by default), oldest file first. `datetime_utc` is the acquisition's start in tz-aware UTC; `datetime` is the same moment in the instrument's local time, and `acquisition_timezone` names that zone where it is known. A time given without a zone is taken as UTC.
@@ -766,6 +768,22 @@ scans = mascope.sample_files.get_scans(
 
 ```python
 raw = mascope.sample_files.download_raw(file_id, "downloads/")
+```
+
+`get_axis_fingerprint` returns what Mascope measured of a raw Orbitrap file's m/z axis when it converted the file. On some Orbitrap models the data system divides the frequency axis into frequency bands, and each mass calibration leaves one m/z offset per band on top of a smooth trend; the fingerprint reads those offsets back from the stored profile, per acquisition mode, with the lock mass each scan was corrected with. Mascope never alters an m/z with it. It is a JSON document under the schema `mascope.axis_fingerprint`, version 1 (`libraries/thermo/src/mascope_thermo/axis_fingerprint/axis_fingerprint.schema.json`). Read its `status` first: `ok` and `no_fingerprint` carry the whole document; `missing` (not computed for the file), `unavailable` and `error` carry nothing else. `ok` means that some mode has a table of frequency bands, not that every mode has one: a mode without one, flagged `no_segment_table` or `centroid_only`, has `segments` null. A file that is not an Orbitrap file raises `NotFoundError`.
+
+`mascope.samples.get_axis_fingerprint(sample_id)` returns the same document for the sample's file with an `item` block: `scans`, the scan numbers its peak list is built from; `mode_id`, the mode they belong to, which `modes` lists first; `lock`, that mode's lock shares and effective lock mass over those scans; and `mz_calibration_factor` and `file_mz_calibration_factor`, what Mascope multiplies into the m/z it serves of the sample's stream and of the file. `dominant_mode` stays the file's. A stitched sample's `mz_calibration_factor` is the file's, while its peaks carry the factor of each stream that owns a run of it.
+
+```python
+fingerprint = mascope.samples.get_axis_fingerprint(sample_id)
+item = fingerprint.get("item")
+if item and item["mode_id"]:
+    mode = fingerprint["modes"][0]  # the sample's mode
+    print(item["lock"]["m_lock_eff"], item["mz_calibration_factor"])
+    if mode["segments"]:
+        bands = pd.DataFrame(
+            mode["segments"]["rows"], columns=mode["segments"]["columns"]
+        )
 ```
 
 #### `mascope.matching`
