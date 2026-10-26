@@ -25,6 +25,12 @@ account released from the password screen hears those broadcasts again.
 Only the sockets subscribe would now refuse are evicted - the same comparison,
 :func:`socket_hold_reason` - so a session the cutoff's tolerance still keeps,
 the one that just changed its own password, carries on.
+
+Signing out of one tab ends that tab's session alone and moves no cutoff, so
+eviction, which works by account and keeps every socket that may still read,
+cannot reach it. :func:`sign_out_socket` does it for the one socket the
+logout request names: the tab is no longer signed in, so it leaves every room,
+its own ``user-{id}`` included, and its session goes.
 """
 
 import os
@@ -35,6 +41,7 @@ from mascope_backend.socket import sio
 from mascope_backend.socket.signed_in import SIGNED_IN_ROOM, admit_signed_in
 from mascope_backend.socket.storage import (
     SocketSessionError,
+    clear_user_session,
     forget_user_socket,
     get_session_user,
     get_user_socket_sids,
@@ -143,3 +150,61 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
             f"Failed to evict the sockets of user {user_id} [Worker {worker_pid}]"
         )
         return 0
+
+
+async def sign_out_socket(sid: str, user_id: int) -> bool:
+    """
+    End the socket session of a tab that has just signed out.
+
+    The logout route names the socket from the request's ``X-SID``, which the
+    client supplies, so the socket is touched only when its stored session is
+    the account signing out: a header naming another account's socket changes
+    nothing. The session is cleared first, so a subscribe arriving meanwhile is
+    refused; then the socket leaves every room it is on record in, the
+    signed-in room and ``user-{id}`` with the others. The user's membership of
+    a room goes only where no other socket of theirs holds it, as on a
+    disconnect: signing out of one tab leaves the others as they are.
+
+    The connection itself stays open: the tab carries on as one that has not
+    signed in, as the SPA's socket is before its login form.
+    Never raises: the session the cookie carried has ended either way.
+
+    :param sid: The socket the signing-out request names, on the default
+        namespace.
+    :param user_id: The account signing out.
+    :return: Whether the socket was signed out.
+    """
+    worker_pid = os.getpid()
+    try:
+        try:
+            session = await get_session_user(sid)
+        except SocketSessionError:
+            # Never authenticated, or already gone: nothing is signed in.
+            return False
+        if session.get("user_id") != user_id:
+            runtime.logger.warning(
+                f"Sign-out of user {user_id} named socket {sid} of another "
+                f"account; left it as it is [Worker {worker_pid}]"
+            )
+            return False
+
+        await clear_user_session(sid)
+        # Out of the user's socket index (cleared above) before the others are
+        # read, so a room only this socket held goes and one another tab holds
+        # stays the user's.
+        await room_tracker.release_socket(user_id, sid)
+        rooms = await room_tracker.socket_rooms(sid)
+        for room in rooms:
+            await sio.leave_room(sid, room)
+        await room_tracker.forget_socket(sid)
+
+        runtime.logger.info(
+            f"Signed socket {sid} of user {user_id} out of {len(rooms)} room(s) "
+            f"[Worker {worker_pid}]"
+        )
+        return True
+    except Exception:
+        runtime.logger.exception(
+            f"Failed to sign socket {sid} of user {user_id} out [Worker {worker_pid}]"
+        )
+        return False
