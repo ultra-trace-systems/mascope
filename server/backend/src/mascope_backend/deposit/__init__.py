@@ -21,7 +21,8 @@ dataset (``mascope-package_<dataset id>_<dataset name>``)::
     raw/<file>.raw | .h5           each sample file's raw file, as it was
                                    uploaded
     raw/<file>.raw.mascope.json    the acquisition record the instrument's
-                                   control program sent with it, if it sent one
+                                   control program sent with it, if it sent
+                                   one, without its ``machine``
     batches/<batch>.xlsx           each batch's spreadsheet, the one the app's
                                    "Export spreadsheet" writes
     target_collections/<c>.json    each collection a batch was matched against
