@@ -129,12 +129,23 @@ def test_absent_group_values_on_both_sides_agree():
 
 
 def test_nearest_centroid_wins_a_contested_pairing():
-    """Two expected centroids close together each pair with their own
-    nearest actual one, not both with the first."""
-    close = (233.116, "hcd15.00", 13, 1.0, 100.00000, 500.0)
-    closer = (233.116, "hcd15.00", 13, 1.0, 100.00001, 400.0)
-    golden = _ms2([close, closer])
-    assert compare_ms2(golden, _ms2([closer, close]), {"mz_ppm": 1.0}) == []
+    """Two expected centroids within the tolerance of both actual ones pair
+    nearest first, each with its own. Paired in index order instead, the
+    first expected would take the first actual and both intensities would
+    read as drifted."""
+    golden = _ms2(
+        [
+            (233.116, "hcd15.00", 13, 1.0, 100.00000, 500.0),
+            (233.116, "hcd15.00", 13, 1.0, 100.00004, 400.0),
+        ]
+    )
+    actual = _ms2(
+        [
+            (233.116, "hcd15.00", 13, 1.0, 100.00003, 400.0),
+            (233.116, "hcd15.00", 13, 1.0, 100.00009, 500.0),
+        ]
+    )
+    assert compare_ms2(golden, actual, {"mz_ppm": 1.0}) == []
 
 
 def test_empty_actual_names_every_group_missing():

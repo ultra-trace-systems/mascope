@@ -119,6 +119,28 @@ def test_already_deidentified_plain_name_is_idempotent():
     assert "polarity" not in parsed
 
 
+def test_plain_name_under_an_original_label_is_not_taken_for_de_identified():
+    """A name that fits no source pattern but ends in a stamp goes out
+    unmatched under an original label, so the caller warns, rather than
+    being published under that label as already de-identified."""
+    name, parsed = _deidentify_name("KORBI2_blank_20250811142302.raw")
+    assert name == "KORBI2_blank_20250811142302.raw"
+    assert parsed == {}
+
+    name, parsed = _deidentify_name(
+        "SITEORBI_x_20261015034940.raw", aliases={"KORBI2": "Orbion", **_SITE_ALIASES}
+    )
+    assert name == "SITEORBI_x_20261015034940.raw"
+    assert parsed == {}
+
+
+def test_plain_name_under_an_alias_label_is_already_de_identified():
+    name, parsed = _deidentify_name("Orbion_x_20261015034940.raw")
+    assert name == "Orbion_x_20261015034940.raw"
+    assert parsed["instrument"] == "Orbion"
+    assert parsed["date"] == "2026.10.15"
+
+
 def test_both_source_instruments_share_the_demo_alias():
     """The second instrument joins the first's workspace on the demo stack,
     which is where the contract and e2e suites look (docs/demo_dataset.md E)."""
@@ -190,17 +212,20 @@ def test_manifest_acquired_is_the_earliest_day(tmp_path, monkeypatch):
 
     raw = tmp_path / "raw"
     raw.mkdir()
-    # Sorted by name, the plain 2026 file comes first (upper-case label).
+    # Sorted by name, the plain 2026 file comes first: its label sorts before
+    # the alias the 2025 file already carries. Dating the bundle from the
+    # first file would then say 2026.
     for name in (
-        "SITEORBI_2026.10.15-03h49m40s_MS2_15NO3_manual-C10H18O2_20261015034940.raw",
+        "AORBI_2026.10.15-03h49m40s_MS2_15NO3_manual-C10H18O2_20261015034940.raw",
         "Orbion_pos_Ur_NoRI_20250811142302.raw",
     ):
         (raw / name).write_bytes(b"not a raw file")
+    assert sorted(p.name for p in raw.iterdir())[0].startswith("AORBI_")
     monkeypatch.setattr(build_bundle, "_opentfraw_version", lambda: None)
     monkeypatch.setattr(build_bundle, "_match_score_version", lambda: None)
 
     out = build_bundle.build(
-        out_dir=tmp_path / "1.4.0", raw_dir=raw, aliases=_SITE_ALIASES
+        out_dir=tmp_path / "1.4.0", raw_dir=raw, aliases={"AORBI": "Orbion"}
     )
 
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))

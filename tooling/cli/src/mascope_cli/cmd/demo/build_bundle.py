@@ -76,9 +76,11 @@ _PLAIN_RAW_NAME = re.compile(
 )
 
 # Its de-identified form, e.g.
-# Orbion_MS2_15NO3_manual-C10H18O2_20261015034940.raw. Tried last: it would
-# take a sequence-named de-identified file too, with the polarity and sample
-# segments inside `rest`, so `_DEID_NAME` goes first.
+# Orbion_MS2_15NO3_manual-C10H18O2_20261015034940.raw. Tried last, and only
+# under a label that is an alias: it fits any `LABEL_..._<stamp>.raw`, so it
+# would take a sequence-named de-identified file too, with the polarity and
+# sample segments inside `rest`, and a name under an original label that fits
+# no source pattern, which must go out unmatched rather than as done.
 _PLAIN_DEID_NAME = re.compile(
     r"^(?P<instrument>[A-Za-z0-9]+)_(?P<rest>.+?)_(?P<stamp>\d{14})\.raw$"
 )
@@ -284,7 +286,15 @@ def _deidentify_name(
 
     # Already de-identified (e.g. renamed in place): leave unchanged, but still
     # parse so measurement metadata works. Derive the date from the compact stamp.
-    d = _DEID_NAME.match(name) or _PLAIN_DEID_NAME.match(name)
+    d = _DEID_NAME.match(name)
+    if d is None:
+        # The plain form is taken as de-identified only under an alias label.
+        # Under an original label, or one the map does not know, the name is
+        # unmatched and the caller warns, as for any name that fits no
+        # pattern; it is not published under its real label as already done.
+        d = _PLAIN_DEID_NAME.match(name)
+        if d is not None and d.group("instrument") not in alias_map.values():
+            d = None
     if d:
         parts = d.groupdict()
         stamp = parts["stamp"]
