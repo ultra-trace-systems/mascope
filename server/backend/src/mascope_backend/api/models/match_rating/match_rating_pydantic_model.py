@@ -72,8 +72,16 @@ class GetMatchRatingsQueryParams(QueryParamsModel):
     page: int | None = Field(None, description="Page number for pagination")
     limit: int | None = Field(None, description="Number of items per page")
     datetime_min: Optional[dt] = Field(
-        None, description="Minimum datetime of creation filter"
+        None,
+        description=(
+            "Earliest creation time to list, inclusive. A time without an "
+            "offset is read as UTC."
+        ),
     )
     datetime_max: Optional[dt] = Field(
-        None, description="Maximum datetime of creation filter"
+        None,
+        description=(
+            "Latest creation time to list, inclusive. A time without an "
+            "offset is read as UTC."
+        ),
     )
