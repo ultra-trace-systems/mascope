@@ -20,6 +20,9 @@ from mascope_backend.api.models.samples.sample_pydantic_model import (
     GetSamplesQueryParams,
 )
 from mascope_backend.api.new.auth.dependencies import current_active_user
+from mascope_backend.api.new.axis_fingerprint.routes import (
+    sample_axis_fingerprint_router,
+)
 from mascope_backend.api.new.ms2.routes import ms2_router
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access,
@@ -32,6 +35,7 @@ from mascope_backend.db import User
 
 samples_router = APIRouter(prefix="/api/samples", tags=["Samples Loading"])
 samples_router.include_router(ms2_router)
+samples_router.include_router(sample_axis_fingerprint_router)
 
 
 @samples_router.get("")
