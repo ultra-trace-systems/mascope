@@ -44,6 +44,11 @@ from mascope_backend.api.controllers.sample.files.process.census import (
     fragmentation_polarities,
     records_only_fragmentation_scans,
 )
+from mascope_backend.api.controllers.sample.files.process.detection import (
+    PolarityBinding,
+    ms1_polarities,
+    record_chemistry_detection,
+)
 from mascope_backend.api.controllers.sample.files.process.ms2_parts import (
     file_fragmentation_scans,
     filed_sentence,
@@ -658,6 +663,8 @@ async def _park_needing_chemistry(
     reason: str,
     streams_note: str | None,
     cleared_by_this_run: bool,
+    *,
+    scan_streams: list[dict] | None,
 ) -> dict:
     """Leave a file that binds to no ionization mode waiting for a chemistry.
 
@@ -686,9 +693,17 @@ async def _park_needing_chemistry(
     :param streams_note: The file's pooled-streams note, if any.
     :param cleared_by_this_run: An earlier attempt of this run cleared the
         file, so the samples it has are that attempt's.
+    :param scan_streams: The file's scan-stream census, which says what its
+        polarities' scans recorded.
     :return: The run's result.
     """
     reason = reason.strip().rstrip(".") + "."
+    # What the spectrum names, stored with nothing beside it: no rung bound
+    # the file. Rung 5 suggests it on a parked file once it is measured; for
+    # now it is an audit (section 5.4) and the status says nothing of it.
+    await record_chemistry_detection(
+        sample_file, scan_streams, ms1_polarities(scan_streams, sample_file.polarity)
+    )
     if cleared_by_this_run:
         await _delete_partial_acquisition_items(sample_file.sample_file_id)
         kept = None
@@ -1439,7 +1454,11 @@ async def _auto_process_sample_file(
                 note,
             )
         return await _park_needing_chemistry(
-            sample_file, reason, streams_note, cleared_by_this_run
+            sample_file,
+            reason,
+            streams_note,
+            cleared_by_this_run,
+            scan_streams=scan_streams,
         )
 
     # --- Bind the file to its ionization modes --- #
@@ -1509,6 +1528,7 @@ async def _auto_process_sample_file(
                 _beside_the_declaration(undeclared, str(e)),
                 streams_note,
                 cleared_by_this_run,
+                scan_streams=scan_streams,
             )
     else:
         try:
@@ -1607,6 +1627,23 @@ async def _auto_process_sample_file(
     stopped = await clear()
     if stopped is not None:
         return _rebuild_stopped(sample_file, stopped)
+
+    # --- Rung 5, as an audit: what each polarity's spectrum names --- #
+    # Stored beside the rung and mode that bound it (section 5.4), and binds
+    # nothing. After the clearing, which may have detected the file's peaks
+    # again; it never costs the file its run.
+    await record_chemistry_detection(
+        sample_file,
+        scan_streams,
+        [mode.ionization_mode_polarity for mode in bound_modes],
+        {
+            mode.ionization_mode_polarity: PolarityBinding(
+                mode.ionization_mode_id,
+                provenance[mode.ionization_mode_id].bound_by,
+            )
+            for mode in bound_modes
+        },
+    )
 
     # --- Create ACQUISITION batches and sample items for each ionization mode --- #
     (

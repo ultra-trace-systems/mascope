@@ -469,6 +469,18 @@ class BackendConfig(ModuleConfig):
     # whose file names carry no token at all. See
     # docs/dev/ingest_routing_and_splitting.md section 5.3.
     method_binding: Literal["off", "shadow", "route"] = "shadow"
+    # Chemistry detection: what each MS1 polarity's spectrum names by its
+    # reagent ions, read as a file is bound or parked. "audit" (the default)
+    # stores the detector's call on the file beside the rung and mode that
+    # bound it, and binds nothing: no file is routed, calibrated or matched
+    # any differently. "off" stores nothing. It reads the polarity's peak list
+    # once more per file, a fraction of a second.
+    #
+    # The audit is how the detector earns rung 5 of the binding ladder: its
+    # calls are compared with the bindings on the corpus and on each server
+    # before it may bind a file nothing else binds. See
+    # docs/dev/ingest_routing_and_splitting.md section 5.4.
+    chemistry_detection: Literal["off", "audit"] = "audit"
     # Composite scan streams: how a raw Orbitrap file is processed whose
     # acquisition method runs more than one experiment in a polarity, most
     # often several scan ranges of one chemistry. False (the default) pools
