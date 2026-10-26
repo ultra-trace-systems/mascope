@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import delete
 
 from mascope_backend.db import (
     Dataset,
@@ -150,7 +151,28 @@ async def seeded(async_session_factory):
                 )
             )
         await session.commit()
-    return {"item": item, "ratings": ratings}
+    yield {"item": item, "ratings": ratings}
+    async with async_session_factory() as session:
+        # The workspace takes its dataset, batch, item and ratings with it,
+        # and the compound its ion.
+        await session.execute(
+            delete(Workspace).where(Workspace.workspace_id == workspace)
+        )
+        await session.execute(
+            delete(SampleFile).where(SampleFile.sample_file_id == file)
+        )
+        await session.execute(
+            delete(TargetCompound).where(TargetCompound.target_compound_id == compound)
+        )
+        await session.execute(
+            delete(IonizationMode).where(IonizationMode.ionization_mode_id == mode)
+        )
+        await session.execute(
+            delete(IonizationMechanism).where(
+                IonizationMechanism.ionization_mechanism_id == mechanism
+            )
+        )
+        await session.commit()
 
 
 async def _listed(client, seeded: dict, **bounds) -> set[str]:
