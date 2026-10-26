@@ -257,6 +257,13 @@ class TestCompare:
             "answer['list']: [1], not 2 item(s) like [1, 2]",
         ]
 
+    def test_an_mz_is_printed_to_its_tolerance(self):
+        # 1.4 ppm off: six significant digits would print the known answer
+        # as 169.122, the wrong value itself
+        assert compare({"mz": ai_golden._peak_mz(169.1222414)}, {"mz": 169.122}) == [
+            "answer['mz']: 169.122, not 169.1222414 (within 0.1 ppm)"
+        ]
+
     def test_keys_missing_or_extra(self):
         assert compare({"a": 1, "b": 2}, {"a": 1, "c": 3}) == [
             "answer: has 'c', which the known answer has not",
@@ -528,24 +535,33 @@ class TestNothingUnscoredIsAVerdict:
 
 
 class TestTheCommandLine:
-    def test_run_reports_and_fails_on_an_error(self, kit, monkeypatch, capsys):
-        monkeypatch.setattr(ai_golden, "_toolkit", lambda *args: kit)
+    def test_run_reports_and_fails_on_an_error(
+        self, kit, monkeypatch, capsys, tmp_path
+    ):
+        roots = []
+        monkeypatch.setattr(
+            ai_golden, "_toolkit", lambda *args: roots.append(args[-1]) or kit
+        )
 
         # The fake workspace has no dataset named 2025
-        assert ai_golden.main(["run", "--only", "M2, M7"]) == 1
+        argv = ["run", "--only", "M2, M7", "--session-root", str(tmp_path)]
+        assert ai_golden.main(argv) == 1
+        assert roots == [tmp_path]
 
         out = capsys.readouterr().out
         assert "2 question(s): 0 answered, 0 wrong, 0 unanswerable, 2 error" in out
         assert "M2 error: Which batches are in the 2025 dataset?" in out
         assert f"its manifest included: {kit.session.path}" in out
 
-    def test_run_passes_with_the_known_answers(self, kit, monkeypatch, capsys):
+    def test_run_passes_with_the_known_answers(
+        self, kit, monkeypatch, capsys, tmp_path
+    ):
         monkeypatch.setattr(ai_golden, "_toolkit", lambda *args: kit)
         monkeypatch.setattr(
             ai_golden, "QUESTIONS", (_asked(_samples_in_spring, 3), _asked(_cannot, 1))
         )
 
-        assert ai_golden.main(["run", "--json"]) == 0
+        assert ai_golden.main(["run", "--json", "--session-root", str(tmp_path)]) == 0
 
         report = json.loads(capsys.readouterr().out)
         assert report["bundle"] == ai_golden.BUNDLE
