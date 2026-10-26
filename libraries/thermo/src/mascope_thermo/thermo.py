@@ -1128,15 +1128,7 @@ def get_ms2_summary_metadata(
         ms1_count = all_count - ms2_count
 
         if ms2_count == 0:
-            return {
-                "parent_peaks": [],
-                "groups": [],
-                "hcd_energy_map": {},
-                "isolation_width": None,
-                "ms1_scan_count": ms1_count,
-                "ms2_scan_count": 0,
-                "parent_peak_tolerance": parent_peak_tolerance,
-            }
+            return ms2_summary([], [], ms1_count, 0, parent_peak_tolerance)
 
         # Get MS2 scans grouped by (parent peak, activation)
         events = backend.ms2_events_by_scan(polarity, t_min, t_max)
@@ -1145,8 +1137,8 @@ def get_ms2_summary_metadata(
         # Isolation width + (calibrated) HCD energy per MS2 scan. Thermo reads
         # these from the trailer ("MS2 Isolation Width:" / "HCD Energy V:");
         # backends that lack the calibrated HCD energy raise NotImplementedError.
-        isolation_width, scan_idx_to_width, scan_idx_to_hcd = (
-            backend.ms2_acquisition_info(polarity, t_min, t_max)
+        _, scan_idx_to_width, scan_idx_to_hcd = backend.ms2_acquisition_info(
+            polarity, t_min, t_max
         )
 
         # Scan times, so each group can report the span it was acquired over.
@@ -1160,83 +1152,156 @@ def get_ms2_summary_metadata(
             idx: float(t) for idx, t in zip(ms2_indices, ms2_times, strict=True)
         }
 
-        parent_peaks: list[float] = []
         groups: list[dict] = []
         for (pp, activation), scan_indices in parent_peak_mapping.items():
-            if pp not in parent_peaks:
-                parent_peaks.append(pp)
-
-            # Averaged within the group, so the energies reported are ones the
-            # instrument actually used. A value may itself be comma-separated
-            # when the instrument stepped the energy *within* one scan, which
-            # is a different thing from the per-scan stepping the group key
-            # separates - each comma-separated step keeps its own entry. The
+            # A value may itself be comma-separated when the instrument
+            # stepped the energy *within* one scan (ms2_group_summary). The
             # Thermo library writes the value in the invariant culture
             # (load_dotnet), so no comma here is a decimal mark.
             raw_values = [
                 scan_idx_to_hcd[idx] for idx in scan_indices if idx in scan_idx_to_hcd
             ]
-            step_dissociation_values = [
-                [float(v) for v in str(val).split(",") if v.strip()]
-                for val in raw_values
-                if str(val).strip()
-            ]
-            energies: list[float] = []
-            if step_dissociation_values:
-                max_steps = max(len(row) for row in step_dissociation_values)
-                for step_idx in range(max_steps):
-                    step_values = [
-                        row[step_idx]
-                        for row in step_dissociation_values
-                        if step_idx < len(row)
-                    ]
-                    energies.append(round(float(np.mean(step_values)), 2))
-
-            group_times = [
-                scan_idx_to_time[idx] for idx in scan_indices if idx in scan_idx_to_time
-            ]
-            group_widths = [
-                scan_idx_to_width[idx]
-                for idx in scan_indices
-                if idx in scan_idx_to_width
-            ]
             groups.append(
-                {
-                    "parent_peak_mz": pp,
-                    "activation": activation,
-                    "hcd_energy": energies,
-                    "isolation_width": _common_isolation_width(group_widths),
-                    "isolation_widths": _isolation_width_counts(group_widths),
-                    "scan_count": len(scan_indices),
-                    "t_min": min(group_times) if group_times else None,
-                    "t_max": max(group_times) if group_times else None,
-                }
+                ms2_group_summary(
+                    pp,
+                    activation,
+                    len(scan_indices),
+                    widths=[
+                        scan_idx_to_width[idx]
+                        for idx in scan_indices
+                        if idx in scan_idx_to_width
+                    ],
+                    volts=[
+                        [float(v) for v in str(val).split(",") if v.strip()]
+                        for val in raw_values
+                        if str(val).strip()
+                    ],
+                    times=[
+                        scan_idx_to_time[idx]
+                        for idx in scan_indices
+                        if idx in scan_idx_to_time
+                    ],
+                )
             )
 
-        # Derived from `groups` rather than accumulated alongside it, so the
-        # two cannot drift. It is a flattening: a group whose scans carry no
-        # trailer energy contributes nothing, so the i-th entry here is not the
-        # i-th group of that precursor. `groups` is what carries the per-step
-        # breakdown; this stays for callers that only want the energies.
-        hcd_energy_map: dict[float, list[float]] = {
-            pp: [
-                energy
-                for group in groups
-                if group["parent_peak_mz"] == pp
-                for energy in group["hcd_energy"]
-            ]
-            for pp in parent_peaks
-        }
+        return ms2_summary(
+            groups,
+            list(scan_idx_to_width.values()),
+            ms1_count,
+            ms2_count,
+            parent_peak_tolerance,
+        )
 
+
+def ms2_group_summary(
+    parent_peak_mz: float,
+    activation: str,
+    scan_count: int,
+    widths: list[float],
+    volts: list[list[float]],
+    times: list[float],
+) -> dict:
+    """One group's record in the MS2 summary, from what its scans hold.
+
+    The one place a group's record is made, for the raw read
+    (:func:`get_ms2_summary_metadata`) and for the MS2 store
+    (``mascope_signal.ms2_store``) alike, so the two answer one group alike.
+
+    The energies are averaged within the group, so the ones reported are ones
+    the instrument actually used. A scan may hold several, when the instrument
+    stepped the energy *within* the scan, which is a different thing from the
+    per-scan stepping the group key separates: each step keeps its own entry.
+
+    :param parent_peak_mz: The group's parent peak m/z.
+    :param activation: The group's activation, as its scans' filters give it.
+    :param scan_count: How many scans the group holds.
+    :param widths: The isolation width of each of its scans that stores one.
+    :param volts: The HCD energies [V] of each of its scans that stores them,
+        one list per scan, one entry per step within the scan.
+    :param times: The start time [s] of each of its scans.
+    :return: ``parent_peak_mz``, ``activation``, ``hcd_energy``,
+        ``isolation_width``, ``isolation_widths``, ``scan_count``, ``t_min``
+        and ``t_max``.
+    :rtype: dict
+    """
+    energies: list[float] = []
+    if volts:
+        max_steps = max(len(row) for row in volts)
+        for step_idx in range(max_steps):
+            step_values = [row[step_idx] for row in volts if step_idx < len(row)]
+            energies.append(round(float(np.mean(step_values)), 2))
+    return {
+        "parent_peak_mz": parent_peak_mz,
+        "activation": activation,
+        "hcd_energy": energies,
+        "isolation_width": _common_isolation_width(widths),
+        "isolation_widths": _isolation_width_counts(widths),
+        "scan_count": scan_count,
+        "t_min": min(times) if times else None,
+        "t_max": max(times) if times else None,
+    }
+
+
+def ms2_summary(
+    groups: list[dict],
+    widths: list[float],
+    ms1_scan_count: int,
+    ms2_scan_count: int,
+    parent_peak_tolerance: float,
+) -> dict:
+    """The MS2 summary of a selection, from its groups' records.
+
+    Shared by the raw read and the MS2 store, as :func:`ms2_group_summary`.
+
+    :param groups: The groups' records (:func:`ms2_group_summary`), ordered
+        by parent peak, then by acquisition.
+    :param widths: The isolation width of every MS2 scan selected that stores
+        one, grouped or not: the top-level width is the one they all share.
+    :param ms1_scan_count: How many of the scans selected are not MS2 scans.
+    :param ms2_scan_count: How many are.
+    :param parent_peak_tolerance: The tolerance the groups were made at [Da].
+    :return: The summary, as :func:`get_ms2_summary_metadata` describes it.
+    :rtype: dict
+    :raises ValueError: MS2 scans are selected and none stores a width.
+    """
+    if not ms2_scan_count:
         return {
-            "parent_peaks": parent_peaks,
-            "groups": groups,
-            "hcd_energy_map": hcd_energy_map,
-            "isolation_width": isolation_width,
-            "ms1_scan_count": ms1_count,
-            "ms2_scan_count": ms2_count,
+            "parent_peaks": [],
+            "groups": [],
+            "hcd_energy_map": {},
+            "isolation_width": None,
+            "ms1_scan_count": ms1_scan_count,
+            "ms2_scan_count": 0,
             "parent_peak_tolerance": parent_peak_tolerance,
         }
+    if not widths:
+        # As ms2_acquisition_info refuses it, and in its words
+        raise ValueError("No MS2 scan stores an isolation width")
+
+    parent_peaks = list(dict.fromkeys(group["parent_peak_mz"] for group in groups))
+    # Derived from `groups` rather than accumulated alongside it, so the
+    # two cannot drift. It is a flattening: a group whose scans carry no
+    # trailer energy contributes nothing, so the i-th entry here is not the
+    # i-th group of that precursor. `groups` is what carries the per-step
+    # breakdown; this stays for callers that only want the energies.
+    hcd_energy_map: dict[float, list[float]] = {
+        pp: [
+            energy
+            for group in groups
+            if group["parent_peak_mz"] == pp
+            for energy in group["hcd_energy"]
+        ]
+        for pp in parent_peaks
+    }
+    return {
+        "parent_peaks": parent_peaks,
+        "groups": groups,
+        "hcd_energy_map": hcd_energy_map,
+        "isolation_width": _common_isolation_width(widths),
+        "ms1_scan_count": ms1_scan_count,
+        "ms2_scan_count": ms2_scan_count,
+        "parent_peak_tolerance": parent_peak_tolerance,
+    }
 
 
 def get_ms2_centroids_per_scan_for_parent(
