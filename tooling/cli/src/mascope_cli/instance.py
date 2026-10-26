@@ -17,8 +17,9 @@ worktrees. A new binding also skips any slot whose API or frontend port another
 process already listens on (a bare ``mascope dev run``, or a service outside the
 registry), so an instance never shares a port with it; the skipped slot is not
 recorded and is offered again once its ports are free. An existing binding is
-never probed: a worktree keeps its slot whether its stack runs or not. The registry is the source of truth for the slot->ports mapping; the
-runtime honours the ``MASCOPE_ENV`` / ``MASCOPE_API_PORT`` / ``MASCOPE_FRONTEND_PORT``
+never probed: a worktree keeps its slot whether its stack runs or not. The
+registry is the source of truth for the slot->ports mapping; the runtime
+honours the ``MASCOPE_ENV`` / ``MASCOPE_API_PORT`` / ``MASCOPE_FRONTEND_PORT``
 env vars this module sets, so nothing is written into config files.
 
 This module has no Docker/Postgres dependencies and is safe to import anywhere.
@@ -44,7 +45,10 @@ from loguru import logger
 # Slot N maps to API_PORT_BASE + N and FRONTEND_PORT_BASE + N, so slot 0 has
 # the default single-dev ports (8090/5173). Allocation skips a slot whose ports
 # something already listens on, a bare `mascope dev run` or any other service,
-# so the first instance on a shared box may get slot 1 or higher.
+# so the first instance on a shared box may get slot 1 or higher. The probe
+# sees only what already listens when a slot is allocated: a bare
+# `mascope dev run` started after an instance holds slot 0 still collides with
+# it, so on a shared box use instances throughout.
 API_PORT_BASE = 8090
 FRONTEND_PORT_BASE = 5173
 # Ceiling on concurrent instances. A guard against runaway allocation, not a
