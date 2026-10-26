@@ -1335,6 +1335,7 @@ def predict_resolved_isotopes(
     ion_charge: int,
     threshold: float,
     resolution: Callable[[float], float] | None,
+    purity: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """An ion's envelope as a file of this resolving power shows it.
 
@@ -1350,13 +1351,15 @@ def predict_resolved_isotopes(
     :param threshold: The envelope's floor, relative to its most abundant line.
     :param resolution: The file's resolving power as a function of m/z, or None,
         which predicts exactly as :func:`predict_isotopes` does.
+    :param purity: A labelled reagent's isotopic purity, as
+        :func:`predict_isotopes` takes it.
     :return: The envelope's m/z values, abundances and labels.
     """
     if resolution is None:
-        return predict_isotopes(ion_formula, ion_charge, threshold=threshold)
+        return predict_isotopes(ion_formula, ion_charge, purity, threshold)
     mzs, intensities, labels = merge_unresolved_lines(
         *predict_isotopes(
-            ion_formula, ion_charge, threshold=threshold * UNRESOLVED_MEMBER_DEPTH
+            ion_formula, ion_charge, purity, threshold * UNRESOLVED_MEMBER_DEPTH
         ),
         resolution,
     )

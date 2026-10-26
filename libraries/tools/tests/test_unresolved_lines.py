@@ -215,3 +215,15 @@ def test_a_merged_line_under_the_floor_is_left_out():
 
     assert labels == ["M0", "13C"]
     assert intensities.min() >= 0.05 * intensities.max()
+
+
+@pytest.mark.parametrize("power", [TOF, None], ids=["tof", "none"])
+def test_a_labelled_reagent_is_predicted_at_its_own_purity(power):
+    # A 95% 15N nitrate's unlabelled remainder, one mass unit under the ion, is
+    # 5/95 of it; the default purity of 98% would make it 2/98.
+    _, intensities, labels = predict_resolved_isotopes(
+        "O3^N", -1, 1e-3, None if power is None else _resolving(power), purity=0.95
+    )
+
+    share = dict(zip(labels, intensities / intensities[labels.index("M0")]))
+    assert share["14N"] == pytest.approx(0.05 / 0.95, rel=1e-3)

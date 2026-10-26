@@ -2405,16 +2405,24 @@ async def _already_running_result(
     return result
 
 
-def _claim_reagent_lines(peaks_df: pd.DataFrame, resolved_profile: ResolvedProfile):
+def _claim_reagent_lines(
+    peaks_df: pd.DataFrame,
+    resolved_profile: ResolvedProfile,
+    *,
+    resolution: Callable[[float], float] | None,
+):
     """The reagent pre-pass's claim, as every reader of it makes it.
 
     One call for the run's pre-pass (:func:`_reagent_assignments`) and the
     offset a path with no run reads (:func:`reagent_offset_for`): the claim is
-    made at the profile's own m/z precision, and a second copy of it is where
-    that precision would drift apart.
+    made at the profile's own m/z precision and the file's own resolving power,
+    and a second copy of it is where either would drift apart.
 
     :param peaks_df: Every observed peak of the sample.
     :param resolved_profile: The chemistry the claim is made under.
+    :param resolution: The file's resolving power as a function of m/z
+        (:func:`_resolution_of`), at which an ion's isotope line is one peak of
+        the file; None where it has none. Required, so no reader leaves it out.
     :return: What :func:`claim_reagent_peaks` claimed, and its calibration.
     """
     return claim_reagent_peaks(
@@ -2422,6 +2430,7 @@ def _claim_reagent_lines(peaks_df: pd.DataFrame, resolved_profile: ResolvedProfi
         reagent_library_for(resolved_profile.profile.name),
         claim_ppm=resolved_profile.mz_precision_ppm,
         purity=resolved_profile.profile.label_purity,
+        resolution=resolution,
     )
 
 
@@ -2455,20 +2464,26 @@ def _claimed_lines_offset(
 
 
 def reagent_offset_for(
-    peaks_df: pd.DataFrame, resolved_profile: ResolvedProfile
+    peaks_df: pd.DataFrame,
+    resolved_profile: ResolvedProfile,
+    *,
+    resolution: Callable[[float], float] | None,
 ) -> ReagentOffset | None:
     """The reagent pre-pass's offset alone, for a path that writes no reagent rows.
 
-    The same claim :func:`_reagent_assignments` makes, at the same precision,
-    so a seeded re-score is centred where a run of the sample would be.
+    The same claim :func:`_reagent_assignments` makes, at the same precision
+    and resolution, so a seeded re-score is centred where a run of the sample
+    would be.
 
     :param peaks_df: Every observed peak of the sample.
     :param resolved_profile: The sample's resolved chemistry.
+    :param resolution: The file's resolving power as a function of m/z, or None.
     :return: Where the claimed lines put the axis; None for a profile with no
         reagent library.
     """
     return _claimed_lines_offset(
-        *_claim_reagent_lines(peaks_df, resolved_profile), resolved_profile
+        *_claim_reagent_lines(peaks_df, resolved_profile, resolution=resolution),
+        resolved_profile,
     )
 
 
@@ -2582,7 +2597,12 @@ async def sample_reagent_offset(
         )
     if peaks_df is None:
         peaks_df = await asyncio.to_thread(load_sample_peaks, sample)
-    return await asyncio.to_thread(reagent_offset_for, peaks_df, resolved_profile)
+    return await asyncio.to_thread(
+        reagent_offset_for,
+        peaks_df,
+        resolved_profile,
+        resolution=await _resolution_of(sample),
+    )
 
 
 def _reagent_assignments(
@@ -2590,6 +2610,8 @@ def _reagent_assignments(
     resolved_profile: ResolvedProfile,
     sample_item_id: str,
     peak_assignment_run_id: str,
+    *,
+    resolution: Callable[[float], float] | None,
 ) -> tuple[list[dict], set[str], ReagentOffset | None]:
     """The reagent pre-pass: the peaks the source made, claimed before the stages.
 
@@ -2603,12 +2625,17 @@ def _reagent_assignments(
         source's reagent and (for a labelled one) its isotopic purity.
     :param sample_item_id: The sample these rows belong to.
     :param peak_assignment_run_id: The run they are stamped with.
+    :param resolution: The file's resolving power as a function of m/z, at
+        which an ion's isotope line is one peak of the file; None where it has
+        none.
     :return: The reagent rows, the peaks they take out of both stages, and where
         the claimed lines put the mass axis, which Stage A scores at where the
         target library fits no offset (:func:`reagent_line_offset`); None for a
         profile with no reagent library.
     """
-    hits, calibration = _claim_reagent_lines(peaks_df, resolved_profile)
+    hits, calibration = _claim_reagent_lines(
+        peaks_df, resolved_profile, resolution=resolution
+    )
     if calibration is not None and calibration.anchors:
         runtime.logger.info(
             "Reagent pre-pass anchored at "
@@ -2997,13 +3024,22 @@ async def _run_sample_assignment(
             mechanisms, secondary_mechanisms, resolved_profile
         )
 
+        # The file's resolving power, read once: what one peak of the file holds
+        # for every pass that predicts an isotope line - the reagent pre-pass,
+        # the envelope match, the mass gate and the tiering pass.
+        resolution = await _resolution_of(sample)
+
         # -- The reagent pre-pass, ahead of both stages: the source's own
         # cluster ions are the brightest peaks in the spectrum and none of them
         # is sample chemistry, so they are claimed here and taken out of what
         # either stage may assign. Ordering is the whole mechanism - nothing
         # downstream is ever offered the peak, so nothing can overwrite it.
         reagent_assignments, reagent_peak_ids, reagent_offset = _reagent_assignments(
-            peaks_df, resolved_profile, sample_item_id, run.peak_assignment_run_id
+            peaks_df,
+            resolved_profile,
+            sample_item_id,
+            run.peak_assignment_run_id,
+            resolution=resolution,
         )
         if reagent_assignments:
             runtime.logger.info(
@@ -3072,7 +3108,6 @@ async def _run_sample_assignment(
         # the untargeted branch because the tiering pass reads it whether or not
         # that branch ran: a run of Stage A alone still has committed rows whose
         # peaks a neighbour's envelope may already predict.
-        resolution = await _resolution_of(sample)
         scoring = pattern_scoring_for(
             match_params,
             mass_accuracy,
@@ -3670,8 +3705,11 @@ async def _fold_sample_peaks_without_run(
         instrument_type=instrument_type,
         polarity=sample.polarity,
     )
+    # Read once, for the two passes here that predict an isotope line: the
+    # reagent pre-pass and the mass gate, as a run reads them.
+    resolution = await _resolution_of(sample)
     reagent, reagent_peak_ids, reagent_offset = _reagent_assignments(
-        peaks_df, resolved_profile, sample_item_id, run_id
+        peaks_df, resolved_profile, sample_item_id, run_id, resolution=resolution
     )
     artifact, artifact_peak_ids = _artifact_assignments(
         peaks_df, instrument_type, sample_item_id, run_id, reagent_peak_ids
@@ -3728,7 +3766,7 @@ async def _fold_sample_peaks_without_run(
         stage_a,
         stage_a_accuracy=mass_accuracy,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
-        lines=SpectrumLines.from_peaks(peaks_df, await _resolution_of(sample)),
+        lines=SpectrumLines.from_peaks(peaks_df, resolution),
         reagent_lines=reagent,
     )
     # ...and the run's same-ion check, through the channels a run would read,

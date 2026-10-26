@@ -36,8 +36,12 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
     reagent_library_for,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
-from mascope_tools.composition.heuristic_filter import predict_isotopes
+from mascope_tools.composition.heuristic_filter import (
+    predict_isotopes,
+    predict_resolved_isotopes,
+)
 from mascope_tools.composition.reagents import (
+    DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE,
     FAMILY_FRAGMENT,
     KIND_FRAGMENT,
     FragmentIon,
@@ -229,7 +233,9 @@ class TestTheIsotopologueRows:
         assert len(errors) == 1
 
 
-def _run_pre_pass(peaks: pd.DataFrame, profile: str, instrument_type: str | None):
+def _run_pre_pass(
+    peaks: pd.DataFrame, profile: str, instrument_type: str | None, resolution=None
+):
     """The pre-pass as a run calls it, with the chemistry a run would resolve."""
     from mascope_backend.api.new.peak_assignments.config import (
         PeakAssignmentConfig,
@@ -245,7 +251,9 @@ def _run_pre_pass(peaks: pd.DataFrame, profile: str, instrument_type: str | None
         instrument_type=instrument_type,
         polarity="+",
     )
-    return _reagent_assignments(peaks, resolved, "sample1", "run1")
+    return _reagent_assignments(
+        peaks, resolved, "sample1", "run1", resolution=resolution
+    )
 
 
 class TestWhereTheClaimedLinesPutTheAxis:
@@ -347,6 +355,17 @@ class TestTheOffsetOutsideARun:
 
     _urea = staticmethod(TestWhereTheClaimedLinesPutTheAxis._urea)
 
+    @pytest.fixture(autouse=True)
+    def no_resolution(self, monkeypatch):
+        # The file's resolving power lives with its instrument functions in the
+        # database; these samples have none unless a test says.
+        from mascope_backend.api.new.peak_assignments import service
+
+        async def none(sample):
+            return None
+
+        monkeypatch.setattr(service, "_resolution_of", none)
+
     def test_the_peak_list_reads_the_runs_offset(self):
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
@@ -367,7 +386,7 @@ class TestTheOffsetOutsideARun:
         )
 
         _, _, run_offset = _run_pre_pass(peaks, "UR", "orbi")
-        assert reagent_offset_for(peaks, resolved) == run_offset
+        assert reagent_offset_for(peaks, resolved, resolution=None) == run_offset
         assert run_offset.beyond_width
 
     def test_the_claim_is_made_at_the_profiles_precision(self):
@@ -394,7 +413,7 @@ class TestTheOffsetOutsideARun:
         )
         assert resolved.mz_precision_ppm == 3.0
 
-        offset = reagent_offset_for(peaks, resolved)
+        offset = reagent_offset_for(peaks, resolved, resolution=None)
 
         assert offset == _run_pre_pass(peaks, "UR", "orbi")[2]
         assert offset.lines == 3
@@ -556,6 +575,136 @@ class TestTheOffsetOutsideARun:
         )
 
         assert offset == _run_pre_pass(peaks, "UR", "orbi")[2]
+
+
+def tof(mz: float) -> float:
+    """A TOF's resolving power: its peak one mass unit up holds every line there."""
+    return 5000.0
+
+
+def _tof_urea(ppm: float = 0.0) -> pd.DataFrame:
+    """The urea monomer and dimer as a TOF records them, one peak per line it
+    resolves, every peak ``ppm`` off its own mass."""
+    rows = []
+    for formula, height in (("CH5N2O", 2e6), ("C2H9N4O2", 3e6)):
+        predicted_mz, predicted_intensity, labels = predict_resolved_isotopes(
+            formula, 1, DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE, tof
+        )
+        base = max(predicted_intensity)
+        for one_mz, one_intensity, label in zip(
+            predicted_mz, predicted_intensity, labels
+        ):
+            rows.append(
+                {
+                    "mz": float(one_mz) * (1.0 + ppm * 1e-6),
+                    "intensity": height * float(one_intensity) / base,
+                    "line": f"{formula} {label}",
+                }
+            )
+    frame = pd.DataFrame(sorted(rows, key=lambda row: row["mz"]))
+    frame.insert(0, "sample_peak_id", [f"p{index}" for index in range(len(frame))])
+    return frame
+
+
+#: The urea dimer's peak one mass unit up on a TOF: its 13C and 15N lines and
+#: the 2H and 17O ones, 19 ppm under the 13C line and 33 ppm over the 15N one.
+DIMER_M1 = "C2H9N4O2 13C"
+
+
+class TestATofIsotopeLineIsOnePeak:
+    """An ion's isotope line is what one peak of the file holds, as in the
+    envelope match, so the pass finds the peak the lines make."""
+
+    def test_the_claim_finds_the_peak_the_lines_make(self):
+        peaks = _tof_urea()
+        m1 = int(peaks.index[peaks["line"] == DIMER_M1][0])
+        library = reagent_library_for("UR")
+
+        unresolved, _ = claim_reagent_peaks(peaks, library, claim_ppm=10.0)
+        resolved, _ = claim_reagent_peaks(
+            peaks, library, claim_ppm=10.0, resolution=tof
+        )
+
+        assert m1 not in {hit.index for hit in unresolved}
+        assert m1 in {hit.index for hit in resolved}
+
+    def test_its_row_reads_against_everything_the_peak_holds(self):
+        peaks = _tof_urea()
+        _, share, labels = predict_resolved_isotopes(
+            "C2H9N4O2", 1, DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE, tof
+        )
+
+        rows, claimed, _ = _run_pre_pass(peaks, "UR", "tof", resolution=tof)
+
+        by_peak = {row["sample_peak_id"]: row for row in rows}
+        line = by_peak[peaks.loc[peaks["line"] == DIMER_M1, "sample_peak_id"].iloc[0]]
+        owner = by_peak[
+            peaks.loc[peaks["line"] == "C2H9N4O2 M0", "sample_peak_id"].iloc[0]
+        ]
+        assert line["owner_peak_assignment_id"] == owner["peak_assignment_id"]
+        assert line["isotope_label"] == "13C"
+        assert line["provenance"]["reagent"]["predicted_relative"] == pytest.approx(
+            share[labels.index("13C")] / share[labels.index("M0")], abs=1e-5
+        )
+        assert line["abundance_error"] == pytest.approx(0.0, abs=1e-3)
+        assert line["mz_error_ppm"] == pytest.approx(0.0, abs=1e-3)
+        assert line["sample_peak_id"] in claimed
+
+    def test_the_offset_outside_a_run_reads_the_same_peaks(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.profiles import (
+            resolve_profile,
+        )
+        from mascope_backend.api.new.peak_assignments.service import (
+            reagent_offset_for,
+        )
+
+        peaks = _tof_urea(-1.3)
+        resolved = resolve_profile(
+            PeakAssignmentConfig(profile="UR"),
+            mechanism_notations=["[M+H]+"],
+            instrument_type="tof",
+            polarity="+",
+        )
+
+        offset = reagent_offset_for(peaks, resolved, resolution=tof)
+        unresolved = reagent_offset_for(peaks, resolved, resolution=None)
+
+        assert offset == _run_pre_pass(peaks, "UR", "tof", resolution=tof)[2]
+        assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-3)
+        assert offset.lines > unresolved.lines
+
+    @pytest.mark.asyncio
+    async def test_a_sample_s_offset_reads_its_files_resolution(self, monkeypatch):
+        from mascope_backend.api.new.peak_assignments import service
+
+        peaks = _tof_urea(-1.3)
+        asked = []
+
+        async def resolution_of(sample):
+            asked.append(sample)
+            return tof
+
+        async def mechanisms(sample):
+            return ["im-urea"], [SimpleNamespace(ionization_mechanism="[M+CH4N2O+H]+")]
+
+        async def no_run(sample_item_id):
+            return None
+
+        monkeypatch.setattr(service, "_resolution_of", resolution_of)
+        monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
+        monkeypatch.setattr(service, "load_sample_peaks", lambda sample: peaks)
+        monkeypatch.setattr(service, "get_instrument_type", lambda name: "tof")
+        monkeypatch.setattr(service, "_latest_run_pattern_scoring", no_run)
+        sample = SimpleNamespace(sample_item_id="s1", filename="sample", polarity="+")
+
+        offset = await service.sample_reagent_offset(sample)
+
+        assert asked == [sample]
+        assert offset == _run_pre_pass(peaks, "UR", "tof", resolution=tof)[2]
+        assert offset != _run_pre_pass(peaks, "UR", "tof")[2]
 
 
 class TestTheChargeTransferBeam:

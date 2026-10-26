@@ -46,6 +46,7 @@ to fit.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Iterable, Mapping, Sequence
 
@@ -54,7 +55,7 @@ import numpy as np
 from mascope_tools.composition.config import ELECTRON_MASS
 from mascope_tools.composition.heuristic_filter import (
     monoisotopic_index,
-    predict_isotopes,
+    predict_resolved_isotopes,
 )
 from mascope_tools.composition.utils import (
     composition_mass,
@@ -1876,6 +1877,7 @@ def _isotopologue_hits(
     purity: float | None,
     min_relative: float,
     max_excess: float,
+    resolution: Callable[[float], float] | None = None,
 ) -> list[ReagentHit]:
     """The isotopologue peaks of one claimed cluster.
 
@@ -1885,12 +1887,18 @@ def _isotopologue_hits(
     shifted onto the parent's OWN observed mass, so each isotopologue is looked
     for at the instrument's precision around where this ion actually sits rather
     than where its formula says it should.
+
+    A line is a peak the file can resolve, as in the envelope match
+    (``heuristic_filter.predict_resolved_isotopes``). On a TOF the urea dimer's
+    peak one mass unit up holds its 13C and 15N lines together and sits 19 ppm
+    under the one and 33 ppm over the other, and the nitrate dimer's 14 ppm over
+    its 15N line: at a TOF's 10 ppm claim no isotopologue alone finds either.
     """
     # Predicted down to the floor this pass will actually look for, not to the
     # scoring path's 1%: a line the envelope omits is not a rounding error here,
     # it is a peak left in the residual for another stage to explain.
-    predicted_mz, predicted_intensity, labels = predict_isotopes(
-        cluster.formula, cluster.charge, purity, min_relative
+    predicted_mz, predicted_intensity, labels = predict_resolved_isotopes(
+        cluster.formula, cluster.charge, min_relative, resolution, purity
     )
     if len(predicted_mz) == 0:
         return []
@@ -1947,6 +1955,7 @@ def match_reagent_clusters(
     anchor_min_relative_intensity: float = DEFAULT_ANCHOR_MIN_RELATIVE_INTENSITY,
     isotopologue_min_relative: float = DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE,
     isotopologue_max_excess: float = DEFAULT_ISOTOPOLOGUE_MAX_EXCESS,
+    resolution: Callable[[float], float] | None = None,
 ) -> tuple[list[ReagentHit], ReagentCalibration]:
     """Which peaks of this spectrum the reagent library accounts for.
 
@@ -1987,6 +1996,10 @@ def match_reagent_clusters(
     :param isotopologue_min_relative: Predicted-height floor for an isotopologue.
     :param isotopologue_max_excess: How far above prediction an isotopologue may be
         observed and still be claimed.
+    :param resolution: The file's resolving power as a function of m/z. Where it
+        is known, an isotopologue is one peak of the file: the lines that peak
+        holds, at their weighted centre and summed height (:func:`_isotopologue_hits`).
+        ``None`` looks for each isotopologue on its own.
     :return: The hits, monoisotopic before their isotopologues, and the correction
         the anchors gave.
     """
@@ -2047,6 +2060,7 @@ def match_reagent_clusters(
                 purity=purity,
                 min_relative=isotopologue_min_relative,
                 max_excess=isotopologue_max_excess,
+                resolution=resolution,
             )
         )
     return hits, calibration

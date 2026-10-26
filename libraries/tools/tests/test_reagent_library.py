@@ -12,7 +12,10 @@ are tested as behaviour rather than left to a comment.
 import numpy as np
 import pytest
 
-from mascope_tools.composition.heuristic_filter import predict_isotopes
+from mascope_tools.composition.heuristic_filter import (
+    predict_isotopes,
+    predict_resolved_isotopes,
+)
 from mascope_tools.composition.reagents import (
     DEFAULT_ANCHOR_PPM,
     DEFAULT_FRAGMENT_MAX_EXCESS,
@@ -670,6 +673,85 @@ class TestTheLabelledEnvelope:
         isotopologues = [h for h in hits if h.is_isotopologue]
         assert [h.isotope_label for h in isotopologues] == ["14N"]
         assert isotopologues[0].predicted_relative == pytest.approx(0.02, abs=0.005)
+
+
+def tof(mz: float) -> float:
+    """A TOF's resolving power: its peak one mass unit up holds every line there."""
+    return 5000.0
+
+
+#: The window a TOF run claims in, as the profiles resolve it.
+TOF_PPM = 10.0
+
+
+def _tof_spectrum(*ions: tuple[str, int, float]) -> tuple[np.ndarray, np.ndarray]:
+    """A spectrum as a TOF records each ion: one peak per line it resolves, at
+    the lines' weighted centre and summed height."""
+    mz: list[float] = []
+    intensity: list[float] = []
+    for formula, charge, height in ions:
+        predicted_mz, predicted_intensity, _ = predict_resolved_isotopes(
+            formula, charge, DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE, tof
+        )
+        base = max(predicted_intensity)
+        for one_mz, one_intensity in zip(predicted_mz, predicted_intensity):
+            mz.append(float(one_mz))
+            intensity.append(height * float(one_intensity) / base)
+    order = np.argsort(mz)
+    return np.asarray(mz)[order], np.asarray(intensity)[order]
+
+
+class TestATofIsotopeLineIsOnePeak:
+    """On a TOF an ion's peak one mass unit up holds every line there. Looked
+    for one isotopologue at a time, the pass misses it: the nitrate dimer's sits
+    14 ppm over its 15N line, the urea dimer's 19 ppm under its 13C line, and a
+    TOF claims within 10."""
+
+    @pytest.mark.parametrize(
+        "profile, ions, ion, label",
+        [
+            ("NO3", (("NO3", -1, 1e6), ("HN2O6", -1, 5e5)), "HN2O6", "15N"),
+            ("UR", (("CH5N2O", 1, 2e6), ("C2H9N4O2", 1, 3e6)), "C2H9N4O2", "13C"),
+        ],
+        ids=["nitrate dimer", "urea dimer"],
+    )
+    def test_the_peak_the_lines_make_is_claimed_as_one_line(
+        self, profile, ions, ion, label
+    ):
+        mz, intensity = _tof_spectrum(*ions)
+        lines, shares, labels = predict_resolved_isotopes(
+            ion, -1 if profile == "NO3" else 1, DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE, tof
+        )
+        at = int(np.argmin(np.abs(mz - lines[labels.index(label)])))
+
+        unresolved, _ = claim(
+            reagent_library(profile), mz, intensity, claim_ppm=TOF_PPM
+        )
+        resolved, _ = claim(
+            reagent_library(profile), mz, intensity, claim_ppm=TOF_PPM, resolution=tof
+        )
+
+        assert at not in {hit.index for hit in unresolved}
+        (hit,) = [hit for hit in resolved if hit.index == at]
+        assert hit.isotope_label == label
+        assert hit.predicted_relative == pytest.approx(
+            shares[labels.index(label)] / shares[labels.index("M0")], rel=1e-9
+        )
+        assert hit.mz_error_ppm == pytest.approx(0.0, abs=1e-6)
+
+    def test_a_labelled_reagent_s_remainder_is_read_at_its_purity(self):
+        predicted_mz, predicted_intensity, labels = predict_isotopes("O3^N", -1, 0.95)
+        m0 = labels.index("M0")
+        mz = np.array([float(predicted_mz[labels.index("14N")]), predicted_mz[m0]])
+        intensity = np.array([5.3e4, 1.0e6])
+
+        hits, _ = claim(
+            reagent_library("NO3_15N"), mz, intensity, purity=0.95, resolution=tof
+        )
+
+        (remainder,) = [h for h in hits if h.is_isotopologue]
+        assert remainder.isotope_label == "14N"
+        assert remainder.predicted_relative == pytest.approx(0.05 / 0.95, rel=1e-3)
 
 
 class TestTheEnvelopeReachesTheFloorItSearches:
