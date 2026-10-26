@@ -110,6 +110,11 @@ def _store(filename: str, extension: str, content: bytes) -> str:
     return path
 
 
+#: The computer an acquisition record names, which no package may publish.
+_HOST_NAME = "instrument-pc-x"
+_MACHINE_GUID = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+
+
 def _acquisition(sample_file_id: str) -> dict:
     """An acquisition record, its identifiers its own."""
     ids = {
@@ -120,6 +125,7 @@ def _acquisition(sample_file_id: str) -> dict:
         "schema": "mascope-acquisition/1",
         "source_filename": "acquisition.raw",
         "ionization": "Br",
+        "machine": {"name": _HOST_NAME, "windows_machine_guid": _MACHINE_GUID},
         **ids,
     }
 
@@ -560,16 +566,36 @@ async def test_a_file_the_filestore_no_longer_keeps_is_described_not_packed(
 @pytest.mark.asyncio
 async def test_the_acquisition_record_lies_beside_its_raw_file(package, dataset):
     """The record the control program sent is written back as the sidecar
-    it was, ``<raw file>.mascope.json``, and the manifest names its ids."""
+    it was, ``<raw file>.mascope.json``, but for the computer it names, and
+    the manifest names its ids."""
     ids = dataset.ids
     record = json.loads(package.read(f"raw/{dataset.names.orbi}.raw.mascope.json"))
-    assert record == _acquisition(ids.orbi_file)
+    sent = _acquisition(ids.orbi_file)
+    assert sent.pop("machine")
+    assert record == sent
     acquisition = _raw_entry(package, ids.orbi_file)["acquisition"]
     assert acquisition["acquisition_id"] == record["acquisition_id"]
     assert acquisition["step_id"] == record["step_id"]
     assert acquisition["sequence_run_id"] == record["sequence_run_id"]
     assert acquisition["agent_id"] == record["agent_id"]
     assert _raw_entry(package, ids.tof_file)["acquisition"] is None
+
+
+@pytest.mark.asyncio
+async def test_no_file_of_the_package_names_the_acquiring_computer(
+    package, dataset, async_session_factory
+):
+    """The host name and machine GUID of the computer that wrote an
+    acquisition record are in no file of the package, while the database
+    keeps the record whole."""
+    for path in package.paths:
+        data = package.read(path)
+        assert _HOST_NAME.encode() not in data, path
+        assert _MACHINE_GUID.encode() not in data, path
+    async with async_session_factory() as session:
+        stored = await session.get(SampleFile, dataset.ids.orbi_file)
+        await session.refresh(stored, ["acquisition"])
+        assert stored.acquisition == _acquisition(dataset.ids.orbi_file)
 
 
 @pytest.mark.asyncio
@@ -690,6 +716,8 @@ async def test_the_readme_tells_a_stranger_what_how_who_and_which_software(
         "`target_collections/`",
     ):
         assert f"| {row} |" in readme
+    assert "without the computer it names (`machine`)" in readme
+    assert "may name the instrument and the computer that acquired it" in readme
     assert "Batch **First batch**: 2 samples" in readme
     assert "Mascope v9.9.9-test" in readme
     assert f"deployment `{_DEPLOYMENT}`" in readme
