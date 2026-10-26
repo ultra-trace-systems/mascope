@@ -1041,6 +1041,56 @@ class SamplesResource(BaseResource):
                 )
         return data
 
+    def get_axis_fingerprint(self, sample_id: str) -> dict:
+        """Get the axis fingerprint of a sample's raw Orbitrap file, with
+        what the sample reads of it.
+
+        The document is the file's, as
+        :meth:`~mascope_sdk.resources.sample_files.SampleFilesResource.get_axis_fingerprint`
+        returns it. Where it describes the file's scans (``status`` ``ok`` or
+        ``no_fingerprint``), it also holds an ``item`` block, and its
+        ``modes`` start with the one the sample's scans belong to, then the
+        other modes of its polarity and stream; ``dominant_mode`` stays the
+        file's. ``item`` holds:
+
+        - ``sample_item_id``, ``sample_file_id``, ``polarity``, and ``t0_s``
+          and ``t1_s``, the sample's window [s];
+        - ``stream_key``, the scan stream it reads, None for every MS1 scan
+          of its polarity;
+        - ``scans``, the scan numbers its peak list is built from;
+        - ``mode_id``, the mode most of those scans belong to;
+        - ``lock``, that mode's ``used_share``, ``used_count``,
+          ``m_lock_eff`` and ``s_lock_eff_ppm`` over the sample's scans;
+        - ``mz_calibration_factor``, the factor of the file's mass
+          calibration for the sample's stream, and
+          ``file_mz_calibration_factor``, the file's own, which
+          :meth:`get_centroids` multiplies into every mass. Both None for a
+          file never calibrated. A stitched sample's
+          ``mz_calibration_factor`` is the file's, while its peaks carry the
+          factor of each stream that owns a run of it.
+
+        :param sample_id: The ID of the sample.
+        :type sample_id: str
+        :return: The fingerprint document of the sample's file.
+        :rtype: dict
+        :raises NotFoundError: If the sample's file is not an Orbitrap file,
+            or the server predates the route.
+        :raises ValidationError: If the document describes the file's scans
+            but the server no longer keeps the raw file they are read from.
+        :raises AuthenticationError: If authentication fails, or the token's
+            user may not read the sample.
+        :raises MascopeAPIError: If the API request fails.
+
+        Example::
+
+            fingerprint = mascope.samples.get_axis_fingerprint("sample-456")
+            item = fingerprint.get("item")
+            if item and item["mode_id"]:
+                print(item["mode_id"], item["lock"]["m_lock_eff"])
+        """
+        logger.debug("Fetching the axis fingerprint of sample {}", sample_id)
+        return self._get(f"samples/{sample_id}/axis_fingerprint")
+
     def update(self, sample_id: str, sample_item: dict[str, Any]) -> dict[str, Any]:
         """Update a sample's fields: its name, type, attributes and the rest.
 

@@ -195,6 +195,53 @@ class SampleFilesResource(BaseResource):
             )
         return df
 
+    def get_axis_fingerprint(self, sample_file_id: str) -> dict:
+        """Get the axis fingerprint of a raw Orbitrap file.
+
+        On some Orbitrap models the data system divides the frequency axis
+        into frequency bands, and each mass calibration stores one m/z offset
+        per band on top of a smooth trend. The fingerprint reads those offsets
+        back from the file's stored profile, per acquisition mode: the table of
+        bands, the grid of their edges, and the lock mass each scan was
+        corrected with. It describes the raw file's own m/z axis; Mascope
+        computes it when the file is converted and never alters an m/z with
+        it.
+        :meth:`~mascope_sdk.resources.samples.SamplesResource.get_axis_fingerprint`
+        adds what one sample reads of it.
+
+        The document follows the JSON schema ``mascope.axis_fingerprint``,
+        version 1, with ``sample_file_id`` added. Read its ``status`` first:
+        ``ok`` (at least one mode has a table of bands; a mode without one
+        has ``segments`` None), ``no_fingerprint`` (read, but no mode gave
+        one), and three that carry nothing else:
+        ``missing`` (not computed for this file), ``unavailable`` (the
+        server's reader cannot read the stored profile) and ``error`` (the
+        computation failed; ``error`` says how).
+
+        :param sample_file_id: The ID of the sample file.
+        :type sample_file_id: str
+        :return: The fingerprint document.
+        :rtype: dict
+        :raises NotFoundError: If the file is not an Orbitrap file, does not
+            exist (for an administrator), or the server predates the route.
+        :raises AuthenticationError: If authentication fails, or the token's
+            user may not read the file.
+        :raises MascopeAPIError: If the API request fails.
+
+        Example::
+
+            file_id = mascope.samples.get(sample_id)["sample_file_id"]
+            fingerprint = mascope.sample_files.get_axis_fingerprint(file_id)
+            if fingerprint["status"] == "ok":
+                # Some mode has a table of bands, not every one
+                mode = next(mode for mode in fingerprint["modes"] if mode["segments"])
+                bands = pd.DataFrame(
+                    mode["segments"]["rows"], columns=mode["segments"]["columns"]
+                )
+        """
+        logger.debug("Fetching the axis fingerprint of sample file {}", sample_file_id)
+        return self._get(f"sample/files/{sample_file_id}/axis_fingerprint")
+
     def download_raw(self, sample_file_id: str, path: str | os.PathLike) -> Path:
         """Download the source data file of a sample file to disk.
 

@@ -34,6 +34,26 @@ sample that failed and why. A script that loads more samples than the
 prompt, so the load raises `ConfirmationRequiredError` instead of starting;
 pass `confirm_above=None` to load without asking.
 
+## The axis fingerprint of an Orbitrap file
+
+On some Orbitrap models the mass calibration leaves one small m/z offset in
+each frequency band of the Orbitrap axis. Mascope reads those offsets back
+from every raw Orbitrap file it converts, and serves them as the file's axis
+fingerprint, for a client that corrects its own mass assignments with them.
+Mascope never changes an m/z with it.
+
+```python
+fingerprint = mascope.sample_files.get_axis_fingerprint(sample_file_id)
+fingerprint = mascope.samples.get_axis_fingerprint(sample_id)
+```
+
+A sample's fingerprint also names the scans its peaks come from, the lock
+mass those scans used and the calibration factor Mascope applies to them. A
+file converted before the fingerprint existed has none yet: its `status` is
+`missing`. The
+[SDK readme](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/sdk/README.md#mascopesample_files)
+describes the document.
+
 ## Built on the SDK: Peaky
 
 Want the analysis without writing the notebook code?
