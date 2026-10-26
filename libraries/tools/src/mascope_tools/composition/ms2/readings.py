@@ -823,18 +823,17 @@ class FragmentCandidate:
 
 
 def _candidates(
-    pkey: tuple[tuple[str, int], ...],
+    grid: _Grid,
     charge: int,
     mz: float,
     tolerance: Tolerance,
     k_max: int,
     allow_radical: bool,
 ) -> list[FragmentCandidate]:
-    grid = _parent_grid(pkey, charge)
     tol = tolerance.window_da(mz)
     lo = int(np.searchsorted(grid.mass, mz - tol, side="left"))
     hi = int(np.searchsorted(grid.mass, mz + tol, side="right"))
-    parent_odd = (2 + sum(_VM2[_IDX[e]] * n for e, n in pkey)) % 2 == 0
+    parent_odd = (2 + int(grid.parent @ _VM2)) % 2 == 0
     out: list[FragmentCandidate] = []
     for i in range(lo, hi):
         theo = float(grid.mass[i])
@@ -912,7 +911,8 @@ def fragment_candidates(
     k_max = _check_k_max(k_max)
     mz = _check_mz(mz)
     pkey, charge = _resolve_parent(parent_ion)
-    return _candidates(pkey, charge, mz, tolerance, k_max, bool(allow_radical))
+    grid = _parent_grid(pkey, charge)
+    return _candidates(grid, charge, mz, tolerance, k_max, bool(allow_radical))
 
 
 # ---------------------------------------------------------------------------
@@ -1099,10 +1099,20 @@ def _window_ions(window_ions) -> list[tuple[str, str, tuple, int]]:
     if len(set(labels)) != len(labels):
         raise ValueError(f"duplicate window ion labels: {labels}")
     out = []
+    seen: dict[str, str] = {}
     for label, ion in items:
         pkey, charge = _resolve_parent(ion)
+        formula = format_ion(dict(pkey), charge)
+        # one ion under two labels or spellings would be read as two parents
+        # (n_parents 2): composition cannot tell isomers apart, so it is a mistake
+        if formula in seen:
+            raise ValueError(
+                f"duplicate window ion {formula}: labels {seen[formula]!r} and "
+                f"{label!r}"
+            )
+        seen[formula] = label
         _check_grid_size(pkey, charge)  # refused up front, peaks or not
-        out.append((label, format_ion(dict(pkey), charge), pkey, charge))
+        out.append((label, formula, pkey, charge))
     if len({charge for *_, charge in out}) > 1:
         raise ValueError("window ions of both polarities in one window")
     return out
@@ -1143,7 +1153,8 @@ def read_fragments(
     :param spectrum: The caller's key for this spectrum, carried on every row
         (:func:`ladder_gate` reads one window's spectra together).
     :raises ValueError: For malformed peaks, window ions, ``k_max``, tolerance or
-        offset.
+        offset, and for one window ion given twice (under two labels or two
+        spellings of one ion).
     """
     tolerance = _check_tolerance(tolerance)
     k_max = _check_k_max(k_max)
@@ -1152,6 +1163,14 @@ def read_fragments(
         raise ValueError(f"spectrum must be a string, got {spectrum!r}")
     mz, inten = _peak_arrays(peaks)
     ions = _window_ions(window_ions)
+    if not len(mz):
+        return ()
+    # each grid once per call, not once per peak: a window of more ions than
+    # the grid cache holds would rebuild every grid at every peak
+    parents = [
+        (label, ion, _parent_grid(pkey, charge), charge)
+        for label, ion, pkey, charge in ions
+    ]
     mz_cal = apply_offset(mz, offset_ppm)
     out: list[Reading] = []
     for i in range(len(mz)):
@@ -1160,9 +1179,9 @@ def read_fragments(
             (
                 label,
                 ion,
-                _candidates(pkey, charge, mc, tolerance, k_max, bool(allow_radical)),
+                _candidates(grid, charge, mc, tolerance, k_max, bool(allow_radical)),
             )
-            for label, ion, pkey, charge in ions
+            for label, ion, grid, charge in parents
         ]
         n_parents = sum(1 for *_, cands in per_ion if cands)
         if n_parents == 0:
@@ -1294,6 +1313,52 @@ def _rerank(rows: Sequence[Reading], keep: Sequence[bool]) -> tuple[Reading, ...
     return tuple(out)
 
 
+def _check_row_order(rows: Sequence[Reading]) -> None:
+    """Refuse rows that are not :func:`read_fragments`' own order: each (spectrum,
+    peak) together and at one m/z, an unexplained row alone, and the ranks of
+    each (spectrum, peak, parent) 1, 2, ... in row order. Spectra that share a
+    ``spectrum`` key, or a table re-sorted by ppm or intensity, would otherwise
+    be read with the wrong steps and re-ranked across spectra."""
+    done: set[tuple[str, int]] = set()
+    group: tuple[str, int] | None = None
+    mz = math.nan
+    ranks: dict[str | None, int] = {}  # parent -> last rank; None: unexplained
+    for r in rows:
+        key = (r.spectrum, r.peak)
+        if key != group:
+            if key in done:
+                raise ValueError(
+                    f"ladder_gate: the rows of spectrum {r.spectrum!r} peak "
+                    f"{r.peak} are not together; give each spectrum its own "
+                    f"spectrum key and keep read_fragments' row order"
+                )
+            if group is not None:
+                done.add(group)
+            group, mz, ranks = key, r.mz, {}
+        elif r.mz != mz:
+            raise ValueError(
+                f"ladder_gate: spectrum {r.spectrum!r} peak {r.peak} has two m/z, "
+                f"{mz!r} and {r.mz!r}; give each spectrum its own spectrum key"
+            )
+        if r.rank == 0 or None in ranks:
+            if ranks:
+                raise ValueError(
+                    f"ladder_gate: spectrum {r.spectrum!r} peak {r.peak} has an "
+                    f"unexplained row beside readings; give each spectrum its own "
+                    f"spectrum key"
+                )
+            ranks[None] = 0
+            continue
+        expected = ranks.get(r.parent, 0) + 1
+        if r.rank != expected:
+            raise ValueError(
+                f"ladder_gate: spectrum {r.spectrum!r} peak {r.peak} parent "
+                f"{r.parent!r} has rank {r.rank} where {expected} belongs; keep "
+                f"read_fragments' row order"
+            )
+        ranks[r.parent] = r.rank
+
+
 def ladder_gate(
     readings: Iterable[Reading], *, k: int = LADDER_K
 ) -> tuple[Reading, ...]:
@@ -1313,17 +1378,24 @@ def ladder_gate(
 
     The readings must hold ONE window, read at ``k_max`` >= ``k``
     (:func:`read_fragments` with ``k_max=LADDER_K``, once per spectrum, each
-    with its own ``spectrum`` key). An ammonium adduct of a polyol walks a
-    chain - [M+NH4]+ loses NH3 and then water step by step - whose fourth step
-    (NH3 + 3 H2O, DBE -3) needs four molecules in any library; the gate admits
-    it only when its previous step is observed.
+    with its own ``spectrum`` key), in :func:`read_fragments`' row order. An
+    ammonium adduct of a polyol walks a chain - [M+NH4]+ loses NH3 and then
+    water step by step - whose fourth step (NH3 + 3 H2O, DBE -3) needs four
+    molecules in any library; the gate admits it only when its previous step is
+    observed.
 
-    :raises ValueError: For ``k`` outside 2 to :data:`K_MAX_LIMIT`.
+    :raises ValueError: For ``k`` outside 2 to :data:`K_MAX_LIMIT`, and for rows
+        out of :func:`read_fragments`' order: a (spectrum, peak) that comes back
+        after another or carries two m/z, an unexplained row beside readings,
+        or ranks of a (spectrum, peak, parent) that are not 1, 2, ... in order.
+        Two spectra under one ``spectrum`` key, or a table re-sorted before the
+        gate, are refused rather than read wrong.
     """
     k = _check_k_max(k, lowest=2)
     rows = tuple(readings)
     if not rows:
         return rows
+    _check_row_order(rows)
     # each window ion's read steps as count vectors (never strings): the first
     # <= k-1-piece non-precursor reading of each (spectrum, peak, parent)
     steps: dict[str, set[tuple[int, ...]]] = {}
