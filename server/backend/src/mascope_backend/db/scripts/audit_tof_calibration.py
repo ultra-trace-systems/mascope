@@ -85,6 +85,9 @@ Configuration, all through the environment:
 - ``TOF_AUDIT_FAMILY_PEAKED_IQR`` (0.5): a band's family offset is a reading
   only where its IQR is at most this share of the window; elsewhere the
   offsets fill the window and the report says so instead of a median.
+- ``TOF_AUDIT_FAMILY_MIN_PEAKS`` (10): ...and only where it rests on at
+  least this many peaks; below it the report says "too few peaks" instead of
+  a median.
 - ``TOF_AUDIT_JSON=1``: also print the whole result as one JSON document,
   per-file fits and each unreadable file's cause included, as the last line
   of stdout.
@@ -181,6 +184,7 @@ class Config:
     family_window_ppm: float
     family_window_spacing: float
     family_peaked_iqr: float
+    family_min_peaks: int
     family_dbe_max: int
     as_json: bool
 
@@ -344,6 +348,9 @@ def read_config(today: date | None = None) -> Config:
         ),
         family_peaked_iqr=_number_env(
             "TOF_AUDIT_FAMILY_PEAKED_IQR", audit.DEFAULT_FAMILY_PEAKED_IQR, float, 0
+        ),
+        family_min_peaks=_number_env(
+            "TOF_AUDIT_FAMILY_MIN_PEAKS", audit.DEFAULT_FAMILY_MIN_PEAKS, int, 1
         ),
         family_dbe_max=_number_env(
             "TOF_AUDIT_FAMILY_DBE_MAX", audit.DEFAULT_FAMILY_DBE_MAX, int, 0
@@ -876,6 +883,8 @@ class ModeSummary:
     #: The largest IQR of a family offset that reads the axis, as a share of
     #: its window
     family_peaked_iqr: float
+    #: The fewest peaks a family offset that reads the axis rests on
+    family_min_peaks: int
     files: int = 0
     unreadable: Counter = field(default_factory=Counter)
     estimated_files: int = 0
@@ -1047,6 +1056,7 @@ def summary_dict(summary: ModeSummary) -> dict:
                     [offset for offset, _ in readings],
                     [window for _, window in readings],
                     summary.family_peaked_iqr,
+                    summary.family_min_peaks,
                 )
                 for (fit, mechanism, band_index), readings in summary.family.items()
                 if fit == name and band_index == index
@@ -1106,6 +1116,11 @@ def _family(stats: dict | None) -> str:
     window = f"within +-{stats['window_ppm']:.0f} ppm"
     if stats["peaked"]:
         return f"{_ppm(stats)} {window}"
+    if stats["n"] < stats["min_peaks"]:
+        return (
+            f"no reading: too few peaks {window} "
+            f"(n {stats['n']}, fewer than {stats['min_peaks']})"
+        )
     return f"no reading: flat {window} (IQR {stats['iqr']:.1f}, n {stats['n']})"
 
 
@@ -1205,8 +1220,9 @@ def log_summary(summary: dict, config: Config) -> None:
         "'used' where the fit kept the ion, 'held out' where it did not. The "
         "stored record keeps no list of what it was fitted on, so all of its "
         "errors count as held out. A family offset is read only where its IQR "
-        f"is at most {config.family_peaked_iqr:g} of its window; where the "
-        "offsets fill the window, its median says nothing of the axis and is "
+        f"is at most {config.family_peaked_iqr:g} of its window and it rests "
+        f"on at least {config.family_min_peaks} peaks; where the offsets fill "
+        "the window, or are too few, its median says nothing of the axis and is "
         "not given."
     )
 
@@ -1256,6 +1272,7 @@ async def run_audit(config: Config) -> dict:
             band_labels=audit.band_labels(config.band_edges),
             notes=mode_audit.notes,
             family_peaked_iqr=config.family_peaked_iqr,
+            family_min_peaks=config.family_min_peaks,
         )
 
         async def one(row: FileRow) -> FileAudit | str:

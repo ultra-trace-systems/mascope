@@ -442,10 +442,11 @@ def test_a_member_spacing_is_to_its_nearer_neighbour():
 
 
 def test_a_family_offset_is_a_reading_only_where_it_is_peaked():
-    peaked = audit.family_spread([-1.0, 0.0, 0.5, 1.0, 2.0], [20.0] * 5)
+    peaked = audit.family_spread([-1.0, 0.0, 0.5, 1.0, 2.0] * 2, [20.0] * 10)
     assert peaked["peaked"]
     assert peaked["window_ppm"] == 20.0
     assert peaked["median"] == 0.5
+    assert peaked["min_peaks"] == audit.DEFAULT_FAMILY_MIN_PEAKS
     # Spread evenly over +-20 ppm: an IQR of 20, the window's
     flat = audit.family_spread(np.linspace(-20, 20, 41), [20.0] * 41)
     assert flat["iqr"] == pytest.approx(20.0)
@@ -462,6 +463,18 @@ def test_a_family_offset_is_a_reading_only_where_it_is_peaked():
         np.linspace(-20, 20, 41), [10.0] * 21 + [100.0] * 20, peaked_iqr=0.5
     )["peaked"]
     assert audit.family_spread([], []) is None
+
+
+def test_a_family_offset_of_too_few_peaks_is_no_reading():
+    """Two peaks 1.7 ppm apart have a small IQR by chance."""
+    few = audit.family_spread([-16.85, -15.15], [30.0] * 2)
+    assert few["iqr"] == pytest.approx(0.85)
+    assert not few["peaked"]
+    assert not audit.family_spread([0.0] * 9, [30.0] * 9)["peaked"]
+    assert audit.family_spread([0.0] * 10, [30.0] * 10)["peaked"]
+    # Non-finite offsets are not peaks
+    assert not audit.family_spread([0.0] * 9 + [np.nan], [30.0] * 10)["peaked"]
+    assert audit.family_spread([0.0] * 2, [30.0] * 2, min_peaks=2)["peaked"]
 
 
 def test_both_bromine_lines_make_a_lattice():

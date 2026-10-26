@@ -95,6 +95,9 @@ DEFAULT_FAMILY_WINDOW_SPACING = 0.5
 #: at most this share of the window. Offsets spread evenly over a window of
 #: +-w have an IQR of w, and a median that says nothing.
 DEFAULT_FAMILY_PEAKED_IQR = 0.5
+#: ...and only where it rests on at least this many peaks. Two or three
+#: offsets have a small IQR by chance, wherever they fall in the window.
+DEFAULT_FAMILY_MIN_PEAKS = 10
 #: The peaks a family offset is read from: S/N at least this, the plan's
 #: "strong peaks".
 DEFAULT_FAMILY_SNR = 20.0
@@ -579,6 +582,7 @@ def family_spread(
     offsets: Iterable[float],
     windows: Iterable[float],
     peaked_iqr: float = DEFAULT_FAMILY_PEAKED_IQR,
+    min_peaks: int = DEFAULT_FAMILY_MIN_PEAKS,
 ) -> dict | None:
     """A family offset's spread, its window, and whether it is a reading.
 
@@ -587,8 +591,10 @@ def family_spread(
     :param peaked_iqr: The largest IQR, as a share of the median window, of a
         distribution that is peaked: a reading of the axis. Above it the
         offsets fill the window, and their median is no reading.
-    :return: :func:`spread` plus ``window_ppm``, the median window, and
-        ``peaked``.
+    :param min_peaks: The fewest offsets a reading rests on. Below it the
+        IQR is small or large by chance, and the median is no reading.
+    :return: :func:`spread` plus ``window_ppm``, the median window,
+        ``min_peaks``, and ``peaked``.
     """
     stats = spread(offsets)
     if stats is None:
@@ -597,7 +603,8 @@ def family_spread(
     return {
         **stats,
         "window_ppm": window,
-        "peaked": stats["iqr"] <= peaked_iqr * window,
+        "min_peaks": min_peaks,
+        "peaked": stats["n"] >= min_peaks and stats["iqr"] <= peaked_iqr * window,
     }
 
 
