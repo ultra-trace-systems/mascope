@@ -79,6 +79,9 @@ _FORWARDED_ENV_VARS = [
     # backfill_scan_stream_census
     "CENSUS_LIMIT",
     "CENSUS_RETRY",
+    # backfill_axis_fingerprint
+    "AXF_LIMIT",
+    "AXF_RETRY",
     # report_method_binding_disagreements
     "BINDING_REPORT_FILES",
     "BINDING_REPORT_PER_KEY",
