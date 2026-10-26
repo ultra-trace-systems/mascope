@@ -2012,6 +2012,58 @@ async def get_ms2_fragment_timeseries(
     )
 
 
+async def get_ms2_group_scans(
+    base_filename: str,
+    parent_peak_mz: float,
+    activation: str,
+    t_min: float | None = None,
+    t_max: float | None = None,
+    polarity: Literal["+", "-"] | None = None,
+    parent_peak_tolerance: float = 0.001,
+) -> tuple[list[dict], list[dict]] | None:
+    """The scan records and per-scan centroids of one MS2 group, read raw.
+
+    :func:`mascope_thermo.thermo.get_ms2_group_scans`, for a file with no MS2
+    store (:mod:`mascope_signal.ms2_store`). The centroids are on the
+    instrument's axis: :func:`ms2_calibration_factor` puts them on the file's.
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :param parent_peak_mz: The group's parent peak m/z.
+    :type parent_peak_mz: float
+    :param activation: The group's activation, ``""`` for none.
+    :type activation: str
+    :param t_min: Minimum time [s], optional.
+    :type t_min: float | None, optional
+    :param t_max: Maximum time [s], optional.
+    :type t_max: float | None, optional
+    :param polarity: Polarity filter ('+' or '-'), optional.
+    :type polarity: Literal['+', '-'] | None, optional
+    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks.
+    :type parent_peak_tolerance: float
+    :return: The group's scan records and centroids, in scan order, or None
+        when the selection holds no such group.
+    :rtype: tuple[list[dict], list[dict]] | None
+    """
+    sample_type = m_name.get_sample_file_type(base_filename)
+    match sample_type:
+        case "orbi_raw":
+            return await asyncio.to_thread(
+                m_thermo.get_ms2_group_scans,
+                m_name.filename_to_datafile_path(base_filename),
+                parent_peak_mz,
+                activation,
+                t_min=t_min,
+                t_max=t_max,
+                polarity=polarity,
+                parent_peak_tolerance=parent_peak_tolerance,
+            )
+        case _:
+            raise NotImplementedError(
+                "MS2 scan extraction is only implemented for Orbitrap raw files."
+            )
+
+
 def ms2_fragment_timeseries(
     base_filename: str,
     centroids: list[dict],

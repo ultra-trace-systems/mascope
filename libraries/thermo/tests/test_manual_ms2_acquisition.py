@@ -38,6 +38,7 @@ inside .NET, which a stand-in cannot reach.
 from types import SimpleNamespace
 from typing import NamedTuple
 
+import numpy as np
 import pytest
 from thermo_test_support import POS_ORBI_FILE_PATH
 
@@ -552,3 +553,97 @@ class TestTheSummaryOfTheScript:
             (g["parent_peak_mz"], g["activation"]) for g in summary["groups"]
         ]
         assert (TWO_WIDTH_MZ, TWO_WIDTH_ACTIVATION) in by_parent
+
+
+class TestWhatTheMs2StoreReads:
+    """``get_ms2_store_contents``: what the MS2 store is written from, read as
+    the MS2 reads read the same scans."""
+
+    @pytest.fixture
+    def contents(self, on_both, monkeypatch):
+        if on_both == "thermo":
+            # The Thermo library averages and reads peaks inside .NET, which
+            # the stand-in cannot reach: everything else is read on both.
+            monkeypatch.setattr(
+                ThermoBackend, "average_centroids", lambda self, scans, **_: scans
+            )
+            monkeypatch.setattr(
+                ThermoBackend,
+                "ms2_centroids_for_scans",
+                lambda self, scans: (list(scans), [0.0] * len(scans)),
+            )
+        return m_thermo.get_ms2_store_contents(POS_ORBI_FILE_PATH)
+
+    def test_every_scan_of_its_polarity_with_its_time(self, contents):
+        (polarity,) = contents["polarities"]
+        held = contents["polarities"][polarity]
+        with open_backend(POS_ORBI_FILE_PATH) as backend:
+            scans = backend.scan_indices(polarity, ms_type=None)
+            times = backend.scan_times(polarity, ms_type=None)
+            fragment_scans = backend.scan_indices(polarity, ms_type="Ms2")
+
+        assert held["scan_numbers"] == list(scans)
+        assert held["times"] == [float(t) for t in times]
+        assert held["ms2_scan_numbers"] == list(fragment_scans)
+        assert set(contents["centroids"]) == set(fragment_scans)
+
+    def test_each_fragment_scans_record(self, contents):
+        (held,) = contents["polarities"].values()
+
+        assert held["records"] == _records()
+        assert held["records"][-1]["scan_number"] == LACKING_SCAN
+
+    def test_the_groups_of_the_summary(self, contents):
+        (held,) = contents["polarities"].values()
+        summary = m_thermo.get_ms2_summary_metadata(POS_ORBI_FILE_PATH)
+
+        assert (
+            [
+                (pp, activation, len(scans))
+                for (pp, activation), scans in held["groups"].items()
+            ]
+            == SCRIPTED_GROUPS
+            == _groups(summary)
+        )
+
+    def test_a_merged_spectrum_only_where_a_precursor_took_several(self, contents):
+        (held,) = contents["polarities"].values()
+
+        assert list(held["merged"]) == [(STEPPED_MZ, "")]
+
+    def test_each_spectrum_is_the_centroid_reads(self, on_opentfraw):
+        """Bit for bit, by activation and over every activation."""
+        contents = m_thermo.get_ms2_store_contents(POS_ORBI_FILE_PATH)
+        (held,) = contents["polarities"].values()
+        by_activation = m_thermo.get_ms2_centroids_by_parent(POS_ORBI_FILE_PATH)
+        merged = m_thermo.get_ms2_centroids_by_parent(
+            POS_ORBI_FILE_PATH, by_activation=False
+        )
+
+        assert held["averaged"].keys() == by_activation.keys()
+        for key, spectrum in held["averaged"].items():
+            for stored, read in zip(spectrum, by_activation[key], strict=True):
+                np.testing.assert_array_equal(stored, read)
+        for stored, read in zip(
+            held["merged"][(STEPPED_MZ, "")], merged[(STEPPED_MZ, "")], strict=True
+        ):
+            np.testing.assert_array_equal(stored, read)
+        # The other precursor's one group holds every scan of it
+        for stored, read in zip(
+            held["averaged"][(TWO_WIDTH_MZ, TWO_WIDTH_ACTIVATION)],
+            merged[(TWO_WIDTH_MZ, "")],
+            strict=True,
+        ):
+            np.testing.assert_array_equal(stored, read)
+
+    def test_each_scans_centroids_are_the_per_scan_reads(self, on_opentfraw):
+        contents = m_thermo.get_ms2_store_contents(POS_ORBI_FILE_PATH)
+        with open_backend(POS_ORBI_FILE_PATH) as backend:
+            scans = backend.scan_indices(ms_type="Ms2")
+            read, _ = backend.ms2_centroids_for_scans(scans)
+
+        for scan, centroids in zip(scans, read, strict=True):
+            stored = contents["centroids"][scan]
+            assert stored.keys() == centroids.keys()
+            for field in ("masses", "intensities", "resolutions", "signal_to_noise"):
+                np.testing.assert_array_equal(stored[field], centroids[field])

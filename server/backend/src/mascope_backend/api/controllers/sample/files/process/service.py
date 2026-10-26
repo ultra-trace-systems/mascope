@@ -125,6 +125,7 @@ from mascope_backend.socket.records.service import (
     emit_record_deleted,
 )
 from mascope_runtime.logging import SENTRY_FINGERPRINT
+from mascope_signal.ms2_store import refresh_ms2_store
 
 
 # Number of calibration fitting attempts before giving up
@@ -2167,6 +2168,30 @@ def _compose_reprocess_failure_message(failed_files: list[dict], header: str) ->
     return "\n".join([header] + lines)
 
 
+async def _rewrite_ms2_store(sample_file: SampleFile) -> None:
+    """Write a re-processed file's MS2 store again, from its raw file.
+
+    By its census, as the converter writes it: a file whose census holds a
+    fragmentation stream gets its store written, one converted before the
+    store existed included, and any other has none
+    (:func:`mascope_signal.ms2_store.refresh_ms2_store`). A store that cannot
+    be written does not stop the re-processing: the file keeps the store it
+    had, which a rewrite replaces only whole, and is logged.
+
+    :param sample_file: The file being re-processed.
+    """
+    # Read on the loop: an attached ORM instance's attributes are not read in
+    # the worker thread.
+    filename = sample_file.filename
+    try:
+        await asyncio.to_thread(refresh_ms2_store, filename)
+    except Exception:  # noqa: BLE001 - one file's store, never its re-processing
+        runtime.logger.opt(exception=True).warning(
+            f"Could not write the MS2 store of {filename} again for its "
+            "re-processing; it keeps the store it had"
+        )
+
+
 def _reprocessing_rebuild(
     per_stream: bool | None,
     independent_transaction: bool,
@@ -2187,6 +2212,8 @@ def _reprocessing_rebuild(
       under it: after the reset, so on the acquisition axis, as a first
       conversion detects them, and before the samples are cleared, so that a
       file whose peaks could not be detected keeps them;
+    - its MS2 store is written again (:func:`_rewrite_ms2_store`), which
+      never stops the rebuild;
     - every sample item of the file is cleared
       (:func:`_clear_sample_items_for_reprocessing`), and the batches they
       were in are added to ``affected_sample_batch_ids``.
@@ -2205,10 +2232,10 @@ def _reprocessing_rebuild(
         and its status says so.
     """
     cleared: ClearedMzCalibration | None = None
-    reset = detected = False
+    reset = detected = stored = False
 
     async def rebuild(sample_file: SampleFile) -> str | None:
-        nonlocal cleared, reset, detected
+        nonlocal cleared, reset, detected, stored
         if not reset:
             reset = True
             try:
@@ -2247,6 +2274,9 @@ def _reprocessing_rebuild(
                 )
                 return f"{_PEAKS_NOT_REDETECTED} {_failure_detail(e)}{unrestored}"
             detected = True
+        if not stored:
+            stored = True
+            await _rewrite_ms2_store(sample_file)
         affected_sample_batch_ids.update(
             await _clear_sample_items_for_reprocessing(
                 sample_file_id=sample_file.sample_file_id,
@@ -2286,8 +2316,9 @@ async def re_process_sample_files(
       method declines; run the auto-process pipeline, which, once it has
       bound the file, resets its calibration, detects its peaks again where
       the deployment's scan-stream setting can give it another peak store
-      than it has, and deletes its existing sample items
-      (:func:`_reprocessing_rebuild`), so that a file it parks keeps them
+      than it has, writes its MS2 store again, and deletes its existing
+      sample items (:func:`_reprocessing_rebuild`), so that a file it parks
+      keeps them
     - Return aggregated results
 
     :param sample_file_ids: List of IDs of the sample files to re-process

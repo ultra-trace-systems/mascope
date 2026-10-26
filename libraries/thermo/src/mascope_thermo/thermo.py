@@ -1373,6 +1373,166 @@ def get_ms2_centroids_per_scan_for_parent(
         return backend.ms2_centroids_for_scans(sorted(matching_scan_indices))
 
 
+def get_ms2_group_scans(
+    datafile_path: str,
+    parent_peak_mz: float,
+    activation: str,
+    t_min: float | None = None,
+    t_max: float | None = None,
+    polarity: Literal["+", "-"] | None = None,
+    parent_peak_tolerance: float = 0.001,
+) -> tuple[list[dict], list[dict]] | None:
+    """The scan records and per-scan centroids of one MS2 group.
+
+    The group is the (parent peak, activation) group of the selection, as
+    :func:`get_ms2_centroids_by_parent` groups it, whose parent peak is
+    ``parent_peak_mz`` at four decimals.
+
+    :param datafile_path: Path to the Thermo Fisher raw file (.raw).
+    :type datafile_path: str
+    :param parent_peak_mz: The group's parent peak m/z.
+    :type parent_peak_mz: float
+    :param activation: The group's activation, ``""`` for a group whose
+        filter carries none.
+    :type activation: str
+    :param t_min: Minimum time [s], optional.
+    :type t_min: float | None, optional
+    :param t_max: Maximum time [s], optional.
+    :type t_max: float | None, optional
+    :param polarity: Polarity filter ('+' or '-'), optional.
+    :type polarity: Literal['+', '-'] | None, optional
+    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks.
+    :type parent_peak_tolerance: float
+    :return: The group's scan records
+        (:meth:`~mascope_thermo.backend.ReaderBackend.ms2_scan_records`) and
+        their centroids
+        (:meth:`~mascope_thermo.backend.ReaderBackend.ms2_centroids_for_scans`),
+        in scan order, or None when the selection holds no such group.
+    :rtype: tuple[list[dict], list[dict]] | None
+    """
+    with open_backend(datafile_path) as backend:
+        events = backend.ms2_events_by_scan(polarity, t_min, t_max)
+        parent_peak_mapping = _cluster_scans_by_parent(events, parent_peak_tolerance)
+        wanted = round(float(parent_peak_mz), 4)
+        scans = next(
+            (
+                scan_indices
+                for (pp, group_activation), scan_indices in parent_peak_mapping.items()
+                if round(pp, 4) == wanted and group_activation == activation
+            ),
+            None,
+        )
+        if scans is None:
+            return None
+        in_group = set(scans)
+        records = [
+            record
+            for record in backend.ms2_scan_records(polarity, t_min, t_max)
+            if record["scan_number"] in in_group
+        ]
+        centroids, _ = backend.ms2_centroids_for_scans(
+            [record["scan_number"] for record in records]
+        )
+        return records, centroids
+
+
+def get_ms2_store_contents(
+    datafile_path: str,
+    parent_peak_tolerance: float = 0.001,
+    ppm: int = 1,
+) -> dict:
+    """Everything the MS2 store holds of a raw file, read in one opening.
+
+    What ``mascope_signal.ms2_store`` writes, read as the MS2 reads of this
+    module read it, so that what is answered from the store is what they
+    would answer for the same scans. Per polarity of the file:
+
+    - ``scan_numbers`` and ``times``: every scan the reader selects in that
+      polarity, of every MS order, in scan order, with its start time [s];
+    - ``ms2_scan_numbers``: those of them that are MS2 scans;
+    - ``records``: one record per MS2 scan
+      (:meth:`~mascope_thermo.backend.ReaderBackend.ms2_scan_records`);
+    - ``groups``: the scans of each (parent peak, activation) group, as
+      :func:`get_ms2_centroids_by_parent` groups the whole polarity at
+      ``parent_peak_tolerance``;
+    - ``averaged``: each group's averaged centroids, keyed as ``groups``;
+    - ``merged``: the averaged centroids over every scan of each parent peak
+      measured at more than one activation, keyed ``(parent peak m/z, "")``,
+      as ``by_activation=False`` averages it. A parent peak measured at one
+      activation has none here: its one group holds every scan of it, in the
+      same order, so the group's spectrum is that average.
+
+    And ``centroids``: each MS2 scan's centroids
+    (:meth:`~mascope_thermo.backend.ReaderBackend.ms2_centroids_for_scans`),
+    keyed by scan number.
+
+    The averages are at ``ppm`` and with ``average=True``, as the MS2 centroid
+    route asks for them; their S/N floor is none, so a reader applies its own.
+
+    :param datafile_path: Path to the Thermo Fisher raw file (.raw).
+    :type datafile_path: str
+    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks.
+    :type parent_peak_tolerance: float
+    :param ppm: Mass tolerance in ppm for centroid binning, defaults to 1.
+    :type ppm: int, optional
+    :return: ``{"polarities": {polarity: {...}}, "centroids": {...}}``; a
+        polarity with no scan is left out.
+    :rtype: dict
+    """
+    polarities: dict[str, dict] = {}
+    with open_backend(datafile_path) as backend:
+        for polarity in ("+", "-"):
+            try:
+                scan_numbers = backend.scan_indices(polarity, ms_type=None)
+            except NoScansFoundError:
+                continue
+            times = backend.scan_times(polarity, ms_type=None)
+            try:
+                ms2_scan_numbers = backend.scan_indices(polarity, ms_type="Ms2")
+            except NoScansFoundError:
+                ms2_scan_numbers = []
+            records = (
+                backend.ms2_scan_records(polarity) if len(ms2_scan_numbers) else []
+            )
+            groups = _cluster_scans_by_parent(
+                backend.ms2_events_by_scan(polarity) if len(ms2_scan_numbers) else {},
+                parent_peak_tolerance,
+            )
+            averaged = {
+                key: backend.average_centroids(scan_indices, ppm=ppm, average=True)
+                for key, scan_indices in groups.items()
+            }
+            activations = {}
+            for parent_peak_mz, _activation in groups:
+                activations[parent_peak_mz] = activations.get(parent_peak_mz, 0) + 1
+            merged = {
+                key: backend.average_centroids(scan_indices, ppm=ppm, average=True)
+                for key, scan_indices in _merge_activations(groups).items()
+                if activations[key[0]] > 1
+            }
+            polarities[polarity] = {
+                "scan_numbers": [int(n) for n in scan_numbers],
+                "times": [float(t) for t in times],
+                "ms2_scan_numbers": [int(n) for n in ms2_scan_numbers],
+                "records": records,
+                "groups": groups,
+                "averaged": averaged,
+                "merged": merged,
+            }
+        every_ms2_scan = sorted(
+            n for contents in polarities.values() for n in contents["ms2_scan_numbers"]
+        )
+        centroids, _ = (
+            backend.ms2_centroids_for_scans(every_ms2_scan)
+            if every_ms2_scan
+            else ([], [])
+        )
+    return {
+        "polarities": polarities,
+        "centroids": dict(zip(every_ms2_scan, centroids, strict=True)),
+    }
+
+
 class RawFileMetadata:
     """Class to access metadata of a Thermo Fisher raw file."""
 
