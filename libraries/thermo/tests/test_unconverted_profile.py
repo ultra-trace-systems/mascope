@@ -76,6 +76,10 @@ class Reader:
             "total_ion_current": [1.0] * 3,
             "low_mz": [300.0] * 3,
             "high_mz": [301.0] * 3,
+            # Profile scans of the method's first experiment
+            "filter_string": ["FTMS + p NSI Full ms [300.0000-301.0000]"] * 3,
+            "scan_segment": [0] * 3,
+            "scan_event": [0] * 3,
         }
 
     def profile(self, scan_number: int) -> tuple[np.ndarray, np.ndarray]:

@@ -30,6 +30,7 @@ from mascope_thermo.backend import (
 from mascope_thermo.calibration import calibration_identity
 from mascope_thermo.lib import load_dotnet
 from mascope_thermo.runtime import runtime
+from mascope_thermo.scan_filter import parse_scan_filter
 
 
 def _ensure_dotnet() -> None:
@@ -507,6 +508,75 @@ def get_signal(
     )
 
 
+#: The attribute a sum signal drawn from centroids carries
+#: (:func:`compute_sum_signal`), and its value. A summed profile carries none.
+SPECTRUM_ATTR = "spectrum"
+CENTROID_SPECTRUM = "centroids"
+
+#: How far either side of a centroid its stick in a centroid spectrum drops to
+#: zero, relative to its m/z, where its neighbours leave the room
+#: (:func:`centroid_spectrum`).
+_STICK_HALF_WIDTH = 1e-7
+
+
+def holds_centroids_only(backend, scan_numbers: Iterable[int]) -> bool:
+    """Whether every one of these scans stored its centroids alone.
+
+    A scan's filter says how it was stored: ``p``, the profile and the
+    centroids the instrument found in it, or ``c``, the centroids alone. Such
+    a scan has no profile to average: OpenTFRaw reads it as empty, and the
+    Thermo library as the centroids standing in for one.
+
+    :param backend: An open reader backend.
+    :param scan_numbers: The scans, by their 1-based numbers.
+    :return: True when there is at least one scan and every one is a centroid
+        scan. A scan whose filter states no data type is not one.
+    """
+    scan_numbers = list(scan_numbers)
+    if not scan_numbers:
+        return False
+    filters = {row["scan"]: row["filter"] for row in backend.scan_filters()}
+    # A file holds a handful of distinct filters however many scans it has
+    data_types: dict[str, str | None] = {}
+    for number in scan_numbers:
+        text = filters.get(number) or ""
+        if text not in data_types:
+            data_types[text] = parse_scan_filter(text).data_type
+        if data_types[text] != "c":
+            return False
+    return True
+
+
+def centroid_spectrum(
+    masses: np.ndarray, intensities: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Centroids drawn as a spectrum: each one a stick, at zero either side.
+
+    A stick drops to zero a tenth of a ppm either side of its centroid, or a
+    third of the way to a neighbour that is closer, so the m/z axis is
+    strictly increasing and a line drawn through it returns to zero between
+    any two centroids. Centroids on one m/z are one stick, at their sum.
+
+    :param masses: The centroids' m/z.
+    :param intensities: Their intensities.
+    :return: The spectrum's m/z axis and its values: three points per
+        centroid, in order of m/z.
+    """
+    masses = np.asarray(masses, dtype=np.float64)
+    intensities = np.asarray(intensities, dtype=np.float64)
+    masses, inverse = np.unique(masses, return_inverse=True)
+    intensities = np.bincount(inverse, weights=intensities, minlength=masses.size)
+    gaps = np.diff(masses) / 3
+    reach = masses * _STICK_HALF_WIDTH
+    left = masses - np.minimum(reach, np.concatenate(([np.inf], gaps)))
+    right = masses + np.minimum(reach, np.concatenate((gaps, [np.inf])))
+    zeros = np.zeros(masses.size)
+    return (
+        np.column_stack((left, masses, right)).ravel(),
+        np.column_stack((zeros, intensities, zeros)).ravel(),
+    )
+
+
 def compute_sum_signal(
     datafile_path: str,
     t_min: float | None = None,
@@ -521,6 +591,12 @@ def compute_sum_signal(
     The signal is the measured profile summed over the selected scans: what the
     instrument-function fit reads its peak shapes from, and what the spectrum
     views draw.
+
+    Scans that stored their centroids alone (:func:`holds_centroids_only`)
+    have no profile to sum. Their signal is their centroids, averaged as the
+    peaks are and summed, drawn as sticks (:func:`centroid_spectrum`), and it
+    says so in its :data:`SPECTRUM_ATTR` attribute: the instrument-function
+    fit reads no peak shape off a stick.
 
     :param datafile_path: Path to the Thermo Fisher raw file (.raw) containing the data.
     :type datafile_path: str
@@ -553,14 +629,27 @@ def compute_sum_signal(
             f"Selected {len(indices)} scans for sum signal computation. "
             f"Polarity: {polarity}, binning ppm: {ppm}."
         )
-        # average=False restores the sum signal (averaged * scans combined).
-        mz, sum_signal, num_of_combined_scans = backend.average_profile(
-            indices, ppm=ppm, average=False
-        )
+        attrs = {}
+        if holds_centroids_only(backend, indices):
+            masses, intensities, *_ = backend.average_centroids(
+                indices, ppm=ppm, average=False
+            )
+            mz, sum_signal = centroid_spectrum(masses, intensities)
+            num_of_combined_scans = len(indices)
+            attrs[SPECTRUM_ATTR] = CENTROID_SPECTRUM
+        else:
+            # average=False restores the sum signal (averaged * scans combined).
+            mz, sum_signal, num_of_combined_scans = backend.average_profile(
+                indices, ppm=ppm, average=False
+            )
 
     sum_signal_dask = da.from_array(sum_signal, chunks="auto")
     sum_signal = xr.DataArray(
-        data=sum_signal_dask, dims=["mz"], coords={"mz": mz}, name="sum_signal"
+        data=sum_signal_dask,
+        dims=["mz"],
+        coords={"mz": mz},
+        name="sum_signal",
+        attrs=attrs,
     )
 
     return sum_signal, num_of_combined_scans
