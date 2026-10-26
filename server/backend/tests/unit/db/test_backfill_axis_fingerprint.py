@@ -231,6 +231,23 @@ async def test_the_survey_stops_at_the_cap():
     assert pending == [f"f{i}.raw" for i in range(5)]
     assert counts["surveyed"] == script._SURVEY_BATCH
     assert len(read) == script._SURVEY_BATCH
+    assert counts["beyond_cap"] == script._SURVEY_BATCH - 5
+
+
+@pytest.mark.asyncio
+async def test_the_survey_counts_the_files_a_cap_inside_one_batch_leaves():
+    """A server with fewer files than one batch is surveyed whole, so only
+    this count tells the run that work is left."""
+    pending, counts = await script._survey(
+        _candidates("a.raw", "b.raw", "c.raw"),
+        _always(NONE_YET),
+        _always(True),
+        limit=1,
+    )
+    assert pending == ["a.raw"]
+    assert counts["surveyed"] == 3
+    assert counts["why_missing"] == 3
+    assert counts["beyond_cap"] == 2
 
 
 # --- what to do with each answer (the attempt record) -----------------------
@@ -496,7 +513,38 @@ _COUNTS = (
     "why_status",
     "why_version",
     "why_params",
+    "beyond_cap",
 )
+
+
+def _messages():
+    """Collect what the script logs, until the returned remover is called."""
+    messages: list[str] = []
+    sink = script.runtime.logger.add(messages.append, format="{message}")
+    return messages, lambda: script.runtime.logger.remove(sink)
+
+
+@pytest.mark.parametrize(
+    "limit, left", [("1", True), ("2", False), (None, False)], ids=str
+)
+@pytest.mark.asyncio
+async def test_a_capped_run_that_leaves_files_says_to_run_again(
+    stand_ins, monkeypatch, limit, left
+):
+    """Both files are surveyed in one batch: a cap of one leaves the other."""
+    computed, updates = stand_ins
+    if limit:
+        monkeypatch.setenv("AXF_LIMIT", limit)
+    messages, stop = _messages()
+    try:
+        await script.run()
+    finally:
+        stop()
+    log = "".join(messages)
+    assert len(updates) == (1 if left else 2)
+    assert ("run this again" in log) is left
+    assert "2 need a document" in log
+    assert f"reading {len(updates)} this run" in log
 
 
 @pytest.mark.asyncio

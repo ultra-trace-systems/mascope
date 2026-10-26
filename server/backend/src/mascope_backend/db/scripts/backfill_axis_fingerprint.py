@@ -309,9 +309,10 @@ async def _survey(
     :param limit: Stop once this many files are found; None surveys them all.
     :param retry: Include files a previous run tried and got no document from.
     :return: The filenames to read, best first, and the counts: ``surveyed``,
-        ``current``, ``no_props``, ``no_raw``, ``already_tried``, and one
-        ``why_<reason>`` per reason of :func:`why_compute` among the files to
-        read.
+        ``current``, ``no_props``, ``no_raw``, ``already_tried``, one
+        ``why_<reason>`` per reason of :func:`why_compute` among the files
+        found to need a document, and ``beyond_cap``, those of them the cap
+        left for a later run.
     :rtype: tuple[list[str], dict[str, int]]
     """
     gate = asyncio.Semaphore(_PROPS_CONCURRENCY)
@@ -331,6 +332,7 @@ async def _survey(
         "why_status": 0,
         "why_version": 0,
         "why_params": 0,
+        "beyond_cap": 0,
     }
     for start in range(0, len(candidates), _SURVEY_BATCH):
         batch = candidates[start : start + _SURVEY_BATCH]
@@ -352,6 +354,7 @@ async def _survey(
                 counts[f"why_{reason}"] += 1
                 pending.append(filename)
         if limit is not None and len(pending) >= limit:
+            counts["beyond_cap"] = len(pending) - limit
             return pending[:limit], counts
     return pending, counts
 
@@ -510,15 +513,18 @@ async def run() -> None:
     pending, survey = await _survey(
         candidates, _read_props, _has_raw, None if dry_run else limit, retry
     )
-    capped = survey["surveyed"] < len(candidates)
+    # Work is left when the survey stopped early or the cap cut what it found.
+    capped = survey["surveyed"] < len(candidates) or survey["beyond_cap"] > 0
     runtime.logger.info(
         f"Surveyed {survey['surveyed']} of {len(candidates)}: "
-        f"{len(pending)} to read (no document {survey['why_missing']}, "
+        f"{len(pending) + survey['beyond_cap']} need a document "
+        f"(no document {survey['why_missing']}, "
         f"unavailable or error {survey['why_status']}, "
         f"other version {survey['why_version']}, "
         f"other parameters {survey['why_params']}), "
         f"current {survey['current']}, raw data not kept {survey['no_raw']}, "
-        f"tried before {survey['already_tried']}, no props {survey['no_props']}"
+        f"tried before {survey['already_tried']}, no props {survey['no_props']}; "
+        f"reading {len(pending)} this run"
     )
     if survey["already_tried"] and not retry:
         runtime.logger.info(
@@ -574,8 +580,8 @@ async def run() -> None:
     )
     if capped:
         runtime.logger.info(
-            "The survey stopped at the cap, so run this again until it reports "
-            "nothing left to do."
+            f"AXF_LIMIT={limit} left files for later runs, so run this again "
+            f"until it reports nothing left to do."
         )
     runtime.logger.info("=" * 80)
     failed = (
