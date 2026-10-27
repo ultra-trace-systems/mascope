@@ -1823,6 +1823,10 @@ MS2_STORE_MODE=run mascope prod db script run backfill_ms2_store  # write; again
   routes read the raw file meanwhile, as before.
 - It changes no database row, only files in the filestore, so the pre-script
   database dump restores nothing it does: `--skip-backup` loses nothing.
+- A store of another version than the release reads is not read, and the
+  backfill counts its file as one to write. A release that changes the
+  version says so in its changelog: run the backfill again after it. Until
+  then those files' MS2 routes read the raw file, as before.
 
 ### Auditing a TOF instrument's mass calibration
 

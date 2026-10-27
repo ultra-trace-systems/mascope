@@ -57,7 +57,7 @@ from mascope_ai.oracle import STATUS
 
 
 #: The demo bundle whose data the known answers are.
-BUNDLE = "1.4.1"
+BUNDLE = "1.4.2"
 
 #: The demo stack's workspace the questions are about.
 WORKSPACE = "Acquisitions Orbion"

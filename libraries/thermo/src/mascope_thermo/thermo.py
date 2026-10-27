@@ -269,9 +269,18 @@ class ScanSelector:
             )
         return np.array([key == self._stream for key in self._stream_keys], dtype=bool)
 
-    def _bad_first_scan(self, among: np.ndarray | None = None) -> bool:
+    def _kind_of_first_mask(self) -> np.ndarray:
+        """Creates a boolean mask for the scans of the first scan's MS order
+        and polarity, the first scan included."""
+        kinds = [
+            (scan_filter.MSOrder.ToString(), scan_filter.Polarity.ToString())
+            for scan_filter in self.raw_scan_filters
+        ]
+        return np.array([kind == kinds[0] for kind in kinds], dtype=bool)
+
+    def _bad_first_scan(self, among: np.ndarray) -> bool:
         """Checks if the TIC in the first scan is 5 times higher than
-        the median TIC of the other scans
+        the median TIC of the other scans it is compared with
 
         This is a workaround for a common issue in Thermo raw files where the first scan
         is an outlier with an abnormally high TIC.
@@ -279,12 +288,9 @@ class ScanSelector:
         #TODO: can be removed if Thermo releases a fix for this issue
 
         :param among: A boolean mask of the scans to compare the first scan
-            with, itself included. None compares it with every other scan of
-            the file.
+            with, itself included.
         """
-        tic_values = np.array([stats.TIC for stats in self.raw_scan_stats])
-        if among is not None:
-            tic_values = tic_values[among]
+        tic_values = np.array([stats.TIC for stats in self.raw_scan_stats])[among]
 
         # <= 1, not == 1: a file with no scans at all would otherwise index
         # off an empty TIC array below, raising IndexError from what is only
@@ -321,30 +327,31 @@ class ScanSelector:
         if self._ms_type:
             mask &= self._ms_type_mask()
 
-        # The first scan is compared with every other scan of the file - or,
-        # when a stream is asked for, with the other scans of that stream,
-        # and only if the first scan is one of them.
-        if self._stream is None:
-            bad_first_scan = self._bad_first_scan()
-        else:
+        if self._stream is not None:
             in_stream = self._stream_mask()
             # A file with no scans holds no key, and stays the empty
             # selection its handling is built on.
             if in_stream.size and not in_stream.any():
                 raise UnknownStreamError(self._stream, self._stream_keys)
             mask &= in_stream
-            bad_first_scan = bool(
-                in_stream.size and in_stream[0] and self._bad_first_scan(in_stream)
-            )
 
-        if bad_first_scan:
-            # INFO: a data quirk of the file, re-evaluated on every scan
-            # selection for as long as the file is in use
-            runtime.logger.info(
-                "The first scan appears to be an outlier with abnormally high TIC. "
-                "Excluding the first scan from selection."
-            )
-            mask[0] = False
+        # The first scan is judged only by a selection that holds it, and
+        # against the scans that measure what it measures: the other scans of
+        # the stream asked for, or else those of its MS order and polarity. A
+        # fragmentation scan carries a small fraction of a full scan's ion
+        # current, and one polarity's scans can carry a small fraction of the
+        # other's, so a median across them makes an ordinary first scan an
+        # outlier. Mirrors OpenTFRawBackend._selected.
+        if mask.size and mask[0]:
+            among = self._kind_of_first_mask() if self._stream is None else in_stream
+            if self._bad_first_scan(among):
+                # INFO: a data quirk of the file, re-evaluated on every scan
+                # selection for as long as the file is in use
+                runtime.logger.info(
+                    "The first scan appears to be an outlier with abnormally high "
+                    "TIC. Excluding the first scan from selection."
+                )
+                mask[0] = False
 
         filtered_indices = np.array(self.all_scan_indices)[mask]
 

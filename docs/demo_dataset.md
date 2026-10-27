@@ -556,7 +556,13 @@ The published artifact is a zip of `<BUNDLE>`. The sign-off report lives outside
 Bundle 1.4.0 added four MS2 acquisitions to the 161 MS1 acquisitions of
 1.3.2 (a MINOR version: samples added); 1.4.1 is the same raw set and seed
 rebuilt with the raw reader the stack pins, as 1.3.2 was of 1.3.1, with
-goldens identical to 1.4.0's. They are hand-started, stepped-energy
+goldens identical to 1.4.0's. 1.4.2 is the same raw set and seed again,
+rebuilt once the reader judged a file's first scan against the scans of its
+own MS order and polarity: the rule before counted the MS2 scans, and left
+these four files' first MS1 scan out as a TIC outlier. Their MS1 peaks and
+ions moved with it (heights by a median of 0.1 to 0.8%), their MS2 spectra
+only by the calibration's shift (under 0.002 ppm), and the 161 MS1 files not
+at all. They are hand-started, stepped-energy
 MS2 acquisitions of alpha-pinene oxidation products from a chamber oxidation
 experiment, on a second Orbitrap of the same model whose label was aliased
 to the demo's on the command line, in the three reagent-ion chemistries the
