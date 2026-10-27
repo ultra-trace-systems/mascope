@@ -1539,6 +1539,7 @@ dependencies = [
     { name = "mascope-sdk" },
     { name = "pandas" },
     { name = "pyarrow" },
+    { name = "python-dotenv" },
 ]
 
 [package.metadata]
@@ -1547,6 +1548,7 @@ requires-dist = [
     { name = "mascope-sdk", editable = "libraries/sdk" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "pyarrow", specifier = ">=14.0.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
 ]
 
 [[package]]

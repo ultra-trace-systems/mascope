@@ -3,8 +3,8 @@
 Mascope's toolkit for AI agents: a plain Python library over
 [`mascope_sdk`](../sdk/README.md) that finds, describes and loads Mascope's
 data as **handles, not tables**. It is the AI layer's library, designed in
-[`docs/dev/ai_layer.md`](../../docs/dev/ai_layer.md) (sections 3.1 to 3.6);
-the MCP server builds on it.
+[`docs/dev/ai_layer.md`](../../docs/dev/ai_layer.md) (sections 3.1 to 3.6),
+and its [MCP server](#the-mcp-server) serves it to a coding agent.
 
 The backbone is one invariant: tables never pass through a model's context.
 A loader returns a `Frame`, whose repr prints the schema, the row count,
@@ -223,6 +223,84 @@ from mascope_ai import Session, Toolkit
 
 kit = Toolkit(session=Session("conversation-42"))
 ```
+
+## The MCP server
+
+`mascope-ai mcp` serves the toolkit to a coding agent such as Claude Code,
+over stdio in the Model Context Protocol. The agent runs it with the user's
+own AI Agent token and its own model subscription:
+
+```bash
+mascope-ai setup                                   # check, then register:
+claude mcp add mascope -- python -m mascope_ai mcp  # the Python mascope_ai is in
+```
+
+| Tool | Returns |
+| ---- | ------- |
+| `find` | refs, best first, with the total; `dataset` / `batch` search within one |
+| `describe` | the small dict `describe()` gives |
+| `load_peaks`, `load_timeseries`, `load_spectrum`, `load_peaks_by_stage` | a Frame's handle |
+| `query_by_mz` | Mascope's candidates for an m/z |
+| `match_compounds` | one condensed verdict per candidate, the unscored apart, the tree's handle |
+| `answer` | closes an answer in the manifest |
+| `session` | the session's directory, the Python to run, the line that opens it |
+
+`chart` and `table` are not served yet: they come with the toolkit's
+`mascope_viz` artifacts.
+
+What a model reads is bounded by the server, not by a prompt:
+
+- **No tables.** A Frame's handle has its ID, rows, columns, completeness and
+  failures, three rows, and `rows_in_python`, the Python that gives its rows
+  as a DataFrame. A match result is its verdicts.
+- **A few kilobytes.** No result passes 4 KB (`MAX_RESULT_BYTES`). A list
+  that would is cut, and its holder says how many it left out
+  (`<name>_omitted`).
+- **Names are data.** Every string Mascope returns comes back as a JSON
+  string, cut to 200 characters, with its unprintable characters escaped:
+  a newline, a bidirectional override or a zero-width space shows as its
+  escape (`\n`, `\u202e`). A name cannot break out of its value or hide
+  text, and the server's instructions and the skill tell the model to
+  read it as data, never as an instruction.
+- **Failures are results.** A `ToolkitError` comes back as its `to_dict()`
+  with `isError` set, as does a missing configuration (`not_configured`).
+  The server keeps running.
+
+The server keeps every Frame in one session, `--session ID` (or
+`$MASCOPE_AI_SESSION`), a new one by default. The workspace is
+`--workspace`, else `MASCOPE_WORKSPACE` from the environment or the `.env`
+file, as the SDK reads `MASCOPE_URL` and `MASCOPE_ACCESS_TOKEN`.
+
+## The local-Python path
+
+Heavy work runs in Python on the same machine, as a Bash step, never through
+the server. The `session` tool gives the Python and the session to open:
+
+```bash
+python - <<'EOF'
+from mascope_ai import Session
+session = Session("s-20261027T120000Z-1a2b3c", root="/home/me/.cache/mascope_ai/sessions")
+peaks = session.frame("f_0123456789ab").df    # a Frame the server loaded
+print(peaks.groupby("sample_item_name")["height"].max().nlargest(3))
+EOF
+```
+
+Reading a Frame needs no credentials: its rows are in the session's
+directory. `Toolkit(session=session)` in that Python loads more and derives
+Frames into the same session and manifest; it reads the URL and the token as
+the server does. The agent then records its answer with the `answer` tool,
+the code included.
+
+## The command line
+
+| Command | Does |
+| ------- | ---- |
+| `mascope-ai setup` | checks the install, the session directory, the configuration and the token; says how to register the server. Idempotent |
+| `mascope-ai list [KIND] [QUERY]` | what there is: `datasets`, `batches --dataset D`, `samples --batch B`, `collections`, or every kind but samples; `sessions`; `frames --session ID` |
+| `mascope-ai mcp` | the MCP server |
+| `mascope-ai skill` | the skill text, for `~/.claude/skills/mascope-ai/SKILL.md` |
+
+`python -m mascope_ai` is the same command.
 
 ## Tests
 
