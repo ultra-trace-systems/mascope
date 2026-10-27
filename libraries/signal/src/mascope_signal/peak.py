@@ -642,6 +642,38 @@ class OrbiPeakDetector(BasePeakDetector):
         )
 
 
+def _event_height(signal: np.ndarray, in_core: np.ndarray, sparse: np.ndarray) -> float:
+    """The height one counting event leaves in a mostly empty baseline
+
+    Where a summed TOF spectrum is mostly zeros, what lies between its peaks
+    is single ions, each a short run of points above zero. This is the
+    median of those runs' maxima: the height of one ion, the least a peak
+    can stand above an empty baseline. It is read over the whole spectrum,
+    since a window around one peak often holds no ion clear of the peaks.
+    Only runs wholly within ``sparse`` count, where the baseline is mostly
+    empty and a run is one ion, not a stretch of baseline; and a run that
+    reaches into a fitted peak's core does not, since part of it is the
+    peak's. Zero where no run is left.
+
+    :param signal: The summed spectrum, in m/z order
+    :type signal: np.ndarray
+    :param in_core: Whether each point lies in a fitted peak's core
+    :type in_core: np.ndarray
+    :param sparse: Whether each point lies in a mostly empty baseline
+    :type sparse: np.ndarray
+    :return: The median height of a run of points above zero
+    :rtype: float
+    """
+    above = signal > 0
+    # Each run's maximum, and whether a point of it is in a core or outside
+    # the sparse baseline, read from its start to the next run's: the zeros
+    # between them change none of these
+    starts = np.flatnonzero(np.diff(above.astype(np.int8), prepend=0) == 1)
+    maxima = np.maximum.reduceat(signal, starts)
+    clear = ~np.logical_or.reduceat(above & (in_core | ~sparse), starts)
+    return float(np.median(maxima[clear])) if clear.any() else 0.0
+
+
 class TofPeakDetector(BasePeakDetector):
     async def detect_peaks(
         self,
@@ -782,9 +814,16 @@ class TofPeakDetector(BasePeakDetector):
         near zero and the column stopped tracking height.
 
         The spread is the MAD scaled to a standard deviation, so a small peak
-        too weak to be fitted does not count as noise; where the baseline is
-        mostly empty and the MAD is zero, the standard deviation stands in.
-        A peak with no baseline left, or a flat one, has no ratio (NaN).
+        too weak to be fitted does not count as noise. Where the baseline is
+        mostly empty and the MAD is zero, the spectrum is counting single
+        ions, and the noise is the height one of them leaves
+        (:func:`_event_height`), or the standard deviation where that is
+        larger. The standard deviation alone shrinks with how rarely an ion
+        arrives, so a peak of a few ions over an empty baseline scored ten
+        or more, as a strong peak does, and over a window with no ion in it
+        had no ratio at all.
+        A peak with no baseline left has no ratio (NaN), nor has one over a
+        flat baseline in a spectrum with no single ion to measure.
 
         :param peak_mzs: Fitted peak m/z values
         :type peak_mzs: np.ndarray
@@ -814,16 +853,29 @@ class TofPeakDetector(BasePeakDetector):
         window_start = np.searchsorted(mz_axis, peak_mzs - half_window)
         window_end = np.searchsorted(mz_axis, peak_mzs + half_window, side="right")
 
+        # Where the baseline is mostly empty the MAD is zero, and the noise is
+        # read after every window is seen: one ion's height is measured over
+        # all of them
+        empty = []
+        sparse = np.zeros(mz_axis.size, dtype=bool)
         for i in range(len(peak_mzs)):
             window = slice(window_start[i], window_end[i])
             baseline = signal[window][~in_core[window]]
             if baseline.size == 0:
                 continue
             noise = median_abs_deviation(baseline, scale="normal")
-            if not noise > 0:
-                noise = np.std(baseline)
             if noise > 0:
                 snr[i] = peak_heights[i] / noise
+            else:
+                empty.append((i, np.std(baseline)))
+                sparse[window] = True
+
+        if empty:
+            event = _event_height(signal, in_core, sparse)
+            for i, spread in empty:
+                noise = max(spread, event)
+                if noise > 0:
+                    snr[i] = peak_heights[i] / noise
 
         return snr
 
