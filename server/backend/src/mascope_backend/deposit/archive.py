@@ -8,9 +8,10 @@ nothing of it is held in memory.
 
 The archive is the same for the same package: its files go in the same order,
 each dated the package's creation time (to the two seconds a zip records) and
-given the same permissions, so it differs only where what it describes does. ``manifest.json`` and
-``SHA256SUMS`` come last, since they hold the checksums of everything before
-them; ``SHA256SUMS`` holds the manifest's too.
+given the same permissions, so it differs only where what it describes does.
+``manifest.json``, ``ro-crate-metadata.json`` and ``SHA256SUMS`` come last,
+in that order, since each holds the checksums of everything before it: the
+crate holds the manifest's, and ``SHA256SUMS`` both of theirs.
 """
 
 import asyncio
@@ -20,6 +21,7 @@ import zipfile
 from datetime import datetime
 
 from mascope_backend.deposit.collect import Package, PackageFile, _json
+from mascope_backend.deposit.crate import METADATA_FILE, render_crate
 from mascope_backend.deposit.documents import render_licence, render_readme
 from mascope_backend.runtime import runtime
 
@@ -77,6 +79,12 @@ async def write_package(package: Package, output: str) -> dict:
             await asyncio.to_thread(
                 archive.add_bytes, "manifest.json", _json(package.manifest)
             )
+            crate = render_crate(
+                package.manifest,
+                archive.written,
+                archive.sums_size(also=METADATA_FILE),
+            )
+            await asyncio.to_thread(archive.add_bytes, METADATA_FILE, _json(crate))
             await asyncio.to_thread(archive.add_sums)
         os.replace(partial, output)
     except BaseException:
@@ -123,7 +131,8 @@ class _Archive:
         )
         self._root = root
         self._date_time = created.timetuple()[:6]
-        self._sums: list[tuple[str, str]] = []
+        #: Every file added so far, as ``(path, sha256, bytes)``.
+        self.written: list[tuple[str, str, int]] = []
 
     def __enter__(self) -> "_Archive":
         return self
@@ -156,7 +165,7 @@ class _Archive:
         """Add a file the package makes. :return: Its SHA-256 and size."""
         digest = hashlib.sha256(data).hexdigest()
         self._zip.writestr(self._info(path, len(data), compress), data)
-        self._sums.append((digest, path))
+        self.written.append((path, digest, len(data)))
         return digest, len(data)
 
     def add_file(
@@ -172,15 +181,18 @@ class _Archive:
                 dst.write(chunk)
                 size += len(chunk)
         digest = hasher.hexdigest()
-        self._sums.append((digest, path))
+        self.written.append((path, digest, size))
         return digest, size
+
+    def sums_size(self, also: str) -> int:
+        """The size ``SHA256SUMS`` will have once ``also`` is added too."""
+        paths = [path for path, _, _ in self.written] + [also]
+        return sum(len(_sums_line("0" * 64, path)) for path in paths)
 
     def add_sums(self) -> None:
         """Add ``SHA256SUMS``: every file so far, in the format of ``sha256sum``."""
-        text = "".join(f"{digest}  {path}\n" for digest, path in self._sums)
-        self._zip.writestr(
-            self._info("SHA256SUMS", len(text), compress=True), text.encode()
-        )
+        data = b"".join(_sums_line(digest, path) for path, digest, _ in self.written)
+        self._zip.writestr(self._info("SHA256SUMS", len(data), compress=True), data)
 
     def _info(self, path: str, size: int, compress: bool) -> zipfile.ZipInfo:
         info = zipfile.ZipInfo(f"{self._root}/{path}", date_time=self._date_time)
@@ -194,3 +206,8 @@ class _Archive:
         # file over 4 GiB without being forced on every small one.
         info.file_size = size
         return info
+
+
+def _sums_line(digest: str, path: str) -> bytes:
+    """One file's line in ``SHA256SUMS``, as ``sha256sum`` writes it."""
+    return f"{digest}  {path}\n".encode()

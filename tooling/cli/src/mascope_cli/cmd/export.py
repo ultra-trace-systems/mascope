@@ -378,8 +378,9 @@ def package(
     acquisition record it came with, less its machine block (the instrument
     computer's host name and machine GUID); each batch's spreadsheet; the
     target collections matched and calibrated against; the instrument
-    functions; manifest.json, which says all of it for a program; and
-    SHA256SUMS, which `sha256sum -c` checks.
+    functions; manifest.json, which says all of it for a program;
+    ro-crate-metadata.json, the same as an RO-Crate for repositories and
+    RO-Crate viewers; and SHA256SUMS, which `sha256sum -c` checks.
 
     On a server the package is built inside the running prod backend
     container, from that stack's env, and copied out. A source checkout

@@ -21,6 +21,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from urllib.parse import unquote
 
 import pandas as pd
 import pytest
@@ -432,6 +433,7 @@ async def package(dataset, out, monkeypatch):
         read=read,
         paths=sorted(name.removeprefix(f"{root}/") for name in archive.namelist()),
         manifest=json.loads(read("manifest.json")),
+        crate=json.loads(read("ro-crate-metadata.json")),
         readme=read("README.md").decode(),
         licence=read("DATA_LICENSE").decode(),
     )
@@ -478,6 +480,7 @@ async def test_the_package_holds_every_file_the_layout_names(package, dataset):
             "README.md",
             "DATA_LICENSE",
             "manifest.json",
+            "ro-crate-metadata.json",
             "SHA256SUMS",
             f"raw/{names.orbi}.raw",
             f"raw/{names.orbi}.raw.mascope.json",
@@ -490,12 +493,13 @@ async def test_the_package_holds_every_file_the_layout_names(package, dataset):
             "instrument_functions.json",
         ]
     )
-    # README first, the checksums last, which hold the manifest's too.
+    # README first, the checksums last: the crate holds the manifest's, and
+    # SHA256SUMS both of theirs.
     order = [
         name.removeprefix(f"{package.root}/") for name in package.archive.namelist()
     ]
     assert order[:2] == ["README.md", "DATA_LICENSE"]
-    assert order[-2:] == ["manifest.json", "SHA256SUMS"]
+    assert order[-3:] == ["manifest.json", "ro-crate-metadata.json", "SHA256SUMS"]
 
 
 @pytest.mark.asyncio
@@ -520,11 +524,158 @@ async def test_the_manifest_checksums_every_file_it_names(package):
     named += [batch["spreadsheet"] for batch in manifest["batches"]]
     named += manifest["target_collections"]
     named += [manifest["instrument_functions"]]
-    assert len(named) == len(package.paths) - 4
+    # All but README.md, DATA_LICENSE, itself, the crate and SHA256SUMS.
+    assert len(named) == len(package.paths) - 5
     for entry in named:
         data = package.read(entry["path"])
         assert entry["sha256"] == hashlib.sha256(data).hexdigest(), entry["path"]
         assert entry["bytes"] == len(data), entry["path"]
+
+
+def _entities(crate: dict) -> dict:
+    """A crate's entities by their ``@id``."""
+    return {entity["@id"]: entity for entity in crate["@graph"]}
+
+
+def _refs(value) -> list[str]:
+    """The ``@id`` of each entity a property refers to: one, or a list."""
+    return [ref["@id"] for ref in (value if isinstance(value, list) else [value])]
+
+
+@pytest.mark.asyncio
+async def test_the_ro_crate_reaches_every_file_with_its_checksum(package, dataset):
+    """``ro-crate-metadata.json`` is an RO-Crate 1.2 whose root reaches every
+    other file of the archive through ``hasPart``, each directory a
+    ``Dataset`` and each file a ``File`` carrying the SHA-256 and size of its
+    bytes in the archive. ``SHA256SUMS``, which holds the crate's own
+    checksum, has its size alone."""
+    names, ids = dataset.names, dataset.ids
+    crate = package.crate
+    assert crate["@context"] == "https://w3id.org/ro/crate/1.2/context"
+    entities = _entities(crate)
+    assert entities["ro-crate-metadata.json"] == {
+        "@id": "ro-crate-metadata.json",
+        "@type": "CreativeWork",
+        "conformsTo": {"@id": "https://w3id.org/ro/crate/1.2"},
+        "about": {"@id": "./"},
+    }
+    files, directories = [], []
+    todo = _refs(entities["./"]["hasPart"])
+    while todo:
+        entity = entities[todo.pop(0)]
+        if entity["@type"] == "Dataset":
+            directories.append(entity["@id"])
+            todo += _refs(entity["hasPart"])
+        else:
+            files.append(entity["@id"])
+    assert sorted(directories) == ["batches/", "raw/", "target_collections/"]
+    assert sorted(unquote(file) for file in files) == [
+        path for path in package.paths if path != "ro-crate-metadata.json"
+    ]
+    # Each file is named as a person knows it.
+    assert entities[f"raw/{names.orbi}.raw"]["name"] == names.orbi
+    assert entities[f"raw/{names.orbi}.raw.mascope.json"]["name"] == (
+        f"Acquisition record of {names.orbi}"
+    )
+    assert entities[f"batches/First_batch_{ids.first_batch}.xlsx"]["name"] == (
+        "Batch First batch"
+    )
+    assert entities["instrument_functions.json"]["name"] == "Instrument functions"
+    for file in files:
+        path = unquote(file)
+        data = package.read(path)
+        entity = entities[file]
+        assert entity["@type"] == "File", path
+        assert entity["contentSize"] == str(len(data)), path
+        if path == "SHA256SUMS":
+            assert "sha256" not in entity
+        else:
+            assert entity["sha256"] == hashlib.sha256(data).hexdigest(), path
+
+
+@pytest.mark.asyncio
+async def test_the_ro_crate_root_is_the_datasets_record(package, dataset):
+    """The root ``Dataset`` carries the metadata record in schema.org terms:
+    a licence a viewer names, authors by their ORCID iD, funding, related
+    identifiers, the dataset's global id and the PSI-MS terms of what
+    measured it."""
+    ids = dataset.ids
+    entities = _entities(package.crate)
+    root = entities["./"]
+    assert root["name"] == f"Package DS {ids.dataset}"
+    assert root["description"] == "Ambient air, winter campaign."
+    assert root["datePublished"] == package.manifest["created"]
+    assert root["dateCreated"] == "2026-01-01T00:00:00Z"
+    assert root["keywords"] == ["aerosol", "CI-MS"]
+    assert root["temporalCoverage"] == "2026-01-01T12:00:00Z/2026-01-03T08:00:00Z"
+    assert entities[root["license"]["@id"]] == {
+        "@id": "https://spdx.org/licenses/CC-BY-4.0",
+        "@type": "CreativeWork",
+        "name": "Creative Commons Attribution 4.0 International",
+        "identifier": "CC-BY-4.0",
+        "description": "The SPDX licence CC-BY-4.0; its terms are at "
+        "https://creativecommons.org/licenses/by/4.0/.",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+    }
+    one, two = (entities[ref] for ref in _refs(root["author"]))
+    assert one["@id"] == "https://orcid.org/0000-0002-1825-0097"
+    assert (one["@type"], one["name"]) == ("Person", "Author One")
+    assert entities[one["affiliation"]["@id"]]["name"] == "Lab A"
+    assert two == {"@id": "#author-2", "@type": "Person", "name": "Author Two"}
+    grant = entities[root["funding"]["@id"]]
+    assert (grant["@type"], grant["name"], grant["identifier"]) == (
+        "Grant",
+        "Funder A, 123",
+        "123",
+    )
+    assert grant["funder"] == root["funder"]
+    assert entities[root["funder"]["@id"]]["name"] == "Funder A"
+    assert entities[root["citation"]["@id"]]["@id"] == "https://doi.org/10.1234/example"
+    assert entities[root["identifier"]["@id"]]["value"] == (
+        f"{_DEPLOYMENT}:dataset:{ids.dataset}"
+    )
+    terms = [entities[ref] for ref in _refs(root["measurementTechnique"])]
+    assert {term["termCode"] for term in terms} == {
+        entry["cv_terms"][key]["accession"]
+        for entry in package.manifest["raw"]
+        for key in ("instrument_model", "ion_source", "mass_analyser", "detector")
+        if entry["cv_terms"][key]
+    }
+    model = next(term for term in terms if term["termCode"] == "MS:1003095")
+    assert model["@id"] == "http://purl.obolibrary.org/obo/MS_1003095"
+    assert model["name"] == "Orbitrap Exploris 120"
+    assert entities[model["inDefinedTermSet"]["@id"]]["version"] == "4.2.6"
+
+
+@pytest.mark.asyncio
+async def test_the_ro_crate_says_which_software_wrote_the_package(package, dataset):
+    """The root mentions a ``CreateAction``: Mascope and the raw-file reader,
+    at the versions the manifest gives, wrote every file but the raw files,
+    which were its object."""
+    names = dataset.names
+    manifest = package.manifest
+    entities = _entities(package.crate)
+    action = entities[entities["./"]["mentions"]["@id"]]
+    assert action["@type"] == "CreateAction"
+    assert action["endTime"] == manifest["created"]
+    assert f"deployment {_DEPLOYMENT}" in action["description"]
+    mascope, reader = (entities[ref] for ref in _refs(action["instrument"]))
+    assert mascope["@type"] == "SoftwareApplication"
+    assert (mascope["name"], mascope["version"]) == ("Mascope", "v9.9.9-test")
+    assert mascope["url"] == "https://github.com/ultra-trace-systems/mascope"
+    assert entities[mascope["license"]["@id"]]["identifier"] == "Apache-2.0"
+    distribution, _, version = manifest["produced_with"]["opentfraw_version"].partition(
+        "=="
+    )
+    assert reader["version"] == version
+    assert reader["url"] == f"https://pypi.org/project/{distribution}/"
+    raw = [f"raw/{names.orbi}.raw", f"raw/{names.tof}.h5"]
+    assert sorted(_refs(action["object"])) == raw
+    assert sorted(_refs(action["result"])) == sorted(
+        path
+        for path in package.paths
+        if path not in raw and path != "ro-crate-metadata.json"
+    )
 
 
 @pytest.mark.asyncio
@@ -714,6 +865,7 @@ async def test_the_readme_tells_a_stranger_what_how_who_and_which_software(
         "`raw/*.mascope.json`",
         "`batches/`",
         "`target_collections/`",
+        "`ro-crate-metadata.json`",
     ):
         assert f"| {row} |" in readme
     assert "without the computer it names (`machine`)" in readme

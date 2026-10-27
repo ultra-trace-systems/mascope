@@ -16,6 +16,9 @@ dataset (``mascope-package_<dataset id>_<dataset name>``)::
     DATA_LICENSE                   the dataset's licence
     manifest.json                  the same and more, for a program, with the
                                    SHA-256 and size of every file it names
+    ro-crate-metadata.json         the manifest as an RO-Crate 1.2: JSON-LD
+                                   in schema.org terms, for repositories,
+                                   harvesters and generic viewers
     SHA256SUMS                     every other file's SHA-256, as
                                    ``sha256sum -c SHA256SUMS`` reads them
     raw/<file>.raw | .h5           each sample file's raw file, as it was
@@ -45,6 +48,12 @@ carry their id alone. Its ``schema`` is
 :data:`PACKAGE_SCHEMA`; like the provenance block's keys, the manifest's are a
 contract: a key may be added, and one that has shipped is never renamed or
 given a new meaning without a new schema.
+
+``ro-crate-metadata.json`` is the standards-facing view of the same facts
+(``mascope_backend.deposit.crate``), rendered from the manifest: the dataset
+as a schema.org ``Dataset`` with its licence, authors and funding, each file
+with its SHA-256, and the software that wrote the package. The manifest stays
+the package's own record: the crate adds a view, it replaces no key.
 
 Every file is checksummed as it is written, so the checksums are of the bytes
 in the archive. A raw file the filestore does not keep - a file of which only

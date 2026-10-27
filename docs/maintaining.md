@@ -861,7 +861,8 @@ Zenodo, which keeps it and mints its DOI. `mascope export package` writes what
 they upload: one zip archive of a dataset, holding its raw files, its batch
 spreadsheets, its target collections, a README that says what was measured,
 how, under what licence, by whom and with which software, and a manifest with
-the SHA-256 of every file. The user guide's
+the SHA-256 of every file, also written as an RO-Crate for repositories and
+RO-Crate viewers. The user guide's
 [Export files](user/reference/exports.md#the-deposit-package) lists what it
 holds.
 

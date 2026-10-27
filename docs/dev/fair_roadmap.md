@@ -340,6 +340,16 @@ the reasoning.
 15. **RO-Crate as the manifest format.** JSON-LD, schema.org-based, and the
     de-facto standard for exactly this. Gets I1/I2 in the manifest layer as a
     side-effect of a format choice rather than a vocabulary project.
+    *Built (MAS-34):* the package carries `ro-crate-metadata.json`, an
+    RO-Crate 1.2 rendered from `manifest.json` by
+    `mascope_backend.deposit.crate`, beside the manifest rather than in its
+    place. The root `Dataset` holds the metadata record, authors by ORCID
+    iD, funding as `Grant`s, related identifiers as `citation`, `isBasedOn`
+    or `isPartOf`, and the files' PSI-MS terms as `measurementTechnique`.
+    Every file carries its `sha256` and size, and a `CreateAction` names the
+    Mascope and reader versions. It passes the RO-Crate validator's 1.2
+    profile at its required level. The recommended level asks for what the
+    record does not hold: ROR ids, contact points, a publisher.
 16. **A UI path**, not just a CLI - "Prepare for publication" on a dataset.
     Scientists deposit data; they do not run CLIs.
 17. **Zenodo deposition** (optional, last). The API is simple, and by this
