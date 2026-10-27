@@ -78,6 +78,25 @@ centroids = mascope.samples.get_centroids(
 )
 ```
 
+## Reference lists
+
+Peak assignment names known compounds from the reference lists the server has
+loaded. Two reads show which lists those are and what each holds:
+
+```python
+sources = mascope.reference.sources()
+compounds = mascope.reference.compounds("nitroaromatics")
+```
+
+| Read | SDK | Operation | Returns |
+|---|---|---|---|
+| The loaded lists | `mascope.reference.sources()` | `GET /api/reference/sources` | one row per active list: its name, label, the publications it comes from (citation with DOI or ISBN), version, licence, polarity, size, load date, and `admitted`, whether the server's licence gate lets peak assignment match it |
+| What one list holds | `mascope.reference.compounds(name, version=None)` | `GET /api/reference/sources/{name}/compounds` | one row per compound of the active version, or of the one named: name, formula, mass, InChIKey, the list's own id, the DOI it cites, tags |
+
+Any role reads them: the lists belong to the server, not to a workspace. The
+[reference lists guide](../guides/reference-lists.md) says where the lists
+come from and how an operator loads them.
+
 ## Built on the SDK: Peaky
 
 Want the analysis without writing the notebook code?
