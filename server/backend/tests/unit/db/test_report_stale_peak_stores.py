@@ -64,6 +64,7 @@ def _survey(props_of, check_of):
             ("short", "A"),
             ("fine", "A"),
             ("plain", "A"),
+            ("zarr", "A"),
             ("broken", "B"),
             ("unknown", "B"),
         ]
@@ -74,8 +75,14 @@ def _survey(props_of, check_of):
         checked.append(filename)
         return check_of(filename)
 
+    def read_props(filename):
+        assert filename != "zarr", "read the props of a file with no raw"
+        return props_of[filename]
+
     found, counts = asyncio.run(
-        script.survey(candidates, lambda filename: props_of[filename], check)
+        script.survey(
+            candidates, lambda filename: filename != "zarr", read_props, check
+        )
     )
     return found, counts, checked
 
@@ -109,13 +116,14 @@ def test_the_survey_lists_the_outgrown_files_and_counts_every_file():
             "reads": 127,
         }
     ]
-    # A single-polarity MS1 file is never opened; one that cannot be read
-    # is counted and does not end the run
+    # Neither a single-polarity MS1 file nor one that keeps no raw file is
+    # opened; one that cannot be read is counted and does not end the run
     assert checked == ["short", "fine", "broken", "unknown"]
     assert counts["A"] == {
         script.OUTGROWN: 1,
         script.CURRENT: 1,
         script.MS1_ONE_POLARITY: 1,
+        script.NO_RAW: 1,
     }
     assert counts["B"] == {
         script.UNREADABLE: 1,
@@ -134,6 +142,7 @@ def test_the_counts_line_names_every_class():
             script.UNREADABLE: 1,
             script.NO_CENSUS: 3,
             script.MS1_ONE_POLARITY: 40,
+            script.NO_RAW: 6,
             script.NO_PROPS: 4,
         }
     )
@@ -141,5 +150,6 @@ def test_the_counts_line_names_every_class():
     assert line == (
         "2 outgrown their store, 5 read back their store, 1 per stream, "
         "1 with no store, 1 unreadable (10 candidates, 3 of them with no "
-        "census); 40 MS1 files of one polarity not opened, 4 with no props"
+        "census); 40 MS1 files of one polarity not opened, 6 with no raw file "
+        "kept, 4 with no props"
     )

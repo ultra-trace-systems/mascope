@@ -22,7 +22,9 @@ file's scan index, and writes nothing.
   fragmentation stream or MS1 scans of both polarities: the files the old
   rule could misjudge. A single-polarity file of MS1 scans alone reads as it
   always did, and is not opened. A file with no census is opened, since what
-  it holds is not known otherwise.
+  it holds is not known otherwise. An Orbitrap file that keeps no raw file
+  (one converted to zarr) is counted and not opened: its scans are what its
+  conversion stored, and a re-processing never detects its peaks again.
 - **A per-stream store** compares each stream's first scan with its own
   stream's scans, which the rule always did, so it is counted and not
   opened.
@@ -84,7 +86,8 @@ _CANDIDATES_SQL = """
     ORDER BY sf.instrument, sf.datetime_utc, sf.filename
 """
 
-#: What :func:`classify` and :func:`check` call a file.
+#: What :func:`survey`, :func:`classify` and :func:`check` call a file.
+NO_RAW = "no_raw"
 NO_PROPS = "no_props"
 MS1_ONE_POLARITY = "ms1_one_polarity"
 PER_STREAM = "per_stream"
@@ -145,6 +148,16 @@ def check(filename: str) -> tuple[str, int, int]:
     return OUTGROWN, store.time.size, m_compute.get_scan_timestamps(filename).size
 
 
+def _has_raw(filename: str) -> bool:
+    """Whether the sample keeps a raw Orbitrap file, whose scans are
+    selected anew on every read (``has_scan_streams``), as a re-processing
+    asks before it reads a file for its peaks."""
+    try:
+        return m_compute.has_scan_streams(filename)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _read_props(filename: str) -> dict | None:
     """One sample file's ``.props``, or None when there are none to read."""
     try:
@@ -155,6 +168,7 @@ def _read_props(filename: str) -> dict | None:
 
 async def survey(
     candidates: list[dict],
+    has_raw: Callable[[str], bool],
     read_props: Callable[[str], dict | None],
     check_one: Callable[[str], tuple[str, int, int]],
 ) -> tuple[list[dict], dict[str, Counter]]:
@@ -164,6 +178,7 @@ async def survey(
     server that keeps serving.
 
     :param candidates: Rows from :func:`_candidates`.
+    :param has_raw: :func:`_has_raw`, or a stand-in.
     :param read_props: :func:`_read_props`, or a stand-in.
     :param check_one: :func:`check`, or a stand-in.
     :return: The outgrown files, each with ``stored`` and ``reads`` (scan
@@ -176,6 +191,9 @@ async def survey(
     for candidate in candidates:
         filename = candidate["filename"]
         tally = counts[candidate["instrument"] or "(none)"]
+        if not await asyncio.to_thread(has_raw, filename):
+            tally[NO_RAW] += 1
+            continue
         kind = classify(await asyncio.to_thread(read_props, filename))
         if kind not in (CENSUS, NO_CENSUS):
             tally[kind] += 1
@@ -238,7 +256,8 @@ def _counts_line(found: Counter) -> str:
         f"{found[UNREADABLE]} unreadable "
         f"({opened + found[UNREADABLE]} candidates, {found[NO_CENSUS]} of them "
         f"with no census); {found[MS1_ONE_POLARITY]} MS1 files of one polarity "
-        f"not opened, {found[NO_PROPS]} with no props"
+        f"not opened, {found[NO_RAW]} with no raw file kept, "
+        f"{found[NO_PROPS]} with no props"
     )
 
 
@@ -250,7 +269,7 @@ async def report() -> tuple[list[dict], dict[str, Counter]]:
     """
     candidates = await _candidates()
     runtime.logger.info(f"Orbitrap files: {len(candidates)}")
-    found, counts = await survey(candidates, _read_props, check)
+    found, counts = await survey(candidates, _has_raw, _read_props, check)
     person_made = await _with_samples_a_person_made(
         [row["sample_file_id"] for row in found]
     )
