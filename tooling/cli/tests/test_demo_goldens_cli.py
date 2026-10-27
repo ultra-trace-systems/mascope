@@ -113,7 +113,7 @@ def test_a_file_with_neither_peaks_nor_spectra_is_refused(backend_goldens, tmp_p
     assert not (tmp_path / "expected").exists()
 
 
-def test_an_ms1_only_run_records_no_ms2_block(backend_goldens, tmp_path):
+def test_an_ms1_only_run_records_no_ms2_block(backend_goldens, tmp_path, warnings):
     backend_goldens.peaks = [_peak(_db_name(MS1))]
     backend_goldens.ingested = [_db_name(MS1)]
 
@@ -123,6 +123,7 @@ def test_an_ms1_only_run_records_no_ms2_block(backend_goldens, tmp_path):
     assert "ms2" not in expected
     assert "ms2_sha256" not in expected
     assert not (tmp_path / "expected" / "ms2.parquet").exists()
+    assert warnings == []
 
 
 # --- a refresh keeps the MS2 goldens ----------------------------------------
@@ -234,6 +235,21 @@ def test_a_refresh_that_reads_the_prior_ms2_files_again_writes_them(
     assert expected["ms2"] == "expected/ms2.parquet"
     ms2_path = tmp_path / "expected" / "ms2.parquet"
     assert pd.read_parquet(ms2_path).to_dict("records") == backend_goldens.ms2
+    assert warnings == []
+
+
+def test_an_ms1_only_refresh_of_an_ms1_only_bundle_warns_of_nothing(
+    backend_goldens, tmp_path, warnings
+):
+    """A bundle that never had MS2 goldens loses none: no `ms2` block, and no
+    warning that it is written without them."""
+    prior = {"peaks": "expected/peaks.parquet", "sha256": "x" * 64}
+    backend_goldens.peaks = [_peak(_db_name(MS1))]
+    backend_goldens.ingested = [_db_name(MS1)]
+
+    expected = build_bundle.export_goldens(tmp_path, _raw_entries(MS1), prior)
+
+    assert "ms2" not in expected
     assert warnings == []
 
 
