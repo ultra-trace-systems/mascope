@@ -3,7 +3,7 @@
 # Public Chemistry & Spectral Database Integration: Design & Plan
 
 - **Status:** building
-- **As of:** 2026-10-23
+- **As of:** 2026-10-27
 - **Tracked in:** [MS2 analysis](https://linear.app/ultra-trace/project/ms2-analysis-7fdc525bca51)
   milestone 6, "Spectral library matching", for phase 4 (Linear: MAS-429 the
   `reference_spectrum` table and the library adapters, MAS-360 the ranking); for
@@ -200,7 +200,7 @@ a peak whose winning formula matches a `reference_compound` gets `source=databas
 and populated identity, so annotation and the two-stage assignment reinforce each
 other rather than duplicating logic.
 
-### 3.6 MS2 spectral matching (later phase)
+### 3.6 MS2 spectral matching
 
 Ingest MassBank/MoNA/GNPS spectra into a `reference_spectrum` table keyed by
 precursor m/z + formula + InChIKey (carrying peak lists and license), then add a
@@ -208,6 +208,40 @@ spectral-similarity scorer (cosine / modified cosine over aligned centroids) tha
 runs against the extracted MS2 centroids
 ([ms2.py](../../libraries/sdk/src/mascope_sdk/resources/ms2.py)). This is a
 distinct, larger subsystem and is sequenced after MS1 annotation is proven.
+
+**The ingestion half, as built (MAS-429).** `reference_spectrum` sits beside
+`reference_compound`, one row per spectrum per source version: the compound's
+name, canonical formula, InChIKey, SMILES and InChI where the library gives
+them; the precursor m/z, adduct and polarity; the collision energy as a number
+with its kind (`nce` or `ev`) where the library names one value and its unit,
+and as the library wrote it always (a ramp, steps, a bare number); the centroid
+list as JSON pairs in ascending m/z, intensities as given; and the per-record
+licence. `precursor_mz`, `inchikey` and `formula` are indexed.
+
+- **Versioned loads, one kind per name.** A library loads through `mascope
+  reference sync <massbank|mona|gnps> <dump> --version <tag>` (or the backend's
+  `reference_sync` script) as a load on its own `reference_source` row, which
+  records its `kind`, `compound` or `spectrum`. Activation, staging, pruning
+  and `status` work as they do for compounds. A name holds loads of one kind,
+  so a library loaded as `--name hmdb` cannot deactivate the HMDB compound
+  mirror.
+- **The dumps.** MassBank in its record format, from the source archive of a
+  MassBank-data release (its MSP files leave the licence out, and its JSON is
+  a metadata catalogue without peaks). MoNA as an MSP export. GNPS as a
+  library MGF, the adduct read off the compound's name and the formula off
+  the InChI.
+- **What is admitted.** MS2 spectra that were measured, with a precursor m/z
+  and a peak: MS1, MS3+ and deprecated records, MoNA's in-silico spectra (most
+  of its "All Spectra" export) and GNPS library classes other than gold, silver
+  and bronze are counted by reason and left out.
+- **Licences.** Each spectrum keeps the licence its record states (MassBank
+  mixes CC0, CC BY, CC BY-SA, the non-commercial CC BY-NC and CC BY-NC-SA, and
+  others); a record that states none carries `mona-unstated` or
+  `gnps-unstated` rather than an assumed licence, and GNPS's own libraries are
+  `CC0`. The read path, `by_inchikey` and `by_precursor` in
+  `mascope_reference.spectral_query`, takes the licences to keep from its
+  caller. The deployment gate `reference_licenses` is Stage A's and does not
+  read spectra; which setting gates the scorer is MAS-360's to wire.
 
 ---
 
@@ -246,9 +280,11 @@ matched on. The seam was designed in `reference_peak_assignment_convergence.md` 
 [reference library's README](../../libraries/reference/README.md) ("Ownership boundary")
 and the [`known.py`](../../libraries/reference/src/mascope_reference/known.py) docstring.
 
-### Phase 4 - MS/MS spectral matching (not started)
-- `reference_spectrum` table + MassBank/MoNA/GNPS adapters (license-filtered).
-- Spectral-similarity scorer against extracted MS2 centroids; surface hits.
+### Phase 4 - MS/MS spectral matching (ingestion shipped; scorer not started)
+- `reference_spectrum` table + MassBank/MoNA/GNPS adapters (license-filtered):
+  shipped in MAS-429, described in section 3.6.
+- Spectral-similarity scorer against extracted MS2 centroids; surface hits:
+  MAS-360.
 
 ### Phase 5 - Productization (partly shipped: identities in the ledger and inspector, licence gating)
 - UI/SDK surfaces for annotations and spectral hits.
