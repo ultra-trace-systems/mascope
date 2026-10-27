@@ -888,16 +888,41 @@ own, or each owner of a stitched sample's runs, whose peaks are on their
 owner's factor rather than the one the sample's stream gives. The SDK reads
 both with `get_axis_fingerprint`.
 
-**The direct route, a future simplification.** The fingerprint infers each
-chunk's correction from the spacing of its points. The correction itself is
-in the file, and OpenTFRaw 3.1.0, the pinned reader, returns it per chunk:
+**The direct route checks it.** The fingerprint infers each chunk's
+correction from the spacing of its points. The correction itself is in the
+file, and OpenTFRaw 3.1.0, the pinned reader, returns it per chunk:
 `RawFile.profile_chunks(scan)` gives each chunk's `fudge` with the scan's
 coefficients, and `r` is that over the law's m/z
-(`reference.s_from_fudge_ratio` turns it into `s`). Reading it would replace
-the spacing measurement, and its thresholds on chunk sizes, with the value
-the file stores. It is not done yet: the 39 reference documents pin the
-spacing route, and a direct one needs its own comparison against them
-before it can stand in.
+(`reference.s_from_fudge_ratio` turns it into `s`). It does not replace the
+spacing measurement. Measured on the 39 reference files (the corpus's axis
+set), every band of the spacing route's tables agrees with the stored
+corrections to 0.0031 ppm, so reading them would give no better band values.
+It would give other grids: on the same chunks, the band grid of 21 of 53
+modes moves, by up to 0.47 kHz in phase, and those grids fit the band edges
+the stored corrections show no better. On every stored chunk the grid gets
+weaker (12 dominant modes flagged `grid_weak` against 7): a quarter of the
+chunks, 10 to 34 % per file, store a correction off their band's value, and
+the extra levels cost the grid its brackets. Either way the documents would
+change, and the reference documents pin the spacing route. So the
+fingerprint stays on the spacing, and `axis_fingerprint/direct.py` checks
+it: after computing a document, the converter reads the stored chunks of the
+scans each mode read, about 0.1 s a file, and compares each band's `s_ppm`
+with the modal `s` of the stored corrections in it. Only a band structure is
+compared: a mode without `grid_unmeasured`, `not_stepwise` or
+`fft_step_not_power_of_two`, and in it a measured band where both the table
+and the stored corrections hold one level (half their chunks or more). On an
+axis without bands the corrections follow a smooth trend, so a band's modal
+value depends on which chunks it is taken over: on the Exploris files of the
+corpus the two routes' differ by up to 10 ppm while every chunk agrees. On an
+FFT step that is not a power of two (an Exploris MX), the spacing is read
+against the measured step, and every chunk sits 2.4 to 4 ppm off its stored
+correction. Over the 271 raw files of the corpus the check compares 2,745
+bands in 67 Q Exactive modes, all within 0.0031 ppm. A band more than
+0.01 ppm off is logged as a warning, naming the file, the mode and the
+bands. The document is stored as computed either way. A warning means a
+reader or an instrument on which the spacing no longer gives back the
+stored correction: a defect to look into, not a fingerprint to trust less
+on its own.
 
 ---
 
