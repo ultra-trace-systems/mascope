@@ -422,7 +422,7 @@
      "items": {
       "type": "integer"
      },
-     "description": "the scan numbers the item's peak list is built from: the MS1 scans of its polarity and stream starting in [t0_s, t1_s], without a stream's outlier first scan; for a stitched item, those of the streams that own some m/z of it"
+     "description": "the scan numbers the item's peak list is built from: the MS1 scans of its polarity and stream starting in [t0_s, t1_s], without a stream's outlier first scan; for a stitched item, those of the streams that own some m/z of it, which 'streams' lists stream by stream"
     },
     "mode_id": {
      "type": [
@@ -440,7 +440,7 @@
       "number",
       "null"
      ],
-     "description": "the factor the sample file's mass calibration (.props mz_calibration) gives the item's stream: mz_calibration.streams[stream_key].calibration_factor where the record names the stream, else mz_calibration.par.calibration_factor; null when the file has no calibration. A record never names a composite, so for a stitched item this is the file's factor, while its peaks carry the factor of each stream that owns a run of it, which this block does not list"
+     "description": "the factor the sample file's mass calibration (.props mz_calibration) gives the item's stream: mz_calibration.streams[stream_key].calibration_factor where the record names the stream, else mz_calibration.par.calibration_factor; null when the file has no calibration. A record never names a composite, so for a stitched item this is the file's factor, while each of its peaks carries the factor of the stream that owns its m/z, which 'streams' lists"
     },
     "file_mz_calibration_factor": {
      "type": [
@@ -448,6 +448,40 @@
       "null"
      ],
      "description": "the sample file's .props mz_calibration.par.calibration_factor, which /api/samples/centroids multiplies into every served mass of the file; null when none"
+    },
+    "streams": {
+     "type": [
+      "array",
+      "null"
+     ],
+     "items": {
+      "type": "object",
+      "required": [
+       "stream_key",
+       "scans",
+       "mz_calibration_factor"
+      ],
+      "properties": {
+       "stream_key": {
+        "type": "string"
+       },
+       "scans": {
+        "type": "array",
+        "items": {
+         "type": "integer"
+        },
+        "description": "the scans of 'scans' that are of this stream, ascending"
+       },
+       "mz_calibration_factor": {
+        "type": [
+         "number",
+         "null"
+        ],
+        "description": "the factor the file's mass calibration gives this stream, as 'mz_calibration_factor' is read for the item's: what Mascope multiplies into the m/z of the item's peaks of this stream; null when the file has no calibration"
+       }
+      }
+     },
+     "description": "the streams the item's peak list is read from, each with its scans and its factor: the item's stream alone, or for a stitched item each stream that owns some m/z of it, in its stitch map's order. A peak listing names the stream each peak of a stitched item is of (its segment's key), which joins a peak to its factor here. null when the item reads every MS1 scan of its polarity (stream_key null): its peaks all carry the file's factor"
     }
    }
   }

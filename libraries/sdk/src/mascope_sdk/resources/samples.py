@@ -1067,7 +1067,16 @@ class SamplesResource(BaseResource):
           :meth:`get_centroids` multiplies into every mass. Both None for a
           file never calibrated. A stitched sample's
           ``mz_calibration_factor`` is the file's, while its peaks carry the
-          factor of each stream that owns a run of it.
+          factor of each stream that owns a run of it, which ``streams``
+          lists;
+        - ``streams``, the scan streams its peak list is read from, each
+          with its ``stream_key``, its ``scans`` and its
+          ``mz_calibration_factor``: the sample's own stream, or each stream
+          that owns some m/z of a stitched sample. None for a sample over
+          every MS1 scan of its polarity, whose peaks carry the file's
+          factor. :meth:`get_peaks` names the stream of each peak of a
+          stitched sample: its ``segment`` is the ``index`` of an entry of
+          ``attrs["segments"]``, whose ``key`` is a ``stream_key`` here.
 
         :param sample_id: The ID of the sample.
         :type sample_id: str

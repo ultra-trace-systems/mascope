@@ -9,7 +9,10 @@ existed, or with ``[backend] axis_fingerprint = "off"``, is served the
 The document describes the raw file's own m/z axis. A client of one sample
 also has to know which of the file's scans the sample's peak list is built
 from, and what Mascope multiplies into the m/z it serves of them, so the
-sample's route adds an ``item`` block saying both.
+sample's route adds an ``item`` block saying both. A stitched sample's peaks
+are of several scan streams, each put on the file's axis by its own factor
+(``mascope_signal.mz_factor``), so the block says both stream by stream as
+well.
 """
 
 import asyncio
@@ -152,8 +155,8 @@ async def get_sample_axis_fingerprint(sample_item_id: str) -> dict:
         )
     streams = read_streams(found.stream_key, found.stitch)
     try:
-        scans = await asyncio.to_thread(
-            item_scans, found.filename, found.polarity, found.t0, found.t1, streams
+        by_stream = await asyncio.to_thread(
+            scans_by_stream, found.filename, found.polarity, found.t0, found.t1, streams
         )
     except Exception as e:
         # str(e) can carry internal file paths; the cause is logged
@@ -162,6 +165,7 @@ async def get_sample_axis_fingerprint(sample_item_id: str) -> dict:
             status_code=500, detail="Could not read the scans of the sample."
         ) from e
 
+    scans = sorted({scan for numbers in by_stream.values() for scan in numbers})
     described = describe_scans(
         document,
         scans,
@@ -185,6 +189,11 @@ async def get_sample_axis_fingerprint(sample_item_id: str) -> dict:
             m_factor.stream_factor(record, found.stream_key) if record else None
         ),
         "file_mz_calibration_factor": m_factor.file_factor(record) if record else None,
+        # A sample over its whole polarity reads its streams pooled, on the
+        # file's factor, and has none of its own to list.
+        "streams": (
+            stream_entries(record, by_stream) if found.stream_key is not None else None
+        ),
     }
     return {"message": message, "data": document}
 
@@ -208,14 +217,14 @@ def read_streams(stream_key: str | None, stitch: dict | None) -> list[str | None
     return list(dict.fromkeys(owner for _lower, _upper, owner in stitch["runs"]))
 
 
-def item_scans(
+def scans_by_stream(
     filename: str,
     polarity: str | None,
     t0: float | None,
     t1: float | None,
     streams: list[str | None],
-) -> list[int]:
-    """The scan numbers a sample's peak list is built from.
+) -> dict[str | None, list[int]]:
+    """The scan numbers each stream gives a sample's peak list.
 
     Selected as every read of the sample selects them: MS1 scans of its
     polarity starting in ``[t0, t1]`` (both ends included), of each stream
@@ -227,15 +236,47 @@ def item_scans(
     :param t0: The start of the sample's window [s], None for the file's.
     :param t1: The end of the sample's window [s], None for the file's.
     :param streams: :func:`read_streams`.
-    :return: The scan numbers, ascending; empty when no scan is selected.
+    :return: Per stream, in their order, its scan numbers ascending; empty
+        for a stream none of whose scans is selected.
     """
-    scans: set[int] = set()
+    scans: dict[str | None, list[int]] = {}
     with m_thermo.open_backend(m_name.filename_to_datafile_path(filename)) as backend:
         for stream in streams:
             try:
-                scans.update(
-                    backend.scan_indices(polarity, t0, t1, ms_type="Ms", stream=stream)
+                selected = backend.scan_indices(
+                    polarity, t0, t1, ms_type="Ms", stream=stream
                 )
             except NoScansFoundError:
-                continue
-    return sorted(int(scan) for scan in scans)
+                selected = []
+            scans[stream] = sorted(int(scan) for scan in selected)
+    return scans
+
+
+def stream_entries(
+    record: dict | None, by_stream: dict[str | None, list[int]]
+) -> list[dict]:
+    """What each stream a sample reads gives it: its scans, and the factor
+    its peaks are put on the file's axis by.
+
+    A stitched sample's peak at some m/z is of the stream that owns that
+    m/z, and carries that stream's factor. The sample's peak listing names
+    each peak's stream (its ``segment``, keyed in ``segments``), which a
+    client looks the factor up here by.
+
+    :param record: The file's calibration record, None for a file never
+        calibrated.
+    :param by_stream: :func:`scans_by_stream`, of the streams of a sample
+        that reads one stream or a composite.
+    :return: One entry per stream, in their order: ``stream_key``, ``scans``
+        and ``mz_calibration_factor``, None for a file never calibrated.
+    """
+    return [
+        {
+            "stream_key": key,
+            "scans": scans,
+            "mz_calibration_factor": (
+                m_factor.stream_factor(record, key) if record else None
+            ),
+        }
+        for key, scans in by_stream.items()
+    ]
