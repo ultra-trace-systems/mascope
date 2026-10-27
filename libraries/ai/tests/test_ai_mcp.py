@@ -10,6 +10,7 @@ import sys
 
 import pandas as pd
 import pytest
+from loguru import logger
 
 from mascope_ai import Frame, Ref, Session, mcp
 from mascope_ai.mcp import (
@@ -126,6 +127,11 @@ class TestProtocol:
         assert answer["error"]["code"] == -32602
         assert "load_everything" in answer["error"]["message"]
 
+    def test_a_tool_name_that_is_not_a_string_is_a_protocol_error(self, server):
+        answer = rpc(server, "tools/call", {"name": ["find"]})
+        assert answer["error"]["code"] == -32602
+        assert "name" in answer["error"]["message"]
+
     def test_an_unknown_method_is_a_protocol_error(self, server):
         answer = rpc(server, "resources/list")
         assert answer["error"]["code"] == -32601
@@ -169,6 +175,42 @@ class TestProtocol:
         assert [a.get("id") for a in answers] == [1, 2, None]
         assert answers[2]["error"]["code"] == -32700
 
+    def test_no_message_ends_the_server(self, server, monkeypatch):
+        dispatch = server._dispatch
+
+        def explodes(method, params):
+            if method == "explode":
+                raise KeyError("boom")
+            return dispatch(method, params)
+
+        monkeypatch.setattr(server, "_dispatch", explodes)
+        lines = [
+            b'{"jsonrpc": "2.0", "id": 1, "method": "tools/call", '
+            b'"params": {"name": ["find"]}}',
+            # A lone surrogate is valid JSON, and cannot be encoded as UTF-8
+            b'{"jsonrpc": "2.0", "id": "\\ud800", "method": "ping"}',
+            b'{"jsonrpc": "2.0", "id": 3, "method": "\\udfff"}',
+            b"[" * 100_000 + b"]" * 100_000,
+            b'{"jsonrpc": "2.0", "id": 5, "method": "explode"}',
+            b'{"jsonrpc": "2.0", "id": 6, "method": "ping"}',
+        ]
+        stdout = io.BytesIO()
+        logged: list[str] = []
+        sink = logger.add(logged.append, level="ERROR", format="{message}\n{exception}")
+        try:
+            server.serve(io.BytesIO(b"\n".join(lines) + b"\n"), stdout)
+        finally:
+            logger.remove(sink)
+        answers = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        assert [a.get("id") for a in answers] == [1, "\ud800", 3, None, 5, 6]
+        codes = [a["error"]["code"] if "error" in a else None for a in answers]
+        assert codes == [-32602, None, -32601, -32700, -32603, None]
+        assert answers[-1]["result"] == {}
+        stdout.getvalue().decode("ascii")
+        # The unforeseen failure's traceback is in the server's log
+        (line,) = logged
+        assert "A message could not be answered" in line and "KeyError" in line
+
 
 # --- results: inert, bounded ----------------------------------------------------
 
@@ -210,6 +252,13 @@ class TestResults:
     def test_fit_gives_up_with_an_error_rather_than_a_long_result(self):
         result = {f"key {i}": "y" for i in range(2000)}
         assert fit(result, 1000)["error"] == "too_large"
+
+    def test_a_result_too_large_to_fit_is_an_error(self, server, monkeypatch):
+        monkeypatch.setattr(
+            server, "_session", lambda args: {f"key {i}": "y" for i in range(2000)}
+        )
+        out = refused(server, "session")
+        assert out["error"] == "too_large"
 
     def test_render_is_the_fitted_inert_json(self):
         assert json.loads(render({"name": "a\u202eb"})) == {"name": "a\\u202eb"}
