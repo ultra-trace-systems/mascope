@@ -217,8 +217,10 @@ async def get_ionization_modes(include_system: bool = False) -> dict:
     Retrieves the ionization modes.
 
     The modes Mascope ships that this deployment has not adopted are left out
-    unless asked for: without target collections such a mode calibrates and
-    matches nothing. Asking for them is how one is adopted in the first place.
+    unless asked for: offering the shipped chemistries is the browser's step
+    (MAS-337), not a side effect of the listing, and the collections Mascope
+    seeds for one do not adopt it (``system_mode_adopted``). Asking for them
+    is how one is adopted in the first place.
 
     :param include_system: Whether to include unadopted seeded modes.
     :return: A dictionary containing total results count and a list of ionization modes.
