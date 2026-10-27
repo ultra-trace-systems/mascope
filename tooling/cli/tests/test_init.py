@@ -7,7 +7,12 @@ The command materializes bundled config/compose files, creates the
 pre-existing environment.
 """
 
-from mascope_cli.cmd.init import CONFIG_FILES, GENERATED_SECRETS, RUNTIME_DIRS
+from mascope_cli.cmd.init import (
+    CONFIG_FILES,
+    GENERATED_SECRETS,
+    PLACEHOLDER_SECRETS,
+    RUNTIME_DIRS,
+)
 from mascope_cli.main import app
 
 
@@ -28,6 +33,33 @@ def test_init_creates_a_complete_home(cli_runner, tmp_path):
     for name in GENERATED_SECRETS:
         secret = (home / ".runtime" / "secrets" / name).read_text().strip()
         assert len(secret) >= 32, f"secret {name} looks too short"
+
+
+def test_init_creates_the_operator_supplied_ca_empty(cli_runner, tmp_path):
+    # Compose refuses to start on a declared secret whose file is missing, and
+    # the origin-pull CA is the operator's to bring: an empty file lets a site
+    # without origin pulls start, and reads as "not set up" to the frontend.
+    home = tmp_path / "home"
+
+    result = _init(cli_runner, home)
+
+    assert result.exit_code == 0
+    assert PLACEHOLDER_SECRETS == ("origin_pull_ca.pem",)
+    ca = home / ".runtime" / "secrets" / "origin_pull_ca.pem"
+    assert ca.is_file()
+    assert ca.read_bytes() == b""
+
+
+def test_init_keeps_an_operator_supplied_ca(cli_runner, tmp_path):
+    home = tmp_path / "home"
+    ca = home / ".runtime" / "secrets" / "origin_pull_ca.pem"
+    ca.parent.mkdir(parents=True)
+    ca.write_bytes(b"-----BEGIN CERTIFICATE-----\n")
+
+    result = _init(cli_runner, home, "--force")
+
+    assert result.exit_code == 0
+    assert ca.read_bytes() == b"-----BEGIN CERTIFICATE-----\n"
 
 
 def test_init_generates_unique_secrets(cli_runner, tmp_path):

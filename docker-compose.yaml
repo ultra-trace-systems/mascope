@@ -230,12 +230,22 @@ services:
       # Docker gateway. A deployment with no Cloudflare in front sets it to
       # `off` (docs/hosting.md).
       - MASCOPE_TRUST_DOCKER_GATEWAY
+      # Unset means off. `on` makes :443 answer only the CDN's origin-pull
+      # certificate, signed by the CA in origin_pull_ca (docs/maintaining.md,
+      # "The edge").
+      - MASCOPE_ORIGIN_PULL
     secrets:
       - ssl_certificate
       - ssl_secret_key
+      - origin_pull_ca
     tty: true
     ports:
       - 443:443
+      # The host's own way in, which never asks for a client certificate: the
+      # reboot playbook's probe and the security suite's origin vantage. On the
+      # host's loopback only, so neither the internet nor a tailnet peer can
+      # reach it.
+      - 127.0.0.1:8443:8443
 
 volumes:
   redis_data:
@@ -253,3 +263,7 @@ secrets:
     file: .runtime/secrets/mascope.app.pem
   ssl_secret_key:
     file: .runtime/secrets/mascope.app.key
+  # Operator-supplied like the TLS pair, but created empty by the CLI when
+  # absent, so a site without origin pulls still starts.
+  origin_pull_ca:
+    file: .runtime/secrets/origin_pull_ca.pem
