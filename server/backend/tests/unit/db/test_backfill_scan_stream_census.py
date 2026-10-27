@@ -467,6 +467,23 @@ async def test_a_capped_run_that_leaves_files_says_to_run_again(
     assert f"reading {len(updates)} this run" in log
 
 
+@pytest.mark.asyncio
+async def test_a_run_stopped_between_batches_says_to_run_again(stand_ins, monkeypatch):
+    """One file per batch and a cap of one: the survey stops after the first
+    batch with nothing beyond the cap, and the unread file still needs a census.
+    """
+    updates = stand_ins
+    monkeypatch.setattr(script, "_SURVEY_BATCH", 1)
+    monkeypatch.setenv("CENSUS_LIMIT", "1")
+
+    with captured_logs() as records:
+        await script.run()
+
+    log = "\n".join(r["message"] for r in records)
+    assert len(updates) == 1
+    assert "run this again" in log
+
+
 # --- the read itself --------------------------------------------------------
 
 
