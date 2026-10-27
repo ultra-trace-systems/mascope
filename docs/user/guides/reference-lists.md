@@ -246,11 +246,44 @@ version, licence, polarity, compound count and load date, and `admitted`, which
 says whether the deployment's licence gate lets peak assignment match it.
 `GET /api/reference/sources/<name>/compounds` pages through what one source
 holds (`page`, `limit` up to 1000, and `version` for a load other than the
-active one). A page in the app that shows the same follows.
+active one). In the app, the same is under
+[Reference lists](#see-the-loaded-lists-in-the-app).
 
 **License / attribution.** Set a per-record `license` column if the list carries
 one; it is carried through to every annotation, so results stay attributable.
 Put the paper's DOI in a `reference` column and it travels with each compound.
+
+## See the loaded lists in the app
+
+Open the home menu, choose **Settings**, and press **Reference lists** under
+**Data**. Any signed-in user can open it: the lists belong to the deployment,
+not to a workspace, so everyone sees the same ones.
+
+![The Reference lists dialog on the demo dataset](images/reference-lists.png)
+
+Each row is one loaded list:
+
+- **List**: its label, and the source name it loads as under it.
+- **Version** and **Licence**, as the load recorded them.
+- **Polarity**: the polarity its compounds are matched in. *Both* matches
+  samples of either.
+- **Radicals**: whether its radicals may be matched.
+- **Window**: the formulas it may contribute, as described in
+  [How a loaded source may be matched](#how-a-loaded-source-may-be-matched).
+  A list someone authored is *Unbounded*.
+- **Species** and **Loaded**: how many compounds it holds, and when it was
+  loaded.
+
+Open a row with its arrow to page through its species by mass: name, formula,
+monoisotopic mass and the DOI the list cites for it, linked to doi.org.
+
+A list the deployment's licence gate leaves out still shows, with its licence
+and a note that peak assignment does not match against it. The gate is
+described under
+[Loading reference chemistry data](https://github.com/ultra-trace-systems/mascope/blob/master/docs/maintaining.md#loading-reference-chemistry-data).
+
+With no list loaded, the dialog says so and links this guide. An operator
+loads the lists on the server, as described above.
 
 ## When to use a public-source adapter instead
 
