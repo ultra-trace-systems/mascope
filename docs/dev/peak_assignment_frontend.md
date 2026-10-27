@@ -1,7 +1,7 @@
 # Peak-Centric Assignment — Frontend Design & Implementation Plan
 
 - **Status:** built
-- **As of:** 2026-10-22
+- **As of:** 2026-10-27
 - **Tracked in:** closed; retiring the Targets/Assignments switch is MAS-162 in [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9)
 - **Supersedes:** `peak_assignment_confidence_frontend.md` (retired 2026-10-22; its `n_adducts` rule is under "Confidence")
 - **What:** The Sample view as shipped for peak-centric assignment: ledger, inspector, verification, curation.
@@ -326,6 +326,17 @@ are API/SDK surface without in-app UI — the designed entry point for SDK-side 
 verification (see [`sdk_peak_assignment.md`](sdk_peak_assignment.md), deferred `fit_aggregate`).
 With the flag off the Match tab and its targeted visualization behave exactly as before the
 feature landed.
+
+**Retirement path (MAS-162, decided 2026-10-27).** The targeted view retires by the fold,
+not by re-scoring the legacy matcher in place: the reasons and the steps are
+[paradigm doc §5.4](peak_assignment_paradigm.md). On the frontend that means: the
+Targets mode, `MatchIonTable` and the Match tab go in the release after peak assignment is on
+by default (MAS-80), and before that release the two things only the Match tab has get a
+home in the assignment layout - the match-parameter drawer in the inspector (per-ion
+parameters are Stage A's gating parameters too) and *Rate Match* as a verification verdict.
+Until then the targeted view takes quick wins (QW3, QW6 of
+[`ux_review_2026_10.md`](ux_review_2026_10.md)) and no medium work; F3, F10 and F24 are
+not taken further.
 
 **Open threads.** **Tier is evidence-based** (`tier_for_evidence(evidence, …)`, evidence being
 fit × chemical plausibility) — settled, at both engine stages and every other site that derives a tier;

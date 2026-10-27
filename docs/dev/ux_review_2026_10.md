@@ -3,7 +3,7 @@
 # Dashboard UX review, October 2026
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-10-27
 - **Tracked in:** [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) (Linear, MAS-148 to MAS-163)
 - **What:** The dashboard UX review of October 2026 and its three tiers of fixes.
 
@@ -632,7 +632,12 @@ the medium items named wait on it.
   match-parameter drawer and Rate Match are only there (the comment in
   `Dashboard.vue` records that retiring the tab once removed both). Until this
   is written down, polishing the targeted view competes with retiring it.
-  Decides how far F3, F10 and F24 are worth taking.
+  Decides how far F3, F10 and F24 are worth taking. *Answered
+  2026-10-27: the fold, not a re-scoring of the legacy matcher;
+  the path is [`peak_assignment_paradigm.md`](peak_assignment_paradigm.md)
+  §5.4 and the "Retirement path" of
+  [`peak_assignment_frontend.md`](peak_assignment_frontend.md); F3, F10
+  and F24 are not taken further.*
 - **D3. A design-system note.** Whether the frontend gets a short note of its
   own - type scale, density, colour semantics, dialog grammar, button
   vocabulary, the empty-state pattern - that M2, M6 and QW6 implement against,
