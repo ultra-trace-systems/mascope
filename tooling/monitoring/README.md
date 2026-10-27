@@ -339,9 +339,46 @@ Setup:
    The script header lists every variable.
 4. Cron it clear of the backup windows, e.g. `30 5 * * 0`.
 
+**The CDN vantage.** The origin run never crosses the edge, so it cannot see
+anything the edge answers itself: the HTTPS redirect (`TLS-02`), WAF
+behaviour, edge rate limits, headers the edge adds or strips. With
+`CDN_TARGET` set, the same job runs the suite a second time, **here**, against
+the deployment's public URL, after the origin run and a pause of
+`VANTAGE_GAP` seconds (default 300, so the second run does not start inside
+the login windows the first one spent for the same account). The two
+vantages legitimately disagree, and that is the information:
+`<ts>-vantage.md` says per control where they disagree and which layer
+answered (`security/pentest/README.md`, "The CDN vantage").
+
+1. Deploy `security/pentest/` with its venv on this box too, in `CDN_SUITE_DIR`
+   (default `/opt/pentest-runner/suite/pentest`), synced to the same tag as the
+   target's copy. Hash it against the tag, as for the target.
+2. In the CDN console, add a **WAF skip rule keyed on a secret header**: a
+   custom rule whose expression matches one request header against a long
+   random value and whose action skips the rules that would refuse a scanner.
+   Scope it to the assessed hostname. Not an address allowlist: it drifts when
+   this box's address changes and exempts everything else behind that address.
+   The uptime monitors use the same shape. Record the rule, without the value,
+   with the rest of the fleet's console settings, outside this repository.
+3. Optionally, a request-header transform rule that removes the header before
+   the request goes to the origin, so the origin never sees or logs it.
+4. In `config.env`, add `CDN_TARGET` (the public `https://` URL),
+   `MASCOPE_PENTEST_HEADER_NAME` and `MASCOPE_PENTEST_HEADER_VALUE`. The header
+   goes only to the edge, over TLS with the certificate verified. The target
+   host never receives it, and the suite keeps the value out of the report
+   and its console output.
+5. Check it: a run with the header passes the WAF and gets real answers. The
+   same run without it, or with a value the rule does not match, aborts
+   before the first control: the suite stops when a public route the
+   application always answers comes back 403, since every control behind it
+   would be assessing the WAF. The job then fails rather than reporting
+   refusals as controls that held.
+
 **Exit codes.** Normally the suite's, so the heartbeat reflects the assessment
-rather than the plumbing — with two overrides for cases where pytest succeeded
-and the run still is not evidence:
+rather than the plumbing. With both vantages, either one failing fails the
+job, and the origin's code wins when both fail. A disagreement between them
+does not fail it. Two overrides apply to each vantage, for cases where pytest
+succeeded and the run still is not evidence:
 
 | Exit | Meaning |
 | --- | --- |
@@ -360,8 +397,12 @@ CI runs it with the CLI tests. Deploy the script from a checkout, so what runs
 here is what was reviewed (`sha256sum` it against the tag), and change it by a
 pull request rather than on the box.
 
-Each run leaves three files in `RECORDS`: `<ts>-origin.log`, `<ts>-origin.tar.gz`
-and `<ts>-origin.summary`, pruned at 400 days.
+Each vantage leaves three files in `RECORDS`: `<ts>-<vantage>.log`,
+`<ts>-<vantage>.tar.gz` and `<ts>-<vantage>.summary`, where the vantage is
+`origin` or `cdn`. With both, `<ts>-vantage.md` and `<ts>-vantage.json` hold
+the comparison. Everything is pruned at 400 days. The heartbeat then carries
+both summaries and the comparison's counts
+(`origin: ... | cdn: ... | vantages: agree=N disagree=N edge=N origin_only=N`).
 
 **Do not "simplify" the report retrieval.** It is written defensively against
 the box it talks to: the report is pulled as one stream rather than a remote

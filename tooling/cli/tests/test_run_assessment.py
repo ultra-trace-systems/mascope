@@ -26,6 +26,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "tooling" / "monitoring" / "run-assessment.sh"
+VANTAGE_DIFF = REPO_ROOT / "security" / "pentest" / "vantage_diff.py"
 
 pytestmark = [
     pytest.mark.skipif(
@@ -41,7 +42,10 @@ RELEASE_API = "https://releases.invalid/latest"
 HC_URL = "https://heartbeat.invalid/ping"
 
 # ssh: a suite run exits STUB_SUITE_RC; the report fetch streams STUB_ARCHIVE.
+# Every argument list is appended to STUB_SSH_ARGS, so a test can see what
+# reached the target.
 SSH_STUB = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$STUB_SSH_ARGS"
 for last; do :; done
 case "$last" in
   *"tar -cz report"*) [ -n "$STUB_ARCHIVE" ] && cat "$STUB_ARCHIVE"; exit 0 ;;
@@ -68,8 +72,34 @@ esac
 """
 
 
-def _report(build="v1.7.2", findings=0):
+# The CDN vantage's suite runs on this host from CDN_SUITE_DIR. Its interpreter
+# is stubbed: it records the environment it was given and writes the report
+# STUB_CDN_REPORT names, as the suite would.
+CDN_PYTHON_STUB = """#!/usr/bin/env bash
+{
+  echo "target=$MASCOPE_PENTEST_TARGET"
+  echo "vantage=$MASCOPE_PENTEST_VANTAGE"
+  echo "verify=$MASCOPE_PENTEST_VERIFY_TLS"
+  echo "header=$MASCOPE_PENTEST_HEADER_NAME:$MASCOPE_PENTEST_HEADER_VALUE"
+  echo "args=$*"
+} > "$STUB_CDN_ENV"
+mkdir -p report
+[ -n "$STUB_CDN_REPORT" ] && cp "$STUB_CDN_REPORT" report/pentest-report.json
+exit "${STUB_CDN_RC:-0}"
+"""
+
+# sleep: the gap between the two vantages, recorded instead of waited out.
+SLEEP_STUB = """#!/usr/bin/env bash
+printf '%s\\n' "$1" >> "$STUB_SLEEPS"
+"""
+
+CDN_TARGET = "https://app.invalid"
+HEADER_VALUE = "edge-bypass-0123456789"
+
+
+def _report(build="v1.7.2", findings=0, rows=None):
     return {
+        **(rows or {}),
         "build": {"identity": build},
         "summary": {
             "findings": findings,
@@ -88,15 +118,35 @@ def _archive(path, report_bytes):
         tar.addfile(info, io.BytesIO(report_bytes))
 
 
-def _run(tmp_path, *, report=None, raw=None, release=None, suite_rc=0):
-    """Run the runner once; return (exit code, summary file, heartbeats)."""
+def _run(
+    tmp_path,
+    *,
+    report=None,
+    raw=None,
+    release=None,
+    suite_rc=0,
+    cdn=None,
+    cdn_rc=0,
+    old_records=(),
+):
+    """
+    Run the runner once; return (exit code, summary file, heartbeats).
+
+    :param cdn: The CDN run's report, or ``...`` for a CDN run that writes none.
+        ``None`` configures no CDN vantage at all.
+    :param old_records: Names of files to leave in RECORDS beforehand, dated
+        past the retention.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name, body in (("ssh", SSH_STUB), ("curl", CURL_STUB)):
+    for name, body in (("ssh", SSH_STUB), ("curl", CURL_STUB), ("sleep", SLEEP_STUB)):
         (bin_dir / name).write_text(body)
         (bin_dir / name).chmod(0o755)
     records = tmp_path / "records"
     records.mkdir()
+    for name in old_records:
+        (records / name).write_text("old")
+        os.utime(records / name, (0, 0))
 
     archive = ""
     if report is not None or raw is not None:
@@ -119,7 +169,36 @@ def _run(tmp_path, *, report=None, raw=None, release=None, suite_rc=0):
         "STUB_ARCHIVE": archive,
         "STUB_SUITE_RC": str(suite_rc),
         "STUB_PINGS": str(tmp_path / "pings"),
+        "STUB_SSH_ARGS": str(tmp_path / "ssh-args"),
+        "STUB_SLEEPS": str(tmp_path / "sleeps"),
     }
+    if cdn is not None:
+        suite = tmp_path / "suite"
+        (suite / ".venv" / "bin").mkdir(parents=True)
+        (suite / ".venv" / "bin" / "python").write_text(CDN_PYTHON_STUB)
+        (suite / ".venv" / "bin" / "python").chmod(0o755)
+        shutil.copy(VANTAGE_DIFF, suite / "vantage_diff.py")
+        cdn_report = ""
+        if cdn is not ...:
+            cdn_report = str(tmp_path / "cdn-report.json")
+            Path(cdn_report).write_text(json.dumps(cdn))
+        # The header lives in the config file, as on the monitoring host: a
+        # sourced file sets shell variables, not exported ones, so it reaches
+        # the suite only if the runner passes it on.
+        config = tmp_path / "config.env"
+        config.write_text(
+            "MASCOPE_PENTEST_HEADER_NAME=X-Assessment\n"
+            f"MASCOPE_PENTEST_HEADER_VALUE={HEADER_VALUE}\n"
+        )
+        env.update(
+            PENTEST_RUNNER_ENV=str(config),
+            CDN_TARGET=CDN_TARGET,
+            CDN_SUITE_DIR=str(suite),
+            VANTAGE_GAP="17",
+            STUB_CDN_REPORT=cdn_report,
+            STUB_CDN_RC=str(cdn_rc),
+            STUB_CDN_ENV=str(tmp_path / "cdn-env"),
+        )
     if release is not None:
         env["STUB_RELEASE"] = release
     result = subprocess.run(
@@ -219,3 +298,135 @@ def test_an_empty_archive_fails_the_run(tmp_path):
     rc, summary, _ = _run(tmp_path, release=_tag("v1.7.2"))
     assert rc == 1
     assert summary == "report unreadable"
+
+
+def _rows(**outcomes):
+    """Report sections from ``{control id: outcome}``."""
+    section = {"failed": "findings", "passed": "controls_verified"}
+    rows = {"findings": [], "controls_verified": [], "not_assessed": []}
+    for control, outcome in outcomes.items():
+        rows[section.get(outcome, "not_assessed")].append(
+            {"id": control.replace("_", "-"), "title": control, "detail": ""}
+        )
+    return rows
+
+
+ORIGIN_ROWS = _rows(HDR_01="passed", TLS_02="skipped", AUTHN_01="passed")
+# The edge strips a header the origin sets, and answers the HTTPS redirect the
+# origin never sees.
+CDN_ROWS = _rows(HDR_01="failed", TLS_02="passed", AUTHN_01="passed")
+
+
+def test_the_cdn_vantage_runs_beside_the_origin_and_the_two_are_compared(tmp_path):
+    rc, origin, pings = _run(
+        tmp_path,
+        report=_report(rows=ORIGIN_ROWS),
+        release=_tag("v1.7.2"),
+        cdn=_report(rows=CDN_ROWS),
+    )
+    records = tmp_path / "records"
+    assert rc == 0
+    assert origin == f"build=v1.7.2 {COUNTS} lag=current"
+    [cdn_summary] = records.glob("*-cdn.summary")
+    assert cdn_summary.read_text().strip() == f"build=v1.7.2 {COUNTS} lag=current"
+    assert len(list(records.glob("*-cdn.tar.gz"))) == 1
+    assert len(list(records.glob("*-cdn.log"))) == 1
+
+    # One timestamp holds both vantages and their comparison.
+    # "2026-10-27T132500Z" is 18 characters.
+    assert len({path.name[:18] for path in records.iterdir()}) == 1
+    [comparison] = records.glob("*-vantage.json")
+    verdicts = {
+        d["id"]: (d["verdict"], d["layer"])
+        for d in json.loads(comparison.read_text())["disagreements"]
+    }
+    assert verdicts == {
+        "HDR-01": ("edge weakens", "edge"),
+        "TLS-02": ("edge only", "edge"),
+    }
+    assert "| HDR-01 | passed | failed | edge weakens | edge |" in (
+        next(records.glob("*-vantage.md")).read_text()
+    )
+    assert pings[-1] == (
+        f"{HC_URL} origin: {origin} | cdn: {origin} | "
+        "vantages: agree=1 disagree=2 edge=2 origin_only=0"
+    )
+
+
+def test_the_header_goes_to_the_local_cdn_run_and_never_to_the_target(tmp_path):
+    _run(tmp_path, report=_report(), release=_tag("v1.7.2"), cdn=_report())
+    cdn_env = (tmp_path / "cdn-env").read_text().splitlines()
+    assert f"target={CDN_TARGET}" in cdn_env
+    assert "vantage=cdn" in cdn_env
+    assert "verify=true" in cdn_env
+    assert f"header=X-Assessment:{HEADER_VALUE}" in cdn_env
+    # Through the environment, not the command line.
+    assert not any(HEADER_VALUE in line for line in cdn_env if line.startswith("args="))
+    ssh_args = (tmp_path / "ssh-args").read_text()
+    assert "MASCOPE_PENTEST_VANTAGE=origin" in ssh_args
+    assert HEADER_VALUE not in ssh_args
+    assert "X-Assessment" not in ssh_args
+
+
+def test_a_failing_cdn_run_fails_the_run(tmp_path):
+    rc, origin, pings = _run(
+        tmp_path, report=_report(), release=_tag("v1.7.2"), cdn=_report(), cdn_rc=1
+    )
+    assert rc == 1
+    assert pings[-1].startswith(f"{HC_URL}/fail suite exit 1 | origin: {origin}")
+
+
+def test_an_origin_failure_keeps_its_code_over_the_cdn_run(tmp_path):
+    rc, _, pings = _run(
+        tmp_path,
+        report=_report(build="v1.7.9"),
+        release=_tag("v1.7.10"),
+        cdn=_report(build="v1.7.9"),
+        cdn_rc=1,
+    )
+    assert rc == 90
+    assert pings[-1].startswith(f"{HC_URL}/fail suite exit 90 |")
+
+
+def test_a_cdn_run_without_a_report_fails_and_is_not_compared(tmp_path):
+    rc, _, pings = _run(tmp_path, report=_report(), release=_tag("v1.7.2"), cdn=...)
+    records = tmp_path / "records"
+    assert rc == 1
+    assert next(records.glob("*-cdn.summary")).read_text().strip() == (
+        "report unreadable"
+    )
+    assert not list(records.glob("*-vantage.*"))
+    assert pings[-1].endswith(
+        "| cdn: report unreadable | vantages: comparison unavailable"
+    )
+
+
+def test_without_a_cdn_target_only_the_origin_runs(tmp_path):
+    rc, _, _ = _run(tmp_path, report=_report(), release=_tag("v1.7.2"))
+    records = tmp_path / "records"
+    assert rc == 0
+    assert not list(records.glob("*-cdn.*"))
+    assert not list(records.glob("*-vantage.*"))
+
+
+def test_the_cdn_run_waits_out_the_gap_after_the_origin_run(tmp_path):
+    _run(tmp_path, report=_report(), release=_tag("v1.7.2"), cdn=_report())
+    assert (tmp_path / "sleeps").read_text().split() == ["17"]
+
+
+def test_retention_prunes_every_vantage_and_the_comparison(tmp_path):
+    old = [
+        "2025-01-01T000000Z-origin.log",
+        "2025-01-01T000000Z-cdn.tar.gz",
+        "2025-01-01T000000Z-vantage.md",
+    ]
+    _run(
+        tmp_path,
+        report=_report(),
+        release=_tag("v1.7.2"),
+        cdn=_report(),
+        old_records=[*old, "keep-me.txt"],
+    )
+    names = {path.name for path in (tmp_path / "records").iterdir()}
+    assert not names & set(old)
+    assert "keep-me.txt" in names
