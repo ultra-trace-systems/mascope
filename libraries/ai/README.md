@@ -171,8 +171,9 @@ receipt = kit.apply(plan.id, token)
 - **Refused at planning.** A builder refuses what the server would: a role
   too low in a workspace the change touches (`AccessDenied`), a locked
   sample or destination batch, an object already where it would go. A
-  builder also refuses a batch or sample outside the client's workspace,
-  even one found by its ID (`InvalidRequest`): the role it checks is that
+  builder also refuses a dataset, batch or sample outside the client's
+  workspace, even one found by its ID or passed as a `Ref`
+  (`InvalidRequest`): the role it checks is that
   workspace's.
 - **What every workspace shares** is not planned unless the user asked for
   it in so many words: a global collection, an association of one, and

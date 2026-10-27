@@ -335,13 +335,21 @@ def plan_organize(kit: "Toolkit", moves: Sequence[Any]) -> Plan:
             if (dataset.kind, dataset.id) in seen:
                 raise InvalidRequest(f"{dataset} is moved twice in one plan")
             seen.add((dataset.kind, dataset.id))
+            with kit._errors("read", dataset):
+                row = _row(kit.client.datasets.list(), "dataset_id", dataset.id)
+            if not row:
+                # A Ref passed in can name a dataset of another workspace,
+                # whose move the role checked here would not cover
+                raise InvalidRequest(
+                    f"{dataset} is not in workspace {home.name!r}, the client's: "
+                    "the toolkit plans writes in its client's workspace alone. "
+                    "Open a client on the workspace it is in to plan this."
+                )
             if to.id == home.id:
                 raise InvalidRequest(f"{dataset} is in workspace {to.name!r} already")
             operation = f"move into workspace {to.name!r}"
             _need(roles, home, "editor", operation, dataset)
             _need(roles, to, "editor", operation, dataset)
-            with kit._errors("read", dataset):
-                row = _row(kit.client.datasets.list(), "dataset_id", dataset.id)
             if _locked(row.get("locked")):
                 warnings.append(
                     f"Dataset {dataset.name!r} is locked: moving it needs the "
