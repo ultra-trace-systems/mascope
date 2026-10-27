@@ -265,6 +265,71 @@ class TestDescribe:
         assert set(out["mz_calibration"]) == {"status", "verified"}
         json.dumps(out)
 
+    def test_a_sample_names_its_ionization_mode_and_its_mechanisms(self, kit):
+        out = kit.describe("s21", kind="sample")
+
+        assert out["ionization_mode"] == "Bromide"
+        assert out["ionization_mode_id"] == "im-x"
+        # By name, sorted; a mechanism the listing lacks keeps its ID
+        assert out["ionization_mechanisms"] == ["[M+Br2]-", "[M+Br]-", "gone"]
+
+    def test_a_sample_under_a_mode_no_longer_adopted_still_names_it(self, kit, api):
+        out = kit.describe("s23", kind="sample")
+
+        assert out["ionization_mode"] == "Retired"
+        assert out["ionization_mechanisms"] == ["[M+H]+"]
+        assert [c[2] for c in api.requests_to("ionization/modes")] == [
+            {},
+            {"include_system": "true"},
+        ]
+
+    def test_a_sample_whose_mode_is_unknown_or_none(self, kit, api):
+        unlisted = kit.describe("s31", kind="sample")
+        # Neither listing has it: there are no mechanisms to name
+        assert len(api.requests_to("ionization/modes")) == 2
+        assert api.requests_to("ionization_mechanisms") == []
+        none = kit.describe("s11", kind="sample")
+
+        assert unlisted["ionization_mode_id"] == "im-unlisted"
+        assert unlisted["ionization_mode"] is None
+        assert unlisted["ionization_mechanisms"] is None
+        assert none["ionization_mode_id"] is None
+        assert none["ionization_mode"] is None
+        assert none["ionization_mechanisms"] is None
+
+    def test_an_adopted_mode_reads_no_system_modes(self, kit, api):
+        kit.describe("s22", kind="sample")
+
+        assert [c[2] for c in api.requests_to("ionization/modes")] == [{}]
+
+    def test_a_batch_names_the_modes_of_its_samples(self, kit):
+        out = kit.describe(kit.resolve("Spring 2026", "batch"))
+
+        assert out["n_ionization_modes"] == 2
+        # Most samples first
+        assert out["ionization_modes"] == [
+            {
+                "id": "im-x",
+                "name": "Bromide",
+                "mechanisms": ["[M+Br2]-", "[M+Br]-", "gone"],
+                "n_samples": 2,
+            },
+            {
+                "id": "im-old",
+                "name": "Retired",
+                "mechanisms": ["[M+H]+"],
+                "n_samples": 1,
+            },
+        ]
+
+    def test_a_batch_of_samples_without_a_mode_names_none(self, kit, api):
+        out = kit.describe(kit.resolve("Blank (A)", "batch"))
+
+        assert out["n_ionization_modes"] == 0
+        assert out["ionization_modes"] == []
+        assert api.requests_to("ionization/modes") == []
+        assert api.requests_to("ionization_mechanisms") == []
+
     def test_the_workspaces(self, kit):
         mine = kit.describe("Workspace A", kind="workspace")
         other = kit.describe("Workspace B", kind="workspace")

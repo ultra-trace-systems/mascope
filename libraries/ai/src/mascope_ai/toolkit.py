@@ -859,6 +859,7 @@ class Toolkit:
             "workspace_id",
             None,
         )
+        modes = self._modes_of(samples)
         return {
             "description": row.get("sample_batch_description"),
             "type": row.get("sample_batch_type"),
@@ -872,9 +873,10 @@ class Toolkit:
             "last_measured": times.max() if times.notna().any() else None,
             "sample_polarities": counts("polarity"),
             "instruments": counts("instrument"),
-            "n_ionization_modes": int(samples["ionization_mode_id"].nunique())
+            "n_ionization_modes": len(modes)
             if "ionization_mode_id" in samples
             else None,
+            "ionization_modes": modes,
             "n_samples_matched": matched,
             "n_collections": len(collection_refs),
             "collections": [c.to_dict() for c in collection_refs[:LISTED]],
@@ -886,6 +888,8 @@ class Toolkit:
         calibration = record.get("mz_calibration") or {}
         match = record.get("match") or {}
         attributes = record.get("sample_item_attributes") or {}
+        mode_id = record.get("ionization_mode_id")
+        mode = self._ionization_modes([mode_id]).get(mode_id, {}) if mode_id else {}
         return {
             "batch_id": record.get("sample_batch_id"),
             "type": record.get("sample_item_type"),
@@ -893,6 +897,9 @@ class Toolkit:
             "polarity": record.get("polarity"),
             "instrument": record.get("instrument"),
             "instrument_type": record.get("instrument_type"),
+            "ionization_mode": mode.get("name"),
+            "ionization_mode_id": mode_id,
+            "ionization_mechanisms": mode.get("mechanisms"),
             "duration_s": record.get("length"),
             "t_range_s": [record.get("t0"), record.get("t1")],
             "mz_range": record.get("range"),
@@ -909,6 +916,53 @@ class Toolkit:
             },
             "n_attributes": len(attributes),
             "attributes": dict(list(attributes.items())[:LISTED]),
+        }
+
+    def _modes_of(self, samples: pd.DataFrame) -> list[dict[str, Any]]:
+        """The ionization modes of *samples*, most samples first: each with
+        its mechanisms and how many of the samples it has."""
+        if "ionization_mode_id" not in samples:
+            return []
+        counts = samples["ionization_mode_id"].value_counts(dropna=True)
+        modes = self._ionization_modes(list(counts.index))
+        return [
+            {
+                "id": mode_id,
+                "name": modes.get(mode_id, {}).get("name"),
+                "mechanisms": modes.get(mode_id, {}).get("mechanisms"),
+                "n_samples": int(n),
+            }
+            for mode_id, n in counts.items()
+        ]
+
+    def _ionization_modes(self, mode_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """The modes *mode_ids* name, by ID: their name and the names of
+        their mechanisms, sorted. A mode the server does not list is left
+        out.
+
+        The adopted modes are listed first and the system ones only for an
+        ID they lack: a sample processed under a mode the server since
+        stopped adopting still names it.
+        """
+        found: dict[str, dict[str, Any]] = {}
+        with self._errors("list the ionization modes"):
+            for include_system in (False, True):
+                if all(mode_id in found for mode_id in mode_ids):
+                    break
+                rows = self.client.ionization.modes(include_system=include_system)
+                for row in [] if rows is None else rows.to_dict("records"):
+                    if row["ionization_mode_id"] in mode_ids:
+                        found[row["ionization_mode_id"]] = row
+            names = self._mechanism_names() if found else {}
+        return {
+            mode_id: {
+                "name": row.get("ionization_mode_name"),
+                "mechanisms": sorted(
+                    names.get(mechanism, mechanism)
+                    for mechanism in row.get("ionization_mechanism_ids") or []
+                ),
+            }
+            for mode_id, row in found.items()
         }
 
     def _describe_collection(self, ref: Ref) -> dict[str, Any]:
