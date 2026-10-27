@@ -218,6 +218,27 @@ class TestList:
         assert code == 1
         assert "access token not configured" in err and "mascope-ai setup" in err
 
+    def test_a_refused_token_says_so(self, env, api, capsys):
+        api.fail("GET", "workspaces", 401)
+        code, out, err = run(capsys, "list")
+        assert code == 1
+        assert "The server refused the token" in err
+        assert "Traceback" not in err
+
+    def test_a_server_it_cannot_reach_says_so(self, env, capsys, monkeypatch):
+        import requests
+
+        from mascope_sdk import _http
+
+        def unreachable(url, *args, **kwargs):
+            raise requests.ConnectionError("Connection refused")
+
+        monkeypatch.setattr(_http.requests, "get", unreachable)
+        code, out, err = run(capsys, "list", "datasets")
+        assert code == 1
+        assert "Could not connect to Mascope" in err
+        assert "Traceback" not in err
+
     def test_an_ambiguous_batch_says_so(self, env, capsys):
         code, out, err = run(capsys, "list", "samples", "--batch", "Spring")
         assert code == 1
@@ -383,6 +404,13 @@ def test_the_server_logs_to_stderr_once_the_sdk_has_taken_its_handler(tmp_path):
     assert b"KeyError: 'boom'" in stderr
     # The SDK's own lines are its handler's, printed once
     assert stderr.count(b"sdk line") == 1
+
+
+def test_the_server_logs_each_line_once_before_the_sdk_s_client_is_made(tmp_path):
+    done = _serve(tmp_path, b"", "-m", "mascope_ai", "mcp", "--session", "once")
+    assert done.returncode == 0, done.stderr
+    stderr = re.sub(rb"\x1b\[[0-9;]*m", b"", done.stderr)
+    assert stderr.count(b"mascope-ai mcp: session once") == 1
 
 
 def test_the_server_opens_the_workspace_it_is_given(tmp_path):
