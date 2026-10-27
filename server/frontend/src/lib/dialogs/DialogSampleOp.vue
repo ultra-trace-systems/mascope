@@ -13,7 +13,7 @@ import Message from 'primevue/message'
 import { ToolbarTemplate } from '@/lib/toolbars'
 import { clone, strToSnakeCase, beautifySnakeCase, beautifyConstant, genId } from '@/lib/utils'
 import { useApp } from '@/stores'
-import { ionizationModeChoices } from '@/lib/ionizationModes'
+import { findMode, ionizationModeChoices } from '@/lib/ionizationModes'
 import {
   sampleTypesFilterIdRequired,
   sampleTypesFilterIdOptional,
@@ -187,14 +187,13 @@ const ionization = computed(() => {
       instrument: input.instrument
     })
   }
-  const assigned = app.data.ionization.mode.list.find(
-    (mode) => mode.ionization_mode_id === original.value?.ionization_mode_id
-  )
+  // The sample may hold an earlier version of its mode, which the list names
+  // through the current one; the option keeps the id the sample holds.
+  const assignedId = original.value?.ionization_mode_id ?? null
+  const assigned = findMode(app.data.ionization.mode.list, assignedId)
   return {
-    options: assigned
-      ? [{ label: assigned.ionization_mode_name, value: assigned.ionization_mode_id }]
-      : [],
-    defaultId: assigned?.ionization_mode_id ?? null
+    options: assigned ? [{ label: assigned.ionization_mode_name, value: assignedId }] : [],
+    defaultId: assigned ? assignedId : null
   }
 })
 const ionizationModeOptions = computed(() => ionization.value.options)

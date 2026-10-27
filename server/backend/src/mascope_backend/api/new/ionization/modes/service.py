@@ -1,4 +1,4 @@
-from sqlalchemy import and_, distinct, func, or_, select
+from sqlalchemy import and_, delete, distinct, func, or_, select
 
 from mascope_backend.api.controllers.sample.batches.status.service import (
     update_sample_batch_status,
@@ -34,6 +34,14 @@ from .util import (
     resolve_ionization_modes_by_tokens,
     token_is_unique,
 )
+from .versions import (
+    VERSIONED_FIELDS,
+    SupersededVersionError,
+    lineage,
+    make_version,
+    repoint_routing,
+    superseded_ids,
+)
 
 
 def _mechanism_set(ionization_mechanism_ids) -> set:
@@ -51,6 +59,25 @@ def _same_value(field: str, incoming, current) -> bool:
     if field == "ionization_mechanism_ids":
         return _mechanism_set(incoming) == _mechanism_set(current)
     return incoming == current
+
+
+async def listed(modes: list[IonizationMode]) -> list[dict]:
+    """The modes as the browser holds them: each with its earlier versions.
+
+    ``superseded_ids`` is what lets a reader holding only the current versions
+    resolve a sample bound under an earlier one, without the listing offering
+    the earlier ones to bind to. Every record of a mode that leaves the server
+    goes through here, the socket's included: a record without the field
+    would replace a listed one and lose it.
+    """
+    async with async_session() as session:
+        earlier = await superseded_ids(
+            session, [mode.ionization_mode_id for mode in modes]
+        )
+    return [
+        {**mode.to_dict(), "superseded_ids": earlier[mode.ionization_mode_id]}
+        for mode in modes
+    ]
 
 
 #: The date a daily ACQUISITION batch's name starts with: ``YYYY-MM-DD``.
@@ -107,11 +134,13 @@ async def create_ionization_mode(
                     f"Ionization mode with similar token as '{ionization_mode_data.ionization_mode_token}' already exists"
                 )
 
-        # Step 2: Check for name conflicts
+        # Step 2: Check for name conflicts, among the current versions: an
+        # earlier version keeps the name its successor has.
         existing_name = await session.execute(
             select(IonizationMode).where(
                 IonizationMode.ionization_mode_name
-                == ionization_mode_data.ionization_mode_name
+                == ionization_mode_data.ionization_mode_name,
+                IonizationMode.is_active.is_(True),
             )
         )
         if existing_name.scalar_one_or_none():
@@ -135,14 +164,15 @@ async def create_ionization_mode(
         # Step 5: Refresh and return
         await session.refresh(new_ionization_mode)
 
+    (record,) = await listed([new_ionization_mode])
     await emit_record_created(
         record_type="ionization_mode",
         record_id=new_ionization_mode.ionization_mode_id,
-        record=new_ionization_mode.to_dict(),
+        record=record,
     )
     return {
         "message": "Ionization mode created successfully.",
-        "data": new_ionization_mode.to_dict(),
+        "data": record,
     }
 
 
@@ -172,11 +202,13 @@ async def get_ionization_mode(ionization_mode_id: str) -> dict:
         if not ionization_mode:
             raise NotFoundException(f"ionization mode {label} not found")
 
-        # Return details
-        return {
-            "message": f"Ionization mode {ionization_mode.ionization_mode_name} retrieved successfully.",
-            "data": ionization_mode.to_dict(),
-        }
+    # Any version, a superseded one included: a sample bound under it
+    # names it.
+    (record,) = await listed([ionization_mode])
+    return {
+        "message": f"Ionization mode {ionization_mode.ionization_mode_name} retrieved successfully.",
+        "data": record,
+    }
 
 
 @api_controller()
@@ -200,7 +232,7 @@ async def get_ionization_modes(include_system: bool = False) -> dict:
     return {
         "message": "Ionization modes retrieved successfully.",
         "results": len(ionization_modes),
-        "data": [mode.to_dict() for mode in ionization_modes],
+        "data": await listed(ionization_modes),
     }
 
 
@@ -234,6 +266,14 @@ async def update_ionization_mode(
     """
     Updates an existing ionization mode.
 
+    A mode is a versioned setup. An edit that changes what a run computes
+    from it - the polarity, the mechanisms or a collection - inserts the next
+    version and marks this one inactive; the samples bound under this one
+    keep it until they are re-processed, and the method bindings move to the
+    new one. An edit of the name, the token or the instrument scope changes
+    no result and is made on this row in place. Only the current version can
+    be edited.
+
     Steps:
     - Fetch the ionization mode by its ID from the database.
     - Check for token conflicts if token is being updated.
@@ -243,8 +283,8 @@ async def update_ionization_mode(
     - Block updates if any affected batch is currently processing.
     - Flag affected batches: "recalibrate" if the calibration collection changed,
       otherwise "rematch" if mechanisms or the diagnostic collection changed.
-    - Update the fields that were provided in the request.
-    - Commit the changes and return the updated ionization mode.
+    - Mint the next version, or update the fields in place.
+    - Commit the changes and return the mode as it now stands.
 
     :param ionization_mode_id: The ID of the ionization mode to update.
     :param ionization_mode_data: The data to update.
@@ -261,6 +301,13 @@ async def update_ionization_mode(
         if not ionization_mode:
             raise NotFoundException(
                 f"Ionization mode with ID {ionization_mode_id} not found"
+            )
+        if not ionization_mode.is_active:
+            raise SupersededVersionError(
+                f"Version {ionization_mode.version} of ionization mode "
+                f"'{ionization_mode.ionization_mode_name}' has been replaced by a "
+                "later version, and is kept for the samples bound under it. "
+                "Edit the current version."
             )
         update_data = ionization_mode_data.model_dump(exclude_unset=True)
 
@@ -439,17 +486,36 @@ async def update_ionization_mode(
                                 f"as it is in use for one or more acquisition batches."
                             )
 
-        # Update the fields that were provided
-        for field, value in update_data.items():
-            setattr(ionization_mode, field, value)
-        if "instrument" in update_data:
-            ionization_mode.instrument_id = await instrument_id_for(
-                session, ionization_mode.instrument
+        # A change to what a run computes is a new version; the rest is made
+        # in place. The row being replaced goes inactive first: the token and
+        # system-key indexes hold among the active rows, and the new version
+        # usually shares both.
+        minted = any(
+            field in update_data
+            and not _same_value(
+                field, update_data[field], getattr(ionization_mode, field)
             )
+            for field in VERSIONED_FIELDS
+        )
+        if minted:
+            current = make_version(ionization_mode, update_data)
+            ionization_mode.is_active = False
+            await session.flush()
+            session.add(current)
+            await session.flush()
+            await repoint_routing(
+                session, ionization_mode_id, current.ionization_mode_id
+            )
+        else:
+            current = ionization_mode
+            for field, value in update_data.items():
+                setattr(current, field, value)
+        if "instrument" in update_data:
+            current.instrument_id = await instrument_id_for(session, current.instrument)
 
         # Commit and return
         await session.commit()
-        await session.refresh(ionization_mode)
+        await session.refresh(current)
 
     # Flag affected batches so stale results are reprocessed. A calibration
     # collection change requires a re-fit of m/z calibration to take effect
@@ -469,27 +535,45 @@ async def update_ionization_mode(
                 independent_transaction=True,
             )
 
-    await emit_record_updated(
-        record_type="ionization_mode",
-        record_id=ionization_mode_id,
-        record=ionization_mode.to_dict(),
-    )
+    (record,) = await listed([current])
+    if minted:
+        # The listing holds current versions only: the replaced one leaves it
+        # and the new one joins it.
+        await emit_record_deleted(
+            record_type="ionization_mode", record_id=ionization_mode_id
+        )
+        await emit_record_created(
+            record_type="ionization_mode",
+            record_id=current.ionization_mode_id,
+            record=record,
+        )
+    else:
+        await emit_record_updated(
+            record_type="ionization_mode",
+            record_id=ionization_mode_id,
+            record=record,
+        )
     return {
-        "message": f"Ionization mode {ionization_mode.ionization_mode_name} "
-        "updated successfully.",
-        "data": ionization_mode.to_dict(),
+        "message": (
+            f"Ionization mode {current.ionization_mode_name} updated: version "
+            f"{current.version}."
+            if minted
+            else f"Ionization mode {current.ionization_mode_name} updated successfully."
+        ),
+        "data": record,
     }
 
 
 @api_controller()
 async def delete_ionization_mode(ionization_mode_id: str) -> dict:
     """
-    Deletes an ionization mode by its unique identifier.
+    Deletes an ionization mode by its unique identifier, every version of it.
 
     Steps:
-    1. Fetch the ionization mode by its ID from the database.
-    2. Check if the ionization mode is associated with any samples. If so, raise an exception.
-    3. If the ionization mode is found, delete it from the session and commit the changes.
+    1. Fetch the ionization mode by its ID from the database: its current
+       version, since a superseded one is kept for its samples.
+    2. Check if any version of it is associated with samples. If so, raise an exception.
+    3. Delete every version and commit the changes.
 
     :param ionization_mode_id: The unique identifier of the ionization mode to delete.
     :return: A dictionary with a success message.
@@ -503,17 +587,24 @@ async def delete_ionization_mode(ionization_mode_id: str) -> dict:
                 f"Ionization mode with ID '{ionization_mode_id}' not found"
             )
 
+        if not ionization_mode.is_active:
+            raise SupersededVersionError(
+                f"Version {ionization_mode.version} of ionization mode "
+                f"'{ionization_mode.ionization_mode_name}' has been replaced by a "
+                "later version, and is kept for the samples bound under it. "
+                "Delete the current version to delete the mode."
+            )
+
         if ionization_mode.system_key:
             raise ValueError(
                 f"Ionization mode '{ionization_mode.ionization_mode_name}' is one "
                 "Mascope ships and cannot be deleted"
             )
 
-        # Step 2: Check for associations with samples
+        # Step 2: Check for associations with samples, under any version
+        versions = await lineage(session, ionization_mode_id)
         result = await session.execute(
-            select(SampleItem).where(
-                SampleItem.ionization_mode_id == ionization_mode_id
-            )
+            select(SampleItem).where(SampleItem.ionization_mode_id.in_(versions))
         )
         if result.scalars().first():
             raise ValueError(
@@ -521,8 +612,12 @@ async def delete_ionization_mode(ionization_mode_id: str) -> dict:
                 "existing samples and cannot be deleted"
             )
 
-        # Step 3: Delete the ionization mode and commit changes
-        await session.delete(ionization_mode)
+        # Step 3: Delete every version and commit changes
+        await session.execute(
+            delete(IonizationMode).where(
+                IonizationMode.ionization_mode_id.in_(versions)
+            )
+        )
         await session.commit()
 
     await emit_record_deleted(

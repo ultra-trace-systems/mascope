@@ -263,3 +263,87 @@ async def test_a_leftover_row_that_was_edited_is_not_claimed(
     assert counts["claimed"] == 0
     assert row.system_key is None
     assert row.ionization_mode_token == "OURS"
+
+
+# --- versions --------------------------------------------------------------
+
+
+async def _add_mode(async_session_factory, mode_id, **fields):
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMode(
+                ionization_mode_id=mode_id,
+                ionization_mode_polarity=_POLARITY,
+                **fields,
+            )
+        )
+        await session.commit()
+
+
+async def _drop_modes(async_session_factory, *mode_ids):
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(IonizationMode).where(
+                IonizationMode.ionization_mode_id.in_(mode_ids)
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_row_under_the_catalogue_id_is_left_alone(
+    async_session_factory, clean_slate
+):
+    """Neither claimed - a key on a version nothing reads - nor seeded over,
+    which its id would refuse."""
+    mechanism_id = await _add_mechanism(async_session_factory, _MECHANISMS[0], "-")
+    successor = gen_id()
+    await _add_mode(
+        async_session_factory,
+        _MODE_ID,
+        ionization_mode_name=_NAME,
+        ionization_mechanism_ids=[mechanism_id],
+        is_active=False,
+    )
+    await _add_mode(
+        async_session_factory,
+        successor,
+        ionization_mode_name=f"{_NAME} edited",
+        ionization_mechanism_ids=[mechanism_id],
+        version=2,
+        supersedes_id=_MODE_ID,
+    )
+    try:
+        counts = await ensure_system_ionization_modes()
+        async with async_session_factory() as session:
+            superseded = await session.get(IonizationMode, _MODE_ID)
+    finally:
+        await _drop_modes(async_session_factory, successor, _MODE_ID)
+
+    assert counts["edited"] == 1
+    assert superseded.system_key is None
+    assert await _mode(async_session_factory, _KEY) is None
+
+
+@pytest.mark.asyncio
+async def test_a_name_only_a_superseded_version_holds_is_free_to_seed(
+    async_session_factory, clean_slate
+):
+    await _add_mechanism(async_session_factory, _MECHANISMS[0], "-")
+    old = gen_id()
+    await _add_mode(
+        async_session_factory,
+        old,
+        ionization_mode_name=_NAME,
+        ionization_mechanism_ids=[],
+        is_active=False,
+    )
+    try:
+        counts = await ensure_system_ionization_modes()
+        seeded = await _mode(async_session_factory, _KEY)
+    finally:
+        await _drop_modes(async_session_factory, old)
+
+    assert counts["name_taken"] == 0
+    assert seeded is not None
+    assert seeded.ionization_mode_name == _NAME

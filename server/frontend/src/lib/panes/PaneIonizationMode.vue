@@ -17,6 +17,7 @@ import FloatLabel from 'primevue/floatlabel'
 import Select from 'primevue/select'
 import MultiSelect from 'primevue/multiselect'
 import Fieldset from 'primevue/fieldset'
+import Tag from 'primevue/tag'
 import { useConfirm } from 'primevue/useconfirm'
 import { FilterMatchMode } from '@primevue/core/api'
 
@@ -145,7 +146,9 @@ const mode = {
         ionization_mechanism_ids: [...data.ionization_mechanism_ids],
         calibration_collection_id: data.calibration_collection_id,
         diagnostic_collection_id: data.diagnostic_collection_id,
-        instrument: data.instrument ?? null
+        instrument: data.instrument ?? null,
+        // Read for the confirmation only: an edit cannot set the version.
+        version: data.version ?? 1
       }
     }
   },
@@ -167,19 +170,21 @@ const mode = {
       resetEdit()
     }
 
-    // Editing a mode affects every sample processed under it. A calibration
-    // collection change requires re-calibration to take effect (stronger
-    // signal); mechanism/diagnostic changes only need a rematch. Warn
-    // accordingly before persisting.
+    // A change to what a run computes makes the mode's next version. Samples
+    // already processed keep theirs until they are reprocessed: a calibration
+    // collection change needs a re-calibration (the stronger signal), a
+    // mechanism or diagnostic change a rematch. Warn accordingly before
+    // persisting.
+    const next = `version ${(o.version ?? 1) + 1}`
     if (calibrationChanged) {
       confirm.require({
         icon: 'pi pi-exclamation-triangle',
         header: 'Confirm ionization mode update',
         message:
-          'Changing the calibration collection affects how all samples processed under ' +
-          'this mode are mass-calibrated. Affected batches will be flagged for re-calibration ' +
-          'and must be re-calibrated (then re-matched) for the new collection to take effect. ' +
-          'Do you want to proceed?',
+          `Changing the calibration collection makes ${next} of this mode. Samples ` +
+          'already processed keep the version they were calibrated under. Affected batches ' +
+          'will be flagged for re-calibration, which moves their samples onto the new ' +
+          'version (then re-matches them). Do you want to proceed?',
         accept: doSave,
         acceptProps: { icon: 'pi pi-check', label: 'Update', severity: 'warn' },
         rejectProps: { label: 'Cancel', severity: 'secondary' }
@@ -189,9 +194,10 @@ const mode = {
         icon: 'pi pi-exclamation-triangle',
         header: 'Confirm ionization mode update',
         message:
-          'Changing the ionization mechanisms or diagnostic collection affects all associated ' +
-          'samples. Batches containing those samples will be flagged for re-matching. ' +
-          'Do you want to proceed?',
+          `Changing the ionization mechanisms or diagnostic collection makes ${next} of ` +
+          'this mode. Samples already processed keep the version they were matched under. ' +
+          'Batches containing them will be flagged for re-matching, which moves their ' +
+          'samples onto the new version. Do you want to proceed?',
         accept: doSave,
         acceptProps: { icon: 'pi pi-check', label: 'Update', severity: 'warn' },
         rejectProps: { label: 'Cancel', severity: 'secondary' }
@@ -243,15 +249,21 @@ watch(
   }
 )
 
-// Reset when create successful
-watch(
-  computed(() => app.data.ionization.mode.list.length),
-  (newVal, oldVal) => {
-    if (newVal > oldVal) {
-      resetFields()
-    }
-  }
-)
+// Reset once the create succeeds. Not on the list growing: an edit that
+// makes a mode's next version replaces its row, which the list sees as one
+// row leaving and another arriving, and that would clear a half-typed form.
+const createMode = async () => {
+  const created = await app.data.ionization.mode.create({
+    ionization_mode_name: add.ionization_mode_name.trim(),
+    ionization_mode_token: add.ionization_mode_token.trim() || null,
+    ionization_mode_polarity: add.ionization_mode_polarity,
+    ionization_mechanism_ids: add.ionization_mechanism_ids,
+    calibration_collection_id: add.calibration_collection_id,
+    diagnostic_collection_id: add.diagnostic_collection_id,
+    instrument: add.instrument
+  })
+  if (created) resetFields()
+}
 
 // Expose resetFields for parent component
 defineExpose({
@@ -381,18 +393,7 @@ defineExpose({
       <Button
         label="Create"
         icon="pi pi-plus"
-        @click="
-          () =>
-            app.data.ionization.mode.create({
-              ionization_mode_name: add.ionization_mode_name.trim(),
-              ionization_mode_token: add.ionization_mode_token.trim() || null,
-              ionization_mode_polarity: add.ionization_mode_polarity,
-              ionization_mechanism_ids: add.ionization_mechanism_ids,
-              calibration_collection_id: add.calibration_collection_id,
-              diagnostic_collection_id: add.diagnostic_collection_id,
-              instrument: add.instrument
-            })
-        "
+        @click="createMode"
         :disabled="
           !add.ionization_mode_name.trim() ||
           !add.ionization_mode_polarity ||
@@ -429,7 +430,19 @@ defineExpose({
             v-model="edited.ionization_mode_name"
             style="width: 100%"
           />
-          <span v-else>{{ data.ionization_mode_name }}</span>
+          <span v-else>
+            {{ data.ionization_mode_name }}
+            <Tag
+              v-if="data.version > 1"
+              :value="`v${data.version}`"
+              severity="secondary"
+              class="version"
+              v-tooltip="{
+                value: `Version ${data.version}. Samples processed under an earlier version keep it until they are reprocessed.`,
+                showDelay: 300
+              }"
+            />
+          </span>
         </template>
       </Column>
 
@@ -654,6 +667,11 @@ defineExpose({
 .list :deep(.p-datatable) {
   flex: 1;
   min-height: 0;
+}
+
+.version {
+  margin-left: 0.5rem;
+  font-size: 0.7rem;
 }
 
 .mechanism-tag {

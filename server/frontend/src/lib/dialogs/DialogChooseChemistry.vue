@@ -26,6 +26,7 @@ import Message from 'primevue/message'
 
 import { api } from '@/api'
 import { useApp } from '@/stores'
+import { findMode } from '@/lib/ionizationModes'
 
 const app = useApp()
 
@@ -75,10 +76,13 @@ watch(visible, (open) => {
   if (!open) return
   if (props.resume) {
     // A mode can be renamed or deleted while the settings are open, so keep
-    // only what the options still offer rather than a dangling id.
+    // only what the options still offer rather than a dangling id. An edit
+    // that made the chosen mode's next version leaves its earlier id behind:
+    // the choice follows it to the current one.
     for (const polarity of ['-', '+']) {
-      const offered = options(polarity).some(({ value }) => value === chosen[polarity])
-      if (!offered) chosen[polarity] = null
+      const current = findMode(app.data.ionization.mode.list, chosen[polarity])
+      const offered = options(polarity).some(({ value }) => value === current?.ionization_mode_id)
+      chosen[polarity] = offered ? current.ionization_mode_id : null
     }
     return
   }

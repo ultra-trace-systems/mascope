@@ -204,10 +204,14 @@ async def get_ionization_mechanism(ionization_mechanism_id: str) -> dict:
             if ionization_mechanism_id in ion_mode.ionization_mechanism_ids:
                 affected_ion_modes.append(ion_mode)
 
+        # Every version: an earlier one still holds the mechanism for the
+        # samples bound under it, and keeps it from being deleted.
         affected_ion_mode_info = [
             {
                 "ion_mode_id": ion_mode.ionization_mode_id,
                 "ion_mode_name": ion_mode.ionization_mode_name,
+                "version": ion_mode.version,
+                "is_active": ion_mode.is_active,
             }
             for ion_mode in affected_ion_modes
         ]
@@ -395,6 +399,9 @@ async def _release_unadopted_system_modes(
             await session.execute(
                 select(IonizationMode).where(
                     IonizationMode.system_key.is_not(None),
+                    # A superseded version is the history of an adopted one:
+                    # its successor carries the collections.
+                    IonizationMode.is_active.is_(True),
                     ~system_mode_adopted(),
                 )
             )
@@ -487,6 +494,8 @@ async def delete_ionization_mechanism(ionization_mechanism_id: str) -> dict:
                         {
                             "ion_mode_id": mode.ionization_mode_id,
                             "ion_mode_name": mode.ionization_mode_name,
+                            "version": mode.version,
+                            "is_active": mode.is_active,
                         }
                         for mode in blocking
                     ]

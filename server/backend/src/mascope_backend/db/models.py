@@ -1847,7 +1847,15 @@ class IonizationMechanism(Base):
 
 
 class IonizationMode(Base):
-    """Ionization mode configuration."""
+    """Ionization mode configuration: one version of an ionization setup.
+
+    A row is one version, and is not edited in what a run computes from it:
+    an edit of the polarity, the mechanisms or the collections inserts the
+    next version and marks this one inactive (``api.new.ionization.modes.
+    versions``). The name, the token and the instrument scope change no
+    result and are edited on the active row in place. A sample item keeps the
+    version it was bound under until it is re-processed.
+    """
 
     __tablename__ = "ionization_mode"
 
@@ -1871,8 +1879,22 @@ class IonizationMode(Base):
     # mode the deployment made, which is every mode it names itself. A row that
     # has one owns its name, polarity and mechanisms: only its target
     # collections are the deployment's to set.
-    system_key: Mapped[Optional[str]] = mapped_column(
-        String(64), nullable=True, unique=True
+    system_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    #: 1 for the setup as made, one more for each edit that changed what a
+    #: run computes from it.
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    #: False once a later version has replaced this one. Only active rows are
+    #: offered, routed to or edited; an inactive one is kept for what was
+    #: bound under it.
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true")
+    )
+    #: The version this one replaced, NULL on a first version.
+    supersedes_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("ionization_mode.ionization_mode_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     calibration_collection_id: Mapped[Optional[str]] = mapped_column(
         String(16),
@@ -1910,11 +1932,14 @@ class IonizationMode(Base):
         # Postgres counts NULLs as distinct: a plain composite would let two
         # unscoped modes share a token, which is the ambiguity this whole rule
         # exists to prevent.
+        #
+        # Among the active versions only: a superseded version keeps the
+        # token it had, and its successor usually has the same one.
         Index(
             "uq_ionization_mode_token_global",
             "ionization_mode_token",
             unique=True,
-            postgresql_where=text("instrument IS NULL"),
+            postgresql_where=text("instrument IS NULL AND is_active"),
         ),
         # Folded, like every other comparison of an instrument name
         # (`method_keys.instrument_key`): `ORBI-1` and `orbi-1` are one
@@ -1925,7 +1950,15 @@ class IonizationMode(Base):
             "ionization_mode_token",
             func.lower(instrument),
             unique=True,
-            postgresql_where=text("instrument IS NOT NULL"),
+            postgresql_where=text("instrument IS NOT NULL AND is_active"),
+        ),
+        # A chemistry Mascope ships is one setup on a server: every version of
+        # it carries the key, and one of them is active.
+        Index(
+            "uq_ionization_mode_system_key",
+            "system_key",
+            unique=True,
+            postgresql_where=text("is_active"),
         ),
     )
 

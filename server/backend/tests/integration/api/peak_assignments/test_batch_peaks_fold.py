@@ -39,6 +39,7 @@ from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
     Dataset,
+    IonizationMode,
     PeakAssignment,
     PeakAssignmentRun,
     SampleBatch,
@@ -1156,3 +1157,62 @@ async def test_a_fold_from_rows_in_memory_links_no_ledger_row(
             .all()
         )
     assert len(links) == 3 and all(links)
+
+
+async def test_two_versions_of_one_setup_fold_into_one_partition(
+    async_session_factory, seeded
+):
+    """The ledger is partitioned per setup, not per version.
+
+    A sample bound under a later version of a mode folds into the anchors its
+    batch already has under the first: the m/z axis is the same, and a batch
+    holds both whenever a mode is edited between its files.
+    """
+    batch, samples = seeded
+    first, second = gen_id(), gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMode(
+                ionization_mode_id=first,
+                ionization_mode_name=f"Ledger setup {first}",
+                ionization_mode_polarity="+",
+                ionization_mechanism_ids=[],
+                is_active=False,
+            )
+        )
+        session.add(
+            IonizationMode(
+                ionization_mode_id=second,
+                ionization_mode_name=f"Ledger setup {first}",
+                ionization_mode_polarity="+",
+                ionization_mechanism_ids=[],
+                version=2,
+                supersedes_id=first,
+            )
+        )
+        await session.flush()
+        for name, mode_id in (("A", first), ("B", second)):
+            item = await session.get(SampleItem, samples[name])
+            item.ionization_mode_id = mode_id
+        await session.commit()
+
+    try:
+        await fold_sample_into_batch_peaks(samples["A"])
+        await fold_sample_into_batch_peaks(samples["B"])
+        peaks = await _batch_peaks(async_session_factory, batch)
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(SampleBatch).where(SampleBatch.sample_batch_id == batch)
+            )
+            await session.execute(
+                delete(IonizationMode).where(
+                    IonizationMode.ionization_mode_id.in_([second, first])
+                )
+            )
+            await session.commit()
+
+    # 181 shared, 200 and 250 from A, 300 from B: one partition, four anchors.
+    assert len(peaks) == 4
+    assert {p.ionization_mode_id for p in peaks} == {first}
+    assert next(p for p in peaks if p.consensus_formula == "C6H12O6").n_present == 2
