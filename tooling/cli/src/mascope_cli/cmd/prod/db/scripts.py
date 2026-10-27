@@ -79,6 +79,11 @@ _FORWARDED_ENV_VARS = [
     # backfill_scan_stream_census
     "CENSUS_LIMIT",
     "CENSUS_RETRY",
+    # backfill_ms2_store
+    "MS2_STORE_MODE",
+    "MS2_STORE_LIMIT",
+    "MS2_STORE_PAUSE",
+    "MS2_STORE_RETRY",
     # backfill_axis_fingerprint
     "AXF_LIMIT",
     "AXF_RETRY",

@@ -559,6 +559,39 @@ def test_password_change_env_vars_are_forwarded_into_the_container():
         assert var in scripts._FORWARDED_ENV_VARS
 
 
+def test_the_ms2_store_backfill_runs_in_the_mode_and_bounds_the_operator_set(
+    no_host_backend, stack_up, no_backup, monkeypatch
+):
+    # Unforwarded, MS2_STORE_MODE=run would arrive unset and only count, and
+    # an operator's MS2_STORE_LIMIT and MS2_STORE_PAUSE would be dropped: an
+    # unbounded run, at the default pace, on a server that is meant to keep
+    # serving.
+    container = FakeContainer(names=["backfill_ms2_store"])
+    monkeypatch.setattr(scripts.subprocess, "run", container)
+    settings = {
+        "MS2_STORE_MODE": "run",
+        "MS2_STORE_LIMIT": "500",
+        "MS2_STORE_PAUSE": "5",
+        "MS2_STORE_RETRY": "1",
+    }
+    for var, value in settings.items():
+        monkeypatch.setenv(var, value)
+
+    result = runner.invoke(
+        scripts.prod_db_scripts_app,
+        ["run", "backfill_ms2_store", "--yes", "--skip-backup"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert container.executed_modules == [
+        "mascope_backend.db.scripts.backfill_ms2_store"
+    ]
+    run_cmd = container.calls[-1]
+    forwarded = run_cmd[: run_cmd.index(CONTAINER)]
+    for var, value in settings.items():
+        assert f"{var}={value}" in forwarded
+
+
 def test_skip_backup_warns_an_interactive_operator():
     # A human at the terminal can still abort at the confirmation prompt that
     # prints right after, so the notice is a real warning.
