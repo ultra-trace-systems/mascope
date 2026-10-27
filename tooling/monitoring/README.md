@@ -336,7 +336,13 @@ Setup:
    client's `ForwardAgent no`.
 3. Write the config file (`/opt/pentest-runner/config.env`, `chmod 600`) with
    `TARGET_HOST`, the `MASCOPE_PENTEST_*` credentials and an optional `HC_URL`.
-   The script header lists every variable.
+   The script header lists every variable. On a target with authenticated
+   origin pulls on (`MASCOPE_ORIGIN_PULL=on`, `docs/maintaining.md`, "The
+   edge"), set `MASCOPE_PENTEST_TARGET=https://127.0.0.1:8443`: its :443 then
+   answers 403 to everything without Cloudflare's client certificate. That
+   loopback listener differs from :443 only in asking for no client
+   certificate, so the refusal itself is outside this vantage; read the
+   report with that in mind.
 4. Cron it clear of the backup windows, e.g. `30 5 * * 0`.
 
 **Exit codes.** Normally the suite's, so the heartbeat reflects the assessment

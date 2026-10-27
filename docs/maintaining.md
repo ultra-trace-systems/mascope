@@ -1343,6 +1343,132 @@ step being demanded, so the account's holder can sign in and set up a new
 authenticator. Open sessions are not ended - restart the backend if you need
 them closed.
 
+## The edge (Cloudflare) and authenticated origin pulls
+
+A fleet server is reached through Cloudflare. Its firewall admits port 443 from
+Cloudflare's address ranges only (the fleet `firewall` role, or
+[`tooling/ufw-allow-cf.sh`](../tooling/ufw-allow-cf.sh) on a single host), and
+the frontend restores each visitor's address from `CF-Connecting-IP`. Until a
+site's CDN IP allowlist comes off, the allowlist is what keeps the internet away
+from its sign-in page. Before it comes off, the edge has to carry the rest: the
+console settings below, and the origin refusing anything that did not come
+through our own zone.
+
+**Do it on the staging deployment first**, leave it a week, and check GlitchTip
+for new issues before the next site. Then repeat it per site, recording each
+step as done for that site.
+
+### The host's own listener, :8443
+
+The frontend also listens on port 8443, published on the host's `127.0.0.1`
+only. It is the same server as :443, except that it never asks for a client
+certificate. Neither the internet nor a tailnet peer can reach it. It is how
+the host itself reaches the origin once origin pulls are on:
+
+- the reboot playbook's API probe asks it first, and asks :443 only when it is
+  not there, as on a release from before it;
+- the security suite's origin vantage points at it
+  ([monitoring runbook](../tooling/monitoring/README.md), section 10);
+- an operator's check from the host:
+
+```sh
+curl -sk -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{}' \
+  --resolve <app host>:8443:127.0.0.1 https://<app host>:8443/api/auth/login   # 422
+```
+
+### Console checklist
+
+Settings in the Cloudflare dashboard for the site's zone, one checkbox each. The
+application's own limits, which the edge must not undercut for one client, are
+10 sign-in attempts per 60 s per address and 15 per 300 s per account
+(`api/lib/rate_limit.py`).
+
+- [ ] **Managed rules.** The Cloudflare managed ruleset deployed on the zone,
+  with its default actions.
+- [ ] **Rate limit on sign-in and tokens.** One rule: `POST` to
+  `/api/auth/login` or `/api/auth/access_token/regenerate`, counted per IP,
+  **20 requests** in a period of **60 s or less**, action Block. Any threshold
+  above 10 with a period up to 60 s lets the application's own 429 answer one
+  client first. Leave `/api/auth/pairing/` and `/api/auth/mfa/` out: their own
+  limits allow more (30 polls per 60 s, 60 verifies per 300 s).
+- [ ] **Challenge on the sign-in POST only.** A Managed Challenge on `POST` to
+  `/api/auth/login`. Leave everything else challenge-free: SDK and agent calls
+  with a bearer token, `/api/sample/files/upload` and its `tus` route,
+  `/api/auth/pairing/`, and `/socket.io/`. A challenge cannot be solved by a
+  script, so any of those would stop. The web app signs in with `fetch`, and
+  Cloudflare cannot show a challenge to a `fetch` request: check sign-in from a
+  fresh private window on staging before going on. If it fails with a 403
+  carrying `cf-mitigated: challenge`, take the rule off again.
+- [ ] **Skip rule for the security suite.** The rule from GitHub #1889, so the
+  suite's own runs pass the managed rules, the rate limit and the challenge.
+  Until it is built, the suite runs from its origin vantage only.
+- [ ] **Authenticated origin pulls**, with this zone's own certificate (below),
+  turned on **before** the switch at the origin.
+
+### Turning origin pulls on
+
+The origin then answers only a connection that presents a certificate signed by
+our own CA. Cloudflare presents it for our zone alone. Cloudflare's shared
+origin-pull certificate is not used: every Cloudflare customer's zone presents
+that one, so it says only that a request came through Cloudflare, not through
+our zone.
+
+1. Make the CA and the zone's origin-pull certificate, on a machine you trust,
+   not on the server:
+
+   ```sh
+   openssl req -x509 -newkey rsa:4096 -nodes -days 3650 -subj "/CN=Mascope origin pull CA" \
+     -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign \
+     -keyout origin-pull-ca.key -out origin-pull-ca.pem
+   openssl req -newkey rsa:2048 -nodes -subj "/CN=origin pull" \
+     -keyout origin-pull.key -out origin-pull.csr
+   openssl x509 -req -in origin-pull.csr -CA origin-pull-ca.pem -CAkey origin-pull-ca.key \
+     -CAcreateserial -days 825 -out origin-pull.pem
+   ```
+
+   The CA must sign the certificate directly: the origin checks one level only.
+   Keep `origin-pull-ca.key` offline. Put the certificate's expiry date in the
+   calendar.
+2. Upload `origin-pull.pem` and `origin-pull.key` to the zone as its
+   Authenticated Origin Pulls certificate (zone-level, custom certificate), and
+   turn Authenticated Origin Pulls on. Nothing changes yet: the origin does not
+   ask for the certificate. The other order would cut the site off.
+3. On the server, put the CA certificate, never a key, where the frontend reads
+   it, and turn the switch on in `/etc/environment`:
+
+   ```sh
+   cp origin-pull-ca.pem "$(mascope path)/.runtime/secrets/origin_pull_ca.pem"
+   echo MASCOPE_ORIGIN_PULL=on | sudo tee -a /etc/environment
+   export MASCOPE_ORIGIN_PULL=on
+   mascope prod up --detach
+   docker logs mascope_prod_frontend 2>&1 | grep MASCOPE_ORIGIN_PULL
+   ```
+
+   The last command prints `MASCOPE_ORIGIN_PULL=on -> :443 accepts only the
+   CDN's origin-pull certificate`. The CLI creates the CA file empty on every
+   server, so compose starts without it; with the switch on and the file still
+   empty, the frontend refuses to start and says why.
+4. Check it. Through the public URL the site works as before. From the host,
+   `:443` answers 403 and `:8443` answers 422:
+
+   ```sh
+   curl -sk -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{}' \
+     --resolve <app host>:443:127.0.0.1 https://<app host>/api/auth/login   # 403
+   ```
+
+   Then an SDK call with a token, and an upload from a paired agent, through
+   the public URL.
+
+**Rotating.** Before `origin-pull.pem` expires, sign a new one with the same CA
+and upload it to the zone; the origin needs no change. To replace the CA itself,
+put the old and the new CA certificates in `origin_pull_ca.pem`, one after the
+other, bring the stack up again, upload the new certificate, then remove the
+old CA.
+
+**Turning it off.** Remove `MASCOPE_ORIGIN_PULL` from `/etc/environment`,
+unset it, and bring the stack up again; then turn Authenticated Origin Pulls off
+in the zone, if at all.
+
 ## Monitoring
 
 Beyond the healthchecks.io dead-man's-switch pings (backups, disk monitor), a
