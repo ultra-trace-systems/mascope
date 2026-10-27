@@ -6,12 +6,15 @@ reshaped without touching callers. Both return normalized
 :class:`ReferenceRecord` instances and only ever see the *active* version of
 each source, so a re-synced source does not double annotations.
 :func:`structures_by_formula` pages through the same rows for a person
-choosing a compound's structure among them.
+choosing a compound's structure among them. :func:`active_sources` and
+:func:`source_compounds` say which sources are loaded and what one of them
+holds, for a person reading the lists rather than an annotation.
 """
 
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import case, func, or_, select
@@ -43,6 +46,10 @@ CAS_XREF_KEYS = ("casrn", "cas")
 #: Rows per page of :func:`structures_by_formula` by default, and at most.
 STRUCTURE_PAGE_SIZE = 20
 STRUCTURE_PAGE_CAP = 100
+
+#: Rows per page of :func:`source_compounds` by default, and at most.
+SOURCE_PAGE_SIZE = 100
+SOURCE_PAGE_CAP = 1000
 
 
 # A total order over reference rows. (source, source_native_id) is unique within
@@ -344,4 +351,149 @@ async def structures_by_formula(
         ],
         total=total or 0,
         formula=canon,
+    )
+
+
+@dataclass(frozen=True)
+class SourceRow:
+    """One loaded source version, as its ``reference_source`` row records it.
+
+    :param name: The source's name; a shipped list's id.
+    :param version: The loaded version.
+    :param license: The source's licence.
+    :param record_count: How many compounds the load wrote.
+    :param ingested_at: When it was loaded.
+    :param known_window: The window its compounds may be matched in, as JSON
+        whose null fields are unbounded; None for unbounded.
+    :param allow_radicals: Whether its radicals may be matched.
+    :param polarity: The polarity it is matched in; None for both.
+    """
+
+    name: str
+    version: str
+    license: str | None
+    record_count: int | None
+    ingested_at: datetime | None
+    known_window: dict | None
+    allow_radicals: bool | None
+    polarity: str | None
+
+
+@dataclass
+class SourcePage:
+    """One page of :func:`source_compounds`.
+
+    :param version: The version the page is of.
+    :param records: The page's rows, in order.
+    :param total: How many rows the version holds, on every page.
+    """
+
+    version: str
+    records: list[ReferenceRecord] = field(default_factory=list)
+    total: int = 0
+
+
+_SOURCE_COLUMNS = (
+    reference_source.c.name,
+    reference_source.c.version,
+    reference_source.c.license,
+    reference_source.c.record_count,
+    reference_source.c.ingested_at,
+    reference_source.c.known_window,
+    reference_source.c.allow_radicals,
+    reference_source.c.polarity,
+)
+
+
+async def active_sources(session: AsyncSession) -> list[SourceRow]:
+    """The active version of every loaded source, by name.
+
+    :param session: Active async session.
+    :return: One row per active source version, ordered by name and version.
+    """
+    stmt = (
+        select(*_SOURCE_COLUMNS)
+        .where(reference_source.c.is_active.is_(True))
+        .order_by(
+            reference_source.c.name,
+            reference_source.c.version,
+            reference_source.c.reference_source_id,
+        )
+    )
+    return [SourceRow(**row._mapping) for row in (await session.execute(stmt)).all()]
+
+
+async def source_compounds(
+    session: AsyncSession,
+    name: str,
+    *,
+    version: str | None = None,
+    limit: int = SOURCE_PAGE_SIZE,
+    offset: int = 0,
+) -> SourcePage | None:
+    """One page of the compounds a source version holds.
+
+    The version asked for is read whether it is active or not, so a person can
+    look at a load before or after it was replaced; without one, the active
+    version is. The rows come by mass, then formula and native id, which is a
+    total order within one version, so a page boundary never moves between two
+    reads of the same load.
+
+    :param session: Active async session.
+    :param name: The source's name.
+    :param version: The version to read; None for the active one.
+    :param limit: Rows per page, 1 to :data:`SOURCE_PAGE_CAP`.
+    :param offset: Rows to skip.
+    :return: The page, or None when the source has no such version, or no
+        active one when none is asked for.
+    :raises ValueError: On a ``limit`` outside its range or a negative
+        ``offset``.
+    """
+    if not 1 <= limit <= SOURCE_PAGE_CAP:
+        raise ValueError(f"limit must be 1 to {SOURCE_PAGE_CAP}, not {limit}")
+    if offset < 0:
+        raise ValueError(f"offset must not be negative, not {offset}")
+    which = select(reference_source.c.reference_source_id, reference_source.c.version)
+    which = which.where(reference_source.c.name == name)
+    if version is None:
+        which = which.where(reference_source.c.is_active.is_(True))
+    else:
+        which = which.where(reference_source.c.version == version)
+    # Nothing keeps a name and version unique, so a reloaded version reads as
+    # its newest load.
+    found = (
+        await session.execute(
+            which.order_by(reference_source.c.reference_source_id.desc()).limit(1)
+        )
+    ).first()
+    if found is None:
+        return None
+
+    of_version = reference_compound.c.reference_source_id == found.reference_source_id
+    total = await session.scalar(
+        select(func.count()).select_from(reference_compound).where(of_version)
+    )
+    stmt = (
+        select(*_COMPOUND_COLUMNS, reference_source.c.name.label("source_name"))
+        .select_from(
+            reference_compound.join(
+                reference_source,
+                reference_compound.c.reference_source_id
+                == reference_source.c.reference_source_id,
+            )
+        )
+        .where(of_version)
+        .order_by(
+            reference_compound.c.monoisotopic_mass,
+            reference_compound.c.formula,
+            reference_compound.c.source_native_id,
+            reference_compound.c.reference_compound_id,
+        )
+        .limit(limit)
+        .offset(offset)
+    )
+    return SourcePage(
+        version=found.version,
+        records=[_row_to_record(row) for row in (await session.execute(stmt)).all()],
+        total=total or 0,
     )

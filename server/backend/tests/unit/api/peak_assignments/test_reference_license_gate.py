@@ -37,8 +37,8 @@ from mascope_backend.api.new.peak_assignments.service import (
     REFERENCE_LICENSES_KEY,
     _fetch_reference_known_isotopes,
     _stored_run_config,
-    reference_license_gate,
 )
+from mascope_backend.api.new.reference.licenses import reference_license_gate
 from mascope_reference import KnownComposition, KnownIdentity
 
 
@@ -87,6 +87,10 @@ def _known():
 
 class TestGateResolution:
     """`reference_license_gate` reads the deployment's backend config."""
+
+    def test_stage_a_reads_the_one_gate(self):
+        """Stage A and the reference sources API read the gate from one home."""
+        assert service.reference_license_gate is reference_license_gate
 
     def test_unset_is_the_default(self):
         """The single most important property of the whole change: the shipped
