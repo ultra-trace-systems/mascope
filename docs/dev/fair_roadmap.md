@@ -3,7 +3,7 @@
 # FAIR: Review & Roadmap
 
 - **Status:** building
-- **As of:** 2026-10-23
+- **As of:** 2026-10-27
 - **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear, MAS-19 to MAS-36)
 - **Supersedes:** section 7 of `ionization_method_config.md` (retired 2026-10-22)
 - **What:** Mascope against the FAIR principles, and the phased plan: provenance, ids, metadata, deposit.
@@ -352,6 +352,19 @@ the reasoning.
     record does not hold: ROR ids, contact points, a publisher.
 16. **A UI path**, not just a CLI - "Prepare for publication" on a dataset.
     Scientists deposit data; they do not run CLIs.
+    *Built (MAS-35):* the dataset's right-click menu opens a dialog that
+    reads the package `collect_package` gathers, without building it
+    (`mascope_backend.deposit.preview`): the metadata record as it stands,
+    the batches, raw files and their size, the collections and modes, and
+    the gaps a deposit would have. A gap is no licence, no authors, no
+    description (Zenodo asks for all three) or no samples; it links to the
+    dataset dialog and does not stop the build. The build is
+    `build_package` in a background task, the archive moved into the user's
+    temp directory for the notification's download, as the batch spreadsheet
+    export does; the routes are `api/new/dataset_package`, for an editor of
+    the dataset's workspace. A test builds the archive through the app and
+    through `build_package` under one frozen clock and finds the bytes
+    equal. The command still warns of licence and authors only (#2725).
 17. **Zenodo deposition** (optional, last). The API is simple, and by this
     point the package is the payload. Explicitly *not* a prerequisite: the
     package is valuable on its own, and a manual upload is a fine v1.

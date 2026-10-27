@@ -5,17 +5,14 @@ the records it was built from by their ids and says which build of Mascope
 wrote it, so a spreadsheet that ends up beside a paper can be traced back to
 the dataset, the batch and the server it came from.
 
-Three exports are made from the app:
+Four exports are made from the app:
 
 | Export | Where | Format |
 |---|---|---|
 | **Batch data** | Right-click a batch, *Download > Batch data* | A spreadsheet (`.xlsx`) of five sheets, below |
 | **Peak data** | Right-click a batch, *Download > Peak data*; or a sample's own *Download > Peak data* | A CSV, semicolon-separated |
 | **Batch ledger** | The batch peaks view's menu behind the cog, *Export ledger (CSV)* | A CSV: one row per member peak, described under [Batch peaks](../how-it-works/peak-assignment.md#batch-peaks) |
-
-A fourth export covers a whole dataset: the [deposit package](#the-deposit-package),
-one archive to upload to a data repository such as Zenodo. It is not made from
-the app yet. Whoever operates the server writes it with one command.
+| **Deposit package** | Right-click a dataset, *Prepare for publication* | A zip archive of the whole dataset, to upload to a data repository such as Zenodo, [below](#the-deposit-package) |
 
 Each export made from the app is written in the background, and the browser
 downloads the file when it is ready. The same data is one call away in the
@@ -120,11 +117,30 @@ A dataset as one zip archive, for a data repository such as
 what was measured, how, under what licence, by whom, and with which software.
 Mascope writes the archive. The repository keeps it and mints its DOI.
 
-Before asking for one, fill in the dataset's licence, authors, keywords,
-related identifiers and funding in the dataset dialog. They are what the
-archive's README and the repository's record say about the data. The archive
-is written by whoever operates the server
+Right-click the dataset and choose *Prepare for publication*. The dialog
+shows what the archive will hold: the dataset's metadata record as it stands,
+its batches and samples, its raw files and their size, its target collections
+and its ionization modes. Above them it lists what the dataset still lacks for
+a deposit:
+
+- **No licence.** Without one, nobody but the authors may reuse the data.
+- **No authors.** A repository cites a deposit by its creators.
+- **No description.** A repository shows it as what the deposit is.
+- **No samples.** The package would describe no measurement.
+
+*Edit dataset* opens the dataset dialog over it, where the licence, authors,
+description, keywords, related identifiers and funding are filled in. They are
+what the archive's README and the repository's record say about the data. When
+the dataset dialog closes, the list is read again. *Build package* writes the
+archive in the background, gaps or not, and the browser downloads it when it is
+ready. The notification gives its size, and counts the sample files with no
+raw file kept and the raw files changed since upload. Preparing a dataset
+takes the editor role in its workspace.
+
+Whoever operates the server can write the same archive with one command
 ([Packaging a dataset for deposit](https://github.com/ultra-trace-systems/mascope/blob/master/docs/maintaining.md#packaging-a-dataset-for-deposit)).
+The app and the command run the same builder, so for the same dataset they
+write the same archive.
 
 Unzipped, it is one folder, `mascope-package_<dataset id>_<dataset name>`:
 

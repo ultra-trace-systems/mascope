@@ -866,6 +866,15 @@ RO-Crate viewers. The user guide's
 [Export files](user/reference/exports.md#the-deposit-package) lists what it
 holds.
 
+A user with the editor role in the dataset's workspace builds the same archive
+from the app: right-click the dataset, *Prepare for publication*. The app and
+the command run one builder, so the archive is the same. The app builds it in
+a directory of the build's own under the env's `temp/packages/`, then moves it
+into the user's own temp directory, from which the browser downloads it. It
+stays there, the latest one per dataset and user, until the backend restarts
+and empties `temp/` (#2726). On a server where users package large datasets,
+plan for their raw files' size again on the env's disk.
+
 ```bash
 mascope export package <dataset id>                 # into the current directory
 mascope export package <dataset id> -o ~/deposits/  # into a directory
