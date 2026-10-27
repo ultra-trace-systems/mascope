@@ -157,7 +157,8 @@ Signing in to the web app starts a **session** that lasts seven days. It ends
 early when any of these happens, and the browser is sent back to the sign-in
 screen on its next request:
 
-- **Signing out** in that browser.
+- **Signing out** in that browser. Every tab of the browser is signed out,
+  not only the one signed out in.
 - **A password change**, by the account holder or by an administrator's reset.
   Every session the account had is ended, not just the others.
 - **Disabling the account.** Enabling it again does not bring old sessions
