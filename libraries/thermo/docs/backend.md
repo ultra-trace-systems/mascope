@@ -170,7 +170,7 @@ The two backends render some filters differently, because OpenTFRaw does not ren
 
 - **`lock`.** The Thermo library writes `lock` on each scan that found its lock mass (its trailer's `Number of LM Found` is above zero), and OpenTFRaw never does ([Sigilweaver/OpenTFRaw#58](https://github.com/Sigilweaver/OpenTFRaw/issues/58)). `lock` describes one scan's outcome, so it is left out of the signature.
 - **Other tokens OpenTFRaw leaves out:**
-  - the source fragmentation of a scan acquired with in-source CID (`sid=20.00`, [Sigilweaver/OpenTFRaw#57](https://github.com/Sigilweaver/OpenTFRaw/issues/57));
+  - the source fragmentation of a scan acquired with in-source CID (`sid=20.00`, [Sigilweaver/OpenTFRaw#57](https://github.com/Sigilweaver/OpenTFRaw/issues/57)) up to 2.0.0; 3.1.0 renders it from the trailer or the method, as [Keys OpenTFRaw 3.1.0 renamed](#keys-opentfraw-310-renamed-sid) says;
   - the FAIMS compensation voltage (`cv=`);
   - flags such as wideband activation (`w`) and multiplexing (`msx`);
   - the `{segment,event}` prefix.
@@ -199,7 +199,30 @@ Every method that selects scans by polarity, time and MS order also takes `strea
 - **The first scan.** A file's first scan is left out of every selection when its TIC is five times the median of the others or more. With no stream given, the others are every other scan of the file, of any polarity and MS order. With one given, they are the other scans of the first scan's own stream - the scans that measured what it measured - and a stream that does not hold the first scan loses nothing. On a file with one stream the two are the same comparison, so its stream selects exactly what no stream selects.
 
   On a file with several, they need not be. Of the internal regression corpus's two such files, one loses its first scan to the file-wide comparison and keeps it under its stream: its TIC equals the median of its own experiment's other scans, and is sixty times the file's median only because the other polarity's scans are that much weaker.
+- **A reader upgrade can rename a stream.** A key is built from the filter the reader renders, so a reader that renders a token its predecessor missed names the same scans anew (next section).
 - **On the corpus**, under both backends: each of the 195 streams selects the scans the census counted into it, less a first scan left out in eleven single-stream files; the backends select the same scans for every key both report; and the selections of a file's streams together are the default selection in 184 of 185 files, the one above being the other.
+
+### Keys OpenTFRaw 3.1.0 renamed: `sid=`
+
+OpenTFRaw 2.0.0, the reader up to release 1.13.0, renders no `sid=` token at all.
+OpenTFRaw 3.1.0 renders `sid=<eV>` on a scan whose source CID energy is above 0.
+It takes the energy from the scan's trailer where the trailer has a source CID field (every Exploris file of the corpus has one), and otherwise from the method, which it reads as a compound-file stream (Sigilweaver/OpenTFRaw#77).
+A Q Exactive's trailer has no such field, so its method decides.
+A file of such a method converted under 2.0.0 keeps keys without the token, and its stream key and `signature_key` gain it under 3.1.0: `FTMS - p ESI SIM ms [123.4244-127.4244] R=280000` becomes `FTMS - p ESI sid=20.00 SIM ms [123.4244-127.4244] R=280000` (GitHub #2492).
+
+What still reads the old key:
+
+- **A per-stream peak store** labels its peaks by key, and per-stream calibration and matching select scans by that label. Under 3.1.0 the reader holds no stream of the old name, so the selection raises `UnknownStreamError`.
+- **A method binding** builds its signature class from `signature_key`, so files of such a method converted after the upgrade start a new binding row. With `method_binding = "shadow"`, the default, nothing routes on it.
+- **`acquisition_stream` rows** are matched on file and key, so re-processing such a file replaces its row with one of the new key.
+
+Measured before 3.1.0 shipped, on every production site's stored Orbitrap files (about 740,000 on eight servers, read-only; MAS-426):
+
+- **No per-stream store holds a key 3.1.0 renames.** Every file stored per stream, on every site, carries the source CID field in its trailer at 0 eV, so 3.1.0 adds no token to it. The failure above meets no stored file.
+- **No stored key, census, stream row or binding carries `sid=`**, as 2.0.0 never rendered it.
+- About 62,000 files on three sites are decided by their method. Six files of one site, of the method the corpus file comes from, measure that file's window and gain the token; four more of the same method name, edited to other windows, may. The rest are of methods the corpus does not hold, so they are not decided. All of them are stored pooled.
+
+So nothing needs re-processing for this. A pooled file re-processed under 3.1.0 takes the new keys, and with them its stream rows; bindings of an affected method split once, in shadow. Stream selection is not made to match a key that differs only by `sid=`: a key that matched both would select the scans of two experiments where a file holds both.
 
 ## Underlying Algorithms
 
