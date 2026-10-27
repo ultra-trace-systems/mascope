@@ -113,6 +113,18 @@ def _clip(text: str, chars: int) -> str:
     return text if len(text) <= chars else text[: chars - 1] + "…"
 
 
+class Own(str):
+    """A string of the server's own - a path on this machine, a line of
+    Python to run there - which :func:`inert` and :func:`fit` leave whole.
+
+    It is not Mascope's text, so it needs no escape, and a cut one no longer
+    works: a session's path or the line that opens it, cut short, is Python
+    that fails. The type marks it, not the key it is under, so that no
+    mapping of Mascope's - a sample's attributes, say - can pass a value off
+    as one.
+    """
+
+
 def inert(value: Any, chars: int = TEXT_CHARS) -> Any:
     """*value* as plain JSON values, every string in it made inert.
 
@@ -121,10 +133,13 @@ def inert(value: Any, chars: int = TEXT_CHARS) -> Any:
     can neither break a result's lines nor hide text - and is cut to
     *chars* characters (a message to :data:`MESSAGE_CHARS`). What is left is
     the users' text as a value: it is put in a result as a JSON string,
-    never into the server's own sentences.
+    never into the server's own sentences. The server's own strings
+    (:class:`Own`) are left as they are.
     """
 
     def walk(value: Any, limit: int) -> Any:
+        if isinstance(value, Own):
+            return value
         if isinstance(value, str):
             return _clip(_escape(value), limit)
         if isinstance(value, dict):
@@ -824,7 +839,7 @@ class Server:
         out["head"] = [
             {c: row.get(c) for c in shown} for row in frame.head5[:HEAD_ROWS]
         ]
-        out["rows_in_python"] = f"{self.opener}.frame({frame.id!r}).df"
+        out["rows_in_python"] = Own(f"{self.opener}.frame({frame.id!r}).df")
         return out
 
     def _find(self, args: _Args) -> dict[str, Any]:
@@ -972,7 +987,7 @@ class Server:
             "tree": {
                 "frame": tree.id,
                 "rows": tree.n_rows,
-                "rows_in_python": f"{self.opener}.frame({tree.id!r}).df",
+                "rows_in_python": Own(f"{self.opener}.frame({tree.id!r}).df"),
             },
             "note": "The scores are Mascope's; an unscored candidate is "
             "speculation, not a verdict.",
@@ -988,7 +1003,7 @@ class Server:
         values = record["values"]
         return {
             "recorded": record["seq"],
-            "manifest": str(self.session.manifest.path),
+            "manifest": Own(self.session.manifest.path),
             "calls": len(record["calls"]),
             "frames": record["frames"],
             "objects": len(record["refs"]),
@@ -1000,9 +1015,9 @@ class Server:
         frames = self.session.frames()
         return {
             "session": self.session.id,
-            "directory": str(self.session.path),
-            "python": sys.executable,
-            "open": f"from mascope_ai import Session; session = {self.opener}",
+            "directory": Own(self.session.path),
+            "python": Own(sys.executable),
+            "open": Own(f"from mascope_ai import Session; session = {self.opener}"),
             "frames": [
                 {
                     "frame": frame.id,
