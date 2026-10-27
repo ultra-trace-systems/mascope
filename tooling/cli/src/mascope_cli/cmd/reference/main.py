@@ -12,6 +12,11 @@ radical allowance and its polarity (``mascope_reference.scope``). A database
 mirror loads at the mirror window and a list loads unbounded; ``sync``'s
 ``--elements``, ``--max-carbon``, ``--max-mass``, ``--allow-radicals`` and
 ``--polarity`` override either.
+
+``sync`` loads the MS/MS spectral libraries (``massbank``, ``mona``, ``gnps``)
+the same way, as versioned loads of spectra rather than compounds. They have
+no window: Stage A never matches a spectrum, so the window flags are refused
+for them.
 """
 
 from pathlib import Path
@@ -25,10 +30,28 @@ from sqlalchemy import create_engine, select, update
 from sqlalchemy.pool import NullPool
 
 from mascope_cli.runtime import runtime
-from mascope_reference import available_sources, get_adapter, ingest
-from mascope_reference.ingest import DEFAULT_BATCH_SIZE, EmptyIngest, deactivate
+from mascope_reference import (
+    available_sources,
+    available_spectrum_sources,
+    get_adapter,
+    get_spectrum_adapter,
+    ingest,
+    ingest_spectra,
+    is_spectrum_source,
+)
+from mascope_reference.ingest import (
+    DEFAULT_BATCH_SIZE,
+    EmptyIngest,
+    SourceKindConflict,
+    deactivate,
+)
 from mascope_reference.peaklist import admitted_species
-from mascope_reference.schema import reference_compound, reference_source
+from mascope_reference.schema import (
+    COMPOUND_KIND,
+    SPECTRUM_KIND,
+    reference_compound,
+    reference_source,
+)
 from mascope_reference.scope import (
     BOTH_POLARITIES,
     UNBOUNDED_TOKEN,
@@ -106,6 +129,17 @@ def sources() -> None:
             f"[bold]{name}[/bold]  (license: {adapter.license}; window: "
             f"{adapter.known_window.describe()}){gated}"
         )
+    # Not under the gate above: it is Stage A's, and Stage A reads no spectrum.
+    console.print(
+        "\n[bold]MS/MS spectral libraries[/bold] - spectra, not compounds: not "
+        "matched by Stage A, each spectrum keeps the licence its record states"
+    )
+    for name in available_spectrum_sources():
+        adapter = get_spectrum_adapter(name)
+        console.print(
+            f"[bold]{name}[/bold]  (license: per record; {adapter.license} where "
+            "a record states none)"
+        )
 
 
 @reference_app.command()
@@ -120,7 +154,11 @@ def sync(
             exists=True,
             dir_okay=False,
             readable=True,
-            help="Path to the downloaded source dump (.sdf/.csv/.xml, optionally .gz).",
+            help=(
+                "Path to the downloaded source dump (.sdf/.csv/.xml, optionally "
+                ".gz; for a spectral library .msp, .mgf or a MassBank release "
+                ".tar.gz)."
+            ),
         ),
     ],
     version: Annotated[
@@ -220,7 +258,41 @@ def sync(
         ),
     ] = False,
 ) -> None:
-    """Ingest a source dump as a new versioned load."""
+    """Ingest a source dump as a new versioned load.
+
+    A spectral library (massbank, mona, gnps) loads its MS/MS spectra; the
+    window, radical and polarity flags are a compound source's and are refused
+    for it.
+    """
+    if is_spectrum_source(source):
+        flags = {
+            "--elements": elements,
+            "--max-carbon": max_carbon,
+            "--max-mass": max_mass,
+            "--allow-radicals": allow_radicals,
+            "--polarity": polarity,
+        }
+        given = [flag for flag, value in flags.items() if value is not None]
+        if given:
+            # Refused before the prompt: a flag that does nothing would read as
+            # if it had bounded something.
+            runtime.logger.error(
+                f"{', '.join(given)} set how a compound source is matched; "
+                f"'{source}' is a spectral library, which Stage A never matches."
+            )
+            raise typer.Exit(1)
+        _confirm_sync(name or source, prune=prune, stage=stage, yes=yes)
+        _sync_spectra(
+            source,
+            path,
+            version,
+            name=name,
+            batch_size=batch_size,
+            prune=prune,
+            stage=stage,
+        )
+        return
+
     try:
         adapter = get_adapter(source)
     except KeyError as error:
@@ -240,17 +312,7 @@ def sync(
         runtime.logger.error(str(error))
         raise typer.Exit(1) from None
 
-    # An activating sync replaces whatever is currently serving annotations, and
-    # --prune destroys the load it replaces. Staging changes nothing visible, so
-    # it needs no confirmation.
-    if not stage and not yes:
-        target = name or source
-        consequence = (
-            f"replace the active version of '{target}' and DELETE its prior loads"
-            if prune
-            else f"replace the active version of '{target}'"
-        )
-        typer.confirm(f"This will {consequence}. Continue?", abort=True)
+    _confirm_sync(name or source, prune=prune, stage=stage, yes=yes)
 
     engine = _sync_engine()
     runtime.logger.info(
@@ -273,7 +335,7 @@ def sync(
             progress=_progress,
             scope=scope,
         )
-    except EmptyIngest as error:
+    except (EmptyIngest, SourceKindConflict) as error:
         # The mirror is untouched - report why rather than leaving the operator to
         # discover an empty source later.
         runtime.logger.error(str(error))
@@ -287,6 +349,83 @@ def sync(
         f"{result.skipped:,} skipped)."
     )
     runtime.logger.info(f"Matched as: {result.scope.describe()}.")
+    if stage:
+        runtime.logger.info(
+            f"Load staged (inactive). Expose it with: mascope reference activate "
+            f"{result.source} --version {result.version}"
+        )
+
+
+def _confirm_sync(target: str, *, prune: bool, stage: bool, yes: bool) -> None:
+    """Ask before a sync replaces what is serving, unless staged or told not to.
+
+    An activating sync replaces whatever is currently serving annotations, and
+    --prune destroys the load it replaces. Staging changes nothing visible, so
+    it needs no confirmation.
+    """
+    if stage or yes:
+        return
+    consequence = (
+        f"replace the active version of '{target}' and DELETE its prior loads"
+        if prune
+        else f"replace the active version of '{target}'"
+    )
+    typer.confirm(f"This will {consequence}. Continue?", abort=True)
+
+
+def _skipped_text(skipped: dict[str, int]) -> str:
+    """'3 skipped: 2 not MS2, 1 predicted', or '0 skipped'."""
+    total = sum(skipped.values())
+    if not total:
+        return "0 skipped"
+    reasons = ", ".join(f"{count:,} {reason}" for reason, count in skipped.items())
+    return f"{total:,} skipped: {reasons}"
+
+
+def _sync_spectra(
+    source: str,
+    path: Path,
+    version: str,
+    *,
+    name: str | None,
+    batch_size: int,
+    prune: bool,
+    stage: bool,
+) -> None:
+    """Load a spectral library's dump, as `sync` does a compound source's."""
+    adapter = get_spectrum_adapter(source)
+    engine = _sync_engine()
+    runtime.logger.info(
+        f"Ingesting spectral library '{name or source}' (version '{version}') "
+        f"from {path.name}..."
+    )
+
+    def _progress(count: int) -> None:
+        runtime.logger.info(f"  ...{count:,} spectra ingested")
+
+    try:
+        result = ingest_spectra(
+            engine,
+            adapter,
+            path,
+            version,
+            source_name=name,
+            batch_size=batch_size,
+            activate=not stage,
+            prune=prune,
+            progress=_progress,
+        )
+    except (EmptyIngest, SourceKindConflict) as error:
+        runtime.logger.error(str(error))
+        raise typer.Exit(1) from None
+    finally:
+        engine.dispose()
+
+    runtime.logger.success(
+        f"Ingested {result.ingested:,} spectra from '{result.source}' "
+        f"(version '{result.version}', source_id={result.reference_source_id}, "
+        f"{_skipped_text(result.skipped)})."
+    )
     if stage:
         runtime.logger.info(
             f"Load staged (inactive). Expose it with: mascope reference activate "
@@ -678,8 +817,18 @@ def _print_known_licenses(allowed: list[str] | None) -> None:
     )
 
 
+def _is_spectral(row) -> bool:
+    """Whether a status row is a spectral library's load.
+
+    A row from before sources had a kind is a compound source's.
+    """
+    return (row.kind or COMPOUND_KIND) == SPECTRUM_KIND
+
+
 def _scope_text(row) -> str:
     """How a status row's compounds may be matched, for the table."""
+    if _is_spectral(row):
+        return "spectra; not matched by Stage A"
     try:
         return SourceScope.from_row(row).describe()
     except (TypeError, ValueError):
@@ -706,11 +855,17 @@ def status() -> None:
                     reference_source.c.known_window,
                     reference_source.c.allow_radicals,
                     reference_source.c.polarity,
+                    reference_source.c.kind,
                 ).order_by(
                     reference_source.c.name, reference_source.c.ingested_at.desc()
                 )
             ).all()
-            active_ids = [row.reference_source_id for row in rows if row.is_active]
+            # The gate is Stage A's, and Stage A reads compounds only.
+            active_ids = [
+                row.reference_source_id
+                for row in rows
+                if row.is_active and not _is_spectral(row)
+            ]
             record_licenses = (
                 _record_licenses(conn, active_ids)
                 if allowed is not None and active_ids
@@ -749,5 +904,7 @@ def status() -> None:
             Text(_scope_text(row)),
         )
     console.print(table)
-    _print_license_gate(rows, record_licenses, allowed)
+    _print_license_gate(
+        [row for row in rows if not _is_spectral(row)], record_licenses, allowed
+    )
     _print_known_licenses(allowed)
