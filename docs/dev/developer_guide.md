@@ -1625,8 +1625,12 @@ acknowledgement is an error payload naming why:
 | `{"error": "SOCKET_AUTH_CONFIG_ERROR"}` | the backend's role configuration is broken (logged at ERROR) |
 
 An accepted event's acknowledgement is whatever its handler returns, today nothing. Only a
-client that emits with a callback (`sio.emit(..., callback=...)` or `sio.call`) receives it;
-the converter currently emits without one.
+client that emits with a callback (`sio.emit(..., callback=...)` or `sio.call`) receives it.
+The converter emits every event with one (`FileConverterSocketClient.emit`). On a rejection
+it logs a WARNING once per file and token, naming the event and the code, and sends no
+further events for that file with that token: the backend would drop them too. A fresh token
+for the file, from a new upload context or a new peak detection request, is sent as usual.
+What the converter does with the file itself is unchanged.
 
 **Axis fingerprint** — for every raw Orbitrap file the converter computes its axis
 fingerprint (`mascope_thermo.axis_fingerprint`): the m/z offset the file's mass calibration

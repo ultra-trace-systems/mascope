@@ -61,17 +61,20 @@ class SocketEventHandler:
                 is_acquired, failure_reason = self._peak_guard.acquire(filename)
                 if not is_acquired:
                     # The guard already logged the rejection
-                    self.client.sio.emit(
+                    # Through the client's emit, which reads the backend's
+                    # acknowledgement, as every other converter event does
+                    self.client.emit(
                         "peak_detection_warning",
                         {
                             "filename": filename,
                             "sample_file_id": data.get("sample_file_id"),
                             "process_id": data.get("process_id"),
                             "message": failure_reason,
+                        },
+                        auth={
                             "access_token": data.get("access_token"),
                             "user_id": data.get("user_id"),
                         },
-                        namespace="/file-converter",
                     )
                     return
 
