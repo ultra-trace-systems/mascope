@@ -527,3 +527,76 @@ async def test_a_diagnostic_only_seeded_mode_counts_as_adopted(
             )
         )
         await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_seeded_version_is_not_released_with_a_mechanism(
+    admin_client, async_session_factory, sys_collection
+):
+    """An edit of a seeded mode's collections leaves its first version, as
+    seeded and unadopted, behind its adopted successor. It is that mode's
+    history, not a mode nobody took up: deleting a mechanism they hold is
+    refused naming both versions, and the first is not released."""
+    mechanism_id = gen_id(11)
+    first, second = gen_id(), gen_id()
+    key = f"{_SYSTEM_KEY}-versions-{first}"
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMechanism(
+                ionization_mechanism_id=mechanism_id,
+                ionization_mechanism_polarity="-",
+                ionization_mechanism="+Cl- (sys-mode-versions)",
+            )
+        )
+        session.add(
+            IonizationMode(
+                ionization_mode_id=first,
+                ionization_mode_name=f"Versioned Chemistry {first}",
+                ionization_mode_polarity="-",
+                ionization_mechanism_ids=[mechanism_id],
+                system_key=key,
+                is_active=False,
+            )
+        )
+        session.add(
+            IonizationMode(
+                ionization_mode_id=second,
+                ionization_mode_name=f"Versioned Chemistry {first}",
+                ionization_mode_polarity="-",
+                ionization_mechanism_ids=[mechanism_id],
+                calibration_collection_id=sys_collection,
+                system_key=key,
+                version=2,
+                supersedes_id=first,
+            )
+        )
+        await session.commit()
+
+    try:
+        listed = await admin_client.get(f"/api/ionization_mechanisms/{mechanism_id}")
+        resp = await admin_client.delete(f"/api/ionization_mechanisms/{mechanism_id}")
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(IonizationMode).where(
+                    IonizationMode.ionization_mode_id.in_([second, first])
+                )
+            )
+            await session.execute(
+                delete(IonizationMechanism).where(
+                    IonizationMechanism.ionization_mechanism_id == mechanism_id
+                )
+            )
+            await session.commit()
+
+    assert resp.status_code == 400
+    blocking = resp.json()["detail"]["ionization_modes"]
+    assert {(m["ion_mode_id"], m["version"], m["is_active"]) for m in blocking} == {
+        (first, 1, False),
+        (second, 2, True),
+    }
+    assert listed.status_code == 200, listed.text
+    assert {
+        (m["ion_mode_id"], m["version"], m["is_active"])
+        for m in listed.json()["data"]["ionization_modes"]
+    } == {(first, 1, False), (second, 2, True)}

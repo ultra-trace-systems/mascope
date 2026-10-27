@@ -31,6 +31,7 @@ from sqlalchemy.exc import IntegrityError
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
+from mascope_backend.api.new.ionization.modes.versions import root_ids
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
     ROLE_REAGENT,
@@ -219,7 +220,12 @@ async def fold_sample_into_batch_peaks(
         if sample is None:
             return None
         sample_batch_id = sample.sample_batch_id
-        ionization_mode_id = sample.ionization_mode_id
+        # The ledger is partitioned per setup, keyed by its first version: an
+        # anchor made under one version is the same species' anchor under the
+        # next, so a sample bound under a later version folds into it.
+        ionization_mode_id = (await root_ids(session, [sample.ionization_mode_id])).get(
+            sample.ionization_mode_id
+        )
         filename = sample.filename
 
         if rows is None:

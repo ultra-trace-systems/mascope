@@ -85,17 +85,22 @@ async def fetch_mode_collection_ids(ionization_mode_id: str) -> dict[str, str | 
 
 
 async def fetch_all_ionization_modes() -> list[IonizationMode]:
-    """Fetch all ionization modes from the database.
+    """Fetch every current ionization mode from the database.
 
     Every mode, the ones Mascope ships included: this is what routing reads,
     and the next binding rung routes *to* those rows. Hiding an unadopted mode
     is the listing's concern, and ``get_ionization_modes`` does it there.
 
-    :return: A list of all ionization modes.
+    Current versions only. A superseded version is kept for the samples bound
+    under it, and nothing new is bound, routed or checked against it.
+
+    :return: A list of all current ionization modes.
     :rtype: list[IonizationMode]
     """
     async with async_session() as session:
-        result = await session.execute(select(IonizationMode))
+        result = await session.execute(
+            select(IonizationMode).where(IonizationMode.is_active.is_(True))
+        )
         ionization_modes = result.scalars().all()
         return ionization_modes
 
@@ -133,6 +138,9 @@ async def fetch_listable_ionization_modes() -> list[IonizationMode]:
     is a mode like any other, and a sample bound to one carries an id the
     browser must resolve.
 
+    Current versions only; a sample bound under an earlier one is resolved
+    through its successor's ``superseded_ids`` (``service.listed``).
+
     :return: A list of the deployment's own modes and the seeded ones it
         has adopted.
     :rtype: list[IonizationMode]
@@ -140,7 +148,8 @@ async def fetch_listable_ionization_modes() -> list[IonizationMode]:
     async with async_session() as session:
         result = await session.execute(
             select(IonizationMode).where(
-                or_(IonizationMode.system_key.is_(None), system_mode_adopted())
+                IonizationMode.is_active.is_(True),
+                or_(IonizationMode.system_key.is_(None), system_mode_adopted()),
             )
         )
         ionization_modes = result.scalars().all()

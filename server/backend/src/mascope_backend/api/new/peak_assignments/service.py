@@ -48,6 +48,7 @@ from mascope_backend.api.new.instrument_configs.lib import read_instrument_funct
 from mascope_backend.api.new.ionization.modes.util import (
     fetch_sample_ionization_mechanism_ids,
 )
+from mascope_backend.api.new.ionization.modes.versions import move_to_current_versions
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.match.params.lib import (
     apply_match_params,
@@ -2230,6 +2231,8 @@ async def create_pending_run(
     :param config: The run configuration; engine defaults when omitted.
     :return: The created run, in :data:`PENDING_RUN_STATUS`.
     """
+    # Before the row: the run is recorded under the version it will search.
+    await move_to_current_versions(sample_item_ids=[sample_item_id])
     return await _create_run(
         sample_item_id,
         config or PeakAssignmentConfig(),
@@ -2924,6 +2927,9 @@ async def _run_sample_assignment(
         batch loop) leave it unset and get a run of their own.
     :return: A dictionary with run summary and status message
     """
+    # A run searches under the current version of the sample's ionization
+    # mode and records it; a sample bound under an earlier one moves first.
+    await move_to_current_versions(sample_item_ids=[sample_item_id])
     sample = await fetch_sample(sample_item_id)
     config = config or PeakAssignmentConfig()
 

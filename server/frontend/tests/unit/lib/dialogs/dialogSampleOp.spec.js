@@ -167,3 +167,22 @@ describe('DialogSampleOp ionization mode', () => {
     expect(ionizationSelect(wrapper).props('modelValue')).toBe('m3')
   })
 })
+
+// Update fixes the mode the sample has. It may be a version an edit has since
+// replaced, which the list names only through the current one.
+describe('DialogSampleOp ionization mode of a sample being updated', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app.data.ionization.mode.list = [
+      { ...mode('m1-v2', 'Ammonium', 'NH4', '+'), superseded_ids: ['m1'] }
+    ]
+  })
+
+  it('names the mode of a sample bound under an earlier version', async () => {
+    const wrapper = await openDialog(acquisition({ ionization_mode_id: 'm1' }))
+    await wrapper.setProps({ action: 'update' })
+    await flushPromises()
+
+    expect(ionizationSelect(wrapper).props('options')).toEqual([{ label: 'Ammonium', value: 'm1' }])
+  })
+})

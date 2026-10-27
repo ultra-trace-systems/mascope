@@ -43,6 +43,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from mascope_backend.api.new.instruments.registry import instrument_id_for
+from mascope_backend.api.new.ionization.modes.versions import current_versions
 from mascope_backend.binding_rungs import LEARNING_SOURCES
 from mascope_backend.db import IonizationMode, MethodBinding, SampleFile, async_session
 from mascope_backend.db.id import gen_id
@@ -286,6 +287,20 @@ async def resolve_modes_by_method_binding(
                     "rest will follow it.",
                 )
             binding, mode = found
+            if not mode.is_active:
+                # Learned under a version an edit has since replaced. The edit
+                # moves the bindings it finds on to the new version; one
+                # learned from a file processed while it ran is moved here.
+                mode = (await current_versions(session, [mode.ionization_mode_id])).get(
+                    mode.ionization_mode_id
+                )
+                if mode is None:
+                    return [], Declined(
+                        "its acquisition method has not been seen running a "
+                        "chemistry on this instrument",
+                        "Choose a chemistry for one file of this method and "
+                        "the rest will follow it.",
+                    )
             # Judged on the chemistries, not on `state`. The two say the same
             # thing today and would not once a person can confirm a binding.
             if len(binding.chemistry_keys or []) != 1:

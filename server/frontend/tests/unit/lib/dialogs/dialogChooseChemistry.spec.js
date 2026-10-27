@@ -224,6 +224,21 @@ describe('DialogChooseChemistry', () => {
       expect(selects(wrapper)[0].props('modelValue')).toBe(null)
     })
 
+    it('follows a chosen mode an edit made a next version of', async () => {
+      const wrapper = mountDialog([file('a', '-')])
+      await selects(wrapper)[0].vm.$emit('update:modelValue', 'no3')
+      await setupButton(wrapper).vm.$emit('click')
+
+      // Its mechanisms were edited while the settings were open.
+      mocks.modes.splice(0, mocks.modes.length, {
+        ...mode('no3-v2', 'Nitrate', 'NO3', '-'),
+        superseded_ids: ['no3']
+      })
+      await reopen(wrapper, { resume: true })
+
+      expect(selects(wrapper)[0].props('modelValue')).toBe('no3-v2')
+    })
+
     it('still opens clean when it was simply closed and opened again', async () => {
       const wrapper = mountDialog([file('a', '-')])
       await selects(wrapper)[0].vm.$emit('update:modelValue', 'no3')

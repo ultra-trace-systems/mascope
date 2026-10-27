@@ -10,7 +10,7 @@ filename token.
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from test_utils import captured_logs
 
 from mascope_backend.api.controllers.sample.files.process import (
@@ -775,6 +775,73 @@ async def test_a_binding_whose_mode_was_deleted_declines(
     routings, declined = await resolve_modes_by_method_binding(
         _File(instrument), _streams()
     )
+
+    assert routings == []
+    assert "has not been seen" in declined.reason
+
+
+async def _supersede(async_session_factory, mode, active=True) -> str:
+    """Replace ``mode`` with a next version, as an edit the binding missed."""
+    successor = gen_id()
+    async with async_session_factory() as session:
+        await session.execute(
+            update(IonizationMode)
+            .where(IonizationMode.ionization_mode_id == mode.ionization_mode_id)
+            .values(is_active=False)
+        )
+        session.add(
+            IonizationMode(
+                ionization_mode_id=successor,
+                ionization_mode_name=mode.ionization_mode_name,
+                ionization_mode_polarity=mode.ionization_mode_polarity,
+                ionization_mechanism_ids=list(mode.ionization_mechanism_ids),
+                version=2,
+                is_active=active,
+                supersedes_id=mode.ionization_mode_id,
+            )
+        )
+        await session.commit()
+    return successor
+
+
+async def _drop(async_session_factory, mode_id):
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(IonizationMode).where(IonizationMode.ionization_mode_id == mode_id)
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_binding_on_a_superseded_version_routes_to_the_current_one(
+    modes, instrument, async_session_factory
+):
+    """An edit moves the bindings it finds; one learned meanwhile is moved here."""
+    await _taught(instrument, modes["nitrate"])
+    successor = await _supersede(async_session_factory, modes["nitrate"])
+    try:
+        routings, declined = await resolve_modes_by_method_binding(
+            _File(instrument), _streams()
+        )
+    finally:
+        await _drop(async_session_factory, successor)
+
+    assert declined is None
+    assert [r.mode.ionization_mode_id for r in routings] == [successor]
+
+
+@pytest.mark.asyncio
+async def test_a_binding_whose_setup_has_no_current_version_declines(
+    modes, instrument, async_session_factory
+):
+    await _taught(instrument, modes["nitrate"])
+    successor = await _supersede(async_session_factory, modes["nitrate"], active=False)
+    try:
+        routings, declined = await resolve_modes_by_method_binding(
+            _File(instrument), _streams()
+        )
+    finally:
+        await _drop(async_session_factory, successor)
 
     assert routings == []
     assert "has not been seen" in declined.reason
