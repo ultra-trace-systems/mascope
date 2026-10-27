@@ -25,13 +25,17 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mascope_reference.normalize import canonical_formula
 from mascope_reference.peaklist import is_odd_electron
 from mascope_reference.query import _STABLE_ORDER, active_join
-from mascope_reference.schema import reference_compound, reference_source
+from mascope_reference.schema import (
+    COMPOUND_KIND,
+    reference_compound,
+    reference_source,
+)
 from mascope_reference.scope import SourceScope
 from mascope_tools.composition.known_window import KnownWindow
 
@@ -100,9 +104,14 @@ async def known_state_fingerprint(session: AsyncSession) -> tuple:
     date without reloading it included. An empty tuple means no active sources -
     the known set is empty without scanning ``reference_compound``.
 
+    Only compound sources count: a spectral library's load holds no compound
+    Stage A could match, so loading, activating or pruning one leaves the
+    known set, and this tuple, as they were. A row with no kind predates the
+    column and is a compound source.
+
     :param session: Active async session.
     :return: Sorted tuple of (source id, ingestion timestamp, window, radical
-        allowance, polarity), one per active source.
+        allowance, polarity), one per active compound source.
     """
     rows = (
         await session.execute(
@@ -114,6 +123,9 @@ async def known_state_fingerprint(session: AsyncSession) -> tuple:
                 reference_source.c.polarity,
             )
             .where(reference_source.c.is_active.is_(True))
+            .where(
+                func.coalesce(reference_source.c.kind, COMPOUND_KIND) == COMPOUND_KIND
+            )
             .order_by(reference_source.c.reference_source_id)
         )
     ).all()
