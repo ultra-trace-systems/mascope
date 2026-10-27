@@ -143,6 +143,14 @@ async def test_the_active_sources_are_listed_by_label(outsider_client, sources):
         "name": _SHIPPED.id,
         "version": "new",
         "label": _SHIPPED.label,
+        "references": [
+            {
+                "citation": _SHIPPED.references[0]["citation"],
+                "doi": "10.1016/j.aca.2008.04.043",
+                "isbn": None,
+                "note": None,
+            }
+        ],
         "license": "CC-BY-4.0",
         "polarity": None,
         "allow_radicals": False,
@@ -153,6 +161,8 @@ async def test_the_active_sources_are_listed_by_label(outsider_client, sources):
     # A source no shipped list names is labelled by its name.
     assert (custom["name"], custom["label"]) == (_CUSTOM, _CUSTOM)
     assert (custom["polarity"], custom["allow_radicals"]) == ("negative", True)
+    # ... and cites no publication: the database keeps none for it.
+    assert custom["references"] == []
 
 
 @pytest.mark.asyncio
