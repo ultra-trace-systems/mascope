@@ -13,12 +13,10 @@ compare gets backwards, a lookup that fails (which must never redden an
 assessment), and an assessment failure that a deployment verdict must not hide.
 """
 
-import io
 import json
 import os
 import shutil
 import subprocess
-import tarfile
 from pathlib import Path
 
 import pytest
@@ -41,16 +39,23 @@ pytestmark = [
 RELEASE_API = "https://releases.invalid/latest"
 HC_URL = "https://heartbeat.invalid/ping"
 
-# ssh: a suite run exits STUB_SUITE_RC; the report fetch streams STUB_ARCHIVE.
-# Every argument list is appended to STUB_SSH_ARGS, so a test can see what
-# reached the target.
+# ssh: runs the remote command here, in SUITE_DIR, a directory standing in for
+# the target's suite copy; its state (a report left by an earlier run) persists
+# as it would on the target. Every argument list is appended to STUB_SSH_ARGS,
+# so a test can see what reached the target.
 SSH_STUB = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$STUB_SSH_ARGS"
 for last; do :; done
-case "$last" in
-  *"tar -cz report"*) [ -n "$STUB_ARCHIVE" ] && cat "$STUB_ARCHIVE"; exit 0 ;;
-  *) echo "suite output"; exit "${STUB_SUITE_RC:-0}" ;;
-esac
+exec bash -c "$last"
+"""
+
+# The target's suite interpreter: writes the report bytes STUB_ORIGIN_REPORT
+# names, as the suite would, and exits STUB_SUITE_RC.
+ORIGIN_PYTHON_STUB = """#!/usr/bin/env bash
+echo "suite output"
+mkdir -p report
+[ -n "$STUB_ORIGIN_REPORT" ] && cp "$STUB_ORIGIN_REPORT" report/pentest-report.json
+exit "${STUB_SUITE_RC:-0}"
 """
 
 # curl: the release lookup answers STUB_RELEASE (or fails when unset); every
@@ -111,13 +116,6 @@ def _report(build="v1.7.2", findings=0, rows=None):
     }
 
 
-def _archive(path, report_bytes):
-    with tarfile.open(path, "w:gz") as tar:
-        info = tarfile.TarInfo("report/pentest-report.json")
-        info.size = len(report_bytes)
-        tar.addfile(info, io.BytesIO(report_bytes))
-
-
 def _run(
     tmp_path,
     *,
@@ -128,6 +126,7 @@ def _run(
     cdn=None,
     cdn_rc=0,
     old_records=(),
+    leftover=None,
 ):
     """
     Run the runner once; return (exit code, summary file, heartbeats).
@@ -136,6 +135,8 @@ def _run(
         ``None`` configures no CDN vantage at all.
     :param old_records: Names of files to leave in RECORDS beforehand, dated
         past the retention.
+    :param leftover: A report an earlier run left in both suite copies'
+        ``report/``, at the target and here.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -148,10 +149,16 @@ def _run(
         (records / name).write_text("old")
         os.utime(records / name, (0, 0))
 
-    archive = ""
+    target = tmp_path / "target"
+    (target / ".venv" / "bin").mkdir(parents=True)
+    (target / ".venv" / "bin" / "python").write_text(ORIGIN_PYTHON_STUB)
+    (target / ".venv" / "bin" / "python").chmod(0o755)
+    origin_report = ""
     if report is not None or raw is not None:
-        archive = str(tmp_path / "report.tar.gz")
-        _archive(archive, raw if raw is not None else json.dumps(report).encode())
+        origin_report = str(tmp_path / "origin-report.json")
+        Path(origin_report).write_bytes(
+            raw if raw is not None else json.dumps(report).encode()
+        )
 
     env = {
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
@@ -166,7 +173,8 @@ def _run(
         "MASCOPE_PENTEST_EMAIL": "admin@example.com",
         "MASCOPE_PENTEST_PASSWORD": "secret",
         "STUB_RELEASE_API": RELEASE_API,
-        "STUB_ARCHIVE": archive,
+        "SUITE_DIR": str(target),
+        "STUB_ORIGIN_REPORT": origin_report,
         "STUB_SUITE_RC": str(suite_rc),
         "STUB_PINGS": str(tmp_path / "pings"),
         "STUB_SSH_ARGS": str(tmp_path / "ssh-args"),
@@ -178,6 +186,9 @@ def _run(
         (suite / ".venv" / "bin" / "python").write_text(CDN_PYTHON_STUB)
         (suite / ".venv" / "bin" / "python").chmod(0o755)
         shutil.copy(VANTAGE_DIFF, suite / "vantage_diff.py")
+        if leftover is not None:
+            (suite / "report").mkdir()
+            (suite / "report" / "pentest-report.json").write_text(json.dumps(leftover))
         cdn_report = ""
         if cdn is not ...:
             cdn_report = str(tmp_path / "cdn-report.json")
@@ -199,6 +210,9 @@ def _run(
             STUB_CDN_RC=str(cdn_rc),
             STUB_CDN_ENV=str(tmp_path / "cdn-env"),
         )
+    if leftover is not None:
+        (target / "report").mkdir()
+        (target / "report" / "pentest-report.json").write_text(json.dumps(leftover))
     if release is not None:
         env["STUB_RELEASE"] = release
     result = subprocess.run(
@@ -397,6 +411,31 @@ def test_a_cdn_run_without_a_report_fails_and_is_not_compared(tmp_path):
     )
     assert not list(records.glob("*-vantage.*"))
     assert pings[-1].endswith(
+        "| cdn: report unreadable | vantages: comparison unavailable"
+    )
+
+
+def test_an_aborted_run_does_not_archive_the_previous_report(tmp_path):
+    # Both vantages abort as a WAF-refused run does (exit 4, no report) over a
+    # good report an earlier run left behind. Archiving that one would date an
+    # assessment that did not happen today, and compare it.
+    rc, summary, pings = _run(
+        tmp_path,
+        release=_tag("v1.7.2"),
+        suite_rc=4,
+        cdn=...,
+        cdn_rc=4,
+        leftover=_report(build="v1.7.1"),
+    )
+    records = tmp_path / "records"
+    assert rc == 4
+    assert summary == "report unreadable"
+    assert next(records.glob("*-cdn.summary")).read_text().strip() == (
+        "report unreadable"
+    )
+    assert not list(records.glob("*-vantage.*"))
+    assert pings[-1] == (
+        f"{HC_URL}/fail suite exit 4 | origin: report unreadable "
         "| cdn: report unreadable | vantages: comparison unavailable"
     )
 
