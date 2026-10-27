@@ -1357,6 +1357,44 @@ def _raise_if_unfinished(datafile_path: str, cause: BaseException) -> None:
     ) from cause
 
 
+# The scan ranges that close a filter, "[40.0000-600.0000]" or several
+# separated by ", ", as mascope_thermo.scan_filter finds them.
+_FILTER_RANGES = re.compile(r"\[([^\[\]]*)\]\s*$")
+
+
+def _thermo_filter_text(scan_filter) -> str:
+    """A scan's filter as the Thermo library renders it, its scan ranges as
+    OpenTFRaw renders them.
+
+    The method holds a range bound as a double (``181.636952``), and the
+    Thermo library rounds that to four decimals (``181.6370``). OpenTFRaw
+    reads the bound as a single-precision float (``181.636948``), as the
+    scan index stores it, and its four decimals can differ in the last one
+    (``181.6369``). The parser normalises the text to four decimals but cannot
+    undo a rounding, so the two backends keyed such a stream apart (GitHub
+    #2658). Each bound is narrowed to single precision here before it is
+    written, which gives OpenTFRaw's text: on the internal regression corpus,
+    every MS2 stream of the files that differed.
+
+    A filter whose text closes on as many ranges as the filter holds gets them
+    rewritten; any other is left as the library renders it.
+
+    :param scan_filter: The scan's ``IScanFilter``.
+    :return: The filter text.
+    """
+    text = scan_filter.ToString()
+    count = int(scan_filter.MassRangeCount)
+    match = _FILTER_RANGES.search(text)
+    if not match or match.group(1).count(",") + 1 != count:
+        return text
+    ranges = (scan_filter.GetMassRange(k) for k in range(count))
+    rendered = ", ".join(
+        f"{float(np.float32(r.Low)):.4f}-{float(np.float32(r.High)):.4f}"
+        for r in ranges
+    )
+    return f"{text[: match.start()]}[{rendered}]"
+
+
 class ThermoBackend:
     """:class:`ReaderBackend` backed by Thermo RawFileReader via pythonnet.
 
@@ -1527,7 +1565,7 @@ class ThermoBackend:
                 {
                     "scan": scan_number,
                     "time_s": stats.StartTime * _SECONDS_PER_MINUTE,
-                    "filter": scan_filter.ToString(),
+                    "filter": _thermo_filter_text(scan_filter),
                     "segment": segment,
                     "event": event,
                 }
@@ -1989,7 +2027,7 @@ class ThermoBackend:
                     scan_idx,
                     scan_stats.StartTime * _SECONDS_PER_MINUTE,
                     scan_stats.TIC,
-                    scan_filter.ToString(),
+                    _thermo_filter_text(scan_filter),
                     self.trailer_numbers(scan_idx, _MS2_RECORD_TRAILER_NUMBERS),
                     self.scan_trailer(scan_idx).get(MS2_HCD_ENERGY),
                 )
