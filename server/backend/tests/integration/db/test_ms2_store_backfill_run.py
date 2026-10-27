@@ -168,3 +168,23 @@ async def test_a_file_whose_store_cannot_be_written_is_passed_over_next_time(
     _, written = await script.backfill("run", pause=0, retry=True, sleep=_no_sleep)
     assert written == Counter({"written": 1})
     assert m_io.read_props(history["fragmented"])[script.ATTEMPT_FIELD] is None
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_raw_file_was_not_kept_is_counted_and_left_alone(
+    history,
+):
+    fragmented = history["fragmented"]
+    raw = os.path.join(os.path.dirname(ms2_store.store_path(fragmented)), "data.raw")
+    os.remove(raw)
+    held = _held(fragmented)
+
+    for mode in ("count", "run"):
+        counts, written = await script.backfill(mode, pause=0, sleep=_no_sleep)
+
+        assert counts[history["instrument"]] == Counter(
+            {script.NO_RAW: 1, script.NO_CENSUS: 1}
+        )
+        assert written == Counter()
+    assert _held(fragmented) == held
+    assert script.ATTEMPT_FIELD not in m_io.read_props(fragmented)
