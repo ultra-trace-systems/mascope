@@ -182,6 +182,24 @@ class TestWhatStageAMeasured:
         measured = sample_mass_accuracy(frame, min_anchor_ions=8)
         assert (measured.mu_ppm, measured.sigma_ppm) == (None, None)
         assert measured.anchors == 15
+        # And says why: its fifteen lines are one ion's.
+        assert measured.anchor_ions == 1
+
+    def test_the_ions_are_counted_where_no_minimum_is_asked(self):
+        # A run records how many ions its lines came from whether or not it
+        # held them to a minimum.
+        frame = pd.DataFrame(
+            {
+                "target_ion_id": ["ion-a"] * 9 + ["ion-b"],
+                "match_mz_error": [0.5] * 9 + [0.1],
+                "sample_peak_intensity": [100.0] * 10,
+            }
+        )
+
+        measured = sample_mass_accuracy(frame)
+
+        assert measured.sigma_ppm is not None
+        assert (measured.anchors, measured.anchor_ions) == (10, 2)
 
     def test_the_ions_counted_are_those_with_an_anchor(self):
         # Eight ions with a line each fit; seven with two each do not, nor do
@@ -208,8 +226,11 @@ class TestWhatStageAMeasured:
 
         fitted = sample_mass_accuracy(eight, min_anchor_ions=8)
         assert (fitted.mu_ppm, fitted.sigma_ppm) == fit_mass_accuracy(errors)
+        assert fitted.anchor_ions == 8
         assert sample_mass_accuracy(seven, min_anchor_ions=8).sigma_ppm is None
-        assert sample_mass_accuracy(gated, min_anchor_ions=8).sigma_ppm is None
+        refused = sample_mass_accuracy(gated, min_anchor_ions=8)
+        assert refused.sigma_ppm is None
+        assert (refused.anchors, refused.anchor_ions) == (14, 7)
 
     def test_a_frame_with_no_ions_to_count_measured_nothing(self):
         errors = [0.0, 0.1, -0.1, 0.2, -0.2, 0.1, -0.1, 0.05]
@@ -456,6 +477,19 @@ class TestTheRunSaysWhatItJudgedAt:
         assert snapshot["sigma_ppm"] == pytest.approx(
             math.hypot(ORBI_ACCURACY, PRED_SIGMA_PPM), abs=1e-4
         )
+
+    def test_a_fallback_on_too_few_ions_names_them(self):
+        # Twelve lines are enough to fit; three ions are not. Without the ion
+        # count the record would show a class width beside twelve anchors and
+        # nothing to say why.
+        accuracy = SampleMassAccuracy(None, None, 12, anchor_ions=3)
+        scoring = pattern_scoring_for(_orbi_params(), accuracy, ORBI_ACCURACY)
+
+        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+
+        assert snapshot["sigma_source"] == "instrument_class"
+        assert snapshot["fitted_anchors"] == 12
+        assert snapshot["fitted_anchor_ions"] == 3
 
     def test_an_offset_from_the_reagent_lines_says_so_and_names_them(self):
         accuracy = SampleMassAccuracy(None, None, 7, NITRATE_READING)

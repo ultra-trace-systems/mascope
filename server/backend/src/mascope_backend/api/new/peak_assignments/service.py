@@ -92,6 +92,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     REFERENCE_IDENTITIES_COL,
     SEARCH_SCOPE_KEY,
     SOURCE_DATABASE,
+    STAGE_A_FIT_MIN_IONS,
     TIERING_KEY,
     ReagentOffset,
     SampleMassAccuracy,
@@ -2805,15 +2806,16 @@ async def _stage_a_assignments(
         see :func:`drop_ions_claimed_elsewhere` for why the difference matters.
     :param fallback_sigma_ppm: The resolved profile's instrument class width.
         Stage A scores at it when the target library matched too few lines to
-        fit a width, as the untargeted stage does, so neither stage falls back
-        to a width the other does not use (:func:`score_ions_by_fit`).
+        fit a width, or lines of fewer than :data:`STAGE_A_FIT_MIN_IONS` ions,
+        as the untargeted stage does, so neither stage falls back to a width
+        the other does not use (:func:`score_ions_by_fit`).
     :param known_window: The resolved chemistry context's ceiling on every
         reference source's window, or None where the context sets none.
     :param reagent_offset: Where the reagent pre-pass's lines put the mass
         axis. Stage A scores at it where the target library matched too few
-        lines to fit an offset and the lines show one beyond the width
-        (:attr:`SampleMassAccuracy.scoring_mu_ppm`), and so does the untargeted
-        stage. The width stays the class's: a handful of the source's own
+        lines, or too few ions, to fit an offset and the lines show one beyond
+        the width (:attr:`SampleMassAccuracy.scoring_mu_ppm`), and so does the
+        untargeted stage. The width stays the class's: a handful of the source's own
         bright lines says where the axis sits, not how an analyte scatters
         about it.
     :return: The assignment rows; what a run records about the confidence curve
@@ -2825,9 +2827,10 @@ async def _stage_a_assignments(
         from, and the target library is exactly such a set. The reference
         mirror is not, so its lines are left out of the fit even though they
         compete for peaks in the same frame (:func:`target_library_rows`). Its
-        ``sigma_ppm`` is None when too few of the library's lines matched to
-        fit one, its ``anchors`` says how few, and its ``reagent`` is the
-        pre-pass's reading, carried even where the library matched nothing.
+        ``sigma_ppm`` is None when too few of the library's lines, or too few
+        of its ions, matched to fit one, its ``anchors`` and ``anchor_ions``
+        say how few, and its ``reagent`` is the pre-pass's reading, carried
+        even where the library matched nothing.
     """
     stage_a_assignments: list[dict] = []
     confidence_calibration: dict | None = None
@@ -2865,16 +2868,22 @@ async def _stage_a_assignments(
             # the peak-centric engine's scoring engine is the ion-level fit
             # quality, not the targeted matcher's per-isotopologue term. Runs
             # after gating so tolerance/intensity cuts carry into the fit.
+            # The fit counts the ions its lines come from as well as the lines:
+            # a few bright ions with many lines each would otherwise calibrate
+            # the sample on their own mass error (STAGE_A_FIT_MIN_IONS).
             match_isotope_df = score_ions_by_fit(
                 match_isotope_df,
                 fallback_sigma_ppm=fallback_sigma_ppm,
                 reagent_offset=reagent_offset,
+                min_anchor_ions=STAGE_A_FIT_MIN_IONS,
             )
             # Read off the frame the fit was computed on, so Stage B is judged
             # at the width Stage A was judged at rather than at one refitted
             # over a different set of rows.
             mass_accuracy = sample_mass_accuracy(
-                match_isotope_df, reagent=reagent_offset
+                match_isotope_df,
+                reagent=reagent_offset,
+                min_anchor_ions=STAGE_A_FIT_MIN_IONS,
             )
         instrument = get_instrument_type(sample.filename)
         # Load this instrument's confidence calibration from the D6 store (active DB row,
@@ -3220,7 +3229,8 @@ async def _run_sample_assignment(
                     f"Untargeted stage for sample '{sample.sample_item_name}' scores "
                     f"at {scoring.sigma_ppm:.3f} ppm "
                     f"({scoring_snapshot['sigma_source']}, "
-                    f"{mass_accuracy.anchors} anchors), offset "
+                    f"{mass_accuracy.anchors} anchors of "
+                    f"{mass_accuracy.anchor_ions} ions), offset "
                     f"{scoring.mu_ppm:+.3f} ppm ({scoring_snapshot['mu_source']})"
                 )
                 started = time.perf_counter()

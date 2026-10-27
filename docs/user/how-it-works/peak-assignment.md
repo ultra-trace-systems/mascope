@@ -418,18 +418,20 @@ awareness. The full mathematical model is in the developer reference,
 `libraries/tools/docs/fit_score.md`.
 
 The Gaussian's width and centre are the sample's own where it can measure them, from
-the lines of your target library that it matched. Where fewer than eight matched, the
-width is the instrument class's, and the centre is the median mass error of the reagent
-ions the run claimed, if it claimed at least three and their offset exceeds that width;
-otherwise the sample is scored on its nominal masses. The reagent ions stand in only
-there: they sit at the low end of the mass range and need not agree with the offset
-your library measures. A formula measured on its own - a batch peak's *Use this*, the
-inspector's measured evidence and its alternatives - holds too few ions to measure
-either. A bright ion can match eight lines alone, but they all share its own mass
-error, so these are measured only from lines of at least eight different ions. Below
-that, the formula is scored at the instrument class's width and at the centre the sample's
-latest run in Mascope scored at, whether that was your library's offset or the reagent
-ions'. An imported run does not count. A sample with no such run is centred on its own reagent ions, as a run would be.
+the lines of your target library that it matched. That takes at least eight lines, of
+at least eight different ions. A bright ion can match many lines alone, but they all
+share its own mass error: counted as lines, a few such ions would put the sample's
+centre at their own error and its width at how well their lines agree. Below either
+count, the width is the instrument class's, and the centre is the median mass error of
+the reagent ions the run claimed, if it claimed at least three and their offset exceeds
+that width; otherwise the sample is scored on its nominal masses. The reagent ions
+stand in only there: they sit at the low end of the mass range and need not agree with the
+offset your library measures. A formula measured on its own - a batch peak's *Use
+this*, the inspector's measured evidence and its alternatives - is held to the same
+counts, and holds too few ions to measure either. It is scored at the instrument
+class's width and at the centre the sample's latest run in Mascope scored at, whether
+that was your library's offset or the reagent ions'. An imported run does not count. A
+sample with no such run is centred on its own reagent ions, as a run would be.
 
 A predicted line is a peak your instrument can resolve, not a single isotopologue. On a
 TOF, the peak one mass unit above a compound holds its 13C line and also its 15N, 2H and
