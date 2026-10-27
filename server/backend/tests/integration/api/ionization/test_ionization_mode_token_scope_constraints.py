@@ -23,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 
 from mascope_backend.db import (
     Dataset,
+    Instrument,
     IonizationMechanism,
     IonizationMode,
     SampleBatch,
@@ -280,6 +281,14 @@ async def test_widening_a_scope_rechecks_the_token(
 # --- through the API, not the ORM ------------------------------------------
 
 
+async def _instrument_id(session, name: str) -> str:
+    return (
+        await session.execute(
+            select(Instrument.instrument_id).where(Instrument.name == name)
+        )
+    ).scalar_one()
+
+
 @pytest.mark.asyncio
 async def test_the_api_lets_a_scoped_mode_repeat_an_unscoped_token(
     admin_client, modes, async_session_factory, mechanism
@@ -314,6 +323,7 @@ async def test_the_api_lets_a_scoped_mode_repeat_an_unscoped_token(
             IonizationMode, resp.json()["data"]["ionization_mode_id"]
         )
         assert stored.instrument == "SCOPE-A"
+        assert stored.instrument_id == await _instrument_id(session, "SCOPE-A")
 
 
 @pytest.mark.asyncio
@@ -347,6 +357,7 @@ async def test_a_mode_that_has_routed_files_can_still_be_scoped(
     async with async_session_factory() as session:
         stored = await session.get(IonizationMode, in_use_mode["mode_id"])
         assert stored.instrument == "SCOPE-A"
+        assert stored.instrument_id == await _instrument_id(session, "SCOPE-A")
 
 
 # --- the scope is normalised ------------------------------------------------

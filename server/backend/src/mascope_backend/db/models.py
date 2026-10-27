@@ -86,6 +86,22 @@ Base = declarative_base(
 )
 
 
+def _instrument_link(**kwargs):
+    """The ``instrument_id`` beside a free-text ``instrument`` column.
+
+    Nullable, and SET NULL should an instrument row ever go: the string beside
+    it still says which instrument it was. Filled wherever the string is
+    written (``instruments.registry``), and by the migration that made it for
+    every row that carried a name then.
+    """
+    return mapped_column(
+        String(16),
+        ForeignKey("instrument.instrument_id", ondelete="SET NULL"),
+        nullable=True,
+        **kwargs,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Workspace & membership
 # ---------------------------------------------------------------------------
@@ -482,6 +498,7 @@ class Notification(Base):
     # The instrument whose files it is about, when it is about any, as the
     # first of them spelled it; instrument_key is what rows are matched on.
     instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     instrument_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     # How many events the row stands for.
@@ -586,6 +603,7 @@ class AgentDevice(Base):
     # the server knew the field. Reported, not verified, and not read by
     # routing, which still takes an upload's instrument from the file name.
     instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     # The person who approved the pairing and vouches for this machine.
     sponsor_user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
@@ -649,6 +667,7 @@ class Dataset(Base):
         server_default=text(f"'{dataset_config.DEFAULT_LOCKED_STATUS}'"),
     )
     instrument: Mapped[Optional[str]] = mapped_column(String(64))
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     icon: Mapped[Optional[dict]] = mapped_column(JSON)
     dataset_utc_created: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
     dataset_utc_modified: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
@@ -755,6 +774,7 @@ class DatasetTombstone(Base):
     dataset_description: Mapped[Optional[str]] = mapped_column(Text)
     dataset_type: Mapped[Optional[str]] = mapped_column(String(64))
     instrument: Mapped[Optional[str]] = mapped_column(String(64))
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     # The five descriptive fields of `Dataset` as one object:
     # {license, authors, keywords, related_identifiers, funding}.
     descriptive_metadata: Mapped[Optional[dict]] = mapped_column(JSON)
@@ -897,6 +917,51 @@ def _instrument_type_from_name(context) -> str | None:
     return resolve_instrument_type(instrument, throw=False)
 
 
+class Instrument(Base):
+    """An instrument, as a row of its own that outlives its files.
+
+    Until this table an instrument was ``SELECT DISTINCT sample_file.instrument``,
+    the first segment of a file's name: delete the last file and the instrument
+    was gone, with everything known about it. A row is made or touched when a
+    file of it is registered (``api.new.instruments.registry``)
+    and whenever another table records the name, and nothing deletes one.
+
+    ``name`` is that same string, spelled exactly as the files spell it: one
+    row per distinct string, as the instrument list (``GET /api/instruments``)
+    groups them. The free-text ``instrument`` columns stay beside the
+    ``instrument_id`` that links them here, and every read still goes through
+    them; the link is what a later change reads instead.
+
+    What the file says about the instrument fills the rest, where its reader
+    reports it: the model from a Thermo file, nothing from a TofDaq one, which
+    names its digitizer and not the instrument. The serial number and the
+    software version come only from Thermo's own reader, and ``cv_term`` (the
+    PSI-MS term for the model) from the controlled-vocabulary mapping; all are
+    NULL until something fills them.
+    """
+
+    __tablename__ = "instrument"
+
+    instrument_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    #: "orbi" or "tof", the class of the files it has registered. NULL for a
+    #: name only a mode's scope, a paired device or a notification has given.
+    instrument_type: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    vendor: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    serial_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    software_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    cv_term: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    created_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+    #: When a file of it was last registered. NULL for a name no file has
+    #: carried since the row was made.
+    last_seen_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+
 #: The sample file's deferred columns, which ``SampleFile.to_dict`` leaves out
 #: unless they were loaded. Named rather than read off the instance's unloaded
 #: set: after a commit every column of a row is unloaded, and to_dict reads
@@ -928,6 +993,7 @@ class SampleFile(Base):
     )
     filename: Mapped[str] = mapped_column(String(256), unique=True)
     instrument: Mapped[str] = mapped_column(String(64))
+    instrument_id: Mapped[Optional[str]] = _instrument_link(index=True)
     method_file: Mapped[Optional[str]] = mapped_column(String(512))
     datetime: Mapped[dt] = mapped_column(
         TIMESTAMP(timezone=False),
@@ -1797,6 +1863,7 @@ class IonizationMode(Base):
     # polarity and the scoped token covers the shared one, the instrument's own
     # wins; a name carrying two different tokens stays ambiguous.
     instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     ionization_mode_polarity: Mapped[str] = mapped_column(String(1))
     ionization_mechanism_ids: Mapped[list[str]] = mapped_column(JSON)
     # The chemistry this row stands for, the same string on every server, for
@@ -1889,6 +1956,7 @@ class MethodBinding(Base):
     # Digest of the three columns below; see method_keys.binding_digest.
     binding_key: Mapped[str] = mapped_column(String(64))
     instrument: Mapped[str] = mapped_column(String(64))
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     # "" when the instrument reported no method name, or one that never
     # varies. Such a binding keys on the signature class alone and yields to
     # the filename token.
@@ -2903,6 +2971,7 @@ class InstrumentFunction(Base):
 
     instrument_function_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     instrument: Mapped[str] = mapped_column(String(64))
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     method_file: Mapped[str] = mapped_column(String(512))
     datetime_utc: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
     peakshape: Mapped[Optional[dict]] = mapped_column(JSON)
@@ -3446,6 +3515,7 @@ __all__ = [
     "BatchPeakRun",
     "BatchPeakRunAnchor",
     "AttributeTemplate",
+    "Instrument",
     "InstrumentFunction",
     "ReferenceSource",
     "ReferenceCompound",

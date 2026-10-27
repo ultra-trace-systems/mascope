@@ -378,6 +378,32 @@ class RawProcessor(BaseFileProcessor):
             return ""
 
     @property
+    @with_file_context
+    def instrument_model(self) -> str | None:
+        """The instrument model the file names, its ``Model``.
+
+        What both backends report (``ReaderBackend.instrument_details``); the
+        default one reports no serial number or software version, so the
+        model is all the instrument's row takes from the file. Descriptive,
+        like ``method_file``: a reader that cannot supply it gives None and a
+        warning rather than failing ingestion.
+
+        :return: The model, or None when absent or unreadable
+        :rtype: str | None
+        """
+        try:
+            model = self.file_handle.instrument_details().get("Model")
+        except Exception:
+            _log.warning(
+                "Could not read the instrument model for %s",
+                self.file_to_process,
+                exc_info=True,
+            )
+            return None
+        # OpenTFRaw answers "" for a model it does not recognise.
+        return str(model).strip() or None if model is not None else None
+
+    @property
     def mz_calibration(self) -> None:
         """M/z calibration coefficient is not applicable for Orbi files
 

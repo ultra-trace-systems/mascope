@@ -42,6 +42,7 @@ from typing import NamedTuple
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from mascope_backend.api.new.instruments.registry import instrument_id_for
 from mascope_backend.binding_rungs import LEARNING_SOURCES
 from mascope_backend.db import IonizationMode, MethodBinding, SampleFile, async_session
 from mascope_backend.db.id import gen_id
@@ -403,6 +404,10 @@ async def learn_method_bindings(
         observations.sort(key=lambda observation: observation[0])
         written: list[str] = []
         async with async_session() as session:
+            # Before the first binding row is locked: a row made here holds its
+            # name until the commit, so taking it after one binding and before
+            # the next would order two ingests' locks differently.
+            instrument_id = await instrument_id_for(session, sample_file.instrument)
             for digest, signature, mode in observations:
                 if recorded is not None and digest in recorded:
                     counts["repeated"] += 1
@@ -411,6 +416,7 @@ async def learn_method_bindings(
                     session,
                     digest=digest,
                     instrument=sample_file.instrument,
+                    instrument_id=instrument_id,
                     key=key,
                     signature=signature,
                     mode=mode,
@@ -479,6 +485,7 @@ async def _observe(
     source: str,
     seen_at: datetime,
     sample_file_id: str,
+    instrument_id: str | None = None,
 ) -> str:
     """Fold one observation into its binding, creating the row if needed.
 
@@ -515,6 +522,7 @@ async def _observe(
                     method_binding_id=gen_id(),
                     binding_key=digest,
                     instrument=instrument,
+                    instrument_id=instrument_id,
                     method_key=clipped(key, METHOD_KEY_COLUMN),
                     signature_class=clipped(signature, SIGNATURE_CLASS_COLUMN),
                     ionization_mode_id=mode.ionization_mode_id,

@@ -18,6 +18,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from mascope_backend.api.new.dataset_tombstones import routes as tombstone_routes
+from mascope_backend.api.new.instruments.registry import instrument_id_for
 from mascope_backend.db import (
     Dataset,
     DatasetTombstone,
@@ -94,6 +95,7 @@ async def _dataset(
                 dataset_description="What was measured",
                 dataset_type="ANALYSIS",
                 instrument="instrument-x",
+                instrument_id=await instrument_id_for(session, "instrument-x"),
                 dataset_utc_created=_NOW,
                 dataset_utc_modified=_NOW,
                 **METADATA,
@@ -199,6 +201,9 @@ async def test_deleting_a_dataset_leaves_its_tombstone(
     assert row["dataset_description"] == "What was measured"
     assert row["dataset_type"] == "ANALYSIS"
     assert row["instrument"] == "instrument-x"
+    async with async_session_factory() as session:
+        kept = await session.get(DatasetTombstone, dataset_id)
+        assert kept.instrument_id == await instrument_id_for(session, "instrument-x")
     assert row["descriptive_metadata"] == METADATA
     assert (row["n_sample_batches"], row["n_sample_items"], row["n_sample_files"]) == (
         2,

@@ -108,6 +108,7 @@ _HISTORY_SQL = """
     SELECT
         sf.filename                     AS filename,
         sf.instrument                   AS instrument,
+        sf.instrument_id                AS instrument_id,
         sf.instrument_type              AS instrument_type,
         sf.method_file                  AS method_file,
         sf.datetime_utc                 AS datetime_utc,
@@ -271,6 +272,7 @@ def _fold(
             records[digest] = {
                 "binding_key": digest,
                 "instrument": row["instrument"],
+                "instrument_id": row["instrument_id"],
                 "method_key": clipped(key, METHOD_KEY_COLUMN),
                 "signature_class": clipped(signature, SIGNATURE_CLASS_COLUMN),
                 "ionization_mode_id": row["mode_id"],

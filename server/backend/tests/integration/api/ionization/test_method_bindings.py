@@ -20,7 +20,7 @@ from mascope_backend.api.controllers.sample.files.process.bindings import (
     learn_method_bindings,
     resolve_modes_by_method_binding,
 )
-from mascope_backend.db import IonizationMode, MethodBinding
+from mascope_backend.db import Instrument, IonizationMode, MethodBinding
 from mascope_backend.db.id import gen_id
 from mascope_backend.method_keys import (
     METHOD_KEY_COLUMN,
@@ -155,6 +155,25 @@ async def test_a_routed_file_teaches_its_method(modes, binding_of, instrument):
     assert row.n_streams == 1
     assert row.n_disagreements == 0
     assert len(row.chemistry_keys) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_binding_links_the_instrument_s_row(
+    modes, binding_of, instrument, async_session_factory
+):
+    sample_file = _File(instrument)
+    await learn_method_bindings(
+        sample_file, [modes["nitrate"]], source="token", streams=_streams()
+    )
+
+    row = await binding_of(sample_file, streams=_streams())
+    async with async_session_factory() as session:
+        named = (
+            await session.execute(
+                select(Instrument.instrument_id).where(Instrument.name == instrument)
+            )
+        ).scalar_one()
+    assert row.instrument_id == named
 
 
 @pytest.mark.asyncio

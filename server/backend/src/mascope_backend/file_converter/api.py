@@ -213,6 +213,7 @@ def create_sample_file_db_record(
         "acquisition_timezone": data.acquisition_timezone,
         "utc_offset_source": data.utc_offset_source,
         "instrument_type": data.instrument_type,
+        "instrument_model": data.instrument_model,
         "source_filename": source_filename,
         "acquisition": acquisition,
         "sha256": sha256,
