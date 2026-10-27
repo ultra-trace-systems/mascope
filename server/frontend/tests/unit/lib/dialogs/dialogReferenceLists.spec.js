@@ -50,6 +50,15 @@ const source = (extra = {}) => ({
   record_count: 573,
   ingested_at: '2026-10-20T08:30:00+00:00',
   admitted: true,
+  references: [],
+  ...extra
+})
+
+const citation = (n, extra = {}) => ({
+  citation: `Author ${n}, A paper. Journal ${n} (2021) 1-2.`,
+  doi: `10.1000/paper-${n}`,
+  isbn: null,
+  note: null,
   ...extra
 })
 
@@ -111,10 +120,10 @@ afterEach(() => {
 })
 
 describe('DialogReferenceLists', () => {
-  it('lists each source: label, name, version, licence, polarity, radicals, window, species, loaded', async () => {
+  it('lists each source: label, name, version, licence, polarity, radicals, window, species, loaded, references', async () => {
     store.value = makeStore({
       list: [
-        source(),
+        source({ references: [citation(1)] }),
         source({
           name: 'my-list',
           label: 'my-list',
@@ -140,7 +149,8 @@ describe('DialogReferenceLists', () => {
       'Radicals',
       'Window',
       'Species',
-      'Loaded'
+      'Loaded',
+      'References'
     ])
     const rows = bodyRows(wrapper)
     expect(rows).toHaveLength(2)
@@ -153,7 +163,8 @@ describe('DialogReferenceLists', () => {
       'No',
       'Unbounded',
       '573',
-      when
+      when,
+      'Author 1, A paper. Journal 1 (2021) 1-2.10.1000/paper-1'
     ])
     // A source labelled by its own name shows the name once.
     expect(cells(rows[1]).slice(1)).toEqual([
@@ -164,9 +175,58 @@ describe('DialogReferenceLists', () => {
       'Allowed',
       'C, H, O; C <= 20; any mass',
       '12',
+      '-',
       '-'
     ])
     expect(wrapper.find('.gated').exists()).toBe(false)
+  })
+
+  it("cites a list's publications: a DOI linked, an ISBN shown, the rest behind a button", async () => {
+    store.value = makeStore({
+      list: [
+        source({
+          references: [
+            citation(1),
+            citation(2, { doi: null, isbn: '978-3-95806-596-3' }),
+            citation(3),
+            citation(4)
+          ]
+        })
+      ]
+    })
+    const { wrapper } = await mountDialog()
+
+    const cell = () => bodyRows(wrapper)[0].findAll(':scope > td').at(-1)
+    const items = () => cell().findAll('li.citation')
+    expect(items()).toHaveLength(2)
+    expect(items()[0].text()).toContain('Author 1, A paper.')
+    expect(items()[0].get('a').attributes('href')).toBe('https://doi.org/10.1000/paper-1')
+    expect(items()[1].text()).toContain('Author 2, A paper.')
+    expect(items()[1].text()).toContain('ISBN 978-3-95806-596-3')
+    expect(items()[1].find('a').exists()).toBe(false)
+    expect(cell().text()).not.toContain('Author 3')
+
+    const more = cell()
+      .findAll('button')
+      .find((b) => b.text() === '2 more')
+    expect(more, 'no "2 more" button').toBeDefined()
+    await more.trigger('click')
+    expect(items()).toHaveLength(4)
+    expect(items()[3].get('a').attributes('href')).toBe('https://doi.org/10.1000/paper-4')
+
+    await cell()
+      .findAll('button')
+      .find((b) => b.text() === 'Show fewer')
+      .trigger('click')
+    expect(items()).toHaveLength(2)
+  })
+
+  it('shows a list with no references field as citing none', async () => {
+    const { references, ...older } = source()
+    expect(references).toEqual([])
+    store.value = makeStore({ list: [older] })
+    const { wrapper } = await mountDialog()
+    expect(cells(bodyRows(wrapper)[0]).at(-1)).toBe('-')
   })
 
   it('notes a source outside the licence gate, with its licence', async () => {

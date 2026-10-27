@@ -19,6 +19,7 @@ import {
 } from '@/lib/referenceSources'
 import { useReference } from '@/stores/data/modules/reference'
 
+import ReferenceCitations from './ReferenceCitations.vue'
 import ReferenceSpecies from './ReferenceSpecies.vue'
 
 // The reference lists this deployment has loaded, read only, opened from
@@ -49,7 +50,7 @@ watch(
     header="Reference lists"
     modal
     dismissableMask
-    style="width: min(80rem, 95vw)"
+    style="width: min(96rem, 95vw)"
   >
     <p class="intro">
       The compound lists this deployment has loaded. Peak assignment names a formula after the lists
@@ -127,6 +128,11 @@ watch(
       <Column header="Loaded">
         <template #body="{ data }">
           <span class="nowrap">{{ loadedLabel(data.ingested_at) }}</span>
+        </template>
+      </Column>
+      <Column header="References">
+        <template #body="{ data }">
+          <ReferenceCitations :references="data.references" />
         </template>
       </Column>
       <template #expansion="{ data }">
