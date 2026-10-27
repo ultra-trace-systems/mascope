@@ -1915,10 +1915,18 @@ docker compose exec backend python -m mascope_backend.db.scripts.reference_sync 
 - The load reports how many records it left out and why: MS1 or MS3 records,
   predicted (in-silico) spectra, records without a precursor.
 
-Every spectrum keeps the licence its record states. MassBank alone holds
-non-commercial ones (`CC-BY-NC`, `CC-BY-NC-SA`), and a MoNA or GNPS record that
-states none is tagged `mona-unstated` or `gnps-unstated`. The licence gate
-below is Stage A's and does not apply to spectra.
+Every spectrum keeps the licence its record states. Any of the three libraries
+can hold spectra a commercial deployment may not use:
+
+- MassBank's records include non-commercial ones (`CC-BY-NC`, `CC-BY-NC-SA`).
+- A MoNA export of MassBank's records keeps those tags.
+- GNPS tags every spectrum it imported from another library, MassBank's
+  included, `gnps-unstated`.
+- A record that states no licence is tagged `massbank-unstated`,
+  `mona-unstated` or `gnps-unstated`.
+
+An `-unstated` tag means the terms are unknown, not that they are open. The
+licence gate below is Stage A's and does not apply to spectra.
 
 ### Reference licence gating
 
