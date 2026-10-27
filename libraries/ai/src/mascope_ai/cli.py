@@ -89,9 +89,14 @@ def _mcp(args: argparse.Namespace) -> int:
     # bar, a native library's output - cannot break a message
     protocol = os.fdopen(os.dup(sys.stdout.fileno()), "wb")
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
-    # The SDK's client drops loguru's default handler and logs its own
-    # lines alone; this one keeps the toolkit's, a failed tool's traceback
-    # among them
+    # This handler keeps the toolkit's lines, a failed tool's traceback
+    # among them, and the SDK's client logs its own. Loguru's default one
+    # would print each a second time: the client drops it, but only when it
+    # is made, at the first call that needs it, if ever
+    try:
+        logger.remove(0)
+    except ValueError:
+        pass
     logger.add(
         sys.stderr,
         level="INFO",
@@ -178,9 +183,10 @@ def _list(args: argparse.Namespace) -> int:
         # the conversation's session
         session = Session(args.session) if args.session else Session(root=scratch)
         try:
-            kit = Toolkit(
-                session=session, workspace=configured_workspace(args.workspace)
-            )
+            with sdk_errors("connect to Mascope"):
+                kit = Toolkit(
+                    session=session, workspace=configured_workspace(args.workspace)
+                )
             within = kit.resolve(args.dataset, "dataset") if args.dataset else None
             if args.batch:
                 within = kit.resolve(args.batch, "batch", within=within)
