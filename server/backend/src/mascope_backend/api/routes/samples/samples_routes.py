@@ -70,12 +70,27 @@ async def get_samples_centroids_route(
     """Retrieve the centroids of every scan of several sample items.
 
     Per sample item, one list entry per scan: `scan` (the scan number),
-    `timestamp` [s], and per centroid its `masses`, `intensities`,
-    `resolutions`, `signal_to_noise` and `flags`. A centroid's flags are the
-    sum of the instrument's marks on it: 2 fragmented (a lobe of a split weak
-    peak), 4 merged, 8 exception (a weak side-lobe peak), 16 reference (the
-    lock-mass peak the scan was corrected with); 0 for an unflagged one.
-    Every stored centroid is served unless `exclude` names its flag.
+    `timestamp` [s], `mz_calibration_factor`, and per centroid its `masses`,
+    `intensities`, `resolutions`, `signal_to_noise` and `flags`. A
+    centroid's flags are the sum of the instrument's marks on it: 2
+    fragmented (a lobe of a split weak peak), 4 merged, 8 exception (a weak
+    side-lobe peak), 16 reference (the lock-mass peak the scan was corrected
+    with); 0 for an unflagged one. Every stored centroid is served unless
+    `exclude` names its flag.
+
+    The scans are every scan of the sample's polarity starting in its
+    window, MS2 scans and the scans of every scan stream included. The
+    sample's peak list is read from fewer: the MS1 scans of its own stream,
+    or of the streams that own some m/z of a stitched sample, which `GET
+    /api/samples/{sample_item_id}/axis_fingerprint` lists in `item.scans`.
+
+    A scan's `masses` are on the file's calibrated m/z axis: as the
+    instrument recorded them, times `mz_calibration_factor`. That is the
+    factor of the stream the scan is of, where the file was calibrated
+    stream by stream and its calibration names the stream, so a scan sits
+    where its stream's peaks do. Any other scan, an MS2 scan among them, is
+    on the file's own factor. Null for a file never calibrated, whose
+    masses are as recorded.
 
     :param sample_item_ids: List of sample item IDs to retrieve centroids for.
     :param exclude: The flags whose centroids are left out.

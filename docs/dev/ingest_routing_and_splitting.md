@@ -899,9 +899,12 @@ be matched, is the same question from the store's side (4.3).
     per-scan centroids and the m/z a peak timeseries is read back at all
     take the stream's factor (`get_sum_signal`, `load_signal`,
     `get_orbi_centroids`, `get_orbi_centroids_per_scan`,
-    `get_peak_timeseries`). A stitched signal places each run by its
-    owner's factor, and the name it is cached under carries the factors,
-    so a file calibrated again is not handed a signal stitched before.
+    `get_peak_timeseries`). The per-scan centroids of every stream at
+    once (`/api/samples/centroids`) put each scan on the factor of its own
+    stream, looked up by its scan number, and say which factor that was.
+    A stitched signal places each run by its owner's factor, and the name
+    it is cached under carries the factors, so a file calibrated again is
+    not handed a signal stitched before.
     Detection places a peak by its stream's factor when it draws the
     `composite` mask, and reads the overlaps as the instrument recorded
     them (4.5). It goes by one read of the record throughout: its

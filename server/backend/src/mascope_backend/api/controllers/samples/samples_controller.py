@@ -939,6 +939,9 @@ async def get_samples_centroids(
                 ],
                 "flags": [cen["flags"].tolist() for cen in per_scan],
                 "timestamp": [cen["timestamp"] for cen in per_scan],
+                "mz_calibration_factor": [
+                    cen["mz_calibration_factor"] for cen in per_scan
+                ],
             }
 
         centroids[sample.sample_item_id] = await asyncio.to_thread(_centroid_lists)

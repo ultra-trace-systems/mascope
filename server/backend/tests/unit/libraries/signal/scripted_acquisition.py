@@ -103,7 +103,9 @@ class ScriptedAcquisition:
 
     # -- selection --
 
-    def _selected(self, polarity=None, t_min=None, t_max=None, stream=None):
+    def _selected(
+        self, polarity=None, t_min=None, t_max=None, stream=None, ms_type="Ms"
+    ):
         # Like the real backends: no key is read unless a stream is asked
         # for, and one the file holds no stream under is refused as such.
         rows = self.scan_filters()
@@ -113,7 +115,8 @@ class ScriptedAcquisition:
         selected = []
         for row, key in zip(rows, keys):
             text = row["filter"]
-            if " ms " not in f"{text} ":
+            # "Ms" the survey scans, "Ms2" the fragmentation scans, None both
+            if ms_type and f" {ms_type.lower()} " not in f"{text} ":
                 continue
             if polarity and f" {polarity} " not in text:
                 continue
@@ -157,6 +160,38 @@ class ScriptedAcquisition:
             np.array([row["time_s"] for row in rows]),
             np.array([sum(self._peaks(row["scan"]).values()) for row in rows]),
         )
+
+    def centroids_per_scan(
+        self,
+        polarity=None,
+        t_min=None,
+        t_max=None,
+        ms_type=None,
+        mz_min=None,
+        mz_max=None,
+        stream=None,
+        exclude=(),
+    ):
+        """Each selected scan's centroids as it recorded them, in m/z order,
+        with its number: every MS order unless one is asked for, as the
+        real reader selects them. Nothing is flagged, so nothing is left
+        out."""
+        out = []
+        for row in self._selected(polarity, t_min, t_max, stream, ms_type=ms_type):
+            peaks = self._peaks(row["scan"])
+            masses = np.array(sorted(peaks), dtype=float)
+            out.append(
+                {
+                    "scan": row["scan"],
+                    "masses": masses,
+                    "intensities": np.array([peaks[mz] for mz in masses]),
+                    "resolutions": np.full(len(masses), float(self.RESOLUTION)),
+                    "signal_to_noise": np.full(len(masses), 100.0),
+                    "flags": np.zeros(len(masses), dtype=np.int64),
+                    "timestamp": row["time_s"],
+                }
+            )
+        return out
 
     def average_centroids(self, scan_indices, ppm=1, average=False):
         """Every m/z any of the scans recorded, summed over the scans, as the

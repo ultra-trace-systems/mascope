@@ -993,8 +993,24 @@ class SamplesResource(BaseResource):
 
         Retrieves per-scan centroid data for the specified samples. Per
         sample, each key holds one entry per scan: ``scan`` (the scan
-        number), ``timestamp`` [s], and per centroid ``masses``,
-        ``intensities``, ``resolutions``, ``signal_to_noise`` and ``flags``.
+        number), ``timestamp`` [s], ``mz_calibration_factor``, and per
+        centroid ``masses``, ``intensities``, ``resolutions``,
+        ``signal_to_noise`` and ``flags``.
+
+        The scans are every scan of the sample's polarity in its window, MS2
+        scans and every scan stream's included. Its peak list is read from
+        the MS1 scans of its own streams alone, which
+        :meth:`get_axis_fingerprint` lists in ``item["scans"]``.
+
+        ``masses`` are on the file's calibrated m/z axis: as the instrument
+        recorded them, times the scan's ``mz_calibration_factor``. In a file
+        calibrated stream by stream that is the factor of the scan's own
+        stream, so a scan sits where its stream's peaks do. A scan of a
+        stream the calibration does not name, an MS2 scan among them, is on
+        the file's factor. The factor is None for a file never calibrated,
+        whose masses are as recorded. A server older than the factor per
+        scan serves no ``mz_calibration_factor``, and puts every scan on the
+        file's factor.
 
         A centroid's flags are the sum of the instrument's marks on it:
         2 fragmented (a lobe of a split weak peak), 4 merged, 8 exception (a
@@ -1063,9 +1079,10 @@ class SamplesResource(BaseResource):
           ``m_lock_eff`` and ``s_lock_eff_ppm`` over the sample's scans;
         - ``mz_calibration_factor``, the factor of the file's mass
           calibration for the sample's stream, and
-          ``file_mz_calibration_factor``, the file's own, which
-          :meth:`get_centroids` multiplies into every mass. Both None for a
-          file never calibrated. A stitched sample's
+          ``file_mz_calibration_factor``, the file's own, which a reading
+          of the file as a whole goes by (:meth:`get_centroids` says which
+          factor each scan is on). Both None for a file never calibrated.
+          A stitched sample's
           ``mz_calibration_factor`` is the file's, while its peaks carry the
           factor of each stream that owns a run of it.
 

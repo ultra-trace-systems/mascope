@@ -377,6 +377,15 @@ class TestSpectraContract:
             sum(map(len, every["masses"])) - excluded
         )
 
+    def test_centroids_say_the_factor_each_scan_is_on(self, mascope):
+        sample_id = _first_sample_id(mascope)
+
+        every = mascope.samples.get_centroids([sample_id])[sample_id]
+
+        factors = every["mz_calibration_factor"]
+        assert len(factors) == len(every["scan"]) > 0
+        assert all(factor is None or factor > 0 for factor in factors)
+
     def test_peak_timeseries_by_peak_id(self, top_peak_timeseries):
         peak, ts = top_peak_timeseries
 
