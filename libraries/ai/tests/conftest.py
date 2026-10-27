@@ -118,12 +118,17 @@ class FakeAPI:
     :ivar peak_copies: How many copies of the recorded peak list each
         sample answers with (each copy's peaks with IDs of their own), to
         make loads as large as a test needs.
+    :ivar left_out: ``(params, count)``: a peak read whose query has the
+        *params* given warns that *count* peaks were left out, or with
+        *count* None answers as a server up to 1.10.1 does when it left out
+        every peak, set through :meth:`leave_out`.
     """
 
     def __init__(self):
         self.calls: list[tuple[str, str, dict[str, Any], Any]] = []
         self.failures: list[tuple[str, re.Pattern, dict[str, Any], int]] = []
         self.peak_copies = 1
+        self.left_out: list[tuple[dict[str, Any], int | None]] = []
 
     def fail(
         self,
@@ -135,6 +140,15 @@ class FakeAPI:
         """Answer requests whose path fully matches regex *path*, and whose
         query has the *params* given, with *status*."""
         self.failures.append((method, re.compile(path), dict(params or {}), status))
+
+    def leave_out(
+        self, count: int | None, params: dict[str, Any] | None = None
+    ) -> None:
+        """Have peak reads whose query has the *params* given warn, as the
+        server does of a time-ranged read, that *count* peaks without a
+        computed time series were left out of them; *count* None, answer
+        with no peak and no warnings list at all, as an older server does."""
+        self.left_out.append((dict(params or {}), count))
 
     def requests_to(self, path: str, method: str = "GET") -> list[tuple]:
         return [
@@ -221,7 +235,23 @@ class FakeAPI:
                 return 403, {"error": "Forbidden"}
             return 200, _envelope(self._sample(parts[1]))
         if re.fullmatch(r"samples/\w+/peaks", path):
-            return 200, self._peaks(parts[1])
+            peaks = self._peaks(parts[1])
+            for left_params, count in self.left_out:
+                if not left_params.items() <= params.items():
+                    continue
+                if count is None:
+                    peaks.pop("warnings", None)
+                    peaks["data"] = {key: [] for key in peaks["data"]}
+                else:
+                    peaks["warnings"] = [
+                        *peaks["warnings"],
+                        f"{count} peak(s) were excluded because their timeseries "
+                        "have not been computed yet. A peak's timeseries is "
+                        "computed when it is first requested (POST /api/samples/"
+                        "{sample_item_id}/peaks/timeseries); repeat this request "
+                        "afterwards to include them.",
+                    ]
+            return 200, peaks
         if re.fullmatch(r"samples/\w+/spectrum", path):
             return 200, RECORDED["spectrum"]
         if path == "ionization_mechanisms":

@@ -608,10 +608,13 @@ answered wrongly, failed, or **not answerable**: a solver raises
   of a batch the modes of its samples, each with its mechanisms; M8 is
   answered, and I1 and I2 take their mechanisms from it. Building A5 also
   found that a stage load leaves out the peaks whose time series was never
-  computed, while its Frame still says it is complete. The
+  computed. Its Frame says so: it is incomplete, with a
+  `TimeseriesNotComputed` failure per stage that counts the peaks left out
+  ([#2636](https://github.com/ultra-trace-systems/mascope/issues/2636)). The
   surface cannot compute an unmatched peak's series
-  ([#2636](https://github.com/ultra-trace-systems/mascope/issues/2636)), so
-  A5 asks for its target's series before the stage.
+  ([#2704](https://github.com/ultra-trace-systems/mascope/issues/2704)), so
+  A5 asks for its target's series before the stage and accepts the failures
+  of the other peaks.
 - **The model in the loop** is a separate, manual check: a coding agent
   given the toolkit and `ai_golden.py prompts`. Its transcript is kept
   under [`libraries/ai/tests/golden_transcripts/`](../../libraries/ai/tests/golden_transcripts/README.md),
