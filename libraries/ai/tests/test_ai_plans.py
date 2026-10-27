@@ -28,6 +28,7 @@ from mascope_ai import (
     PlanConsumed,
     PlanDrifted,
     PlanExpired,
+    Ref,
     Session,
     Toolkit,
 )
@@ -57,6 +58,16 @@ def approve(kit: Toolkit, plan: Plan) -> str:
 def ws2_editor(api):
     """The user is an editor in Workspace B too."""
     api.roles["ws2"] = "editor"
+
+
+@pytest.fixture
+def elsewhere(api):
+    """A batch of Workspace B, where the user is a guest, and its sample:
+    a sample ID finds it from Workspace A's client all the same."""
+    api.datasets["d9"] = ["Other campaign", "ws2"]
+    api.batches["b9"] = ("d9", "Other batch")
+    api.samples["s91"] = ("b9", "Other sample")
+    return Ref(id="b9", kind="batch", name="Other batch", parent="d9")
 
 
 # --- the plan types -----------------------------------------------------------
@@ -175,6 +186,17 @@ def test_a_sample_move_needs_editor_in_its_workspace(kit, api):
         kit.plan_organize([Move("s21", "Spring 2026 repeat", kind="sample")])
 
 
+def test_a_sample_of_another_workspace_is_refused_at_planning(kit, api, elsewhere):
+    # The role checked is the client's workspace's; the server would ask for
+    # editor where the sample is, and refuse the move at apply
+    with pytest.raises(InvalidRequest, match="not in workspace 'Workspace A'"):
+        kit.plan_organize([Move("s91", "Spring 2026 repeat", kind="sample")])
+    with pytest.raises(InvalidRequest, match="not in workspace 'Workspace A'"):
+        kit.plan_organize([Move("s21", elsewhere, kind="sample")])
+    assert changed(api) == []
+    assert kit.session.plans.plans() == []
+
+
 def test_what_the_server_refuses_whatever_the_role_fails_at_planning(
     kit, api, ws2_editor
 ):
@@ -230,6 +252,8 @@ def test_apply_refuses_without_an_approval_of_that_plan(kit, api):
         kit.apply(one.id, "0123456789abcdef." + "0" * 64)
     with pytest.raises(ApprovalRefused):
         kit.apply(one.id, Approver().approve(one))  # another transport's key
+    with pytest.raises(ApprovalRefused):
+        kit.apply(one.id, "\u00e9.\u00e9")  # not ASCII: refused, not a TypeError
     assert changed(api) == []
     # A refused approval consumed nothing: the right one still applies
     assert kit.apply(one.id, token).complete
@@ -660,6 +684,18 @@ def test_an_association_that_changes_nothing_is_refused(kit, api):
         kit.plan_associate("Organic acids", ["b1"], detach=["b4"])
 
 
+def test_a_batch_both_added_and_detached_is_refused(kit, api):
+    with pytest.raises(InvalidRequest, match="both added and detached"):
+        kit.plan_associate("Organic acids", ["b3"], detach=["b3"])
+    assert kit.session.plans.plans() == []
+
+
+def test_an_association_of_another_workspaces_batch_is_refused(kit, api, elsewhere):
+    with pytest.raises(InvalidRequest, match="not in workspace 'Workspace A'"):
+        kit.plan_associate("Organic acids", [elsewhere])
+    assert kit.session.plans.plans() == []
+
+
 def test_an_association_whose_batches_changed_is_drift(kit, api):
     plan = kit.plan_associate("Organic acids", ["b3"])
     api.collections["c1"] = ("ws1", "Organic acids", ["b1"])
@@ -753,6 +789,14 @@ def test_a_matching_save_needs_editor(kit, api):
 
     with pytest.raises(AccessDenied):
         kit.plan_match("Spring 2026", save=True)
+
+
+def test_a_matching_save_in_another_workspace_is_refused(kit, api, elsewhere):
+    with pytest.raises(InvalidRequest, match="not in workspace 'Workspace A'"):
+        kit.plan_match("s91", save=True, kind="sample")
+    with pytest.raises(InvalidRequest, match="not in workspace 'Workspace A'"):
+        kit.plan_match(elsewhere, save=True)
+    assert kit.session.plans.plans() == []
 
 
 def test_a_batch_that_gained_a_sample_is_drift_for_its_save(kit, api):
