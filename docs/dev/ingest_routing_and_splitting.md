@@ -1,7 +1,7 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
 - **Status:** building
-- **As of:** 2026-10-27
+- **As of:** 2026-10-28
 - **Tracked in:** [Automatic ingest: routing and splitting](https://linear.app/ultra-trace/project/automatic-ingest-routing-and-splitting-68acd9575fa9) (Linear) and GitHub #2098
 - **Supersedes:** `ionization_method_config.md` (retired 2026-10-22; its target model is in phase 8 of section 10)
 - **What:** Automatic ingest: binding a file's chemistry by evidence and splitting it into streams, segments and windows.
@@ -18,10 +18,11 @@ composites, and it is on by default from 1.14.0 (decision 19); what phases
 and layout override, the per-stream stale rebuild (step 6) and MS2 routes
 taking the stream; phase 8, the profiles, is filed as milestone 9 of the
 Linear project, and of its target model the `Instrument` row and the
-versioned ionization setup are built (MAS-300, 2026-10-27), the rest
-unbuilt (MAS-312, MAS-313, MAS-337, MAS-344);
+versioned ionization setup are built (MAS-300, 2026-10-27), and so are the
+seeded profiles' calibrant and diagnostic collections (MAS-312), the rest
+unbuilt (MAS-313, MAS-337, MAS-344);
 detection is built as an audit: it reads each file's chemistry off its
-reagent ions and binds nothing** (2026-10-27). Written for issue #2098 ("Split files into
+reagent ions and binds nothing** (2026-10-28). Written for issue #2098 ("Split files into
 samples by scan attributes"), which carries the checklist of pull
 requests. Decisions 1 to 5, 7, 9, 11 to 16, 18 and 19 in section 12 are
 settled; 6, 8 and 10 are open; 17 was decided on 2026-10-10 (a layout
@@ -102,7 +103,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | shipped |
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
-| 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
+| 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05). The seeded profiles carry their calibrant and diagnostic collections (MAS-312) |
 | 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the item TIC and the per-scan export read the scans the store holds, an item made by hand reads the row the pipeline's item reads, and a spectrum that meets a stale store asks for its rebuild (#2329); the spectrum and the peak listing name each segment, and the sample's views draw the scan ranges apart (#2330); each segment is calibrated by a factor of its own, fitted on the calibrants it holds or taken from a neighbour (#2332), and the calibration dialog and the sample's badge say which (#2333); a stitched file's processing detail says what its ranges read where they overlap and which have no fit of their own (#2334); each segment is fitted an instrument function of its own, which its peaks are read under and the detail states (4.3); **phase 8 run** on the two sites that acquire composites (2026-10-15 and 16): one site's 7,312 pooled files from before its switch re-processed and stitched in ten hours, 2.5 s a file inside batches of 25 paced against the live ingest, leaving 45 files parked without a chemistry and one single-stream file; the other site's 889 files, stitched on arrival under 1.11.0, re-processed in 81 minutes at 3.0 s a file for their calibration per range; the ingest, the pipeline and error tracking undisturbed throughout - the operator's steps are in [maintaining.md](../maintaining.md#the-composite-cut) |
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is built with the composite cut (#2332) and shown with it (#2333), and so is its instrument function per segment; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | **audit built** (MAS-92, #2649): the detector reads each bound or parked file's MS1 polarities off the reagent libraries and stores its call beside the rung that bound them (`sample_file.binding_evidence`); on the labelled corpus 92 calls, none wrong, 53% no call, in-sample (5.4). The rung waits for a release in audit and a production shadow read per site |
@@ -1951,8 +1952,8 @@ What a regular user needs from a profile, and how far each part is built
 | A profile carries | State |
 |---|---|
 | Its identity, name, polarity and adduct panel (mechanisms) | shipped in #2193: eleven chemistries seeded at every start (`mascope_backend.ionization_catalogue`, `db.admin.ionization.ensure_system_modes`) |
-| Its calibrant collection: the reagent-ion library as m/z anchors | not built; a seeded row carries none, and a site adopts one by pointing a hand-built collection at it |
-| Its diagnostic collection: the reagent ions to look for | not built |
+| Its calibrant collection: the reagent-ion library as m/z anchors | built (MAS-312): seeded at every start for the seven chemistries with a reagent, the reagent ion and its own clusters; a site's own collection on the mode still wins |
+| Its diagnostic collection: the reagent ions to look for | built (MAS-312): every line of the reagent, seeded beside the calibrants |
 | Its place in the browser | not built; the listing hides an unadopted profile unless asked (`include_system`), and the frontend never asks, so Choose chemistry cannot offer one |
 | Recognition: a fingerprint, and a hint on the method name | phase 5, and a measurement in phase 8 |
 
@@ -1960,8 +1961,8 @@ The first row is what made the method binding measurable at all: judged on the m
 record, a third of the fleet's Orbitrap files look ambiguous; judged on the
 chemistry a profile names, three in a hundred (2.4). The next three rows are
 phase 8, which is what makes a profile usable on the day a server is
-installed. Until it ships, a fresh server processes its first file only after
-someone has built a mode the advanced way.
+installed. Until the browser lists the profiles, a fresh server processes its
+first file only after someone has built a mode the advanced way.
 
 The versioned `reagent_profile` row of `chemistry_profiles.md` (section 3.1
 there) is the same object with an element grid and a matrix context beside
@@ -3096,7 +3097,15 @@ file and nothing waits on the profiles). It is where the setup win of the
 original proposal is delivered. Every item keeps a site's own modes working
 unchanged.
 
-- **Complete the profiles.** Each seeded chemistry gets a system-owned
+- **Complete the profiles.** *Built (MAS-312), as described in the next
+  paragraph but for two points: the collections are global rather than in a
+  system workspace, since the acquisition datasets live in one workspace per
+  instrument and a batch takes only a global collection or one of its own
+  workspace; and the four chemistries with no reagent in the library
+  (protonation, deprotonation, the two ammonium ones) get none. An edit is
+  told from the seed's own collection by a digest of its content against
+  the ones releases seeded (`ionization_catalogue.SEEDED_BEFORE`).* Each
+  seeded chemistry gets a system-owned
   calibrant collection and a diagnostic collection, seeded at start beside
   its mechanisms from the reagent-ion library
   (`mascope_tools.composition.reagents`), in the system workspace the

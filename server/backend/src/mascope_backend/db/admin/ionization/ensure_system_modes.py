@@ -1,5 +1,6 @@
 """
-Seed the ionization chemistry Mascope ships: its mechanisms, then its modes.
+Seed the ionization chemistry Mascope ships: its mechanisms, its modes, then
+their collections.
 
 Every deployment names its chemistries itself, so one reagent is spelled many
 ways and nothing can refer to a chemistry as such. A mode carrying a
@@ -10,8 +11,8 @@ the mechanisms a server holds decide the chemistry its runs search under.
 Seeding them makes that the same on every server, a fresh one included, from
 its first start.
 
-Two passes, in this order, at every start (:func:`ensure_system_ionization`).
-Both are idempotent, and they run in the main process before any worker
+Three passes, in this order, at every start (:func:`ensure_system_ionization`).
+Each is idempotent, and they run in the main process before any worker
 starts, so there is nothing to race with.
 
 **Mechanisms** (:func:`ensure_system_ionization_mechanisms`). Each mechanism
@@ -53,8 +54,33 @@ own only makes the channel searchable. For the modes themselves:
   because ``create_ionization_mode`` refuses a duplicate name and answers
   ``MultipleResultsFound`` when two rows already share one.
 
+**Collections** (:func:`ensure_system_ionization_collections`). Each seeded
+chemistry with a reagent of its own gets a calibrant and a diagnostic
+collection (``ionization_catalogue.seeded_collections``), global like the mode
+that reads them, under a fixed id. A collection is the seed's while it holds
+what a release of Mascope seeded it with, which its digest says:
+
+- missing, it is created, its compounds through the path the API creates one
+  by (``create_target_compound``), which builds their target ions for every
+  mechanism; a compound the library already holds under the same name and
+  formula is reused;
+- holding what this release seeds, it is left;
+- holding what an earlier release seeded (``SEEDED_BEFORE``), it is brought
+  to this release's, through the path a person's edit takes
+  (``update_target_collection``), so the batches it serves are re-matched;
+- holding anything else, the deployment has edited it, and it is left as it
+  is.
+
+A seeded mode is pointed at its collection only where it points at none. A
+mode pointed at a collection of the deployment's keeps it: the deployment
+chose it. The API cannot clear a mode's collection, so a mode points at none
+only until the seed has pointed it, or once the collection it pointed at has
+been deleted, and then the next start creates the seeded one again and points
+the mode back at it, as it creates a deleted mechanism again. Files already
+processed under the mode keep their results until they are processed again.
+
 Entry Points:
-- Async: `ensure_system_ionization()` for both passes, as a start runs them
+- Async: `ensure_system_ionization()` for every pass, as a start runs them
 - Sync: `run_ensure_system_ionization()` for CLI and scripts
 """
 
@@ -62,24 +88,52 @@ import asyncio
 import time
 
 from sqlalchemy import select, update
+from sqlalchemy.orm import selectinload
 
 from mascope_backend.api.controllers.ionization_mechanisms.ionization_mechanisms_controller import (
     add_ionization_mechanism,
 )
-from mascope_backend.db import IonizationMechanism, IonizationMode, async_session
-from mascope_backend.ionization_catalogue import SYSTEM_MODES, shipped_mechanisms
+from mascope_backend.api.controllers.target.collections.target_collections_controller import (
+    update_target_collection,
+)
+from mascope_backend.api.controllers.target.compounds.target_compounds_controller import (
+    create_target_compound,
+)
+from mascope_backend.api.models.target.collections.target_collection_pydantic_model import (
+    TargetCollectionUpdate,
+)
+from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
+    TargetCompoundBase,
+)
+from mascope_backend.db import (
+    IonizationMechanism,
+    IonizationMode,
+    TargetCollection,
+    TargetCompoundInTargetCollection,
+    async_session,
+)
+from mascope_backend.ionization_catalogue import (
+    SEEDED_BEFORE,
+    SYSTEM_MODES,
+    SeededCollection,
+    collection_digest,
+    seeded_collections,
+    shipped_mechanisms,
+)
 from mascope_backend.runtime import runtime
 
 
 async def ensure_system_ionization() -> dict[str, dict[str, int]]:
-    """Seed the mechanisms Mascope ships, then its modes.
+    """Seed the mechanisms Mascope ships, then its modes, then their collections.
 
-    :return: Each pass's counts, under ``"mechanisms"`` and ``"modes"``.
+    :return: Each pass's counts, under ``"mechanisms"``, ``"modes"`` and
+        ``"collections"``.
     :rtype: dict[str, dict[str, int]]
     """
     mechanisms = await ensure_system_ionization_mechanisms()
     modes = await ensure_system_ionization_modes()
-    return {"mechanisms": mechanisms, "modes": modes}
+    collections = await ensure_system_ionization_collections()
+    return {"mechanisms": mechanisms, "modes": modes, "collections": collections}
 
 
 async def ensure_system_ionization_mechanisms() -> dict[str, int]:
@@ -325,6 +379,230 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
             "an ionization mechanism they need could not be created here"
         )
     return counts
+
+
+async def ensure_system_ionization_collections() -> dict[str, int]:
+    """Create the collections of the seeded chemistries, keep the seed's own
+    up to date, and point each seeded mode that points at none at its own.
+
+    One transaction per collection, so a start that fails partway keeps what
+    it finished, and a collection it did not finish is still missing, or
+    still holds what it held, for the next start to try again.
+
+    :return: Counts of the collections created, brought up to date, held as
+        they are, left as the deployment edited them, skipped for want of
+        their mode, and failed, and of the mode pointers set.
+    :rtype: dict[str, int]
+    """
+    counts = {
+        "created": 0,
+        "updated": 0,
+        "held": 0,
+        "edited": 0,
+        "no_mode": 0,
+        "failed": 0,
+        "pointed": 0,
+    }
+    seeded = seeded_collections()
+
+    async with async_session() as session:
+        # The current versions. A superseded one keeps its chemistry's key.
+        modes = {
+            mode.system_key: mode
+            for mode in (
+                await session.execute(
+                    select(IonizationMode).where(
+                        IonizationMode.system_key.is_not(None),
+                        IonizationMode.is_active.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+        stored = {
+            collection.target_collection_id: collection
+            for collection in (
+                await session.execute(
+                    select(TargetCollection)
+                    .where(
+                        TargetCollection.target_collection_id.in_(
+                            [collection.collection_id for collection in seeded]
+                        )
+                    )
+                    .options(
+                        selectinload(TargetCollection.target_compound).selectinload(
+                            TargetCompoundInTargetCollection.target_compound
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+
+    edited: list[str] = []
+    pointers: list[tuple[str, str, str]] = []
+    for collection in seeded:
+        mode = modes.get(collection.system_key)
+        if mode is None:
+            # Its chemistry was not seeded here (a mechanism missing, or its
+            # name taken), so there is no mode to read it.
+            counts["no_mode"] += 1
+            continue
+
+        row = stored.get(collection.collection_id)
+        try:
+            if row is None:
+                await _create_collection(collection)
+                counts["created"] += 1
+            else:
+                held = _stored_digest(row)
+                if held == collection.digest:
+                    counts["held"] += 1
+                elif held in SEEDED_BEFORE:
+                    await _bring_up_to_date(collection)
+                    counts["updated"] += 1
+                else:
+                    edited.append(collection.collection_id)
+                    counts["edited"] += 1
+        except Exception as e:
+            runtime.logger.error(
+                f"Could not seed the collection {collection.collection_id} "
+                f"('{collection.name}') Mascope ships: {e}"
+            )
+            counts["failed"] += 1
+            continue
+
+        pointers.append(
+            (mode.ionization_mode_id, collection.mode_field, collection.collection_id)
+        )
+
+    async with async_session() as session:
+        for mode_id, field, collection_id in pointers:
+            column = getattr(IonizationMode, field)
+            # Only where it points at none. A mode pointed at a collection
+            # keeps it: the deployment chose it, before this pass or while
+            # it ran.
+            pointed = await session.execute(
+                update(IonizationMode)
+                .where(
+                    IonizationMode.ionization_mode_id == mode_id,
+                    column.is_(None),
+                )
+                .values({field: collection_id})
+            )
+            counts["pointed"] += pointed.rowcount
+        await session.commit()
+
+    # Every start, so the log says the pass ran on a server that needed nothing.
+    exceptions = "".join(
+        f", {counts[key]} {what}"
+        for key, what in (
+            ("updated", "brought up to date"),
+            ("no_mode", "without their mode"),
+            ("failed", "failed"),
+        )
+        if counts[key]
+    )
+    if edited:
+        exceptions += (
+            f", {len(edited)} left as this server edited them ({', '.join(edited)})"
+        )
+    runtime.logger.info(
+        f"System target collections: {counts['created']} created, "
+        f"{counts['held']} held{exceptions}; {counts['pointed']} mode "
+        f"collection{'' if counts['pointed'] == 1 else 's'} pointed at them"
+    )
+    return counts
+
+
+def _stored_digest(collection: TargetCollection) -> str:
+    """What a stored collection holds, as :func:`collection_digest` reads it.
+
+    :param collection: The row, its compounds loaded.
+    :return: Its digest.
+    :rtype: str
+    """
+    return collection_digest(
+        name=collection.target_collection_name,
+        description=collection.target_collection_description,
+        collection_type=collection.target_collection_type,
+        workspace_id=collection.workspace_id,
+        compounds=(
+            (
+                link.target_compound.target_compound_name,
+                link.target_compound.target_compound_formula,
+            )
+            for link in collection.target_compound
+        ),
+    )
+
+
+def _compounds_to_create(collection: SeededCollection) -> list[TargetCompoundBase]:
+    return [
+        TargetCompoundBase(
+            target_compound_name=compound.name,
+            target_compound_formula=compound.formula,
+        )
+        for compound in collection.compounds
+    ]
+
+
+async def _create_collection(collection: SeededCollection) -> None:
+    """Create a seeded collection and its compounds, in one transaction.
+
+    Written here rather than through ``create_target_collection``, which
+    generates the id: the seed's collection is known by the one the catalogue
+    gives it.
+    """
+    async with async_session() as session:
+        compounds = await create_target_compound(
+            target_compounds=_compounds_to_create(collection),
+            independent_transaction=False,
+            session=session,
+        )
+        session.add(
+            TargetCollection(
+                target_collection_id=collection.collection_id,
+                target_collection_name=collection.name,
+                target_collection_description=collection.description,
+                target_collection_type=collection.collection_type,
+                workspace_id=None,
+            )
+        )
+        for compound_id in dict.fromkeys(compounds["target_compound_ids"]):
+            session.add(
+                TargetCompoundInTargetCollection(
+                    target_compound_id=compound_id,
+                    target_collection_id=collection.collection_id,
+                )
+            )
+        await session.commit()
+
+
+async def _bring_up_to_date(collection: SeededCollection) -> None:
+    """Make a collection an earlier release seeded what this one seeds.
+
+    Through the path a person's edit of the collection takes, so the batches it
+    serves are marked for a rematch as they would be after that edit. The
+    compounds it no longer holds stay in the library, as they do when a person
+    takes one out of a collection.
+    """
+    compounds = await create_target_compound(
+        target_compounds=_compounds_to_create(collection),
+        independent_transaction=True,
+    )
+    await update_target_collection(
+        target_collection_id=collection.collection_id,
+        target_collection_update=TargetCollectionUpdate(
+            target_collection_name=collection.name,
+            target_collection_description=collection.description,
+            target_collection_type=collection.collection_type,
+            target_compound_ids=list(dict.fromkeys(compounds["target_compound_ids"])),
+        ),
+        independent_transaction=True,
+    )
 
 
 def run_ensure_system_ionization() -> dict[str, dict[str, int]]:

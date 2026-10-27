@@ -10,7 +10,7 @@ Tasks:
 - The deployment's identity, generated on the first start
 - Application state reset (stuck batch recovery, interrupted file processing)
 - Idempotent data initialization (acquisition datasets, the ionization
-  mechanisms and modes Mascope ships)
+  mechanisms, modes and collections Mascope ships)
 """
 
 import os
@@ -60,8 +60,9 @@ async def init_main_process() -> None:
       of to the admins and owners, each file once
     - Purge notifications read long ago
     - Auto-create missing acquisition datasets for all instruments
-    - Seed the ionization mechanisms and modes Mascope ships, building the
-      target ions of the library's compounds for a mechanism it lacked
+    - Seed the ionization mechanisms, modes and collections Mascope ships,
+      building the target ions of the library's compounds for a mechanism it
+      lacked
     - Dispose the engine — each worker initialises its own independently
 
     :raises Exception: If any critical initialization step fails
@@ -123,7 +124,8 @@ async def init_main_process() -> None:
         # start tries again. The steps above are different - a reset left
         # undone would leave work looking like it is still running.
         runtime.logger.info(
-            "Main process: seeding the ionization mechanisms and modes Mascope ships"
+            "Main process: seeding the ionization mechanisms, modes and "
+            "collections Mascope ships"
         )
         try:
             await ensure_system_ionization()

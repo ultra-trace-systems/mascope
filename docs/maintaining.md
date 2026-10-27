@@ -1654,13 +1654,33 @@ routes stay open, so ledgers written while it was on remain visible).
 Every backend start creates, before the server listens, the ionization
 mechanisms the engine's chemistry needs - the mechanisms the shipped ionization
 modes declare and every secondary channel an assignment profile can open,
-nineteen in all - and then the eleven shipped modes. Each mechanism is built
-with the target ions of every compound already in the library, so a fresh
-server searches under the same chemistry as any other from its first run. A
-mechanism the deployment already holds under that notation, in either
-spelling, is adopted as it is; the shipped modes arrive inert (no token, no
-collections, left out of the ionization listing until a deployment adopts one);
-a second start changes nothing.
+nineteen in all - then the eleven shipped modes, and then the calibrant and
+diagnostic collections of the seven among them that have a reagent of their
+own. Each mechanism is built with the target ions of every compound already in
+the library, so a fresh server searches under the same chemistry as any other
+from its first run. A mechanism the deployment already holds under that
+notation, in either spelling, is adopted as it is; the shipped modes arrive
+with no token and are left out of the ionization listing until a deployment
+adopts one; a second start changes nothing.
+
+The shipped collections are read off the reagent-ion library. Nitrate,
+15N-nitrate, bromide, iodide, uronium and the two ambient chemistries each get
+a calibrant collection, the reagent ion and its own clusters (`[Br]-`,
+`[Br2]-` and `[Br3]-` for bromide; the fluoranthene ion of an Orbitrap's
+EASY-IC beam for the ambient ones), and a diagnostic collection, every ion
+the reagent makes on its own. Protonation, deprotonation and the ammonium
+chemistries have no reagent there and get none. The collections are global,
+named after their chemistry (*Bromide, negative calibrants*, *Bromide,
+negative reagent ions*) under fixed ids (`sysBromideCal`, `sysBromideDia`),
+and a start points each shipped mode at its own only where the mode points at
+no collection. So a deployment that points a shipped mode at a collection of
+its own keeps it, and a deployment may also edit a shipped collection: each
+start compares a shipped collection with what releases of Mascope seeded it
+with, brings one that still holds that up to date, marking the batches it
+serves for a rematch as an edit would, and leaves an edited one as it is. The
+start's log line `System target collections: ...` counts both and names the
+edited ones. A deleted one comes back at the next start, as a deleted shipped
+mechanism does; to stop a mode using it, point the mode at another collection.
 
 The first start on a large library is the slow one: about 6.5 s per missing
 mechanism against a 1,466-compound library, 85 s for thirteen. The backend's
