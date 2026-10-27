@@ -123,6 +123,26 @@ Calibrated mass values are computed by directly multiplying the observed mass va
 
 $$m_{\text{calibrated}} = m_{\text{observed}} \times \text{Scaling Factor}$$
 
+### The Orbitrap Axis Fingerprint
+
+An Orbitrap measures how often each ion oscillates in the trap, and converts that frequency $f$ to m/z with the instrument's mass calibration, $m/z = B/f^2 + C/f^4$ ([Makarov, 2000](https://doi.org/10.1021/ac991131p); the [OpenTFRaw format documentation](https://github.com/Sigilweaver/OpenTFRaw/blob/main/docs/docs/format/10-frequency-to-mz.md)).
+On some Orbitrap models, the Q Exactive Plus among them, the data system divides the frequency axis into bands about 16 kHz wide.
+Each mass calibration of the instrument stores one small m/z offset per band, on top of a smooth trend.
+After a good calibration the offsets are a fraction of a ppm to a few ppm; after a poor one they can reach tens of ppm.
+The instrument does not report them, and a lock mass cannot remove them: it scales a whole scan by one factor, while the offset steps from band to band.
+
+The raw file keeps these offsets: it stores one m/z correction with each stretch of a scan's profile ([OpenTFRaw changelog](https://github.com/Sigilweaver/OpenTFRaw/blob/main/CHANGELOG.md), 1.4.1).
+When Mascope converts a raw Orbitrap file, it reads the offset of each frequency band back from the spacing of the stored profile points, for each acquisition mode of the file, and records which lock mass each scan was corrected with.
+This per-file description is the file's **axis fingerprint**.
+It is stored with the file and served through the API and the SDK ([The axis fingerprint of an Orbitrap file](../sdk/index.md#the-axis-fingerprint-of-an-orbitrap-file)), for clients that correct the mass axis band by band themselves, such as [Peaky](https://github.com/ultra-trace-systems/peaky).
+
+Mascope itself changes no m/z with the fingerprint.
+Its own Orbitrap calibration is the one-point scaling above: one factor per file, or per scan range, multiplied into every m/z.
+On a model whose data system uses no such bands, as on the Exploris models measured, the fingerprint shows no steps between bands.
+A file converted before the fingerprint existed has none until an operator runs the backfill script for it.
+
+The measurement, its quality flags and the code are described in the [reader pipeline notes](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/thermo/docs/reader_pipeline.md#71-the-axis-fingerprint).
+
 ## Verification
 
 A fit that runs to completion is not necessarily a good one: two calibrants that disagree are split down the middle, and a single calibrant fits itself perfectly.

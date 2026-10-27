@@ -52,7 +52,31 @@ mass those scans used and the calibration factor Mascope applies to them. A
 file converted before the fingerprint existed has none yet: its `status` is
 `missing`. The
 [SDK readme](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/sdk/README.md#mascopesample_files)
-describes the document.
+describes the document, and
+[How it works: calibration](../how-it-works/calibration.md#the-orbitrap-axis-fingerprint)
+says what it measures.
+
+A client that corrects the axis also reads the scans and centroids the
+fingerprint describes. `get_scans` returns a file's scan table without its
+centroids: one row per scan, with the conversion coefficients and lock-mass
+fields of its trailer.
+
+```python
+scans = mascope.sample_files.get_scans(
+    sample_file_id,
+    fields=["Conversion Parameter B:", "Conversion Parameter C:", "MsType"],
+)
+```
+
+`get_centroids` gives each centroid the instrument's flags, and `exclude`
+leaves flagged ones out: here the lock-mass peaks (`reference`) and weak
+side-lobe peaks (`exception`).
+
+```python
+centroids = mascope.samples.get_centroids(
+    [sample_id], exclude=["reference", "exception"]
+)
+```
 
 ## Built on the SDK: Peaky
 

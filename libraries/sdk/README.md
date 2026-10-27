@@ -724,7 +724,7 @@ workspaces, not only the client's.
 | `compute_peak_timeseries(sample_id, peak_ids=)` | Have the server compute the timeseries peaks lack    | `int`               |
 | `get_spectrum(sample_id, ...)`                  | Get averaged spectrum                                | `pd.DataFrame│None` |
 | `get_spectra(sample_ids, ...)`                  | Get spectra for multiple samples                     | `pd.DataFrame│None` |
-| `get_centroids(sample_ids)`                     | Get centroid data                                    | `dict│None`         |
+| `get_centroids(sample_ids, exclude=)`           | Per-scan centroids, flagged ones left out on request | `dict│None`         |
 | `get_axis_fingerprint(sample_id)`               | Its file's axis fingerprint, with the sample's scans | `dict`              |
 | `update(sample_id, sample_item)`                | Update a sample's fields (the whole sample)          | `dict`              |
 | `move(sample_ids, batch_id)`                    | Move samples into a batch, in the background         | `dict`              |
@@ -733,6 +733,17 @@ workspaces, not only the client's.
 A `get_peaks` over a time range (`t_min` / `t_max`) leaves out the peaks whose timeseries has not been computed yet; see [Peaks left out of a time range](#peaks-left-out-of-a-time-range).
 
 `list` accepts exactly one of `batch` (must match a single batch; raises if ambiguous) or `batches` (returns samples from all matching batches, with an added `sample_batch_name` column).
+
+`get_centroids` returns a dict keyed by sample ID. Each sample's value holds parallel lists with one entry per scan: `scan` (the scan number), `timestamp` in seconds, and the scan's centroids as lists of `masses`, `intensities`, `resolutions`, `signal_to_noise` and `flags`. A centroid's `flags` are the sum of the instrument's marks on it: 2 fragmented, 4 merged, 8 exception (a weak side-lobe peak), 16 reference (the lock-mass peak the scan was corrected with), 0 for none. So `flag & 16` finds a scan's lock mass. `exclude` leaves out the centroids that carry any of the flags it names (`"reference"`, `"exception"`, `"merged"`, `"fragmented"`); without it every stored centroid comes back. A server older than the flags ignores `exclude`, so given one, an answer without `flags` raises `MascopeAPIError` rather than return the centroids asked to be left out.
+
+```python
+centroids = mascope.samples.get_centroids(
+    [sample_id], exclude=["reference", "exception"]
+)
+kept = centroids[sample_id]
+for scan, masses in zip(kept["scan"], kept["masses"]):
+    print(scan, len(masses))
+```
 
 #### `mascope.sample_files`
 
@@ -771,6 +782,15 @@ raw = mascope.sample_files.download_raw(file_id, "downloads/")
 ```
 
 `get_axis_fingerprint` returns what Mascope measured of a raw Orbitrap file's m/z axis when it converted the file. On some Orbitrap models the data system divides the frequency axis into frequency bands, and each mass calibration leaves one m/z offset per band on top of a smooth trend; the fingerprint reads those offsets back from the stored profile, per acquisition mode, with the lock mass each scan was corrected with. Mascope never alters an m/z with it. It is a JSON document under the schema `mascope.axis_fingerprint`, version 1 (`libraries/thermo/src/mascope_thermo/axis_fingerprint/axis_fingerprint.schema.json`). Read its `status` first: `ok` and `no_fingerprint` carry the whole document; `missing` (not computed for the file), `unavailable` and `error` carry nothing else. `ok` means that some mode has a table of frequency bands, not that every mode has one: a mode without one, flagged `no_segment_table` or `centroid_only`, has `segments` null. A file that is not an Orbitrap file raises `NotFoundError`.
+
+```python
+fingerprint = mascope.sample_files.get_axis_fingerprint(file_id)
+if fingerprint["status"] in ("ok", "no_fingerprint"):
+    for mode in fingerprint["modes"]:
+        print(mode["mode_id"], mode["flags"], mode["segments"] is not None)
+```
+
+How the fingerprint is measured, and what its flags mean (`grid_unmeasured`, `grid_weak`, `not_stepwise`), is in [the reader pipeline notes](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/thermo/docs/reader_pipeline.md#71-the-axis-fingerprint).
 
 `mascope.samples.get_axis_fingerprint(sample_id)` returns the same document for the sample's file with an `item` block: `scans`, the scan numbers its peak list is built from; `mode_id`, the mode they belong to, which `modes` lists first; `lock`, that mode's lock shares and effective lock mass over those scans; and `mz_calibration_factor` and `file_mz_calibration_factor`, what Mascope multiplies into the m/z it serves of the sample's stream and of the file. `dominant_mode` stays the file's. A stitched sample's `mz_calibration_factor` is the file's, while its peaks carry the factor of each stream that owns a run of it.
 
