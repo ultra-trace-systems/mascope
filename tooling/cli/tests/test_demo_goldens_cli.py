@@ -125,6 +125,146 @@ def test_an_ms1_only_run_records_no_ms2_block(backend_goldens, tmp_path):
     assert not (tmp_path / "expected" / "ms2.parquet").exists()
 
 
+# --- a refresh keeps the MS2 goldens ----------------------------------------
+
+
+MS2_B = "Orbion_MS2_15NO3_manual-C10H18O2_20261016034940.raw"
+
+
+def _prior_ms2(out_dir, rows: list[dict]) -> dict:
+    """The ``expected`` block of a prior manifest with MS2 goldens of ``rows``."""
+    (out_dir / "expected").mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_parquet(out_dir / "expected" / "ms2.parquet", index=False)
+    return {
+        "peaks": "expected/peaks.parquet",
+        "ms2": "expected/ms2.parquet",
+        "ms2_sha256": bundles.sha256_file(out_dir / "expected" / "ms2.parquet"),
+    }
+
+
+@pytest.fixture
+def warnings(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(
+        build_bundle.runtime.logger,
+        "warning",
+        lambda m, *a, **k: seen.append(str(m)),
+    )
+    return seen
+
+
+def test_a_refresh_that_reads_no_spectra_of_a_prior_ms2_file_is_refused(
+    backend_goldens, tmp_path
+):
+    """The MS2 file is still covered by its MS1 peaks, so the coverage check
+    passes; the prior MS2 goldens are what refuse the run, before anything is
+    written."""
+    prior = _prior_ms2(tmp_path, [_ms2_row(_db_name(MS2))])
+    before = (tmp_path / "expected" / "ms2.parquet").read_bytes()
+    backend_goldens.peaks = [_peak(_db_name(MS1)), _peak(_db_name(MS2))]
+    backend_goldens.ingested = [_db_name(MS1), _db_name(MS2)]
+
+    with pytest.raises(RuntimeError, match="would drop MS2 goldens") as info:
+        build_bundle.export_goldens(tmp_path, _raw_entries(MS1, MS2), prior)
+
+    assert _db_name(MS2) in str(info.value)
+    assert (tmp_path / "expected" / "ms2.parquet").read_bytes() == before
+    assert not (tmp_path / "expected" / "peaks.parquet").exists()
+
+
+def test_a_refresh_that_loses_one_of_two_prior_ms2_files_is_refused(
+    backend_goldens, tmp_path
+):
+    prior = _prior_ms2(tmp_path, [_ms2_row(_db_name(MS2)), _ms2_row(_db_name(MS2_B))])
+    backend_goldens.peaks = [_peak(_db_name(MS1)), _peak(_db_name(MS2_B))]
+    backend_goldens.ms2 = [_ms2_row(_db_name(MS2))]
+    backend_goldens.ingested = [_db_name(n) for n in (MS1, MS2, MS2_B)]
+
+    with pytest.raises(RuntimeError, match=r"1 raw file\(s\) the prior MS2") as info:
+        build_bundle.export_goldens(tmp_path, _raw_entries(MS1, MS2, MS2_B), prior)
+
+    assert _db_name(MS2_B) in str(info.value)
+    assert f"{_db_name(MS2)}," not in str(info.value)
+
+
+def test_a_refresh_with_an_unreadable_prior_ms2_golden_and_no_spectra_is_refused(
+    backend_goldens, tmp_path, warnings
+):
+    prior = _prior_ms2(tmp_path, [_ms2_row(_db_name(MS2))])
+    (tmp_path / "expected" / "ms2.parquet").write_bytes(b"not parquet")
+    backend_goldens.peaks = [_peak(_db_name(MS1)), _peak(_db_name(MS2))]
+    backend_goldens.ingested = [_db_name(MS1), _db_name(MS2)]
+
+    with pytest.raises(RuntimeError, match="could not be read"):
+        build_bundle.export_goldens(tmp_path, _raw_entries(MS1, MS2), prior)
+
+    assert any("Cannot read the prior MS2 golden" in w for w in warnings)
+
+
+def test_a_refresh_that_reads_the_prior_ms2_files_again_writes_them(
+    backend_goldens, tmp_path, warnings
+):
+    prior = _prior_ms2(tmp_path, [_ms2_row(_db_name(MS2))])
+    backend_goldens.peaks = [_peak(_db_name(MS1))]
+    backend_goldens.ms2 = [_ms2_row(_db_name(MS2), intensity=1600.0)]
+    backend_goldens.ingested = [_db_name(MS1), _db_name(MS2)]
+
+    expected = build_bundle.export_goldens(tmp_path, _raw_entries(MS1, MS2), prior)
+
+    assert expected["ms2"] == "expected/ms2.parquet"
+    ms2_path = tmp_path / "expected" / "ms2.parquet"
+    assert pd.read_parquet(ms2_path).to_dict("records") == backend_goldens.ms2
+    assert warnings == []
+
+
+def test_a_prior_ms2_file_that_left_the_raw_set_is_dropped_with_a_warning(
+    backend_goldens, tmp_path, warnings
+):
+    """Taking the MS2 file out of the raw set is a deliberate change: the
+    bundle is written without MS2 goldens, and the log says so."""
+    prior = _prior_ms2(tmp_path, [_ms2_row(_db_name(MS2))])
+    backend_goldens.peaks = [_peak(_db_name(MS1))]
+    backend_goldens.ingested = [_db_name(MS1)]
+
+    expected = build_bundle.export_goldens(tmp_path, _raw_entries(MS1), prior)
+
+    assert expected is not None
+    assert "ms2" not in expected
+    assert any(
+        "Dropping the MS2 goldens of 1 file(s)" in w and _db_name(MS2) in w
+        for w in warnings
+    )
+    assert any("is written without them" in w for w in warnings)
+
+
+def test_snapshot_update_refuses_to_drop_the_prior_manifests_ms2_goldens(
+    backend_goldens, tmp_path, monkeypatch
+):
+    """`build(update=True)` hands the prior manifest's goldens to the export:
+    the refusal leaves the manifest and the snapshot as they were."""
+    prior_expected = _prior_ms2(tmp_path, [_ms2_row(_db_name(MS2))])
+    manifest = {
+        "bundle_version": tmp_path.name,
+        "raw": _raw_entries(MS1, MS2),
+        "measurement": {},
+        "expected": prior_expected,
+    }
+    manifest_path = tmp_path / bundles.MANIFEST_NAME
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    backend_goldens.peaks = [_peak(_db_name(MS1)), _peak(_db_name(MS2))]
+    backend_goldens.ingested = [_db_name(MS1), _db_name(MS2)]
+
+    def _no_snapshot(_out_dir):
+        raise AssertionError("the snapshot was exported after a refused export")
+
+    monkeypatch.setattr(build_bundle, "export_snapshot", _no_snapshot)
+
+    with pytest.raises(RuntimeError, match="would drop MS2 goldens"):
+        build_bundle.build(tmp_path, update=True)
+
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest
+
+
 # --- the verify command -----------------------------------------------------
 
 
