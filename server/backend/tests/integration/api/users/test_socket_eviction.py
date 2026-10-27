@@ -30,6 +30,9 @@ from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken, User
 from mascope_backend.db.id import gen_id
+from mascope_backend.db.scripts import (
+    clear_password_change_requirement as clear_script,
+)
 from mascope_backend.db.scripts import require_password_change as sweep_script
 from mascope_backend.socket.auth.exceptions import SocketUnauthenticatedError
 from mascope_backend.socket.auth.service import authenticate_socket_connection
@@ -282,7 +285,9 @@ def script_redis(monkeypatch):
     monkeypatch.setattr(redis_storage_client, "connect", connect)
     monkeypatch.setattr(redis_storage_client, "disconnect", disconnect)
     monkeypatch.setattr(sweep_script, "configure_database_engine", AsyncMock())
+    monkeypatch.setattr(clear_script, "configure_database_engine", AsyncMock())
     monkeypatch.delenv("MASCOPE_REQUIRE_PASSWORD_CHANGE_DRY_RUN", raising=False)
+    monkeypatch.delenv("MASCOPE_CLEAR_PASSWORD_CHANGE_EMAILS", raising=False)
     return connect, disconnect
 
 
@@ -384,6 +389,111 @@ async def test_the_maintenance_script_notifies_nothing_without_redis(
     await sweep_script.run_require_password_change()
 
     server.emit.assert_not_awaited()
+
+
+def _notices(calls, user: User) -> list[tuple]:
+    """The emits ``user``'s own room heard."""
+    return [c for c in calls if c[0] == "emit" and c[2] == f"user-{user.id}"]
+
+
+@pytest.mark.asyncio
+async def test_the_owner_route_notifies_open_tabs(
+    owner_client, person, sio, record_sio
+):
+    """The tab hears it owes a change after its sockets are evicted."""
+    _, calls = record_sio
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+
+    resp = await owner_client.post(
+        "/api/users/owner/require-password-change", json={"confirm": True}
+    )
+    assert resp.status_code == 200, resp.text
+
+    notices = _notices(calls, person)
+    assert len(notices) == 1
+    _, event, _, payload = notices[0]
+    assert event == "user_me_updated"
+    assert payload["record"] == {"id": person.id, "must_change_password": True}
+    assert calls.index(("leave", "sid-a", RESOURCE_ROOM)) < calls.index(notices[0])
+    reloads = [c for c in calls if c[0] == "emit" and c[1] == "user_reload"]
+    assert len(reloads) == 1
+    assert calls[-1] == reloads[0]
+
+
+@pytest.mark.asyncio
+async def test_the_clear_script_notifies_released_tabs(
+    person, other_person, sio, record_sio, script_redis, async_session_factory
+):
+    """
+    The way back is heard as the requirement was: each released tab on its own
+    room, and user tables once. A tab signed in at the password screen is let
+    back into the signed-in room; one whose session the sweep ended is not.
+    """
+    _, calls = record_sio
+    redis_connect, redis_disconnect = script_redis
+    await _open_socket("sid-old", person, datetime.now(timezone.utc) - LONG_AGO)
+    await sweep_script.run_require_password_change()
+    now = datetime.now(timezone.utc)
+    for sid, user in (("sid-a", person), ("sid-b", other_person)):
+        cookie = f"{auth_settings.COOKIE_NAME}={_token(user, now)}"
+        assert await connect(sid, {"HTTP_COOKIE": cookie})
+    calls.clear()
+    sio.enter_room.reset_mock()
+    redis_connect.reset_mock()
+    redis_disconnect.reset_mock()
+
+    await clear_script.run_clear()
+
+    for sid, user in (("sid-a", person), ("sid-b", other_person)):
+        notices = _notices(calls, user)
+        assert len(notices) == 1
+        _, event, _, payload = notices[0]
+        assert event == "user_me_updated"
+        assert payload["record_id"] == str(user.id)
+        assert payload["record"] == {"id": user.id, "must_change_password": False}
+        assert _entered(sio, sid) == {SIGNED_IN_ROOM}
+        async with async_session_factory() as session:
+            assert not (await session.get(User, user.id)).must_change_password
+    assert _entered(sio, "sid-old") == set()
+    assert not [c for c in calls if c[0] == "leave"]
+
+    reloads = [c for c in calls if c[0] == "emit" and c[1] == "user_reload"]
+    assert len(reloads) == 1
+    assert calls[-1] == reloads[0]
+    redis_connect.assert_awaited_once()
+    redis_disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_clear_script_releases_without_redis(
+    person, sio, record_sio, script_redis, async_session_factory
+):
+    """The requirement is withdrawn all the same; nothing is sent."""
+    server, _ = record_sio
+    await _hold(async_session_factory, person)
+    connect, disconnect = script_redis
+    connect.side_effect = ConnectionError("Redis connection failed")
+
+    await clear_script.run_clear()
+
+    server.emit.assert_not_awaited()
+    disconnect.assert_not_awaited()
+    async with async_session_factory() as session:
+        assert not (await session.get(User, person.id)).must_change_password
+
+
+@pytest.mark.asyncio
+async def test_the_clear_script_notifies_nothing_when_nobody_is_held(
+    sio, record_sio, script_redis
+):
+    """Nothing released, nothing to say, and Redis is not even reached."""
+    server, _ = record_sio
+    connect, _ = script_redis
+
+    await clear_script.run_clear()
+
+    server.emit.assert_not_awaited()
+    connect.assert_not_awaited()
 
 
 # --- Only the sockets subscribe would now refuse ---

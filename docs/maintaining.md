@@ -1216,6 +1216,10 @@ server:
 mascope prod db script run clear_password_change_requirement
 ```
 
+Anyone held at the password screen leaves it at once, as they were moved to it.
+If the script cannot reach Redis it says so, and they leave the screen when they
+reload the page.
+
 Set `MASCOPE_CLEAR_PASSWORD_CHANGE_EMAILS` to a comma-separated list to release
 only some accounts. Note that the pre-script database dump is a whole-database
 restore, not a per-account undo - use the script, not the dump.
