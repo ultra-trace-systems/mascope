@@ -418,19 +418,13 @@ def _uronium_monitor_size(kit: Surface) -> int:
 
 
 def _ionization_of_bromide(kit: Surface) -> dict[str, Any]:
-    batch = kit.resolve(BROMIDE, "batch")
-    sample = _whole(kit.find("", kind="sample", within=batch, limit=1))[0]
-    # The keys a describe() that answered would have; neither has them yet
-    for about in (kit.describe(batch), kit.describe(sample)):
-        if "ionization_mode" in about and "ionization_mechanisms" in about:
-            return {
-                "mode": about["ionization_mode"],
-                "mechanisms": sorted(about["ionization_mechanisms"]),
-            }
-    raise Unanswerable(
-        "describe() names no ionization mode or mechanism of a batch or a "
-        "sample: a batch says only how many modes its samples have"
-    )
+    about = kit.describe(kit.resolve(BROMIDE, "batch"))
+    modes = [
+        {"mode": mode["name"], "mechanisms": sorted(mode["mechanisms"] or [])}
+        for mode in about["ionization_modes"]
+    ]
+    # One mode is the answer; several are an answer the known one is not
+    return modes[0] if len(modes) == 1 else {"modes": modes}
 
 
 # The analysis questions: numbers computed through Frames.
@@ -590,8 +584,8 @@ def _peak_at(
     """What the peak at *mz* in the sample *sample_name* of *batch* is.
 
     The peak is the one nearest *mz* within 5 ppm in the sample's peak
-    list. The mass query proposes candidates for its m/z with the sample's
-    mechanisms - those its stored matches used, as ``describe`` names none -
+    list. The mass query proposes candidates for its m/z with the
+    mechanisms of the sample's ionization mode, as ``describe`` names them,
     and Mascope scores them, and the model's own *suggested*, in the sample.
     The answer is the scored verdicts whose attributed peaks include this
     peak; the rest are listed apart, and what Mascope did not score is
@@ -603,8 +597,7 @@ def _peak_at(
     if near.empty:
         return {"peak_mz": None, "assigned": []}
     peak = near.loc[(near["mz"] - mz).abs().idxmin()]
-    found = peaks[peaks["match_score_isotope"] > 0]
-    mechanisms = sorted(found["ionization_mechanism"].dropna().unique())
+    mechanisms = kit.describe(sample)["ionization_mechanisms"]
     candidates = kit.query_by_mz(mz, mechanisms)
     result = kit.match_compounds(sample, candidates, suggested=suggested)
     return {
@@ -773,7 +766,7 @@ QUESTIONS: tuple[Question, ...] = (
         _ionization_of_bromide,
         {"mode": "Bromide m/z 82-750", "mechanisms": ["[M+Br]-", "[M-H]-"]},
         "Bromide m/z 82-750: [M+Br]- and [M-H]-",
-        ("describe", "find", "resolve"),
+        ("describe", "resolve"),
     ),
     Question(
         "A1",
@@ -878,7 +871,14 @@ QUESTIONS: tuple[Question, ...] = (
         },
         "formic acid, CH2O2 as CH2BrO2- [M+Br]-, probable; "
         "the 13C-labelled suggestion unscored",
-        ("find", "load_peaks", "match_compounds", "query_by_mz", "resolve"),
+        (
+            "describe",
+            "find",
+            "load_peaks",
+            "match_compounds",
+            "query_by_mz",
+            "resolve",
+        ),
         golden=_golden_formic_acid_peak,
         check=_nothing_unscored_is_a_verdict,
     ),
@@ -909,7 +909,14 @@ QUESTIONS: tuple[Question, ...] = (
         },
         "C10H16O2 as C10H17O2+ [M+H]+, probable; three other candidates "
         "unmatched; the numeric-mass suggestion unscored",
-        ("find", "load_peaks", "match_compounds", "query_by_mz", "resolve"),
+        (
+            "describe",
+            "find",
+            "load_peaks",
+            "match_compounds",
+            "query_by_mz",
+            "resolve",
+        ),
         golden=_golden_uronium_peak,
         check=_nothing_unscored_is_a_verdict,
     ),

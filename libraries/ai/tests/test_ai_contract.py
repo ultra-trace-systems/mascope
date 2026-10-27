@@ -116,6 +116,11 @@ class TestFindAndDescribe:
         assert out["ref"]["id"] == batch.id
         assert out["n_samples"] > 0
         assert isinstance(out["collections"], list)
+        # Every demo sample is processed under a mode the server names
+        assert out["ionization_modes"]
+        assert all(
+            mode["name"] and mode["mechanisms"] for mode in out["ionization_modes"]
+        )
 
     def test_describe_a_sample(self, kit, batch):
         sample = kit.find("", kind="sample", within=batch, limit=1)[0]
@@ -123,6 +128,7 @@ class TestFindAndDescribe:
         out = kit.describe(sample)
 
         assert out["batch_id"] == batch.id
+        assert out["ionization_mode"] and out["ionization_mechanisms"]
 
 
 class TestLoaders:
