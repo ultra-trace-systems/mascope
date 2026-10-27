@@ -9,6 +9,26 @@ from .composition import CompositionMap, get_composition_label
 from .data_extractor import DataExtractor
 
 
+def isolation_width_label(
+    isolation_width: float, counts: list[tuple[float, int]]
+) -> str:
+    """The info label's text for a group's isolation width.
+
+    A group whose scans used more than one width names each with its scan
+    count, and says the window is the widest, which ``isolation_width`` is.
+    """
+    if len(counts) <= 1:
+        return f"&emsp; <b>Isolation width:</b> {isolation_width} m/z"
+    widths = ", ".join(
+        f"{width} m/z ({scans} scan{'s' if scans != 1 else ''})"
+        for width, scans in counts
+    )
+    return (
+        f"&emsp; <b>Isolation widths:</b> {widths}; "
+        f"the window uses the widest, {isolation_width} m/z"
+    )
+
+
 class Ms2Dashboard:
     def __init__(self, data: DataExtractor, compositions: CompositionMap):
         self._data = data
@@ -123,12 +143,15 @@ class Ms2Dashboard:
         group = self._parent_dropdown.value
         pp = group.parent_peak_mz
         d = self._data
-        # A group's own: the events of a targeted method may differ.
+        # A group's own: the events of a targeted method may differ. A group
+        # whose scans used several widths is windowed at the widest.
         isolation_width = d.isolation_widths[group]
         half_iso = isolation_width / 2
 
         # --- Info label ---
-        self._info_label.value = f"&emsp; <b>Isolation width:</b> {isolation_width} m/z"
+        self._info_label.value = isolation_width_label(
+            isolation_width, d.isolation_width_counts.get(group, [])
+        )
 
         # --- Composition data (needed by both MS1 and MS2 charts) ---
         ms2_spec = d.ms2_spectra[group]

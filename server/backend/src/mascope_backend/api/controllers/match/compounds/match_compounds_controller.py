@@ -113,6 +113,8 @@ async def get_match_compounds(
             ).add_columns(
                 TargetCompound.target_compound_name,
                 TargetCompound.target_compound_formula,
+                TargetCompound.cas_number,
+                TargetCompound.inchikey,
             )
 
         if sample_batch_id:
@@ -186,6 +188,8 @@ async def get_match_compounds(
         if show_target_compound:
             match_compound_data["target_compound_name"] = row.target_compound_name
             match_compound_data["target_compound_formula"] = row.target_compound_formula
+            match_compound_data["cas_number"] = row.cas_number
+            match_compound_data["inchikey"] = row.inchikey
         if show_target_collection:
             match_compound_data["target_collection_id"] = row.target_collection_id
             match_compound_data["target_collection_name"] = row.target_collection_name

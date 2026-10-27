@@ -116,6 +116,9 @@ export const useAuth = defineStore('app.auth', () => {
       return
     }
     mfaPending.value = false
+    // The sign-in authenticated this tab's socket; its rooms were left at
+    // the last sign-out.
+    api.socket.resubscribe()
     await identify()
   }
 
@@ -143,6 +146,7 @@ export const useAuth = defineStore('app.auth', () => {
       throw error
     }
     mfaPending.value = false
+    api.socket.resubscribe()
     await identify()
   }
 
@@ -160,6 +164,9 @@ export const useAuth = defineStore('app.auth', () => {
         use: 'auth'
       }
     )
+    // A new connection, whose handshake carries no session cookie: the old
+    // socket would otherwise stay signed in on the realtime channel.
+    await api.socket.renew()
     await identify()
   }
 

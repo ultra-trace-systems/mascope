@@ -1100,11 +1100,15 @@ def test_a_file_waiting_for_a_free_worker_at_a_deadline_is_named(
 ):
     """Three workers, four files: the fourth has been handed over and not begun."""
     uploads.hold()
+    names = {"a.raw", "b.raw", "c.raw", "d.raw"}
+    # Written before the agent watches the folder, so that each is enqueued
+    # here alone: one the watcher saw too would be enqueued twice, and a
+    # worker could take a file another worker had already begun.
+    for name in names:
+        (tmp_path / name).write_bytes(b"data")
     agent = make_agent()
     agent.start()
-    names = {"a.raw", "b.raw", "c.raw", "d.raw"}
     for name in sorted(names):
-        (tmp_path / name).write_bytes(b"data")
         agent.uploader.enqueue(str(tmp_path / name))
     assert wait_for(lambda: len(uploads.calls) == 3 and agent.uploader.jobs.empty())
 

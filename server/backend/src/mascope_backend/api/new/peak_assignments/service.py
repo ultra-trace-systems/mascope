@@ -17,7 +17,7 @@ import asyncio
 import copy
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime as dt
 from datetime import timezone
@@ -84,6 +84,9 @@ from mascope_backend.api.new.peak_assignments.engine import (
     FRAGMENTS_KEY,
     LIST_PRIOR_WEIGHT,
     MASS_CALIBRATION_KEY,
+    MU_SOURCE_FITTED,
+    MU_SOURCE_NONE,
+    MU_SOURCE_REAGENT,
     PARTNER_GATE_KEY,
     PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
@@ -151,6 +154,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     find_envelope_claims,
 )
 from mascope_backend.api.new.reference import service as reference_service
+from mascope_backend.api.new.reference.licenses import reference_license_gate
 from mascope_backend.db import (
     AssignmentVerification,
     BatchPeakOccurrence,
@@ -1521,6 +1525,8 @@ def judge_commits(
     tier_bands: dict[str, float] | None = None,
     minor_channels: frozenset[str] = frozenset(),
     partner_gated_channels: frozenset[str] = frozenset(),
+    reagent_lines: Sequence[dict] = (),
+    resolution: Callable[[float], float] | None = None,
 ) -> JudgedCommits:
     """Run the mass gate, the partner gate, the cross-channel pass and the
     tiering pass, and read the lines they find in doubt as their neighbours'.
@@ -1550,6 +1556,13 @@ def judge_commits(
         (``engine.apply_partner_gates``), read over both stages' rows after
         the mass gate, so a partner is a reading it left committed, and
         before the cross-channel pass, so a reading set aside is no rival.
+    :param reagent_lines: The reagent pre-pass's rows, whose monoisotopic lines
+        anchor the mass gate's calibration beside the commits
+        (``mass_gate.fit_run_mass_accuracy``). Read only, and the same in every
+        round: a claim moves a commit, never one of the source's lines.
+    :param resolution: The file's resolving power as a function of m/z, at
+        which the tiering pass and the claims read a neighbour's envelope, one
+        line per peak the file resolves; None where the run could read none.
     :return: The judged rows and each pass's summary.
     """
     claims: dict[str, EnvelopeClaim] = {}
@@ -1564,6 +1577,7 @@ def judge_commits(
             stage_a_accuracy=stage_a_accuracy,
             fallback_sigma_ppm=fallback_sigma_ppm,
             lines=lines,
+            reagent_lines=reagent_lines,
         )
         partner_gate = apply_partner_gates(
             judged,
@@ -1581,6 +1595,7 @@ def judge_commits(
             abundance_floor=abundance_floor,
             notation_by_id=notation_by_id,
             tier_bands=tier_bands,
+            resolution=resolution,
         )
         found, held = find_envelope_claims(
             judged,
@@ -1588,6 +1603,7 @@ def judge_commits(
             abundance_floor=abundance_floor,
             precision_ppm=fallback_sigma_ppm,
             lines=lines,
+            resolution=resolution,
         )
         if not found or claim_round >= MAX_CLAIM_ROUNDS:
             tiering.update(
@@ -1757,28 +1773,6 @@ def _build_reference_isotopes_df(
                 }
             )
     return pd.DataFrame(rows)
-
-
-def reference_license_gate() -> list[str] | None:
-    """The reference licences Stage A is allowed to match against, or None.
-
-    The reference mirror carries a per-record licence from ingest through to
-    results precisely so a deployment can decline to match against sources
-    whose terms it has not accepted (HMDB's adapter, for instance, asks that
-    commercial terms be verified first). Nothing wired that to a setting until
-    now: the call site passed nothing, so every active source was matched.
-
-    ``None`` - the default, and what an env toml that says nothing yields -
-    keeps exactly that behaviour. Gating is opt-in because narrowing it shrinks
-    what Stage A can find with no trace in the UI: an operator must choose it,
-    not inherit it.
-
-    Read per call rather than captured at import so a restart is enough to pick
-    up a change, and so tests can set it.
-
-    :return: The allowlist (sorted, non-empty) or None for no gating.
-    """
-    return getattr(runtime.config, "reference_licenses", None)
 
 
 # The expanded reference frame is identical for every run over the same
@@ -2086,9 +2080,10 @@ def _stored_run_config(
 
     The mass calibration is the fifth, and the only one measured from the run's
     own answers rather than from its inputs: the offset and width its
-    corroborated commits turned out to have, which is what every committed row's
-    ``mass_z`` is stated in and what its gate demoted on. A z without the
-    calibration behind it is a number with no units.
+    corroborated commits and the lines its reagent pre-pass claimed turned out
+    to have, which is what every committed row's ``mass_z`` is stated in and
+    what its gate demoted on. A z without the calibration behind it is a
+    number with no units.
 
     The tiering is the sixth, and it is on the run for the same reason the tier
     BANDS are: a tier is only comparable across two runs together with the rules
@@ -2410,11 +2405,213 @@ async def _already_running_result(
     return result
 
 
+def _claim_reagent_lines(
+    peaks_df: pd.DataFrame,
+    resolved_profile: ResolvedProfile,
+    *,
+    resolution: Callable[[float], float] | None,
+):
+    """The reagent pre-pass's claim, as every reader of it makes it.
+
+    One call for the run's pre-pass (:func:`_reagent_assignments`) and the
+    offset a path with no run reads (:func:`reagent_offset_for`): the claim is
+    made at the profile's own m/z precision and the file's own resolving power,
+    and a second copy of it is where either would drift apart.
+
+    :param peaks_df: Every observed peak of the sample.
+    :param resolved_profile: The chemistry the claim is made under.
+    :param resolution: The file's resolving power as a function of m/z
+        (:func:`_resolution_of`), at which an ion's isotope line is one peak of
+        the file; None where it has none. Required, so no reader leaves it out.
+    :return: What :func:`claim_reagent_peaks` claimed, and its calibration.
+    """
+    return claim_reagent_peaks(
+        peaks_df,
+        reagent_library_for(resolved_profile.profile.name),
+        claim_ppm=resolved_profile.mz_precision_ppm,
+        purity=resolved_profile.profile.label_purity,
+        resolution=resolution,
+    )
+
+
+def _claimed_lines_offset(
+    hits, calibration, resolved_profile: ResolvedProfile
+) -> ReagentOffset | None:
+    """Where the reagent pre-pass's claimed lines put the mass axis.
+
+    :param hits: What :func:`claim_reagent_peaks` claimed.
+    :param calibration: What its anchors said; None when there was nothing to
+        match.
+    :param resolved_profile: The chemistry the pass claimed under, whose class
+        width decides whether the offset is beyond it.
+    :return: The lines' offset (:func:`reagent_line_offset`), or None for a
+        profile with no reagent library.
+    """
+    # A profile with no reagent library has no pre-pass to ask, which the run
+    # records differently from a pass that claimed nothing. The offset is read
+    # off the reagent's own ladder and the calibrant beam; the air's ions sit
+    # where the axis bends (``REAGENT_LINE_FAMILIES``).
+    if calibration is None:
+        return None
+    return reagent_line_offset(
+        (
+            hit.mz_error_ppm
+            for hit in hits
+            if hit.cluster.family in REAGENT_LINE_FAMILIES
+        ),
+        resolved_profile.fallback_sigma_ppm,
+    )
+
+
+def reagent_offset_for(
+    peaks_df: pd.DataFrame,
+    resolved_profile: ResolvedProfile,
+    *,
+    resolution: Callable[[float], float] | None,
+) -> ReagentOffset | None:
+    """The reagent pre-pass's offset alone, for a path that writes no reagent rows.
+
+    The same claim :func:`_reagent_assignments` makes, at the same precision
+    and resolution, so a seeded re-score is centred where a run of the sample
+    would be.
+
+    :param peaks_df: Every observed peak of the sample.
+    :param resolved_profile: The sample's resolved chemistry.
+    :param resolution: The file's resolving power as a function of m/z, or None.
+    :return: Where the claimed lines put the axis; None for a profile with no
+        reagent library.
+    """
+    return _claimed_lines_offset(
+        *_claim_reagent_lines(peaks_df, resolved_profile, resolution=resolution),
+        resolved_profile,
+    )
+
+
+async def _latest_run_pattern_scoring(sample_item_id: str) -> dict | None:
+    """What the sample's latest completed in-app run recorded it scored at.
+
+    :param sample_item_id: The sample.
+    :return: The run's ``pattern_scoring`` snapshot; None where the sample has
+        no completed in-app run, or its latest recorded none (a run without an
+        untargeted search, or one from before the snapshot).
+    """
+    async with async_session() as session:
+        config = (
+            await session.execute(
+                select(PeakAssignmentRun.config)
+                .where(
+                    PeakAssignmentRun.sample_item_id == sample_item_id,
+                    PeakAssignmentRun.status == "completed",
+                    # An import's config is the client's own, stored as sent:
+                    # it says nothing of where the in-app scorer centred.
+                    PeakAssignmentRun.engine == IN_APP_ENGINE,
+                )
+                .order_by(PeakAssignmentRun.peak_assignment_run_utc_created.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    snapshot = (config or {}).get(PATTERN_SCORING_KEY)
+    return snapshot if isinstance(snapshot, dict) else None
+
+
+def _recorded_scoring_centre(
+    snapshot: dict | None,
+) -> tuple[bool, ReagentOffset | None]:
+    """The centre a run's snapshot says it scored the sample at, as the seeded
+    chain takes one.
+
+    The same centre :func:`_run_scoring_centre` hands the run's own re-score:
+    the library's fit where it made one, the reagent lines' where they stood in
+    for it, and none where the run scored uncorrected.
+
+    :param snapshot: A run's ``pattern_scoring`` snapshot, or None.
+    :return: Whether the snapshot records a centre, and that centre, marked
+        beyond the width so it is taken as it is; None for a run that scored
+        the sample uncorrected.
+    """
+    # A snapshot from before the offset was recorded says nothing about it.
+    source = (snapshot or {}).get("mu_source")
+    if source == MU_SOURCE_NONE:
+        return True, None
+    if source == MU_SOURCE_FITTED:
+        lines = snapshot.get("fitted_anchors") or 0
+    elif source == MU_SOURCE_REAGENT:
+        lines = snapshot.get("reagent_lines") or 0
+    else:
+        return False, None
+    return True, ReagentOffset(
+        mu_ppm=float(snapshot["mu_ppm"]), lines=int(lines), beyond_width=True
+    )
+
+
+async def sample_reagent_offset(
+    sample,
+    config: PeakAssignmentConfig | None = None,
+    *,
+    peaks_df: pd.DataFrame | None = None,
+    resolved_profile: ResolvedProfile | None = None,
+) -> ReagentOffset | None:
+    """Where a run of a sample scores its mass axis at, outside any run.
+
+    What the seeded chain scores a short seed list at when it has no run's
+    centre to hand (``seeded_scoring.score_seeds``): a pin, the inspector's
+    evidence and alternatives, the batch search's re-score and its
+    propagation. A run scores at the target library's own offset where it
+    fitted one, and at the reagent lines' only where it fitted none
+    (:attr:`SampleMassAccuracy.scoring_mu_ppm`); the lines need not sit where
+    the library does (on the gate's uronium set -0.9 ppm against near zero),
+    so a centre read off the lines alone would move these readers away from the
+    run. The sample's latest completed run's record of its centre is taken
+    first, then.
+
+    Only where no run recorded one are the lines claimed, as the run-less
+    ingest fold resolves them - the configuration's profile (the default's
+    where the caller has none), from the sample's own mechanisms, instrument
+    and polarity, over the same peak read - since a library too short to fit
+    an offset of its own is what a run then has as well.
+
+    :param sample: The sample being scored.
+    :param config: The configuration of the pass the caller is part of, whose
+        ``profile`` or ``mz_precision_ppm`` may override the default's: the
+        batch ledger's propagation is a step of a batch search, and claims a
+        sample's lines where that search's own re-score does. None for a
+        caller with no configuration of its own (a pin, the inspector).
+    :param peaks_df: The sample's peaks, where the caller has read them.
+    :param resolved_profile: The sample's resolved chemistry, where the caller
+        has resolved it; ``config`` is then not read.
+    :return: That centre; None where the run scored uncorrected, or, with no
+        run's record, for a profile with no reagent library.
+    """
+    recorded, centre = _recorded_scoring_centre(
+        await _latest_run_pattern_scoring(sample.sample_item_id)
+    )
+    if recorded:
+        return centre
+    if resolved_profile is None:
+        _, mechanisms = await fetch_sample_mechanisms(sample)
+        resolved_profile = resolve_profile(
+            config if config is not None else PeakAssignmentConfig(),
+            mechanism_notations=[m.ionization_mechanism for m in mechanisms],
+            instrument_type=get_instrument_type(sample.filename),
+            polarity=sample.polarity,
+        )
+    if peaks_df is None:
+        peaks_df = await asyncio.to_thread(load_sample_peaks, sample)
+    return await asyncio.to_thread(
+        reagent_offset_for,
+        peaks_df,
+        resolved_profile,
+        resolution=await _resolution_of(sample),
+    )
+
+
 def _reagent_assignments(
     peaks_df: pd.DataFrame,
     resolved_profile: ResolvedProfile,
     sample_item_id: str,
     peak_assignment_run_id: str,
+    *,
+    resolution: Callable[[float], float] | None,
 ) -> tuple[list[dict], set[str], ReagentOffset | None]:
     """The reagent pre-pass: the peaks the source made, claimed before the stages.
 
@@ -2428,16 +2625,16 @@ def _reagent_assignments(
         source's reagent and (for a labelled one) its isotopic purity.
     :param sample_item_id: The sample these rows belong to.
     :param peak_assignment_run_id: The run they are stamped with.
+    :param resolution: The file's resolving power as a function of m/z, at
+        which an ion's isotope line is one peak of the file; None where it has
+        none.
     :return: The reagent rows, the peaks they take out of both stages, and where
         the claimed lines put the mass axis, which Stage A scores at where the
         target library fits no offset (:func:`reagent_line_offset`); None for a
         profile with no reagent library.
     """
-    hits, calibration = claim_reagent_peaks(
-        peaks_df,
-        reagent_library_for(resolved_profile.profile.name),
-        claim_ppm=resolved_profile.mz_precision_ppm,
-        purity=resolved_profile.profile.label_purity,
+    hits, calibration = _claim_reagent_lines(
+        peaks_df, resolved_profile, resolution=resolution
     )
     if calibration is not None and calibration.anchors:
         runtime.logger.info(
@@ -2446,22 +2643,7 @@ def _reagent_assignments(
             "on "
             + ", ".join(f"{label} {error:+.1f}" for label, error in calibration.anchors)
         )
-    # A profile with no reagent library has no pre-pass to ask, which the run
-    # records differently from a pass that claimed nothing. The offset is read
-    # off the reagent's own ladder and the calibrant beam; the air's ions sit
-    # where the axis bends (``REAGENT_LINE_FAMILIES``).
-    offset = (
-        None
-        if calibration is None
-        else reagent_line_offset(
-            (
-                hit.mz_error_ppm
-                for hit in hits
-                if hit.cluster.family in REAGENT_LINE_FAMILIES
-            ),
-            resolved_profile.fallback_sigma_ppm,
-        )
-    )
+    offset = _claimed_lines_offset(hits, calibration, resolved_profile)
     if offset is not None and offset.mu_ppm is not None:
         runtime.logger.info(
             f"Reagent pre-pass lines put the mass axis at {offset.mu_ppm:+.2f} ppm "
@@ -2507,10 +2689,37 @@ def _artifact_assignments(
     return rows, {row["sample_peak_id"] for row in rows}
 
 
+def _run_scoring_centre(mass_accuracy: SampleMassAccuracy) -> ReagentOffset | None:
+    """The offset a run scored Stage A and its search at, as the seeded chain
+    takes one.
+
+    The seeded re-score of the search's commits is a frame too short to fit an
+    offset, which ``score_ions_by_fit`` centres on the offset it is handed
+    where that is beyond the width. In a run that has to be where Stage A and
+    the search were scored (:attr:`SampleMassAccuracy.scoring_mu_ppm`): the
+    target library's own fit where it made one, which need not be where the
+    reagent lines sit, and the lines' only otherwise. Handed the lines' offset
+    alone, a library fitted at +0.2 ppm with lines at -1.3 would rank a reading
+    at +0.2 and tier it at -1.3.
+
+    :param mass_accuracy: What Stage A measured, with the run's reagent offset.
+    :return: That centre, marked beyond the width so it is taken as it is; None
+        where the run scored the sample uncorrected.
+    """
+    mu_ppm = mass_accuracy.scoring_mu_ppm
+    if mu_ppm is None:
+        return None
+    if mass_accuracy.mu_ppm is None:
+        return mass_accuracy.reagent
+    return ReagentOffset(mu_ppm=mu_ppm, lines=mass_accuracy.anchors, beyond_width=True)
+
+
 async def _seeded_fits(
     sample,
     match_params,
     seeds: set[tuple[str, str]],
+    *,
+    reagent_offset: ReagentOffset | None,
 ) -> dict[tuple[str, str], float | None]:
     """Measure the untargeted stage's readings the way Stage A measures one.
 
@@ -2528,13 +2737,17 @@ async def _seeded_fits(
     :param sample: The sample being assigned.
     :param match_params: The sample's resolved match parameters.
     :param seeds: ``(formula, mechanism id)`` pairs, from ``untargeted_seeds``.
+    :param reagent_offset: The centre a seed list too short to fit an offset of
+        its own is scored at, where it is beyond the width: in a run, the one
+        Stage A and the search were scored at (:func:`_run_scoring_centre`);
+        in a batch search, which runs no Stage A, the reagent lines' own.
     :return: Fit per seed; a seed whose ion the pass could not score is absent,
         and its rows fall back to the finder's own number.
     """
     if not seeds:
         return {}
     ion_by_seed, fit_by_ion, _errors, _scored = await score_seeds(
-        sample, seeds, match_params
+        sample, seeds, match_params, reagent_offset=reagent_offset
     )
     fits = {
         seed: fit_by_ion.get(ion_id)
@@ -2811,13 +3024,22 @@ async def _run_sample_assignment(
             mechanisms, secondary_mechanisms, resolved_profile
         )
 
+        # The file's resolving power, read once: what one peak of the file holds
+        # for every pass that predicts an isotope line - the reagent pre-pass,
+        # the envelope match, the mass gate and the tiering pass.
+        resolution = await _resolution_of(sample)
+
         # -- The reagent pre-pass, ahead of both stages: the source's own
         # cluster ions are the brightest peaks in the spectrum and none of them
         # is sample chemistry, so they are claimed here and taken out of what
         # either stage may assign. Ordering is the whole mechanism - nothing
         # downstream is ever offered the peak, so nothing can overwrite it.
         reagent_assignments, reagent_peak_ids, reagent_offset = _reagent_assignments(
-            peaks_df, resolved_profile, sample_item_id, run.peak_assignment_run_id
+            peaks_df,
+            resolved_profile,
+            sample_item_id,
+            run.peak_assignment_run_id,
+            resolution=resolution,
         )
         if reagent_assignments:
             runtime.logger.info(
@@ -2887,7 +3109,10 @@ async def _run_sample_assignment(
         # that branch ran: a run of Stage A alone still has committed rows whose
         # peaks a neighbour's envelope may already predict.
         scoring = pattern_scoring_for(
-            match_params, mass_accuracy, resolved_profile.fallback_sigma_ppm
+            match_params,
+            mass_accuracy,
+            resolved_profile.fallback_sigma_ppm,
+            resolution,
         )
         if config.run_untargeted:
             eligible_df = peaks_df[
@@ -3031,6 +3256,7 @@ async def _run_sample_assignment(
                         mechanism_id_by_notation,
                         to_custom_element_format,
                     ),
+                    reagent_offset=_run_scoring_centre(mass_accuracy),
                 )
                 stage_b_assignments = untargeted_matches_to_peak_assignments(
                     election.matches,
@@ -3092,7 +3318,8 @@ async def _run_sample_assignment(
         # - the run's own mass calibration and the gate on it, since the
         #   corroboration it reads is a property of the whole ledger - which
         #   reading kept an isotopologue, and which peak a curated identity
-        #   claimed;
+        #   claimed - with the source's own lines the reagent pre-pass claimed
+        #   among its anchors;
         # - what the sample's other channels say about each committed neutral,
         #   and which readings of one ion nothing measured tells apart;
         # - why every committed row holds the tier it holds, which reads what
@@ -3101,7 +3328,7 @@ async def _run_sample_assignment(
         # and never which tier a row ends on. A line one of them finds on an
         # assigned neighbour's envelope is read as that neighbour's, and then
         # all three run again over the ledger that leaves (`judge_commits`).
-        lines = SpectrumLines.from_peaks(peaks_df, await _resolution_of(sample))
+        lines = SpectrumLines.from_peaks(peaks_df, resolution)
         judged = judge_commits(
             fragments.rows,
             stage_a_accuracy=mass_accuracy,
@@ -3114,6 +3341,8 @@ async def _run_sample_assignment(
             tier_bands=config.tier_bands(),
             minor_channels=resolved_profile.minor_channels,
             partner_gated_channels=resolved_profile.partner_gated_channels,
+            reagent_lines=reagent_assignments,
+            resolution=resolution,
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel
@@ -3131,7 +3360,9 @@ async def _run_sample_assignment(
                 f"Sample '{sample.sample_item_name}' calibrates at "
                 f"{mass_calibration['mu_ppm']:+.3f} ppm, width "
                 f"{mass_calibration['sigma_ppm']:.3f} ppm over "
-                f"{mass_calibration['anchors']} corroborated commits, judged at "
+                f"{mass_calibration['anchors']} anchors "
+                f"({mass_calibration['reagent_anchors']} of them the source's own "
+                "lines), judged at "
                 f"{centre}; "
                 f"{mass_calibration['capped']} of "
                 f"{mass_calibration['committed'] - mass_calibration['corroborated']} "
@@ -3141,8 +3372,9 @@ async def _run_sample_assignment(
             runtime.logger.info(
                 f"Sample '{sample.sample_item_name}' corroborated "
                 f"{mass_calibration['corroborated']} of "
-                f"{mass_calibration['committed']} commits, too few to measure a "
-                "mass calibration; no row is gated on one"
+                f"{mass_calibration['committed']} commits and had "
+                f"{mass_calibration['reagent_anchors']} of the source's own lines, "
+                "too few to measure a mass calibration; no row is gated on one"
             )
         followed = mass_calibration["isotopologues"]
         runtime.logger.info(
@@ -3473,8 +3705,11 @@ async def _fold_sample_peaks_without_run(
         instrument_type=instrument_type,
         polarity=sample.polarity,
     )
+    # Read once, for the two passes here that predict an isotope line: the
+    # reagent pre-pass and the mass gate, as a run reads them.
+    resolution = await _resolution_of(sample)
     reagent, reagent_peak_ids, reagent_offset = _reagent_assignments(
-        peaks_df, resolved_profile, sample_item_id, run_id
+        peaks_df, resolved_profile, sample_item_id, run_id, resolution=resolution
     )
     artifact, artifact_peak_ids = _artifact_assignments(
         peaks_df, instrument_type, sample_item_id, run_id, reagent_peak_ids
@@ -3525,12 +3760,14 @@ async def _fold_sample_peaks_without_run(
     # The run's gate over this path's commits, so that a reference mirror's
     # row off calibration is capped here as a run would cap it, and an
     # isotopologue that does not track its parent is held as a run holds it.
+    # The source's lines anchor its calibration as they anchor a run's.
     # Nothing records the summary: there is no run to put it on.
     apply_mass_gate(
         stage_a,
         stage_a_accuracy=mass_accuracy,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
-        lines=SpectrumLines.from_peaks(peaks_df, await _resolution_of(sample)),
+        lines=SpectrumLines.from_peaks(peaks_df, resolution),
+        reagent_lines=reagent,
     )
     # ...and the run's same-ion check, through the channels a run would read,
     # so a reference-list row whose ion reads as well another way is not held

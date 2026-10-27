@@ -20,6 +20,7 @@ from mascope_file.name import (
     get_instrument_name,
     parse_path_from_item_filename,
 )
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.instrument_func.fit import InsufficientPeaksError
 from mascope_signal.peak import compute_peaks, write_empty_peak_timeseries
 
@@ -29,7 +30,12 @@ from .api import (
     create_sample_file_db_record,
     delete_sample_file_by_filename,
 )
-from .errors import describe_exception, is_routine_file_failure
+from .errors import (
+    UNREGISTERED_FILE_MESSAGE,
+    UnregisteredFileError,
+    describe_exception,
+    is_routine_file_failure,
+)
 from .peak_guard import PeakDetectionGuard
 from .runtime import runtime
 from .schema import SampleFileProps
@@ -57,6 +63,21 @@ def composites_scan_streams() -> bool:
     """
     backend = runtime.full_config.backend
     return bool(backend is not None and backend.composite_scan_streams)
+
+
+def computes_axis_fingerprints() -> bool:
+    """Whether this deployment computes a raw Orbitrap file's axis
+    fingerprint as it converts the file.
+
+    ``axis_fingerprint`` in the runtime ``[backend]`` config
+    (``mascope_runtime.config.BackendConfig``), ``"ingest"`` by default. A
+    config with no ``[backend]`` section computes it, as the default says.
+
+    :return: False only when the deployment sets it ``"off"``.
+    :rtype: bool
+    """
+    backend = runtime.full_config.backend
+    return backend is None or backend.axis_fingerprint != "off"
 
 
 def with_file_context(prop_getter) -> callable:
@@ -520,8 +541,49 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         self.active.clear()
         self.cancel_event.clear()
 
+    #: A file last written this recently (seconds) whose upload context has
+    #: not arrived yet may be one whose ``file-converter.auth`` event is still
+    #: crossing Redis: the upload awaits only that event's publish, and a busy
+    #: worker stretches its delivery to seconds, while the watcher queues a
+    #: file one to two seconds after it appears. An older one is a leftover.
+    CONTEXT_GRACE_MAX_FILE_AGE = 60.0
+    #: How long (seconds) to wait for such a late context before failing.
+    CONTEXT_GRACE_WAIT = 10.0
+    #: How often (seconds) to look for it meanwhile.
+    CONTEXT_GRACE_POLL = 0.25
+
+    def _await_file_context(self):
+        """Get the current file's context, waiting briefly when it may be late.
+
+        A file last written within ``CONTEXT_GRACE_MAX_FILE_AGE`` gets up to
+        ``CONTEXT_GRACE_WAIT`` for its context to arrive. One left over from
+        before a restart, which is older, fails at once, so a backlog adds no
+        delay.
+
+        :raises UnregisteredFileError: When no context arrives.
+        """
+        context_manager = self.socket_client.context_manager
+        base_filename = os.path.basename(self.file_to_process)
+        if context_manager.get_context(base_filename) is None:
+            try:
+                age = time.time() - os.stat(self.file_to_process).st_mtime
+            except OSError:
+                age = None
+            if age is not None and age < self.CONTEXT_GRACE_MAX_FILE_AGE:
+                deadline = time.monotonic() + self.CONTEXT_GRACE_WAIT
+                while (
+                    context_manager.get_context(base_filename) is None
+                    and time.monotonic() < deadline
+                    and not self.shutdown_event.wait(self.CONTEXT_GRACE_POLL)
+                ):
+                    pass
+        return self._get_file_context()
+
     def _get_file_context(self):
-        """Get file context for the current file being processed."""
+        """Get file context for the current file being processed.
+
+        :raises UnregisteredFileError: When no upload registered one.
+        """
         base_filename = os.path.basename(self.file_to_process)
 
         if not (
@@ -529,9 +591,7 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                 base_filename
             )
         ):
-            raise RuntimeError(
-                f"File {base_filename} not registered in file converter service"
-            )
+            raise UnregisteredFileError(UNREGISTERED_FILE_MESSAGE)
         return file_context
 
     def _wall_time_offset(self, local_dt: dt, zone: ZoneInfo | None) -> int:
@@ -618,6 +678,27 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         """
         zone = self._context_timezone()
         return zone.key if zone is not None else None
+
+    @property
+    def ms2_store(self) -> dict:
+        """The file's MS2 store, which is not written yet when the properties
+        are read: ``{}``, filled in by :meth:`_store_ms2` once the file is in
+        the filestore."""
+        return {}
+
+    def _store_ms2(self, sample_file_props: SampleFileProps) -> None:
+        """Write the file's MS2 store, if its kind of file has one.
+
+        Called once the file is in the filestore, before whatever path it
+        takes after - a blank, an acquisition with no scans to detect peaks
+        in, an ordinary one - so each of them gets it; a file that fails later
+        loses it with its sample directory. Only a raw Orbitrap file records
+        fragmentation scans (``RawProcessor``): a processor of any other kind
+        writes nothing, as here.
+
+        :param sample_file_props: The file's properties, as written.
+        :type sample_file_props: SampleFileProps
+        """
 
     @property
     def instrument_type(self) -> str:
@@ -720,6 +801,8 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         self._record_created = False
         try:
             self._emit_progress_notification(10)
+
+            self._store_ms2(sample_file_props)
 
             if self._is_blank_measurement:
                 # Routine classification of a measurement, not a fault
@@ -885,6 +968,11 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                     )
                     self.active.set()
 
+                    # Every record of the file is written with its uploader's
+                    # credential: without one nothing can store it, so fail it
+                    # before the file is read and the instruments are fitted
+                    self._await_file_context()
+
                     # Get sample file properties using subclass implementation
                     sample_file_props = self._get_sample_file_props()
 
@@ -924,6 +1012,16 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                         runtime.logger.info(
                             f"Failed to process file {Path(self.file_to_process).name}: {e}"
                         )
+                    elif isinstance(e, UnregisteredFileError):
+                        # One issue for every such file, and no traceback: the
+                        # stack is always this check's, and the file's age is
+                        # what tells a restart from a context that came late
+                        runtime.logger.bind(
+                            **{SENTRY_FINGERPRINT: ["file-converter-unregistered-file"]}
+                        ).error(
+                            f"Failed to process file {Path(self.file_to_process).name} "
+                            f"({describe_file_state(self.file_to_process)}): {e}"
+                        )
                     else:
                         runtime.logger.exception(
                             f"Failed to process file {Path(self.file_to_process).name} "
@@ -933,15 +1031,24 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                     # CRITICAL: Finalize BEFORE error emission to ensure file is closed
                     self._finalize()
 
-                    # Emit clean error message
-                    self.socket_client.emit(
-                        "file_processing_error",
-                        {
-                            "filename": file_basename,
-                            "instrument": instrument,
-                            "error": error_msg,
-                        },
-                    )
+                    if isinstance(e, UnregisteredFileError):
+                        # The uploader cannot be told: the backend takes a
+                        # processing error only with the uploader's credential,
+                        # the very thing missing. The admins are told instead.
+                        self.socket_client.emit(
+                            "upload_lost",
+                            {"filename": file_basename, "instrument": instrument},
+                        )
+                    else:
+                        # Emit clean error message
+                        self.socket_client.emit(
+                            "file_processing_error",
+                            {
+                                "filename": file_basename,
+                                "instrument": instrument,
+                                "error": error_msg,
+                            },
+                        )
 
                     # Clear context after error emission
                     self.socket_client.context_manager.clear_context(file_basename)

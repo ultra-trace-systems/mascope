@@ -323,7 +323,14 @@ Setup:
 1. On the target, create an unprivileged account (`pentest` by default) that is
    **not** in `sudo`, and deploy `security/pentest/` plus its venv into
    `SUITE_DIR`. A release does not update this copy — it is a copy, not a
-   checkout, so sync it and verify by hashing against the tag.
+   checkout, so sync it and verify by hashing against the tag. Sync it to the
+   tag the target runs, not ahead of it: `baseline.json` accepts findings a
+   given release produces, and an acceptance whose control passes fails the
+   run as stale. The `IDENT-02` acceptance, for one, matches only a target
+   that trusts the Docker gateway. On a release from before that trust, or on
+   a target running `MASCOPE_TRUST_DOCKER_GATEWAY=off`, `IDENT-02` passes: a
+   copy synced ahead of the target goes red until the target catches up, and
+   an `off` target's copy needs the entry removed.
 2. Give the monitoring box a dedicated key for that account. Use `restrict` in
    the target's `authorized_keys`, server-side, rather than relying on the
    client's `ForwardAgent no`.
@@ -362,15 +369,13 @@ own deployment and the heartbeat is a third party.
 
 If this box is also the off-site restic target for your Mascope servers (the
 arrangement `tooling/backup-cron.sh` on each server expects), that side needs
-setting up **here** — the server-side docs only describe what gets pushed.
-
-```sh
-sudo adduser --disabled-password --gecos "" mascope-backup
-sudo -u mascope-backup mkdir -p ~mascope-backup/.ssh
-# one line per server: the public half of the key its backup cron uses
-sudo -u mascope-backup tee -a ~mascope-backup/.ssh/authorized_keys < server-keys.pub
-sudo install -d -o mascope-backup -g mascope-backup /mnt/<data-volume>/mascope-backups/<server>
-```
+setting up **here**: give each server an account of its own, SFTP-only and
+chrooted to its own directory, its key usable only from that server's
+address. The recipe, sshd drop-in and checks included, is
+[Using your own backup server](../../docs/maintaining.md#using-your-own-backup-server)
+in the maintainer runbook. Not one shared account with a shell: every server
+would hold a key that can delete every other server's backups and tunnel
+through this box.
 
 Points that are easy to get wrong, each of which has bitten someone:
 
@@ -379,14 +384,17 @@ Points that are easy to get wrong, each of which has bitten someone:
   the monitoring ports would have silently stopped every off-site backup — the
   backups would have failed nightly and the failure is only visible if the
   dead-man's-switch pings (below) are actually wired up.
-- **One repo per server, each with its own password.** A shared repo means one
-  compromised server can read — or delete — every other customer's backups.
+- **One repo per server, each with its own password and its own account.** A
+  shared repo means one compromised server can read — or delete — every other
+  customer's backups; a shared account still lets it delete them.
 - **The repo password is the whole restore.** Repo plus password is sufficient;
   neither alone is worth anything. Keep the passwords in the password manager,
   never on this box.
 - These repos are **not** included in this host's own backup (§5). They are
   large, and they are themselves backups — but it does mean they exist in
-  exactly one place, so decide deliberately whether that is acceptable.
+  exactly one place, so decide deliberately whether that is acceptable. The
+  sshd drop-in and the key directory are configuration, though: name them in
+  `EXTRA_CONFIG_PATHS`, or a rebuilt box refuses every server.
 
 ## 12. Restoring this host
 

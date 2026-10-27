@@ -63,6 +63,9 @@ class InMemoryRedis:
     async def get(self, key: str):
         return self.values.get(key)
 
+    async def exists(self, *keys: str) -> int:
+        return sum(key in self.values or key in self.sets for key in keys)
+
     async def setex(self, key: str, seconds: int, value: str) -> bool:
         self.values[key] = value
         return True

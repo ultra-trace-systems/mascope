@@ -20,10 +20,17 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from mascope_thermo.backend import _common_isolation_width, open_backend
+from mascope_thermo.backend import (
+    _centroids_meta,
+    _common_isolation_width,
+    _isolation_width_counts,
+    centroid_flag_mask,
+    open_backend,
+)
 from mascope_thermo.calibration import calibration_identity
 from mascope_thermo.lib import load_dotnet
 from mascope_thermo.runtime import runtime
+from mascope_thermo.scan_filter import parse_scan_filter
 
 
 def _ensure_dotnet() -> None:
@@ -501,6 +508,75 @@ def get_signal(
     )
 
 
+#: The attribute a sum signal drawn from centroids carries
+#: (:func:`compute_sum_signal`), and its value. A summed profile carries none.
+SPECTRUM_ATTR = "spectrum"
+CENTROID_SPECTRUM = "centroids"
+
+#: How far either side of a centroid its stick in a centroid spectrum drops to
+#: zero, relative to its m/z, where its neighbours leave the room
+#: (:func:`centroid_spectrum`).
+_STICK_HALF_WIDTH = 1e-7
+
+
+def holds_centroids_only(backend, scan_numbers: Iterable[int]) -> bool:
+    """Whether every one of these scans stored its centroids alone.
+
+    A scan's filter says how it was stored: ``p``, the profile and the
+    centroids the instrument found in it, or ``c``, the centroids alone. Such
+    a scan has no profile to average: OpenTFRaw reads it as empty, and the
+    Thermo library as the centroids standing in for one.
+
+    :param backend: An open reader backend.
+    :param scan_numbers: The scans, by their 1-based numbers.
+    :return: True when there is at least one scan and every one is a centroid
+        scan. A scan whose filter states no data type is not one.
+    """
+    scan_numbers = list(scan_numbers)
+    if not scan_numbers:
+        return False
+    filters = {row["scan"]: row["filter"] for row in backend.scan_filters()}
+    # A file holds a handful of distinct filters however many scans it has
+    data_types: dict[str, str | None] = {}
+    for number in scan_numbers:
+        text = filters.get(number) or ""
+        if text not in data_types:
+            data_types[text] = parse_scan_filter(text).data_type
+        if data_types[text] != "c":
+            return False
+    return True
+
+
+def centroid_spectrum(
+    masses: np.ndarray, intensities: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Centroids drawn as a spectrum: each one a stick, at zero either side.
+
+    A stick drops to zero a tenth of a ppm either side of its centroid, or a
+    third of the way to a neighbour that is closer, so the m/z axis is
+    strictly increasing and a line drawn through it returns to zero between
+    any two centroids. Centroids on one m/z are one stick, at their sum.
+
+    :param masses: The centroids' m/z.
+    :param intensities: Their intensities.
+    :return: The spectrum's m/z axis and its values: three points per
+        centroid, in order of m/z.
+    """
+    masses = np.asarray(masses, dtype=np.float64)
+    intensities = np.asarray(intensities, dtype=np.float64)
+    masses, inverse = np.unique(masses, return_inverse=True)
+    intensities = np.bincount(inverse, weights=intensities, minlength=masses.size)
+    gaps = np.diff(masses) / 3
+    reach = masses * _STICK_HALF_WIDTH
+    left = masses - np.minimum(reach, np.concatenate(([np.inf], gaps)))
+    right = masses + np.minimum(reach, np.concatenate((gaps, [np.inf])))
+    zeros = np.zeros(masses.size)
+    return (
+        np.column_stack((left, masses, right)).ravel(),
+        np.column_stack((zeros, intensities, zeros)).ravel(),
+    )
+
+
 def compute_sum_signal(
     datafile_path: str,
     t_min: float | None = None,
@@ -515,6 +591,12 @@ def compute_sum_signal(
     The signal is the measured profile summed over the selected scans: what the
     instrument-function fit reads its peak shapes from, and what the spectrum
     views draw.
+
+    Scans that stored their centroids alone (:func:`holds_centroids_only`)
+    have no profile to sum. Their signal is their centroids, averaged as the
+    peaks are and summed, drawn as sticks (:func:`centroid_spectrum`), and it
+    says so in its :data:`SPECTRUM_ATTR` attribute: the instrument-function
+    fit reads no peak shape off a stick.
 
     :param datafile_path: Path to the Thermo Fisher raw file (.raw) containing the data.
     :type datafile_path: str
@@ -547,14 +629,27 @@ def compute_sum_signal(
             f"Selected {len(indices)} scans for sum signal computation. "
             f"Polarity: {polarity}, binning ppm: {ppm}."
         )
-        # average=False restores the sum signal (averaged * scans combined).
-        mz, sum_signal, num_of_combined_scans = backend.average_profile(
-            indices, ppm=ppm, average=False
-        )
+        attrs = {}
+        if holds_centroids_only(backend, indices):
+            masses, intensities, *_ = backend.average_centroids(
+                indices, ppm=ppm, average=False
+            )
+            mz, sum_signal = centroid_spectrum(masses, intensities)
+            num_of_combined_scans = len(indices)
+            attrs[SPECTRUM_ATTR] = CENTROID_SPECTRUM
+        else:
+            # average=False restores the sum signal (averaged * scans combined).
+            mz, sum_signal, num_of_combined_scans = backend.average_profile(
+                indices, ppm=ppm, average=False
+            )
 
     sum_signal_dask = da.from_array(sum_signal, chunks="auto")
     sum_signal = xr.DataArray(
-        data=sum_signal_dask, dims=["mz"], coords={"mz": mz}, name="sum_signal"
+        data=sum_signal_dask,
+        dims=["mz"],
+        coords={"mz": mz},
+        name="sum_signal",
+        attrs=attrs,
     )
 
     return sum_signal, num_of_combined_scans
@@ -837,6 +932,7 @@ def get_centroids_per_scan(
     polarity: Literal["+", "-"] | None = None,
     scan_type: Literal["Ms", "Ms2"] | None = None,
     stream: str | None = None,
+    exclude: Iterable[str] = (),
 ) -> list[dict[str, np.ndarray]]:
     """Reads centroided peaks from a Thermo Fisher raw file
     within a specified time range and m/z range.
@@ -864,10 +960,16 @@ def get_centroids_per_scan(
                    ``mascope_thermo.streams``), optional, defaults to None
                    (every stream)
     :type stream: str
+    :param exclude: Names of centroid flags (``mascope_thermo.backend.
+                    CENTROID_FLAGS``: ``reference``, ``exception``,
+                    ``merged``, ``fragmented``) whose centroids are left
+                    out, optional, defaults to none (every stored centroid)
+    :type exclude: Iterable[str]
     :return: List of dictionaries, each containing per-scan
-             centroid masses, intensities, resolutions,
-             signal-to-noise ratios, and timestamps.
+             scan number (``scan``), centroid masses, intensities,
+             resolutions, signal-to-noise ratios, flags, and timestamps.
     :rtype: list[dict[str, np.ndarray]]
+    :raises ValueError: If ``exclude`` names something that is not a flag.
     """
     with open_backend(datafile_path) as backend:
         return backend.centroids_per_scan(
@@ -878,6 +980,7 @@ def get_centroids_per_scan(
             mz_min=mz_min,
             mz_max=mz_max,
             stream=stream,
+            exclude=exclude,
         )
 
 
@@ -1077,9 +1180,15 @@ def get_ms2_summary_metadata(
     so one file's groups may differ. The top-level ``isolation_width`` is the
     one width every MS2 scan that stores one shares, and ``None`` when they
     do not. A group's is ``None`` when its own scans store more than one, or
-    none. A file none of whose MS2 scans stores a width has no summary: that
-    stays a :class:`ValueError`, as the width is what a client reads the
-    isolation window off.
+    none. Its ``isolation_widths`` lists every width its scans used, narrowest
+    first, each with the number of scans isolated at it
+    (``[{"isolation_width": 1.0, "scan_count": 12}, ...]``): one entry when
+    they share one, none when no scan of the group stores one. A scan that
+    stores no width is counted in no entry. The group stays one group however
+    many widths its scans used, so its key is the same either way. A file none
+    of whose MS2 scans stores a width has no summary: that stays a
+    :class:`ValueError`, as the width is what a client reads the isolation
+    window off.
 
     :param datafile_path: Path to the Thermo Fisher raw file (.raw).
     :type datafile_path: str
@@ -1108,15 +1217,7 @@ def get_ms2_summary_metadata(
         ms1_count = all_count - ms2_count
 
         if ms2_count == 0:
-            return {
-                "parent_peaks": [],
-                "groups": [],
-                "hcd_energy_map": {},
-                "isolation_width": None,
-                "ms1_scan_count": ms1_count,
-                "ms2_scan_count": 0,
-                "parent_peak_tolerance": parent_peak_tolerance,
-            }
+            return ms2_summary([], [], ms1_count, 0, parent_peak_tolerance)
 
         # Get MS2 scans grouped by (parent peak, activation)
         events = backend.ms2_events_by_scan(polarity, t_min, t_max)
@@ -1125,8 +1226,8 @@ def get_ms2_summary_metadata(
         # Isolation width + (calibrated) HCD energy per MS2 scan. Thermo reads
         # these from the trailer ("MS2 Isolation Width:" / "HCD Energy V:");
         # backends that lack the calibrated HCD energy raise NotImplementedError.
-        isolation_width, scan_idx_to_width, scan_idx_to_hcd = (
-            backend.ms2_acquisition_info(polarity, t_min, t_max)
+        _, scan_idx_to_width, scan_idx_to_hcd = backend.ms2_acquisition_info(
+            polarity, t_min, t_max
         )
 
         # Scan times, so each group can report the span it was acquired over.
@@ -1140,81 +1241,156 @@ def get_ms2_summary_metadata(
             idx: float(t) for idx, t in zip(ms2_indices, ms2_times, strict=True)
         }
 
-        parent_peaks: list[float] = []
         groups: list[dict] = []
         for (pp, activation), scan_indices in parent_peak_mapping.items():
-            if pp not in parent_peaks:
-                parent_peaks.append(pp)
-
-            # Averaged within the group, so the energies reported are ones the
-            # instrument actually used. A value may itself be comma-separated
-            # when the instrument stepped the energy *within* one scan, which
-            # is a different thing from the per-scan stepping the group key
-            # separates - each comma-separated step keeps its own entry. The
+            # A value may itself be comma-separated when the instrument
+            # stepped the energy *within* one scan (ms2_group_summary). The
             # Thermo library writes the value in the invariant culture
             # (load_dotnet), so no comma here is a decimal mark.
             raw_values = [
                 scan_idx_to_hcd[idx] for idx in scan_indices if idx in scan_idx_to_hcd
             ]
-            step_dissociation_values = [
-                [float(v) for v in str(val).split(",") if v.strip()]
-                for val in raw_values
-                if str(val).strip()
-            ]
-            energies: list[float] = []
-            if step_dissociation_values:
-                max_steps = max(len(row) for row in step_dissociation_values)
-                for step_idx in range(max_steps):
-                    step_values = [
-                        row[step_idx]
-                        for row in step_dissociation_values
-                        if step_idx < len(row)
-                    ]
-                    energies.append(round(float(np.mean(step_values)), 2))
-
-            group_times = [
-                scan_idx_to_time[idx] for idx in scan_indices if idx in scan_idx_to_time
-            ]
             groups.append(
-                {
-                    "parent_peak_mz": pp,
-                    "activation": activation,
-                    "hcd_energy": energies,
-                    "isolation_width": _common_isolation_width(
+                ms2_group_summary(
+                    pp,
+                    activation,
+                    len(scan_indices),
+                    widths=[
                         scan_idx_to_width[idx]
                         for idx in scan_indices
                         if idx in scan_idx_to_width
-                    ),
-                    "scan_count": len(scan_indices),
-                    "t_min": min(group_times) if group_times else None,
-                    "t_max": max(group_times) if group_times else None,
-                }
+                    ],
+                    volts=[
+                        [float(v) for v in str(val).split(",") if v.strip()]
+                        for val in raw_values
+                        if str(val).strip()
+                    ],
+                    times=[
+                        scan_idx_to_time[idx]
+                        for idx in scan_indices
+                        if idx in scan_idx_to_time
+                    ],
+                )
             )
 
-        # Derived from `groups` rather than accumulated alongside it, so the
-        # two cannot drift. It is a flattening: a group whose scans carry no
-        # trailer energy contributes nothing, so the i-th entry here is not the
-        # i-th group of that precursor. `groups` is what carries the per-step
-        # breakdown; this stays for callers that only want the energies.
-        hcd_energy_map: dict[float, list[float]] = {
-            pp: [
-                energy
-                for group in groups
-                if group["parent_peak_mz"] == pp
-                for energy in group["hcd_energy"]
-            ]
-            for pp in parent_peaks
-        }
+        return ms2_summary(
+            groups,
+            list(scan_idx_to_width.values()),
+            ms1_count,
+            ms2_count,
+            parent_peak_tolerance,
+        )
 
+
+def ms2_group_summary(
+    parent_peak_mz: float,
+    activation: str,
+    scan_count: int,
+    widths: list[float],
+    volts: list[list[float]],
+    times: list[float],
+) -> dict:
+    """One group's record in the MS2 summary, from what its scans hold.
+
+    The one place a group's record is made, for the raw read
+    (:func:`get_ms2_summary_metadata`) and for the MS2 store
+    (``mascope_signal.ms2_store``) alike, so the two answer one group alike.
+
+    The energies are averaged within the group, so the ones reported are ones
+    the instrument actually used. A scan may hold several, when the instrument
+    stepped the energy *within* the scan, which is a different thing from the
+    per-scan stepping the group key separates: each step keeps its own entry.
+
+    :param parent_peak_mz: The group's parent peak m/z.
+    :param activation: The group's activation, as its scans' filters give it.
+    :param scan_count: How many scans the group holds.
+    :param widths: The isolation width of each of its scans that stores one.
+    :param volts: The HCD energies [V] of each of its scans that stores them,
+        one list per scan, one entry per step within the scan.
+    :param times: The start time [s] of each of its scans.
+    :return: ``parent_peak_mz``, ``activation``, ``hcd_energy``,
+        ``isolation_width``, ``isolation_widths``, ``scan_count``, ``t_min``
+        and ``t_max``.
+    :rtype: dict
+    """
+    energies: list[float] = []
+    if volts:
+        max_steps = max(len(row) for row in volts)
+        for step_idx in range(max_steps):
+            step_values = [row[step_idx] for row in volts if step_idx < len(row)]
+            energies.append(round(float(np.mean(step_values)), 2))
+    return {
+        "parent_peak_mz": parent_peak_mz,
+        "activation": activation,
+        "hcd_energy": energies,
+        "isolation_width": _common_isolation_width(widths),
+        "isolation_widths": _isolation_width_counts(widths),
+        "scan_count": scan_count,
+        "t_min": min(times) if times else None,
+        "t_max": max(times) if times else None,
+    }
+
+
+def ms2_summary(
+    groups: list[dict],
+    widths: list[float],
+    ms1_scan_count: int,
+    ms2_scan_count: int,
+    parent_peak_tolerance: float,
+) -> dict:
+    """The MS2 summary of a selection, from its groups' records.
+
+    Shared by the raw read and the MS2 store, as :func:`ms2_group_summary`.
+
+    :param groups: The groups' records (:func:`ms2_group_summary`), ordered
+        by parent peak, then by acquisition.
+    :param widths: The isolation width of every MS2 scan selected that stores
+        one, grouped or not: the top-level width is the one they all share.
+    :param ms1_scan_count: How many of the scans selected are not MS2 scans.
+    :param ms2_scan_count: How many are.
+    :param parent_peak_tolerance: The tolerance the groups were made at [Da].
+    :return: The summary, as :func:`get_ms2_summary_metadata` describes it.
+    :rtype: dict
+    :raises ValueError: MS2 scans are selected and none stores a width.
+    """
+    if not ms2_scan_count:
         return {
-            "parent_peaks": parent_peaks,
-            "groups": groups,
-            "hcd_energy_map": hcd_energy_map,
-            "isolation_width": isolation_width,
-            "ms1_scan_count": ms1_count,
-            "ms2_scan_count": ms2_count,
+            "parent_peaks": [],
+            "groups": [],
+            "hcd_energy_map": {},
+            "isolation_width": None,
+            "ms1_scan_count": ms1_scan_count,
+            "ms2_scan_count": 0,
             "parent_peak_tolerance": parent_peak_tolerance,
         }
+    if not widths:
+        # As ms2_acquisition_info refuses it, and in its words
+        raise ValueError("No MS2 scan stores an isolation width")
+
+    parent_peaks = list(dict.fromkeys(group["parent_peak_mz"] for group in groups))
+    # Derived from `groups` rather than accumulated alongside it, so the
+    # two cannot drift. It is a flattening: a group whose scans carry no
+    # trailer energy contributes nothing, so the i-th entry here is not the
+    # i-th group of that precursor. `groups` is what carries the per-step
+    # breakdown; this stays for callers that only want the energies.
+    hcd_energy_map: dict[float, list[float]] = {
+        pp: [
+            energy
+            for group in groups
+            if group["parent_peak_mz"] == pp
+            for energy in group["hcd_energy"]
+        ]
+        for pp in parent_peaks
+    }
+    return {
+        "parent_peaks": parent_peaks,
+        "groups": groups,
+        "hcd_energy_map": hcd_energy_map,
+        "isolation_width": _common_isolation_width(widths),
+        "ms1_scan_count": ms1_scan_count,
+        "ms2_scan_count": ms2_scan_count,
+        "parent_peak_tolerance": parent_peak_tolerance,
+    }
 
 
 def get_ms2_centroids_per_scan_for_parent(
@@ -1284,6 +1460,166 @@ def get_ms2_centroids_per_scan_for_parent(
             return [], []
 
         return backend.ms2_centroids_for_scans(sorted(matching_scan_indices))
+
+
+def get_ms2_group_scans(
+    datafile_path: str,
+    parent_peak_mz: float,
+    activation: str,
+    t_min: float | None = None,
+    t_max: float | None = None,
+    polarity: Literal["+", "-"] | None = None,
+    parent_peak_tolerance: float = 0.001,
+) -> tuple[list[dict], list[dict]] | None:
+    """The scan records and per-scan centroids of one MS2 group.
+
+    The group is the (parent peak, activation) group of the selection, as
+    :func:`get_ms2_centroids_by_parent` groups it, whose parent peak is
+    ``parent_peak_mz`` at four decimals.
+
+    :param datafile_path: Path to the Thermo Fisher raw file (.raw).
+    :type datafile_path: str
+    :param parent_peak_mz: The group's parent peak m/z.
+    :type parent_peak_mz: float
+    :param activation: The group's activation, ``""`` for a group whose
+        filter carries none.
+    :type activation: str
+    :param t_min: Minimum time [s], optional.
+    :type t_min: float | None, optional
+    :param t_max: Maximum time [s], optional.
+    :type t_max: float | None, optional
+    :param polarity: Polarity filter ('+' or '-'), optional.
+    :type polarity: Literal['+', '-'] | None, optional
+    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks.
+    :type parent_peak_tolerance: float
+    :return: The group's scan records
+        (:meth:`~mascope_thermo.backend.ReaderBackend.ms2_scan_records`) and
+        their centroids
+        (:meth:`~mascope_thermo.backend.ReaderBackend.ms2_centroids_for_scans`),
+        in scan order, or None when the selection holds no such group.
+    :rtype: tuple[list[dict], list[dict]] | None
+    """
+    with open_backend(datafile_path) as backend:
+        events = backend.ms2_events_by_scan(polarity, t_min, t_max)
+        parent_peak_mapping = _cluster_scans_by_parent(events, parent_peak_tolerance)
+        wanted = round(float(parent_peak_mz), 4)
+        scans = next(
+            (
+                scan_indices
+                for (pp, group_activation), scan_indices in parent_peak_mapping.items()
+                if round(pp, 4) == wanted and group_activation == activation
+            ),
+            None,
+        )
+        if scans is None:
+            return None
+        in_group = set(scans)
+        records = [
+            record
+            for record in backend.ms2_scan_records(polarity, t_min, t_max)
+            if record["scan_number"] in in_group
+        ]
+        centroids, _ = backend.ms2_centroids_for_scans(
+            [record["scan_number"] for record in records]
+        )
+        return records, centroids
+
+
+def get_ms2_store_contents(
+    datafile_path: str,
+    parent_peak_tolerance: float = 0.001,
+    ppm: int = 1,
+) -> dict:
+    """Everything the MS2 store holds of a raw file, read in one opening.
+
+    What ``mascope_signal.ms2_store`` writes, read as the MS2 reads of this
+    module read it, so that what is answered from the store is what they
+    would answer for the same scans. Per polarity of the file:
+
+    - ``scan_numbers`` and ``times``: every scan the reader selects in that
+      polarity, of every MS order, in scan order, with its start time [s];
+    - ``ms2_scan_numbers``: those of them that are MS2 scans;
+    - ``records``: one record per MS2 scan
+      (:meth:`~mascope_thermo.backend.ReaderBackend.ms2_scan_records`);
+    - ``groups``: the scans of each (parent peak, activation) group, as
+      :func:`get_ms2_centroids_by_parent` groups the whole polarity at
+      ``parent_peak_tolerance``;
+    - ``averaged``: each group's averaged centroids, keyed as ``groups``;
+    - ``merged``: the averaged centroids over every scan of each parent peak
+      measured at more than one activation, keyed ``(parent peak m/z, "")``,
+      as ``by_activation=False`` averages it. A parent peak measured at one
+      activation has none here: its one group holds every scan of it, in the
+      same order, so the group's spectrum is that average.
+
+    And ``centroids``: each MS2 scan's centroids
+    (:meth:`~mascope_thermo.backend.ReaderBackend.ms2_centroids_for_scans`),
+    keyed by scan number.
+
+    The averages are at ``ppm`` and with ``average=True``, as the MS2 centroid
+    route asks for them; their S/N floor is none, so a reader applies its own.
+
+    :param datafile_path: Path to the Thermo Fisher raw file (.raw).
+    :type datafile_path: str
+    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks.
+    :type parent_peak_tolerance: float
+    :param ppm: Mass tolerance in ppm for centroid binning, defaults to 1.
+    :type ppm: int, optional
+    :return: ``{"polarities": {polarity: {...}}, "centroids": {...}}``; a
+        polarity with no scan is left out.
+    :rtype: dict
+    """
+    polarities: dict[str, dict] = {}
+    with open_backend(datafile_path) as backend:
+        for polarity in ("+", "-"):
+            try:
+                scan_numbers = backend.scan_indices(polarity, ms_type=None)
+            except NoScansFoundError:
+                continue
+            times = backend.scan_times(polarity, ms_type=None)
+            try:
+                ms2_scan_numbers = backend.scan_indices(polarity, ms_type="Ms2")
+            except NoScansFoundError:
+                ms2_scan_numbers = []
+            records = (
+                backend.ms2_scan_records(polarity) if len(ms2_scan_numbers) else []
+            )
+            groups = _cluster_scans_by_parent(
+                backend.ms2_events_by_scan(polarity) if len(ms2_scan_numbers) else {},
+                parent_peak_tolerance,
+            )
+            averaged = {
+                key: backend.average_centroids(scan_indices, ppm=ppm, average=True)
+                for key, scan_indices in groups.items()
+            }
+            activations = {}
+            for parent_peak_mz, _activation in groups:
+                activations[parent_peak_mz] = activations.get(parent_peak_mz, 0) + 1
+            merged = {
+                key: backend.average_centroids(scan_indices, ppm=ppm, average=True)
+                for key, scan_indices in _merge_activations(groups).items()
+                if activations[key[0]] > 1
+            }
+            polarities[polarity] = {
+                "scan_numbers": [int(n) for n in scan_numbers],
+                "times": [float(t) for t in times],
+                "ms2_scan_numbers": [int(n) for n in ms2_scan_numbers],
+                "records": records,
+                "groups": groups,
+                "averaged": averaged,
+                "merged": merged,
+            }
+        every_ms2_scan = sorted(
+            n for contents in polarities.values() for n in contents["ms2_scan_numbers"]
+        )
+        centroids, _ = (
+            backend.ms2_centroids_for_scans(every_ms2_scan)
+            if every_ms2_scan
+            else ([], [])
+        )
+    return {
+        "polarities": polarities,
+        "centroids": dict(zip(every_ms2_scan, centroids, strict=True)),
+    }
 
 
 class RawFileMetadata:
@@ -1490,32 +1826,41 @@ class RawFileMetadataLegacy(RawFileMetadata):
             "time": [...],  # list of scan times [s]
             "data": [
                 {
+                    "scan": ...,  # the scan number
                     "intensities": ...,
                     "mzs": ...,
                     "resolutions": ...,
-                    "noises": ...
+                    "noises": ...,
+                    "flags": ...  # each centroid's CENTROID_FLAGS, summed
                     }
                     ...
                 ],
                 ...
             }
         }
+
+        Every stored centroid is in it, flagged ones included.
         """
         with open_backend(self.datafile_path) as backend:
             return backend.centroids_meta()
 
-    def iter_centroids_meta(self) -> Iterator[tuple[int, float, dict]]:
+    def iter_centroids_meta(
+        self, exclude: Iterable[str] = ()
+    ) -> Iterator[tuple[int, float, dict]]:
         """:attr:`centroids_meta` one scan at a time, in scan order.
 
         ``(scan_number, time_s, data)`` per scan, ``time_s`` and ``data``
         being the scan's entries of ``"time"`` and ``"data"``. A scan is read
         when its turn comes, and the file stays open until the last one has
         been taken or the iterator is closed.
+
+        :param exclude: Names of centroid flags whose centroids are left out
+            (``mascope_thermo.backend.CENTROID_FLAGS``).
         """
         with open_backend(self.datafile_path) as backend:
-            yield from backend.iter_centroids_meta()
+            yield from backend.iter_centroids_meta(exclude)
 
-    def to_dict(self, include_centroids: bool = True):
+    def to_dict(self, include_centroids: bool = True, exclude: Iterable[str] = ()):
         """Convert the metadata to a dictionary.
 
         The dictionary contains the number of scans, statistics per scan, and statistics
@@ -1528,6 +1873,9 @@ class RawFileMetadataLegacy(RawFileMetadata):
             centroid of every scan. It is nearly all of the dictionary, and
             the only part a peak is read for.
         :type include_centroids: bool, optional
+        :param exclude: Names of centroid flags whose centroids are left out
+            of ``centroids_meta`` (``mascope_thermo.backend.CENTROID_FLAGS``).
+        :type exclude: Iterable[str], optional
         """
         # Built from the reader's dicts rather than the DataFrame views: a pandas
         # round trip turns a None into NaN, and an integer in a numeric scan
@@ -1546,10 +1894,14 @@ class RawFileMetadataLegacy(RawFileMetadata):
             "stats_per_file": {"Value": self.instrument_details},
         }
         if include_centroids:
-            document["centroids_meta"] = self.centroids_meta
+            document["centroids_meta"] = (
+                _centroids_meta(self.iter_centroids_meta(exclude))
+                if exclude
+                else self.centroids_meta
+            )
         return _non_finite_as_none(document)
 
-    def iter_json(self) -> Iterator[str]:
+    def iter_json(self, exclude: Iterable[str] = ()) -> Iterator[str]:
         """The dictionary :meth:`to_dict` returns, as JSON text in pieces.
 
         Joined, the pieces are one JSON document that parses to what
@@ -1563,14 +1915,21 @@ class RawFileMetadataLegacy(RawFileMetadata):
         after it is one scan's centroids, read when the piece is asked for. A
         caller that sends each piece on before taking the next holds one
         scan's centroids at a time, where ``to_dict`` holds the file's.
+
+        :param exclude: Names of centroid flags whose centroids are left out
+            (``mascope_thermo.backend.CENTROID_FLAGS``).
+        :raises ValueError: On the first piece, if ``exclude`` names
+            something that is not a flag.
         """
+        exclude = tuple(exclude)
+        centroid_flag_mask(exclude)
         members = ",".join(
             f"{_json(name)}:{_json(value)}"
             for name, value in self.to_dict(include_centroids=False).items()
         )
         yield "{" + members + ',"centroids_meta":{"data":['
         times = []
-        for index, (_, time_s, data) in enumerate(self.iter_centroids_meta()):
+        for index, (_, time_s, data) in enumerate(self.iter_centroids_meta(exclude)):
             times.append(time_s)
             yield ("," if index else "") + _json(data)
         yield '],"time":' + _json(times) + "}}"

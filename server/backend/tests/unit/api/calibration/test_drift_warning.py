@@ -1,5 +1,6 @@
 """Unit tests for the acquisition-drift warning."""
 
+import asyncio
 import time
 from datetime import datetime
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data impor
     AffectedSampleData,
 )
 from mascope_backend.api.models.calibration.config import calibration_config
+from mascope_backend.socket.storage import redis_storage_client
 from mascope_runtime.logging import SENTRY_FINGERPRINT
 
 
@@ -35,21 +37,78 @@ _CTRL = "mascope_backend.api.controllers.calibration.calibration_controller"
 
 
 @pytest.fixture(autouse=True)
-def reset_drift_suppression():
-    """Give every test an empty suppression window to start from."""
+def reset_drift_suppression(monkeypatch):
+    """Give every test an empty suppression window to start from.
+
+    Redis is disconnected, so the shared window cannot answer and each
+    observation falls back to the worker's own: the tests that do not install
+    :class:`_FakeRedis` exercise that fallback. Patches the backing attribute
+    rather than ``client``, a property that raises when nothing is connected,
+    and so never touches a Redis an earlier test may have connected.
+    """
+    monkeypatch.setattr(redis_storage_client, "_client", None)
     calibration_controller._drift_warned_at.clear()
     yield
     calibration_controller._drift_warned_at.clear()
 
 
-def _observe(fit, instrument="ORBI-1", filename=ORBI_FILE):
+class _FakeRedis:
+    """The two commands the shared window uses, on a dict.
+
+    ``broken`` makes every command raise, ``hang`` makes it never answer.
+    """
+
+    def __init__(self, broken: bool = False, hang: bool = False):
+        self.store: dict[str, str] = {}
+        self.set_calls: list[tuple[str, int | None, bool]] = []
+        self.broken = broken
+        self.hang = hang
+
+    async def _fault(self):
+        if self.broken:
+            raise ConnectionError("redis is down")
+        if self.hang:
+            await asyncio.sleep(60)
+
+    async def set(self, key, value, ex=None, nx=False):
+        await self._fault()
+        self.set_calls.append((key, ex, nx))
+        if nx and key in self.store:
+            return None
+        self.store[key] = value
+        return True
+
+    async def delete(self, *keys):
+        await self._fault()
+        removed = sum(1 for key in keys if self.store.pop(key, None) is not None)
+        return removed
+
+
+@pytest.fixture
+def shared_redis(monkeypatch):
+    """Install a :class:`_FakeRedis` as the backend's shared Redis client."""
+
+    def _install(**kwargs):
+        client = _FakeRedis(**kwargs)
+        monkeypatch.setattr(redis_storage_client, "_client", client)
+        return client
+
+    return _install
+
+
+def _new_worker():
+    """Forget this process's own window, as a sibling worker starts without it."""
+    calibration_controller._drift_warned_at.clear()
+
+
+async def _observe(fit, instrument="ORBI-1", filename=ORBI_FILE):
     """Run one drift observation, returning the log records it produced."""
     with captured_logs() as records:
-        warn_on_acquisition_drift(fit, instrument, filename)
+        await warn_on_acquisition_drift(fit, instrument, filename)
     return records
 
 
-def _capture(fit, instrument="ORBI-1", filename=ORBI_FILE):
+async def _capture(fit, instrument="ORBI-1", filename=ORBI_FILE):
     """A *first* observation of this drift: suppression window cleared first.
 
     Tests of threshold and message content each want a fresh episode; the
@@ -57,7 +116,7 @@ def _capture(fit, instrument="ORBI-1", filename=ORBI_FILE):
     :class:`TestDriftWarningSuppression`.
     """
     calibration_controller._drift_warned_at.clear()
-    return _observe(fit, instrument, filename)
+    return await _observe(fit, instrument, filename)
 
 
 def _warnings(records):
@@ -76,8 +135,9 @@ class TestAcquisitionDriftLimitPpm:
 
 
 class TestWarnOnAcquisitionDrift:
-    def test_drift_beyond_threshold_warns(self):
-        records = _capture(
+    @pytest.mark.asyncio
+    async def test_drift_beyond_threshold_warns(self):
+        records = await _capture(
             {"quality": {"pre_fit_mz_error_ppm": -12.53}}, instrument="ORBI-1"
         )
 
@@ -92,25 +152,29 @@ class TestWarnOnAcquisitionDrift:
         assert "ORBI-1_file.raw" in detail[0]["message"]
         assert "-12.53 ppm" in detail[0]["message"]
 
-    def test_warning_text_is_identical_across_magnitudes(self):
+    @pytest.mark.asyncio
+    async def test_warning_text_is_identical_across_magnitudes(self):
         # The magnitude of ongoing drift wanders file-to-file; it stays out of
         # the text so one drift episode reads as one warning, and follows at
         # INFO instead.
-        first = _warnings(_capture({"quality": {"pre_fit_mz_error_ppm": 84.0}}))
-        second = _warnings(_capture({"quality": {"pre_fit_mz_error_ppm": 122.4}}))
+        first = _warnings(await _capture({"quality": {"pre_fit_mz_error_ppm": 84.0}}))
+        second = _warnings(await _capture({"quality": {"pre_fit_mz_error_ppm": 122.4}}))
         assert first[0]["message"] == second[0]["message"]
         assert "pre-calibration error" not in first[0]["message"]
 
-    def test_monitoring_groups_the_warning_per_instrument(self):
+    @pytest.mark.asyncio
+    async def test_monitoring_groups_the_warning_per_instrument(self):
         # Monitoring groups warnings by call site unless the record binds its
         # own fingerprint; drift binds one per instrument and threshold, so
         # each instrument that needs retuning keeps an issue of its own.
-        orbi = _warnings(_capture({"quality": {"pre_fit_mz_error_ppm": 12.0}}))
+        orbi = _warnings(await _capture({"quality": {"pre_fit_mz_error_ppm": 12.0}}))
         other = _warnings(
-            _capture({"quality": {"pre_fit_mz_error_ppm": 12.0}}, instrument="ORBI-2")
+            await _capture(
+                {"quality": {"pre_fit_mz_error_ppm": 12.0}}, instrument="ORBI-2"
+            )
         )
         unknown = _warnings(
-            _capture({"quality": {"pre_fit_mz_error_ppm": 12.0}}, instrument=None)
+            await _capture({"quality": {"pre_fit_mz_error_ppm": 12.0}}, instrument=None)
         )
 
         assert orbi[0]["extra"][SENTRY_FINGERPRINT] == ["acquisition-drift:ORBI-1:10"]
@@ -119,22 +183,30 @@ class TestWarnOnAcquisitionDrift:
             "acquisition-drift:unknown:10"
         ]
 
-    def test_drift_within_threshold_is_silent(self):
-        assert _warnings(_capture({"quality": {"pre_fit_mz_error_ppm": 4.2}})) == []
+    @pytest.mark.asyncio
+    async def test_drift_within_threshold_is_silent(self):
+        assert (
+            _warnings(await _capture({"quality": {"pre_fit_mz_error_ppm": 4.2}})) == []
+        )
 
-    def test_drift_exactly_at_threshold_is_silent(self):
-        assert _warnings(_capture({"quality": {"pre_fit_mz_error_ppm": 10.0}})) == []
+    @pytest.mark.asyncio
+    async def test_drift_exactly_at_threshold_is_silent(self):
+        assert (
+            _warnings(await _capture({"quality": {"pre_fit_mz_error_ppm": 10.0}})) == []
+        )
 
-    def test_tof_drift_within_tof_threshold_is_silent(self):
-        records = _capture(
+    @pytest.mark.asyncio
+    async def test_tof_drift_within_tof_threshold_is_silent(self):
+        records = await _capture(
             {"quality": {"pre_fit_mz_error_ppm": 30.0}},
             instrument="TOF-1",
             filename=TOF_FILE,
         )
         assert _warnings(records) == []
 
-    def test_tof_drift_beyond_tof_threshold_warns(self):
-        records = _capture(
+    @pytest.mark.asyncio
+    async def test_tof_drift_beyond_tof_threshold_warns(self):
+        records = await _capture(
             {"quality": {"pre_fit_mz_error_ppm": 84.0}},
             instrument="TOF-1",
             filename=TOF_FILE,
@@ -143,10 +215,11 @@ class TestWarnOnAcquisitionDrift:
         assert len(warnings) == 1
         assert "beyond 50 ppm" in warnings[0]["message"]
 
-    def test_missing_quality_is_silent(self):
-        assert _warnings(_capture({"mode": "one-point"})) == []
-        assert _warnings(_capture(None)) == []
-        assert _warnings(_capture({"quality": {}})) == []
+    @pytest.mark.asyncio
+    async def test_missing_quality_is_silent(self):
+        assert _warnings(await _capture({"mode": "one-point"})) == []
+        assert _warnings(await _capture(None)) == []
+        assert _warnings(await _capture({"quality": {}})) == []
 
 
 class TestAcquisitionDriftPpm:
@@ -405,42 +478,46 @@ class TestTheIncomingFitCannotSetItsOwnMarker:
 
 
 class TestClearDriftSuppression:
-    def test_every_threshold_for_the_instrument_is_forgotten(self):
+    @pytest.mark.asyncio
+    async def test_every_threshold_for_the_instrument_is_forgotten(self):
         # The stale entry may have been recorded under either class limit, and
         # the next observation need not use the same one.
         calibration_controller._drift_warned_at.update(
             {("ORBI-1", 10.0): 1000.0, ("ORBI-1", 50.0): 1000.0}
         )
-        clear_drift_suppression("ORBI-1")
+        await clear_drift_suppression("ORBI-1")
 
         assert calibration_controller._drift_warned_at == {}
 
-    def test_other_instruments_are_left_alone(self):
+    @pytest.mark.asyncio
+    async def test_other_instruments_are_left_alone(self):
         calibration_controller._drift_warned_at.update(
             {("ORBI-1", 10.0): 1000.0, ("ORBI-2", 10.0): 1000.0}
         )
-        clear_drift_suppression("ORBI-1")
+        await clear_drift_suppression("ORBI-1")
 
         assert list(calibration_controller._drift_warned_at) == [("ORBI-2", 10.0)]
 
-    def test_a_missing_instrument_name_is_a_no_op(self):
+    @pytest.mark.asyncio
+    async def test_a_missing_instrument_name_is_a_no_op(self):
         # Unattributable warnings are never recorded as a window, so there is
         # nothing keyed under an empty name to clear - and clearing "all
         # unnamed" would be indiscriminate.
         calibration_controller._drift_warned_at.update({("ORBI-1", 10.0): 1000.0})
-        clear_drift_suppression(None)
-        clear_drift_suppression("")
+        await clear_drift_suppression(None)
+        await clear_drift_suppression("")
 
         assert list(calibration_controller._drift_warned_at) == [("ORBI-1", 10.0)]
 
-    def test_the_instrument_warns_again_afterwards(self):
+    @pytest.mark.asyncio
+    async def test_the_instrument_warns_again_afterwards(self):
         drifting = {"quality": {"pre_fit_mz_error_ppm": -12.53}}
-        assert len(_warnings(_observe(drifting))) == 1
-        assert _warnings(_observe(drifting)) == []
+        assert len(_warnings(await _observe(drifting))) == 1
+        assert _warnings(await _observe(drifting)) == []
 
-        clear_drift_suppression("ORBI-1")
+        await clear_drift_suppression("ORBI-1")
 
-        assert len(_warnings(_observe(drifting))) == 1
+        assert len(_warnings(await _observe(drifting))) == 1
 
 
 def _sample_file(previous: dict | None) -> SimpleNamespace:
@@ -667,52 +744,58 @@ class TestDriftWarningSuppression:
 
     DRIFTING = {"quality": {"pre_fit_mz_error_ppm": -12.53}}
 
-    def test_first_observation_warns(self):
-        assert len(_warnings(_observe(self.DRIFTING))) == 1
+    @pytest.mark.asyncio
+    async def test_first_observation_warns(self):
+        assert len(_warnings(await _observe(self.DRIFTING))) == 1
 
-    def test_repeat_within_the_window_is_suppressed(self):
-        _observe(self.DRIFTING)
-        assert _warnings(_observe(self.DRIFTING)) == []
+    @pytest.mark.asyncio
+    async def test_repeat_within_the_window_is_suppressed(self):
+        await _observe(self.DRIFTING)
+        assert _warnings(await _observe(self.DRIFTING)) == []
 
-    def test_the_per_file_detail_survives_suppression(self):
+    @pytest.mark.asyncio
+    async def test_the_per_file_detail_survives_suppression(self):
         # Suppression is about the monitoring event; the drill-down still
         # needs a line for every affected file, magnitude included.
-        _observe(self.DRIFTING)
-        records = _observe({"quality": {"pre_fit_mz_error_ppm": -14.1}})
+        await _observe(self.DRIFTING)
+        records = await _observe({"quality": {"pre_fit_mz_error_ppm": -14.1}})
         detail = [r for r in records if "drift detail" in r["message"]]
         assert len(detail) == 1
         assert detail[0]["level"].name == "INFO"
         assert "-14.10 ppm" in detail[0]["message"]
 
-    def test_another_instrument_is_not_suppressed(self):
+    @pytest.mark.asyncio
+    async def test_another_instrument_is_not_suppressed(self):
         # The window is keyed per instrument - one drifting instrument must
         # not mask another.
-        _observe(self.DRIFTING, instrument="ORBI-1")
-        warnings = _warnings(_observe(self.DRIFTING, instrument="ORBI-2"))
+        await _observe(self.DRIFTING, instrument="ORBI-1")
+        warnings = _warnings(await _observe(self.DRIFTING, instrument="ORBI-2"))
         assert len(warnings) == 1
         assert "ORBI-2" in warnings[0]["message"]
 
-    def test_an_unnamed_instrument_is_never_suppressed(self):
+    @pytest.mark.asyncio
+    async def test_an_unnamed_instrument_is_never_suppressed(self):
         # With no name to key on, every such warning would share one entry,
         # so the first unnamed instrument to drift would hide every other one
         # for a day. Repeats are the lesser harm: monitoring groups them into
         # a single issue anyway, since the message text is identical.
-        _observe(self.DRIFTING, instrument=None)
-        assert len(_warnings(_observe(self.DRIFTING, instrument=None))) == 1
+        await _observe(self.DRIFTING, instrument=None)
+        assert len(_warnings(await _observe(self.DRIFTING, instrument=None))) == 1
 
-    def test_warning_returns_after_the_window_elapses(self):
+    @pytest.mark.asyncio
+    async def test_warning_returns_after_the_window_elapses(self):
         # Still drifting a day later is worth saying again - the reminder is
         # what keeps a needed retune from being forgotten. Backdate the
         # recorded entry rather than patching the clock: `time.monotonic` is
         # an attribute of the stdlib module, so patching it there freezes it
         # for every other thread in the interpreter too.
-        assert len(_warnings(_observe(self.DRIFTING))) == 1
-        assert _warnings(_observe(self.DRIFTING)) == []
+        assert len(_warnings(await _observe(self.DRIFTING))) == 1
+        assert _warnings(await _observe(self.DRIFTING)) == []
 
         window = calibration_config.ACQUISITION_DRIFT_WARNING_INTERVAL_S
         for key in list(calibration_controller._drift_warned_at):
             calibration_controller._drift_warned_at[key] -= window
-        assert len(_warnings(_observe(self.DRIFTING))) == 1
+        assert len(_warnings(await _observe(self.DRIFTING))) == 1
 
     def test_the_window_is_a_day(self):
         # A shorter window reintroduces the flood; a longer one lets a
@@ -748,3 +831,162 @@ class TestDriftWarningDue:
         # Orbi-class limit never share a window.
         _drift_warning_due(self.KEY, 1000.0)
         assert _drift_warning_due(("ORBI-1", 50.0), 1000.0)
+
+
+class TestSharedDriftWindow:
+    """The backend runs one worker per two CPU cores, and a window kept per
+    worker let each of them warn once a day: one production instrument still
+    raised the warning about 40 times a day. The window lives in Redis, so of
+    all the workers only one warns per instrument and day.
+    """
+
+    DRIFTING = {"quality": {"pre_fit_mz_error_ppm": -12.53}}
+    KEY = "mascope:calibration:drift-warning:10:ORBI-1"
+
+    @pytest.mark.asyncio
+    async def test_a_sibling_worker_does_not_warn_again(self, shared_redis):
+        shared_redis()
+        assert len(_warnings(await _observe(self.DRIFTING))) == 1
+
+        _new_worker()
+
+        assert _warnings(await _observe(self.DRIFTING)) == []
+
+    @pytest.mark.asyncio
+    async def test_the_window_is_claimed_once_for_a_day(self, shared_redis):
+        redis = shared_redis()
+        await _observe(self.DRIFTING)
+
+        assert redis.set_calls == [(self.KEY, 24 * 60 * 60, True)]
+        assert self.KEY in redis.store
+
+    @pytest.mark.asyncio
+    async def test_the_shared_window_is_keyed_per_instrument_and_threshold(
+        self, shared_redis
+    ):
+        redis = shared_redis()
+        await _observe(self.DRIFTING, instrument="ORBI-1")
+        warnings = _warnings(await _observe(self.DRIFTING, instrument="ORBI-2"))
+        tof = _warnings(
+            await _observe(
+                {"quality": {"pre_fit_mz_error_ppm": 84.0}},
+                instrument="ORBI-1",
+                filename=TOF_FILE,
+            )
+        )
+
+        assert len(warnings) == 1
+        assert len(tof) == 1
+        assert set(redis.store) == {
+            self.KEY,
+            "mascope:calibration:drift-warning:10:ORBI-2",
+            "mascope:calibration:drift-warning:50:ORBI-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_window_expiring_lets_the_warning_return(self, shared_redis):
+        redis = shared_redis()
+        await _observe(self.DRIFTING)
+        redis.store.clear()  # Redis expired the key a day later.
+
+        assert len(_warnings(await _observe(self.DRIFTING))) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unnamed_instrument_does_not_ask_redis(self, shared_redis):
+        redis = shared_redis()
+        await _observe(self.DRIFTING, instrument=None)
+
+        assert len(_warnings(await _observe(self.DRIFTING, instrument=None))) == 1
+        assert redis.set_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_failing_redis_falls_back_to_the_worker_window(self, shared_redis):
+        # The warning still goes out, and still once per worker rather than
+        # once per file.
+        shared_redis(broken=True)
+
+        assert len(_warnings(await _observe(self.DRIFTING))) == 1
+        assert _warnings(await _observe(self.DRIFTING)) == []
+
+    @pytest.mark.asyncio
+    async def test_a_hung_redis_does_not_stall_the_calibration(
+        self, shared_redis, monkeypatch
+    ):
+        shared_redis(hang=True)
+        monkeypatch.setattr(
+            calibration_controller, "DRIFT_WARNING_REDIS_TIMEOUT_S", 0.05
+        )
+
+        started = time.monotonic()
+        records = await _observe(self.DRIFTING)
+
+        assert time.monotonic() - started < 5
+        assert len(_warnings(records)) == 1
+
+    @pytest.mark.asyncio
+    async def test_clearing_retires_the_shared_window_for_every_worker(
+        self, shared_redis
+    ):
+        redis = shared_redis()
+        redis.store["mascope:calibration:drift-warning:50:ORBI-1"] = "1"
+        redis.store["mascope:calibration:drift-warning:10:ORBI-2"] = "1"
+        await _observe(self.DRIFTING)
+
+        await clear_drift_suppression("ORBI-1")
+        _new_worker()
+
+        assert set(redis.store) == {"mascope:calibration:drift-warning:10:ORBI-2"}
+        assert len(_warnings(await _observe(self.DRIFTING))) == 1
+
+    @pytest.mark.asyncio
+    async def test_clearing_with_redis_down_still_clears_this_worker(
+        self, shared_redis
+    ):
+        shared_redis(broken=True)
+        await _observe(self.DRIFTING)
+
+        await clear_drift_suppression("ORBI-1")
+
+        assert calibration_controller._drift_warned_at == {}
+
+    @pytest.mark.asyncio
+    async def test_clearing_with_a_hung_redis_does_not_stall(
+        self, shared_redis, monkeypatch
+    ):
+        shared_redis(hang=True)
+        monkeypatch.setattr(
+            calibration_controller, "DRIFT_WARNING_REDIS_TIMEOUT_S", 0.05
+        )
+        calibration_controller._drift_warned_at[("ORBI-1", 10.0)] = 1000.0
+
+        started = time.monotonic()
+        await clear_drift_suppression("ORBI-1")
+
+        assert time.monotonic() - started < 5
+        assert calibration_controller._drift_warned_at == {}
+
+    @pytest.mark.asyncio
+    async def test_a_manual_recalibration_retires_the_shared_window(self, shared_redis):
+        # Through the apply path the dialog uses: the clear has to reach
+        # Redis, or a sibling worker keeps a genuine drift quiet for a day.
+        redis = shared_redis()
+        redis.store[self.KEY] = "1"
+
+        await _apply(
+            dict(TestApplyRoutesTheMarkerByPath.CLEAN),
+            TestApplyRoutesTheMarkerByPath.FLAGGED,
+            manual=True,
+        )
+
+        assert self.KEY not in redis.store
+
+    @pytest.mark.asyncio
+    async def test_calibrating_a_sample_consults_the_shared_window(self, shared_redis):
+        redis = shared_redis()
+        redis.store[self.KEY] = "1"  # Another worker warned today.
+
+        records = await _calibrate_sample(
+            {"quality": {"pre_fit_mz_error_ppm": 12.53}}, None, manual=False
+        )
+
+        assert _warnings(records) == []

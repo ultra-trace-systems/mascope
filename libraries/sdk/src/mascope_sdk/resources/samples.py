@@ -1,7 +1,7 @@
 """Samples resource for the Mascope SDK."""
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import pandas as pd
@@ -9,6 +9,7 @@ from loguru import logger
 
 from .._concurrent import failure_record, mark_complete, progress_bar, run_concurrent
 from .._resolve import _match_names, _pattern_text, resolve_id
+from ..exceptions import MascopeAPIError
 from ._base import (
     BaseResource,
     Needs,
@@ -982,24 +983,139 @@ class SamplesResource(BaseResource):
 
         return pd.concat(frames, ignore_index=True)
 
-    def get_centroids(self, sample_ids: Sequence[str]) -> dict | None:
+    def get_centroids(
+        self,
+        sample_ids: Sequence[str],
+        *,
+        exclude: Iterable[str] | None = None,
+    ) -> dict | None:
         """Get centroid data for multiple samples.
 
-        Retrieves per-scan centroid data for the specified samples.
+        Retrieves per-scan centroid data for the specified samples. Per
+        sample, each key holds one entry per scan: ``scan`` (the scan
+        number), ``timestamp`` [s], ``mz_calibration_factor``, and per
+        centroid ``masses``, ``intensities``, ``resolutions``,
+        ``signal_to_noise`` and ``flags``.
+
+        The scans are every scan of the sample's polarity in its window, MS2
+        scans and every scan stream's included. Its peak list is read from
+        the MS1 scans of its own streams alone, which
+        :meth:`get_axis_fingerprint` lists in ``item["scans"]``.
+
+        ``masses`` are on the file's calibrated m/z axis: as the instrument
+        recorded them, times the scan's ``mz_calibration_factor``. In a file
+        calibrated stream by stream that is the factor of the scan's own
+        stream, so a scan sits where its stream's peaks do. A scan of a
+        stream the calibration does not name, an MS2 scan among them, is on
+        the file's factor. The factor is None for a file never calibrated,
+        whose masses are as recorded. A server older than the factor per
+        scan serves no ``mz_calibration_factor``, and puts every scan on the
+        file's factor.
+
+        A centroid's flags are the sum of the instrument's marks on it:
+        2 fragmented (a lobe of a split weak peak), 4 merged, 8 exception (a
+        weak side-lobe peak), 16 reference (the lock-mass peak the scan was
+        corrected with), 0 for an unflagged one. So ``flag & 16`` finds a
+        scan's lock mass. A server older than the flags serves neither
+        ``scan`` nor ``flags``, and ignores ``exclude``: given ``exclude``,
+        an answer without ``flags`` raises rather than hand back the very
+        centroids asked to be left out.
 
         :param sample_ids: List of sample IDs to retrieve centroids for.
         :type sample_ids: list[str]
+        :param exclude: Leave out the centroids carrying any of these flags:
+            ``"reference"``, ``"exception"``, ``"merged"``,
+            ``"fragmented"``. Every stored centroid is returned when this is
+            omitted.
+        :type exclude: Iterable[str], optional
         :return: A dictionary containing centroid data keyed by sample ID.
                  Returns None if no data is found.
         :rtype: dict | None
+        :raises ValidationError: If ``exclude`` names something that is not
+            a flag.
         :raises AuthenticationError: If authentication fails.
-        :raises MascopeAPIError: If the API request fails.
+        :raises MascopeAPIError: If the API request fails, or ``exclude`` was
+            given and the server predates centroid flags.
 
         .. note::
             This method returns a dict rather than DataFrame due to the
             complex nested structure of per-scan centroid data.
         """
-        return self._get("samples/centroids", params={"sample_item_ids": sample_ids})
+        params: dict[str, Any] = {"sample_item_ids": sample_ids}
+        if exclude:
+            names = [exclude] if isinstance(exclude, str) else list(exclude)
+            params["exclude"] = ",".join(names)
+        data = self._get("samples/centroids", params=params)
+        if "exclude" in params and data:
+            # A server older than the flags ignores the parameter it does not
+            # know and serves every centroid; only the missing flags show it.
+            if any("flags" not in entry for entry in data.values()):
+                raise MascopeAPIError(
+                    "The server predates centroid flags and ignored "
+                    f"exclude={params['exclude']}: its answer still holds "
+                    "the centroids asked to be left out. Upgrade the server."
+                )
+        return data
+
+    def get_axis_fingerprint(self, sample_id: str) -> dict:
+        """Get the axis fingerprint of a sample's raw Orbitrap file, with
+        what the sample reads of it.
+
+        The document is the file's, as
+        :meth:`~mascope_sdk.resources.sample_files.SampleFilesResource.get_axis_fingerprint`
+        returns it. Where it describes the file's scans (``status`` ``ok`` or
+        ``no_fingerprint``), it also holds an ``item`` block, and its
+        ``modes`` start with the one the sample's scans belong to, then the
+        other modes of its polarity and stream; ``dominant_mode`` stays the
+        file's. ``item`` holds:
+
+        - ``sample_item_id``, ``sample_file_id``, ``polarity``, and ``t0_s``
+          and ``t1_s``, the sample's window [s];
+        - ``stream_key``, the scan stream it reads, None for every MS1 scan
+          of its polarity;
+        - ``scans``, the scan numbers its peak list is built from;
+        - ``mode_id``, the mode most of those scans belong to;
+        - ``lock``, that mode's ``used_share``, ``used_count``,
+          ``m_lock_eff`` and ``s_lock_eff_ppm`` over the sample's scans;
+        - ``mz_calibration_factor``, the factor of the file's mass
+          calibration for the sample's stream, and
+          ``file_mz_calibration_factor``, the file's own, which a reading
+          of the file as a whole goes by (:meth:`get_centroids` says which
+          factor each scan is on). Both None for a file never calibrated.
+          A stitched sample's
+          ``mz_calibration_factor`` is the file's, while its peaks carry the
+          factor of each stream that owns a run of it, which ``streams``
+          lists;
+        - ``streams``, the scan streams its peak list is read from, each
+          with its ``stream_key``, its ``scans`` and its
+          ``mz_calibration_factor``: the sample's own stream, or each stream
+          that owns some m/z of a stitched sample. None for a sample over
+          every MS1 scan of its polarity, whose peaks carry the file's
+          factor. :meth:`get_peaks` names the stream of each peak of a
+          stitched sample: its ``segment`` is the ``index`` of an entry of
+          ``attrs["segments"]``, whose ``key`` is a ``stream_key`` here.
+
+        :param sample_id: The ID of the sample.
+        :type sample_id: str
+        :return: The fingerprint document of the sample's file.
+        :rtype: dict
+        :raises NotFoundError: If the sample's file is not an Orbitrap file,
+            or the server predates the route.
+        :raises ValidationError: If the document describes the file's scans
+            but the server no longer keeps the raw file they are read from.
+        :raises AuthenticationError: If authentication fails, or the token's
+            user may not read the sample.
+        :raises MascopeAPIError: If the API request fails.
+
+        Example::
+
+            fingerprint = mascope.samples.get_axis_fingerprint("sample-456")
+            item = fingerprint.get("item")
+            if item and item["mode_id"]:
+                print(item["mode_id"], item["lock"]["m_lock_eff"])
+        """
+        logger.debug("Fetching the axis fingerprint of sample {}", sample_id)
+        return self._get(f"samples/{sample_id}/axis_fingerprint")
 
     def update(self, sample_id: str, sample_item: dict[str, Any]) -> dict[str, Any]:
         """Update a sample's fields: its name, type, attributes and the rest.

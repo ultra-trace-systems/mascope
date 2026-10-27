@@ -6,7 +6,7 @@ import { useApp } from '@/stores'
 const app = useApp()
 
 // The batch overview coexists in two modes: the legacy target-ion view and the
-// peak-centric assignment view (batch peaks). See docs/dev/peak_assignment_batch.md.
+// peak-centric assignment view (batch peaks). See docs/dev/peak_assignment_batch_primary.md.
 // This tab carries no switch of its own: the mode is the shared
 // `app.ui.matchMode` the browser shell's switch bar sets (PaneBrowserMatch), so
 // the chart always plots the paradigm the browser is showing - the assignments

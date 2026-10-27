@@ -12,7 +12,7 @@ Seeds a three-sample batch holding, deliberately, all four cases the vote has to
 tell apart: an isotopologue every sample agrees on, an anchor seen as an isotopologue in
 one sample and assigned in its own right in the other two, an isotopologue whose
 owner is unknown, and an unassigned peak that is neither. See
-docs/dev/peak_assignment_batch.md.
+docs/dev/peak_assignment_batch_primary.md (section 12).
 """
 
 from datetime import datetime, timedelta, timezone

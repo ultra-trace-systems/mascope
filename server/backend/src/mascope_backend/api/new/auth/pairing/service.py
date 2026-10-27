@@ -25,6 +25,7 @@ from mascope_backend.api.new.auth.pairing.config import pairing_settings
 from mascope_backend.api.new.auth.pairing.exceptions import (
     PairingCodeAlreadyApprovedException,
     PairingCodeInvalidException,
+    PairingCodeUnavailableException,
 )
 from mascope_backend.capabilities import SERVER_CAPABILITIES
 from mascope_backend.db import AgentDevice, User, async_session
@@ -62,6 +63,7 @@ async def start_pairing(
     machine_name: str | None,
     instrument: str | None = None,
     agent_version: str | None = None,
+    requested_from: str | None = None,
 ) -> dict:
     """Create a pending pairing and return its codes.
 
@@ -74,35 +76,47 @@ async def start_pairing(
     :type instrument: str | None
     :param agent_version: Optional agent release, kept on the device likewise.
     :type agent_version: str | None
+    :param requested_from: Client address the request came from, logged here
+        and again when the pairing is approved, so an audit can tie the
+        credential to where it was asked for.
+    :type requested_from: str | None
     :return: user_code (display form), device_code, expires_in, interval.
     :rtype: dict
+    :raises PairingCodeUnavailableException: No free code after a few draws.
     """
     client = _redis()
-    # Retry on the (unlikely) case of a code collision with a pending pairing.
-    for _ in range(5):
-        user_code = "".join(
-            secrets.choice(pairing_settings.CODE_ALPHABET)
-            for _ in range(pairing_settings.CODE_LENGTH)
-        )
-        if not await client.exists(_code_key(user_code)):
-            break
     device_code = secrets.token_urlsafe(32)
     record = {
         "service_name": service_name,
         "machine_name": machine_name,
         "instrument": instrument,
         "agent_version": agent_version,
+        "requested_from": requested_from,
         "status": "pending",
         "device_code": device_code,
         "access_token": None,
     }
     ttl = pairing_settings.CODE_TTL_SECONDS
-    await client.setex(_code_key(user_code), ttl, json.dumps(record))
+    # Claim a code that no other pairing holds. SET NX makes the check and the
+    # write one step, and running out of draws refuses the start: writing over
+    # a held code would hand that pairing - pending or approved - to this one.
+    for _ in range(5):
+        user_code = "".join(
+            secrets.choice(pairing_settings.CODE_ALPHABET)
+            for _ in range(pairing_settings.CODE_LENGTH)
+        )
+        if await client.set(_code_key(user_code), json.dumps(record), ex=ttl, nx=True):
+            break
+    else:
+        raise PairingCodeUnavailableException()
     await client.setex(_device_key(device_code), ttl, user_code)
+    # Never the codes: the user code is what an approver types, and the device
+    # code is the agent's secret.
     runtime.logger.info(
         f"Pairing started for {service_name}"
         + (f" on '{machine_name}'" if machine_name else "")
         + (f" watching '{instrument}'" if instrument else "")
+        + f" from {requested_from or 'an unknown address'}"
     )
     return {
         "user_code": format_user_code(user_code),
@@ -226,9 +240,14 @@ async def approve_pairing(user: User, user_code: str) -> dict:
     ttl = pairing_settings.PICKUP_TTL_SECONDS
     await client.setex(_code_key(user_code), ttl, json.dumps(record))
     await client.setex(_device_key(record["device_code"]), ttl, user_code)
+    # Who approved what, for which machine, asked for from where - and not the
+    # code, which is only a rendezvous label and identifies nothing afterwards.
+    # A record written before requested_from existed carries none.
     runtime.logger.info(
-        f"Pairing {format_user_code(user_code)} approved by {user.username} "
-        f"for {record['service_name']}"
+        f"Pairing approved by {user.username} (user {user.id}) "
+        f"for {record['service_name']} on '{machine_name}': device {device_id}, "
+        f"machine account {machine_user_id}, requested from "
+        f"{record.get('requested_from') or 'an unknown address'}"
     )
     return {
         "service_name": record["service_name"],

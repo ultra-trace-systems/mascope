@@ -20,6 +20,8 @@ RUN apt update && apt install -y \
     cmake \
     # jemalloc to avoid DLL segfaults
     libjemalloc2 \
+    # pkill, which stops an interrupted `mascope export package` build
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Install PostgreSQL client for the db_init container.

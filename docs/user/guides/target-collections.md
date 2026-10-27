@@ -30,26 +30,76 @@ first — this guide assumes them.
 
 ### Add compounds
 
-You only provide the neutral molecule — a **formula**, plus an optional name
-and CAS number. Mascope generates the target ions (one per configured
-ionization mechanism) and their isotopic patterns automatically; at match time
-it uses the ions that fit each sample's ionization mode.
+You only provide the neutral molecule — a **formula**, plus an optional name.
+Mascope generates the target ions (one per configured ionization mechanism) and
+their isotopic patterns automatically; at match time it uses the ions that fit
+each sample's ionization mode.
 
 Three ways to fill the **Compounds** tab, mix and match freely:
 
 - **Paste from a spreadsheet.** Copy cells and paste them onto the left-hand
   *Collection* panel: one column is read as formulas; two columns as name +
-  formula; three columns as name + formula + CAS number.
+  formula; three columns as name + formula + CAS number. Up to three more
+  columns give the structure, in this order: InChIKey, InChI and SMILES. A
+  paste with a malformed InChIKey or InChI is refused and names the cell.
 - **Import existing.** In the *Add compounds* panel, pick a source — another
   collection, or *All compounds* — search, and tick the compounds you want.
   Compounds are shared reference data, so reusing beats recreating.
 - **Create new.** Switch the toggle to *Create new* and enter a **Formula**
-  (required), **Name**, and **CAS Number**, then click **Create compound**. If
+  (required) and a **Name**. Open the *Structure* group to give the CAS
+  number, InChIKey, InChI and SMILES too. Then click **Create compound**. If
   the compound already exists in Mascope, the button reads **Add compound**
   and reuses it.
 
+A row whose InChIKey differs from that of a compound with the same formula is
+an isomer, another compound: Mascope creates it, and an icon beside its
+*Create* badge names the compound it was told apart from. A row with the stored
+compound's InChIKey is that compound and reuses it, and an icon says it matched.
+A row without an InChIKey matches by formula or CAS number as before, and a CAS
+number match reuses the compound whatever the InChIKey.
+
+A row that reuses a compound already in Mascope keeps that compound's
+structure. A pasted or entered InChIKey, InChI or SMILES is not applied to it,
+and an info icon beside the row's status says so. The structure of a stored
+compound is changed in *Edit compound*: right-click one of the compound's ions
+in the collection's ion table, and open the dialog's *Structure* group. The
+structure says what the target stands for; a match on its formula does not
+confirm it. An InChI has to describe the compound's
+formula: Mascope refuses one that names another formula, since a wrong
+structure is worse than none. Changing a compound's formula makes it another
+substance, so its InChIKey, InChI and SMILES are cleared unless you give them
+again.
+
 Each row in the collection list gets a status badge — *Create*, *Add*, *Keep*,
 or *Remove* — so you always see what saving will change.
+
+#### Find a compound's structure
+
+Rather than paste an identifier, pick the structure from the reference lists
+Mascope holds. A formula is shared by every isomer, so picking from the
+compounds that have it keeps you from pasting the key of another one.
+
+1. In *Edit compound*, open the *Structure* group. It is already open when the
+   compound has a CAS number.
+2. Click **Find structure**. The dialog lists the compounds of the active
+   reference lists that have this formula and a structure. The ones with the
+   compound's CAS number come first, tagged *CAS*, then the ones with its
+   name, tagged *name*. Each row shows its InChIKey, its CAS number where the
+   list records one, the list it comes from and its licence. **Show more**
+   reads further rows.
+3. Click **Use** on a row. Its InChIKey, InChI and SMILES replace the ones in
+   the group; a row without one of them leaves that field empty. Its CAS
+   number replaces the compound's; a row that records none leaves the
+   compound's CAS number as it is.
+4. Click **Save**. The InChI is checked against the formula as when you type
+   it.
+
+When no active reference list has a structure for the formula, the dialog
+says so. The lists Mascope ships name formulas without structures; a source
+an operator loaded, such as CompTox or a
+[custom list](reference-lists.md) with InChIKeys, gives them.
+Pasting stays possible. As with a typed structure, a picked one says what the
+target stands for, not what a peak is.
 
 ### Assign and save
 
@@ -101,8 +151,10 @@ modified, matches may be out of date"*.
   collections the colouring is alarm-style — a confident detection shows
   **red**, not green.
 - Click a collection to open its **ion table**: every target ion with its
-  score, formula, compound, and ionization mechanism. Click an ion's expander
-  (*Visualize ion match*) to open the **Match** tab for it.
+  score, formula, compound, and ionization mechanism. With a sample selected,
+  open an ion's match in the **Match** tab with its expander (*Open match*),
+  with Enter on its row, or with *Open match* in its right-click menu. Clicking
+  a row only selects it, for the Batch tab's chart.
 - **Match tab** — one ion in detail: the matched isotopes with their *m/z* and
   relative abundances, the spectrum around each isotope, and the timeseries of
   matched peaks across the batch. It opens on the ion's monoisotopic isotope —
@@ -120,7 +172,7 @@ modified, matches may be out of date"*.
     [Peak assignment](../how-it-works/peak-assignment.md) is off by default;
     switched on, it adds its views to the Sample tab, but it takes nothing
     away here. The
-    Match tab, the *Visualize ion match* expander, the batch chart's
+    Match tab, the *Open match* action, the batch chart's
     click-through, the match-parameter drawer and *Rate Match* all work the
     same whether assignment is on or off. The two answer different questions:
     Match reads one *target* ion across the batch, the Sample tab reads every

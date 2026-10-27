@@ -459,6 +459,97 @@ class TestTheJudgedLedger:
         }
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("read", [True, False], ids=["read", "none"])
+    async def test_a_neighbour_s_lines_are_read_at_the_files_resolution(self, read):
+        # The resolving power the mass gate reads the lines at is the one the
+        # envelope rule and the claims predict a neighbour's lines at: on a TOF
+        # its M+1 peak holds its 13C, 15N, 2H and 17O lines together.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        mocks["resolution"].return_value = (lambda mz: 5000.0) if read else None
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        tiering = recorder.recorded_configs()[-1]["tiering"]
+        assert tiering["lines_merged_at_resolution"] is read
+
+    @pytest.mark.asyncio
+    async def test_the_source_s_lines_anchor_the_runs_calibration(self):
+        # The urea source's three ladder ions are claimed before either stage
+        # and are no commit, but their masses are the file's best known: the
+        # gate fits beside the run's one corroborated commit over them.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.reagents import reagent_library
+
+        ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("r1", ladder["[CH4N2O+H]+"], 2.0e6),
+                ("r2", ladder["[(CH4N2O)2+H]+"], 3.0e6),
+                ("r3", ladder["[(CH4N2O)3+H]+"], 1.0e5),
+            ]
+        )
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        await _run(PeakAssignmentConfig(profile="UR", run_untargeted=False))
+
+        calibration = recorder.recorded_configs()[-1]["mass_calibration"]
+        # The library's monoisotopic row and the three lines.
+        assert (calibration["anchors"], calibration["reagent_anchors"]) == (4, 3)
+        assert (calibration["committed"], calibration["corroborated"]) == (2, 2)
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        assert {by_peak[peak]["role"] for peak in ("r1", "r2", "r3")} == {"reagent"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("read", [True, False], ids=["read", "none"])
+    async def test_the_source_s_isotope_lines_are_claimed_at_the_files_resolution(
+        self, read
+    ):
+        # On a TOF the urea dimer's peak one mass unit up holds its 13C and 15N
+        # lines, and sits 19 ppm under the 13C line: the pre-pass finds it only
+        # where the run hands it the file's resolving power.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.heuristic_filter import (
+            predict_resolved_isotopes,
+        )
+        from mascope_tools.composition.reagents import reagent_library
+
+        def tof(mz):
+            return 5000.0
+
+        ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+        mzs, _, labels = predict_resolved_isotopes("C2H9N4O2", 1, 1e-3, tof)
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("r1", ladder["[CH4N2O+H]+"], 2.0e6),
+                ("r2", ladder["[(CH4N2O)2+H]+"], 3.0e6),
+                ("r2-m1", float(mzs[labels.index("13C")]), 1.1e5),
+            ]
+        )
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        mocks["resolution"].return_value = tof if read else None
+
+        await _run(PeakAssignmentConfig(profile="UR", run_untargeted=False))
+
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        assert (by_peak["r2-m1"]["role"] == "reagent") is read
+
+    @pytest.mark.asyncio
     async def test_the_passes_are_handed_the_runs_own_bands(self):
         # A row under the top band names it among its reasons, so the bands the
         # tiering pass reads are the ones the run tiered on.
@@ -1418,6 +1509,30 @@ class TestResolvedProfile:
         }
 
     @pytest.mark.asyncio
+    async def test_the_search_matches_envelopes_at_the_files_resolving_power(self):
+        # A TOF peak at the 13C position holds the 15N, 2H and 17O lines too;
+        # the finder can merge them only if the run hands it the file's
+        # resolving power, and the run records that it did.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        def resolution(mz):
+            return 8000.0
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 300.1234, 500.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, []))
+        mocks["resolution"].return_value = resolution
+
+        await _run(PeakAssignmentConfig())
+
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        assert scoring.resolution is resolution
+        recorded = recorder.recorded_configs()[-1]["pattern_scoring"]
+        assert recorded["lines_merged_at_resolution"] is True
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("column", [True, False], ids=["with S/N", "without"])
     async def test_the_run_records_the_signal_to_noise_it_scored_on(self, column):
         # The frame the search scores over is the one whose column is ranked:
@@ -1484,6 +1599,11 @@ class TestResolvedProfile:
             offset = mocks["fit"].call_args.kwargs["reagent_offset"]
             assert (offset.lines, offset.beyond_width) == (3, True)
             assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+        # The search's commits are measured again as ions at the same offset,
+        # so a seed list too short to fit one is centred where Stage A was.
+        seeded = mocks["seeded"].call_args.kwargs["reagent_offset"]
+        assert (seeded.lines, seeded.beyond_width) == (3, True)
+        assert seeded.mu_ppm == pytest.approx(-1.3, abs=1e-6)
         scoring = mocks["compositions"].call_args.kwargs["scoring"]
         assert scoring.mu_ppm == pytest.approx(-1.3, abs=1e-6)
         recorded = recorder.recorded_configs()[-1]["pattern_scoring"]
@@ -1497,6 +1617,55 @@ class TestResolvedProfile:
         assert searched == (
             {181.0707, 300.1234} if library else {181.0707, 182.0741, 300.1234}
         )
+
+    @pytest.mark.asyncio
+    async def test_the_re_score_is_centred_where_the_library_fitted(self):
+        # A library that fits an offset of its own scores Stage A and the
+        # search there, wherever the reagent lines sit. The re-score the rows
+        # are tiered on is centred there too, not on the lines' -1.3.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.engine import (
+            SampleMassAccuracy,
+        )
+        from mascope_tools.composition.reagents import reagent_library
+
+        ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+        low = 1.0 - 1.3e-6
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 300.1234, 500.0),
+                ("r1", ladder["[CH4N2O+H]+"] * low, 2.0e6),
+                ("r2", ladder["[(CH4N2O)2+H]+"] * low, 3.0e6),
+                ("r3", ladder["[(CH4N2O)3+H]+"] * low, 1.0e5),
+            ]
+        )
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        _start(
+            {
+                "accuracy": patch(
+                    f"{_MOD}.sample_mass_accuracy",
+                    side_effect=lambda df, reagent: SampleMassAccuracy(
+                        mu_ppm=0.2, sigma_ppm=0.3, anchors=9, reagent=reagent
+                    ),
+                )
+            }
+        )
+
+        await _run(PeakAssignmentConfig(profile="UR"))
+
+        assert mocks["fit"].call_args.kwargs["reagent_offset"].mu_ppm == (
+            pytest.approx(-1.3, abs=1e-6)
+        )
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        assert scoring.mu_ppm == pytest.approx(0.2)
+        seeded = mocks["seeded"].call_args.kwargs["reagent_offset"]
+        assert seeded.mu_ppm == pytest.approx(0.2)
+        assert seeded.beyond_width
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

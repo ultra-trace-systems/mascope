@@ -12,6 +12,7 @@ vi.mock('@/api', () => ({
 }))
 
 import { useNotification } from '@/stores/ui/notification'
+import { toastFor } from '@/lib/toastTitles'
 
 describe('notification store', () => {
   let store
@@ -226,6 +227,21 @@ describe('notification store', () => {
     expect(entry.timestamp).toBeInstanceOf(Date)
   })
 
+  // The log keeps no payload, so the severity is read while it is at hand.
+  it('logs an empty composition search as an info', () => {
+    store.push({
+      type: 'match_compositions_by_mz',
+      status: 'success',
+      process_id: 'p1',
+      message: 'No matching compositions found',
+      data: { results: 0 }
+    })
+    store.push({ type: 'shared_link', status: 'success', message: 'copied' })
+
+    expect(store.log[1].severity).toBe('info')
+    expect(store.log[0].severity).toBe('success')
+  })
+
   it('tolerates a notification with no message or payload', () => {
     store.push({ type: 'x', status: 'success' })
 
@@ -313,5 +329,95 @@ describe("notification store: auto-processing's own outcomes", () => {
     expect(store.recentErrors).toBe(0)
     expect(store.recentWarnings).toBe(0)
     expect(store.log).toHaveLength(4)
+  })
+})
+
+// A pane that renders a process's outcome claims it: the toaster in App.vue
+// (`toastFor`) then leaves it out, and the log keeps it.
+describe('notification store: claims', () => {
+  let store
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.useFakeTimers()
+    store = useNotification()
+  })
+
+  it('suppresses the toast of a claimed outcome, not its log entry', () => {
+    store.claim('p1')
+    store.push({ type: 'calibration_mz_fit', status: 'pending', process_id: 'p1', progress: 5 })
+    store.push({ type: 'calibration_mz_fit', status: 'success', process_id: 'p1', message: 'ok' })
+
+    expect(store.latest.claimed).toBe(true)
+    expect(toastFor(store.latest)).toBeNull()
+    expect(store.log).toHaveLength(1)
+    expect(store.log[0].message).toBe('ok')
+  })
+
+  it('toasts a claimed error regardless', () => {
+    store.claim('p1')
+    store.push({ type: 'calibration_mz_fit', status: 'error', process_id: 'p1', message: 'bad' })
+
+    expect(toastFor(store.latest)).toMatchObject({ severity: 'error', detail: 'bad' })
+    expect(store.log).toHaveLength(1)
+  })
+
+  it('toasts an outcome nobody claimed', () => {
+    store.claim('p1')
+    store.push({ type: 'calibration_mz_fit', status: 'success', process_id: 'p2', message: 'ok' })
+
+    expect(store.latest.claimed).toBeUndefined()
+    expect(toastFor(store.latest)).toMatchObject({ severity: 'success' })
+  })
+
+  // A progress report is not the outcome: the claim stands until it arrives.
+  it('keeps the claim across progress reports and releases it with the outcome', () => {
+    store.claim('p1')
+    store.push({ type: 'mz_fit', status: 'pending', process_id: 'p1', progress: 5 })
+    store.push({ type: 'mz_fit', status: 'pending', process_id: 'p1', progress: 50 })
+    store.push({ type: 'mz_fit', status: 'success', process_id: 'p1', message: 'first' })
+    expect(store.latest.claimed).toBe(true)
+
+    store.push({ type: 'mz_fit', status: 'success', process_id: 'p1', message: 'again' })
+    expect(store.latest.claimed).toBeUndefined()
+  })
+
+  // A launch whose acknowledgement named no process claims nothing, and so
+  // takes no place a real claim needs under the cap.
+  it('claims nothing for a launch that named no process', () => {
+    for (let i = 0; i < 99; i++) store.claim(`p${i}`)
+    store.claim(null)
+    store.claim(undefined)
+    store.push({ type: 'mz_fit', status: 'success', message: 'no process' })
+    expect(store.latest.claimed).toBeUndefined()
+
+    store.push({ type: 'mz_fit', status: 'success', process_id: 'p0', message: 'oldest' })
+    expect(store.latest.claimed).toBe(true)
+  })
+
+  // An outcome that never arrives must not hold its claim for the life of the
+  // tab: past the cap, the oldest claim goes.
+  it('drops the oldest claim past the cap', () => {
+    for (let i = 0; i <= 100; i++) store.claim(`p${i}`)
+
+    store.push({ type: 'mz_fit', status: 'success', process_id: 'p0', message: 'oldest' })
+    expect(store.latest.claimed).toBeUndefined()
+    store.push({ type: 'mz_fit', status: 'success', process_id: 'p1', message: 'kept' })
+    expect(store.latest.claimed).toBe(true)
+    store.push({ type: 'mz_fit', status: 'success', process_id: 'p100', message: 'newest' })
+    expect(store.latest.claimed).toBe(true)
+  })
+
+  // A claim made again is fresh: it moves to the back of the eviction order.
+  it('refreshes a claim made again', () => {
+    store.claim('p0')
+    for (let i = 1; i <= 99; i++) store.claim(`p${i}`)
+    store.claim('p0')
+    store.claim('p100')
+
+    store.push({ type: 'mz_fit', status: 'success', process_id: 'p0', message: 'refreshed' })
+    expect(store.latest.claimed).toBe(true)
+    store.push({ type: 'mz_fit', status: 'success', process_id: 'p1', message: 'evicted' })
+    expect(store.latest.claimed).toBeUndefined()
   })
 })

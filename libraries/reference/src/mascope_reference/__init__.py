@@ -1,16 +1,22 @@
 """Mascope reference database library.
 
-Ingestion and query for mirrored public chemistry databases. The library owns
-source-specific ETL (:mod:`mascope_reference.adapters`), the normalized record
-model (:class:`ReferenceRecord`), formula/mass canonicalization
-(:mod:`mascope_reference.normalize`), and the indexed read path
-(:mod:`mascope_reference.query`). The mirror's tables are owned by the backend;
+Ingestion and query for mirrored public chemistry databases and MS/MS spectral
+libraries. The library owns source-specific ETL (:mod:`mascope_reference.adapters`),
+the normalized record models (:class:`ReferenceRecord`, :class:`SpectrumRecord`),
+formula/mass canonicalization (:mod:`mascope_reference.normalize`), and the indexed
+read paths (:mod:`mascope_reference.query` for compounds,
+:mod:`mascope_reference.spectral_query` for spectra). The mirror's tables are owned by the backend;
 the query functions take the ORM model classes as arguments so this library
 never imports the backend.
 """
 
 from mascope_reference.dedup import collapse_by_inchikey
-from mascope_reference.ingest import IngestResult, ingest
+from mascope_reference.ingest import (
+    IngestResult,
+    SpectrumIngestResult,
+    ingest,
+    ingest_spectra,
+)
 from mascope_reference.known import (
     KnownComposition,
     KnownIdentity,
@@ -31,13 +37,29 @@ from mascope_reference.peaklist import (
     read_peak_list,
 )
 from mascope_reference.query import (
+    SourcePage,
+    SourceRow,
+    StructureCandidate,
+    StructurePage,
+    active_sources,
     annotate_formulas,
     by_formula,
     by_mass_window,
+    source_compounds,
+    structures_by_formula,
+    xref_cas_number,
 )
 from mascope_reference.record import ReferenceRecord
 from mascope_reference.seed import SeedOutcome, catalogue, seed
-from mascope_reference.sources import available_sources, get_adapter
+from mascope_reference.sources import (
+    available_sources,
+    available_spectrum_sources,
+    get_adapter,
+    get_spectrum_adapter,
+    is_spectrum_source,
+)
+from mascope_reference.spectral_query import by_inchikey, by_precursor
+from mascope_reference.spectrum import SkippedSpectrum, SpectrumRecord
 
 
 __all__ = [
@@ -55,6 +77,14 @@ __all__ = [
     "by_formula",
     "by_mass_window",
     "annotate_formulas",
+    "structures_by_formula",
+    "active_sources",
+    "source_compounds",
+    "SourceRow",
+    "SourcePage",
+    "StructureCandidate",
+    "StructurePage",
+    "xref_cas_number",
     "collapse_by_inchikey",
     "iter_known_compositions",
     "known_listings",
@@ -66,4 +96,13 @@ __all__ = [
     "get_adapter",
     "ingest",
     "IngestResult",
+    "SpectrumRecord",
+    "SkippedSpectrum",
+    "available_spectrum_sources",
+    "get_spectrum_adapter",
+    "is_spectrum_source",
+    "ingest_spectra",
+    "SpectrumIngestResult",
+    "by_inchikey",
+    "by_precursor",
 ]

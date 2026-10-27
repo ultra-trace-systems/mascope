@@ -27,7 +27,7 @@ _SVC = "mascope_backend.api.controllers.sample.files.process.service"
 _SAMPLE = {
     "sample_item_id": "si-001",
     "sample_item_name": "2025-09-20 10:30:00",
-    "filename": "ORBIONSTAR_2025.09.20_test_file.raw",
+    "filename": "Orbion_2025.09.20_test_file.raw",
 }
 
 

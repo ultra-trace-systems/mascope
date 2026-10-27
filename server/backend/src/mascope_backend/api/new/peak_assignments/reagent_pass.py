@@ -60,6 +60,7 @@ analyte, which only the analyte's own commit licenses (:func:`claim_fragments`).
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pandas as pd
@@ -259,6 +260,7 @@ def claim_reagent_peaks(
     *,
     claim_ppm: float,
     purity: float | None = None,
+    resolution: Callable[[float], float] | None = None,
 ) -> tuple[list[ReagentHit], ReagentCalibration | None]:
     """Match the library against a sample's peaks.
 
@@ -270,6 +272,10 @@ def claim_reagent_peaks(
         corrected, not in a window wide enough to swallow a neighbour.
     :param purity: The labelled reagent's isotopic purity, so a labelled
         reagent's isotopologues are predicted with the label's own abundance.
+    :param resolution: The file's resolving power as a function of m/z, so an
+        ion's isotope line is one peak of the file: on a TOF its 13C, 15N, 2H
+        and 17O lines one mass unit up are one line. None where the run could
+        read none.
     :return: One hit per claimed peak, and what the anchors said; the
         calibration is ``None`` when there was nothing to match.
     """
@@ -281,6 +287,7 @@ def claim_reagent_peaks(
         peaks_df["intensity"].to_numpy(),
         claim_ppm=claim_ppm,
         purity=purity,
+        resolution=resolution,
     )
 
 

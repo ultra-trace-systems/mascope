@@ -1,0 +1,26 @@
+name: CLA (merge queue)
+run-name: CLA check for a merge queue group
+
+# The develop ruleset requires the "CLA Assistant" check, and the merge queue
+# merges a group only once every required check has reported on the group's
+# commit. The check itself, cla.yaml, runs on pull_request_target, an event a
+# merge group never raises, so without this workflow a queued group would wait
+# for the check until the queue's timeout and then fail. Every commit author
+# in the group signed when the pull request's own CLA check passed, which is a
+# condition of entering the queue, and queueing adds no author - so the
+# group's check is this job, which runs nothing and passes, under the name
+# the ruleset requires.
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions: {}
+
+jobs:
+  cla:
+    name: CLA Assistant
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Signatures were checked on the pull request
+        run: echo "Every author in this group signed when the pull request's CLA check passed."

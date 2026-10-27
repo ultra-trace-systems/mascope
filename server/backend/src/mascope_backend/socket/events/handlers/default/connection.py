@@ -15,8 +15,10 @@ from mascope_backend.socket.auth.exceptions import (
 from mascope_backend.socket.auth.token import get_jwt_from_cookies
 from mascope_backend.socket.storage import (
     SocketSessionError,
+    claim_socket,
     clear_user_session,
     get_session_user,
+    release_socket_claim,
     room_tracker,
     start_session_renewal,
     stop_session_renewal,
@@ -55,6 +57,9 @@ async def connect(sid: str, environ: dict) -> bool:
     # to live on the worker holding the connection, and a tick with no
     # session yet simply finds nothing to refresh.
     start_session_renewal(sid)
+    # Names this worker as the socket's holder, so the user's other tabs can
+    # tell it from a socket a dead worker left (see storage/workers.py).
+    await claim_socket(sid)
     try:
         # --- Get cookies from environment ---
         cookies = environ.get("HTTP_COOKIE")
@@ -92,7 +97,7 @@ async def connect(sid: str, environ: dict) -> bool:
 async def disconnect(sid: str) -> None:
     """
     Handle frontend user socket disconnections.
-    - Remove user from all room memberships (room_tracker)
+    - Remove user from the rooms no other socket of theirs holds (room_tracker)
     - Clear authentication session (session manager)
 
     :param sid: Socket session ID
@@ -104,10 +109,12 @@ async def disconnect(sid: str) -> None:
     )
 
     try:
-        # Clean up room memberships BEFORE clearing session (need user_id)
+        # Clean up room memberships BEFORE clearing session (need user_id) and
+        # the socket's room record (names the rooms it leaves). A room another
+        # tab of the user's still holds stays the user's.
         session = await get_session_user(sid)
         user_id = session["user_id"]
-        await room_tracker.leave_all(user_id)
+        await room_tracker.release_socket(user_id, sid)
 
         runtime.logger.debug(
             f"User session disconnected: cleaned up rooms for user {user_id} (sid={sid}) "
@@ -125,4 +132,5 @@ async def disconnect(sid: str) -> None:
         # once nothing can refresh them any more
         await stop_session_renewal(sid)
         await room_tracker.forget_socket(sid)
+        await release_socket_claim(sid)
         await clear_user_session(sid)

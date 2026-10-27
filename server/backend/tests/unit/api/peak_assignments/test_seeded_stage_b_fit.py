@@ -165,6 +165,65 @@ class TestWhatStageAMeasured:
         assert measured.anchors == 3
         assert measured.reagent is NITRATE_READING
 
+    def test_one_ions_lines_alone_measure_nothing_where_ions_are_counted(self):
+        # A bright ion's lines share its own mass error: fitted, they would put
+        # the offset at that error and the width at the floor. Counted by ion,
+        # fifteen of them are one anchor.
+        errors = [0.5] * 15
+        frame = pd.DataFrame(
+            {
+                "target_ion_id": ["ion-a"] * 15,
+                "match_mz_error": errors,
+                "sample_peak_intensity": [100.0] * 15,
+            }
+        )
+
+        assert sample_mass_accuracy(frame).mu_ppm == pytest.approx(0.5)
+        measured = sample_mass_accuracy(frame, min_anchor_ions=8)
+        assert (measured.mu_ppm, measured.sigma_ppm) == (None, None)
+        assert measured.anchors == 15
+
+    def test_the_ions_counted_are_those_with_an_anchor(self):
+        # Eight ions with a line each fit; seven with two each do not, nor do
+        # they with an eighth ion whose only line the gating zeroed.
+        errors = [0.0, 0.1, -0.1, 0.2, -0.2, 0.1, -0.1, 0.05]
+        eight = pd.DataFrame(
+            {
+                "target_ion_id": [f"ion-{i}" for i in range(8)],
+                "match_mz_error": errors,
+                "sample_peak_intensity": [100.0] * 8,
+            }
+        )
+        seven = pd.DataFrame(
+            {
+                "target_ion_id": [f"ion-{i // 2}" for i in range(14)],
+                "match_mz_error": errors + errors[:6],
+                "sample_peak_intensity": [100.0] * 14,
+            }
+        )
+        gated = pd.concat(
+            [seven, eight.iloc[[7]].assign(sample_peak_intensity=0.0)],
+            ignore_index=True,
+        )
+
+        fitted = sample_mass_accuracy(eight, min_anchor_ions=8)
+        assert (fitted.mu_ppm, fitted.sigma_ppm) == fit_mass_accuracy(errors)
+        assert sample_mass_accuracy(seven, min_anchor_ions=8).sigma_ppm is None
+        assert sample_mass_accuracy(gated, min_anchor_ions=8).sigma_ppm is None
+
+    def test_a_frame_with_no_ions_to_count_measured_nothing(self):
+        errors = [0.0, 0.1, -0.1, 0.2, -0.2, 0.1, -0.1, 0.05]
+        frame = pd.DataFrame(
+            {"match_mz_error": errors, "sample_peak_intensity": [100.0] * 8}
+        )
+
+        measured = sample_mass_accuracy(
+            frame, min_anchor_ions=8, reagent=NITRATE_READING
+        )
+
+        assert (measured.mu_ppm, measured.sigma_ppm) == (None, None)
+        assert measured.reagent is NITRATE_READING
+
 
 class TestTheReagentLinesOffset:
     """Where the source's own lines put the axis, for a library too thin to say."""
@@ -337,9 +396,39 @@ class TestPatternScoringForTheSample:
         )
         assert scoring.abundance_floor == 1e-5
 
+    def test_the_files_resolving_power_reaches_the_envelope_match(self):
+        # Where the run read one, the lines one peak of the file cannot
+        # separate are matched as one; where it read none, nothing is merged.
+        def resolution(mz):
+            return 8000.0
+
+        with_resolution = pattern_scoring_for(
+            _orbi_params(), SampleMassAccuracy(0.0, 0.3, 9), ORBI_ACCURACY, resolution
+        )
+        without = pattern_scoring_for(
+            _orbi_params(), SampleMassAccuracy(0.0, 0.3, 9), ORBI_ACCURACY
+        )
+
+        assert with_resolution.resolution is resolution
+        assert without.resolution is None
+
 
 class TestTheRunSaysWhatItJudgedAt:
     """A ppm is not a ppm without the width it was judged against."""
+
+    @pytest.mark.parametrize("read", [True, False], ids=["read", "none"])
+    def test_it_says_whether_the_lines_were_merged_at_the_files_width(self, read):
+        accuracy = SampleMassAccuracy(0.0, 0.3, 9)
+        scoring = pattern_scoring_for(
+            _orbi_params(),
+            accuracy,
+            ORBI_ACCURACY,
+            (lambda mz: 8000.0) if read else None,
+        )
+
+        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+
+        assert snapshot["lines_merged_at_resolution"] is read
 
     def test_a_fitted_width_says_so_and_names_its_anchors(self):
         accuracy = SampleMassAccuracy(-0.24, 0.30, 14)

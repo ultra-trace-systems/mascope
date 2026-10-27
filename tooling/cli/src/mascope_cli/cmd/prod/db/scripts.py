@@ -79,11 +79,37 @@ _FORWARDED_ENV_VARS = [
     # backfill_scan_stream_census
     "CENSUS_LIMIT",
     "CENSUS_RETRY",
+    # backfill_ms2_store
+    "MS2_STORE_MODE",
+    "MS2_STORE_LIMIT",
+    "MS2_STORE_PAUSE",
+    "MS2_STORE_RETRY",
+    # backfill_axis_fingerprint
+    "AXF_LIMIT",
+    "AXF_RETRY",
     # report_method_binding_disagreements
     "BINDING_REPORT_FILES",
     "BINDING_REPORT_PER_KEY",
     # report_stitch_overlaps
     "STITCH_REPORT_FILES",
+    # audit_tof_calibration
+    "TOF_AUDIT_INSTRUMENT",
+    "TOF_AUDIT_FROM",
+    "TOF_AUDIT_TO",
+    "TOF_AUDIT_PER_DAY",
+    "TOF_AUDIT_MODE",
+    "TOF_AUDIT_SETS",
+    "TOF_AUDIT_MODELS",
+    "TOF_AUDIT_BANDS",
+    "TOF_AUDIT_FAMILIES",
+    "TOF_AUDIT_SERIES",
+    "TOF_AUDIT_FAMILY_SNR",
+    "TOF_AUDIT_FAMILY_WINDOW_PPM",
+    "TOF_AUDIT_FAMILY_WINDOW_SPACING",
+    "TOF_AUDIT_FAMILY_PEAKED_IQR",
+    "TOF_AUDIT_FAMILY_MIN_PEAKS",
+    "TOF_AUDIT_FAMILY_DBE_MAX",
+    "TOF_AUDIT_JSON",
     # fix_guessed_datetime_utc
     "MASCOPE_FIX_GUESSED_UTC_ZONE",
     "MASCOPE_FIX_GUESSED_UTC_INSTRUMENT",

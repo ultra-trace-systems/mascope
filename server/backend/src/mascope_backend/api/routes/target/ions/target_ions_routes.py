@@ -11,6 +11,11 @@ from mascope_backend.api.models.target.ions.target_ion_pydantic_model import (
     TargetIonUpdate,
 )
 from mascope_backend.api.new.auth.dependencies import editor_user, guest_user
+from mascope_backend.api.new.workspaces.dependencies import (
+    accessible_workspace_ids_for_user,
+    check_batch_access,
+    check_target_collection_access,
+)
 
 
 target_ions_router = APIRouter(prefix="/api/target/ions", tags=["Target Ions"])
@@ -24,11 +29,29 @@ async def get_target_ions_route(
 ):
     """Retrieve a list of target ions based on filters, sorting, and pagination.
 
+    A named ``sample_batch_id`` or ``target_collection_id`` needs the guest
+    role on its workspace, as the collection and association routes do; a
+    global collection is readable by anyone signed in. Without either filter
+    the list is the shared compound and ion library. ``show_target_collection``
+    lists only the collections the caller can read: the global ones and those
+    of the workspaces they are a member of (superusers see all).
+
     :param query_params: Filtering, sorting, and pagination parameters.
     :param user: The authenticated user, defaults to Depends(guest_user).
     :return: Dictionary with the total count and list of target ions.
     """
-    return await get_target_ions(**query_params.model_dump())
+    if query_params.sample_batch_id:
+        await check_batch_access(query_params.sample_batch_id, user, "guest")
+    if query_params.target_collection_id:
+        await check_target_collection_access(
+            query_params.target_collection_id, user, "guest"
+        )
+    ws_ids = (
+        None if user.is_superuser else await accessible_workspace_ids_for_user(user)
+    )
+    return await get_target_ions(
+        **query_params.model_dump(), accessible_workspace_ids=ws_ids
+    )
 
 
 @target_ions_router.get("/{target_ion_id}")

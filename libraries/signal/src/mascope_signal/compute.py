@@ -23,6 +23,7 @@ import mascope_tofwerk.tofwerk as m_tofwerk
 from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.runtime import runtime
 from mascope_thermo.backend import averaged_profile_signature
+from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_tools.alignment.calibration import CentroidedSpectrum, MassAligner, Spectra
 
 
@@ -1278,6 +1279,9 @@ def load_signal(
     :raises ValueError: If a stream is asked of a type that has none
     :raises mascope_thermo.thermo.UnknownStreamError: If the file holds no
         stream under the key asked for
+    :raises mascope_thermo.scan_events.MisreadScanEventsError: If the reader
+        refuses a raw Orbitrap file's scan events as misread, or a scan's
+        profile it gives no m/z for (``UnconvertedProfileError``)
     :return: The signal with m/z and time coordinates
     :rtype: xr.Dataset
     """
@@ -1354,10 +1358,13 @@ def load_signal(
                 return signal_ds_sliced.chunk(dict(mz=-1))
             case _:
                 raise NotImplementedError(f"Unsupported sample type: {sample_type}")
-    except m_thermo.UnknownStreamError:
+    except (m_thermo.UnknownStreamError, MisreadScanEventsError):
         # Not an empty range either. The file holds no stream under the key
         # asked for, and answered with an empty signal the caller would read
-        # "no data" of a stream that is not there.
+        # "no data" of a stream that is not there. Or the reader refuses the
+        # file's scan events as misread, or a scan's profile as having no m/z:
+        # a ValueError, but its text is the one reason the file shows no
+        # signal, and the caller answers it.
         raise
     except Exception as e:
         # Both paths return an empty dataset (callers render "no data"), but
@@ -1730,6 +1737,7 @@ def get_orbi_centroids_per_scan(
     polarity: Literal["+", "-"] | None = None,
     scan_type: Literal["Ms", "Ms2"] | None = None,
     stream: str | None = None,
+    exclude: Iterable[str] = (),
 ) -> list:
     """
     Extract per-scan centroids from an Orbitrap raw file
@@ -1746,9 +1754,17 @@ def get_orbi_centroids_per_scan(
     :type scan_type: Literal['Ms', 'Ms2'] | None, optional
     :param stream: Key of the scan stream to read, optional, defaults to None (every stream).
     :type stream: str | None, optional
+    :param exclude: Names of centroid flags (``reference``, ``exception``, ``merged``,
+        ``fragmented``) whose centroids are left out, optional, defaults to none.
+    :type exclude: Iterable[str], optional
     :return: List of dictionaries with per-scan centroid data, each containing
-            centroid masses, intensities, resolutions, signal-to-noise ratios, and timestamps.
+            the scan number, centroid masses, intensities, resolutions,
+            signal-to-noise ratios, flags, and timestamps, and
+            ``mz_calibration_factor``: the factor its masses were multiplied
+            by, the one of the stream the scan is of
+            (``mascope_signal.mz_factor``), None for a file never calibrated.
     :rtype: list
+    :raises ValueError: If ``exclude`` names something that is not a flag.
     """
     sample_type = m_name.get_sample_file_type(base_filename)
     match sample_type:
@@ -1761,13 +1777,30 @@ def get_orbi_centroids_per_scan(
                 polarity=polarity,
                 scan_type=scan_type,
                 stream=stream,
+                exclude=exclude,
             )
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
-            if calibration:
-                factor = m_factor.stream_factor(calibration, stream)
-                for scan_centroids in centroids_per_scan:
+            # Each scan goes by the factor of the stream it is of, as that
+            # stream's peaks do. Asked for one stream, every scan is of it.
+            # Asked for every stream of a file calibrated stream by stream,
+            # each scan's stream is looked up; a stream the record does not
+            # name, an MS2 scan's among them, goes by the file's factor.
+            stream_of: dict[int, str] = {}
+            if (
+                calibration
+                and stream is None
+                and calibration.get(m_factor.STREAM_FACTORS)
+            ):
+                stream_of = m_streams.file_scan_stream_keys(datafile_path)
+            for scan_centroids in centroids_per_scan:
+                factor = None
+                if calibration:
+                    factor = m_factor.stream_factor(
+                        calibration, stream_of.get(scan_centroids["scan"], stream)
+                    )
                     scan_centroids["masses"] = scan_centroids["masses"] * factor
+                scan_centroids["mz_calibration_factor"] = factor
 
             return centroids_per_scan
         case _:
@@ -1836,25 +1869,57 @@ async def get_orbi_ms2_centroids_by_parent(
                 average=average,
                 by_activation=by_activation,
             )
-            props = m_io.read_props(base_filename)
-            calibration = props["mz_calibration"]
-            factor = calibration["par"]["calibration_factor"] if calibration else None
-
-            if factor is not None:
-                mapped_ms2_centroids = {
-                    key: (masses * factor, intensities, resolutions, signal_to_noise)
-                    for key, (
-                        masses,
-                        intensities,
-                        resolutions,
-                        signal_to_noise,
-                    ) in mapped_ms2_centroids.items()
-                }
-            return mapped_ms2_centroids
+            return ms2_centroids_on_file_axis(base_filename, mapped_ms2_centroids)
         case _:
             raise NotImplementedError(
                 "MS2 centroid extraction is only implemented for Orbitrap raw files."
             )
+
+
+def ms2_calibration_factor(base_filename: str) -> float | None:
+    """The factor a file's MS2 m/z are put on its calibrated axis by.
+
+    The calibration factor of the file's MS1 calibration, applied to the
+    fragment m/z on every MS2 read, from the raw file or from the MS2 store
+    (:mod:`mascope_signal.ms2_store`) alike.
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :return: The factor, or None for a file with no calibration.
+    :rtype: float | None
+    """
+    calibration = m_io.read_props(base_filename)["mz_calibration"]
+    return calibration["par"]["calibration_factor"] if calibration else None
+
+
+def ms2_centroids_on_file_axis(
+    base_filename: str,
+    mapped_ms2_centroids: dict[tuple[float, str], tuple[np.ndarray, ...]],
+) -> dict[tuple[float, str], tuple[np.ndarray, ...]]:
+    """Averaged MS2 centroids on the file's calibrated axis.
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :param mapped_ms2_centroids: Mapping of (parent peak m/z, activation) to
+        (masses, intensities, resolutions, signal_to_noise) on the
+        instrument's axis.
+    :type mapped_ms2_centroids: dict
+    :return: The same mapping, its masses times
+        :func:`ms2_calibration_factor`.
+    :rtype: dict
+    """
+    factor = ms2_calibration_factor(base_filename)
+    if factor is None:
+        return mapped_ms2_centroids
+    return {
+        key: (masses * factor, intensities, resolutions, signal_to_noise)
+        for key, (
+            masses,
+            intensities,
+            resolutions,
+            signal_to_noise,
+        ) in mapped_ms2_centroids.items()
+    }
 
 
 async def get_ms2_summary(
@@ -1866,7 +1931,8 @@ async def get_ms2_summary(
 ) -> dict:
     """Extract MS2 summary metadata.
 
-    Returns parent peaks, HCD energy map, isolation width, and scan counts.
+    Returns parent peaks, HCD energy map, isolation widths, and scan counts
+    (:func:`mascope_thermo.thermo.get_ms2_summary_metadata`).
 
     :param base_filename: Sample file name (base, not full path).
     :type base_filename: str
@@ -1960,13 +2026,99 @@ async def get_ms2_fragment_timeseries(
                 "MS2 timeseries extraction is only for Orbitrap raw files."
             )
 
+    return ms2_fragment_timeseries(
+        base_filename, centroids, tic_values, noise_threshold, normalize_by
+    )
+
+
+async def get_ms2_group_scans(
+    base_filename: str,
+    parent_peak_mz: float,
+    activation: str,
+    t_min: float | None = None,
+    t_max: float | None = None,
+    polarity: Literal["+", "-"] | None = None,
+    parent_peak_tolerance: float = 0.001,
+) -> tuple[list[dict], list[dict]] | None:
+    """The scan records and per-scan centroids of one MS2 group, read raw.
+
+    :func:`mascope_thermo.thermo.get_ms2_group_scans`, for a file with no MS2
+    store (:mod:`mascope_signal.ms2_store`). The centroids are on the
+    instrument's axis: :func:`ms2_calibration_factor` puts them on the file's.
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :param parent_peak_mz: The group's parent peak m/z.
+    :type parent_peak_mz: float
+    :param activation: The group's activation, ``""`` for none.
+    :type activation: str
+    :param t_min: Minimum time [s], optional.
+    :type t_min: float | None, optional
+    :param t_max: Maximum time [s], optional.
+    :type t_max: float | None, optional
+    :param polarity: Polarity filter ('+' or '-'), optional.
+    :type polarity: Literal['+', '-'] | None, optional
+    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks.
+    :type parent_peak_tolerance: float
+    :return: The group's scan records and centroids, in scan order, or None
+        when the selection holds no such group.
+    :rtype: tuple[list[dict], list[dict]] | None
+    """
+    sample_type = m_name.get_sample_file_type(base_filename)
+    match sample_type:
+        case "orbi_raw":
+            return await asyncio.to_thread(
+                m_thermo.get_ms2_group_scans,
+                m_name.filename_to_datafile_path(base_filename),
+                parent_peak_mz,
+                activation,
+                t_min=t_min,
+                t_max=t_max,
+                polarity=polarity,
+                parent_peak_tolerance=parent_peak_tolerance,
+            )
+        case _:
+            raise NotImplementedError(
+                "MS2 scan extraction is only implemented for Orbitrap raw files."
+            )
+
+
+def ms2_fragment_timeseries(
+    base_filename: str,
+    centroids: list[dict],
+    tic_values: list[float],
+    noise_threshold: float = 10.0,
+    normalize_by: Literal["tic"] | None = None,
+) -> dict:
+    """The fragment timeseries of one parent peak's scans.
+
+    Applies noise filtering and the calibration factor to each scan's
+    centroids, builds timeseries via peak clustering, and optionally
+    normalizes by TIC. The scans are read from the raw file
+    (:func:`get_ms2_fragment_timeseries`) or from the MS2 store
+    (:mod:`mascope_signal.ms2_store`).
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :param centroids: Per-scan centroid dicts on the instrument's axis, in
+        scan order: masses, intensities, resolutions, signal_to_noise,
+        timestamp.
+    :type centroids: list[dict]
+    :param tic_values: Each scan's TIC.
+    :type tic_values: list[float]
+    :param noise_threshold: Minimum signal-to-noise ratio threshold.
+    :type noise_threshold: float
+    :param normalize_by: Normalization mode. ``"tic"`` normalizes by scan TIC,
+        ``None`` returns raw intensities.
+    :type normalize_by: Literal["tic"] | None, optional
+    :return: Dictionary with mz_values, time, and values arrays.
+    :rtype: dict
+    """
     if not centroids:
         return {"mz_values": [], "time": [], "values": []}
 
     # Apply calibration factor to fragment masses
-    props = m_io.read_props(base_filename)
-    calibration = props["mz_calibration"]
-    factor = calibration["par"]["calibration_factor"] if calibration else None
+    factor = ms2_calibration_factor(base_filename)
 
     # Apply noise filtering and calibration, build Spectra
     spectra_list = []

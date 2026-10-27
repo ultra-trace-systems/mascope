@@ -6,13 +6,24 @@ so drift becomes a weekly diff instead of a months-later incident:
 | Role | Owns |
 |---|---|
 | `sshd_hardening` | `/etc/ssh/sshd_config.d/00-tailnet-hardening.conf` (key-only SSH, no root passwords) |
-| `firewall` | ufw policies, tailnet SSH rule, Cloudflare-only 443, the canonical `MASCOPE NAT` masquerade block |
+| `firewall` | ufw policies, tailnet SSH rule, 443 from Cloudflare's ranges (ufw only, see below), the canonical `MASCOPE NAT` masquerade block |
 | `docker_daemon` | `/etc/docker/daemon.json` with `iptables: false` (load-bearing: with stock Docker, published ports bypass ufw) |
 | `unattended_upgrades` | unattended security updates enabled |
 | `deploy_env` | `MASCOPE_PATH` in `/etc/environment` (load-bearing: it is how the CLI finds the checkout, and so which release a unit starts) |
+| `postgres_readonly` | the `mascope_readonly` Postgres role in `mascope_prod_postgres`: SELECT only, read-only by default, its password in `.runtime/secrets/` (see [Read-only database access](#read-only-database-access)) |
 
 The monitoring box is deliberately **not** in the fleet group — it
 runs a different network model (stock Docker + `DOCKER-USER` rules).
+
+**The tailnet bypasses ufw.** Tailscale installs its own netfilter chain,
+`ts-input`, jumped from the top of `INPUT`, and it accepts everything arriving
+on `tailscale0` ahead of ufw's rules. So ufw's "443 from Cloudflare only" holds
+for the internet, but every tailnet peer the Tailscale ACL lets through reaches
+443, and every other port, whatever ufw says: a request from a tailnet peer
+to a fleet server's 443 is answered. This matters to the frontend, which trusts
+`CF-Connecting-IP` relayed through the Docker gateway (the `cloudflare-realip`
+block in `server/frontend/nginx.conf`): a tailnet peer can send that header and
+choose its own rate-limit bucket. The Tailscale ACL, not ufw, decides who can.
 
 ## One-time setup (WSL on the admin workstation)
 
@@ -118,6 +129,102 @@ ansible-playbook site.yml --check --diff -K --limit <host>
 - Cloudflare ranges are fetched live at run time; rules for ranges Cloudflare
   has *withdrawn* are not auto-pruned (same behavior as
   `tooling/ufw-allow-cf.sh`) — prune manually on the rare CF delisting.
+
+## Read-only database access
+
+`postgres_readonly` gives every server a Postgres role, `mascope_readonly`,
+for work that reads production without the app's own credentials: fleet
+audits, and prod jobs (a reviewed read-only script whose output is checked
+before anyone else sees it).
+
+**What the role may do.** It logs in, with a connection limit of 4, and is
+`NOSUPERUSER NOINHERIT NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS`,
+a member of no other role. `default_transaction_read_only = on` is set on it.
+In every app database (`mascope_<env>`) it has USAGE on the schemas and
+SELECT on every table, view and materialized view, and default privileges on
+the app's role (`mascope_user`, which runs the migrations) make the tables and
+schemas created later readable too. Nothing else is granted to it, and a run
+takes away anything else it finds granted: write privileges on tables, USAGE
+on sequences, CREATE on a schema or database, other default privileges. What
+PUBLIC holds by default (CONNECT and TEMPORARY on a database, EXECUTE on
+functions) it keeps. A write privilege it would hold through PUBLIC, such as
+CREATE on the `public` schema in a cluster first initialised before
+PostgreSQL 15, fails the run before it changes anything, or, when the role also
+holds the privilege directly, once it has taken that direct grant back: the
+role is not made there, and a role that exists already loses LOGIN, which a
+later run gives back once PUBLIC no longer holds the privilege. Revoking that
+from PUBLIC is an operator's call.
+
+The role is kept to the app databases' own tables. PostgreSQL's predefined
+`pg_read_all_data` would also read them, and would survive the restores below
+since its membership is cluster-wide, but it reads every database of the
+cluster and every schema whoever made it.
+
+`default_transaction_read_only` is a default a session can turn off; the
+privileges are what make the role read-only. Once a session has turned it off,
+they still let it make two things: temporary tables (TEMPORARY on a database is
+PUBLIC's by default; they go with the session) and large objects (`lo_create`
+and `lo_from_bytea` are PUBLIC's to run and check nothing else; a large object
+stays in the database). `NOTIFY` goes through even in a read-only session;
+nothing in the app listens. None of these is a write a mistaken read-only
+script makes. Taking EXECUTE on the large-object functions from PUBLIC is,
+like PUBLIC's CREATE, an operator's call.
+
+**The password** is `.runtime/secrets/postgres_readonly_password.txt` in the
+deployment checkout, mode 0600 and the deploy user's, made on the first run.
+Postgres is given only its SCRAM verifier, and each run checks the role's
+verifier against the file, so a run with no drift changes nothing. It is not a
+compose secret: no container mounts it and the app never reads it. To rotate
+it, delete the file and run the role again.
+
+**How a job connects.** A job runs in the backend container, which reaches the
+database as host `postgres` on the compose network (the port is not
+published). Whoever runs the job reads the password on the server and hands it
+to `docker exec` by name, never on a command line, with libpq's environment:
+
+```sh
+cd "$MASCOPE_PATH"
+PGPASSWORD=$(head -n 1 .runtime/secrets/postgres_readonly_password.txt) \
+  docker exec -i -e PGHOST=postgres -e PGUSER=mascope_readonly -e PGPASSWORD \
+    -e PGOPTIONS='-c default_transaction_read_only=on' \
+    mascope_prod_backend /opt/uv/tools/mascope/bin/python - < job.py
+```
+
+and the job connects with `psycopg2.connect(dbname=os.environ["MASCOPE_DB_NAME"])`,
+which takes the rest from that environment. The backend container already has
+`MASCOPE_DB_NAME`. Peer or trust authentication cannot do this instead: the
+backend and the database are separate containers, the image's `pg_hba.conf`
+trusts only its own socket and loopback, and a trust rule for the compose
+network would let every container on it log in as the role with no password.
+A job must not read `/run/secrets/postgres_password` or use the app's own
+engine, which connect as the app's role.
+
+**Running it.** It is part of `site.yml`, so the usual check and apply cover
+it:
+
+```sh
+ansible-playbook site.yml --check --diff --ask-vault-pass --limit <canary-host>
+ansible-playbook site.yml --ask-vault-pass --limit <canary-host>
+```
+
+In check mode the role lists what it would change. Once there is nothing to
+change, check and apply runs both end by connecting as the role from
+`mascope_prod_backend`, as a job does, and checking the session is read-only;
+a stopped backend skips that check with a note. Everything else goes through
+`mascope_prod_postgres`, so on a server whose stack is stopped the role fails,
+`--check` included. A failed run's output lists what it changed before it
+failed.
+
+**After a restore.** The role itself is cluster-wide, but its grants and
+default privileges live in each database. Every restore the CLI makes is
+without privileges (`pg_restore --no-acl`), and a new env starts a new
+database. So `mascope prod db restore`, `mascope prod db create` and a
+`mascope env sync` into a local stack grant the role read access to that
+database again when the cluster has the role: the grants and default
+privileges this role makes there, through the same `docker exec ... psql`. If
+that fails, the command says so and exits non-zero, with the data already in
+place; run the role again then. A database made any other way, or a restore by
+hand, still needs a run of the role.
 
 ## Rolling out a release
 

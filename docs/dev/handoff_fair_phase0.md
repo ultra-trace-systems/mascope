@@ -1,5 +1,10 @@
 # Handoff - FAIR Phase 0 (provenance & identifiers)
 
+- **Status:** built
+- **As of:** 2026-10-22
+- **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear, MAS-19 to MAS-23, done)
+- **What:** FAIR phase 0 as built: the provenance block, ids in exports, the OpenAPI document.
+
 *The plan is [fair_roadmap.md](fair_roadmap.md); this document hands off its
 §6 Phase 0 - five tasks, no schema change, independent of the ionization
 redesign and the assignment epic - and records how they were built.*
@@ -117,32 +122,11 @@ guest-gated and `token_access`, because the SDK reads it.
 
 ## 5. T2 + T3 - identifiers and acquisition context in exports
 
-The *Batch data* spreadsheet (`POST /sample/batches/{id}/export/spreadsheet`):
-
-- **Batch** - after the existing rows: `Dataset ID`, `Sample batch ID`,
-  `Target collection IDs`, then `Instruments` and `Method files`, every
-  distinct value in the batch.
-- **Samples** - after the existing columns: `Sample item ID`, `Sample file ID`,
-  `Datetime UTC` (written as naive UTC: Excel stores no time zone), `Instrument`,
-  `Instrument type`, `Method file`, `Polarity`, `m/z range min`,
-  `m/z range max`, `Ionization mode`, `Ionization mode ID`,
-  `Instrument function ID`, `m/z calibration` (the record's status: `ok`,
-  `poor`, `failed`, `unfitted`, or `none` when the file has no record),
-  `m/z calibration verified`, `m/z calibration error (ppm)` (the post-fit
-  error).
-- **Match compounds** - `Sample item ID`, `Target compound ID`.
-- **Match ions** - `Sample item ID`, `Target compound ID`, `Target ion ID`.
-- **Provenance** - a new last sheet: the block flattened to key/value rows
-  (`produced_with.mascope_version`, ...), with `inputs` naming the dataset, the
-  batch and the target collections.
-
-Rows carry the natural keys of their records (sample item and target ids),
-not the `match_*` ids, which a rematch replaces.
-
-The *Peak data* CSVs, of a batch and of a sample: `sample_batch_id` and
-`dataset_id`, appended after the existing columns. They carry no provenance
-block: a constant column per row would multiply the size of a per-scan export
-for a value the spreadsheet and the API already give.
+The sheets and columns the *Batch data* spreadsheet and the *Peak data* CSVs
+carry - the record ids, the acquisition context, the Provenance sheet - are
+the user page [Export files](../user/reference/exports.md) since 2026-10-22,
+which also says why rows carry the natural keys of their records rather than
+the `match_*` ids, and why the CSVs carry no provenance block.
 
 ## 6. T4 - static OpenAPI to the docs site
 

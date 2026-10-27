@@ -2,6 +2,11 @@
 
 # Sample filters, refreshable batches and acquisition metadata: design
 
+- **Status:** design
+- **As of:** 2026-10-22
+- **Tracked in:** [Sample finder and acquisition metadata](https://linear.app/ultra-trace/project/sample-finder-and-acquisition-metadata-cd1678c32e78) (Linear; decisions MAS-104 to MAS-110; phases 1 to 4 filed 2026-10-22 as MAS-306, MAS-310, MAS-311, MAS-334 to MAS-336, MAS-338 to MAS-343, MAS-348 and MAS-349)
+- **What:** Sample search and refreshable batches over acquisition metadata.
+
 Status: **design, nothing built** (2026-10-05). The decisions in section 3 were
 settled in design review on that date. Section 9 lists what is open, each item
 with a recommendation. Code anchors were read on `develop` on the same date
@@ -49,8 +54,9 @@ Stage A.
 Related designs: `ingest_routing_and_splitting.md` (the part a sample is cut
 from, chemistry profiles as the unit, declarations from the instrument side),
 `chemistry_profiles.md` (reagent profile and chemistry context),
-`reference_data_authoring.md` (the reference lists and their headers),
-`peak_assignment_batch.md` (batch peaks), `ui_state_persistence.md` (the
+the user guide [Reference compound lists](../user/guides/reference-lists.md)
+(the reference lists and their headers),
+`peak_assignment_batch_primary.md` (batch peaks and the batch ledger), `ui_state_persistence.md` (the
 location a URL carries). Section 10 says how this design touches each.
 
 ---
@@ -132,10 +138,10 @@ creates a new `sample_item` row in the target batch that references the same
   `polarity` and `sample_item_type` parameters, but the route refuses a call
   that names neither a batch nor a sample
   ([samples_routes.py](../../server/backend/src/mascope_backend/api/routes/samples/samples_routes.py)),
-  so it is not a cross-batch query. Its time filter is written with
-  `julianday`, a SQLite function; no Postgres definition of it was found in
-  the repository and the path was not exercised for this document. The finder
-  needs a route of its own rather than an extension of this one.
+  so it is not a cross-batch query. Its time filter bounds
+  `sample_view.datetime_utc`: both bounds are inclusive, either works alone,
+  and a bound with no offset is read as UTC. The finder needs a route of its
+  own rather than an extension of this one.
 - **`sample_view`** joins `sample_item` to `sample_file`
   ([views.py](../../server/backend/src/mascope_backend/db/views.py)); it is the
   natural thing to query.
@@ -178,8 +184,8 @@ Facts a filter wants that are not columns:
   says `"applies_to_contexts": ["monoterpene_ox", "biogenic_soa"]`, and the
   contaminant and cyclic-siloxane lists say `"always_active": true`. Both keys
   are read and nothing acts on them: Stage A matches every active source in
-  every context ([reference_data_authoring.md](reference_data_authoring.md)
-  section 6; [known.py](../../libraries/reference/src/mascope_reference/known.py)
+  every context ([Reference compound lists](../user/guides/reference-lists.md#the-lists-that-ship-with-mascope);
+  [known.py](../../libraries/reference/src/mascope_reference/known.py)
   selects on `is_active` and polarity alone). The source row does not record
   them.
 - The chemistry context (`ambient-air`, `chamber`, `indoor-air`,
@@ -326,7 +332,7 @@ are editable on a copy. The ionization mode is deliberately not part of it
 already holds or has excluded; show what is left ("14 new samples, 2026-09-28
 to 2026-10-04"); on confirmation, append them through the same copy path and
 flag the batch for matching. Batch-peak anchors are frozen and append-only
-under arrival by design (`peak_assignment_batch.md` section 2), so appending
+under arrival by design (`peak_assignment_batch_primary.md` section 12.1), so appending
 is the case that layer was built for. Whether the copy path folds new members
 into the batch peaks on its own, or a refresh must ask for the fold, is to be
 read off the code in phase 1.
@@ -638,10 +644,10 @@ phase 1 depends on nothing.
   context's scope open. This design answers both from the sample side: the
   environment on the sample supplies the regimes and, where unambiguous, the
   context.
-- **`reference_data_authoring.md`**: the header keys it documents as "read,
-  but nothing acts on them yet" gain their consumer, and the source row
-  records them.
-- **`peak_assignment_batch.md`**: unchanged. A refresh is incremental arrival
+- **The user guide [Reference compound lists](../user/guides/reference-lists.md)**:
+  the header keys it documents as "read, but nothing acts on them yet" gain
+  their consumer, and the source row records them.
+- **`peak_assignment_batch_primary.md`**: unchanged. A refresh is incremental arrival
   into a batch, the case its frozen anchors exist for.
 - **`ui_state_persistence.md`**: the location chain is unchanged, since a
   filter produces an ordinary batch. The finder's filter is a candidate for

@@ -1,13 +1,14 @@
 """
 Hermetic test environment for the Mascope CLI suite.
 
-``mascope_cli`` initializes its Runtime singleton at import time: it requires
+``mascope_cli`` creates its Runtime singleton on first use, not at import
+(``mascope_cli.runtime``): the first command or fixture that touches it reads
 ``MASCOPE_PATH``, loads the ``*.mascope.toml`` layers from that path, and
 persists mode/env state to ``.runtime/state.json``. To keep this suite
 hermetic — runnable without a configured shell, and without clobbering a
 developer's real ``.runtime/state.json`` — this conftest builds a throwaway
 runtime home from the repo's real config layers and points ``MASCOPE_PATH``
-at it *before* any test module imports ``mascope_cli``.
+at it before anything can create the Runtime.
 
 The suite needs no Docker, Postgres, or network; commands that shell out are
 tested against a mocked ``lib.run`` / ``subprocess.run``.
@@ -64,8 +65,13 @@ def _reset_cli_state(monkeypatch):
     The entrypoint callback writes env vars, and commands persist mode/env
     to the singleton's state.json (e.g. ``mascope test run`` sets the active
     mode to "test"). Start each test clean and undo any drift afterwards.
+
+    The demo group's callback also writes ``MASCOPE_ENV`` and the singleton's
+    ``env.name``; ``delenv`` on a variable that is not set records nothing to
+    undo, so both are put back here by hand, or every later test would
+    resolve the demo env.
     """
-    for var in (
+    env_vars = (
         "MASCOPE_VERSION",
         "_MASCOPE_VERSION_PINNED",
         "MASCOPE_LOGLEVEL",
@@ -74,11 +80,16 @@ def _reset_cli_state(monkeypatch):
         "MASCOPE_API_PORT",
         "MASCOPE_FRONTEND_PORT",
         "MASCOPE_INSTANCE",
-    ):
+    )
+    for var in env_vars:
         monkeypatch.delenv(var, raising=False)
+    env_name = runtime.env.name
 
     yield
 
+    for var in env_vars:
+        os.environ.pop(var, None)
+    runtime.env.name = env_name
     runtime.state.mode = "dev"
     runtime.state.env = "default"
     runtime.state.override("mode", None)

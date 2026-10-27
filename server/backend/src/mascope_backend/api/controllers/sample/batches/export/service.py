@@ -4,18 +4,24 @@ Sample batch export service for generating batch scope Excel spreadsheets, csv f
 The spreadsheet carries what it takes to trace it back: the ids of the dataset,
 batch and target collections it was built from, the ids of the records behind
 every row, the acquisition context of each sample, and the provenance block of
-the build that wrote it (``mascope_backend.provenance``). Additions append - a
-sheet, a column or a row - so a reader written against an earlier export keeps
-finding what it found there, where it found it.
+the build that wrote it (``mascope_backend.provenance``). Each sample's
+instrument model, ion source, mass analyser, detector and polarity are also
+given as PSI-MS terms (``mascope_backend.vocabulary``), so that another tool
+can read what a sample was measured on. Additions append - a sheet, a column
+or a row - so a reader written against an earlier export keeps finding what
+it found there, where it found it.
 """
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import IO, Any
 
 import pandas as pd
 from sqlalchemy import select
 
+import mascope_signal.metadata as m_metadata
+from mascope_backend import vocabulary
 from mascope_backend.api.controllers.calibration.calibration_controller import (
     is_unfitted_record,
 )
@@ -36,6 +42,25 @@ from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.db import IonizationMode, async_session
 from mascope_backend.provenance import build_provenance, flatten_provenance
 from mascope_backend.runtime import runtime
+from mascope_file.name import get_sample_file_type
+
+
+@dataclass(frozen=True)
+class BatchSheets:
+    """
+    The sheets of a batch's spreadsheet, built and not yet written.
+
+    Built apart from the writing so that a batch's sheets read the same
+    wherever they are written: the export writes them to a download, and a
+    dataset's deposit package (``mascope_backend.deposit``) into its archive.
+    """
+
+    sample_batch_name: str
+    batch_info: pd.DataFrame
+    samples: pd.DataFrame
+    compounds: pd.DataFrame
+    ions: pd.DataFrame
+    provenance: pd.DataFrame
 
 
 @api_controller_background_task(
@@ -65,6 +90,44 @@ async def sample_batch_export_spreadsheet(
     :return: Dictionary with success message, filename, and download info.
     :rtype: dict
     """
+    sheets = await build_batch_sheets(sample_batch_id)
+    sample_batch_name = sheets.sample_batch_name
+
+    # --- Generate Excel file ---
+    dt_str = datetime.now().isoformat().replace("-", "").replace(":", "").split(".")[0]
+    file = download_name(dt_str, sample_batch_name, extension="xlsx")
+    filepath = user_temp_path(user_id, file)
+
+    runtime.logger.info(f"Writing spreadsheet to file {file}")
+
+    # Offload blocking I/O to thread pool
+    await asyncio.to_thread(write_batch_workbook, filepath, sheets)
+
+    message = f"Spreadsheet for sample batch '{sample_batch_name}' was exported to file '{file}'."
+    runtime.logger.info(message)
+
+    return {
+        "message": message,
+        "data": {"file": file},
+        "_notification_data": {
+            "sample_batch_id": sample_batch_id,
+            "download": file,
+        },
+    }
+
+
+async def build_batch_sheets(sample_batch_id: str) -> BatchSheets:
+    """
+    Build the sheets of a batch's spreadsheet.
+
+    Reads through its own sessions, as every controller it calls does, so it
+    needs a configured engine and nothing else: no request and no user.
+
+    :param sample_batch_id: ID of the sample batch to export.
+    :type sample_batch_id: str
+    :return: The sheets, in the order the workbook holds them.
+    :rtype: BatchSheets
+    """
     # --- Fetch batch data ---
     batch_data_result = await get_batch_data(sample_batch_id)
     data = batch_data_result["data"]
@@ -87,6 +150,7 @@ async def sample_batch_export_spreadsheet(
     ionization_modes = await _ionization_mode_names(
         {sample.get("ionization_mode_id") for sample in data["samples"]}
     )
+    instrument_models = await asyncio.to_thread(_instrument_models, data["samples"])
 
     # --- Prepare lookup dictionaries ---
     samples_lookup = {sample["sample_item_id"]: sample for sample in data["samples"]}
@@ -122,6 +186,8 @@ async def sample_batch_export_spreadsheet(
         [""],
         ["Instruments", _distinct(data["samples"], "instrument")],
         ["Method files", _distinct(data["samples"], "method_file")],
+        [""],
+        *_dataset_metadata_rows(dataset),
     ]
     batch_info_df = pd.DataFrame(batch_info_data)
 
@@ -170,6 +236,13 @@ async def sample_batch_export_spreadsheet(
                 "Sequence run ID": sample.get("sequence_run_id"),
                 "Agent ID": sample.get("agent_id"),
                 "File SHA-256": sample.get("sha256"),
+                # The same acquisition context in PSI-MS terms. Empty where
+                # the vocabulary has no term for what is recorded.
+                **_vocabulary_columns(
+                    instrument_models.get(sample.get("sample_file_id")),
+                    sample.get("instrument_type"),
+                    sample.get("polarity"),
+                ),
             }
         )
     samples_df = pd.DataFrame(samples_data)
@@ -190,6 +263,8 @@ async def sample_batch_export_spreadsheet(
                 "Match score": compound.get("match_score"),
                 "Sample item ID": sample_id,
                 "Target compound ID": compound.get("target_compound_id"),
+                "CAS number": compound.get("cas_number"),
+                "InChIKey": compound.get("inchikey"),
             }
         )
     compounds_df = pd.DataFrame(compounds_data) if compounds_data else pd.DataFrame()
@@ -231,64 +306,37 @@ async def sample_batch_export_spreadsheet(
     )
     provenance_df = pd.DataFrame(flatten_provenance(provenance))
 
-    # --- Generate Excel file ---
-    dt_str = datetime.now().isoformat().replace("-", "").replace(":", "").split(".")[0]
-    file = download_name(dt_str, sample_batch_name, extension="xlsx")
-    filepath = user_temp_path(user_id, file)
-
-    runtime.logger.info(f"Writing spreadsheet to file {file}")
-
-    # Offload blocking I/O to thread pool
-    await asyncio.to_thread(
-        _write_excel_file,
-        filepath,
-        batch_info_df,
-        samples_df,
-        compounds_df,
-        ions_df,
-        provenance_df,
+    return BatchSheets(
+        sample_batch_name=sample_batch_name,
+        batch_info=batch_info_df,
+        samples=samples_df,
+        compounds=compounds_df,
+        ions=ions_df,
+        provenance=provenance_df,
     )
 
-    message = f"Spreadsheet for sample batch '{sample_batch_name}' was exported to file '{file}'."
-    runtime.logger.info(message)
 
-    return {
-        "message": message,
-        "data": {"file": file},
-        "_notification_data": {
-            "sample_batch_id": sample_batch_id,
-            "download": file,
-        },
-    }
-
-
-def _write_excel_file(
-    filepath: str,
-    batch_info_df: pd.DataFrame,
-    samples_df: pd.DataFrame,
-    compounds_df: pd.DataFrame,
-    ions_df: pd.DataFrame,
-    provenance_df: pd.DataFrame,
-) -> None:
+def write_batch_workbook(target: str | IO[bytes], sheets: BatchSheets) -> None:
     """
-    Write DataFrames to Excel file with auto-adjusted columns.
+    Write a batch's sheets as an Excel workbook, columns sized to fit.
 
-    :param filepath: Full path to output Excel file
-    :param batch_info_df: Batch metadata DataFrame
-    :param samples_df: Samples with match data DataFrame
-    :param compounds_df: Match compounds DataFrame
-    :param ions_df: Match ions DataFrame
-    :param provenance_df: The provenance block as key/value rows
+    A sheet of matches is left out when the batch has none. Blocking; run it
+    in a thread.
+
+    :param target: The file's path, or a binary stream to write it to.
+    :param sheets: The sheets, from :func:`build_batch_sheets`.
     """
-    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
-        batch_info_df.to_excel(writer, sheet_name="Batch", index=False, header=False)
-        samples_df.to_excel(writer, sheet_name="Samples", index=False)
+    with pd.ExcelWriter(target, engine="openpyxl") as writer:
+        sheets.batch_info.to_excel(
+            writer, sheet_name="Batch", index=False, header=False
+        )
+        sheets.samples.to_excel(writer, sheet_name="Samples", index=False)
 
-        if not compounds_df.empty:
-            compounds_df.to_excel(writer, sheet_name="Match compounds", index=False)
-        if not ions_df.empty:
-            ions_df.to_excel(writer, sheet_name="Match ions", index=False)
-        provenance_df.to_excel(
+        if not sheets.compounds.empty:
+            sheets.compounds.to_excel(writer, sheet_name="Match compounds", index=False)
+        if not sheets.ions.empty:
+            sheets.ions.to_excel(writer, sheet_name="Match ions", index=False)
+        sheets.provenance.to_excel(
             writer, sheet_name="Provenance", index=False, header=False
         )
 
@@ -315,6 +363,133 @@ async def _ionization_mode_names(mode_ids: set[str | None]) -> dict[str, str]:
             ).where(IonizationMode.ionization_mode_id.in_(mode_ids))
         )
         return dict(rows.all())
+
+
+def _instrument_models(samples: list[dict]) -> dict[str, str | None]:
+    """
+    The instrument model each sample's raw file names, by sample file id.
+
+    The model is not recorded in the database, only in the raw file, so it is
+    read from there: an Orbitrap file's header, which opens in about a
+    millisecond. A TOF file names no model the vocabulary has a term for, and
+    is not opened. Blocking; run it in a thread.
+
+    :param samples: Sample dicts from ``get_batch_data``.
+    :return: The model by sample file id, None where there is no raw file to
+        read or it could not be read. An export is not refused for one file.
+    :rtype: dict[str, str | None]
+    """
+    files = {
+        sample["sample_file_id"]: sample["filename"]
+        for sample in samples
+        if sample.get("instrument_type") == "orbi" and sample.get("sample_file_id")
+    }
+    return {file_id: _instrument_model(filename) for file_id, filename in files.items()}
+
+
+def _instrument_model(filename: str) -> str | None:
+    """
+    The instrument model one Orbitrap sample file's raw file names.
+
+    :param filename: The sample file's name.
+    :return: The model, such as "Orbitrap Exploris 120"; None when the raw
+        file is not kept or cannot be read.
+    :rtype: str | None
+    """
+    try:
+        if get_sample_file_type(filename) != "orbi_raw":
+            return None
+        details = m_metadata.metadata_factory(filename).instrument_details
+    except Exception as error:  # noqa: BLE001 - one unreadable file costs its cell
+        runtime.logger.warning(
+            f"Could not read the instrument model of '{filename}': {error}"
+        )
+        return None
+    return details.get("Model") or None
+
+
+def _vocabulary_columns(
+    model: str | None, instrument_type: str | None, polarity: str | None
+) -> dict[str, str | None]:
+    """
+    A sample's acquisition context as PSI-MS terms, for the Samples sheet.
+
+    Each term is written as its name and its accession, as a ``cvParam``
+    carries it: the model too is its PSI-MS name, not the reader's spelling
+    of it ("Orbitrap XL" reads "LTQ Orbitrap XL"). A value the vocabulary
+    cannot map, such as a family name, leaves both cells empty.
+
+    :param model: The instrument model the raw file names, None if unknown.
+    :param instrument_type: ``"orbi"`` or ``"tof"``.
+    :param polarity: The sample's polarity, ``"+"`` or ``"-"``.
+    :return: The columns, in their order.
+    :rtype: dict[str, str | None]
+    """
+    model_term = vocabulary.instrument_model_term(model)
+    source = vocabulary.source_term(instrument_type)
+    analyser = vocabulary.analyser_term(instrument_type)
+    detector = vocabulary.detector_term(instrument_type)
+    polarities = vocabulary.polarity_terms(polarity)
+    return {
+        "Instrument model": model_term.name if model_term else None,
+        "Instrument model accession": model_term.accession if model_term else None,
+        "Ion source": source.name if source else None,
+        "Ion source accession": source.accession if source else None,
+        "Mass analyser": analyser.name if analyser else None,
+        "Mass analyser accession": analyser.accession if analyser else None,
+        "Detector": detector.name if detector else None,
+        "Detector accession": detector.accession if detector else None,
+        "Scan polarity": "; ".join(term.name for term in polarities) or None,
+        "Scan polarity accession": (
+            "; ".join(term.accession for term in polarities) or None
+        ),
+    }
+
+
+def _dataset_metadata_rows(dataset: dict | None) -> list[list]:
+    """
+    The dataset's descriptive metadata as Batch sheet rows.
+
+    Every row is written whether or not the dataset has the field, empty when
+    it does not, so the sheet's shape does not depend on what a user filled
+    in. A list renders its entries joined with ``"; "``, an entry's own parts
+    with ``", "`` - so an affiliation or keyword with a comma in it stays
+    readable.
+
+    :param dataset: The dataset as ``get_dataset`` reports it, None for a
+        batch without one.
+    :return: Label/value rows: License, Authors, Keywords, Related
+        identifiers, Funding.
+    :rtype: list[list]
+    """
+    dataset = dataset or {}
+
+    def joined(entries: list | None, render) -> str | None:
+        return "; ".join(render(entry) for entry in entries) if entries else None
+
+    def author(entry: dict) -> str:
+        text = entry["name"]
+        if entry.get("orcid"):
+            text += f" ({entry['orcid']})"
+        if entry.get("affiliation"):
+            text += f", {entry['affiliation']}"
+        return text
+
+    def related(entry: dict) -> str:
+        return f"{entry['relation']}: {entry['identifier']}"
+
+    def funding(entry: dict) -> str:
+        if entry.get("award"):
+            return f"{entry['funder']}, {entry['award']}"
+        return entry["funder"]
+
+    return [
+        ["License", dataset.get("license")],
+        ["Authors", joined(dataset.get("authors"), author)],
+        ["Keywords", joined(dataset.get("keywords"), str)],
+        ["Related identifiers", joined(dataset.get("related_identifiers"), related)],
+        ["Funding", joined(dataset.get("funding"), funding)],
+    ]
 
 
 def _distinct(samples: list[dict], key: str) -> str:

@@ -7,6 +7,7 @@ from mascope_backend.runtime import runtime
 from mascope_backend.socket import sio
 from mascope_backend.socket.records.config import record_sync_config
 from mascope_backend.socket.records.schemas import RecordEvent
+from mascope_backend.socket.signed_in import SIGNED_IN_ROOM
 
 
 async def emit_record_created(
@@ -21,7 +22,7 @@ async def emit_record_created(
     :param record_type: Record type (e.g., 'sample_batch')
     :param record_id: ID of created record
     :param record: Full record data
-    :param room: Target room(s) or None to broadcast
+    :param room: Target room(s) or None for every signed-in socket
     """
     event = RecordEvent(
         event_id=gen_id(record_sync_config.EVENT_ID_LENGTH),
@@ -53,7 +54,7 @@ async def emit_record_updated(
     :param record_type: Record type (e.g., 'sample_batch')
     :param record_id: ID of updated record
     :param record: Full or partial record data
-    :param room: Target room(s) or None to broadcast
+    :param room: Target room(s) or None for every signed-in socket
     :param changed_fields: List of field names that changed (enables partial merge)
     """
     event = RecordEvent(
@@ -77,7 +78,7 @@ async def emit_record_deleted(
 
     :param record_type: Record type (e.g., 'sample_batch')
     :param record_id: ID of deleted record
-    :param room: Target room(s) or None to broadcast
+    :param room: Target room(s) or None for every signed-in socket
     """
     event = RecordEvent(
         event_id=gen_id(record_sync_config.EVENT_ID_LENGTH),
@@ -112,19 +113,23 @@ async def emit_record_reload(
 
 async def _emit(event: RecordEvent, room: str | list[str] | None) -> None:
     """
-    Emit event to room(s) or broadcast to all if room is None.
+    Emit event to room(s), or to every signed-in socket if room is None.
+
+    A broadcast goes to the signed-in room, not the whole namespace: the
+    handshake accepts sockets that have not signed in and sockets of an account
+    held at the password screen, and neither may hear when records change
+    (:mod:`mascope_backend.socket.signed_in`).
 
     :param event: Event to emit
-    :param room: Target room(s), or None to broadcast to all connected clients
+    :param room: Target room(s), or None for every signed-in socket
     """
     event_name = event.event_name()
     payload = event.model_dump(mode="json")
 
-    # Broadcast to all if room is None
     if room is None:
         try:
-            await sio.emit(event_name, payload, namespace="/")
-            runtime.logger.debug(f"Broadcast {event_name} to all clients")
+            await sio.emit(event_name, payload, room=SIGNED_IN_ROOM, namespace="/")
+            runtime.logger.debug(f"Broadcast {event_name} to signed-in clients")
         except Exception:
             runtime.logger.exception(f"Failed to broadcast {event_name}")
         return

@@ -29,7 +29,7 @@ const RESOLVED = {
 // `Process-ID` header names the background task. The pane's notification
 // handler is kept so a test can deliver what a search reports, and the result
 // route serves one row for whichever search is asked for.
-const { search, previewCalls, handlers, fetchResult } = vi.hoisted(() => {
+const { search, previewCalls, handlers, fetchResult, claim } = vi.hoisted(() => {
   let launched = 0
   return {
     search: vi.fn(() =>
@@ -39,7 +39,8 @@ const { search, previewCalls, handlers, fetchResult } = vi.hoisted(() => {
     handlers: new Map(),
     fetchResult: vi.fn(() =>
       Promise.resolve([{ target_compound_formula: 'C10H16O4', ionization_mechanism_id: 'mech-1' }])
-    )
+    ),
+    claim: vi.fn()
   }
 })
 
@@ -79,7 +80,7 @@ vi.mock('@/stores', () => ({
         left: () => ({}),
         right: () => ({})
       },
-      notification: { on: (type, handler) => handlers.set(type, handler) }
+      notification: { on: (type, handler) => handlers.set(type, handler), claim }
     }
   })
 }))
@@ -265,6 +266,21 @@ describe('PanePeakSearch waiting for its own search', () => {
 
     expect(lastSearch()).toMatchObject({ mz_precision: 5 })
     expect(wrapper.vm.pendingProcessId).toBe((await acknowledged(-1))['process-id'])
+  })
+
+  // The pane renders the outcome where the toast would repeat it - the rows,
+  // or "No results found" - so each search it launches is claimed.
+  it('claims every search it launches', async () => {
+    await mountPane()
+    const first = (await acknowledged(-1))['process-id']
+    expect(claim).toHaveBeenLastCalledWith(first)
+
+    usePeakAssignParams().params.mz_precision_ppm = 5
+    await flushPromises()
+
+    const second = (await acknowledged(-1))['process-id']
+    expect(second).not.toBe(first)
+    expect(claim).toHaveBeenLastCalledWith(second)
   })
 
   it('keeps waiting for the later search when an earlier one is acknowledged last', async () => {

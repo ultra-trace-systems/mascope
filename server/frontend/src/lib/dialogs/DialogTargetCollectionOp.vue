@@ -31,9 +31,14 @@ import { BaseClipboardContext } from '@/lib/base'
 import {
   isValidChemicalFormula,
   isSameCompound,
+  isIsomer,
+  inchikeyOf,
   findExistingCompound,
   parseCompoundPaste,
-  validateCompoundPaste
+  validateCompoundPaste,
+  compoundIdentity,
+  isValidInchi,
+  isValidInchikey
 } from '@/lib/chem'
 import { clone } from '@/lib/utils'
 import { collectionTypes, getAllowedDatasetTypes, getAllowedBatchTypes } from '@/lib/constants'
@@ -93,8 +98,30 @@ const selected = reactive({
 const add = reactive({
   formula: null,
   name: null,
-  cas: null
+  cas: null,
+  inchikey: null,
+  inchi: null,
+  smiles: null
 })
+// The Create new form's Structure group, collapsed until the user opens it.
+const addStructureCollapsed = ref(true)
+// Stored compounds a pasted or entered row reused while carrying a structure.
+// The stored compound keeps its own: a structure is changed in Edit compound,
+// so the row says the one given was not applied.
+const structureNotApplied = ref(new Set())
+// Inside the row's Add or Keep badge: the paste panel lays its badges out
+// absolutely, so an icon beside one would sit on top of it.
+const structureNotAppliedTip =
+  'This row reuses a stored compound, which keeps its own structure. ' +
+  'The InChIKey, InChI or SMILES given was not applied: change it in Edit compound.'
+// Stored compounds a pasted or entered row matched by its InChIKey: the same
+// structure, so nothing of it is left out.
+const structureMatched = ref(new Set())
+const structureMatchedTip = "This row has the stored compound's InChIKey: it is the same compound."
+// A created row of a formula another compound has, told apart by its InChIKey.
+const isomerTip = (other) =>
+  `Created as another compound: its InChIKey differs from that of ${other}, ` +
+  'which has the same formula.'
 const deleteOrphans = ref(true)
 
 const key = reactive({
@@ -163,9 +190,18 @@ const changes = computed(() =>
         status = '4 remove'
       }
     }
+    // The compound of the same formula a created row was told apart from.
+    const isomer = created
+      ? [...app.data.target.compound.list, ...compounds.created].find((other) =>
+          isIsomer(other, comp)
+        )
+      : null
     return {
       ...comp,
-      status
+      status,
+      structureNotApplied: structureNotApplied.value.has(comp.target_compound_id),
+      structureMatched: structureMatched.value.has(comp.target_compound_id),
+      isomerOf: isomer ? isomer.target_compound_name || isomer.target_compound_formula : null
     }
   })
 )
@@ -292,8 +328,10 @@ function remove(compound) {
   if (compound.status == '1 create') {
     compounds.created = compounds.created.filter((selected) => !isSameCompound(selected, compound))
   } else {
+    // Selected compounds are stored ones: compare by id, as a formula match
+    // would take a same-formula isomer along.
     compounds.selected = compounds.selected.filter(
-      (selected) => !isSameCompound(selected, compound)
+      (selected) => selected.target_compound_id !== compound.target_compound_id
     )
   }
 }
@@ -301,16 +339,41 @@ function restore(compound) {
   compounds.selected.push(compound)
 }
 
+// Whether the stored compound a row resolved to is in the selection already.
+// A row matched by its InChIKey is that compound, so it is checked by id: a
+// keyless compound of the formula in the selection is not it. Any other row
+// is checked by identity against the selection, as it was before structures,
+// so a formula-only row does not add a second compound of its formula.
+function inSelection(row, record) {
+  const key = inchikeyOf(row)
+  if (record && key && key === inchikeyOf(record)) {
+    return compounds.selected.some((comp) => comp.target_compound_id === record.target_compound_id)
+  }
+  return compounds.selected.some((comp) => isSameCompound(comp, row))
+}
+
 function loadSpreadsheet({ rows }) {
   let prexisting = []
+  // the pasted row behind each entry of prexisting
+  const prexistingRows = []
   rows.forEach((compound) => {
+    const identity = compoundIdentity(compound)
     const record = findExistingCompound(app.data.target.compound.list, compound)
     if (record) {
       prexisting.push(record)
+      prexistingRows.push(compound)
+      if (identity.inchikey && inchikeyOf(identity) === inchikeyOf(record)) {
+        structureMatched.value = new Set(structureMatched.value).add(record.target_compound_id)
+      } else if (Object.values(identity).some(Boolean)) {
+        structureNotApplied.value = new Set(structureNotApplied.value).add(
+          record.target_compound_id
+        )
+      }
     } else {
       const created = findExistingCompound(compounds.created, compound)
       if (!created) {
-        compounds.created.push(compound)
+        // A blank identity cell is no identity: the API refuses an empty one.
+        compounds.created.push({ ...compound, ...identity })
       }
     }
   })
@@ -332,7 +395,7 @@ function loadSpreadsheet({ rows }) {
       compound
     )
   })
-  const unselected = (added) => !compounds.selected.some((comp) => isSameCompound(comp, added))
+  const unselected = (added, i) => !inSelection(prexistingRows[i], added)
   compounds.selected.push(...reconciled.filter(unselected))
   // force DataTable re-render
   key.targets += 1
@@ -515,6 +578,8 @@ const invalidated = computed(() => {
 const invalidFormula = computed(
   () => add.formula.length > 0 && !isValidChemicalFormula(add.formula)
 )
+const invalidAddInchikey = computed(() => !isValidInchikey(add.inchikey))
+const invalidAddInchi = computed(() => !isValidInchi(add.inchi))
 
 // Workspace scope options for the scope selector
 const workspaceScopeOptions = computed(() => {
@@ -539,7 +604,8 @@ const existingInputCompound = computed(() =>
   findExistingCompound(app.data.target.compound.list, {
     target_compound_formula: add.formula,
     target_compound_name: add.name,
-    cas_number: add.cas
+    cas_number: add.cas,
+    inchikey: add.inchikey
   })
 )
 
@@ -550,11 +616,12 @@ const alreadyInSelection = computed(() => {
   const searchCompound = {
     target_compound_formula: add.formula,
     target_compound_name: add.name,
-    cas_number: add.cas
+    cas_number: add.cas,
+    inchikey: add.inchikey
   }
 
   return (
-    compounds.selected.some((comp) => isSameCompound(comp, searchCompound)) ||
+    inSelection(searchCompound, existingInputCompound.value) ||
     compounds.created.some((comp) => isSameCompound(comp, searchCompound))
   )
 })
@@ -571,6 +638,18 @@ const addCompoundButtonConfig = computed(() => {
     return {
       label: 'Add compound',
       tooltip: 'Invalid chemical formula'
+    }
+  }
+  if (invalidAddInchikey.value) {
+    return {
+      label: 'Add compound',
+      tooltip: 'An InChIKey reads like WQZGKKKJIJFFOK-GASJEMHNSA-N'
+    }
+  }
+  if (invalidAddInchi.value) {
+    return {
+      label: 'Add compound',
+      tooltip: 'An InChI starts with InChI='
     }
   }
   if (alreadyInSelection.value) {
@@ -594,8 +673,24 @@ const addCompoundButtonConfig = computed(() => {
 })
 
 const addCompoundButtonDisabled = computed(
-  () => !add.formula.trim() || invalidFormula.value || alreadyInSelection.value
+  () =>
+    !add.formula.trim() ||
+    invalidFormula.value ||
+    invalidAddInchikey.value ||
+    invalidAddInchi.value ||
+    alreadyInSelection.value
 )
+
+// Empties the Create new form, its Structure group collapsed again.
+function resetAddInput() {
+  add.formula = ''
+  add.name = ''
+  add.cas = ''
+  add.inchikey = ''
+  add.inchi = ''
+  add.smiles = ''
+  addStructureCollapsed.value = true
+}
 
 /**
  * Computed property that filters global batch selection to current dataset.
@@ -662,9 +757,9 @@ async function init(mode) {
   compounds.selected = []
   compounds.initial = []
   compounds.created = []
-  add.name = ''
-  add.formula = ''
-  add.cas = ''
+  structureNotApplied.value = new Set()
+  structureMatched.value = new Set()
+  resetAddInput()
   batches.loaded = []
   batches.selected = []
 
@@ -736,26 +831,32 @@ async function init(mode) {
 
 /**
  * Adds a new compound to the list.
- * This function first checks if the 'Formula' input is not empty,
- * then it adds the compound, and finally, it resets the input fields.
+ * This function first checks if the 'Formula' input is not empty and the
+ * structure has the shape the API takes, then it adds the compound, and
+ * finally, it resets the input fields.
  */
 const addCompound = () => {
   if (!add.formula.trim()) {
     return // Prevent adding if formula is empty
+  }
+  // Enter adds too, past the disabled button: a malformed InChIKey or InChI
+  // would fail the whole save.
+  if (invalidAddInchikey.value || invalidAddInchi.value) {
+    return
   }
   loadSpreadsheet({
     rows: [
       {
         target_compound_formula: add.formula,
         target_compound_name: add.name,
-        cas_number: add.cas
+        cas_number: add.cas,
+        inchikey: add.inchikey,
+        inchi: add.inchi,
+        smiles: add.smiles
       }
     ]
   })
-  // Reset input fields
-  add.formula = ''
-  add.name = ''
-  add.cas = ''
+  resetAddInput()
 }
 const onEnter = (event) => {
   if (visible.value && event.code == 'Enter') {
@@ -792,9 +893,7 @@ watch(visible, (value) => {
     batches.loaded = []
     batches.selected = []
     batches.initial = []
-    add.name = ''
-    add.formula = ''
-    add.cas = ''
+    resetAddInput()
   } else {
     app.ui.help.set(layer)
   }
@@ -1016,12 +1115,26 @@ watch(
                           <li><b>1 column:</b> formula</li>
                           <li><b>2 columns:</b> name, formula</li>
                           <li><b>3 columns:</b> name, formula, CAS number</li>
+                          <li>
+                            <b>4 to 6 columns:</b> name, formula, CAS number, then InChIKey,
+                            InChI and SMILES
+                          </li>
                         </ul>
                         <p>
                           Only the formula is required. Rows matching an existing compound by
                           formula or CAS number reuse it instead of creating a duplicate, and
                           each row shows whether it will be created, added, kept or removed
                           when you save.
+                        </p>
+                        <p>
+                          A row whose InChIKey differs from that of a compound with the same
+                          formula is an isomer: it is created, and its row says so. A row with
+                          the stored compound's InChIKey reuses it.
+                        </p>
+                        <p>
+                          A reused compound keeps its own structure: a pasted InChIKey, InChI
+                          or SMILES is not applied to it, and its row says so. Change it in
+                          <b>Edit compound</b>.
                         </p>
                       `,
                       { layer, doc: app.ui.help.docUrl('guides/target-collections/#add-compounds') }
@@ -1044,7 +1157,8 @@ watch(
                       `"
                     >
                       Add compounds by pasting spreadsheet cells here (a formula column alone, or
-                      name + formula + optional CAS) or by using the panel to the right.
+                      name + formula + optional CAS, InChIKey, InChI and SMILES) or by using the
+                      panel to the right.
                     </span>
                   </div>
                   <BaseClipboardContext
@@ -1058,7 +1172,7 @@ watch(
                       :dataKey="
                         (item) =>
                           item.target_compound_id ||
-                          `create_${item.target_compound_formula}_${item.target_compound_name || ''}_${item.cas_number || ''}`
+                          `create_${item.target_compound_formula}_${item.target_compound_name || ''}_${item.cas_number || ''}_${item.inchikey || ''}`
                       "
                       v-if="changes.length"
                       :value="changes"
@@ -1089,6 +1203,14 @@ watch(
                               :pt="statusBadgePt"
                             >
                               Create
+                              <i
+                                v-if="slotProps.data.isomerOf"
+                                class="pi pi-clone structure-isomer"
+                                role="img"
+                                aria-label="Created as an isomer"
+                                v-tooltip.top="isomerTip(slotProps.data.isomerOf)"
+                                style="margin-left: 0.4rem; font-size: 13px"
+                              />
                             </Message>
                             <Message
                               v-else-if="slotProps.data.status == '2 add'"
@@ -1098,6 +1220,22 @@ watch(
                               :pt="statusBadgePt"
                             >
                               Add
+                              <i
+                                v-if="slotProps.data.structureNotApplied"
+                                class="pi pi-info-circle structure-not-applied"
+                                role="img"
+                                aria-label="Structure not applied"
+                                v-tooltip.top="structureNotAppliedTip"
+                                style="margin-left: 0.4rem; font-size: 13px"
+                              />
+                              <i
+                                v-if="slotProps.data.structureMatched"
+                                class="pi pi-link structure-matched"
+                                role="img"
+                                aria-label="Same structure as the stored compound"
+                                v-tooltip.top="structureMatchedTip"
+                                style="margin-left: 0.4rem; font-size: 13px"
+                              />
                             </Message>
                             <Message
                               v-else-if="slotProps.data.status == '3 keep'"
@@ -1107,6 +1245,22 @@ watch(
                               :pt="statusBadgePt"
                             >
                               Keep
+                              <i
+                                v-if="slotProps.data.structureNotApplied"
+                                class="pi pi-info-circle structure-not-applied"
+                                role="img"
+                                aria-label="Structure not applied"
+                                v-tooltip.top="structureNotAppliedTip"
+                                style="margin-left: 0.4rem; font-size: 13px"
+                              />
+                              <i
+                                v-if="slotProps.data.structureMatched"
+                                class="pi pi-link structure-matched"
+                                role="img"
+                                aria-label="Same structure as the stored compound"
+                                v-tooltip.top="structureMatchedTip"
+                                style="margin-left: 0.4rem; font-size: 13px"
+                              />
                             </Message>
                             <Message
                               v-else-if="slotProps.data.status == '4 remove'"
@@ -1189,7 +1343,8 @@ watch(
                         </p>
                         <p>
                           <b>Create new</b> adds a single compound manually. The formula is
-                          required; name and CAS number are optional.
+                          required. The name and, under <b>Structure</b>, the CAS number,
+                          InChIKey, InChI and SMILES are optional.
                         </p>
                       `,
                       { layer, doc: app.ui.help.docUrl('guides/target-collections/#add-compounds') }
@@ -1288,7 +1443,8 @@ watch(
                           ?.toLowerCase()
                           .includes(query)
                         const casMatch = comp.cas_number?.toLowerCase().includes(query)
-                        return nameMatch || formulaMatch || casMatch
+                        const inchikeyMatch = comp.inchikey?.toLowerCase().includes(query)
+                        return nameMatch || formulaMatch || casMatch || inchikeyMatch
                       })
                     "
                     sortField="mz"
@@ -1329,23 +1485,72 @@ watch(
                       </template>
                     </Column>
                   </DataTable>
+                  <!--
+                    Scrolls from the top when the Structure group is open: a
+                    grid that centres its content would clip the formula input
+                    above where it can be scrolled to.
+                  -->
                   <div
                     v-if="selected.source == 'input'"
-                    style="min-width: 500px; height: 100%; display: grid; place-items: center"
+                    style="
+                      min-width: 500px;
+                      max-height: 390px;
+                      overflow-y: auto;
+                      display: flex;
+                      justify-content: center;
+                    "
                   >
-                    <div class="col" style="gap: 0.5rem; margin-top: 2rem">
-                      <FloatLabel>
-                        <InputText v-model="add.formula" id="add-compound-formula" />
-                        <label for="add-compound-formula">Formula</label>
-                      </FloatLabel>
-                      <FloatLabel>
-                        <InputText v-model="add.name" id="add-compound-name" />
-                        <label for="add-compound-name">Name</label>
-                      </FloatLabel>
-                      <FloatLabel>
-                        <InputText v-model="add.cas" id="add-compound-cas" />
-                        <label for="add-compound-cas">CAS Number</label>
-                      </FloatLabel>
+                    <div
+                      class="col"
+                      style="flex-direction: column; width: 26rem; margin-top: 1.75rem"
+                    >
+                      <div class="compound-fields">
+                        <FloatLabel>
+                          <InputText v-model="add.formula" id="add-compound-formula" />
+                          <label for="add-compound-formula">Formula</label>
+                        </FloatLabel>
+                        <FloatLabel>
+                          <InputText v-model="add.name" id="add-compound-name" />
+                          <label for="add-compound-name">Name</label>
+                        </FloatLabel>
+                      </div>
+                      <Panel
+                        header="Structure"
+                        toggleable
+                        v-model:collapsed="addStructureCollapsed"
+                        style="width: 100%"
+                      >
+                        <p style="margin: 0; font-size: 0.875rem">
+                          What this target stands for. A match on its formula does not confirm the
+                          structure.
+                        </p>
+                        <div class="compound-fields" style="margin-top: 1.75rem">
+                          <FloatLabel>
+                            <InputText v-model="add.cas" id="create-compound-cas" />
+                            <label for="create-compound-cas">CAS</label>
+                          </FloatLabel>
+                          <FloatLabel>
+                            <InputText
+                              v-model="add.inchikey"
+                              id="create-compound-inchikey"
+                              :invalid="invalidAddInchikey"
+                            />
+                            <label for="create-compound-inchikey">InChIKey</label>
+                          </FloatLabel>
+                          <FloatLabel>
+                            <InputText
+                              v-model="add.inchi"
+                              id="create-compound-inchi"
+                              :invalid="invalidAddInchi"
+                            />
+                            <label for="create-compound-inchi">InChI</label>
+                          </FloatLabel>
+                          <FloatLabel>
+                            <InputText v-model="add.smiles" id="create-compound-smiles" />
+                            <label for="create-compound-smiles">SMILES</label>
+                          </FloatLabel>
+                        </div>
+                      </Panel>
                       <Button
                         :label="addCompoundButtonConfig?.label ?? 'Add compound'"
                         icon="pi pi-plus"
@@ -1353,7 +1558,7 @@ watch(
                         :disabled="addCompoundButtonDisabled"
                         :severity="addCompoundButtonConfig?.severity ?? 'primary'"
                         v-tooltip="addCompoundButtonConfig?.tooltip ?? 'Add compound'"
-                        style="width: 210px; margin-top: 2rem"
+                        style="width: 210px; margin: 0.5rem auto 0 auto"
                       />
                     </div>
                   </div>
@@ -1520,6 +1725,19 @@ watch(
 .col {
   display: flex;
   gap: 0.5rem;
+}
+
+/* Create new's inputs, two to a row so the open Structure group fits. */
+.compound-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.75rem 0.5rem;
+}
+.compound-fields :deep(.p-floatlabel) {
+  margin: 0;
+}
+.compound-fields :deep(input) {
+  width: 100%;
 }
 
 :deep(.p-panel-header) {

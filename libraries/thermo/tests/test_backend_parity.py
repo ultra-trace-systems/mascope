@@ -238,6 +238,12 @@ def test_centroids_per_scan_matches_thermo(monkeypatch, path):
     here would silently tolerate a real decode regression. S:N is
     ``(intensity - baseline) / (noise - baseline)`` (matches Thermo to f32).
     Works on Exploris too.
+
+    The flags too, centroid for centroid: OpenTFRaw's are decoded from the
+    descriptor word it stores per centroid, the Thermo library's are its own
+    (measured: identical on every scan of 198 files, lock-mass files among
+    them). Both read every stored centroid, reference and exception peaks
+    included, so the peak counts compared are the full lists.
     """
     path = str(path)
 
@@ -248,10 +254,12 @@ def test_centroids_per_scan_matches_thermo(monkeypatch, path):
 
     compared = 0
     for t, o in zip(th, ot):
+        assert o["scan"] == t["scan"], "scan numbers differ"
         assert o["masses"].size == t["masses"].size, (
             f"peak count differs: OpenTFRaw {o['masses'].size} vs "
             f"Thermo {t['masses'].size}"
         )
+        np.testing.assert_array_equal(o["flags"], t["flags"])
         if t["masses"].size == 0:
             continue
         compared += 1
@@ -368,6 +376,54 @@ def test_profile_matches_thermo(monkeypatch, path):
 
     if compared == 0:
         pytest.skip("no profile-mode MS1 scan with signal to compare")
+
+
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_per_scan_reads_match_thermo(monkeypatch, path):
+    """The reads a caller takes one scan at a time by number agree under both
+    backends: what the axis fingerprint reads.
+
+    ``centroid_masses`` beside ``centroid_flags``, every stored centroid
+    with its flags, in one order; ``scan_profile``, OpenTFRaw's stored
+    points the Thermo library's non-zero ones, at the bounds of
+    :func:`test_profile_matches_thermo`; and the run's start and end times
+    from the run header.
+    """
+    path = str(path)
+    reads = {}
+    for name in ("thermo", "opentfraw"):
+        monkeypatch.setenv("MASCOPE_THERMO_BACKEND", name)
+        with open_backend(path) as backend:
+            rows = backend.scan_rows()
+            reads[name] = (
+                backend.run_time_range(),
+                {
+                    scan: (
+                        backend.centroid_masses(scan),
+                        backend.centroid_flags(scan),
+                        backend.scan_profile(scan),
+                        row["IsCentroidScan"],
+                    )
+                    for scan, row in rows.items()
+                },
+            )
+    (th_times, th_scans), (ot_times, ot_scans) = reads["thermo"], reads["opentfraw"]
+
+    np.testing.assert_allclose(ot_times, th_times, rtol=1e-9)
+    assert list(ot_scans) == list(th_scans)
+    for scan, (th_mz, th_flags, (th_pmz, th_pint), centroid) in th_scans.items():
+        ot_mz, ot_flags, (ot_pmz, ot_pint), _ = ot_scans[scan]
+        assert ot_mz.size == ot_flags.size == th_flags.size, f"scan {scan}"
+        np.testing.assert_array_equal(ot_flags, th_flags, err_msg=f"scan {scan}")
+        np.testing.assert_allclose(ot_mz, th_mz, rtol=0, atol=1e-5)
+        if centroid:
+            continue
+        om, tm = ot_pmz[ot_pint > 0], th_pmz[th_pint > 0]
+        assert om.size == tm.size, f"scan {scan}: non-zero profile point count"
+        if tm.size:
+            ppm = (om - tm) / tm * 1e6
+            assert np.max(np.abs(ppm)) <= PROFILE_MZ_PPM, f"scan {scan}"
+            np.testing.assert_array_equal(ot_pint[ot_pint > 0], th_pint[th_pint > 0])
 
 
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
@@ -650,6 +706,45 @@ def test_ms2_acquisition_info_matches_thermo(monkeypatch, path):
         )
 
 
+#: The fields of an MS2 scan record the two backends render each from their
+#: own filter text, which writes m/z to different precision.
+_RENDERED_MZ_FIELDS = ("precursor_mz", "low_mass", "high_mass")
+
+
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_ms2_scan_records_match_thermo(monkeypatch, path):
+    """OpenTFRaw's MS2 scan records must be Thermo's, field by field and
+    source by source. The m/z fields come from each backend's rendering of
+    the filter, so they agree to the filter's precision; the trailer's
+    numbers are read as stored and agree exactly. Skips files without MS2
+    scans.
+    """
+    path = str(path)
+
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
+    try:
+        with open_backend(path) as backend:
+            th = backend.ms2_scan_records()
+    except m_thermo.NoScansFoundError:
+        pytest.skip("no MS2 scans")
+
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
+    with open_backend(path) as backend:
+        ot = backend.ms2_scan_records()
+
+    assert [r["scan_number"] for r in ot] == [r["scan_number"] for r in th]
+    for o, t in zip(ot, th, strict=True):
+        scan = t["scan_number"]
+        for field in _RENDERED_MZ_FIELDS:
+            assert o[field] == pytest.approx(t[field], abs=1e-3), (
+                f"scan {scan}: {field}"
+            )
+        assert o["time_s"] == pytest.approx(t["time_s"], rel=1e-9), f"scan {scan}"
+        assert o["tic"] == pytest.approx(t["tic"], rel=1e-6), f"scan {scan}"
+        rest = set(t) - {*_RENDERED_MZ_FIELDS, "time_s", "tic"}
+        assert {f: o[f] for f in rest} == {f: t[f] for f in rest}, f"scan {scan}"
+
+
 # Cap on scans averaged by the ppm-averaging parity tests, to bound runtime on
 # files with thousands of scans (the averaging still spans many scans).
 MAX_AVG_SCANS = 25
@@ -795,12 +890,44 @@ def _profile_apex(mz, inten, center, window_ppm=40):
     return ymax if ymax > 0 else None
 
 
+def _profile_area(mz, inten, center, window_ppm=40):
+    """Area of the peak at `center`: the profile integrated (trapezoid, in m/z)
+    over `window_ppm` of it, or None if not measurable. Unlike apex x FWHM it
+    holds when two profiles give the peak different shapes."""
+    sel = np.abs(mz - center) / center * 1e6 < window_ppm
+    x, y = mz[sel], inten[sel]
+    if (y > 0).sum() < 3:  # signal points only (ignore inserted baseline zeros)
+        return None
+    order = np.argsort(x)
+    area = float(np.trapezoid(y[order], x[order]))
+    return area if area > 0 else None
+
+
+def _single_scan_profiles(monkeypatch, path, t_min, t_max):
+    """Thermo's own profile of each scan compute_sum_signal combines over
+    ``[t_min, t_max]``: the reference the averaged profile's peak shape is
+    measured against."""
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
+    with open_backend(path) as backend:
+        indices = backend.scan_indices(t_min=t_min, t_max=t_max)
+        return [tuple(np.asarray(a) for a in backend.scan_profile(i)) for i in indices]
+
+
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_sum_signal_matches_thermo(monkeypatch, path):
     """OpenTFRaw's measured averaged profile (compute_sum_signal ->
-    average_profile) must reproduce Thermo's in the properties that matter for
-    the quantitative path: per-peak apex intensity and per-peak FWHM. Bounded to
-    a small scan window for speed.
+    average_profile) must keep the peaks the scans measured, in the properties
+    that matter for the quantitative path: per-peak apex intensity, FWHM and
+    area. Bounded to a small scan window for speed.
+
+    The peak shape is measured against Thermo's single scans, not against
+    Thermo's averaged profile. Averaging the scans in frequency aligns their
+    peaks, so the average keeps one scan's FWHM and its apex is the scans'
+    apexes summed. Thermo's AverageScans widens the peaks instead, by 1-8 % on
+    the demo dataset and by up to about 90 % on other Orbitrap files, while
+    the scans themselves differ in width by a percent or two. Against
+    Thermo's average only the integrated peak area is compared: both averages
+    keep it, though not its shape.
     """
     path = str(path)
     t_min, t_max = _bounded_window(monkeypatch, path)
@@ -831,12 +958,11 @@ def test_sum_signal_matches_thermo(monkeypatch, path):
 
     tmz, tv = np.asarray(th_sig.mz), np.asarray(th_sig.values)
     omz, ov = np.asarray(ot_sig.mz), np.asarray(ot_sig.values)
+    scans = _single_scan_profiles(monkeypatch, path, t_min, t_max)
+    assert len(scans) == th_n, "single-scan reference covers other scans"
 
-    # Parity on the strongest, well-separated peaks for both absolute apex
-    # intensity and per-peak FWHM. average_profile conserves the integrated
-    # signal, so a peak's apex matches Thermo up to the (separately checked)
-    # small FWHM difference. Median over several peaks is robust to a single
-    # noise-level apex on near-blank files.
+    # The strongest, well-separated peaks. Median over several peaks is robust
+    # to a single noise-level apex on near-blank files.
     order = np.argsort(tv)[::-1]
     centers = []
     for k in order[:600]:
@@ -846,23 +972,33 @@ def test_sum_signal_matches_thermo(monkeypatch, path):
         if len(centers) >= 12:
             break
 
-    apex_ratios, fwhm_ratios = [], []
+    apex_ratios, fwhm_ratios, area_ratios = [], [], []
     for c in centers:
-        ta, oa = _profile_apex(tmz, tv, c), _profile_apex(omz, ov, c)
-        if ta and oa:
-            apex_ratios.append(oa / ta)
-        tf, of = _profile_fwhm_ppm(tmz, tv, c), _profile_fwhm_ppm(omz, ov, c)
-        if tf and of and tf > 0:
-            fwhm_ratios.append(of / tf)
+        oa, of = _profile_apex(omz, ov, c), _profile_fwhm_ppm(omz, ov, c)
+        scan_apexes = [_profile_apex(mz, y, c) for mz, y in scans]
+        scan_fwhms = [_profile_fwhm_ppm(mz, y, c) for mz, y in scans]
+        if oa and all(scan_apexes):
+            apex_ratios.append(oa / sum(scan_apexes))
+        if of and all(scan_fwhms):
+            fwhm_ratios.append(of / float(np.median(scan_fwhms)))
+        o_area, t_area = _profile_area(omz, ov, c), _profile_area(tmz, tv, c)
+        if o_area and t_area:
+            area_ratios.append(o_area / t_area)
 
-    if len(apex_ratios) < 3 or len(fwhm_ratios) < 3:
+    if min(len(apex_ratios), len(fwhm_ratios), len(area_ratios)) < 3:
         pytest.skip("too few measurable peaks for profile comparison")
-    # Measured median apex 0.99-1.02, FWHM 0.99-1.01 across the corpus.
-    assert 0.92 <= float(np.median(apex_ratios)) <= 1.10, (
-        f"median apex ratio OTF/Thermo = {np.median(apex_ratios):.3f}"
+    # Measured on the demo dataset's 160 files and 297 other Orbitrap files of
+    # 4-23 scans: median apex 0.97-1.00 of the scans' sum (the interpolation
+    # onto the frequency grid trims a point's worth), FWHM 1.00-1.03 of a
+    # scan's, area 1.000-1.008 of Thermo's average.
+    assert 0.95 <= float(np.median(apex_ratios)) <= 1.03, (
+        f"median apex ratio OTF average / summed scans = {np.median(apex_ratios):.3f}"
     )
-    assert 0.93 <= float(np.median(fwhm_ratios)) <= 1.10, (
-        f"median FWHM ratio OTF/Thermo = {np.median(fwhm_ratios):.3f}"
+    assert 0.97 <= float(np.median(fwhm_ratios)) <= 1.05, (
+        f"median FWHM ratio OTF average / single scan = {np.median(fwhm_ratios):.3f}"
+    )
+    assert 0.98 <= float(np.median(area_ratios)) <= 1.02, (
+        f"median peak area ratio OTF/Thermo = {np.median(area_ratios):.3f}"
     )
     # m/z *position* is asserted per backend instead, against that backend's own
     # centroids: test_thermo_spec_extraction's

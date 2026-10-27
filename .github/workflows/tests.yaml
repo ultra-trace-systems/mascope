@@ -1,16 +1,26 @@
 name: Mascope Tests
-run-name: Running tests for PR to develop, master or an epic branch
+run-name: ${{ github.event_name == 'merge_group' && 'Running tests for a merge queue group' || 'Running tests for PR to develop, master or an epic branch' }}
 
+# Every job here also runs for a merge group. The merge queue on develop
+# merges a group only once each check the ruleset requires has reported on
+# the group's own commit, and a workflow that listens to pull_request alone
+# never runs there, so the group would wait for its checks until the queue's
+# timeout and then fail. The group's commit is the pull request merged onto
+# the current base and the entries queued ahead of it - what actually lands.
 on:
   pull_request:
     branches: [develop, master, "epic/**"]
     types: [opened, synchronize, reopened]
+  merge_group:
+    branches: [develop, master, "epic/**"]
+    types: [checks_requested]
 
 # Least privilege: this workflow only checks out code and runs tests.
 permissions:
   contents: read
 
-# A new push to the same PR supersedes the running jobs; cancel them.
+# A new push to the same PR supersedes the running jobs; cancel them. A merge
+# group's ref names its entry, so queue runs never cancel one another.
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
@@ -32,20 +42,40 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The PR's merge commit and its first parent, the base branch tip
+          # The commit under test and its first parent. On a pull request
+          # that is GitHub's merge of the PR onto the base tip, so the
+          # first-parent diff is the PR. A merge group is the PR's commits
+          # rebased onto the base and the entries ahead of it, so its first
+          # parent is only the PR's previous commit: the group is compared
+          # with the base the queue built it on instead, fetched below.
           fetch-depth: 2
           persist-credentials: false
 
       - name: Classify the changed paths
         id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          # The base tip a merge group was built on; empty on a pull request.
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
-          # From the base tip to the merge commit is exactly what merging the
-          # PR changes. --no-renames lists a moved file under both of its
-          # names, so moving code into docs/ cannot pass as a docs change.
+          # On a pull request, from the base tip to the merge commit is
+          # exactly what merging the PR changes. In a merge group, from the
+          # base the queue built on to the group's head covers this PR and
+          # the entries ahead of it: more than this PR alone, which can only
+          # run more here, never less.
+          # --no-renames lists a moved file under both of its names, so
+          # moving code into docs/ cannot pass as a docs change.
           # -z writes each path as it is, NUL-terminated: without it git
           # quotes a path with non-ASCII or special characters
           # ("docs/dev/caf\303\251.md"), which then matches neither pattern.
-          git diff --name-only --no-renames -z HEAD^1 HEAD > "$RUNNER_TEMP/changed-paths"
+          if [ "$EVENT" = merge_group ]; then
+            [ -n "$GROUP_BASE" ] || { echo "::error::merge group without base_sha"; exit 1; }
+            git fetch --depth=1 origin "$GROUP_BASE"
+            from=$GROUP_BASE
+          else
+            from=HEAD^1
+          fi
+          git diff --name-only --no-renames -z "$from" HEAD > "$RUNNER_TEMP/changed-paths"
           code=false
           count=0
           while IFS= read -r -d '' path; do
@@ -76,7 +106,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.1"
 
@@ -127,13 +157,16 @@ jobs:
         # so that one push learns both (changelog.d/README.md).
         if: ${{ !cancelled() }}
         env:
-          BASE_REF: ${{ github.base_ref }}
+          # github.base_ref is set on a pull request only; a merge group names
+          # its base as a full ref, refs/heads/master.
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
-          if [ "$BASE_REF" = master ]; then
-            python3 tooling/changelog.py check --release
-          else
-            python3 tooling/changelog.py check
-          fi
+          case "$BASE_REF" in
+            master | refs/heads/master)
+              python3 tooling/changelog.py check --release ;;
+            *)
+              python3 tooling/changelog.py check ;;
+          esac
 
   nginx-config:
     name: nginx config validation
@@ -165,7 +198,7 @@ jobs:
         run: python3 tooling/check-licenses.py npm
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.1"
 
@@ -200,7 +233,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.1"
 
@@ -237,7 +270,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.1"
 
@@ -299,7 +332,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.1"
 
@@ -326,7 +359,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.1"
 
@@ -362,7 +395,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.1"
 
@@ -395,7 +428,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.1"
 
@@ -414,12 +447,19 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.1"
 
       - name: Install dependencies
         run: uv sync --group dev
+
+      - name: Check the CLI's declared dependencies (deptry)
+        # Every import of mascope_cli must be declared in its pyproject.toml,
+        # which is what a wheel install gets. The checkout-only imports are
+        # listed there under [tool.deptry]; any other undeclared import fails.
+        working-directory: tooling/cli
+        run: uv run deptry src
 
       - name: Run CLI tests
         # Hermetic: the suite's conftest builds its own MASCOPE_PATH home,
@@ -439,7 +479,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.1"
 
@@ -507,7 +547,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.1"
 
@@ -550,11 +590,25 @@ jobs:
           cache: npm
           cache-dependency-path: server/frontend/package-lock.json
 
+      - name: Restore the Playwright browser from the cache
+        # Before the install step: on a hit the Chromium build is already in
+        # Playwright's store, and the install below finds it there and
+        # downloads nothing. The action says what a hit and a miss each mean.
+        uses: ./.github/actions/playwright-cache
+
       - name: Install dependencies and browsers
         working-directory: server/frontend
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          # No --with-deps. The shared libraries Chromium loads are on the
+          # runner image, which ships Google Chrome; what install-deps would
+          # add is fonts for scripts the app does not render, xvfb for a
+          # headed run and newer builds of libraries already present: 26 MB
+          # from the Ubuntu mirror, whose throughput is the one thing in this
+          # job that can stall for minutes. A browser with a library missing
+          # does not launch - Playwright names it and refuses - so an image
+          # that drops one fails the first test loudly, not quietly.
+          npx playwright install chromium
 
       - name: Wait for the stack to come up
         id: wait-stack
@@ -607,8 +661,12 @@ jobs:
           # changes that unit tests cannot. The image-build step earlier in
           # this job already created .venv, so sync into it (no `uv venv`,
           # which refuses to overwrite an existing environment).
+          # The mascope_ai toolkit's contract tests
+          # (libraries/ai/tests/test_ai_contract.py) read through the SDK
+          # against the same stack, under the same MASCOPE_SDK_CONTRACT=1
+          # switch and settings.
           uv sync --group dev
-          uv run pytest libraries/sdk/tests/ -v
+          uv run pytest libraries/sdk/tests/ libraries/ai/tests/ -v
 
       - name: Dump stack logs on failure
         if: failure()
@@ -658,7 +716,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.1"
 

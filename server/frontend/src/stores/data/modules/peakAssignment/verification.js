@@ -23,7 +23,7 @@ import { usePeakAssignment } from './assignment'
 // only ever carry an M0's `sample_peak_id`, which is why the family rule needs
 // no schema change - and why the calibration sees one label per family instead
 // of N correlated ones.
-// See docs/dev/verification_capture_frontend.md.
+// See docs/dev/verification_calibration_loop.md section 4.5.
 export const usePeakAssignmentVerification = defineStore(
   'app.data.peakAssignment.verification',
   () => {

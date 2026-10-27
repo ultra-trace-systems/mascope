@@ -1,14 +1,21 @@
 # CLI decoupling plan
 
-Status: **the first plan's phases 0 to 4 shipped in v1.2.0 (2026-07-07):
-`mascope-cli` and `mascope-runtime` are on PyPI, a wheel install runs the
-operator surface from a runtime home `mascope init` creates, and CI installs
-the wheel on every pull request. What is open is narrower: every server
-install in the repository's own tooling is still the checkout install, and a
-wheel install is not yet a deployment that follows a release. Phases 5 to 8
-below are that work; phase 6 is a decision and gates 7 and 8** (2026-10-14).
-Code anchors were re-read on `develop` on that date and are named where a
-claim rests on them; paths under `cmd/` are in `tooling/cli/src/mascope_cli/`.
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** [CLI decoupling](https://linear.app/ultra-trace/project/cli-decoupling-f732d6d0ca80) (Linear, MAS-112 to MAS-122)
+- **What:** The standalone operator CLI, the wheel install, and what a server installs.
+
+Status: **phases 0 to 4 shipped in v1.2.0 (2026-07-07): `mascope-cli` and
+`mascope-runtime` are on PyPI, a wheel install runs the operator surface from
+a runtime home `mascope init` creates, and CI installs the wheel on every pull
+request. Phase 5 shipped on 2026-10-21 (5.1 #2467, closing #2350; 5.2 #2471,
+the README's "Limits of a wheel install"; 5.3 #2472, with the deptry step in
+CI). Phase 6 was decided the same day on MAS-116: option (b), the wheel
+becomes the server install, sequenced after the 2.0 rollout. Phases 7 and 8
+below (MAS-117 to MAS-122, MAS-118 a second decision) are what is left, and
+wait on that sequencing** (2026-10-22). Code anchors were re-read on `develop`
+on 2026-10-14 and are named where a claim rests on them; paths under `cmd/`
+are in `tooling/cli/src/mascope_cli/`.
 
 ## Picking this up
 

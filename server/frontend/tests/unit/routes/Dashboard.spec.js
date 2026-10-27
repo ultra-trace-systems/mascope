@@ -45,7 +45,7 @@ const SAMPLE = { sample_item_id: 'si-1', sample_item_name: 'Sample 1' }
 const REASONS = [
   ['Batch', 'Open a batch with samples'],
   ['Sample', 'Select a sample'],
-  ['Match', 'Visualize an ion match from the ion table']
+  ['Match', 'Open a match from the ion table']
 ]
 
 // Dispatched rather than triggered, so that `defaultPrevented` can be read

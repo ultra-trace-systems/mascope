@@ -97,6 +97,19 @@ score regardless of `MASCOPE_MATCH_SCORE_VERSION`. It is now gated on the peak-a
 feature flag — see
 [`peak_assignment_paradigm.md`](../../../docs/dev/peak_assignment_paradigm.md) §5.1.
 
+**The on-demand composition search takes its mass sigma from the instrument, not from
+the candidates.** `api/new/cheminfo/service.py` rescores each candidate with
+`ion_score_v2`, and the fit score's mass term needs the instrument's mass accuracy.
+Stage A can *fit* it (`fit_sample_mass_accuracy` over every isotopologue the library
+matched across the spectrum), but the search cannot: its rows are the candidates for a
+single m/z, spread across `±mz_precision` by construction, so a fitted sigma would
+measure the search window and flatten the mass term to near-uniform. It uses the
+sample's resolved `match_params.mz_tolerance` read as a ~3σ window (≈1.7 ppm Orbitrap,
+≈5 ppm TOF) instead, and **reports no fit score at all** when no tolerance is
+resolvable — `score_pattern_v2`'s own `FALLBACK_SIGMA_PPM = 2.0` is Orbitrap-only and
+would collapse every candidate on a TOF sample. (Recorded here on 2026-10-22 from the
+retired `docs/dev/handoff_fit_score_and_assignment.md`.)
+
 ## 2. Scientific rationale
 
 High mass accuracy alone is insufficient to determine elemental composition: even at
@@ -143,6 +156,18 @@ anchor-relative, so both orderings are correct as long as the caller is consiste
 | $o_i$ | observed intensity ($o_i = 0$ if no peak matched) |
 | $s_i$ | observed signal-to-noise of the matched peak |
 | $\sigma$ | instrument mass-error std in ppm (`sigma_ppm`) |
+
+**A line is a peak the file can resolve.** On a TOF the one peak at the 13C position also
+holds the 15N, 2H and 17O lines a few mDa away, so a predicted line per isotopologue
+would read that peak high against the 13C share alone. The composition finder therefore
+predicts one line per peak the file can separate, at the file's own resolving power when
+the run can read one (`heuristic_filter.merge_unresolved_lines`, carried on
+`PatternScoring.resolution`). From the brightest line not yet taken, every line not yet
+taken within half a FWHM either side of it is one line: $p_i$ is the sum of their shares
+and its m/z their abundance-weighted centre. The targeted path does not do this yet: its
+TOF library bins with the same half-FWHM width, but only the lines over its 1% floor, so
+its line at the 13C position is still the 13C line alone (#2587). A file with no
+resolution read is scored one line per isotopologue.
 
 **Guard.** If the anchor is absent ($o_0 \le 0$) the score is $0$ — with nothing to
 measure the envelope against there is no assignment.

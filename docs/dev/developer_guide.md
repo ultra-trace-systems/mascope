@@ -34,11 +34,10 @@ This document is structured as follows:
 - 💾 **[Database](#-database)** - PostgreSQL setup, migrations and operations
   - [Schema migrations](#schema-migrations)
   - [Database management commands](#database-management-commands)
-  - [PostgreSQL tuning reference](#postgresql-tuning-reference)
-  - [Automated backups (cron + restic)](#automated-backups-cron--restic)
+  - [PostgreSQL tuning](#postgresql-tuning) and [Backups](#backups) - in the runbook
 - 🖥️ **[Frontend](#️-frontend)** - VueJS user interface
 - 📚 **[Libraries](#-libraries)** - shared Python libraries
-- 🚚 **[Deploying](#-deploying)** - prod operations guide
+- 🚚 **[Deploying](#-deploying)** - the image pipeline and cutting a release
 - 📒 **[Notebooks](#-notebooks)** - Jupyter lab environment
 - 📝 **[Git conventions](#-git-conventions)** - Git conventions for developers
 
@@ -271,71 +270,11 @@ mascope env sync <source> <dest>  # sync filestore + database from source to tar
 
 ### Env sync
 
-The `env sync` command synchronizes runtime environments locally or to/from a remote host. It transfers both the filestore (via [rsync](https://linux.die.net/man/1/rsync)) and the PostgreSQL database (via `pg_dump`/`pg_restore`
-staged through .runtime/database/transfer/). Both source and target require an explicit mode (dev or prod) to identify which PostgreSQL server to use.
-
-> [!IMPORTANT]
-> Both PostgreSQL containers must be running on source and target machines before executing `env sync`.
-
-Usage examples:
-
-```bash
-# local → local
-mascope env sync default dev foo dev
-
-# local → remote
-mascope env sync foo prod user@192.168.1.100:bar prod
-
-# remote → local, database only
-mascope env sync user@192.168.1.100:bar prod baz prod --skip-filestore
-
-# local → local, filestore only
-mascope env sync foo dev bar dev --skip-db
-```
-
-The `sync` command follows symbolic links on Linux filesystem both ways - syncing into and from a symlinked directory.
-
-If the target environment does not exist, you will be prompted to create it. Pass `--yes` to skip the prompt.
-
-On transfer failure the staged dump is preserved in `.runtime/database/transfer/` for manual recovery. On success it is deleted and 7-day retention pruning runs automatically.
-
-#### Syncing only part of the filestore
-
-A full filestore can be far larger than the link between the two machines. `--from` and `--to` (both `YYYY-MM-DD`, both inclusive, either one optional) narrow the transfer to a window of acquisition dates:
-
-```bash
-# everything acquired since the start of the year
-mascope env sync user@192.168.1.100:bar prod baz prod --from 2026-01-01
-
-# one quarter, filestore only
-mascope env sync user@192.168.1.100:bar prod baz prod --from 2026-01-01 --to 2026-03-31 --skip-db
-```
-
-The filter is a path filter, not a database query: the filestore stores samples as `filestore/<instrument>/<YYYY.MM.DD>/<sample_name>/`, where the date directory comes from the acquisition timestamp in the sample filename. So the window selects on **acquisition date**, not on when a file was uploaded, reprocessed or last modified. The batch cache under `filestore/sample_batches/` has no date in its path and is always transferred; it is rebuildable, so dropping it would only cost recomputation.
-
-> [!IMPORTANT]
-> `--from` / `--to` filter the filestore only - **the database is never filtered**. A date-limited sync that also syncs the database leaves the target holding sample rows whose files were not transferred, and those samples fail to load. The command warns when you do this; add `--skip-db` to sync only the files.
-
-If no filestore data falls inside the window the sync fails rather than silently transferring nothing. When the source is on a **remote** host it also fails if the filestore cannot be listed in full - a mistyped env name, a missing filestore, an unreadable directory - rather than filtering against a partial listing and reporting success on an incomplete transfer.
-
-> [!NOTE]
-> Two cases still read as an empty window rather than as a failure. `find -L` skips a dangling symlink silently and exits 0, so a filestore whose data volume is not mounted looks empty; and a local source is listed with a glob that cannot report an error at all, so an unreadable directory there narrows the transfer without a word. Check the target after a sync that reports fewer dates than you expected.
-
-#### Ownership and permissions after sync
-
-rsync is run without `-o`/`-g`, so ownership is not carried across: every file lands owned by whoever runs the **receiving** side - the SSH login user for a push, the invoking user for a pull or a local sync. Mascope's containers run as the deployment's own uid (1000 by default; see `MASCOPE_UID` in `server/backend/Dockerfile`), so if those two differ the app cannot read or write what was just synced.
-
-The sync detects this by comparing the receiving uid against the owner of the target env directory, and prints the exact command to fix it:
-
-```
-sudo chown -R 1000:1000 /srv/mascope/.runtime/env/default
-```
-
-Pass `--chown` to have the sync attempt that itself. It uses `sudo -n` (non-interactive) on the receiving machine and falls back to printing the command when passwordless sudo is not available - the sync is not failed either way.
-
-If the filestore is a symlink to a data volume (see [Maintaining a deployment](../maintaining.md) → "The filestore on a data volume"), chown its target too: `chown -R` does not follow symlinks. `--chown` resolves the link and covers both paths.
-
-File modes are forced to `755` for directories and `644` for files - the same bits the backend writes under the default umask, so a synced tree is indistinguishable from a natively written one. Note that this also applies on a **re-sync**: modes hand-tightened on an existing target filestore are reset to `755`/`644`.
+`mascope env sync` copies an environment's filestore and database between
+envs, on one host or across two. How to run it - the modes, the date window,
+ownership and permissions after a sync - is in the maintainer runbook,
+[Copying an environment](../maintaining.md#copying-an-environment), since
+2026-10-22.
 
 ### Windows (Cygwin)
 
@@ -590,9 +529,12 @@ automatically. It binds the current worktree to a **slot** and derives everythin
 | Frontend port   | 5173   | 5174   | `5173 + N`      |
 
 Bindings are allocated first-come and stored in `.runtime/instances.json` under the shared
-`MASCOPE_PATH`, so a worktree always resolves to the same slot. Env selection flows through the
-`MASCOPE_ENV` environment variable (never persisted `state.json`), so concurrent runs never
-clobber each other.
+`MASCOPE_PATH`, so a worktree always resolves to the same slot. A new binding skips any slot
+whose backend or frontend port another process already listens on (a bare `mascope dev run`,
+or another service on 8090), so the first instance on a shared machine may get slot 1; the
+skipped slot is not recorded and is offered again once its ports are free. Env selection
+flows through the `MASCOPE_ENV` environment variable (never persisted `state.json`), so
+concurrent runs never clobber each other.
 
 ```sh
 # Once per machine - the shared infra, started from any checkout:
@@ -877,7 +819,7 @@ Which logs the thread's identifier after the module path, e.g. `mascope_hardware
 
 ### CLI Development
 
-The CLI is written using [Typer](https://typer.tiangolo.com/), a type-hints based library for writing command line tools. These are called Typer _apps_ and can be nested to create grouped subcommands. In `mascope`, `modules` and `path` are simple commands (implemented directly in `runtime/cli/mascope_cli/main.py`), while `dev`, `prod` and `env` are subcommand apps found in the `cmd` folder.
+The CLI is written using [Typer](https://typer.tiangolo.com/), a type-hints based library for writing command line tools. These are called Typer _apps_ and can be nested to create grouped subcommands. In `mascope`, `modules` and `path` are simple commands (implemented directly in `tooling/cli/src/mascope_cli/main.py`), while `dev`, `prod` and `env` are subcommand apps found in the `cmd` folder.
 
 The best resource for learning about the Typer API is the [Typer docs Learn section](https://typer.tiangolo.com/tutorial/).
 
@@ -936,7 +878,7 @@ The modules behind it hold no state of their own: `settings.py` (`AgentSettings`
 
 **Interrupts.** Python raises `KeyboardInterrupt` on the main thread at whichever instruction that thread has reached, and `Event`, `Condition` and `Queue` are written in Python around a lock: raised once the lock is taken and before the `with` block that releases it is entered, the interrupt leaves the lock held, and the agent then waits for it for ever. So `run_until_complete()` on the main thread replaces Python's handler for SIGINT with one that only counts (`_threads.Interrupts`), and puts Python's back before it returns. The upload loop and the waits of `stop()` raise each counted interrupt themselves, between two waits, which is where the three answers to Ctrl+C come from: stop and wait for the uploads under way, keep waiting, stop without them. A handler the program has set is left in place, a process that ignores interrupts goes on ignoring them, and off the main thread nothing is replaced. The one step that hears Ctrl+C as Python delivers it is a `Repair` offered at the start, which is a prompt at the console; it is not offered at all when an interrupt is already counted (`interrupts.pending`), since a prompt would not hear that one. Code added to the main thread's path must not count on being cut short by an interrupt: a wait there is a wait in slices (`_threads.wait_for`), and a loop asks `interrupts.raise_pending()` once every time round.
 
-**The acquisition record.** A program that controls the instrument can say what each file is: which step of which run acquired it, in which mode, under which chemistry. It writes that as a JSON document beside the file, `<file>.mascope.json`, and the agent sends the document with the file's upload, together with the file's SHA-256, to a server that announces it keeps them (`files_accept_acquisition_metadata`). An embedding program writes the sidecar in an `on_ready` step; a program beside a standalone agent writes it before the file has been left alone for the agent's `timeout`. The schema is `mascope-acquisition/1`, defined by `mascope_sdk.acquisition`, and [acquisition_sidecar.md](acquisition_sidecar.md) is its reference: the fields, how the record travels, and what the agent does when a sidecar cannot be used or a server does not keep one. Neither the record nor the hash may cost a file its upload.
+**The acquisition record.** A program that controls the instrument can say what each file is: which step of which run acquired it, in which mode, under which chemistry. It writes that as a JSON document beside the file, `<file>.mascope.json`, and the agent sends the document with the file's upload, together with the file's SHA-256, to a server that announces it keeps them (`files_accept_acquisition_metadata`). An embedding program writes the sidecar in an `on_ready` step; a program beside a standalone agent writes it before the file has been left alone for the agent's `timeout`. The schema is `mascope-acquisition/1`, defined by `mascope_sdk.acquisition`; its fields and rules are the user page [Acquisition records](../user/instruments/acquisition-records.md), and [acquisition_sidecar.md](acquisition_sidecar.md) has how the record travels and what the agent does when a sidecar cannot be used or a server does not keep one. Neither the record nor the hash may cost a file its upload.
 
 Everything exported from `mascope_file_agent` is public API. A change that breaks it needs a changelog entry and a new version, and so does anything else that should reach a program depending on the library:
 
@@ -1669,6 +1611,34 @@ consequences:
   WARNING naming a stale secret as the likely cause).
 - A converter without the secret file fails at startup rather than connecting unauthenticated.
 
+**Per-event authentication** — one converter connection serves uploads by many users, so each
+event the converter emits on `/file-converter` (`file_processing_*`, `peak_detection_*`) carries
+the acting user's `access_token` in its payload, and the backend checks it and the user's role
+(editor or above) before handling the event (`file_converter_socket_auth` in
+`mascope_backend/socket/auth/decorators.py`). A rejected event is dropped, and its
+acknowledgement is an error payload naming why:
+
+| Acknowledgement | Meaning |
+| --- | --- |
+| `{"error": "SOCKET_UNAUTHENTICATED"}` | no `access_token`, or an invalid, expired or revoked one |
+| `{"error": "SOCKET_FORBIDDEN"}` | the token's user is below editor |
+| `{"error": "SOCKET_AUTH_CONFIG_ERROR"}` | the backend's role configuration is broken (logged at ERROR) |
+
+An accepted event's acknowledgement is whatever its handler returns, today nothing. Only a
+client that emits with a callback (`sio.emit(..., callback=...)` or `sio.call`) receives it;
+the converter currently emits without one.
+
+**Axis fingerprint** — for every raw Orbitrap file the converter computes its axis
+fingerprint (`mascope_thermo.axis_fingerprint`): the m/z offset the file's mass calibration
+left in each frequency band of the Orbitrap axis, read from the stored profile of at most
+eight scans per acquisition mode. It is stored in the file's `.props` as `axis_fingerprint`,
+a document whose `status` says what it holds: `ok`, `no_fingerprint`, `unavailable` (under
+the Thermo reader backend) or `error`. Nothing in Mascope's processing reads it, and no m/z
+is altered by it. It costs about a second a file and never fails one: a failure stores the
+`error` document and logs a WARNING. The `[backend] axis_fingerprint` setting decides it:
+`"ingest"` (the default) computes it, `"off"` stores `{}`; the converter reads it when it
+starts. A TofDaq file stores `{}`.
+
 ## 💾 Database
 
 Mascope uses **PostgreSQL 16** as its primary database, accessed via **SQLAlchemy 2.x** (async,
@@ -1883,341 +1853,20 @@ or use SSH port-forwarding to the host running the container.
 
 ---
 
-### PostgreSQL Tuning Reference
-
-Settings live in `[backend.database]` in `.mascope.toml` layer files.
-Postgres tuning parameters are passed as `-c` flags via Docker Compose command override.
-`shm_size` is a Docker field - applied via `shm_size:` in compose, never passed to postgres.
-
-**References:**
-
-- [PostgreSQL Parameter Tuning Best Practices - mydbops](https://www.mydbops.com/blog/postgresql-parameter-tuning-best-practices)
-- [How to Tune Database Parameters - EnterpriseDB](https://www.enterprisedb.com/postgres-tutorials/comprehensive-guide-how-tune-database-parameters-and-configuration-postgresql)
-- [PostgreSQL Resource Consumption Docs](https://www.postgresql.org/docs/current/runtime-config-resource.html)
-
-### Recommended Values
-
-| Setting                        | PG Default | Base (dev, ~16 GB SSD) | Prod (64 GB NVMe) |
-| ------------------------------ | ---------- | ---------------------- | ----------------- |
-| `max_connections`              | 100        | 100                    | 200               |
-| `shared_buffers`               | 128MB      | 512MB                  | 16GB              |
-| `effective_cache_size`         | 4GB        | 4GB                    | 48GB              |
-| `work_mem`                     | 4MB        | 32MB                   | 64MB              |
-| `maintenance_work_mem`         | 64MB       | 512MB                  | 4GB               |
-| `autovacuum_work_mem`          | -1         | -1                     | 2GB               |
-| `wal_buffers`                  | auto ~16MB | 16MB                   | 16MB              |
-| `min_wal_size`                 | 80MB       | 512MB                  | 1GB               |
-| `max_wal_size`                 | 1GB        | 2GB                    | 4GB               |
-| `checkpoint_completion_target` | 0.9        | 0.9                    | 0.9               |
-| `wal_compression`              | off        | on                     | on                |
-| `random_page_cost`             | 4.0        | 1.1                    | 1.1               |
-| `effective_io_concurrency`     | 1          | 200                    | 200               |
-| `default_statistics_target`    | 100        | 100                    | 100               |
-| `jit`                          | on         | off                    | off               |
-| `autovacuum_max_workers`       | 3          | 3                      | 4                 |
-| `shm_size` (Docker)            | 64m        | 1g                     | 20g               |
-
-### Connections
-
-- **`max_connections`** — Server-side cap on concurrent connections. Size it from the app:
-  `workers × (pool_size + max_overflow)` plus ~10 headroom (`superuser_reserved_connections`
-  defaults to 3, plus `db_init`, backup dumps, and interactive psql). Each idle connection
-  costs only a few MB, so a generous cap is cheap — but every *active* connection can
-  allocate `work_mem` per operation, so check the `work_mem` formula below when raising it.
-  Requires a postgres container restart.
-
-### Memory
-
-- **`shared_buffers`** — PostgreSQL's dedicated data page cache. The single largest performance
-  lever - pages cached here cost zero I/O on repeated reads. Rule: **25% of RAM**. Above ~40%
-  competes with the OS page cache and yields diminishing returns. PostgreSQL's 128MB default is
-  a historical artifact.
-
-- **`effective_cache_size`** — Planner hint only, **no memory is allocated**. Tells the planner
-  how much total cache (shared_buffers + OS page cache) is available. Too low causes the planner
-  to prefer sequential scans over index scans on large tables. Set to **75% of RAM**.
-
-- **`work_mem`** — Per-operation memory for sorts, hash joins, hash aggregates, window functions.
-  **Allocated per operation per connection** - a query with three sort nodes uses 3× work_mem.
-  Too low causes disk spills (10–100× slower). Worst-case formula:
-
-  ```
-  workers × (pool_size + max_overflow) × ops_per_query × work_mem
-  # Prod: 12 × 10 × 3 × 64MB = ~22.5GB theoretical worst case - acceptable on
-  # 64GB next to shared_buffers=16GB (assumes every connection running 3 sorts
-  # at once, which real workloads never reach)
-  ```
-
-  Diagnostic: set `log_temp_files = 0` and watch for spill entries in logs.
-
-- **`maintenance_work_mem`** — Memory for `VACUUM`, `CREATE INDEX`, `ALTER TABLE`, `pg_restore`.
-  Only a few maintenance ops run concurrently so this can be set high safely.
-
-- **`autovacuum_work_mem`** — Memory per autovacuum worker. `-1` inherits `maintenance_work_mem`.
-  Set explicitly in prod so background autovacuum workers don't consume the full
-  `maintenance_work_mem` allocation.
-
-- **`wal_buffers`** — Shared memory buffer for WAL records before flush to disk. Auto-tunes to
-  1/32 of `shared_buffers`, capped at 16MB. Set explicitly so it's visible in config.
-  **Requires container restart** (shared memory allocation).
-
-### Checkpoints and WAL
-
-- **`min_wal_size` / `max_wal_size`** — WAL files below `min_wal_size` are recycled rather than
-  deleted. `max_wal_size` is the ceiling before a checkpoint is forced. Too small causes I/O
-  spikes from forced checkpoints. Scale with `shared_buffers` - a larger buffer pool accumulates
-  more dirty data between checkpoints.
-
-- **`checkpoint_completion_target`** — Fraction of the checkpoint interval over which dirty page
-  writes are spread. At `0.9`, writes are distributed evenly - no I/O spike at checkpoint
-  boundary. Default since PG14 but set explicitly for visibility.
-
-- **`wal_compression`** — Compresses WAL records before writing. Reduces WAL volume and disk
-  usage at minor CPU cost. `on` uses zlib - available in standard `postgres:16-alpine`.
-  `lz4` requires PostgreSQL compiled with `--with-lz4` (**not in the standard image**).
-
-### Planner
-
-- **`random_page_cost`** — Cost of a random page fetch relative to sequential (always 1.0).
-  Default 4.0 assumes spinning disk - causes the planner to avoid index scans and prefer
-  sequential scans even when an index would be faster. Set to **1.1 for SSD/NVMe** where random
-  reads are nearly as fast as sequential. Getting this wrong causes full table scans on large
-  tables that have usable indexes.
-
-- **`effective_io_concurrency`** — Concurrent I/O requests for bitmap heap scans. Default 1
-  assumes a single spinning disk. Set to **200 for SSD/NVMe**. No effect on sequential scans.
-
-- **`default_statistics_target`** — Histogram depth per column collected during `ANALYZE`. Higher
-  values give the planner more accurate row estimates for skewed data. PostgreSQL default 100 is
-  adequate as a baseline. For heavily skewed columns (isotope counts, intensity values), set
-  per-column:
-
-  ```sql
-  ALTER TABLE match_isotopes ALTER COLUMN intensity SET STATISTICS 500;
-  ANALYZE match_isotopes;
-  ```
-
-- **`jit`** — JIT compilation benefits long analytical queries but adds overhead on short
-  transactional ones. Disabled for Mascope's mixed workload - re-evaluate with profiling data
-  if specific long queries would benefit.
-
-### Autovacuum
-
-- **`autovacuum_max_workers`** — Parallel autovacuum workers. Each consumes `autovacuum_work_mem`.
-  Default 3 is fine for dev; 4 in prod with many large tables prevents dead tuple accumulation.
-
-  The global `autovacuum_vacuum_scale_factor` default of 0.2 means vacuum triggers after 20% of
-  the table is modified - on a 450M-row table that's 90M dead tuples before cleanup. For large
-  tables, override per-table:
-
-  ```sql
-  ALTER TABLE match_isotopes SET (
-      autovacuum_vacuum_scale_factor = 0.01,
-      autovacuum_analyze_scale_factor = 0.005
-  );
-  ```
-
-### Docker: shm_size
-
-`/dev/shm` tmpfs inside the postgres container. PostgreSQL uses it for shared_buffers, WAL
-buffers, lock tables, and IPC. Docker default 64MB causes crashes with any real shared_buffers:
-
-```
-ERROR: could not resize shared memory segment: No space left on device
-```
-
-Rule: `shm_size >= shared_buffers + 2GB overhead (WAL buffers, lock tables, IPC)`
-
-> **Uses Docker byte format: `m` / `g` - not PostgreSQL format `MB` / `GB`.**
-> The Pydantic validator rejects PostgreSQL format values for this field.
-
-### Verifying Settings
-
-```bash
-# Confirm settings applied
-mascope prod db cli -p
-postgres=# SHOW shared_buffers;
-postgres=# SHOW work_mem;
-postgres=# SHOW random_page_cost;
-
-# Check /dev/shm allocation and usage
-docker exec mascope_prod_postgres df -h /dev/shm
-
-# Check postgres shared memory segments
-docker exec mascope_prod_postgres psql -U mascope_user \
-  -c "SELECT name, size FROM pg_shmem_allocations ORDER BY size DESC LIMIT 10;"
-```
-
----
-
-### Automated Backups (Cron + Restic)
-
-Production hosts run `tooling/backup-cron.sh` nightly from cron. The script has
-two layers:
-
-1. **Local dumps** — `mascope prod db backup create` writes a compressed `.dump`
-   file (PostgreSQL custom format, `pg_dump -Fc`) of the **active environment's
-   database** to `.runtime/database/backups/prod/`, then prunes dumps older than
-   `LOCAL_RETENTION_DAYS` (default 7). These give fast same-host restores.
-2. **Encrypted off-site copy** — [restic](https://restic.net/) pushes the dump
-   directory **and the filestore** (uploaded raw files) to an encrypted remote
-   repository, then applies the `KEEP_DAILY`/`KEEP_WEEKLY`/`KEEP_MONTHLY`
-   retention policy (defaults 7/4/6). These survive host loss.
-
-Off-site backups are encrypted client-side by restic, so the storage provider
-never sees plaintext — this is what lets the privacy notice claim encrypted
-backups (GDPR Art. 32).
-
-### Prerequisites
-
-```bash
-which mascope   # /home/<user>/.local/bin/mascope
-which docker    # /usr/bin/docker
-which restic    # /usr/bin/restic (installed by tooling/ubuntu.sh)
-echo $MASCOPE_PATH   # e.g. /home/<deploy-user>/mascope (from /etc/environment)
-```
-
-### Setup
-
-1. **Create the off-site repository.** Any restic-supported backend works:
-   - *Hetzner Storage Box* — enable SSH support in the Storage Box settings and
-     install the host's SSH key (`ssh-copy-id -p 23 u123456@u123456.your-storagebox.de`).
-   - *S3-compatible object storage* (e.g. Contabo Object Storage) — create a
-     bucket and an access key pair.
-   - *Own backup server* — see below.
-
-   Prefer the **other** hosting provider than the one the server runs on, so a
-   provider-level incident cannot take out both the service and its backups.
-
-   #### Using your own backup server
-
-   A machine with large disks (e.g. an office server) can serve as the backup
-   target over plain SFTP. Do not expose its SSH port to the internet — connect
-   the VPSes and the backup server through a VPN overlay instead
-   ([Tailscale](https://tailscale.com/) is the quickest: install on both ends,
-   no inbound router ports needed):
-
-   ```bash
-   # on the backup server: dedicated user, key-only SSH.
-   # NB: do not name the user `backup` — that is a built-in Ubuntu system
-   # account (uid 34, nologin shell) and adduser will silently no-op.
-   sudo adduser --disabled-password --gecos "" mascope-backup
-   sudo -u mascope-backup mkdir -p /home/mascope-backup/.ssh
-   sudo mkdir -p /path/to/big-disk/mascope-backups
-   sudo chown mascope-backup:mascope-backup /path/to/big-disk/mascope-backups
-   # append each VPS's public key to /home/mascope-backup/.ssh/authorized_keys
-   # (mode 600, owner mascope-backup; ~/.ssh mode 700)
-
-   # on each VPS (backup.env) — note the absolute repository path:
-   RESTIC_REPOSITORY=sftp:mascope-backup@<tailscale-ip>:/path/to/big-disk/mascope-backups/<hostname>
-   ```
-
-   Caveats: the backup server needs disk redundancy (RAID/ZFS) and monitoring
-   like any other piece of infrastructure, and its location is a
-   data-processing location (Art. 30 record / DPA). With SFTP push, a
-   compromised VPS could delete its own off-site backups; for a hardened setup,
-   run restic's `rest-server --append-only` on the backup server instead.
-   Migrating to a hosted target later is just a `RESTIC_REPOSITORY` change
-   (`restic init` on the new target, or `restic copy` to carry snapshots over).
-
-2. **Configure the host:**
-
-   ```bash
-   cp tooling/backup.env.example "$MASCOPE_PATH/.runtime/secrets/backup.env"
-   chmod 600 "$MASCOPE_PATH/.runtime/secrets/backup.env"
-   # then edit: repository, encryption password, FILESTORE_PATH, retention
-
-   # the backend image runs as UID 1000, so new dumps land owned by the
-   # deploy user — but dumps created by releases older than that (or by the
-   # docker daemon creating the mount dir) may still be root-owned. Hand
-   # them to the user that runs the cron job once, or pruning fails:
-   sudo chown -R "$(whoami)" "$MASCOPE_PATH/.runtime/database/backups"
-   ```
-
-   ⚠️ Store the `RESTIC_PASSWORD` in the company password manager **before the
-   first run** — without it the backups are unrecoverable, by design.
-
-3. **Test manually** before relying on cron:
-
-   ```bash
-   MASCOPE_PATH=$MASCOPE_PATH bash tooling/backup-cron.sh
-   restic snapshots   # with backup.env sourced — should list the new snapshot
-   ```
-
-4. **Install the cron job** (`crontab -e`). Cron does **not** load
-   `/etc/environment` or shell profiles, so the header must set the environment
-   explicitly:
-
-   ```
-   SHELL=/usr/bin/bash
-   PATH=/home/<deploy-user>/.local/bin:/usr/bin:/usr/local/bin
-   MASCOPE_PATH=/home/<deploy-user>/mascope
-
-   # Nightly backup at 4 AM: local dump + prune + encrypted off-site push
-   0 4 * * * $MASCOPE_PATH/tooling/backup-cron.sh 2>&1 | logger -t mascope-backup
-   ```
-
-   Output goes to syslog: `grep mascope-backup /var/log/syslog | tail -20`.
-
-   The backend image runs as UID 1000 (override with the `MASCOPE_UID` /
-   `MASCOPE_GID` build args), so filestore files are owned by the deploy user.
-   Files written by releases that still ran as root need a one-time
-   `sudo chown -R "$(whoami)" <filestore>` — until then a user-level cron
-   cannot read them.
-
-5. **Monitoring (recommended):** set `HEALTHCHECK_URL` in `backup.env` to a
-   [healthchecks.io](https://healthchecks.io) ping URL. The script pings it on
-   success and `<url>/fail` on failure, so a silently broken cron job (the
-   classic backup failure mode) still raises an email alert.
-
-### Restoring
-
-```bash
-# Same-host restore from a local dump (list, then restore):
-mascope prod db backup list
-mascope prod db restore
-
-# Disaster recovery from off-site (new host):
-set -a; source "$MASCOPE_PATH/.runtime/secrets/backup.env"; set +a
-restic snapshots                                  # pick a snapshot
-restic restore latest --target /tmp/mascope-restore
-# then: mascope prod db restore from the recovered .dump file, and copy the
-# recovered filestore back to the MASCOPE_FILESTORE path.
-```
-
-Do a **restore drill** (restore latest snapshot to a scratch directory and
-`pg_restore --list` the dump) after first setup and then periodically — an
-untested backup is not a backup.
-
-### Notes
-
-- All `mascope prod db backup` commands operate on the **active environment's
-  database only**; deletion never touches other environments' dumps.
-- `pg_dump` for large databases (tens of GB) can take several minutes — the
-  dump file grows incrementally while in progress. restic uploads are
-  incremental/deduplicated, so nightly pushes are much smaller than the first.
-- **Large databases: dump uncompressed.** `pg_dump -Fc` compresses with
-  single-core gzip, which is both the dump-time bottleneck and the reason
-  restic cannot deduplicate consecutive dumps (each night re-uploads the full
-  dump). Set in the env's `prod.mascope.toml`:
-
-  ```toml
-  [backend.database]
-  dump_compression = "0"
-  ```
-
-  This speeds up nightly dumps *and* the pre-migration dump during upgrades
-  (shorter downtime window), and lets restic deduplicate and zstd-compress
-  dump generations off-site. Uncompressed dumps take 2–4× more local disk —
-  lower `LOCAL_RETENTION_DAYS` in `backup.env` to compensate. One-off
-  override: `mascope prod db backup create --compress 0`.
-- Backup filenames embed a timestamp and the `cron` label, e.g.
-  `mascope_test_env_20260313_040001_cron.dump`.
-- The script chains dump create and prune sequentially to avoid simultaneous
-  writes to `state.json`.
-- Pre-migration dumps created by `tooling/db-init.sh` land in the same
-  `.runtime/database/backups/prod/` directory, so they are pushed off-site and
-  pruned locally by the same run. Use https://crontab.guru to adjust schedules.
+### PostgreSQL tuning
+
+The tuning parameters (`[backend.database]` in the config toml layers, passed
+to Postgres as `-c` flags by compose; `shm_size` a Docker field), the
+recommended values per host size and what each setting does are in the
+maintainer runbook, [PostgreSQL tuning](../maintaining.md#postgresql-tuning),
+since 2026-10-22.
+
+### Backups
+
+The nightly two-layer backup (`tooling/backup-cron.sh`: local dumps, then an
+encrypted off-site copy with restic), its setup including a backup server of
+your own, restoring, and the notes on large databases are in the maintainer
+runbook, [Backups](../maintaining.md#backups), since 2026-10-22.
 
 ## 🖥️ Frontend
 
@@ -2814,6 +2463,50 @@ const data = useData(
 
 Currently unused - selection state is managed locally in each store. Reserved for future scenarios where stores need to filter data based on selections from multiple other stores simultaneously.
 
+#### Location: reload restore and shareable links
+
+`src/lib/location/` ([design](ui_state_persistence.md)) turns "where the app
+is" into one value and drives the stores back to it. Three files:
+
+- `schema.js` - the `Location` shape, versioned (`v: 1`): the chain of focused
+  ids (`workspace`, `dataset`, `batch`, `samples[]`, `peak`, `collection`,
+  `ions[]`), the `visualizedIon` and `isotope` of the open match visualization,
+  and the active `tab`. `LOCATION_LEVELS` maps each level to the store that
+  owns it (a dotted path under `app.data`) and its record key, and is the one
+  place that knows the chain order; `normalizeLocation` coerces anything parsed
+  from storage or a URL into a valid location and drops what it does not know.
+- `url.js` - the codec between a location and query parameters
+  (`?w=&d=&b=&s=a,b&p=&c=&i=&vi=&iso=&tab=`). Only the chain and the tab
+  travel; splits and the theme are personal presentation and stay out.
+- `index.js` - the `app.location` store. `read()` derives the location from the
+  live stores. `apply(loc)` seeds each level's store with its target ids
+  through `useSelection`'s lazy-focus path, so the chain converges as data
+  arrives instead of being awaited level by level; restores the match
+  visualization once its sample, collection and ion are loaded (giving up
+  after 30 s); and re-asserts a restored tab until the chain settles, so a
+  late data-driven tab switch cannot win. `shareUrl()` and `copyShareLink()`
+  back the *Copy link to this view* button (`LocationShareButton.vue`);
+  `importFromUrl()` runs on login.
+
+Two sinks. The personal snapshot is the `persist: true` option of
+`useSelection` on the chain's stores (workspace, dataset, instrument, batch,
+sample, peak, match collection and match ion): each writes its focused or
+selected ids to `localStorage["module[<name>]"]` as they change and restores
+them once its records load, keeping an id only while the loaded records prove
+it present. The URL is the other. When the address carries a location it wins
+over the snapshot: it is applied, the query is stripped with
+`history.replaceState` so the address bar stays clean and a later reload
+falls through to the snapshot (which the applied chain rewrites as it
+focuses), and an access check polls the chain for up to 20 s. A level is
+reported only once it is provably inaccessible - its records have loaded and
+lack the id - as the toast "Could not open the shared <level>; you may not
+have access to it.", naming the shallowest unresolved level; the chain stops
+at the last level it resolved, and a slow but successful load never warns.
+The address bar carries a location only while a shared link is being opened:
+continuous URL mirroring, phase 4 of the design, is not built.
+`BaseUpdateBanner.vue` is phase 4's other item, the "new version available"
+prompt whose reload the snapshot makes cheap.
+
 ### Frontend User Help
 
 The frontend includes a user 'help mode' feature, which can be toggled by users using a button in the top toolbar or by the keyboard shortcut `alt+h`. In help mode, detailed info cards are shown when a user hovers over a specific element or component on the page. The help feature state is managed in the `app.ui.help` store.
@@ -3104,38 +2797,14 @@ Formulas may use the caret `^` to denote a labelled **custom element** with a no
 
 > **Operating a live server?** The [maintainer runbook](../maintaining.md) is the
 > day-to-day reference - provisioning, the boot service, manual and unattended
-> updates, backups, and troubleshooting. This section covers the mechanics
-> underneath it.
-
-### Ubuntu host setup
-
-Mascope expects an Ubuntu 22.04 LTS (or later) machine to run on, although in principle it could potentially run on other Debian-based distributions with little to no modifications. To setup a Mascope host, clone the Mascope repo and run `./tooling/ubuntu.sh install`. This will install the `mascope` CLI to Ubuntu.
+> updates, backups, and troubleshooting - and [Hosting & deployment](../hosting.md)
+> walks through the host setup, pulling the release images and running or
+> updating to a release. This section covers the mechanics underneath them:
+> how the images are built, and how a release is cut.
 
 ### GitHub releases
 
 Mascope docker images are built by a release CI/CD pipeline (found in `.github/workflows/release.yaml`). This pipeline triggers whenever we merge to master; you can follow [release workflow runs](https://github.com/ultra-trace-systems/mascope/actions/workflows/release.yaml). The pipeline builds and tags production images and pushes them to the GitHub Container Registry (ghcr.io). You can see these images in [Ultra Trace's GitHub packages page](https://github.com/orgs/ultra-trace-systems/packages).
-
-### Pulling images
-
-The published images are public on GHCR, so no authentication is needed to pull them:
-
-```sh
-mascope prod docker pull
-```
-
-`mascope prod up` also pulls automatically when the images are not present locally.
-
-### Running a specific release
-
-The checked-out git tag selects the version (it sets `MASCOPE_VERSION`, which picks the image tag and the version the UI reports): a `vX.Y.Z` tag runs that release, `master` the latest build.
-
-```sh
-git checkout v1.0.0
-CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli   # CLI first: see hosting.md
-mascope prod docker pull && mascope prod up
-```
-
-See [Hosting & deployment](../hosting.md) for the full host setup and update walkthrough.
 
 ### Cutting a citable release
 

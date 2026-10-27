@@ -19,13 +19,18 @@ Everything below assumes an Ubuntu host provisioned with
 | **Status at a glance** | `mascope prod doctor` (add `--json` to script it) |
 | **Check for an update (applies nothing)** | `mascope prod update --check` |
 | Update now | `mascope prod update` |
-| Approve / defer a pending migration update | `mascope prod update --confirm` / `--snooze 7` |
+| Approve / defer a pending migration update, or retry / quiet a held release | `mascope prod update --confirm` / `--snooze 7` |
 | Enable unattended updates | edit `/etc/mascope/update.env`, then `sudo systemctl enable --now mascope-update.timer` |
 | Update history | `cat "$(mascope path)/.runtime/update/status.log"` |
 | Back up now | `mascope prod db backup create` |
+| Copy an environment from another host | `mascope env sync user@host:<env> prod <env> prod` |
 | **Require a new password from every user** | Manage users in the app, or `mascope prod db script run require_password_change` |
 | **Clear a lost second factor (2FA)** | Manage users in the app, or `mascope prod mfa reset <email>` |
 | What a raw file measured (its scan streams) | `mascope file scans <file.raw>` |
+| Package a dataset for a repository such as Zenodo | `mascope export package <dataset id>` |
+| What the method bindings would route, and where a file name disagrees | `mascope prod db script run report_method_binding_disagreements` |
+| Write the MS2 stores of files converted before them (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
+| Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` (fill rate and projection on each line) |
 | Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
@@ -296,6 +301,17 @@ Each run:
   Deploying that release (or a later one) yourself with `mascope prod update`
   settles the record as well, so `prod doctor` stops reporting it as pending;
   rolling back to an older release keeps it.
+- **Failed earlier** (an apply of this release did not come up healthy: its
+  migration failed, or the backend never turned healthy) ->
+  held: not applied again, and the run exits 2 every time until you act, so
+  the timer does not undo your rollback. `mascope prod update --confirm`
+  retries it once at the next window; `--snooze <days>` keeps it held but
+  quiet for those days. A newer release is tried as usual. Deploying the
+  failed release by hand (`mascope prod update --version <tag>`) lifts the
+  hold too. If the stack still runs the held release and came up healthy
+  once you fixed the cause in place, with no redeploy, `--confirm`
+  acknowledges that: the next run finds the stack up to date and only clears
+  the record. After a rollback, a `--confirm` retries the release instead.
 
 An applied update also moves the deployment checkout to the release it
 deployed, so a reboot redeploys that same release and `mascope prod doctor`
@@ -344,10 +360,10 @@ git fetch --tags && git checkout vX.Y.Z   # the release the update applied
 CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli
 ```
 
-Steer a pending migration update:
+Steer a pending migration update, or a release held after its apply failed:
 
 ```sh
-mascope prod update --confirm    # apply at the next window, skip the grace wait
+mascope prod update --confirm    # apply at the next window: skip the grace wait, or retry a held release
 mascope prod update --snooze 7   # postpone 7 days
 ```
 
@@ -431,20 +447,45 @@ ingested normally. What matters is whether it **stops**:
 ```sh
 # on a server, a few minutes after its restart - expect 0
 docker logs mascope_prod_backend --since 30m 2>&1 | grep -c "not registered in file converter"
-# and nothing quarantined anywhere under the filestore
-find "$(mascope path)"/.runtime/env/*/filestore -type d -name failed_files
+# and nothing quarantined: failed_files sits beside the streams folder
+find "$(mascope path)"/.runtime/env/* -type d -name failed_files
 ```
 
 Errors that keep arriving after the restart window, or any `failed_files`
 directory with contents, are real and worth investigating. Resolve the
 restart-window issues in the error tracker so a recurrence stands out.
 
+A file the converter found in the streams folder with no upload registered
+for it - one left there across a converter restart - can never be stored,
+and its uploader cannot be told. Every active global admin and owner is told
+instead, under "Needs attention" in the notifications pane, as "Upload
+lost" with the file's name. The backend also looks through `failed_files` at
+every start and names each file there that no record was made of, so a file
+the converter could not report reaches them too. The startup scan names each
+file to a person once; the converter names a file again if it is lost again.
+The scan also finds files the converter could not read, whose uploader was
+told why at the time, so the pane says under each file how it was found.
+Upload a lost file again from the instrument, or from `failed_files`, and
+then delete it from the folder; a file that could not be read needs looking
+at first.
+
 ## Backups
 
 [`tooling/backup-cron.sh`](../tooling/backup-cron.sh) runs a two-layer nightly
-backup: a local database dump (`mascope prod db backup create`, pruned by
-`LOCAL_RETENTION_DAYS`) plus an encrypted off-site copy of the dumps and
-filestore via [restic](https://restic.net/).
+backup from cron:
+
+1. **Local dumps** — `mascope prod db backup create` writes a compressed `.dump`
+   file (PostgreSQL custom format, `pg_dump -Fc`) of the **active environment's
+   database** to `.runtime/database/backups/prod/`, then prunes dumps older than
+   `LOCAL_RETENTION_DAYS` (default 7). These give fast same-host restores.
+2. **Encrypted off-site copy** — [restic](https://restic.net/) pushes the dump
+   directory **and the filestore** (uploaded raw files) to an encrypted remote
+   repository, then applies the `KEEP_DAILY`/`KEEP_WEEKLY`/`KEEP_MONTHLY`
+   retention policy (defaults 7/4/6). These survive host loss.
+
+Off-site backups are encrypted client-side by restic, so the storage provider
+never sees plaintext — this is what lets the privacy notice claim encrypted
+backups (GDPR Art. 32).
 
 Neither layer includes `.runtime/secrets/` - deliberately, so no backup medium
 holds both the database and the keys that make its secrets usable. The flip
@@ -453,28 +494,286 @@ a copy of the secrets files wherever the deployment's other credentials live -
 the [two-factor encryption key](#two-factor-authentication) in particular
 cannot be regenerated, only lost.
 
-Set it up:
+### Prerequisites
 
-1. Copy the template and fill it in (restic repo + password, retention):
+```bash
+which mascope   # /home/<user>/.local/bin/mascope
+which docker    # /usr/bin/docker
+which restic    # /usr/bin/restic (installed by tooling/ubuntu.sh)
+echo $MASCOPE_PATH   # e.g. /home/<deploy-user>/mascope (from /etc/environment)
+```
 
-   ```sh
-   cp tooling/backup.env.example "$(mascope path)/.runtime/secrets/backup.env"
-   sudoedit "$(mascope path)/.runtime/secrets/backup.env"
+### Setup
+
+1. **Create the off-site repository.** Any restic-supported backend works:
+   - *Hetzner Storage Box* — enable SSH support in the Storage Box settings and
+     install the host's SSH key (`ssh-copy-id -p 23 u123456@u123456.your-storagebox.de`).
+   - *S3-compatible object storage* (e.g. Contabo Object Storage) — create a
+     bucket and an access key pair.
+   - *Own backup server* — see below.
+
+   Prefer the **other** hosting provider than the one the server runs on, so a
+   provider-level incident cannot take out both the service and its backups.
+
+   #### Using your own backup server
+
+   A machine with large disks (e.g. an office server) can serve as the backup
+   target over plain SFTP. Do not expose its SSH port to the internet — connect
+   the VPSes and the backup server through a VPN overlay instead
+   ([Tailscale](https://tailscale.com/) is the quickest: install on both ends,
+   no inbound router ports needed).
+
+   Give **every backed-up server an account of its own** on the backup server,
+   one that can do nothing but SFTP into its own directory. The obvious setup,
+   one shared account with an ordinary shell, hands every server a key that can
+   delete or overwrite every other server's backups, open a shell on the backup
+   server and tunnel through it into the rest of the network: one compromised
+   server would cost you all of them. The commands below use a group
+   `site-backup`, an account `backup-<server>` per backed-up server, a chroot
+   per account under `/srv/site-backups` (put it on the big disk) and the keys
+   in `/etc/ssh/site-backup-keys`; any names work. `<server>.pub` is the public
+   half of the key that server's backup cron uses (made further down), and
+   `203.0.113.10` stands for that server's VPN address (`tailscale ip -4`).
+
+   On the backup server, once — the group, two root-owned directories, and an
+   sshd drop-in that applies to every member of the group:
+
+   ```bash
+   sudo groupadd --system site-backup
+   sudo install -d -o root -g root -m 755 /srv/site-backups /etc/ssh/site-backup-keys
+   sudoedit /etc/ssh/sshd_config.d/30-site-backups.conf
    ```
 
-2. Add a crontab entry (the header must export `MASCOPE_PATH`):
+   ```
+   # Backups: one sftp-only account per backed-up server (group site-backup).
+   # Each sees only its own chroot, its repository at /repo; no shell, no
+   # terminal, no tunnels. Its keys sit in a root-owned file named after it.
+   Match Group site-backup
+       ChrootDirectory /srv/site-backups/%u
+       ForceCommand internal-sftp
+       AuthorizedKeysFile /etc/ssh/site-backup-keys/%u
+       DisableForwarding yes
+       PermitTTY no
+   Match all
+   ```
 
-   ```cron
-   MASCOPE_PATH=/path/to/mascope
+   The closing `Match all` is load-bearing. A `Match` block runs until the
+   next `Match` line or the end of the file, so without it a line added to
+   this file later — or the block pasted into the middle of `sshd_config` —
+   would quietly apply to the backup accounts alone. `Match all` ends the
+   block; whatever follows it is global again.
+
+   Then for each backed-up server — an account with no password and no shell,
+   its chroot, and its key:
+
+   ```bash
+   sudo useradd --system --user-group --groups site-backup --no-create-home \
+     --home-dir /nonexistent --shell /usr/sbin/nologin backup-<server>
+   # sshd refuses a chroot that is not root's or that anyone else can write;
+   # the account cannot create its repository directory there, so make it
+   sudo install -d -o root -g root -m 755 /srv/site-backups/backup-<server>
+   sudo install -d -o backup-<server> -g backup-<server> -m 700 \
+     /srv/site-backups/backup-<server>/repo
+   printf 'restrict,command="internal-sftp",from="%s" %s\n' \
+     203.0.113.10 "$(cat <server>.pub)" \
+     | sudo tee /etc/ssh/site-backup-keys/backup-<server>
+   sudo chmod 644 /etc/ssh/site-backup-keys/backup-<server>
+   ```
+
+   In the key line, `restrict` turns off forwarding, the terminal and
+   `~/.ssh/rc`; `command="internal-sftp"` keeps the key to SFTP even without
+   the drop-in; `from=` refuses it from any address but that server's own, so
+   a copy of the key is no use anywhere else (it takes a comma-separated list
+   if the server may also connect over IPv6). Adding a server later needs no
+   reload: sshd reads the account and its key file at login.
+
+   Check the drop-in before reloading sshd, and keep an automatic revert armed
+   while you test, so a mistake cannot lock you out of the backup server:
+
+   ```bash
+   sudo sshd -t     # syntax; prints nothing when the config is valid
+   # a backup account: expect its chroot, internal-sftp, its key file,
+   # "disableforwarding yes" and "permittty no"
+   sudo sshd -T -C user=backup-<server>,host=<server>,addr=203.0.113.10 \
+     | grep -E '^(chrootdirectory|forcecommand|authorizedkeysfile|disableforwarding|permittty) '
+   # your own account: chrootdirectory and forcecommand must still be "none"
+   sudo sshd -T -C user="$USER",host=<your-machine>,addr=<your-address> \
+     | grep -E '^(chrootdirectory|forcecommand) '
+   # takes the drop-in out again in 15 minutes unless stopped
+   sudo systemd-run --on-active=15min --unit=site-backup-revert \
+     /bin/sh -c 'rm -f /etc/ssh/sshd_config.d/30-site-backups.conf && systemctl reload ssh'
+   sudo systemctl reload ssh   # the unit is `ssh` on Debian/Ubuntu, often `sshd` elsewhere
+   ```
+
+   Keep your current session open, test a fresh login of your own and the
+   backed-up server (below), then `sudo systemctl stop site-backup-revert.timer`.
+   The revert fails closed: without the drop-in, sshd looks for the backup
+   accounts' keys in their (nonexistent) home and refuses them.
+
+   On each backed-up server, as the user that runs the backup cron, make the
+   key (no passphrase: cron cannot type one), copy its `.pub` to the backup
+   server as `<server>.pub` for the step above, and give the backup server an
+   ssh alias that names the account and the key:
+
+   ```bash
+   ssh-keygen -t ed25519 -N "" -C "backup@$(hostname)" -f ~/.ssh/id_ed25519_backup
+   ```
+
+   ```
+   # ~/.ssh/config
+   Host <backup-host>
+       HostName 203.0.113.20        # the backup server's VPN address
+       User backup-<server>
+       IdentityFile ~/.ssh/id_ed25519_backup
+       IdentitiesOnly yes
+   ```
+
+   Connect once by hand to accept the backup server's host key (cron cannot
+   answer that prompt; compare the fingerprint with
+   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` there), and check what
+   the account can do:
+
+   ```bash
+   sftp <backup-host>       # accept the host key; `ls /` then shows only /repo
+   ssh <backup-host> true   # refused: "This service allows sftp connections only."
+   ```
+
+   In `backup.env` the repository is then the alias and the path the account
+   sees inside its chroot — the same `/repo` on every server:
+
+   ```bash
+   RESTIC_REPOSITORY=sftp:<backup-host>:/repo
+   ```
+
+   Moving from one shared account: take one server at a time, while its
+   backup is not running (its repository's `locks/` directory is empty). Set
+   up its account as above, but instead of creating an empty `repo/`,
+   `sudo mv` its repository there (on the same filesystem that is a rename)
+   and hand it over (`sudo chown -R backup-<server>:backup-<server>`,
+   `sudo chmod 700`); move its key line
+   out of the shared account's `authorized_keys` into the new key file; then
+   change `User` in the server's alias and its `RESTIC_REPOSITORY` to
+   `sftp:<backup-host>:/repo`. Once the shared account holds no keys, give it
+   `/usr/sbin/nologin` (`sudo usermod -s /usr/sbin/nologin <account>`).
+
+   This contains a compromised server; it does not protect that server's own
+   backups from it. restic over SFTP cannot be append-only: every server
+   prunes its own repository (`tooling/backup-cron.sh` runs
+   `restic forget --prune` after each push), so its account must be able to
+   delete, and an attacker who holds the server can delete its history — but
+   no longer anyone else's. The alternative is restic's
+   [rest-server](https://github.com/restic/rest-server) with `--append-only`
+   (and `--private-repos`, so each user reaches only its own repository), with
+   the pruning moved to the backup server, which then needs every
+   repository's password. `backup-cron.sh` always prunes, so that route needs
+   the script changed as well.
+
+   Caveats: the backup server needs disk redundancy (RAID/ZFS) and monitoring
+   like any other piece of infrastructure, and its location is a
+   data-processing location (Art. 30 record / DPA). Keep the drop-in and
+   `/etc/ssh/site-backup-keys` in the backup server's own configuration
+   backup — a rebuilt box without them refuses every server.
+   Migrating to a hosted target later is just a `RESTIC_REPOSITORY` change
+   (`restic init` on the new target, or `restic copy` to carry snapshots over).
+
+2. **Configure the host:**
+
+   ```bash
+   cp tooling/backup.env.example "$MASCOPE_PATH/.runtime/secrets/backup.env"
+   chmod 600 "$MASCOPE_PATH/.runtime/secrets/backup.env"
+   # then edit: repository, encryption password, FILESTORE_PATH, retention
+
+   # the backend image runs as UID 1000, so new dumps land owned by the
+   # deploy user — but dumps created by releases older than that (or by the
+   # docker daemon creating the mount dir) may still be root-owned. Hand
+   # them to the user that runs the cron job once, or pruning fails:
+   sudo chown -R "$(whoami)" "$MASCOPE_PATH/.runtime/database/backups"
+   ```
+
+   ⚠️ Store the `RESTIC_PASSWORD` in the company password manager **before the
+   first run** — without it the backups are unrecoverable, by design.
+
+3. **Test manually** before relying on cron:
+
+   ```bash
+   MASCOPE_PATH=$MASCOPE_PATH bash tooling/backup-cron.sh
+   restic snapshots   # with backup.env sourced — should list the new snapshot
+   ```
+
+4. **Install the cron job** (`crontab -e`). Cron does **not** load
+   `/etc/environment` or shell profiles, so the header must set the environment
+   explicitly:
+
+   ```
+   SHELL=/usr/bin/bash
+   PATH=/home/<deploy-user>/.local/bin:/usr/bin:/usr/local/bin
+   MASCOPE_PATH=/home/<deploy-user>/mascope
+
+   # Nightly backup at 4 AM: local dump + prune + encrypted off-site push
    0 4 * * * $MASCOPE_PATH/tooling/backup-cron.sh 2>&1 | logger -t mascope-backup
    ```
 
-Restore a dump into the active environment:
+   Output goes to syslog: `grep mascope-backup /var/log/syslog | tail -20`.
 
-```sh
+   The backend image runs as UID 1000 (override with the `MASCOPE_UID` /
+   `MASCOPE_GID` build args), so filestore files are owned by the deploy user.
+   Files written by releases that still ran as root need a one-time
+   `sudo chown -R "$(whoami)" <filestore>` — until then a user-level cron
+   cannot read them.
+
+5. **Monitoring (recommended):** set `HEALTHCHECK_URL` in `backup.env` to a
+   [healthchecks.io](https://healthchecks.io) ping URL. The script pings it on
+   success and `<url>/fail` on failure, so a silently broken cron job (the
+   classic backup failure mode) still raises an email alert.
+
+### Restoring
+
+```bash
+# Same-host restore from a local dump (list, then restore):
 mascope prod db backup list
-mascope prod db restore <dump-file> --yes    # or omit the file for the latest
+mascope prod db restore
+
+# Disaster recovery from off-site (new host):
+set -a; source "$MASCOPE_PATH/.runtime/secrets/backup.env"; set +a
+restic snapshots                                  # pick a snapshot
+restic restore latest --target /tmp/mascope-restore
+# then: mascope prod db restore from the recovered .dump file, and copy the
+# recovered filestore back to the MASCOPE_FILESTORE path.
 ```
+
+Do a **restore drill** (restore latest snapshot to a scratch directory and
+`pg_restore --list` the dump) after first setup and then periodically — an
+untested backup is not a backup.
+
+### Notes
+
+- All `mascope prod db backup` commands operate on the **active environment's
+  database only**; deletion never touches other environments' dumps.
+- `pg_dump` for large databases (tens of GB) can take several minutes — the
+  dump file grows incrementally while in progress. restic uploads are
+  incremental/deduplicated, so nightly pushes are much smaller than the first.
+- **Large databases: dump uncompressed.** `pg_dump -Fc` compresses with
+  single-core gzip, which is both the dump-time bottleneck and the reason
+  restic cannot deduplicate consecutive dumps (each night re-uploads the full
+  dump). Set in the env's `prod.mascope.toml`:
+
+  ```toml
+  [backend.database]
+  dump_compression = "0"
+  ```
+
+  This speeds up nightly dumps *and* the pre-migration dump during upgrades
+  (shorter downtime window), and lets restic deduplicate and zstd-compress
+  dump generations off-site. Uncompressed dumps take 2–4× more local disk —
+  lower `LOCAL_RETENTION_DAYS` in `backup.env` to compensate. One-off
+  override: `mascope prod db backup create --compress 0`.
+- Backup filenames embed a timestamp and the `cron` label, e.g.
+  `mascope_test_env_20260313_040001_cron.dump`.
+- The script chains dump create and prune sequentially to avoid simultaneous
+  writes to `state.json`.
+- Pre-migration dumps created by `tooling/db-init.sh` land in the same
+  `.runtime/database/backups/prod/` directory, so they are pushed off-site and
+  pruned locally by the same run. Use https://crontab.guru to adjust schedules.
 
 ### Pre-migration dumps
 
@@ -485,6 +784,133 @@ cron, `db_init` keeps only the most recent `MASCOPE_PREMIGRATION_KEEP` of them
 (default 5) and prunes older ones - it only ever touches `*_pre-migration.dump`
 files, never the cron/manual dumps. Raise the count (or set up the backup cron
 above) if you want a longer local history.
+
+## Copying an environment
+
+`mascope env sync` copies a runtime environment - its filestore and its database - to another env, on the same host or to or from a remote one: the way to stand a test server up on a copy of a site's data, or to move a deployment to a new host. It transfers both the filestore (via [rsync](https://linux.die.net/man/1/rsync)) and the PostgreSQL database (via `pg_dump`/`pg_restore`
+staged through .runtime/database/transfer/). Both source and target require an explicit mode (dev or prod) to identify which PostgreSQL server to use.
+
+> [!IMPORTANT]
+> Both PostgreSQL containers must be running on source and target machines before executing `env sync`.
+
+Usage examples:
+
+```bash
+# local → local
+mascope env sync default dev foo dev
+
+# local → remote
+mascope env sync foo prod user@192.168.1.100:bar prod
+
+# remote → local, database only
+mascope env sync user@192.168.1.100:bar prod baz prod --skip-filestore
+
+# local → local, filestore only
+mascope env sync foo dev bar dev --skip-db
+```
+
+The `sync` command follows symbolic links on Linux filesystem both ways - syncing into and from a symlinked directory.
+
+If the target environment does not exist, you will be prompted to create it. Pass `--yes` to skip the prompt.
+
+On transfer failure the staged dump is preserved in `.runtime/database/transfer/` for manual recovery. On success it is deleted and 7-day retention pruning runs automatically.
+
+### Syncing only part of the filestore
+
+A full filestore can be far larger than the link between the two machines. `--from` and `--to` (both `YYYY-MM-DD`, both inclusive, either one optional) narrow the transfer to a window of acquisition dates:
+
+```bash
+# everything acquired since the start of the year
+mascope env sync user@192.168.1.100:bar prod baz prod --from 2026-01-01
+
+# one quarter, filestore only
+mascope env sync user@192.168.1.100:bar prod baz prod --from 2026-01-01 --to 2026-03-31 --skip-db
+```
+
+The filter is a path filter, not a database query: the filestore stores samples as `filestore/<instrument>/<YYYY.MM.DD>/<sample_name>/`, where the date directory comes from the acquisition timestamp in the sample filename. So the window selects on **acquisition date**, not on when a file was uploaded, reprocessed or last modified. The batch cache under `filestore/sample_batches/` has no date in its path and is always transferred; it is rebuildable, so dropping it would only cost recomputation.
+
+> [!IMPORTANT]
+> `--from` / `--to` filter the filestore only - **the database is never filtered**. A date-limited sync that also syncs the database leaves the target holding sample rows whose files were not transferred, and those samples fail to load. The command warns when you do this; add `--skip-db` to sync only the files.
+
+If no filestore data falls inside the window the sync fails rather than silently transferring nothing. When the source is on a **remote** host it also fails if the filestore cannot be listed in full - a mistyped env name, a missing filestore, an unreadable directory - rather than filtering against a partial listing and reporting success on an incomplete transfer.
+
+> [!NOTE]
+> Two cases still read as an empty window rather than as a failure. `find -L` skips a dangling symlink silently and exits 0, so a filestore whose data volume is not mounted looks empty; and a local source is listed with a glob that cannot report an error at all, so an unreadable directory there narrows the transfer without a word. Check the target after a sync that reports fewer dates than you expected.
+
+### Ownership and permissions after sync
+
+rsync is run without `-o`/`-g`, so ownership is not carried across: every file lands owned by whoever runs the **receiving** side - the SSH login user for a push, the invoking user for a pull or a local sync. Mascope's containers run as the deployment's own uid (1000 by default; see `MASCOPE_UID` in `server/backend/Dockerfile`), so if those two differ the app cannot read or write what was just synced.
+
+The sync detects this by comparing the receiving uid against the owner of the target env directory, and prints the exact command to fix it:
+
+```
+sudo chown -R 1000:1000 /srv/mascope/.runtime/env/default
+```
+
+Pass `--chown` to have the sync attempt that itself. It uses `sudo -n` (non-interactive) on the receiving machine and falls back to printing the command when passwordless sudo is not available - the sync is not failed either way.
+
+If the filestore is a symlink to a data volume (see [The filestore on a data volume](#the-filestore-on-a-data-volume)), chown its target too: `chown -R` does not follow symlinks. `--chown` resolves the link and covers both paths.
+
+File modes are forced to `755` for directories and `644` for files - the same bits the backend writes under the default umask, so a synced tree is indistinguishable from a natively written one. Note that this also applies on a **re-sync**: modes hand-tightened on an existing target filestore are reset to `755`/`644`.
+
+## Packaging a dataset for deposit
+
+A user who publishes their data deposits it in a data repository such as
+Zenodo, which keeps it and mints its DOI. `mascope export package` writes what
+they upload: one zip archive of a dataset, holding its raw files, its batch
+spreadsheets, its target collections, a README that says what was measured,
+how, under what licence, by whom and with which software, and a manifest with
+the SHA-256 of every file. The user guide's
+[Export files](user/reference/exports.md#the-deposit-package) lists what it
+holds.
+
+```bash
+mascope export package <dataset id>                 # into the current directory
+mascope export package <dataset id> -o ~/deposits/  # into a directory
+mascope export package <dataset id> -o deposit.zip  # under a name of your own
+```
+
+The dataset id is in the app's address bar, after `d=`, when the dataset is
+open. The archive is named `mascope-package_<dataset id>_<dataset name>.zip`,
+and an archive already at the output path is replaced. An output path that
+ends in `/` is a directory, made if it is missing; its parent must exist.
+
+The archive is built inside the running backend container, from the database
+and filestore of the env the stack runs, in a directory of the run's own under
+that env's `temp/packages/`. Then it is copied to the output path and removed
+from the container. Two runs at once, of one dataset too, do not meet. Ctrl-C
+stops the build in the container as well, and it removes what it had written.
+The stack must be up. While the archive is built it needs the archive's size
+free on the env's disk, and again where it is copied. A developer's source
+checkout builds the package itself instead, from the active env's dev database
+and filestore; `--in-container` asks for the container there too.
+
+The archive holds every raw file of the dataset, deflated: plan for most of
+the raw files' size, and a few seconds per hundred megabytes. Zenodo takes
+up to 50 GB a record.
+
+The command reads whatever dataset it is given, whichever workspace it is in:
+whoever runs it has the database. When it is done it says what it wrote, and
+warns when the archive is not ready to deposit as it stands:
+
+- **No licence, or no authors.** A repository asks for both. The user adds
+  them to the dataset in the app, and the package is built again.
+- **Sample files with no raw file.** The filestore keeps only the data
+  converted from them, so the package describes them without the file.
+- **Raw files changed since upload.** Their SHA-256 is not the one recorded
+  when they were uploaded. The manifest gives both. A file that changed on the
+  server's disk is worth looking into before it is published.
+
+A deposit is public once uploaded. The acquisition records beside the raw
+files go out without their `machine`, the host name and Windows machine GUID
+of the instrument computer. The raw files themselves are packed as they were
+uploaded, and a Thermo `.raw` file's header can still name the instrument and
+its computer: a user who must not publish those de-identifies the raw files
+before depositing.
+
+Hand the archive to the user to check its README and upload it. Once the
+repository has minted a DOI, it goes into the dataset's related identifiers,
+so that a package built later points at the deposit.
 
 ## Disk space
 
@@ -576,6 +1002,171 @@ especially with unattended updates). The running stack's images are referenced
 and kept; a manual rollback re-pulls the previous release (guarded by the disk
 guard above), the same as the documented rollback flow.
 
+## PostgreSQL tuning
+
+Settings live in `[backend.database]` in `.mascope.toml` layer files.
+Postgres tuning parameters are passed as `-c` flags via Docker Compose command override.
+`shm_size` is a Docker field - applied via `shm_size:` in compose, never passed to postgres.
+
+**References:**
+
+- [PostgreSQL Parameter Tuning Best Practices - mydbops](https://www.mydbops.com/blog/postgresql-parameter-tuning-best-practices)
+- [How to Tune Database Parameters - EnterpriseDB](https://www.enterprisedb.com/postgres-tutorials/comprehensive-guide-how-tune-database-parameters-and-configuration-postgresql)
+- [PostgreSQL Resource Consumption Docs](https://www.postgresql.org/docs/current/runtime-config-resource.html)
+
+### Recommended Values
+
+| Setting                        | PG Default | Base (dev, ~16 GB SSD) | Prod (64 GB NVMe) |
+| ------------------------------ | ---------- | ---------------------- | ----------------- |
+| `max_connections`              | 100        | 100                    | 200               |
+| `shared_buffers`               | 128MB      | 512MB                  | 16GB              |
+| `effective_cache_size`         | 4GB        | 4GB                    | 48GB              |
+| `work_mem`                     | 4MB        | 32MB                   | 64MB              |
+| `maintenance_work_mem`         | 64MB       | 512MB                  | 4GB               |
+| `autovacuum_work_mem`          | -1         | -1                     | 2GB               |
+| `wal_buffers`                  | auto ~16MB | 16MB                   | 16MB              |
+| `min_wal_size`                 | 80MB       | 512MB                  | 1GB               |
+| `max_wal_size`                 | 1GB        | 2GB                    | 4GB               |
+| `checkpoint_completion_target` | 0.9        | 0.9                    | 0.9               |
+| `wal_compression`              | off        | on                     | on                |
+| `random_page_cost`             | 4.0        | 1.1                    | 1.1               |
+| `effective_io_concurrency`     | 1          | 200                    | 200               |
+| `default_statistics_target`    | 100        | 100                    | 100               |
+| `jit`                          | on         | off                    | off               |
+| `autovacuum_max_workers`       | 3          | 3                      | 4                 |
+| `shm_size` (Docker)            | 64m        | 1g                     | 20g               |
+
+### Connections
+
+- **`max_connections`** — Server-side cap on concurrent connections. Size it from the app:
+  `workers × (pool_size + max_overflow)` plus ~10 headroom (`superuser_reserved_connections`
+  defaults to 3, plus `db_init`, backup dumps, and interactive psql). Each idle connection
+  costs only a few MB, so a generous cap is cheap — but every *active* connection can
+  allocate `work_mem` per operation, so check the `work_mem` formula below when raising it.
+  Requires a postgres container restart.
+
+### Memory
+
+- **`shared_buffers`** — PostgreSQL's dedicated data page cache. The single largest performance
+  lever - pages cached here cost zero I/O on repeated reads. Rule: **25% of RAM**. Above ~40%
+  competes with the OS page cache and yields diminishing returns. PostgreSQL's 128MB default is
+  a historical artifact.
+
+- **`effective_cache_size`** — Planner hint only, **no memory is allocated**. Tells the planner
+  how much total cache (shared_buffers + OS page cache) is available. Too low causes the planner
+  to prefer sequential scans over index scans on large tables. Set to **75% of RAM**.
+
+- **`work_mem`** — Per-operation memory for sorts, hash joins, hash aggregates, window functions.
+  **Allocated per operation per connection** - a query with three sort nodes uses 3× work_mem.
+  Too low causes disk spills (10–100× slower). Worst-case formula:
+
+  ```
+  workers × (pool_size + max_overflow) × ops_per_query × work_mem
+  # Prod: 12 × 10 × 3 × 64MB = ~22.5GB theoretical worst case - acceptable on
+  # 64GB next to shared_buffers=16GB (assumes every connection running 3 sorts
+  # at once, which real workloads never reach)
+  ```
+
+  Diagnostic: set `log_temp_files = 0` and watch for spill entries in logs.
+
+- **`maintenance_work_mem`** — Memory for `VACUUM`, `CREATE INDEX`, `ALTER TABLE`, `pg_restore`.
+  Only a few maintenance ops run concurrently so this can be set high safely.
+
+- **`autovacuum_work_mem`** — Memory per autovacuum worker. `-1` inherits `maintenance_work_mem`.
+  Set explicitly in prod so background autovacuum workers don't consume the full
+  `maintenance_work_mem` allocation.
+
+- **`wal_buffers`** — Shared memory buffer for WAL records before flush to disk. Auto-tunes to
+  1/32 of `shared_buffers`, capped at 16MB. Set explicitly so it's visible in config.
+  **Requires container restart** (shared memory allocation).
+
+### Checkpoints and WAL
+
+- **`min_wal_size` / `max_wal_size`** — WAL files below `min_wal_size` are recycled rather than
+  deleted. `max_wal_size` is the ceiling before a checkpoint is forced. Too small causes I/O
+  spikes from forced checkpoints. Scale with `shared_buffers` - a larger buffer pool accumulates
+  more dirty data between checkpoints.
+
+- **`checkpoint_completion_target`** — Fraction of the checkpoint interval over which dirty page
+  writes are spread. At `0.9`, writes are distributed evenly - no I/O spike at checkpoint
+  boundary. Default since PG14 but set explicitly for visibility.
+
+- **`wal_compression`** — Compresses WAL records before writing. Reduces WAL volume and disk
+  usage at minor CPU cost. `on` uses zlib - available in standard `postgres:16-alpine`.
+  `lz4` requires PostgreSQL compiled with `--with-lz4` (**not in the standard image**).
+
+### Planner
+
+- **`random_page_cost`** — Cost of a random page fetch relative to sequential (always 1.0).
+  Default 4.0 assumes spinning disk - causes the planner to avoid index scans and prefer
+  sequential scans even when an index would be faster. Set to **1.1 for SSD/NVMe** where random
+  reads are nearly as fast as sequential. Getting this wrong causes full table scans on large
+  tables that have usable indexes.
+
+- **`effective_io_concurrency`** — Concurrent I/O requests for bitmap heap scans. Default 1
+  assumes a single spinning disk. Set to **200 for SSD/NVMe**. No effect on sequential scans.
+
+- **`default_statistics_target`** — Histogram depth per column collected during `ANALYZE`. Higher
+  values give the planner more accurate row estimates for skewed data. PostgreSQL default 100 is
+  adequate as a baseline. For heavily skewed columns (isotope counts, intensity values), set
+  per-column:
+
+  ```sql
+  ALTER TABLE match_isotopes ALTER COLUMN intensity SET STATISTICS 500;
+  ANALYZE match_isotopes;
+  ```
+
+- **`jit`** — JIT compilation benefits long analytical queries but adds overhead on short
+  transactional ones. Disabled for Mascope's mixed workload - re-evaluate with profiling data
+  if specific long queries would benefit.
+
+### Autovacuum
+
+- **`autovacuum_max_workers`** — Parallel autovacuum workers. Each consumes `autovacuum_work_mem`.
+  Default 3 is fine for dev; 4 in prod with many large tables prevents dead tuple accumulation.
+
+  The global `autovacuum_vacuum_scale_factor` default of 0.2 means vacuum triggers after 20% of
+  the table is modified - on a 450M-row table that's 90M dead tuples before cleanup. For large
+  tables, override per-table:
+
+  ```sql
+  ALTER TABLE match_isotopes SET (
+      autovacuum_vacuum_scale_factor = 0.01,
+      autovacuum_analyze_scale_factor = 0.005
+  );
+  ```
+
+### Docker: shm_size
+
+`/dev/shm` tmpfs inside the postgres container. PostgreSQL uses it for shared_buffers, WAL
+buffers, lock tables, and IPC. Docker default 64MB causes crashes with any real shared_buffers:
+
+```
+ERROR: could not resize shared memory segment: No space left on device
+```
+
+Rule: `shm_size >= shared_buffers + 2GB overhead (WAL buffers, lock tables, IPC)`
+
+> **Uses Docker byte format: `m` / `g` - not PostgreSQL format `MB` / `GB`.**
+> The Pydantic validator rejects PostgreSQL format values for this field.
+
+### Verifying Settings
+
+```bash
+# Confirm settings applied
+mascope prod db cli -p
+postgres=# SHOW shared_buffers;
+postgres=# SHOW work_mem;
+postgres=# SHOW random_page_cost;
+
+# Check /dev/shm allocation and usage
+docker exec mascope_prod_postgres df -h /dev/shm
+
+# Check postgres shared memory segments
+docker exec mascope_prod_postgres psql -U mascope_user \
+  -c "SELECT name, size FROM pg_shmem_allocations ORDER BY size DESC LIMIT 10;"
+```
+
 ## User accounts
 
 ### Requiring a password change
@@ -592,8 +1183,9 @@ that passes the policy and differs from the old. Nobody is excluded - the owner
 who triggers it and deactivated accounts included, so a reactivated account cannot
 come back on a pre-policy password.
 
-An owner can do it from **Manage users** in the web interface, which also notifies
-anyone with the app open. On the server:
+An owner can do it from **Manage users** in the web interface or with a script on
+the server. Either way, anyone with the app open is moved to the password screen at
+once. On the server:
 
 ```sh
 # report what would change, without changing anything
@@ -603,8 +1195,9 @@ MASCOPE_REQUIRE_PASSWORD_CHANGE_DRY_RUN=1 mascope prod db script run require_pas
 mascope prod db script run require_password_change
 ```
 
-The script sends no live notification - there is no socket server in that process
-- so sessions already open transition when their next request is refused.
+The script reaches open tabs through Redis, as the app's own workers do. If it
+cannot reach Redis it says so, and open sessions move to the password screen when
+their next request is refused.
 
 Maintenance scripts like this one ship in the backend image, and
 `mascope prod db script` lists and runs them inside the backend container -
@@ -741,7 +1334,7 @@ nothing in the app can reach - the only account that could reset the factor
 has lost its own authenticator and its codes:
 
 ```sh
-mascope prod mfa status          # who holds a second factor + unused code counts
+mascope prod mfa status          # who holds a second factor (machine accounts: exempt) + unused code counts
 mascope prod mfa reset <email>   # clear it so its holder can enrol afresh
 ```
 
@@ -782,6 +1375,12 @@ Tailscale (the box's LAN address does not route from the servers, and container
 DNS cannot resolve MagicDNS names). One-time per server: the backend container
 needs a `tailscale0` masquerade line in the `MASCOPE NAT` block; see the
 [monitoring runbook](../tooling/monitoring/README.md) step 7.1.
+
+Code fed to Python on stdin or typed at its prompt never reports, though it
+inherits the DSN in the container: a prod job or an operator's
+`docker exec -i <container> python - < script.py` keeps its errors on the
+terminal instead of filing them as the server's. Run a script by its path when
+its errors should reach GlitchTip.
 
 Backend images ship `sentry-sdk` (the runtime's `[sentry]` extra) since
 2026-07, so there is nothing to install per server; the DSN alone toggles
@@ -901,6 +1500,40 @@ before it landed, the UI shows no assignment views, and the
 `/api/peak-assignments` write routes refuse to launch runs (403; the read
 routes stay open, so ledgers written while it was on remain visible).
 
+#### What a start seeds
+
+Every backend start creates, before the server listens, the ionization
+mechanisms the engine's chemistry needs - the mechanisms the shipped ionization
+modes declare and every secondary channel an assignment profile can open,
+nineteen in all - and then the eleven shipped modes. Each mechanism is built
+with the target ions of every compound already in the library, so a fresh
+server searches under the same chemistry as any other from its first run. A
+mechanism the deployment already holds under that notation, in either
+spelling, is adopted as it is; the shipped modes arrive inert (no token, no
+collections, left out of the ionization listing until a deployment adopts one);
+a second start changes nothing.
+
+The first start on a large library is the slow one: about 6.5 s per missing
+mechanism against a 1,466-compound library, 85 s for thirteen. The backend's
+compose healthcheck allows a start 300 s for this (`start_period`); a
+healthcheck of your own in front of the backend has to allow the same, or it
+marks a slow first start unhealthy. A shipped mechanism cannot be deleted: the
+settings show a lock, and the delete route refuses it as it refuses a shipped
+mode.
+
+#### Mechanism notation
+
+An ionization mechanism is written in the standard adduct form, the ion's
+charge at the end: `[M-H]-`, `[M+Br]-`, `[M+NH4]+`, `[M]+.`, `[M-H]+`, a
+labelled moiety kept as it is (`[M+^NO3]-`). Rows stored in the older
+`<operation><moiety><charge>` form (`-H+` for deprotonation, `+Br-`) were
+rewritten in the standard form by a data migration (alembic `5193d1e942e0`,
+whose downgrade is the inverse) when the release that shipped the notation was
+applied, so there is no operator step; the mode editor, the exports and the SDK
+show the standard form. The old form is still accepted on input and converted.
+**The 2.0 release refuses it on input**: a client, a script or a list of your
+own that still writes `-H+` has to write `[M-H]-` before the update to 2.0.
+
 ### Reclaiming assignment runs
 
 Each assignment run writes **one row per observed peak** of its sample -
@@ -974,6 +1607,16 @@ Deleting rows returns space to Postgres for reuse but not to the filesystem;
 `VACUUM FULL peak_assignment` (or `pg_repack`) afterwards does that, and takes
 an exclusive lock while it runs.
 
+**Interrupted runs.** An assignment run that a backend stop interrupts - a
+restart, an update, a crash - cannot finish or fail itself. At its next start
+the backend marks every run still in a state a server task owns as `failed`,
+with the error "Interrupted: the server restarted while this run was in
+progress.", so the run no longer holds its sample against new work; re-run the
+assignment. An import a client started and did not finish is
+not a server task and is left to `MASCOPE_PRUNE_KEEP_IMPORTING_HOURS` above.
+On a database not yet migrated to the release's head the step warns and the
+server starts anyway.
+
 ### The composite cut
 
 **The composite cut** (`composite_scan_streams` in the server's `[backend]`
@@ -983,7 +1626,17 @@ spectrum per polarity: each m/z is read from the range that owns it, averaged
 over that range's own scans, so an ion a short range measures no longer reads
 low for being divided by every range's scans. The 1.11.0 and 1.12.0 release
 notes describe it, and [the design note](dev/ingest_routing_and_splitting.md)
-(section 4.5) the design. It ships **off**; two sites run it as canaries.
+(section 4.5) the design. It is **on** by default from 1.14.0; from 1.11.0 to
+1.13.0 it shipped off, and two sites ran it as canaries. A site that has to
+keep pooling - to keep new files comparable with a pooled history it will not
+re-process - turns it off in the `[backend]` section of its env's
+`prod.mascope.toml`:
+
+```toml
+[backend]
+composite_scan_streams = false
+```
+
 The backend and the file converter read the setting when they start, so after
 changing it restart both:
 
@@ -992,7 +1645,11 @@ mascope prod restart backend
 mascope prod restart file_converter
 ```
 
-Switching it on changes only files converted from then on. Whether a file's
+Switching it on changes only files converted from then on, and upgrading to a
+release where it is on by default is switching it on: a site whose methods
+measure several ranges in a polarity starts stitching their new files at the
+upgrade, while its older files of those methods stay pooled until they are
+re-processed (below). Whether a file's
 peaks are detected per range is decided at its first conversion and recorded
 with the file, and every later rebuild of its peak store goes by that record;
 a file converted pooled stays pooled. The one run that decides again is a
@@ -1025,9 +1682,10 @@ What to expect and how to pace it:
   never queued behind the re-processing, and the load stayed under 1.
 - **What to watch.** Every file of a batch ends `done` and carries a composite
   stream row; the fresh files keep ending `done`; error tracking shows only
-  the drift warning a re-calibrated file raises anyway, one per file, so that
-  count climbs by the number of files re-processed. A re-process takes no
-  database dump, so the backups directory is untouched. Keep a list of what
+  the drift warning a drifting instrument raises anyway, at most once a day
+  per instrument and threshold, so that count stays flat however many files
+  are re-processed (each file's drift is in the logs at INFO). A re-process
+  takes no database dump, so the backups directory is untouched. Keep a list of what
   was submitted, so an interrupted run resumes where it stopped rather than
   re-submitting.
 - **What it changes.** A pooled file becomes stitched: one reading of each
@@ -1037,6 +1695,199 @@ What to expect and how to pace it:
   file is done. A file already stitched by 1.11.0 gains, when re-processed
   under 1.12.0, a calibration factor per range and the overlap readings in its
   processing detail.
+
+### Method bindings
+
+**A method binding** records which chemistry an acquisition method has been
+seen running - keyed on the instrument, the method file's name and the scan
+signature of the method's MS1 streams - so that a later file of the same method
+can be bound to its ionization mode without a token in its name. Every file
+bound by its acquisition record, a person's choice or a filename token teaches
+its method's binding; [the design note](dev/ingest_routing_and_splitting.md)
+(section 5.3) has the rules. What a deployment does with the bindings is
+`method_binding` in the `[backend]` section of the env's config toml:
+
+```toml
+[backend]
+method_binding = "shadow"   # "shadow" (the default), "route" or "off"
+```
+
+- `"shadow"` learns a binding from every file that routes on a stronger rung
+  and routes nothing on what it learned.
+- `"route"` also binds a file **no token names** to the chemistry its method
+  has been seen running, instead of parking it as *Needs a chemistry*. It sits
+  below the filename token, so a file a token names is bound exactly as before.
+  A method seen running two chemistries is skipped rather than guessed at, and
+  so is a method whose name is a constant the instrument reports for every
+  acquisition (some TOF configurations), which is keyed on the signature class
+  alone and yields to a token. What it gains is concentrated at the sites whose
+  file names carry no token: switch it on there first and watch the parked
+  count.
+- `"off"` records nothing.
+
+It takes effect on restart (`mascope prod up`) and applies to files converted
+from then on. With the rung on, re-processing a parked file from Raw files asks
+its method too, so the files that waited for a chemistry are picked up once one
+file of their method has been given one.
+
+**Prime the table from history.** Bindings are learned as files arrive, so a
+server that installs the feature knows nothing of the methods it has routed
+for years until the backfill reads them. Two scripts, in this order:
+
+```sh
+DRY_RUN=1 mascope prod db script run backfill_scan_stream_census   # what it would do
+mascope prod db script run backfill_scan_stream_census             # again, until nothing is left
+DRY_RUN=1 mascope prod db script run backfill_method_bindings
+mascope prod db script run backfill_method_bindings
+```
+
+- `backfill_scan_stream_census` records, in the files converted before the
+  census existed, the scan-stream census the signature class comes from,
+  reading it off the raw data kept beside each converted sample. Orbitrap files
+  only: a TOF acquisition is one stream and has nothing to fill in. Reading a
+  raw file per census is slow, so a run is bounded and resumable:
+  `CENSUS_LIMIT` caps how many files one run reads (run it again until it
+  reports nothing left to do), a file whose census could not be read is
+  remembered and passed over on the next run, and `CENSUS_RETRY=1` tries those
+  again once the cause is dealt with. A file without a census is skipped by
+  the binding backfill, not guessed at, so on a server with Orbitrap history
+  this one runs first or the next learns nothing from that history.
+- `backfill_method_bindings` folds every acquisition sample auto-processing
+  made into the table. It merges with what live learning has written, so
+  running it twice changes nothing, and the mode a binding points at is the
+  newest one its method's files bound to.
+
+Both take the pre-script database dump the runner makes for any script that
+writes.
+
+**Read what the bindings would do** before and after a change to the switch:
+
+```sh
+mascope prod db script run report_method_binding_disagreements
+BINDING_REPORT_FILES=100000 mascope prod db script run report_method_binding_disagreements
+```
+
+For every binding it says what the newest files of that method bind to by
+their token today and what they would bind to by their method - asked of every
+file read, including the ones a token names, which production never asks -
+plus the files `route` would bind and `shadow` parks, the keys a guard holds
+back and why, the keys following a change of mode that has not landed, and the
+files whose name matches two chemistries, which park whatever the bindings say.
+Both answers come from the code the pipeline runs. It writes nothing, so no
+dump is taken before it. `BINDING_REPORT_FILES` caps the files one run walks
+(20,000 by default, newest acquisition first) and `BINDING_REPORT_PER_KEY` how
+many of them each binding is compared on (200).
+
+**Where the composite cut is on**, `report_stitch_overlaps` reads what the
+scan ranges of stitched files record where two of them overlap: per layout and
+per overlap, which range owns it today, how many ions the two share and how the
+second reads them against the first (the ratio and the m/z offset), how many
+peaks each range holds in the overlap that the other does not, and the ions the
+two ranges do not measure alike. It decides nothing - a ratio far from one can
+be the layout's window factor or chemistry inside the instrument - and writes
+nothing. `STITCH_REPORT_FILES` caps the raw Orbitrap files one run walks
+(5,000, newest first).
+
+```sh
+mascope prod db script run report_stitch_overlaps
+```
+
+### The MS2 store
+
+A raw Orbitrap file that holds fragmentation scans gets an MS2 store when it
+is converted: its MS2 scans read once, which the MS2 routes read instead of
+the raw file. A file converted before the store existed has none, and its
+MS2 routes go on opening the raw file on every request. **After updating to
+the release that adds the store** (its changelog: "A file's MS2 scans are
+read once, when it is converted, and kept"), write the stores of the files
+already there:
+
+```sh
+mascope prod db script run backfill_ms2_store                     # count only
+MS2_STORE_MODE=run mascope prod db script run backfill_ms2_store  # write; again until nothing is left
+```
+
+- The count reads only each file's `.props` and writes nothing. Per
+  instrument it says how many files hold fragmentation scans and no store,
+  how many already have one, and how many hold **no scan-stream census**.
+- A file with no census is left alone: nothing says whether it holds
+  fragmentation scans without opening it. Run `backfill_scan_stream_census`
+  (under [Method bindings](#method-bindings)) first, then this again.
+- A run reads one raw file at a time and rests `MS2_STORE_PAUSE` seconds
+  (default 1) after each, so the server keeps serving. It logs each file's
+  groups as it writes them.
+- It can be stopped at any time: a file whose store is written is not read
+  again. `MS2_STORE_LIMIT` caps how many files one run reads.
+- A file whose store could not be written is remembered and passed over;
+  `MS2_STORE_RETRY=1` tries those again once the cause is dealt with. Its MS2
+  routes read the raw file meanwhile, as before.
+- It changes no database row, only files in the filestore, so the pre-script
+  database dump restores nothing it does: `--skip-backup` loses nothing.
+
+### Auditing a TOF instrument's mass calibration
+
+`audit_tof_calibration` refits the stored peaks of one TOF instrument's files
+exactly as the calibration node does - the same matching, the same 15 ppm
+residual rule, the same subset search for five matches or fewer, the same fit -
+under the mode's calibration collection and any calibrant sets you name, and
+reports how good each fit is per ion and per mass band. It is how a change to a
+calibrant collection is measured before it is made and after, in ppm per mass
+band rather than one RMS.
+
+```sh
+TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration
+TOF_AUDIT_INSTRUMENT=<name> TOF_AUDIT_FROM=2026-10-12 TOF_AUDIT_TO=2026-10-18 \
+    TOF_AUDIT_SETS='{"proposed": ["C3H9N", "C6H18N2", "C13H25NO2"]}' \
+    mascope prod db script run audit_tof_calibration
+```
+
+It writes nothing, so no dump is taken before it, and it never computes a peak
+timeseries the store lacks, so it can run on a site inside the backend
+container or on a copy of a site's database and filestore. For each file in the
+range, and each ionization mode the files were acquired in, it reports: each
+ion line's median and IQR error where the fit used it and where it did not
+(held out); each calibrant's presence rate and how often the fit kept it; per
+mass band, the fitted and the held-out error, and how far strong peaks sit from
+the nearest CHO formula under each of the mode's mechanisms, which needs no
+identity to be right; and the nitrate, sulfate and bromide cluster series
+member by member. It checks that its refit under the mode's own collection
+lands on the stored fit to 0.01 ppm on every file the node fitted, and says why
+where it does not.
+A file whose record is the converter's own calibration, as on a mode with no
+calibrants or after a failed fit, has no `stored` fit: those coefficients count
+samples from the start of the raw file's axis, not the stored TOF index the
+audit reads at. The report counts such files as `unfitted` instead. The audit
+tells them from an applied fit by the file's database record, since `.props`
+holds both bare.
+A file it cannot audit is counted as unreadable by its cause, and listed with
+it in the JSON. "Stored as a blank" is a file the converter took for a blank,
+or found too weak to fit instrument functions on: it has an empty peak store
+and no instrument functions, so there is nothing to refit. The other causes
+are no peak store, no instrument functions on a file that has peaks, and
+instrument functions that could not be read. Anything else is counted by the
+error's type, and the debug log has its traceback.
+
+Everything is set through the environment:
+
+| Variable | Meaning |
+|---|---|
+| `TOF_AUDIT_INSTRUMENT` | The instrument, as files name it. Required |
+| `TOF_AUDIT_FROM` / `TOF_AUDIT_TO` | Acquisition dates, inclusive, `YYYY-MM-DD` (UTC). Default: the seven days up to today |
+| `TOF_AUDIT_PER_DAY` | Files per day, spread over the day; `0` (the default) for every file |
+| `TOF_AUDIT_MODE` | Only the files of the ionization mode of this name |
+| `TOF_AUDIT_SETS` | Named calibrant sets as JSON: a name to a list of compound formulas, which the mode's mechanisms make ions of as a collection would, or to `{"collection": "<id or name>"}`. The mode's own collection is always audited, as `collection` |
+| `TOF_AUDIT_MODELS` | Tofwerk calibration modes to fit, comma-separated; default `0` |
+| `TOF_AUDIT_BANDS` | Mass band edges in Th; default `40,100,150,200,300,500` |
+| `TOF_AUDIT_FAMILIES` | Mechanisms whose CHO family is measured, comma-separated (`[M+NO3]-,[M-H]-`); default the mode's |
+| `TOF_AUDIT_SERIES` | Cluster series as JSON, a name to `{"core": "HSO4", "unit": "H2SO4", "n": 4, "charge": "-"}`, or `none`; default the three negative-ion series |
+| `TOF_AUDIT_FAMILY_SNR`, `TOF_AUDIT_FAMILY_WINDOW_PPM`, `TOF_AUDIT_FAMILY_DBE_MAX` | The family yardstick: strong peaks above this S/N (20), within this window (30 ppm), against formulas of up to this many double bonds and rings (3) |
+| `TOF_AUDIT_FAMILY_WINDOW_SPACING` | The family window is at most this share of the distance from a formula to its nearest neighbour (0.5). Above about 600 Th, and under `[M+Br]-` from about 300 Th, where the two bromine lattices interleave 17.7 mDa apart, that is narrower than 30 ppm |
+| `TOF_AUDIT_FAMILY_PEAKED_IQR` | A band's family offset is a reading only where its IQR is at most this share of the window (0.5). Where the offsets fill the window, the report says "no reading: flat" instead of a median, and the JSON has `"peaked": false` |
+| `TOF_AUDIT_FAMILY_MIN_PEAKS` | ...and only where it rests on at least this many peaks (10). Two or three offsets have a small IQR by chance; below the minimum the report says "no reading: too few peaks" instead of a median, and the JSON has `"peaked": false` beside its `n` and `min_peaks` |
+| `TOF_AUDIT_JSON=1` | Also print the whole result as one JSON document, per-file fits and each unreadable file's cause included, as the last line of the output |
+
+The TOF mass calibration plan ([tof_calibration.md](dev/tof_calibration.md))
+is where the audit's readings go and what they decide.
 
 ### Loading reference chemistry data
 
@@ -1061,10 +1912,9 @@ container. `custom` is the adapter for hand-authored CSV/TSV lists - the public
 databases have their own adapters, and each load is versioned.
 
 Each load also records the window its formulas may be matched in, whether its
-radicals may be, and its polarity. A public database loads at C, H, N, O and S
-with at most 40 carbons and 700 Da, and a hand-authored list loads unbounded;
-`--elements`, `--max-carbon`, `--max-mass`, `--allow-radicals` and `--polarity`
-set them otherwise ([reference_data_authoring.md](dev/reference_data_authoring.md)).
+radicals may be, and its polarity. The flags that set them, the CSV schema a
+hand-authored list follows, and staging, activating and pruning loads are in
+the user guide [Reference compound lists](user/guides/reference-lists.md).
 
 A load replaces the active version of that source only once it has successfully
 read records, so a dump the adapter cannot parse leaves the existing mirror
@@ -1098,6 +1948,44 @@ docker compose exec backend python -m mascope_backend.db.scripts.reference_deact
 
 Annotation and peak assignment stop reading it at once. `reference_seed` loads a
 shipped list again, and a new `reference_sync` loads any other source.
+
+#### MS/MS spectral libraries
+
+The same script loads the open MS/MS libraries - MassBank, MoNA and GNPS - as
+reference spectra, for the spectral-similarity ranking to score a sample's MS2
+spectra against. Nothing reads them yet: loading one changes no annotation and
+no assignment.
+
+```sh
+docker compose exec backend python -m mascope_backend.db.scripts.reference_sync massbank /data/MassBank-data-2026.03.tar.gz --version 2026.03
+```
+
+- `massbank` reads the source archive of a
+  [MassBank-data release](https://github.com/MassBank/MassBank-data/releases)
+  as downloaded, `mona` a MoNA MSP export (unzipped), `gnps` a GNPS library
+  MGF.
+- Each load is versioned, and `--stage`, `--prune` and `--name` work as for
+  any source. Load two exports of one library under names of their own, such
+  as `--name mona-positive`.
+- A library cannot be loaded under the name of a compound source, nor a
+  compound source under a library's: the load is refused before it starts.
+- The window, radical and polarity flags are refused: Stage A never matches a
+  spectrum.
+- The load reports how many records it left out and why: MS1 or MS3 records,
+  predicted (in-silico) spectra, records without a precursor.
+
+Every spectrum keeps the licence its record states. Any of the three libraries
+can hold spectra a commercial deployment may not use:
+
+- MassBank's records include non-commercial ones (`CC-BY-NC`, `CC-BY-NC-SA`).
+- A MoNA export of MassBank's records keeps those tags.
+- GNPS tags every spectrum it imported from another library, MassBank's
+  included, `gnps-unstated`.
+- A record that states no licence is tagged `massbank-unstated`,
+  `mona-unstated` or `gnps-unstated`.
+
+An `-unstated` tag means the terms are unknown, not that they are open. The
+licence gate below is Stage A's and does not apply to spectra.
 
 ### Reference licence gating
 
@@ -1298,6 +2186,31 @@ from it, it logs a warning at start and exports name no deployment until the
 file is repaired, moved aside (the next start generates a new id), or
 `deployment_id` is set.
 
+The deployment id is also the namespace of the global ids an export gives its
+records. Beside the dataset and batch ids it names - `inputs.dataset_id`,
+`inputs.sample_batch_id` - the provenance carries `inputs.dataset_global_id`,
+`inputs.sample_batch_global_id`, in the form
+
+```text
+<deployment_id>:<entity>:<local_id>     e.g. example-lab:sample_batch:V1StGXR8_Z5jdHi6
+```
+
+where `<entity>` is the record's table (`dataset`, `sample_batch`,
+`sample_item`, `sample_file`, `target_collection`, `target_compound`,
+`target_ion`) and `<local_id>` its id in this deployment. Neither a deployment
+id nor an entity can hold a `:`, so a global id splits back into its three
+parts. The format is stable: it is part of the provenance contract, and a
+change to it would change the provenance version. A deployment with no id
+gives no global ids rather than inventing a namespace. Only a key that holds
+one id gains a global id: a list of ids, such as
+`inputs.target_collection_ids`, has none.
+
+A global id is only as unique as the deployment id in it. Two deployments
+configured with the same `deployment_id` mint global ids that can name
+different records with the same string: give every deployment whose exports
+may meet a name of its own, and leave it unset where you have no reason to
+choose one.
+
 ### Where a deployment's settings live
 
 | Path | What |
@@ -1407,11 +2320,18 @@ repair follows the converter's rule for the hour the clocks repeat or skip,
 and names the rows that fall in one.
 
 **Backend unhealthy after an update.** The updater stops and leaves the stack in
-place (no automatic rollback). Investigate with `mascope prod logs backend`. To
+place (no automatic rollback). That covers a failed migration too, which stops
+`docker compose up` before the backend starts. Investigate with
+`mascope prod logs backend` (and `mascope prod logs db_init` for a migration). To
 roll back manually: if a migration ran, first restore the pre-migration dump
 (`mascope prod db backup list`, then `mascope prod db restore <dump> --yes`),
 then redeploy the previous release with
-`mascope prod update --version v<previous>`.
+`mascope prod update --version v<previous>`. The timer will not apply the
+failed release again: `--auto` records the failure and holds that release, and
+`mascope prod doctor` reports it as failed. Each timer run exits 2 until you
+act: `mascope prod update --snooze <days>` quiets it while you wait for a
+fixed release, which the timer then applies as usual, and
+`mascope prod update --confirm` retries the failed release at the next window.
 
 **Two-factor codes stopped working for everyone** (typically after a rebuild or
 a restore onto a fresh host). The seeds in the database no longer decrypt:

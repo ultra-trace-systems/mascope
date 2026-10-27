@@ -4,8 +4,9 @@ Tests: the batch spreadsheet export can be traced back to what produced it.
 An exported spreadsheet names the dataset, batch and target collections it was
 built from, gives every row the id of the record behind it, carries each
 sample's acquisition context - instrument, method, polarity, m/z range, UTC
-time, ionization mode, instrument function, calibration verdict - and ends
-with a Provenance sheet naming the build that wrote it.
+time, ionization mode, instrument function, calibration verdict, and the
+instrument and polarity again as PSI-MS terms - and ends with a Provenance
+sheet naming the build that wrote it.
 
 All of it is appended: the sheets, columns and rows a reader of an earlier
 export knows keep their names and their places, which these tests pin as
@@ -72,6 +73,9 @@ LEGACY_COMPOUND_COLUMNS = [
     "Total peak intensity (cps)",
     "Match score",
 ]
+#: Glucose's CAS number and InChIKey, which the matched compound carries.
+GLUCOSE_CAS = "50-99-7"
+GLUCOSE_INCHIKEY = "WQZGKKKJIJFFOK-GASJEMHNSA-N"
 LEGACY_ION_COLUMNS = [
     "Sample name",
     "Filename",
@@ -82,6 +86,19 @@ LEGACY_ION_COLUMNS = [
     "Ion formula",
     "Total peak intensity (cps)",
     "Match score",
+]
+#: The PSI-MS columns, the last of the Samples sheet, in their order.
+PSI_MS_SAMPLE_COLUMNS = [
+    "Instrument model",
+    "Instrument model accession",
+    "Ion source",
+    "Ion source accession",
+    "Mass analyser",
+    "Mass analyser accession",
+    "Detector",
+    "Detector accession",
+    "Scan polarity",
+    "Scan polarity accession",
 ]
 LEGACY_BATCH_LABELS = [
     "Name",
@@ -160,6 +177,27 @@ async def batch(async_session_factory):
                 dataset_name=f"Export DS {ids.dataset}",
                 dataset_type="ANALYSIS",
                 dataset_utc_created=_NOW,
+                license="CC-BY-4.0",
+                authors=[
+                    {
+                        "name": "Author One",
+                        "orcid": "0000-0002-1825-0097",
+                        "affiliation": "Lab A",
+                    },
+                    {"name": "Author Two", "orcid": None, "affiliation": None},
+                ],
+                keywords=["aerosol", "CI-MS"],
+                related_identifiers=[
+                    {
+                        "identifier": "10.1234/example",
+                        "relation": "IsSupplementTo",
+                        "identifier_type": "DOI",
+                    }
+                ],
+                funding=[
+                    {"funder": "Funder A", "award": "123"},
+                    {"funder": "Funder B", "award": None},
+                ],
             )
         )
         session.add(
@@ -263,6 +301,8 @@ async def batch(async_session_factory):
                 target_compound_id=ids.compound,
                 target_compound_name="Glucose",
                 target_compound_formula="C6H12O6",
+                cas_number=GLUCOSE_CAS,
+                inchikey=GLUCOSE_INCHIKEY,
             )
         )
         session.add(
@@ -313,7 +353,11 @@ async def batch(async_session_factory):
 
 @pytest_asyncio.fixture
 async def workbook(batch, tmp_path, monkeypatch, test_users):
-    """Export the batch and read every sheet back."""
+    """Export the batch and read every sheet back.
+
+    The test filestore holds no raw files, so the reader the export takes an
+    Orbitrap file's model from is stood in for, and records what it opened.
+    """
     # The directory, not user_temp_path: that helper is what keeps a file
     # name inside the user's directory, and the export's naming goes with it.
     monkeypatch.setattr(
@@ -321,6 +365,14 @@ async def workbook(batch, tmp_path, monkeypatch, test_users):
         lambda user_id, create=True: str(tmp_path),
     )
     monkeypatch.setattr(runtime, "_version", "v9.9.9-test", raising=False)
+    opened = []
+
+    def metadata_factory(filename):
+        opened.append(filename)
+        return SimpleNamespace(instrument_details={"Model": "Orbitrap Exploris 120"})
+
+    monkeypatch.setattr(service, "get_sample_file_type", lambda filename: "orbi_raw")
+    monkeypatch.setattr(service.m_metadata, "metadata_factory", metadata_factory)
 
     result = await _export(
         batch.batch, user_id=test_users["editor"].id, process_id="export-test"
@@ -336,6 +388,7 @@ async def workbook(batch, tmp_path, monkeypatch, test_users):
             provenance=dict(
                 _key_values(pd.read_excel(book, "Provenance", header=None))
             ),
+            raw_files_opened=opened,
         )
 
 
@@ -371,6 +424,30 @@ async def test_the_batch_sheet_names_the_records_it_was_built_from(workbook, bat
     # A batch can span instruments; every one is named
     assert values["Instruments"] == "instrument-x, instrument-y"
     assert values["Method files"] == "C:/methods/method-a.meth"
+
+
+@pytest.mark.asyncio
+async def test_the_batch_sheet_ends_with_the_datasets_descriptive_metadata(
+    workbook,
+):
+    labels = [label for label, _ in workbook.batch_rows]
+    assert labels[-7:] == [
+        "Method files",
+        "",
+        "License",
+        "Authors",
+        "Keywords",
+        "Related identifiers",
+        "Funding",
+    ]
+
+    values = dict(workbook.batch_rows)
+    assert values["License"] == "CC-BY-4.0"
+    # Author order is kept; an author's absent ORCID and affiliation are left out
+    assert values["Authors"] == ("Author One (0000-0002-1825-0097), Lab A; Author Two")
+    assert values["Keywords"] == "aerosol; CI-MS"
+    assert values["Related identifiers"] == "IsSupplementTo: 10.1234/example"
+    assert values["Funding"] == "Funder A, 123; Funder B"
 
 
 @pytest.mark.asyncio
@@ -427,6 +504,41 @@ async def test_a_sample_row_names_its_acquisition_and_its_files_hash(workbook, b
 
 
 @pytest.mark.asyncio
+async def test_a_sample_row_names_its_acquisition_in_psi_ms_terms(workbook, batch):
+    """The instrument and polarity as PSI-MS terms, appended after every
+    column an earlier export had: the model read from the raw file, the
+    rest from the instrument class and the sample's polarity."""
+    samples = workbook.samples
+    assert list(samples.columns[-len(PSI_MS_SAMPLE_COLUMNS) :]) == (
+        PSI_MS_SAMPLE_COLUMNS
+    )
+    assert list(samples.columns).index("File SHA-256") < list(samples.columns).index(
+        "Instrument model"
+    )
+
+    rows = samples.set_index("Sample item ID")
+    orbitrap = rows.loc[batch.matched_item]
+    assert orbitrap["Instrument model"] == "Orbitrap Exploris 120"
+    assert orbitrap["Instrument model accession"] == "MS:1003095"
+    assert orbitrap["Ion source accession"] == "MS:1000071"
+    assert orbitrap["Mass analyser"] == "orbitrap"
+    assert orbitrap["Mass analyser accession"] == "MS:1000484"
+    assert orbitrap["Detector accession"] == "MS:1000624"
+    assert orbitrap["Scan polarity"] == "negative scan"
+    assert orbitrap["Scan polarity accession"] == "MS:1000129"
+
+    # A TOF file is not opened: the ontology has no Tofwerk model to name
+    tof = rows.loc[batch.bare_item]
+    assert pd.isna(tof["Instrument model"])
+    assert pd.isna(tof["Instrument model accession"])
+    assert tof["Ion source accession"] == "MS:1000071"
+    assert tof["Mass analyser accession"] == "MS:1000084"
+    assert tof["Detector accession"] == "MS:1000114"
+    assert tof["Scan polarity accession"] == "MS:1000129"
+    assert workbook.raw_files_opened == [f"instrument-x_{batch.calibrated_file}.raw"]
+
+
+@pytest.mark.asyncio
 async def test_a_sample_without_calibration_mode_or_method_says_so(workbook, batch):
     """Absence is legible: no calibration record reads as ``none``, not as a
     blank that could be a lost value."""
@@ -467,6 +579,22 @@ async def test_every_match_row_names_its_sample_and_target(workbook, batch):
 
 
 @pytest.mark.asyncio
+async def test_a_compound_row_ends_with_its_cas_number_and_inchikey(workbook):
+    """FAIR Phase 1 appends the compound's identifiers after the ids Phase 0
+    added, so a reader of either earlier export finds its columns in place."""
+    compounds = workbook.compounds
+    assert list(compounds.columns) == [
+        *LEGACY_COMPOUND_COLUMNS,
+        "Sample item ID",
+        "Target compound ID",
+        "CAS number",
+        "InChIKey",
+    ]
+    assert compounds.iloc[0]["CAS number"] == GLUCOSE_CAS
+    assert compounds.iloc[0]["InChIKey"] == GLUCOSE_INCHIKEY
+
+
+@pytest.mark.asyncio
 async def test_the_provenance_sheet_names_the_build_and_the_inputs(workbook, batch):
     provenance = workbook.provenance
 
@@ -478,3 +606,10 @@ async def test_the_provenance_sheet_names_the_build_and_the_inputs(workbook, bat
     assert provenance["inputs.dataset_id"] == batch.dataset
     assert provenance["inputs.sample_batch_id"] == batch.batch
     assert provenance["inputs.target_collection_ids"] == batch.collection
+    assert (
+        provenance["inputs.dataset_global_id"] == f"export-test:dataset:{batch.dataset}"
+    )
+    assert (
+        provenance["inputs.sample_batch_global_id"]
+        == f"export-test:sample_batch:{batch.batch}"
+    )

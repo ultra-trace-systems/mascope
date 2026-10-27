@@ -6,7 +6,9 @@ A plain module rather than conftest.py content, so the tests can import it:
 which in a run spanning several test directories is another directory's.
 """
 
+import importlib.util
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,6 +27,40 @@ TEST_FILES_DIR = Path(
 
 POS_ORBI_FILE_PATH = str(TEST_FILES_DIR / "KORBI2_AMB_POS_20260109174345.raw")
 NEG_ORBI_FILE_PATH = str(TEST_FILES_DIR / "KORBI2_AMB_NEG_20260108144525.raw")
+
+# The hermetic acquisitions live with the backend tests, which convert them;
+# the reader's own tests read the same acquisitions.
+_BACKEND_TESTS_DIR = _TESTS_DIR.parents[2] / "server" / "backend" / "tests"
+
+
+def _backend_test_module(name: str):
+    """A module of the backend's test directory, by its name.
+
+    Imported by path, as the backend's test directory is not on this suite's
+    path, and under the name the backend tests import it by, so a run
+    spanning both suites holds one module.
+    """
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            name, _BACKEND_TESTS_DIR / f"{name}.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return module
+
+
+def ms2_fixture():
+    """The hermetic MS2 fixture module (``server/backend/tests/ms2_fixture.py``),
+    which every MS2 phase tests on."""
+    return _backend_test_module("ms2_fixture")
+
+
+def centroid_acquisition():
+    """The committed MS1 file read as centroid scans alone
+    (``server/backend/tests/centroid_acquisition.py``)."""
+    return _backend_test_module("centroid_acquisition")
 
 
 def read_or_xfail(fn, *args, **kwargs):

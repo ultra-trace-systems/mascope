@@ -2,6 +2,11 @@
 
 # Peak-Centric Assignment: Design & Implementation Plan
 
+- **Status:** built
+- **As of:** 2026-10-22
+- **Tracked in:** closed; the phase 4 leftovers are MAS-61 and MAS-229, the "fold targeted in" of phase 5 is MAS-162 and MAS-80
+- **What:** The shift from target-anchored matching to assigning every peak, and how the engine is operated.
+
 ## Purpose
 
 Mascope was built for **targeted analysis**: a curated list of target
@@ -164,7 +169,10 @@ verification, which is keyed on the peak rather than on a run.
 
 **Stage A - database / known.** Match every peak against the union of known
 isotopologues (the existing target library, optionally plus a curated "known
-compositions" reference set). The existing matcher already produces, per known
+compositions" reference set). That reference set is
+`mascope_reference.known.iter_known_compositions` (PR #1633): the active reference
+mirror's unique neutral formulas with their identities, bounded by the Stage A window
+([public_database_integration.md](public_database_integration.md) Phase 3). The existing matcher already produces, per known
 isotope, the `sample_peak_id` it hit and the score, so Stage A is mostly *reuse
 `compute_match_isotopes` + invert the result* (group by `sample_peak_id`, pick
 the best-scoring owner) and write `PeakAssignment` rows with `source=database`.
@@ -255,8 +263,10 @@ sides. This exists because "coexist" is easy to claim and easy to lose: three
 parts of the first iteration changed behaviour for users who never opened the
 feature, and are now gated on it:
 
-- assignment ran on **every sample ingest**, creating a run per sample
-  (`auto_assign_sample_peaks`);
+- assignment ran on **every sample ingest** - at first creating a run per sample
+  (`auto_assign_sample_peaks`); since the batch-primary epic (1.8.0) ingest folds the
+  sample into the batch ledger without a run, `peak_assignment_ingest_ledger = "batch"`
+  ([peak_assignment_batch_primary.md](peak_assignment_batch_primary.md) §5.1);
 - the on-demand composition search was rescored to fit/tier/plausibility,
   bypassing the `MASCOPE_MATCH_SCORE_VERSION` switch meant to keep legacy
   scoring intact (`api/new/cheminfo`);
@@ -271,8 +281,8 @@ the pre-feature layout (see
 
 **On the API, the flag gates the writes.** The read routes stay open
 regardless — ledgers written while the feature was on remain inspectable after
-opting out — but the write routes (assign per sample or batch, verify,
-recalibrate) return 403 via `require_peak_assignment_enabled`
+opting out — but the write routes (assign, verify, curate,
+recalibrate, import) return 403 via `require_peak_assignment_enabled`
 ([routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py))
 while the flag is off. The first iteration left every route open so the engine
 could be exercised without opting in; the honest reading was that "nothing
@@ -330,18 +340,22 @@ to their rows. On a provisioned deployment `mascope-assignment-prune.timer`
 runs it nightly (enabled by default, policy in `/etc/mascope/prune.env`);
 elsewhere it is manual - see `docs/maintaining.md`.
 
-**Batch cost is per-sample cost times N**, which makes the batch entry point the
-one place a default matters. `batch.default_batch_config()` is therefore Stage A
-only; the untargeted stage is opt-in per batch, exactly as it is for ingest. The
-batch also filters samples the engine cannot usefully assign - blank ones, and
-ones whose m/z calibration is unverified - mirroring `match_compute_batch`,
-rather than driving them through a run that fails.
+**Batch cost is per-sample cost times N**, which is why there is no batch-wide
+run any more: the batch-wide assignment run (`peak_assignments/batch.py`) was
+retired in the batch-primary epic (PR #2049, 1.8.0). A batch is assigned by
+folding each sample into the batch ledger at ingest, Stage A only and without a
+per-sample run, and the untargeted stage runs once per batch peak on request
+(*Search untargeted*), not once per sample
+([peak_assignment_batch_primary.md](peak_assignment_batch_primary.md) §5.1,
+§5.3); *Rebuild batch ledger* folds every sample of a batch that predates the
+ledger or was imported. Ingest still skips samples the engine cannot usefully
+assign - blank ones, and ones whose m/z calibration is unverified.
 
 **Admission control.** Background work runs on the API worker's event loop, so a
-batch competes with interactive requests for the same connection pool. Batch
-assignment holds a semaphore slot for its duration (mirroring `_auto_process_gate`
-in the sample auto-processing controller) and refuses a batch already in flight
-instead of queueing it silently behind a multi-minute run. The in-process
+run competes with interactive requests for the same connection pool. A run holds
+an admission slot for its duration, and a second run for the same sample is
+refused (409, naming the run in flight) instead of being queued silently behind
+a multi-minute one. The in-process
 guards bound one worker; a session-level Postgres advisory-lock claim
 (`admission.py`) extends the same refusal across processes, held on a
 dedicated connection for the run's duration and released by Postgres itself
@@ -370,13 +384,15 @@ docker compose exec backend \
 `mascope prod db script run <script>` is the general in-container script runner, but
 it forwards no arguments to the module, so it fits the argument-free scripts
 (`seed_reference_demo`, `prune_peak_assignment_runs`) and not `reference_sync`. Full
-walkthrough, including authoring a custom list:
-[reference_data_authoring.md](reference_data_authoring.md).
+walkthrough, including authoring a custom list: the user guide
+[Reference compound lists](../user/guides/reference-lists.md).
 
 **Interrupted runs.** A run is created `running` and finalized by the engine's
 own success and failure paths, neither of which survives the process dying - and
 `CancelledError` is a `BaseException`, so it bypasses the `except Exception`
-finalizer too. `reset_running_peak_assignment_runs` reconciles those at startup.
+finalizer too. `reset_running_peak_assignment_runs` reconciles those at startup; what an
+operator sees of it is under "Interrupted runs" in
+[maintaining.md](../maintaining.md#reclaiming-assignment-runs).
 It is deliberately best-effort: it operates on a table a recent migration added,
 so on a database not yet upgraded to this head it must warn and continue rather
 than take the server down with it.

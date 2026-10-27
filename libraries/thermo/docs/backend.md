@@ -42,26 +42,37 @@ A model with other analyzers, or one OpenTFRaw cannot name, is not judged.
 
 An ion-trap scan is not refused, though no Exploris or Q Exactive records one, because the model is a match on the file's free text: OpenTFRaw takes the first registry name it finds in the file's first 64 KB, which holds the sequence row's sample name, comment and paths, and reads the instrument's own InstID record only when it finds none there.
 Its registry tries every Exploris and Q Exactive name before the LTQ Orbitrap ones and has no Orbitrap ID-X, so a hybrid's file whose comment or method path names a Q Exactive is read as a Q Exactive's, and its ion-trap scans are what a hybrid records.
-A misread that lands only on the FTMS and ITMS codes therefore goes unseen; in the one misread file measured, 1,225 of the 4,114 scans not read as FTMS are read as other analyzers or none.
+A misread that lands only on the FTMS and ITMS codes therefore goes unseen; in the one misread public file measured, 1,225 of the 4,114 scans OpenTFRaw 2.0.0 did not read as FTMS read as other analyzers or none.
 
 The check runs in `OpenTFRawBackend._all_scans`, on the `scan_table()` every scan selection reads anyway, so opening a file costs what it did, and what reads no scan event (`created()`, `method_file()`, `instrument_details()`) is still answered.
 The converter's two censuses, `acquisition_params` and `scan_streams`, degrade any other reader failure to a warning and pass this one through, so a refused file fails once, at the first property that selects scans, with the refusal's text.
 A file converted on misread events before the check is refused by every raw read of it since, and creating a sample item over one fails with the refusal, rather than with "no scans of the polarity".
-Of 166 Orbitrap-only files measured with OpenTFRaw 2.0.0 (the demo bundle's 161, the two committed sample files, and two public Q Exactive Plus runs), it refuses one: a public Q Exactive HF-X PRM run (PRIDE PXD021080) whose event stream is not one record size, and of whose 4,142 scans OpenTFRaw reads 1,225 as an analyzer no Orbitrap instrument has or as none, and 2,889 as ITMS (GitHub #2394).
+Of 166 Orbitrap-only files measured with OpenTFRaw 2.0.0 (the demo bundle's 161, the two committed sample files, and two public Q Exactive Plus runs), it refused one: a public Q Exactive HF-X PRM run (PRIDE PXD021080) whose event stream is not one record size, and of whose 4,142 scans OpenTFRaw read 1,225 as an analyzer no Orbitrap instrument has or as none, and 2,889 as ITMS (GitHub #2394).
 
-### Scan-event records that carry a name (interim, GitHub #2391)
+The two causes of a misread found so far are both read right by the pinned reader, OpenTFRaw 3.1.0, which walks a version-66 stream of more than one record size by the lengths its records carry, wherever the walk ends exactly at the stream's end.
+One is the targeted MS2 scan run from an inclusion list, which stores the list entry's name after its body (GitHub #2391, Sigilweaver/OpenTFRaw#86); the other is the multiplexed scan of a PRM run, which stores one reaction per precursor (Sigilweaver/OpenTFRaw#87).
+On the PXD021080 run, 3.1.0 reads all 4,142 scans as FTMS, and every scan's filter agrees with the Thermo library's.
+Measured with 3.1.0, the check refuses none of 434 Orbitrap files: the demo bundle's 161, the two committed sample files, the 270 Orbitrap files of the internal regression corpus (four of them targeted MS2 with a named inclusion list) and that run.
+`test_named_scan_events.py` gives a committed sample file a named record and asserts the backend reads it as the file without one.
 
-A version-66 scan-event record is a 136-byte preamble and a 136-byte body whose last word counts the UTF-16 code units of a name that follows it.
-A targeted MS2 scan run from an inclusion list stores the entry's name there, so its record is longer than an unnamed one.
-OpenTFRaw 2.0.0 reads every record of a file at one size, inferred from the stream's length, and from the second record on such a file decodes at an offset that drifts: polarity, MS order, analyzer and filter come out as noise, and so does the calibration `profile()` converts frequency to m/z with.
-The scan index, the trailer and the centroids are read from elsewhere and are right.
+### A profile with no m/z
 
-Until the pinned reader reads these records, the OpenTFRaw backend reads them itself (`mascope_thermo.v66_scan_events`, called once from `OpenTFRawBackend.__enter__`).
-It engages only for a file whose records, walked by their own counts, end exactly at the stream's end, whose names read as text, and whose record boundaries differ from the ones OpenTFRaw reads; every other file gets the `RawFile` as opened.
-For an engaged file the backend's reader re-derives the scan table's event-dependent keys, `scan_filter()` in OpenTFRaw's grammar, and the m/z axis of `profile()`, each from the scan's own event.
-It refuses a file whose events still cannot be right on opening, before it logs one warning per file and process that the file was read, with `UnreadableScanEventsError`, a `MisreadScanEventsError` whose text names the inclusion-list names as the cause: a scan read as an analyzer no Orbitrap instrument has, by the rule every file is judged by ([Scan events the reader misread](#scan-events-the-reader-misread)), or the scans of one nonzero trailer `Scan Event:` of one `Scan Segment:` read as more than one MS order.
-Polarity is not compared within an event, since a polarity-switching full scan alternates under one.
-The module and its call site go once the reader is fixed (MAS-170).
+OpenTFRaw converts a scan's profile from frequency to m/z with the calibration it reads from the scan's event.
+From 3.0.0 on it gives `NaN` for each point of a scan whose calibration layout it does not know, where 2.0.0 gave the frequencies themselves, which Mascope drew as m/z.
+Unchecked, a `NaN` m/z goes without a word: the m/z range mask of `profile_per_scan` drops every such point, so the scan comes back empty, and in `average_profile` it turns the frequency grid's minimum and every cell index `NaN`, so the average of a selection holding the scan comes back as one `NaN` point, every other scan's signal lost with it, and is cached as the file's sum signal.
+
+So the OpenTFRaw backend refuses a file when any point of a scan's profile has an m/z that is not finite (`mascope_thermo.scan_events.refuse_unconverted_profile`).
+The check runs in `OpenTFRawBackend._profile`, which every profile read goes through (`profile_per_scan`, and `average_profile` with `average_centroids` on top of it), and not when the file opens: checking there would decode every profile of the file on every open.
+So a selection without the scan still reads.
+The refusal is `UnconvertedProfileError`; it names the scan, how many of its points have no m/z, and the reader's version.
+It is a `MisreadScanEventsError`, and so a `ValueError`, whose text reaches the file's status: a calibration layout the reader does not know is an event it misread or one newer than it, so every handler that lets a misread file's refusal through, rather than take it for an empty selection, lets this one through too.
+`load_signal` (`mascope_signal.compute`) is the one on a profile path: it raises the refusal rather than answer with an empty signal.
+Ingest meets it in the instrument-function fit, whose file-level sum signal averages the file's MS1 scans, so the file fails there, before anything is cached.
+The converter does not count it a routine failure and logs it with its traceback: such a file needs an OpenTFRaw release that knows its instrument's layout.
+The Thermo backend has no such check, since RawFileReader converts the m/z itself.
+
+Measured with 3.1.0, the check refuses none of 434 Orbitrap files: the demo bundle's 161, the two committed sample files and the 271 Orbitrap files of the internal regression corpus, 14,633 scans in all.
+No file with a layout the reader does not know is in reach, so `test_unconverted_profile.py` gives the backend a stand-in reader that returns `NaN` m/z, as OpenTFRaw documents (GitHub #2518).
 
 ## API Contract: `ReaderBackend`
 
@@ -122,10 +133,13 @@ Scan selection reads metadata only. The OpenTFRaw backend builds it from `scan_t
 - **`acquisition_parameters(max_scans, scan_numbers)`**: Summarises the trailers of up to `max_scans` scans, sampled evenly from `scan_numbers` (every MS1 scan by default), into the values constant across them and the names of those that vary.
 - **`scan_indices(polarity, t_min, t_max, ms_type, stream)`**: Returns the 1-based numbers of the selected scans.
 - **`mass_range()`**: Returns the run's `(low, high)` m/z range.
+- **`run_time_range()`**: Returns the run's start and end times in seconds, as the MS controller's run header records them: OpenTFRaw's `controllers()`, the Thermo library's `RunHeaderEx`. Not the first and last scan's start times, since a trailing scan can carry the time 0.
 
 ### Data Access and Processing
 
 - **`profile_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max, stream)`**: Retrieves the raw profile m/z and intensity arrays of each selected scan, with the scan times.
+- **`scan_profile(scan_number)`**: One scan's profile, `(mz, intensity)`, as the reader returns it, for a caller that reads a few scans by number. OpenTFRaw returns the points the file stores; the Thermo library also returns the zero-intensity points it adds around each run of them.
+- **`centroid_flags(scan_number)`, `centroid_masses(scan_number)`**: The flags and the m/z of every centroid a scan stores, in one order, so the two pair up centroid for centroid: flagged centroids included, and those without FT label data, which `centroids_per_scan` leaves out. The axis fingerprint reads the lock mass a scan was corrected with off them, the centroid flagged Reference.
 - **`centroids_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max, stream)`**: Retrieves the centroided peaks (m/z, intensity, resolution, S/N) of each selected scan.
 - **`centroids_meta()`**: Returns every scan's centroid m/z, intensity, resolution and noise, decoded from its centroid labels.
 - **`iter_centroids_meta()`**: The same, one scan at a time and in scan order: `(scan_number, time_s, data)`. A scan is decoded when its turn comes, so a caller that hands each scan on before taking the next holds one scan's arrays instead of the file's. `RawFileMetadataLegacy.iter_json()` writes the metadata document this way, which is how `GET /api/sample/files/{id}/metadata` sends a body of hundreds of megabytes without building it.
@@ -156,23 +170,23 @@ The two backends render some filters differently, because OpenTFRaw does not ren
 
 - **`lock`.** The Thermo library writes `lock` on each scan that found its lock mass (its trailer's `Number of LM Found` is above zero), and OpenTFRaw never does ([Sigilweaver/OpenTFRaw#58](https://github.com/Sigilweaver/OpenTFRaw/issues/58)). `lock` describes one scan's outcome, so it is left out of the signature.
 - **Other tokens OpenTFRaw leaves out:**
-  - the source fragmentation of a scan acquired with in-source CID (`sid=20.00`, [Sigilweaver/OpenTFRaw#57](https://github.com/Sigilweaver/OpenTFRaw/issues/57));
+  - the source fragmentation of a scan acquired with in-source CID (`sid=20.00`, [Sigilweaver/OpenTFRaw#57](https://github.com/Sigilweaver/OpenTFRaw/issues/57)) up to 2.0.0; 3.1.0 renders it from the trailer or the method, as [Keys OpenTFRaw 3.1.0 renamed](#keys-opentfraw-310-renamed-sid) says;
   - the FAIMS compensation voltage (`cv=`);
   - flags such as wideband activation (`w`) and multiplexing (`msx`);
   - the `{segment,event}` prefix.
 
   The signature leaves out the prefix too. The others stay in it, so where a file carries one, the stream keys differ between the backends. On an LTQ FT Ultra file the MS2 stream is `ITMS + c ESI d w Full ms2 ...` under the Thermo library and has no `w` under OpenTFRaw. Scans that differ only in such a token pool into one stream under OpenTFRaw.
 
-  The `lock` and `sid=` issues are still open upstream. The values are partly reachable without the rendering -- every scan carries `is_wideband`, and from 1.6.0 the scan dictionaries carry `faims_cv` and an `extra` table with the source-CID energy and the lock-mass count -- but composing the tokens here was considered and **declined**:
+  The `lock` and `sid=` issues are still open upstream, though 3.1.0 renders `sid=` itself. The values are partly reachable without the rendering -- every scan carries `is_wideband`, and from 1.6.0 the scan dictionaries carry `faims_cv` and an `extra` table with the source-CID energy and the lock-mass count -- but composing the tokens here was considered and **declined**:
 
-  - `sid=` would not close the gap it exists for. The `extra` entry is a lookup of the trailer's source-CID label, not the scan event, and the one corpus file whose census differs carries no such label at all. Composing it would make the filters agree on the files that never disagreed and still disagree on the one that does, while retiring a gap the parity suite currently states plainly.
+  - `sid=` would not have closed the gap it existed for under 2.0.0. The `extra` entry is a lookup of the trailer's source-CID label, not the scan event, and the one corpus file whose census differed carries no such label at all. Composing it would have made the filters agree on the files that never disagreed and still disagree on that one. 3.1.0 closed that file's gap by reading the energy from the method, so nothing is left for composing to do.
   - `lock` is deliberately outside the signature, so composing it changes no key. Its `extra` entry also falls back from the number of lock masses *found* to the number the method *configured*, which is a different quantity and not the one the Thermo library writes `lock` from.
   - `cv=` is reachable and is part of the signature, but nothing here acquires with FAIMS: every corpus and demo file reports the voltage off. Rendering it would put untested text into a key that routes.
 
-  So the asymmetric comparison in `test_backend_parity._assert_same_filter` stays as it is: whatever OpenTFRaw writes must agree, and what it omits is allowed. Tightening it is worth revisiting when a FAIMS file or a source-CID file lands in the corpus, or when the upstream issues close.
-- **Precision.** OpenTFRaw writes m/z to four decimals, where the Thermo library follows the file's precision. The parser normalises numbers, so this does not change a key.
+  So the asymmetric comparison in `test_backend_parity._assert_same_filter` stays as it is: whatever OpenTFRaw writes must agree, and what it omits is allowed. Tightening it is worth revisiting when a FAIMS file lands in the corpus, or when the upstream issues close. The corpus's source-CID file, a Q Exactive Plus SIM file whose method sets 20 eV, agrees between the backends from 3.1.0.
+- **Precision.** OpenTFRaw writes m/z to four decimals, where the Thermo library follows the file's precision. The parser normalises numbers, so this does not change a key, except where a bound sits on the rounding edge of its fourth decimal, as some MS2 scan ranges do ([#2658](https://github.com/ultra-trace-systems/mascope/issues/2658)).
 
-On the internal regression corpus, the census agrees between the backends on 184 of the 185 files, and the one difference is `sid=`. Three more files, each a single scan, used to open only in the Thermo library: OpenTFRaw's search for the trailer's layout failed on some files of fewer than five scans ([Sigilweaver/OpenTFRaw#54](https://github.com/Sigilweaver/OpenTFRaw/pull/54)). That is fixed from 1.5.0, and the pinned reader now carries the fix, so all 185 open.
+On the internal regression corpus under OpenTFRaw 2.0.0, the census agreed between the backends on 184 of the 185 files, and the one difference was `sid=`. Under 3.1.0 that file agrees: on the 233 Orbitrap files of the corpus's core and heavy tiers, no census differs on `sid=`, and both backends key that file `FTMS - p ESI sid=20.00 SIM ms [123.4244-127.4244] R=280000`. Three MS2 files added since differ in the fourth decimal of an MS2 scan range's upper bound ([#2658](https://github.com/ultra-trace-systems/mascope/issues/2658)). Another three files, each a single scan, used to open only in the Thermo library: OpenTFRaw's search for the trailer's layout failed on some files of fewer than five scans ([Sigilweaver/OpenTFRaw#54](https://github.com/Sigilweaver/OpenTFRaw/pull/54)). That is fixed from 1.5.0, and the pinned reader now carries the fix, so all 185 open.
 
 ### Selecting one stream
 
@@ -181,11 +195,34 @@ Every method that selects scans by polarity, time and MS order also takes `strea
 - **The keys are the census's.** Selection compares `stream` with `mascope_thermo.streams.scan_stream_keys`, the function `scan_streams` groups by, so the scans selected for a stream are the ones the census counted into it. A backend reads the keys once per open file: a key holds the FT resolution, which is a trailer read per scan.
 - **A stream is selected within the other filters.** A key of another polarity or MS order than the one asked for selects nothing, so a fragmentation stream needs `ms_type="Ms2"` or `None`. A selection that finds no scan raises `NoScansFoundError`, which names the stream.
 - **A key the file does not hold is not an empty selection.** It raises `UnknownStreamError`, which lists the keys the file does hold: all of them in `.held`, and the first eight in its message, which travels into logs and has to stay bounded on a file of many streams. That error is deliberately neither a `NoScansFoundError` nor a `ValueError`: the code above the reader takes an empty selection to mean a polarity the file does not carry, or a window with nothing in it, and would read a stale key the same way. A key can go stale without being mistyped, because it is a name: the name of one experiment depends on what else its file holds, on the backend that rendered its filter, and on the version of the code that keys. A file with no scans holds no key, and a stream asked of it is the empty selection the scanless-file handling expects.
-- **A key selects under the backend whose census reported it, and only there.** The backends render some filters differently (above), so they can key the same scans differently. Usually the other backend then holds no such key, and says so. Where it pools scans, it does not: on a file that records no experiment, with two scans rendered `... sid=20.00 Full ms [40.0000-160.0000]` and three without the token, the plain key selects scans 3 to 5 under a rendering that keeps `sid=` and scans 1 to 5 under one that drops it. One corpus file has the `sid=` difference.
+- **A key selects under the backend whose census reported it, and only there.** The backends render some filters differently (above), so they can key the same scans differently. Usually the other backend then holds no such key, and says so. Where it pools scans, it does not: on a file that records no experiment, with two scans rendered `... sid=20.00 Full ms [40.0000-160.0000]` and three without the token, the plain key selects scans 3 to 5 under a rendering that keeps `sid=` and scans 1 to 5 under one that drops it. Under 2.0.0 one corpus file had the `sid=` difference; under 3.1.0 none has.
 - **The first scan.** A file's first scan is left out of every selection when its TIC is five times the median of the others or more. With no stream given, the others are every other scan of the file, of any polarity and MS order. With one given, they are the other scans of the first scan's own stream - the scans that measured what it measured - and a stream that does not hold the first scan loses nothing. On a file with one stream the two are the same comparison, so its stream selects exactly what no stream selects.
 
   On a file with several, they need not be. Of the internal regression corpus's two such files, one loses its first scan to the file-wide comparison and keeps it under its stream: its TIC equals the median of its own experiment's other scans, and is sixty times the file's median only because the other polarity's scans are that much weaker.
+- **A reader upgrade can rename a stream.** A key is built from the filter the reader renders, so a reader that renders a token its predecessor missed names the same scans anew (next section).
 - **On the corpus**, under both backends: each of the 195 streams selects the scans the census counted into it, less a first scan left out in eleven single-stream files; the backends select the same scans for every key both report; and the selections of a file's streams together are the default selection in 184 of 185 files, the one above being the other.
+
+### Keys OpenTFRaw 3.1.0 renamed: `sid=`
+
+OpenTFRaw 2.0.0, the reader up to release 1.13.0, renders no `sid=` token at all.
+OpenTFRaw 3.1.0 renders `sid=<eV>` on a scan whose source CID energy is above 0.
+It takes the energy from the scan's trailer where the trailer has a source CID field (every Exploris file of the corpus has one), and otherwise from the method, which it reads as a compound-file stream (Sigilweaver/OpenTFRaw#77).
+A Q Exactive's trailer has no such field, so its method decides.
+A file of such a method converted under 2.0.0 keeps keys without the token, and its stream key and `signature_key` gain it under 3.1.0: `FTMS - p ESI SIM ms [123.4244-127.4244] R=280000` becomes `FTMS - p ESI sid=20.00 SIM ms [123.4244-127.4244] R=280000` (GitHub #2492).
+
+What still reads the old key:
+
+- **A per-stream peak store** labels its peaks by key, and per-stream calibration and matching select scans by that label. Under 3.1.0 the reader holds no stream of the old name, so the selection raises `UnknownStreamError`.
+- **A method binding** builds its signature class from `signature_key`, so files of such a method converted after the upgrade start a new binding row. With `method_binding = "shadow"`, the default, nothing routes on it.
+- **`acquisition_stream` rows** are matched on file and key. Re-processing such a file writes a row of the new key and deletes the old one, unless a sample item still reads it: then the old row stays beside the new one (`sync_stream_rows`, reported as `StreamRows.kept`).
+
+Measured before 3.1.0 shipped, on every production site's stored Orbitrap files (about 740,000 on eight servers, read-only; MAS-426):
+
+- **No per-stream store holds a key 3.1.0 renames.** Every file stored per stream, on every site, carries the source CID field in its trailer at 0 eV, so 3.1.0 adds no token to it. The failure above meets no stored file.
+- **No stored key, census, stream row or binding carries `sid=`**, as 2.0.0 never rendered it.
+- About 62,000 files on three sites are decided by their method. Six files of one site, of the method the corpus file comes from, measure that file's window and gain the token; four more of the same method name, edited to other windows, may. The rest are of methods the corpus does not hold, so they are not decided. All of them are stored pooled.
+
+So nothing needs re-processing for this. A pooled file re-processed under 3.1.0 takes the new keys, and with them its stream rows; bindings of an affected method split once, in shadow. Stream selection is not made to match a key that differs only by `sid=`: a key that matched both would select the scans of two experiments where a file holds both.
 
 ## Underlying Algorithms
 

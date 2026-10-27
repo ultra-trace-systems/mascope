@@ -12,8 +12,9 @@ counts and the failures the message names.
 
 The batches the run touched are carried on the failure paths as well, where
 the background-task decorator resolves the run's reload rooms. A file's samples
-are cleared before its pipeline runs, so a run that failed on some or all of
-its files has still changed their batches - the files it re-processed have new
+are cleared by its pipeline once it has bound the file, before it makes new
+ones, so a run that failed on some or all of its files has still changed
+their batches - the files it re-processed have new
 samples, the ones whose pipeline failed have none - and the views showing them
 have to reload.
 
@@ -92,7 +93,13 @@ async def _re_process(
         }
     )
     if pipeline_fails:
-        pipeline.side_effect = ApiException("Calibration failed", {}, 500)
+
+        async def fails(**kwargs):
+            # It bound the file and rebuilt it, then failed
+            await kwargs["rebuild"](_sample_file(0))
+            raise ApiException("Calibration failed", {}, 500)
+
+        pipeline.side_effect = fails
     run = service.re_process_sample_files
     with (
         patch(f"{_SVC}.async_session", lambda: _Session(sample_files)),

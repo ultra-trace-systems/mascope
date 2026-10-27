@@ -108,7 +108,7 @@ def test_ingested_file_without_goldens_is_reported_separately():
     problems = check_raw_coverage(raw, ingested, goldens)
 
     assert len(problems) == 1
-    assert "produced no matched peaks" in problems[0]
+    assert "produced neither matched peaks nor MS2 spectra" in problems[0]
     assert "Orbion_neg_Br_NoRI_20250811142350.raw" in problems[0]
 
 

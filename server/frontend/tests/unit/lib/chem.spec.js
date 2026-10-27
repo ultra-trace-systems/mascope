@@ -1,8 +1,14 @@
 import { describe, it, expect } from 'vitest'
 
 import {
+  compoundIdentity,
+  identityChanges,
+  isValidInchi,
+  isValidInchikey,
   isValidChemicalFormula,
   isSameCompound,
+  isIsomer,
+  inchikeyOf,
   findExistingCompound,
   formatIsotopeFormula,
   formatIsotopeLabel,
@@ -59,6 +65,66 @@ describe('isSameCompound', () => {
   })
 })
 
+const ETHANOL = 'LFQSCWFLJHTTHZ-UHFFFAOYSA-N'
+const DIMETHYL_ETHER = 'LCGLNKUTAGEVQW-UHFFFAOYSA-N'
+
+describe('isSameCompound by structure', () => {
+  const ethanol = { target_compound_formula: 'C2H6O', inchikey: ETHANOL }
+
+  it('tells isomers apart by their InChIKeys', () => {
+    expect(
+      isSameCompound(ethanol, { target_compound_formula: 'C2H6O', inchikey: DIMETHYL_ETHER })
+    ).toBe(false)
+  })
+
+  it('matches one InChIKey however it is written', () => {
+    const other = { target_compound_formula: 'C2H6O', inchikey: ` ${ETHANOL.toLowerCase()} ` }
+    expect(isSameCompound(ethanol, other)).toBe(true)
+  })
+
+  it('matches by formula when either side has no InChIKey', () => {
+    expect(isSameCompound(ethanol, { target_compound_formula: 'C2H6O' })).toBe(true)
+    expect(isSameCompound({ target_compound_formula: 'C2H6O', inchikey: '  ' }, ethanol)).toBe(true)
+  })
+
+  it('still matches by CAS number when the InChIKeys differ', () => {
+    expect(
+      isSameCompound(
+        { ...ethanol, cas_number: '64-17-5' },
+        { target_compound_formula: 'C2H6O', cas_number: '64-17-5', inchikey: DIMETHYL_ETHER }
+      )
+    ).toBe(true)
+  })
+})
+
+describe('isIsomer', () => {
+  const ethanol = { target_compound_formula: 'C2H6O', inchikey: ETHANOL }
+
+  it('is one formula with two InChIKeys', () => {
+    expect(isIsomer(ethanol, { target_compound_formula: 'c2h6o', inchikey: DIMETHYL_ETHER })).toBe(
+      true
+    )
+  })
+
+  it('is not the same InChIKey, another formula, or a side without a key', () => {
+    expect(isIsomer(ethanol, { ...ethanol })).toBe(false)
+    expect(isIsomer(ethanol, { target_compound_formula: 'C3H8O', inchikey: DIMETHYL_ETHER })).toBe(
+      false
+    )
+    expect(isIsomer(ethanol, { target_compound_formula: 'C2H6O' })).toBe(false)
+    expect(isIsomer({ inchikey: ETHANOL }, { inchikey: DIMETHYL_ETHER })).toBe(false)
+  })
+})
+
+describe('inchikeyOf', () => {
+  it('trims and upper-cases, and has none for a blank or missing key', () => {
+    expect(inchikeyOf({ inchikey: ` ${ETHANOL.toLowerCase()}` })).toBe(ETHANOL)
+    expect(inchikeyOf({ inchikey: ' ' })).toBe(null)
+    expect(inchikeyOf({})).toBe(null)
+    expect(inchikeyOf(null)).toBe(null)
+  })
+})
+
 describe('findExistingCompound', () => {
   const list = [
     { target_compound_formula: 'C6H12O6', cas_number: '50-99-7' },
@@ -74,8 +140,40 @@ describe('findExistingCompound', () => {
     expect(findExistingCompound(list, null)).toBe(null)
   })
 
+  it('finds no compound of the formula whose InChIKey differs', () => {
+    const stored = [{ target_compound_formula: 'C2H6O', inchikey: ETHANOL }]
+    const search = { target_compound_formula: 'C2H6O', inchikey: DIMETHYL_ETHER }
+    expect(findExistingCompound(stored, search)).toBeUndefined()
+  })
+
   it('returns undefined when nothing matches', () => {
     expect(findExistingCompound(list, { target_compound_formula: 'CH4' })).toBeUndefined()
+  })
+
+  it('prefers the compound of the InChIKey to a keyless one of the formula before it', () => {
+    const stored = [
+      { target_compound_formula: 'C2H6O', target_compound_name: 'unknown' },
+      { target_compound_formula: 'C2H6O', inchikey: ETHANOL }
+    ]
+    const search = { target_compound_formula: 'C2H6O', inchikey: ETHANOL.toLowerCase() }
+    expect(findExistingCompound(stored, search)).toBe(stored[1])
+  })
+
+  it('prefers the compound of the CAS number to one of the InChIKey before it', () => {
+    const stored = [
+      { target_compound_formula: 'C2H6O', inchikey: ETHANOL },
+      { target_compound_formula: 'C2H6O', cas_number: '64-17-5' }
+    ]
+    const search = { target_compound_formula: 'C2H6O', cas_number: '64-17-5', inchikey: ETHANOL }
+    expect(findExistingCompound(stored, search)).toBe(stored[1])
+  })
+
+  it('falls back to the first formula match for a search without a key', () => {
+    const stored = [
+      { target_compound_formula: 'C2H6O', target_compound_name: 'unknown' },
+      { target_compound_formula: 'C2H6O', inchikey: ETHANOL }
+    ]
+    expect(findExistingCompound(stored, { target_compound_formula: 'C2H6O' })).toBe(stored[0])
   })
 })
 
@@ -111,6 +209,43 @@ describe('parseCompoundPaste', () => {
   it('maps three columns to name, formula and CAS number', () => {
     expect(parseCompoundPaste('Water\tH2O\t7732-18-5')).toEqual([
       { target_compound_name: 'Water', target_compound_formula: 'H2O', cas_number: '7732-18-5' }
+    ])
+  })
+
+  it('maps a fourth column to the InChIKey', () => {
+    expect(parseCompoundPaste('Methane\tCH4\t74-82-8\tVNWKTOKETHGBQD-UHFFFAOYSA-N')).toEqual([
+      {
+        target_compound_name: 'Methane',
+        target_compound_formula: 'CH4',
+        cas_number: '74-82-8',
+        inchikey: 'VNWKTOKETHGBQD-UHFFFAOYSA-N'
+      }
+    ])
+  })
+
+  it('maps six columns to name, formula, CAS number, InChIKey, InChI and SMILES', () => {
+    expect(
+      parseCompoundPaste(
+        'Methane\tCH4\t74-82-8\tVNWKTOKETHGBQD-UHFFFAOYSA-N\tInChI=1S/CH4/h1H4\tC\n' +
+          'Water\tH2O\t\t\t\tO'
+      )
+    ).toEqual([
+      {
+        target_compound_name: 'Methane',
+        target_compound_formula: 'CH4',
+        cas_number: '74-82-8',
+        inchikey: 'VNWKTOKETHGBQD-UHFFFAOYSA-N',
+        inchi: 'InChI=1S/CH4/h1H4',
+        smiles: 'C'
+      },
+      {
+        target_compound_name: 'Water',
+        target_compound_formula: 'H2O',
+        cas_number: '',
+        inchikey: '',
+        inchi: '',
+        smiles: 'O'
+      }
     ])
   })
 })
@@ -162,12 +297,37 @@ describe('validateCompoundPaste', () => {
     expect(result.message).toBe('Some rows are missing a formula, which is required')
   })
 
-  it('rejects more than three columns', () => {
-    const result = validateCompoundPaste([
-      { a: '1', b: '2', c: '3', d: '4' } // 4 columns
-    ])
+  it('accepts six columns, blank structure cells included', () => {
+    const result = validateCompoundPaste(
+      parseCompoundPaste(
+        'Methane\tCH4\t74-82-8\tVNWKTOKETHGBQD-UHFFFAOYSA-N\tInChI=1S/CH4/h1H4\tC\n' +
+          'Water\tH2O\t\t\t\t'
+      )
+    )
+    expect(result.valid).toBe(true)
+    expect(result.message).toBe('Pasted 2 compounds')
+  })
+
+  it('rejects more than six columns', () => {
+    const result = validateCompoundPaste(parseCompoundPaste('a\tCH4\tc\td\te\tf\tg'))
     expect(result.valid).toBe(false)
-    expect(result.message).toContain('1 to 3 are expected')
+    expect(result.message).toBe('You pasted 7 columns but 1 to 6 are expected')
+  })
+
+  it('names a malformed InChIKey', () => {
+    const result = validateCompoundPaste(
+      parseCompoundPaste(
+        'Methane\tCH4\t\tVNWKTOKETHGBQD-UHFFFAOYSA-N\nWater\tH2O\t\tXLYOFNOQVPJJNP'
+      )
+    )
+    expect(result.valid).toBe(false)
+    expect(result.message).toContain("'XLYOFNOQVPJJNP' is not an InChIKey")
+  })
+
+  it('names a malformed InChI', () => {
+    const result = validateCompoundPaste(parseCompoundPaste('Methane\tCH4\t\t\t1S/CH4/h1H4\tC'))
+    expect(result.valid).toBe(false)
+    expect(result.message).toContain("'1S/CH4/h1H4' is not an InChI")
   })
 })
 
@@ -453,5 +613,60 @@ describe('monoisotopicIsotope', () => {
   it('has no answer without rows', () => {
     expect(monoisotopicIsotope([], 'C9H16O7^N-')).toBeUndefined()
     expect(monoisotopicIsotope(null, 'C9H16O7^N-')).toBeUndefined()
+  })
+})
+
+describe('compoundIdentity', () => {
+  it('trims each field and reads a blank one as none', () => {
+    expect(
+      compoundIdentity({ inchikey: ' VNWKTOKETHGBQD-UHFFFAOYSA-N ', inchi: '  ', smiles: 'C' })
+    ).toEqual({ inchikey: 'VNWKTOKETHGBQD-UHFFFAOYSA-N', inchi: null, smiles: 'C' })
+  })
+
+  it('answers no identity for no source', () => {
+    expect(compoundIdentity(null)).toEqual({ inchikey: null, inchi: null, smiles: null })
+  })
+})
+
+describe('identityChanges', () => {
+  const stored = { inchikey: 'VNWKTOKETHGBQD-UHFFFAOYSA-N', inchi: 'InChI=1S/CH4/h1H4' }
+
+  it('sends nothing for an identity left as it was', () => {
+    expect(identityChanges(stored, { ...stored, inchikey: ` ${stored.inchikey}` })).toEqual({})
+  })
+
+  it('sends a field the edit changes, and only that one', () => {
+    expect(identityChanges(stored, { ...stored, smiles: 'C' })).toEqual({ smiles: 'C' })
+  })
+
+  it('sends an emptied field as null, which clears it', () => {
+    expect(identityChanges(stored, { ...stored, inchi: '' })).toEqual({ inchi: null })
+  })
+})
+
+describe('isValidInchikey', () => {
+  it.each(['', null, '  ', 'VNWKTOKETHGBQD-UHFFFAOYSA-N', ' VNWKTOKETHGBQD-UHFFFAOYSA-N '])(
+    'accepts %s',
+    (value) => {
+      expect(isValidInchikey(value)).toBe(true)
+    }
+  )
+
+  it.each([
+    'vnwktoketHGBQD-UHFFFAOYSA-N',
+    'VNWKTOKETHGBQD-UHFFFAOYSA',
+    'VNWKTOKETHGBQDUHFFFAOYSAN'
+  ])('rejects %s', (value) => {
+    expect(isValidInchikey(value)).toBe(false)
+  })
+})
+
+describe('isValidInchi', () => {
+  it.each(['', null, 'InChI=1S/CH4/h1H4'])('accepts %s', (value) => {
+    expect(isValidInchi(value)).toBe(true)
+  })
+
+  it.each(['1S/CH4/h1H4', 'inchi=1S/CH4/h1H4'])('rejects %s', (value) => {
+    expect(isValidInchi(value)).toBe(false)
   })
 })

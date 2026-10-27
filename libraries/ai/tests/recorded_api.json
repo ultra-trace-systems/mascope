@@ -1,0 +1,1331 @@
+{
+ "_about": "Answers of a demo stack to the routes the toolkit reads, trimmed (12 peaks, a few points) and de-identified (names, files, instrument). conftest.py builds a workspace from them; the match tree trimmed to a few isotopes per ion.",
+ "batch_row": {
+  "dataset_id": "jvLwU8nQ6We3V3Gh",
+  "locked": 1,
+  "polarity": "-",
+  "sample_batch_description": null,
+  "sample_batch_id": "j5RWaDZ1ByAjWxL1",
+  "sample_batch_name": "Batch 1",
+  "sample_batch_type": "ACQUISITION",
+  "sample_batch_utc_created": "2026-10-06T11:14:00.777459+00:00",
+  "sample_batch_utc_modified": "2026-10-06T11:15:36.626406+00:00",
+  "status": "ready"
+ },
+ "dataset_row": {
+  "dataset_description": null,
+  "dataset_id": "pYaBmz32gMbPkA8J",
+  "dataset_name": "Dataset A",
+  "dataset_type": "ACQUISITION",
+  "dataset_utc_created": "2026-10-06T11:14:00.544442+00:00",
+  "dataset_utc_modified": null,
+  "icon": null,
+  "instrument": "instrument X",
+  "locked": 1,
+  "workspace_id": "KS5ydorbY73Yua5o"
+ },
+ "ionization_mechanisms": {
+  "data": [
+   {
+    "ionization_mechanism": "[M+Br2]-",
+    "ionization_mechanism_id": "MVtf9Vz9M8F",
+    "ionization_mechanism_polarity": "-",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+Br3]-",
+    "ionization_mechanism_id": "FBoT2xX6Wzc",
+    "ionization_mechanism_polarity": "-",
+    "shipped": false
+   },
+   {
+    "ionization_mechanism": "[M+Br]-",
+    "ionization_mechanism_id": "4Qcgr7rPeNL",
+    "ionization_mechanism_polarity": "-",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+CH4N2O+H]+",
+    "ionization_mechanism_id": "3hAsxsSt4rB",
+    "ionization_mechanism_polarity": "+",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+CO3]-",
+    "ionization_mechanism_id": "ktYRGjDVPG3",
+    "ionization_mechanism_polarity": "-",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+HCOO]-",
+    "ionization_mechanism_id": "sysAddHCOONeg",
+    "ionization_mechanism_polarity": "-",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+H]+",
+    "ionization_mechanism_id": "c7ytTMLixvs",
+    "ionization_mechanism_polarity": "+",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+I2]-",
+    "ionization_mechanism_id": "sysAddI2Neg",
+    "ionization_mechanism_polarity": "-",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+I]-",
+    "ionization_mechanism_id": "sysAddINeg",
+    "ionization_mechanism_polarity": "-",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+K]+",
+    "ionization_mechanism_id": "sysAddKPos",
+    "ionization_mechanism_polarity": "+",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+NH4]+",
+    "ionization_mechanism_id": "Zc6bEQXPzhr",
+    "ionization_mechanism_polarity": "+",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+NO3]-",
+    "ionization_mechanism_id": "bSJF7RsIk3M",
+    "ionization_mechanism_polarity": "-",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+Na]+",
+    "ionization_mechanism_id": "sysAddNaPos",
+    "ionization_mechanism_polarity": "+",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+^NH4]+",
+    "ionization_mechanism_id": "sysAddLabNH4Pos",
+    "ionization_mechanism_polarity": "+",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M+^NO3]-",
+    "ionization_mechanism_id": "vQGuj8wPC2J",
+    "ionization_mechanism_polarity": "-",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M-CH3]+",
+    "ionization_mechanism_id": "sysLossCH3Pos",
+    "ionization_mechanism_polarity": "+",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M-H]+",
+    "ionization_mechanism_id": "sysLossHPos",
+    "ionization_mechanism_polarity": "+",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M-H]-",
+    "ionization_mechanism_id": "5ni6bQ49IbX",
+    "ionization_mechanism_polarity": "-",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M]+.",
+    "ionization_mechanism_id": "JOUgThWOYcT",
+    "ionization_mechanism_polarity": "+",
+    "shipped": true
+   },
+   {
+    "ionization_mechanism": "[M]-.",
+    "ionization_mechanism_id": "B9nbLAu6dFR",
+    "ionization_mechanism_polarity": "-",
+    "shipped": true
+   }
+  ],
+  "message": "Retrieved ionization mechanisms successfully.",
+  "results": 20
+ },
+ "peaks": {
+  "data": {
+   "area": [
+    0.2915604026748794,
+    0.3835524857796162,
+    0.27329408164741853,
+    0.31086259920358555,
+    0.5748950397211597,
+    0.15453961723331974,
+    105.19300702323746,
+    1.1668212451378783,
+    112.3051602977446,
+    1.2125277019906926,
+    0.5715632392783622,
+    26.730367268323555
+   ],
+   "height": [
+    471.07581948108515,
+    673.7029925939718,
+    328.1982604550427,
+    388.39476367969917,
+    840.6383237929198,
+    174.24279362394364,
+    130156.13790192963,
+    1271.4263968777768,
+    135632.3041367446,
+    1318.9130789163125,
+    474.9138611344875,
+    26718.741245947782
+   ],
+   "match": [
+    [],
+    [
+     {
+      "ionization_mechanism_id": "5ni6bQ49IbX",
+      "match_score_isotope": 0.9950693579582763,
+      "relative_abundance": 0.9603815205816066,
+      "target_collection_ids": [
+       "c1"
+      ],
+      "target_collection_names": [
+       "Organic acids"
+      ],
+      "target_compound_formula": "C3H6O3",
+      "target_compound_id": "bobSUgRkiQmNdrHQ",
+      "target_compound_name": "",
+      "target_ion_formula": "C3H5O3-",
+      "target_ion_id": "eWNxiiH32ndJ2LZs",
+      "target_isotope_formula": "C3H5O3-",
+      "target_isotope_id": "psaffDNEJxcQoAMq"
+     }
+    ],
+    [
+     {
+      "ionization_mechanism_id": "4Qcgr7rPeNL",
+      "match_score_isotope": 0.9947890687290077,
+      "relative_abundance": 0.5056659202334556,
+      "target_collection_ids": [
+       "c1"
+      ],
+      "target_collection_names": [
+       "Organic acids"
+      ],
+      "target_compound_formula": "O",
+      "target_compound_id": "HlaSWhad57atmpaO",
+      "target_compound_name": "",
+      "target_ion_formula": "BrO-",
+      "target_ion_id": "bITLQgA1ALEYFnNL",
+      "target_isotope_formula": "BrO-",
+      "target_isotope_id": "UmVnUj2WygBuuO4b"
+     }
+    ],
+    [],
+    [],
+    [],
+    [
+     {
+      "ionization_mechanism_id": "4Qcgr7rPeNL",
+      "match_score_isotope": 0.9994880803404856,
+      "relative_abundance": 0.4988785887189479,
+      "target_collection_ids": [
+       "c1"
+      ],
+      "target_collection_names": [
+       "Organic acids"
+      ],
+      "target_compound_formula": "CH2O2",
+      "target_compound_id": "ausz9qHKi34vBMC3",
+      "target_compound_name": "",
+      "target_ion_formula": "CH2BrO2-",
+      "target_ion_id": "wZ2VengWyJQyIUEO",
+      "target_isotope_formula": "CH2BrO2-",
+      "target_isotope_id": "TpOVBTx2n9lUW5xS"
+     }
+    ],
+    [
+     {
+      "ionization_mechanism_id": "4Qcgr7rPeNL",
+      "match_score_isotope": 0.8910048957493886,
+      "relative_abundance": 0.005440625003565272,
+      "target_collection_ids": [
+       "c1"
+      ],
+      "target_collection_names": [
+       "Organic acids"
+      ],
+      "target_compound_formula": "CH2O2",
+      "target_compound_id": "ausz9qHKi34vBMC3",
+      "target_compound_name": "",
+      "target_ion_formula": "CH2BrO2-",
+      "target_ion_id": "wZ2VengWyJQyIUEO",
+      "target_isotope_formula": "[13C]H2BrO2-",
+      "target_isotope_id": "xeIhDYSf5SlccnMs"
+     }
+    ],
+    [
+     {
+      "ionization_mechanism_id": "4Qcgr7rPeNL",
+      "match_score_isotope": 0.9282388392583406,
+      "relative_abundance": 0.48529910920432906,
+      "target_collection_ids": [
+       "c1"
+      ],
+      "target_collection_names": [
+       "Organic acids"
+      ],
+      "target_compound_formula": "CH2O2",
+      "target_compound_id": "ausz9qHKi34vBMC3",
+      "target_compound_name": "",
+      "target_ion_formula": "CH2BrO2-",
+      "target_ion_id": "wZ2VengWyJQyIUEO",
+      "target_isotope_formula": "[81Br]CH2O2-",
+      "target_isotope_id": "Gt9dJxlRFNmqQNhG"
+     }
+    ],
+    [
+     {
+      "ionization_mechanism_id": "4Qcgr7rPeNL",
+      "match_score_isotope": 0.9495757973248784,
+      "relative_abundance": 0.005292531143749893,
+      "target_collection_ids": [
+       "c1"
+      ],
+      "target_collection_names": [
+       "Organic acids"
+      ],
+      "target_compound_formula": "CH2O2",
+      "target_compound_id": "ausz9qHKi34vBMC3",
+      "target_compound_name": "",
+      "target_ion_formula": "CH2BrO2-",
+      "target_ion_id": "wZ2VengWyJQyIUEO",
+      "target_isotope_formula": "[13C][81Br]H2O2-",
+      "target_isotope_id": "XGWD1kM6Hm0A1S6Z"
+     }
+    ],
+    [
+     {
+      "ionization_mechanism_id": "4Qcgr7rPeNL",
+      "match_score_isotope": 0.9118616572257601,
+      "relative_abundance": 0.0019959321067716043,
+      "target_collection_ids": [
+       "c1"
+      ],
+      "target_collection_names": [
+       "Organic acids"
+      ],
+      "target_compound_formula": "CH2O2",
+      "target_compound_id": "ausz9qHKi34vBMC3",
+      "target_compound_name": "",
+      "target_ion_formula": "CH2BrO2-",
+      "target_ion_id": "wZ2VengWyJQyIUEO",
+      "target_isotope_formula": "[81Br][18O]CH2O-",
+      "target_isotope_id": "xLU7QuJnUytpXWF6"
+     }
+    ],
+    [
+     {
+      "ionization_mechanism_id": "4Qcgr7rPeNL",
+      "match_score_isotope": 0.9980711401614274,
+      "relative_abundance": 0.5013182644260937,
+      "target_collection_ids": [
+       "c1"
+      ],
+      "target_collection_names": [
+       "Organic acids"
+      ],
+      "target_compound_formula": "HNO3",
+      "target_compound_id": "2gZbgPkuQotyOePe",
+      "target_compound_name": "",
+      "target_ion_formula": "BrHNO3-",
+      "target_ion_id": "MPsmLRTCKtiWqe1b",
+      "target_isotope_formula": "BrHNO3-",
+      "target_isotope_id": "rpRF663BeFZBHf8J"
+     }
+    ]
+   ],
+   "mz": [
+    87.00882334159475,
+    89.02446149661267,
+    94.9138507590386,
+    96.91178564912724,
+    101.06083176455253,
+    103.00368561190274,
+    124.92437237997295,
+    125.92765452051881,
+    126.92232520541666,
+    127.92559782996216,
+    128.9265608904308,
+    141.9145022036554
+   ],
+   "peak_id": [
+    "l8x6Ka46vKS230yNiY3a",
+    "uuMAtGo91QyrOvhTyVHu",
+    "VscIltJzObhq6mk4OwbB",
+    "TK5pJe5aajAmmqvRSX21",
+    "Z4kfrR5yy2Mi3dTvMfoZ",
+    "9BCNJP00nfudj80DpbSE",
+    "mnFT7aUMdKotTvjEjCVp",
+    "w6G8z893EDxL7fGS1UKX",
+    "mHiZS5TrPlqq3Y1z02Is",
+    "b32cXmd4UqA2iICsVaJ6",
+    "ut3VpxyU3YwqkhqrGXbD",
+    "DBaaOjEJhHclIYf9LCMu"
+   ],
+   "segment": null,
+   "segments": null,
+   "signal_to_noise": [
+    8.679866184672802,
+    12.409735469848167,
+    5.815239425322545,
+    7.245486827533666,
+    14.777971892990191,
+    3.1179003219410077,
+    2235.7531853638307,
+    22.20049880855074,
+    2347.3460469508254,
+    23.069782615181563,
+    8.713040279242229,
+    457.48080613974474
+   ],
+   "sparsity": [
+    0.0,
+    0.0,
+    0.25,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  "message": "Loaded 12 peaks.",
+  "results": 12,
+  "warnings": []
+ },
+ "provenance": {
+  "data": {
+   "deployment_id": "deployment-x",
+   "generated_utc": "2026-10-20T21:00:20Z",
+   "produced_with": {
+    "mascope_version": "v1.12.0",
+    "match_score_version": 1,
+    "peak_assignment_engine_version": "0.5.0"
+   },
+   "provenance_version": 1
+  },
+  "message": "Provenance of this deployment."
+ },
+ "sample_get": {
+  "data": {
+   "acquisition_id": null,
+   "agent_id": null,
+   "bound_by": null,
+   "datetime": "2025-08-11T14:23:58.949900",
+   "datetime_utc": "2025-08-11T11:23:58.949900+00:00",
+   "filename": "file-x",
+   "filter_id": null,
+   "instrument": "instrument X",
+   "instrument_function_id": "if-x",
+   "instrument_type": "orbi",
+   "ionization_mode_id": "im-x",
+   "length": 10.41332802581787,
+   "locked": 1,
+   "match": {
+    "alarming": false,
+    "match_category": 2,
+    "match_sample_id": "36MNInX0xaZuGaxSHGUEYsMbGt7wGGgI",
+    "match_sample_utc_created": "2026-10-06T11:14:25.506907+00:00",
+    "match_sample_utc_modified": null,
+    "match_score": 0.9805187158026069,
+    "sample_item_id": "KjneCdOrhjBGDr53",
+    "sample_peak_intensity_sum": 4231105.779461558
+   },
+   "method_binding_id": null,
+   "method_file": null,
+   "mz_calibration": {
+    "mode": "one-point",
+    "par": {
+     "calibration_factor": 1.0000034985172477
+    },
+    "quality": {
+     "axis_correction_ppm": 3.4985172476798,
+     "calibrant_to_tic": 0.1309901246765451,
+     "mz_error_tolerance": 5.0,
+     "n_ions": 2,
+     "n_points": 5,
+     "post_fit_mz_error_ppm": 0.2267330472752102,
+     "pre_fit_mz_error_ppm": 3.338058666424396,
+     "refine_window": 50.0
+    },
+    "quality_gate": "warn",
+    "quality_issues": [],
+    "status": "ok",
+    "verified": true
+   },
+   "polarity": "-",
+   "range": [
+    82.01574051307502,
+    668.8105613081565
+   ],
+   "sample_batch_id": "j5RWaDZ1ByAjWxL1",
+   "sample_file_id": "sf-x",
+   "sample_item_attributes": {},
+   "sample_item_id": "KjneCdOrhjBGDr53",
+   "sample_item_name": "Sample 1",
+   "sample_item_type": "ACQUISITION",
+   "sample_item_utc_created": "2026-10-06T11:14:22.802942+00:00",
+   "sample_item_utc_modified": "2026-10-06T11:14:25.525575+00:00",
+   "sequence_run_id": null,
+   "sha256": null,
+   "source_filename": "file-x.raw",
+   "step_id": null,
+   "t0": 2.559264991760254,
+   "t1": 10.41332802581787,
+   "tic": 21160727.0
+  },
+  "message": "Sample '2025-08-11 14:23:58' retrieved successfully",
+  "status": "success"
+ },
+ "sample_row": {
+  "acquisition_id": null,
+  "agent_id": null,
+  "bound_by": null,
+  "datetime": "2025-08-11T14:23:58.949900",
+  "datetime_utc": "2025-08-11T11:23:58.949900+00:00",
+  "filename": "file-x",
+  "filter_id": null,
+  "instrument": "instrument X",
+  "instrument_function_id": "if-x",
+  "instrument_type": "orbi",
+  "ionization_mode_id": "im-x",
+  "length": 10.41332802581787,
+  "locked": 1,
+  "match": {
+   "alarming": false,
+   "match_category": 2,
+   "match_sample_id": "36MNInX0xaZuGaxSHGUEYsMbGt7wGGgI",
+   "match_sample_utc_created": "2026-10-06T11:14:25.506907+00:00",
+   "match_sample_utc_modified": null,
+   "match_score": 0.9805187158026069,
+   "sample_item_id": "KjneCdOrhjBGDr53",
+   "sample_peak_intensity_sum": 4231105.779461558
+  },
+  "method_binding_id": null,
+  "method_file": null,
+  "mz_calibration": {
+   "mode": "one-point",
+   "par": {
+    "calibration_factor": 1.0000034985172477
+   },
+   "quality": {
+    "axis_correction_ppm": 3.4985172476798,
+    "calibrant_to_tic": 0.1309901246765451,
+    "mz_error_tolerance": 5.0,
+    "n_ions": 2,
+    "n_points": 5,
+    "post_fit_mz_error_ppm": 0.2267330472752102,
+    "pre_fit_mz_error_ppm": 3.338058666424396,
+    "refine_window": 50.0
+   },
+   "quality_gate": "warn",
+   "quality_issues": [],
+   "status": "ok",
+   "verified": true
+  },
+  "polarity": "-",
+  "range": [
+   82.01574051307502,
+   668.8105613081565
+  ],
+  "sample_batch_id": "j5RWaDZ1ByAjWxL1",
+  "sample_file_id": "sf-x",
+  "sample_item_attributes": {},
+  "sample_item_id": "KjneCdOrhjBGDr53",
+  "sample_item_name": "Sample 1",
+  "sample_item_type": "ACQUISITION",
+  "sample_item_utc_created": "2026-10-06T11:14:22.802942+00:00",
+  "sample_item_utc_modified": "2026-10-06T11:14:25.525575+00:00",
+  "sequence_run_id": null,
+  "sha256": null,
+  "source_filename": "file-x.raw",
+  "step_id": null,
+  "t0": 2.559264991760254,
+  "t1": 10.41332802581787,
+  "tic": 21160727.0
+ },
+ "spectrum": {
+  "data": {
+   "intensity": [
+    0.0,
+    17.03020477294922,
+    42.4824333190918,
+    59.3551139831543,
+    54.094200134277344,
+    30.889509201049805,
+    0.0
+   ],
+   "intensity_unit": "counts/s",
+   "mz": [
+    100.78577605111792,
+    100.78597762307318,
+    100.7861294549785,
+    100.7862812872269,
+    100.78643311981838,
+    100.78658495275299,
+    100.7867865259229
+   ],
+   "runs": null,
+   "segments": null
+  },
+  "message": "Retrieved spectrum data with 7 m/z points from sample '2025-08-11 14:23:58' with '-' polarity.",
+  "results": 7
+ },
+ "timeseries": {
+  "data": {
+   "height": [
+    873.7725453420283,
+    387.50517830233434,
+    673.0005452474668,
+    760.5337014840577
+   ],
+   "mz": 89.02446149661267,
+   "peak_id": "uuMAtGo91QyrOvhTyVHu",
+   "time": [
+    2.559264991760254,
+    5.17728409576416,
+    7.795368049621584,
+    10.41332802581787
+   ]
+  },
+  "message": "Retrieved timeseries with 4 data points for peak m/z 89.02446149661267 in sample '2025-08-11 14:23:58' with '-' polarity.",
+  "results": 4
+ },
+ "workspaces": {
+  "data": [
+   {
+    "instrument": null,
+    "is_member": true,
+    "is_system": false,
+    "my_role": "editor",
+    "workspace_description": null,
+    "workspace_id": "ws1",
+    "workspace_name": "Workspace A",
+    "workspace_status": "active",
+    "workspace_utc_created": null,
+    "workspace_utc_modified": null
+   },
+   {
+    "instrument": null,
+    "is_member": false,
+    "is_system": false,
+    "my_role": "guest",
+    "workspace_description": null,
+    "workspace_id": "ws2",
+    "workspace_name": "Workspace B",
+    "workspace_status": "active",
+    "workspace_utc_created": "2026-06-23T14:35:08.474417+00:00",
+    "workspace_utc_modified": "2026-06-23T14:35:08.474417+00:00"
+   }
+  ],
+  "total": 2
+ },
+ "match_compounds": {
+  "message": "3 matches found for 3 target compounds",
+  "data": [
+   {
+    "target_compound_id": "HBIigxatZjYLnB2m",
+    "match_score": 0.9607899817360022,
+    "match_category": 2,
+    "sample_peak_intensity_sum": 268853.69537560275,
+    "target_compound_name": null,
+    "target_compound_formula": "CH2O2",
+    "cas_number": null,
+    "inchikey": null,
+    "inchi": null,
+    "smiles": null,
+    "children": [
+     {
+      "target_ion_id": "TJsUKBA5Cry9ChaV",
+      "match_score": 0.0,
+      "sample_peak_intensity_sum": 0.0,
+      "instrument": "instrument X",
+      "match_category": 0,
+      "target_compound_id": "HBIigxatZjYLnB2m",
+      "ionization_mechanism_id": "5ni6bQ49IbX",
+      "target_ion_formula": "CHO2-",
+      "filter_params": {},
+      "children": [
+       {
+        "target_isotope_id": "68eI2cTXoCfbrLdb",
+        "target_ion_id": "TJsUKBA5Cry9ChaV",
+        "target_isotope_formula": "CHO2-",
+        "mz": 44.99820285257906,
+        "relative_abundance": 0.9842915901414453,
+        "resolution": "HIGH",
+        "match_isotope_id": "v6tNf5Ha7fOW3OVAddScvuz2V298Zlsg",
+        "sample_peak_id": "",
+        "sample_peak_mz": 44.99820285257906,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "chuTJTkUFGRRQ5CH",
+        "target_ion_id": "TJsUKBA5Cry9ChaV",
+        "target_isotope_formula": "[18O]CHO-",
+        "mz": 47.002447846079065,
+        "relative_abundance": 0.004048182141544848,
+        "resolution": "HIGH",
+        "match_isotope_id": "yKKSGaIyEQbgoGIMBIeklGOG0DhrLaW9",
+        "sample_peak_id": "",
+        "sample_peak_mz": 47.002447846079065,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "wfGJyqYtbV1vunRr",
+        "target_ion_id": "TJsUKBA5Cry9ChaV",
+        "target_isotope_formula": "[17O]CHO-",
+        "mz": 46.00241998997907,
+        "relative_abundance": 0.0007518559987952557,
+        "resolution": "HIGH",
+        "match_isotope_id": "H3ZalrnnDuAyQO9GjxSBvoFY5leWNuIp",
+        "sample_peak_id": "",
+        "sample_peak_mz": 46.00241998997907,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "KvQZ3H8GdC9mSLa1",
+        "target_ion_id": "TJsUKBA5Cry9ChaV",
+        "target_isotope_formula": "[13C]HO2-",
+        "mz": 46.00155768777906,
+        "relative_abundance": 0.010734398222769774,
+        "resolution": "HIGH",
+        "match_isotope_id": "cZN6AWRR9nWbP9mE7DXKUTwWOZVOdHfo",
+        "sample_peak_id": "",
+        "sample_peak_mz": 46.00155768777906,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       }
+      ]
+     },
+     {
+      "target_ion_id": "stB5WLoB7rcSDoV9",
+      "match_score": 0.9607899817360022,
+      "sample_peak_intensity_sum": 268853.69537560275,
+      "instrument": "instrument X",
+      "match_category": 2,
+      "target_compound_id": "HBIigxatZjYLnB2m",
+      "ionization_mechanism_id": "4Qcgr7rPeNL",
+      "target_ion_formula": "CH2BrO2-",
+      "filter_params": {},
+      "children": [
+       {
+        "target_isotope_id": "2uubaJUtXCWCWZ0t",
+        "target_ion_id": "stB5WLoB7rcSDoV9",
+        "target_isotope_formula": "CH2BrO2-",
+        "mz": 124.92436598484906,
+        "relative_abundance": 0.4988785887189479,
+        "resolution": "HIGH",
+        "match_isotope_id": "FSiHrL8hvHw1PRvQ6BKF7YuQUseNfh9T",
+        "sample_peak_id": "mnFT7aUMdKotTvjEjCVp",
+        "sample_peak_mz": 124.92437237997295,
+        "sample_peak_intensity": 130156.13790192961,
+        "sample_peak_intensity_relative": 1.0,
+        "match_abundance_error": 0.0,
+        "match_mz_error": 0.05119196595144095,
+        "match_score": 0.9994880803404856,
+        "sample_peak_tof": 427.02623517073556,
+        "signal_to_noise": 2235.7531853638307,
+        "is_satellite": false,
+        "match_category": 2
+       },
+       {
+        "target_isotope_id": "4BgyEoTJwNJUrTP0",
+        "target_ion_id": "stB5WLoB7rcSDoV9",
+        "target_isotope_formula": "[13C]H2BrO2-",
+        "mz": 125.92772082004906,
+        "relative_abundance": 0.005440625003565272,
+        "resolution": "HIGH",
+        "match_isotope_id": "ALMHTp0vmao4PYCuhv2zxM0YEp8mlZXL",
+        "sample_peak_id": "w6G8z893EDxL7fGS1UKX",
+        "sample_peak_mz": 125.92765452051881,
+        "sample_peak_intensity": 1271.4263968777768,
+        "sample_peak_intensity_relative": 0.009768470526036771,
+        "match_abundance_error": -0.10427923505509484,
+        "match_mz_error": -0.5264887652578526,
+        "match_score": 0.8910048957493886,
+        "sample_peak_tof": 465.96546084646786,
+        "signal_to_noise": 22.20049880855074,
+        "is_satellite": false,
+        "match_category": 2
+       },
+       {
+        "target_isotope_id": "A1ELa7iaoZ3VY1CX",
+        "target_ion_id": "stB5WLoB7rcSDoV9",
+        "target_isotope_formula": "[81Br]CH2O2-",
+        "mz": 126.92231798484906,
+        "relative_abundance": 0.48529910920432906,
+        "resolution": "HIGH",
+        "match_isotope_id": "HyZAlehhFRbUAehnNi2LeXmy8pfzVyKJ",
+        "sample_peak_id": "mHiZS5TrPlqq3Y1z02Is",
+        "sample_peak_mz": 126.92232520541666,
+        "sample_peak_intensity": 135632.30413674458,
+        "sample_peak_intensity_relative": 1.042073822434261,
+        "match_abundance_error": 0.07123278822685752,
+        "match_mz_error": 0.0568896606280047,
+        "match_score": 0.9282388392583406,
+        "sample_peak_tof": 504.79877017229546,
+        "signal_to_noise": 2347.3460469508254,
+        "is_satellite": false,
+        "match_category": 2
+       },
+       {
+        "target_isotope_id": "nslfY8hV0xeyXCnN",
+        "target_ion_id": "stB5WLoB7rcSDoV9",
+        "target_isotope_formula": "[81Br][18O]CH2O-",
+        "mz": 128.92656297834907,
+        "relative_abundance": 0.0019959321067716043,
+        "resolution": "HIGH",
+        "match_isotope_id": "kMCkunsLEUyJDU7ULl6LPNqul3dIzad6",
+        "sample_peak_id": "ut3VpxyU3YwqkhqrGXbD",
+        "sample_peak_mz": 128.9265608904308,
+        "sample_peak_intensity": 474.9138611344875,
+        "sample_peak_intensity_relative": 0.0036488011152599415,
+        "match_abundance_error": -0.08799064621424924,
+        "match_mz_error": -0.01619463214687531,
+        "match_score": 0.9118616572257601,
+        "sample_peak_tof": 568.2885119232775,
+        "signal_to_noise": 8.713040279242229,
+        "is_satellite": false,
+        "match_category": 2
+       },
+       {
+        "target_isotope_id": "UdvlWogNx7Y3QT5s",
+        "target_ion_id": "stB5WLoB7rcSDoV9",
+        "target_isotope_formula": "[13C][81Br]H2O2-",
+        "mz": 127.92567282004906,
+        "relative_abundance": 0.005292531143749893,
+        "resolution": "HIGH",
+        "match_isotope_id": "UzDPiVpTnuRxUmxyzqHTaaNuPWw33lET",
+        "sample_peak_id": "b32cXmd4UqA2iICsVaJ6",
+        "sample_peak_mz": 127.92559782996216,
+        "sample_peak_intensity": 1318.9130789163125,
+        "sample_peak_intensity_relative": 0.010133314495779604,
+        "match_abundance_error": -0.04482496231132571,
+        "match_mz_error": -0.586200449432275,
+        "match_score": 0.9495757973248784,
+        "sample_peak_tof": 557.3255395752097,
+        "signal_to_noise": 23.069782615181563,
+        "is_satellite": false,
+        "match_category": 2
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "target_compound_id": "K5rRrzMqOneoFDPy",
+    "match_score": 0.0,
+    "match_category": 0,
+    "sample_peak_intensity_sum": 0.0,
+    "target_compound_name": null,
+    "target_compound_formula": "C6H12O6",
+    "cas_number": null,
+    "inchikey": null,
+    "inchi": null,
+    "smiles": null,
+    "children": [
+     {
+      "target_ion_id": "NdUv0EyZIfo7XFhT",
+      "match_score": 0.0,
+      "sample_peak_intensity_sum": 0.0,
+      "instrument": "instrument X",
+      "match_category": 0,
+      "target_compound_id": "K5rRrzMqOneoFDPy",
+      "ionization_mechanism_id": "4Qcgr7rPeNL",
+      "target_ion_formula": "C6H12BrO6-",
+      "filter_params": {},
+      "children": [
+       {
+        "target_isotope_id": "g1GBD8qNU8OWTpHL",
+        "target_ion_id": "NdUv0EyZIfo7XFhT",
+        "target_isotope_formula": "C6H12BrO6-",
+        "mz": 258.98227478834906,
+        "relative_abundance": 0.46742122059122315,
+        "resolution": "HIGH",
+        "match_isotope_id": "eN5aE5mNpT8gZ3w4sZYp2RP7M9yC1vK0",
+        "sample_peak_id": "NmnIohanSNNk9TTKAHN0",
+        "sample_peak_mz": 258.938254688581,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 1.0,
+        "match_abundance_error": 0.0,
+        "match_mz_error": -169.97340765505513,
+        "match_score": 0.0,
+        "sample_peak_tof": 3891.1038803478937,
+        "signal_to_noise": 3.421433725108489,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "gqyNuOAJrHLJIuyT",
+        "target_ion_id": "NdUv0EyZIfo7XFhT",
+        "target_isotope_formula": "[18O]C6H12BrO5-",
+        "mz": 260.9865197818491,
+        "relative_abundance": 0.005767212450239173,
+        "resolution": "HIGH",
+        "match_isotope_id": "CghXuVRbrdwc6WZedNCFrRpHF9UrhI9A",
+        "sample_peak_id": "",
+        "sample_peak_mz": 260.9865197818491,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "XPigfYphBBczMiM6",
+        "target_ion_id": "NdUv0EyZIfo7XFhT",
+        "target_isotope_formula": "[17O]C6H12BrO5-",
+        "mz": 259.9864919257491,
+        "relative_abundance": 0.001071126032729417,
+        "resolution": "HIGH",
+        "match_isotope_id": "IPoUsP9LMcxT0dvZtDrk4hjGaEplbjJ3",
+        "sample_peak_id": "",
+        "sample_peak_mz": 259.9864919257491,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "xxyFqSC7xLcDJBis",
+        "target_ion_id": "NdUv0EyZIfo7XFhT",
+        "target_isotope_formula": "[18O]2C6H12BrO4-",
+        "mz": 262.9907647753491,
+        "relative_abundance": 2.9649149044591458e-05,
+        "resolution": "HIGH",
+        "match_isotope_id": "Ju9PNBFwKy8LmFL2XWwUzKiR1KeYy6vp",
+        "sample_peak_id": "",
+        "sample_peak_mz": 262.9907647753491,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       }
+      ]
+     },
+     {
+      "target_ion_id": "r2v7KjHsISpYp5Js",
+      "match_score": 0.0,
+      "sample_peak_intensity_sum": 0.0,
+      "instrument": "instrument X",
+      "match_category": 0,
+      "target_compound_id": "K5rRrzMqOneoFDPy",
+      "ionization_mechanism_id": "5ni6bQ49IbX",
+      "target_ion_formula": "C6H11O6-",
+      "filter_params": {},
+      "children": [
+       {
+        "target_isotope_id": "b8BS41MvuJWRCu2C",
+        "target_ion_id": "r2v7KjHsISpYp5Js",
+        "target_isotope_formula": "C6H11O6-",
+        "mz": 179.05611165607908,
+        "relative_abundance": 0.9222259421135097,
+        "resolution": "HIGH",
+        "match_isotope_id": "8O81aXNWTWXP8bSV6UrrIcXs1KYebqzD",
+        "sample_peak_id": "1elumh3ZFczk8YX4fLvq",
+        "sample_peak_mz": 178.9349357396825,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 1.0,
+        "match_abundance_error": 0.0,
+        "match_mz_error": -676.7482845229152,
+        "match_score": 0.0,
+        "sample_peak_tof": 1411.3480322799674,
+        "signal_to_noise": 13.911513892749394,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "i0M4Q9P6RakJgqCE",
+        "target_ion_id": "r2v7KjHsISpYp5Js",
+        "target_isotope_formula": "[18O]C6H11O5-",
+        "mz": 181.06035664957906,
+        "relative_abundance": 0.011378757961744226,
+        "resolution": "HIGH",
+        "match_isotope_id": "CzQdTbhlP4v0PjDtVHZTPdLEiPxAFy5E",
+        "sample_peak_id": "1ubMZC8TOEwQaVLhDkQJ",
+        "sample_peak_mz": 180.95050760590465,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 2.078560217809273,
+        "match_abundance_error": 167.4632155419343,
+        "match_mz_error": -606.6984827993881,
+        "match_score": 0.0,
+        "sample_peak_tof": 1432.1413999109147,
+        "signal_to_noise": 28.404261516836925,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "wlrRQIeO363pyxP4",
+        "target_ion_id": "r2v7KjHsISpYp5Js",
+        "target_isotope_formula": "[17O]C6H11O5-",
+        "mz": 180.06032879347907,
+        "relative_abundance": 0.002113340539838428,
+        "resolution": "HIGH",
+        "match_isotope_id": "FBOIKEBPE3FkDfEDpntafkT3Z959r3JP",
+        "sample_peak_id": "",
+        "sample_peak_mz": 180.06032879347907,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "IIefljJGDlp9kQWH",
+        "target_ion_id": "r2v7KjHsISpYp5Js",
+        "target_isotope_formula": "[18O]2C6H11O4-",
+        "mz": 183.06460164307907,
+        "relative_abundance": 5.849801679077993e-05,
+        "resolution": "HIGH",
+        "match_isotope_id": "OOKbOifefWtumvqyh5dZx5Jn1LGEEyyL",
+        "sample_peak_id": "CiZvNgeEGg9dnML3qb83",
+        "sample_peak_mz": 183.00468057227184,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 1.625787410690925,
+        "match_abundance_error": 25629.669358641204,
+        "match_mz_error": -327.3219960026075,
+        "match_score": 0.0,
+        "sample_peak_tof": 1485.5460723254428,
+        "signal_to_noise": 22.808531006921974,
+        "is_satellite": false,
+        "match_category": 0
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "target_compound_id": "RbZrg8l3muBWkDxT",
+    "match_score": 0.9701642456434969,
+    "match_category": 2,
+    "sample_peak_intensity_sum": 53618.632370687454,
+    "target_compound_name": null,
+    "target_compound_formula": "HNO3",
+    "cas_number": null,
+    "inchikey": null,
+    "inchi": null,
+    "smiles": null,
+    "children": [
+     {
+      "target_ion_id": "dQ00olskFklH1DHs",
+      "match_score": 0.9701642456434969,
+      "sample_peak_intensity_sum": 53618.632370687454,
+      "instrument": "instrument X",
+      "match_category": 2,
+      "target_compound_id": "RbZrg8l3muBWkDxT",
+      "ionization_mechanism_id": "4Qcgr7rPeNL",
+      "target_ion_formula": "BrHNO3-",
+      "filter_params": {},
+      "children": [
+       {
+        "target_isotope_id": "nm9xbKmnTvZX8Ud4",
+        "target_ion_id": "dQ00olskFklH1DHs",
+        "target_isotope_formula": "BrHNO3-",
+        "mz": 141.91452957697905,
+        "relative_abundance": 0.5013182644260937,
+        "resolution": "HIGH",
+        "match_isotope_id": "3ycwSMyeTQ2WE6CQRGNWVWHhenyXxdY4",
+        "sample_peak_id": "DBaaOjEJhHclIYf9LCMu",
+        "sample_peak_mz": 141.9145022036554,
+        "sample_peak_intensity": 26718.741245947782,
+        "sample_peak_intensity_relative": 1.0,
+        "match_abundance_error": 0.0,
+        "match_mz_error": -0.19288598385725508,
+        "match_score": 0.9980711401614274,
+        "sample_peak_tof": 714.8974684502041,
+        "signal_to_noise": 457.48080613974474,
+        "is_satellite": false,
+        "match_category": 2
+       },
+       {
+        "target_isotope_id": "5owBqJ2zRlMWe7pp",
+        "target_ion_id": "dQ00olskFklH1DHs",
+        "target_isotope_formula": "[18O]BrHNO2-",
+        "mz": 143.91877457047906,
+        "relative_abundance": 0.0030927232320277207,
+        "resolution": "HIGH",
+        "match_isotope_id": "3bMqXvombM5YuJBMUhC0JSfljdawQV7U",
+        "sample_peak_id": "",
+        "sample_peak_mz": 143.91877457047906,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "kIN2c3nJSWCRCvVL",
+        "target_ion_id": "dQ00olskFklH1DHs",
+        "target_isotope_formula": "[17O]BrHNO2-",
+        "mz": 142.91874671437907,
+        "relative_abundance": 0.0005744016532136893,
+        "resolution": "HIGH",
+        "match_isotope_id": "8sW7v6mgr2LK7JOPFWzjXKPsZOLCJkqs",
+        "sample_peak_id": "b8Rr0T7TuAjGIJtoQ9DV",
+        "sample_peak_mz": 142.93433787902126,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.15753012029218058,
+        "match_abundance_error": 136.48694151186618,
+        "match_mz_error": 109.09110946338735,
+        "match_score": 0.0,
+        "sample_peak_tof": 749.316102257801,
+        "signal_to_noise": 72.3385380516874,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "73GkMWtrcJdT93lk",
+        "target_ion_id": "dQ00olskFklH1DHs",
+        "target_isotope_formula": "[18O]2BrHNO-",
+        "mz": 145.92301956397907,
+        "relative_abundance": 6.359856714226493e-06,
+        "resolution": "HIGH",
+        "match_isotope_id": "EGeOoUWQkPKi7kSon7LyKL9ED5ad2Aoi",
+        "sample_peak_id": "",
+        "sample_peak_mz": 145.92301956397907,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       }
+      ]
+     },
+     {
+      "target_ion_id": "pgtDvHIN8qOY6aVk",
+      "match_score": 0.0,
+      "sample_peak_intensity_sum": 0.0,
+      "instrument": "instrument X",
+      "match_category": 0,
+      "target_compound_id": "RbZrg8l3muBWkDxT",
+      "ionization_mechanism_id": "5ni6bQ49IbX",
+      "target_ion_formula": "NO3-",
+      "filter_params": {},
+      "children": [
+       {
+        "target_isotope_id": "pF5ho6HvrvurBBgx",
+        "target_ion_id": "pgtDvHIN8qOY6aVk",
+        "target_isotope_formula": "NO3-",
+        "mz": 61.988366444709065,
+        "relative_abundance": 0.9891050905311541,
+        "resolution": "HIGH",
+        "match_isotope_id": "pGtH1nu5otU1Q6yiHPzyU45ieRZYpAt6",
+        "sample_peak_id": "",
+        "sample_peak_mz": 61.988366444709065,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "lholqSV2Dhhz49rb",
+        "target_ion_id": "pgtDvHIN8qOY6aVk",
+        "target_isotope_formula": "[18O]NO2-",
+        "mz": 63.99261143820907,
+        "relative_abundance": 0.00610196856861886,
+        "resolution": "HIGH",
+        "match_isotope_id": "DdwxTvXToc5oeEBOOd2f8yo6QuSgABPX",
+        "sample_peak_id": "",
+        "sample_peak_mz": 63.99261143820907,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "qMecMAFKBFMEf7uP",
+        "target_ion_id": "pgtDvHIN8qOY6aVk",
+        "target_isotope_formula": "[17O]NO2-",
+        "mz": 62.99258358210906,
+        "relative_abundance": 0.001133299222308563,
+        "resolution": "HIGH",
+        "match_isotope_id": "ezDTOrXOUaEB9HMemJvfWBrEz5EINK2A",
+        "sample_peak_id": "",
+        "sample_peak_mz": 62.99258358210906,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       },
+       {
+        "target_isotope_id": "L7N5kaXx9ykhSuiG",
+        "target_ion_id": "pgtDvHIN8qOY6aVk",
+        "target_isotope_formula": "[18O]2NO-",
+        "mz": 65.99685643170906,
+        "relative_abundance": 1.2548050006300025e-05,
+        "resolution": "HIGH",
+        "match_isotope_id": "ahcXnzgaBdtfiyB2YGhGpQ3DjO0zwg9S",
+        "sample_peak_id": "",
+        "sample_peak_mz": 65.99685643170906,
+        "sample_peak_intensity": 0.0,
+        "sample_peak_intensity_relative": 0.0,
+        "match_abundance_error": 1.0,
+        "match_mz_error": 0.0,
+        "match_score": 0.0,
+        "sample_peak_tof": -1.0,
+        "signal_to_noise": null,
+        "is_satellite": false,
+        "match_category": 0
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "mz_query": {
+  "message": "Retrieved 5 composition results for m/z query",
+  "results": 5,
+  "total": 5,
+  "data": [
+   {
+    "sample_peak_mz": 179.0561,
+    "target_compound_formula": "C5H6N7O",
+    "target_compound_unsaturation": 6.5,
+    "ionization_mechanism": {
+     "ionization_mechanism_id": "5ni6bQ49IbX",
+     "ionization_mechanism_polarity": "-",
+     "ionization_mechanism": "[M-H]-"
+    },
+    "target_isotope_mz": 179.05610639341907,
+    "target_isotope_mz_error_ppm": -0.03570623316676126
+   },
+   {
+    "sample_peak_mz": 179.0561,
+    "target_compound_formula": "C6H12O6",
+    "target_compound_unsaturation": 1.0,
+    "ionization_mechanism": {
+     "ionization_mechanism_id": "5ni6bQ49IbX",
+     "ionization_mechanism_polarity": "-",
+     "ionization_mechanism": "[M-H]-"
+    },
+    "target_isotope_mz": 179.05611165003904,
+    "target_isotope_mz_error_ppm": -0.06506362139088061
+   },
+   {
+    "sample_peak_mz": 179.0561,
+    "target_compound_formula": "C4H10N3O5",
+    "target_compound_unsaturation": 1.5,
+    "ionization_mechanism": {
+     "ionization_mechanism_id": "5ni6bQ49IbX",
+     "ionization_mechanism_polarity": "-",
+     "ionization_mechanism": "[M-H]-"
+    },
+    "target_isotope_mz": 179.05476898073906,
+    "target_isotope_mz_error_ppm": 7.433587323631806
+   },
+   {
+    "sample_peak_mz": 179.0561,
+    "target_compound_formula": "C3H4N10",
+    "target_compound_unsaturation": 7.0,
+    "ionization_mechanism": {
+     "ionization_mechanism_id": "5ni6bQ49IbX",
+     "ionization_mechanism_polarity": "-",
+     "ionization_mechanism": "[M-H]-"
+    },
+    "target_isotope_mz": 179.05476372411908,
+    "target_isotope_mz_error_ppm": 7.462945152139225
+   },
+   {
+    "sample_peak_mz": 179.0561,
+    "target_compound_formula": "C7H8N4O2",
+    "target_compound_unsaturation": 6.0,
+    "ionization_mechanism": {
+     "ionization_mechanism_id": "5ni6bQ49IbX",
+     "ionization_mechanism_polarity": "-",
+     "ionization_mechanism": "[M-H]-"
+    },
+    "target_isotope_mz": 179.05744906271906,
+    "target_isotope_mz_error_ppm": -7.5342451606101
+   }
+  ]
+ }
+}

@@ -46,8 +46,8 @@ Every peak is assigned in a two-stage engine:
 
 - **Stage A — database-first.** The peak is matched against the sample's known target
   library (the same target isotopologues used by [target matching](matching.md)) and
-  against any reference lists your deployment has loaded; the best-fitting known
-  composition wins the peak. A reference list is matched only within its own element,
+  against any [reference lists](../guides/reference-lists.md) your deployment has
+  loaded; the best-fitting known composition wins the peak. A reference list is matched only within its own element,
   carbon and mass window, under a ceiling the sample's chemistry context sets; only in
   the polarity it is detected in; and it contributes radicals only if it allows them.
   The target library is read through the ionization mechanisms of the sample's mode; a
@@ -380,14 +380,17 @@ the peak as; a compound of your own target library keeps its peak.
 shows its ion in the formula column instead, written with its charge (`Br-`, `C16H10+`),
 and the inspector heads the card with it; the *reagent* chip beside it says the source
 made it. An ion's isotope lines are claimed with it and are its family, as an analyte's
-isotopologues are the analyte's: they fold under the ion's monoisotopic row, counted in
-its **+N** marker, and the inspector lists them in the ion's isotopologue table against
-the abundances its isotope pattern predicts. A fragment's lines fold under the fragment
-the same way. The *reagent* count above the ledger still counts every peak the source
-accounts for, the lines included. If you assign a compound to an ion's peak by hand, its
-lines are unassigned with it, as an analyte's isotopologues are when their compound is
-replaced. A run made before Mascope linked the lines to their ion lists them as rows of
-their own and writes the ion without its charge; running the assignment again links them.
+isotopologues are the analyte's. A line is one peak your instrument resolves: on a TOF,
+the peak one mass unit above the ion is its 13C, 15N, 2H and 17O lines together, claimed
+as one line at their combined height. The lines fold under the ion's monoisotopic row,
+counted in its **+N** marker, and the inspector lists them in the ion's isotopologue
+table against the abundances its isotope pattern predicts. A fragment's lines fold under
+the fragment the same way. The *reagent* count above the ledger still counts every peak
+the source accounts for, the lines included. If you assign a compound to an ion's peak by
+hand, its lines are unassigned with it, as an analyte's isotopologues are when their
+compound is replaced. A run made before Mascope linked the lines to their ion lists them
+as rows of their own and writes the ion without its charge; running the assignment again
+links them.
 
 ## The fit score — a pure measurement
 
@@ -420,7 +423,20 @@ width is the instrument class's, and the centre is the median mass error of the 
 ions the run claimed, if it claimed at least three and their offset exceeds that width;
 otherwise the sample is scored on its nominal masses. The reagent ions stand in only
 there: they sit at the low end of the mass range and need not agree with the offset
-your library measures.
+your library measures. A formula measured on its own - a batch peak's *Use this*, the
+inspector's measured evidence and its alternatives - holds too few ions to measure
+either. A bright ion can match eight lines alone, but they all share its own mass
+error, so these are measured only from lines of at least eight different ions. Below
+that, the formula is scored at the instrument class's width and at the centre the sample's
+latest run in Mascope scored at, whether that was your library's offset or the reagent
+ions'. An imported run does not count. A sample with no such run is centred on its own reagent ions, as a run would be.
+
+A predicted line is a peak your instrument can resolve, not a single isotopologue. On a
+TOF, the peak one mass unit above a compound holds its 13C line and also its 15N, 2H and
+17O lines, a few mDa apart. The untargeted search reads that peak against the sum of all
+four, at the resolving power recorded for the file, and so does the check that reads a
+peak as a neighbour's isotope line (*a neighbour's isotope line*, below). A file with no
+recorded resolving power is read one isotopologue per line.
 
 **A consequence users see:** a lone mass-only match (one peak, no isotopic corroboration)
 scores *low* by design, while a fully corroborated isotope envelope scores near 1.0. This
@@ -612,7 +628,9 @@ What caps a row at candidate:
 - **a neighbour's isotope line** — a committed neighbouring compound's isotope pattern
   predicts a line on this peak, and the peak is no more than twice as tall as that line,
   so the line could account for all of it. The neighbour must itself be a reading the
-  run stands behind, at *candidate* or above.
+  run stands behind, at *candidate* or above. A line is one peak of the file: on a TOF,
+  the neighbour's 13C, 15N, 2H and 17O lines one mass unit up are one line, at their
+  combined height.
 - **read as a neighbour's line** — where that neighbour is held at *assigned*, the peak
   is read as its isotopologue instead, at *candidate*: the run first committed it as a
   compound of its own, which is exactly the doubt. The formula it held before is the
@@ -687,9 +705,15 @@ What caps a row at candidate:
   of its lines has to sit, so a line of it far off calibration with no isotopologue
   behind it is capped like any other. A formula from a loaded reference list is a prior
   matched against every sample rather than a list assembled for your data, and its
-  matches play no part in measuring the sample's own mass accuracy. The calibration's
-  centre can follow
-  the mass range: where the run's assignments show their mass error changing with m/z the
+  matches play no part in measuring the sample's own mass accuracy. The source's own
+  ions do: the monoisotopic lines the run set aside as *reagent* peaks (*The ions a
+  source makes of itself*, above) are the best-known masses in the file, and they
+  measure the calibration beside the run's corroborated assignments. On a
+  charge-transfer source they are the mode's calibration compounds, and on a sample
+  with few corroborated assignments they can be what lets it measure a calibration
+  at all. A source's brightest lines can read slightly above its analytes, so where
+  they are much of what the run measures on, the constant centre leans toward them.
+  The calibration's centre can follow the mass range: where the run's assignments show their mass error changing with m/z the
   way a fixed offset in millidaltons does, growing in ppm as the mass falls, each ion is
   measured from the centre at its own m/z, so a small ion a couple of ppm out can sit
   exactly on calibration.
@@ -823,6 +847,11 @@ and says so when the two disagree - and a hand icon beside the formula in the *B
 peaks* ledger marks it. *Release*, in the inspector's note, undoes it: the samples that
 were re-measured go back to what they read before, and the batch decides again.
 
+An identity that reads the peak as an isotope line of a compound, such as its 13C line,
+cannot be pinned there. The line is part of the compound's envelope, not an ion of its
+own. *Use this* on it says which batch peak holds the compound's monoisotopic line;
+pin the compound on that batch peak instead.
+
 ## Verifying assignments
 
 --8<-- "_help/assignment-verification.md"
@@ -935,6 +964,10 @@ to the whole search - and then runs the untargeted composition search
 for the batch peaks nothing has assigned yet &mdash; once per species, on its brightest
 peak in that sample's own spectrum &mdash; and then measures the composition it found
 against every other sample the species was seen in, so each carries a fit of its own.
+A batch peak that one sample's search reads as an isotope line of another batch peak's
+composition reads as that line, as it would within one sample. That holds even where the
+line is brightest in a sample of its own, whose search read it as a compound: the line
+reading wins, and that sample is searched again without the peak.
 It writes no per-sample runs: the results appear in the batch ledger and in each
 sample's view, marked as untargeted. An assignment run on a sample still takes
 precedence for that sample.

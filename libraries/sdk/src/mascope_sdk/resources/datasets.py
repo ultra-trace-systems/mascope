@@ -1,5 +1,6 @@
 """Datasets resource for the Mascope SDK."""
 
+import builtins
 from typing import Any
 
 import pandas as pd
@@ -211,3 +212,31 @@ class DatasetsResource(BaseResource):
             f"workspaces/{self._workspace(workspace_id)}/datasets/{dataset_id}",
             Needs("delete", "dataset", dataset_id, _EDITOR),
         )
+
+    def tombstones(self) -> builtins.list[dict[str, Any]]:
+        """What deleted datasets were: one record per deleted dataset.
+
+        A dataset's tombstone is written when it is deleted, alone or with its
+        workspace, and outlives both: its name, description, type, instrument,
+        ``descriptive_metadata`` (license, authors, keywords, related
+        identifiers, funding), ``n_sample_batches``, ``n_sample_items`` and
+        ``n_sample_files`` as it stood, ``deleted_utc``, ``deleted_by`` (an
+        email), ``deleted_via`` (``"dataset"`` or ``"workspace"``) and the
+        ``provenance`` block of the build that deleted it.
+
+        Not limited to the client's workspace: the records of every workspace
+        the caller is a member of, and for a global admin or owner every
+        record, a deleted workspace's included. Newest delete first.
+
+        :return: The records as dicts; an empty list when there are none.
+        :rtype: list[dict[str, Any]]
+        :raises AuthenticationError: If authentication fails.
+        :raises NotFoundError: If the server predates tombstones.
+        :raises MascopeAPIError: If the API request fails.
+
+        Example::
+
+            for record in mascope.datasets.tombstones():
+                print(record["dataset_name"], record["deleted_utc"])
+        """
+        return self._get("datasets/tombstones")

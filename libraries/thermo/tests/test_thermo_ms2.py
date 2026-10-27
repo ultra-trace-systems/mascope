@@ -534,6 +534,12 @@ class TestMs2SummaryIsolationWidths:
         assert {
             g["parent_peak_mz"]: g["isolation_width"] for g in summary["groups"]
         } == {137.096: 2.0, 300.5: 150.0}
+        assert {
+            g["parent_peak_mz"]: g["isolation_widths"] for g in summary["groups"]
+        } == {
+            137.096: [{"isolation_width": 2.0, "scan_count": 2}],
+            300.5: [{"isolation_width": 150.0, "scan_count": 2}],
+        }
 
     def test_one_width_is_the_files_and_every_groups(self, monkeypatch):
         summary = self._summary(monkeypatch, dict.fromkeys([2, 3, 4, 5], 2.0))
@@ -547,7 +553,144 @@ class TestMs2SummaryIsolationWidths:
 
         assert summary["isolation_width"] is None
         assert [g["isolation_width"] for g in summary["groups"]] == [None, None]
+        # Every width the disagreeing group's scans store is still answered,
+        # and the group whose scans store none answers none.
+        assert [g["isolation_widths"] for g in summary["groups"]] == [
+            [],
+            [
+                {"isolation_width": 2.0, "scan_count": 1},
+                {"isolation_width": 150.0, "scan_count": 1},
+            ],
+        ]
 
     def test_no_scan_storing_a_width_is_no_summary(self, monkeypatch):
         with pytest.raises(ValueError, match="No MS2 scan stores an isolation width"):
             self._summary(monkeypatch, {})
+
+
+class TestIsolationWidthCounts:
+    """``_isolation_width_counts``: every width a group's scans used."""
+
+    def test_each_width_with_its_scan_count_narrowest_first(self):
+        assert m_backend._isolation_width_counts([4.0, 1.0, 4.0, 2.5]) == [
+            {"isolation_width": 1.0, "scan_count": 1},
+            {"isolation_width": 2.5, "scan_count": 1},
+            {"isolation_width": 4.0, "scan_count": 2},
+        ]
+
+    def test_a_width_read_back_from_32_bits_is_the_same_width(self):
+        """Rounded as ``_common_isolation_width`` rounds, so a group that has
+        one width lists exactly that one."""
+        widths = [float(np.float32(1.6)), 1.6, 1.6]
+
+        assert m_backend._isolation_width_counts(widths) == [
+            {
+                "isolation_width": m_backend._common_isolation_width(widths),
+                "scan_count": 3,
+            }
+        ]
+
+    def test_no_width_is_no_entry(self):
+        assert m_backend._isolation_width_counts([]) == []
+
+
+class TestActivationKindAndNce:
+    @pytest.mark.parametrize(
+        ("activation", "expected"),
+        [
+            ("hcd25.00", ("hcd", 25.0)),
+            ("cid35", ("cid", 35.0)),
+            # A chained activation has an energy per stage, none for the scan.
+            ("cid30.00@hcd20.00", ("cid@hcd", None)),
+            ("etd", ("etd", None)),
+            ("hcd1.2.3", (None, None)),
+            (None, (None, None)),
+            ("", (None, None)),
+        ],
+    )
+    def test_parse(self, activation, expected):
+        assert m_backend._activation_kind_and_nce(activation) == expected
+
+
+class TestHcdEnergyVolts:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("28.5", [28.5]),
+            # The energy stepped within the scan: one value per step.
+            ("28.5,57.0,85.5", [28.5, 57.0, 85.5]),
+            # A trailer read with its values typed.
+            (28.5, [28.5]),
+            # Empty, absent or unreadable is no energy, not a part of one.
+            ("", None),
+            (None, None),
+            ("28.5,n/a", None),
+            (True, None),
+        ],
+    )
+    def test_parse(self, value, expected):
+        assert m_backend._hcd_energy_volts(value) == expected
+
+
+class TestMs2ScanRecord:
+    """``_ms2_scan_record``, which both backends build their records with."""
+
+    FILTER = "FTMS + p NSI Full ms2 137.0960@hcd25.00 [40.0000-160.0419]"
+
+    def test_every_field_and_its_source(self):
+        record = m_backend._ms2_scan_record(
+            7,
+            12.5,
+            1000.0,
+            self.FILTER,
+            {"MS2 Isolation Width:": 1.6, "Ion Injection Time (ms):": 22.0},
+            "35.6",
+        )
+
+        assert record == {
+            "scan_number": 7,
+            "time_s": 12.5,
+            "polarity": "+",
+            "precursor_mz": 137.096,
+            "activation": "hcd25.00",
+            "activation_kind": "hcd",
+            "nce": 25.0,
+            "hcd_energy_v": [35.6],
+            "isolation_width": 1.6,
+            "low_mass": 40.0,
+            "high_mass": 160.0419,
+            "injection_time_ms": 22.0,
+            "tic": 1000.0,
+            "sources": m_backend.MS2_SCAN_RECORD_SOURCES,
+        }
+
+    def test_a_multiplexed_scan_spans_its_ranges(self):
+        record = m_backend._ms2_scan_record(
+            1,
+            0.0,
+            0.0,
+            "FTMS - p NSI SIM msx ms2 300.0000@hcd30.00 [100.0000-120.0000, 80.0000-150.0000]",
+            {},
+            None,
+        )
+
+        assert (record["low_mass"], record["high_mass"]) == (80.0, 150.0)
+        assert record["polarity"] == "-"
+
+    def test_what_the_scan_does_not_hold_is_none_with_no_source(self):
+        record = m_backend._ms2_scan_record(
+            1, 0.0, 0.0, "FTMS + p NSI Full ms2 137.0960@etd", {}, None
+        )
+
+        absent = {
+            "nce",
+            "hcd_energy_v",
+            "isolation_width",
+            "low_mass",
+            "high_mass",
+            "injection_time_ms",
+        }
+        assert {field for field, value in record.items() if value is None} == absent
+        assert {
+            field for field, source in record["sources"].items() if source is None
+        } == absent

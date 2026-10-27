@@ -29,6 +29,7 @@ from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage.client import redis_storage_client
 from mascope_backend.socket.storage.config import storage_config
 from mascope_backend.socket.storage.exceptions import SocketSessionError
+from mascope_backend.socket.storage.workers import renew_socket_claim
 
 
 #: The namespace of the web application's sockets, the only ones indexed by
@@ -190,8 +191,8 @@ async def get_session_user(sid: str, namespace: str = "/") -> dict[str, Any]:
             session_key, storage_config.session_ttl
         )
         if namespace == WEB_NAMESPACE:
-            # And what eviction finds the socket by, so the index and the
-            # room record live as long as the session (see
+            # And what eviction finds the socket by, so the index, the room
+            # record and the worker record live as long as the session (see
             # start_session_renewal for a socket that never emits).
             await redis_storage_client.client.expire(
                 storage_config.user_sockets_key(session["user_id"]),
@@ -199,6 +200,9 @@ async def get_session_user(sid: str, namespace: str = "/") -> dict[str, Any]:
             )
             await redis_storage_client.client.expire(
                 storage_config.socket_rooms_key(sid), storage_config.room_ttl
+            )
+            await redis_storage_client.client.expire(
+                storage_config.socket_worker_key(sid), storage_config.session_ttl
             )
 
         runtime.logger.trace(
@@ -220,6 +224,45 @@ async def get_session_user(sid: str, namespace: str = "/") -> dict[str, Any]:
             f"Redis session storage client: session error for {sid}: {e} [Worker {worker_pid}]"
         )
         raise SocketSessionError(f"Session error: {e}") from e
+
+
+async def peek_session_user(sid: str, namespace: str = "/") -> Optional[dict[str, Any]]:
+    """
+    A socket's session as stored, without refreshing it as a read does.
+
+    For a caller looking over every socket of an account for the ones to sign
+    out: a socket its dead worker left must not have its records kept alive by
+    being looked at.
+
+    :param sid: Socket.IO session ID
+    :type sid: str
+    :param namespace: Socket.IO namespace
+    :type namespace: str
+    :return: The session, or ``None`` when there is none
+    :rtype: Optional[dict[str, Any]]
+    """
+    data = await redis_storage_client.client.get(
+        storage_config.session_key(sid, namespace)
+    )
+    return json.loads(data) if data else None
+
+
+async def has_session(sid: str, namespace: str = "/") -> bool:
+    """
+    Whether a socket has a session, without refreshing it as a read does.
+
+    :param sid: Socket.IO session ID
+    :type sid: str
+    :param namespace: Socket.IO namespace
+    :type namespace: str
+    :return: True if the session key exists
+    :rtype: bool
+    """
+    return bool(
+        await redis_storage_client.client.exists(
+            storage_config.session_key(sid, namespace)
+        )
+    )
 
 
 async def get_user_socket_sids(user_id: int) -> set[str]:
@@ -262,11 +305,20 @@ _renewal_tasks: dict[str, asyncio.Task] = {}
 
 
 async def _renew_session(sid: str) -> None:
-    """Refresh a web socket's session, index entry and room record until cancelled."""
+    """
+    Keep a web socket's records alive until cancelled.
+
+    Each tick re-writes its worker record, session or not, and refreshes its
+    session, index entry and room record.
+    """
     while True:
         await asyncio.sleep(storage_config.session_renewal_interval)
+        # Written, not refreshed: a socket signed out for longer than the
+        # record's TTL has lost it, and must not read as a ghost once it signs
+        # in. Only this worker, which holds the connection, may write it.
+        await renew_socket_claim(sid)
         try:
-            # Reading the session refreshes all three.
+            # Reading the session refreshes the other three.
             await get_session_user(sid)
         except SocketSessionError:
             # Logged inside; retried on the next tick. A session cleared under

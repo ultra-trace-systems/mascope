@@ -73,7 +73,17 @@ export async function initSocket() {
       message: 'Trying to reconnect...'
     })
   })
+  // Set while renew() replaces the connection after sign-out: that handshake
+  // is a fresh start, not a recovery from a drop, so there is nothing to
+  // re-subscribe, report or reload for.
+  let renewing = false
   socket.on('connect', () => {
+    if (renewing) {
+      renewing = false
+      socketConnected.value = true
+      console.debug('✅ [api:sio] Socket renewed')
+      return
+    }
     // Use 'connect' event to detect reconnections, since the socket.io server
     // instance may be different in which case 'reconnect' event won't fire
     console.debug('✅ [api:sio] Socket reconnected')
@@ -110,6 +120,43 @@ export async function initSocket() {
   socket.removeSubscription = function (room) {
     activeSubscriptions.delete(room)
     this.emit('unsubscribe', room)
+  }
+
+  /**
+   * Replace the connection with a new one after sign-out.
+   *
+   * The new handshake carries the cookies the browser holds now, none after
+   * a sign-out, so the tab's socket is one that has not signed in. The server
+   * signs the old socket out too; this does not rely on that. The rooms the
+   * app wants stay listed, for resubscribe() at the next sign-in.
+   *
+   * @returns {Promise<void>} Settles once connected, or once the first
+   * attempt fails: a server out of reach must not hold the sign-out up.
+   */
+  socket.renew = function () {
+    return new Promise((resolve) => {
+      const settle = () => {
+        this.off('connect', settle)
+        this.off('connect_error', settle)
+        resolve()
+      }
+      renewing = true
+      this.on('connect', settle)
+      this.on('connect_error', settle)
+      this.disconnect()
+      this.connect()
+    })
+  }
+
+  /**
+   * Ask again for every room the app wants, once the socket has signed in.
+   *
+   * A socket signed out leaves its rooms on the server, and the subscriptions
+   * the app makes are kept only where the focus changes, so a sign-in in the
+   * same tab asks for them here.
+   */
+  socket.resubscribe = function () {
+    activeSubscriptions.forEach((room) => this.emit('subscribe', room))
   }
 
   return { socket, socketConnected }

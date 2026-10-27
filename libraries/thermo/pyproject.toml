@@ -7,6 +7,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "mascope_runtime",
     "mascope_file",
+    # Validates the axis fingerprint against its schema (axis_fingerprint/).
+    "jsonschema>=4.26,<5",
     "numpy~=2.5",
     # Pinned exactly. The demo bundle's manifest records the reader that
     # produced its goldens and the reproducibility test asserts the stack runs
@@ -14,7 +16,7 @@ dependencies = [
     # It is not a hold: average_profile no longer depends on how the reader
     # renders the m/z axis (see _average_profile_in_frequency), which is what
     # made 1.4.1 unadoptable.
-    "opentfraw==2.0.0",
+    "opentfraw==3.1.0",
     "pythonnet~=3.1",
     "xarray>=2026.7.0",
 ]

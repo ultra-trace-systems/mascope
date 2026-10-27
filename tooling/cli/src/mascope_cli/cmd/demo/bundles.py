@@ -91,9 +91,27 @@ BUNDLES: dict[str, Bundle] = {
         archive_md5="787a306a6de3db39027665bc33097224",
         doi="10.5281/zenodo.23187550",
     ),
+    "1.3.2": Bundle(
+        version="1.3.2",
+        url="https://zenodo.org/records/23562417/files/mascope-demo-dataset-v1.3.2.zip",
+        archive_md5="9b34d1c0577fe7689f00dcae83aaa6d8",
+        doi="10.5281/zenodo.23562417",
+    ),
+    "1.4.0": Bundle(
+        version="1.4.0",
+        url="https://zenodo.org/records/23665290/files/mascope-demo-dataset-v1.4.zip",
+        archive_md5="b07748f8fe86db88d82585ba98197ac9",
+        doi="10.5281/zenodo.23665290",
+    ),
+    "1.4.1": Bundle(
+        version="1.4.1",
+        url="https://zenodo.org/records/23666258/files/mascope-demo-dataset-v1.4.1.zip",
+        archive_md5="aa3db5f6477164c753ba83c49b4f733f",
+        doi="10.5281/zenodo.23666258",
+    ),
 }
 
-DEFAULT_BUNDLE_VERSION = "1.3.1"
+DEFAULT_BUNDLE_VERSION = "1.4.1"
 
 
 def get_bundle(version: Optional[str] = None) -> Bundle:
@@ -240,5 +258,11 @@ def verify_manifest(version: Optional[str] = None) -> list[str]:
     expected = manifest.get("expected", {})
     if expected.get("peaks"):
         _check(expected["peaks"], expected.get("sha256"))
+    # The other goldens carry their checksum under a key of their own. The
+    # MS2 spectra are compared as the peaks are, so they are verified as the
+    # peaks are: a truncated or edited file in a cached bundle is a problem.
+    for golden in ("ions", "ms2"):
+        if expected.get(golden):
+            _check(expected[golden], expected.get(f"{golden}_sha256"))
 
     return problems

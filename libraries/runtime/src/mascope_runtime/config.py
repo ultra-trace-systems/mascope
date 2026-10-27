@@ -469,38 +469,60 @@ class BackendConfig(ModuleConfig):
     # whose file names carry no token at all. See
     # docs/dev/ingest_routing_and_splitting.md section 5.3.
     method_binding: Literal["off", "shadow", "route"] = "shadow"
+    # Chemistry detection: what each MS1 polarity's spectrum names by its
+    # reagent ions, read as a file is bound or parked. "audit" (the default)
+    # stores the detector's call on the file beside the rung and mode that
+    # bound it, and binds nothing: no file is routed, calibrated or matched
+    # any differently. "off" stores nothing. It reads the polarity's peak list
+    # once more per file, a fraction of a second.
+    #
+    # The audit is how the detector earns rung 5 of the binding ladder: its
+    # calls are compared with the bindings on the corpus and on each server
+    # before it may bind a file nothing else binds. See
+    # docs/dev/ingest_routing_and_splitting.md section 5.4.
+    chemistry_detection: Literal["off", "audit"] = "audit"
     # Composite scan streams: how a raw Orbitrap file is processed whose
     # acquisition method runs more than one experiment in a polarity, most
-    # often several scan ranges of one chemistry. False (the default) pools
-    # every MS1 scan of a polarity into one peak list, as every release so
-    # far has, so each ion is divided by the scans of all the experiments,
-    # those that never measured it included. True processes the experiments
-    # one by one and stitches their ranges into one spectrum per polarity.
+    # often several scan ranges of one chemistry. True (the default) detects
+    # the peaks of each experiment over its own scans and stitches their
+    # ranges into one spectrum per polarity: each m/z is read from the range
+    # that owns it, averaged over that range's own scans, and each range is
+    # calibrated and fitted an instrument function of its own
+    # (docs/dev/ingest_routing_and_splitting.md, section 4.5). Such a file
+    # gets one sample per polarity, which reads the stitched spectrum.
     #
-    # LEAVE IT OFF ON A PRODUCTION SERVER. What it switches on is built in
-    # steps (docs/dev/ingest_routing_and_splitting.md, section 4.5). The
-    # peaks of each experiment are detected over its own scans and marked
-    # with whether they belong to the stitched spectrum of their polarity;
-    # such a file gets one sample per polarity, which points at that
-    # spectrum's row and reads its peaks - one reading of each m/z, averaged
-    # over the scans of the experiment that measured it. Still to come: the
-    # m/z calibration and the instrument functions per experiment,
-    # assignment and the views by experiment. The flag exists so
-    # that each step ships inert and can be exercised on a development server.
+    # False pools every MS1 scan of a polarity into one peak list, so each
+    # ion is divided by the scans of all the experiments, those that never
+    # measured it included. A deployment sets it false only to keep what it
+    # acquires comparable with a pooled history: a batch that mixes pooled
+    # and stitched files of one method shows a step where they meet.
     #
     # A file with one experiment in each polarity - nearly every file - is
     # processed exactly as before whichever way this is set, and so is one
-    # whose method only runs the same experiment again in a polarity (the
-    # same scan at the same microscans and AGC target). A file already
-    # converted keeps what was decided for it then: rebuilding a store goes by
-    # that decision and never by this setting. An explicit re-processing
-    # decides again, so this applies to files converted from then on and to
-    # files re-processed from then on.
+    # whose streams in each polarity only run the same scan ranges at the
+    # same microscans: an experiment run again, or a resolution changed part
+    # way through. A file already converted keeps what was decided for it
+    # then: rebuilding a store goes by that decision and never by this
+    # setting. An explicit re-processing decides again, so this applies to
+    # files converted from then on and to files re-processed from then on.
     #
     # Read where a decision is made, when the process starts: by the file
     # converter for a file's first conversion, and by the backend for a
     # re-processing.
-    composite_scan_streams: bool = False
+    composite_scan_streams: bool = True
+    # The axis fingerprint of a raw Orbitrap file: the m/z offset its mass
+    # calibration stored in each frequency band of the Orbitrap axis, read
+    # back from the stored profile (mascope_thermo.axis_fingerprint).
+    # "ingest" (the default) computes it as each file is converted and stores
+    # it in the file's .props, adding about a second to the conversion; "off"
+    # stores {} in its place. It is a measurement for clients that correct
+    # the axis themselves: nothing in Mascope's own processing reads it, and
+    # no m/z is altered by it, so switching it off changes no result.
+    #
+    # Read by the file converter: a change takes effect when it restarts, for
+    # the files converted from then on. Switching it back on does not compute
+    # it for the files converted while it was off.
+    axis_fingerprint: Literal["ingest", "off"] = "ingest"
     # Allowlist of per-record reference licences the peak-assignment database
     # stage (Stage A) may match against. The reference mirror carries a
     # licence per record from ingest through to results, and some sources

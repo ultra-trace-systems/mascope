@@ -56,6 +56,7 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
     upload_sample_files,
 )
 from mascope_backend.api.lib.api_features import api_route
+from mascope_backend.api.lib.centroid_flags import centroid_exclusion
 from mascope_backend.api.lib.rate_limit import enforce_user_rate_limit
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     BindSampleFilesBody,
@@ -74,6 +75,9 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
 from mascope_backend.api.new.auth.access_token.service import get_access_token
 from mascope_backend.api.new.auth.dependencies import current_active_user
 from mascope_backend.api.new.auth.devices.service import record_reported_instrument
+from mascope_backend.api.new.axis_fingerprint.routes import (
+    sample_file_axis_fingerprint_router,
+)
 from mascope_backend.api.new.workspaces.dependencies import (
     accessible_acquisition_instruments,
     check_instrument_workspace_access,
@@ -91,6 +95,7 @@ from mascope_file.name import (
 
 
 sample_files_router = APIRouter(prefix="/api/sample/files", tags=["Sample Files"])
+sample_files_router.include_router(sample_file_axis_fingerprint_router)
 
 
 @sample_files_router.get("")
@@ -387,6 +392,7 @@ async def get_sample_file_metadata_route(
             "response is the scans' statistics and trailers alone."
         ),
     ),
+    exclude: tuple[str, ...] = Depends(centroid_exclusion),
     user=Depends(current_active_user),
 ):
     """
@@ -397,13 +403,22 @@ async def get_sample_file_metadata_route(
     centroid of every scan. `GET /api/sample/files/{sample_file_id}/scans`
     serves the scans alone, of every MS order, and can narrow them.
 
+    Each scan's entry in `centroids_meta.data` holds `scan` (the scan
+    number) and, per centroid, `mzs`, `intensities`, `resolutions`, `noises`
+    and `flags`: the sum of the instrument's marks on the centroid, 2
+    fragmented (a lobe of a split weak peak), 4 merged, 8 exception (a weak
+    side-lobe peak), 16 reference (the lock-mass peak the scan was corrected
+    with), 0 for an unflagged one. Every stored centroid is served unless
+    `exclude` names its flag.
+
     :param sample_file_id: ID of the sample file.
     :param include_centroids: Whether to include every scan's centroids.
+    :param exclude: The flags whose centroids are left out.
     :param user: Authenticated user.
     :return: Metadata for the sample file.
     """
     await check_sample_file_instrument_access(sample_file_id, user, "guest")
-    return await get_sample_file_metadata(sample_file_id, include_centroids)
+    return await get_sample_file_metadata(sample_file_id, include_centroids, exclude)
 
 
 @sample_files_router.get("/{sample_file_id}/scans")

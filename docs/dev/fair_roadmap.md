@@ -2,14 +2,21 @@
 
 # FAIR: Review & Roadmap
 
+- **Status:** building
+- **As of:** 2026-10-23
+- **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear, MAS-19 to MAS-36)
+- **Supersedes:** section 7 of `ionization_method_config.md` (retired 2026-10-22)
+- **What:** Mascope against the FAIR principles, and the phased plan: provenance, ids, metadata, deposit.
+
 ## Purpose
 
 This document reviews Mascope against the [FAIR principles](https://www.go-fair.org/fair-principles/)
 (Findable, Accessible, Interoperable, Reusable) and proposes a phased plan.
 
-It supersedes and expands section 7 of
-[ionization_method_config.md](ionization_method_config.md), which introduced the
-topic as a side-effect of the ionization redesign. That framing was right about
+It supersedes and expands section 7 of the ionization redesign note
+(`ionization_method_config.md`, retired 2026-10-22; its target model now lives in
+[ingest_routing_and_splitting.md](ingest_routing_and_splitting.md) phase 8), which
+introduced the topic as a side-effect of the ionization redesign. That framing was right about
 the important thing - **FAIR is mostly not a separate workstream, it is
 acceptance criteria on work already planned** - but it was written from one
 subsystem's vantage point, has since gone stale in several places, and dismissed
@@ -266,10 +273,39 @@ the reasoning.
     polarity, carried on `Instrument` (from the ionization plan's Phase 1) and
     emitted in exports. The 91 accessions embedded in `opentfraw` cover the
     Thermo side; Tofwerk needs a small hand-authored mapping.
+    *Built without the entity (MAS-29):* the `Instrument` table had not
+    landed, so the terms are a code module, `mascope_backend.vocabulary`, and
+    the batch spreadsheet's Samples sheet carries them per sample; the
+    `Instrument` row is to take its term from the same module. Two findings
+    changed the plan as written. The model is not recorded in the database,
+    only in the raw file, so the export reads it from there. And
+    `opentfraw`'s table is not all PSI-MS: it gives the Orbitrap Exploris 120
+    `MS:1003199`, which the ontology names "change log" (the right term is
+    `MS:1003095`), and several of its other accessions are not instrument
+    models either. The module follows the ontology (release 4.2.6), and item
+    11 has to take the instrument's terms from it rather than from
+    `to_mzml`. The ontology has no Tofwerk models, so a TOF sample has a
+    source, analyser and detector term but no model term.
 11. **mzML export route** for raw and time-windowed sample data, over
     `to_mzml`. Requires an A/B against the current reader path before it is
-    trusted - the same numeric check `ionization_method_config.md` §9 already
-    asks for.
+    trusted - the same numeric check the retired `ionization_method_config.md`
+    section 9 asked for.
+    *Built (MAS-30):* `POST /api/file/mzml`, over
+    `mascope_thermo.mzml.write_mzml`. The A/B changed what the export is:
+    `to_mzml` writes each scan's centroids, equal array for array to the
+    reader's under either backend, and labels them "profile spectrum". The
+    export relabels them "centroid spectrum"; the profile is not exported
+    ([#2594](https://github.com/ultra-trace-systems/mascope/issues/2594)). A
+    sample's file is its window's scans of its polarity, as the reader
+    selects them. Thermo raw only
+    ([#2596](https://github.com/ultra-trace-systems/mascope/issues/2596)), and
+    no web app or SDK action yet
+    ([#2595](https://github.com/ultra-trace-systems/mascope/issues/2595)).
+    The instrument is item 10's terms, not `to_mzml`'s (MAS-352): the export
+    replaces the writer's `instrumentConfigurationList` with the
+    vocabulary's model term and a `componentList` of source, analyser and
+    detector, and writes the ontology's Thermo parent term for a model the
+    vocabulary does not know.
 12. **Schymanski/MSI levels** alongside the private tier vocabulary. Already
     planned as [assignment_confidence.md](assignment_confidence.md) P4; this
     document only adds that it is also R1.3, and that the level belongs in the
@@ -286,6 +322,21 @@ the reasoning.
     ionization setup used, and a human-readable README. **Model it on the demo
     bundle's `manifest.json`** - same fields, same checksum discipline,
     generalised from one hand-built bundle to any dataset on demand.
+    *Built (MAS-33):* `mascope export package <dataset id>` runs
+    `mascope_backend.deposit`, the one builder the UI path (item 16) is to
+    call too. The archive is one directory: a README and a `DATA_LICENSE`
+    rendered from the manifest, the raw files with each acquisition record
+    beside its file as the sidecar it was, less its `machine` block (the
+    instrument computer's host name and GUID, MAS-482), the batch
+    spreadsheets as the app exports them, the target collections matched and
+    calibrated against with their compounds' identity, the instrument
+    functions, `manifest.json` (schema `mascope-package/1`) and
+    `SHA256SUMS`. The user guide's *Export files* lists it. Two departures.
+    There is no standard-format payload yet: item 11's route had not landed,
+    and #2602 adds each file's mzML when it does. And "the ionization setup
+    used" is the ionization modes and instrument functions as recorded, the
+    modes inside the manifest, since the redesign's versioned
+    `IonizationSetup` is not built.
 15. **RO-Crate as the manifest format.** JSON-LD, schema.org-based, and the
     de-facto standard for exactly this. Gets I1/I2 in the manifest layer as a
     side-effect of a format choice rather than a vocabulary project.
@@ -312,7 +363,7 @@ attached to them, not scheduled against them.
 
 | Workstream | Relationship |
 |---|---|
-| **Ionization/method redesign** ([ionization_method_config.md](ionization_method_config.md)) | **Hard prerequisite** for most of I and R. Its `Instrument` table (Phase 1) closes A2's root cause, and its versioned `IonizationSetup` is what a provenance block points at. Phase 2 item 10 hangs directly off it |
+| **Ionization/method redesign** (`ionization_method_config.md`, retired 2026-10-22; its target model is in [ingest_routing_and_splitting.md](ingest_routing_and_splitting.md) phase 8) | **Hard prerequisite** for most of I and R. Its `Instrument` table closes A2's root cause, and its versioned `IonizationSetup` is what a provenance block points at; neither is built, and MAS-300 files them (blocked by the Decisions MAS-350 and MAS-351). Phase 2 item 10 hangs directly off it |
 | **Peak-centric assignment epic** | **Already the model to copy.** `engine_version` + `config` + per-row `provenance` is the pattern; the classic matching path is what lacks it. Do not invent a second provenance design |
 | **Identification confidence** ([assignment_confidence.md](assignment_confidence.md)) | **Owns Phase 2 item 12.** Schymanski levels are already P4 there. FAIR adds a reason, not a task |
 | **Public database integration** ([public_database_integration.md](public_database_integration.md)) | **Already delivered the I3 half that is done.** Phase 1 item 9 is a small extension of its annotation path |
@@ -342,7 +393,7 @@ These are product calls that change the schema or the shape of the work.
 
 1. **Ambition.** Does this stop at internal reproducibility (Phases 0-1), or
    go through to deposit-ready packages (Phase 3)? This is
-   `ionization_method_config.md` §10.5 restated, and it is still open.
+   decision 10.5 of the retired `ionization_method_config.md` restated, and it is still open.
    **Recommendation: commit to Phase 3**, because the paper is out and users
    will be asked by reviewers to deposit data. Phases 0-1 are worth doing
    under either answer, so the decision can be deferred without blocking.

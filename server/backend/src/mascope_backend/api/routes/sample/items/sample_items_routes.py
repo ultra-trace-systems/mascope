@@ -29,6 +29,7 @@ from mascope_backend.api.new.auth.dependencies import (
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access,
     check_sample_access_bulk,
+    check_sample_file_instrument_access,
     require_sample_role,
 )
 from mascope_backend.db import SampleBatch, SampleItem
@@ -105,6 +106,21 @@ async def update_sample_item_route(
     """
     # Check if locked sample item - only owners can update
     await locked_access(user, SampleItem, sample_item_id, min_role="owner")
+
+    # The body always carries the item's batch and file. The checks above are
+    # on the item where it is now; a new batch or file gets the checks the
+    # routes that move an item or read a file make, or an editor here could
+    # put the item into any batch or onto any file by naming it.
+    current = (await get_sample_item(sample_item_id))["data"]
+    if body.sample_item.sample_batch_id != current["sample_batch_id"]:
+        await check_batch_access(body.sample_item.sample_batch_id, user, "editor")
+        # As /move: a locked item stays put, and a locked batch takes none
+        await locked_access(user, SampleItem, sample_item_id)
+        await locked_access(user, SampleBatch, body.sample_item.sample_batch_id)
+    if body.sample_item.sample_file_id != current["sample_file_id"]:
+        await check_sample_file_instrument_access(
+            body.sample_item.sample_file_id, user, "guest"
+        )
 
     return await update_sample_item(
         sample_item_id=sample_item_id,

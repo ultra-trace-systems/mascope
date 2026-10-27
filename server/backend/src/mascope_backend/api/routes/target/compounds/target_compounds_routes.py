@@ -2,6 +2,9 @@ from typing import List
 
 from fastapi import APIRouter, Depends
 
+from mascope_backend.api.controllers.target.compounds.target_compound_structures import (
+    find_target_compound_structures,
+)
 from mascope_backend.api.controllers.target.compounds.target_compounds_controller import (
     create_target_compound,
     delete_target_compound,
@@ -11,11 +14,17 @@ from mascope_backend.api.controllers.target.compounds.target_compounds_controlle
 )
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
+    FindTargetCompoundStructuresQueryParams,
     GetTargetCompoundsQueryParams,
     TargetCompoundBase,
     TargetCompoundUpdate,
 )
 from mascope_backend.api.new.auth.dependencies import editor_user, guest_user
+from mascope_backend.api.new.workspaces.dependencies import (
+    accessible_workspace_ids_for_user,
+    check_batch_access,
+    check_target_collection_access,
+)
 
 
 # TODO_target_compound_management refactor to send the same result as as other routes
@@ -33,11 +42,53 @@ async def get_target_compounds_route(
 ):
     """Retrieve a list of target compounds with optional filters and pagination.
 
+    A named ``sample_batch_id`` or ``target_collection_id`` needs the guest
+    role on its workspace, as the collection and association routes do; a
+    global collection is readable by anyone signed in. Without either filter
+    the list is the shared compound and ion library. ``show_target_collection``
+    lists only the collections the caller can read: the global ones and those
+    of the workspaces they are a member of (superusers see all).
+
     :param query_params: Query parameters for filtering, sorting, and pagination.
     :param user: The authenticated user, defaults to Depends(guest_user).
     :return: Dictionary with total results and data list of target compounds.
     """
-    return await get_target_compounds(**query_params.model_dump())
+    if query_params.sample_batch_id:
+        await check_batch_access(query_params.sample_batch_id, user, "guest")
+    if query_params.target_collection_id:
+        await check_target_collection_access(
+            query_params.target_collection_id, user, "guest"
+        )
+    ws_ids = (
+        None if user.is_superuser else await accessible_workspace_ids_for_user(user)
+    )
+    return await get_target_compounds(
+        **query_params.model_dump(), accessible_workspace_ids=ws_ids
+    )
+
+
+# Before /{target_compound_id}, which would otherwise take "structures" for an ID.
+@target_compounds_router.get("/structures")
+@api_route(token_access=True)
+async def find_target_compound_structures_route(
+    query_params: FindTargetCompoundStructuresQueryParams = Depends(),
+    user=Depends(guest_user),
+):
+    """List the reference compounds that could give a compound its structure.
+
+    The active reference rows whose Hill formula is the one asked about and
+    that carry an InChIKey, an InChI or a SMILES, one per compound per
+    source, each with its source and licence. The rows recording the CAS
+    number asked about come first, then those of the name, then a stable
+    order. Paged; nothing is written.
+
+    :param query_params: The formula, the CAS number and name to rank on, and
+        the page.
+    :param user: The authenticated user, defaults to Depends(guest_user).
+    :return: ``results`` (the rows on every page), ``formula`` (canonical) and
+        ``data``, the page's rows.
+    """
+    return await find_target_compound_structures(**query_params.model_dump())
 
 
 @target_compounds_router.get("/{target_compound_id}")

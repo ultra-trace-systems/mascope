@@ -233,6 +233,60 @@ async def test_stage_a_is_told_where_the_reagent_lines_put_the_axis():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("read", [True, False], ids=["read", "none"])
+async def test_the_fold_claims_the_source_s_lines_at_the_files_resolution(read):
+    """The pre-pass reads an isotope line as one peak of the file here as a run
+    does, or the two ledgers disagree about which peaks are the source's."""
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+    from mascope_tools.composition.heuristic_filter import predict_resolved_isotopes
+    from mascope_tools.composition.reagents import reagent_library
+
+    def tof(mz):
+        return 5000.0
+
+    ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+    # The urea dimer's peak one mass unit up on a TOF, 19 ppm under its 13C line.
+    mzs, _, labels = predict_resolved_isotopes("C2H9N4O2", 1, 1e-3, tof)
+    stack, mocks = _patched()
+    stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    mocks["peaks"].return_value = pd.DataFrame(
+        {
+            "sample_peak_id": ["p1", "r1", "r2", "r2-m1"],
+            "mz": [
+                181.0707,
+                ladder["[CH4N2O+H]+"],
+                ladder["[(CH4N2O)2+H]+"],
+                float(mzs[labels.index("13C")]),
+            ],
+            "intensity": [5000.0, 2.0e6, 3.0e6, 1.1e5],
+        }
+    )
+    mocks["mechanisms"].return_value = (
+        ["m-h", "m-urea"],
+        [
+            SimpleNamespace(
+                ionization_mechanism_id=mechanism_id,
+                ionization_mechanism=notation,
+                ionization_mechanism_polarity="+",
+            )
+            for mechanism_id, notation in (
+                ("m-h", "[M+H]+"),
+                ("m-urea", "[M+CH4N2O+H]+"),
+            )
+        ],
+    )
+    mocks["resolution"].return_value = tof if read else None
+    with stack:
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    mocks["resolution"].assert_awaited_once()
+    folded = {row.sample_peak_id: row for row in mocks["fold"].call_args.kwargs["rows"]}
+    assert (folded["r2-m1"].role == "reagent") is read
+
+
+@pytest.mark.asyncio
 async def test_the_fold_gates_its_stage_a_rows_as_a_run_does():
     """A Stage A row off calibration is capped on this ledger too.
 
@@ -272,6 +326,73 @@ async def test_the_fold_gates_its_stage_a_rows_as_a_run_does():
     assert folded["peak-library"].tier == "below_assignability"
     assert folded["peak-seed"].tier == "below_assignability"
     assert folded["peak-seed"].assigned_formula == "C6H12O6"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ladder_shown", [True, False], ids=["ladder", "no ladder"])
+async def test_the_fold_anchors_its_gate_on_the_source_s_lines_as_a_run_does(
+    ladder_shown,
+):
+    """Five library lines are too few to fit a calibration; with the source's
+    three ladder ions they are enough, here as in a run, and the row off
+    calibration is capped on this ledger as the run that replaces it caps it.
+    """
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+    from mascope_tools.composition.reagents import reagent_library
+
+    run_id = fold_run_id("si-1")
+
+    def stage_a_row(row_id, ppm):
+        return _stage_a_row("si-1", run_id) | {
+            "peak_assignment_id": row_id,
+            "sample_peak_id": f"peak-{row_id}",
+            "mz_error_ppm": ppm,
+            "target_compound_id": f"compound-{row_id}",
+        }
+
+    rows = [stage_a_row(f"anchor-{i}", 0.1 if i % 2 else -0.1) for i in range(5)]
+    rows.append(stage_a_row("off", 5.0))
+    ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+    labels = ("[CH4N2O+H]+", "[(CH4N2O)2+H]+", "[(CH4N2O)3+H]+")
+    stack, mocks = _patched()
+    stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    mocks["peaks"].return_value = pd.DataFrame(
+        {
+            "sample_peak_id": ["peak-off", "r1", "r2", "r3"],
+            "mz": [181.0707]
+            + [ladder[label] * (1.0 if ladder_shown else 1.001) for label in labels],
+            "intensity": [5000.0, 2.0e6, 3.0e6, 1.0e5],
+        }
+    )
+    mocks["mechanisms"].return_value = (
+        ["m-h", "m-urea"],
+        [
+            SimpleNamespace(
+                ionization_mechanism_id=mechanism_id,
+                ionization_mechanism=notation,
+                ionization_mechanism_polarity="+",
+            )
+            for mechanism_id, notation in (
+                ("m-h", "[M+H]+"),
+                ("m-urea", "[M+CH4N2O+H]+"),
+            )
+        ],
+    )
+    mocks["stage_a"].return_value = (rows, None, SampleMassAccuracy())
+    with stack:
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    folded = {row.sample_peak_id: row for row in mocks["fold"].call_args.kwargs["rows"]}
+    if ladder_shown:
+        assert {folded[peak].role for peak in ("r1", "r2", "r3")} == {"reagent"}
+        assert folded["peak-off"].tier == "below_assignability"
+    else:
+        # A thousand ppm off its masses, the ladder is not claimed, and five
+        # lines alone measure nothing to cap a row on.
+        assert {folded[peak].role for peak in ("r1", "r2", "r3")} == {"unassigned"}
+        assert folded["peak-off"].tier == "assigned"
 
 
 @pytest.mark.asyncio

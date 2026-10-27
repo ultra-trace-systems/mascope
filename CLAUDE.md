@@ -122,6 +122,19 @@ findings live here as GitHub issues. The split:
 - **A plan starts as a design note in `docs/dev`** and a Linear project that
   links it. The note stays the record; Linear tracks the work and its
   progress.
+- **A note's header says where it stands** (`docs/dev/README.md` has the
+  fields). It starts `design`, tracked in its Linear project; it is
+  `building` once that project has issues, and `built` when the last step is
+  Done and what a user or operator meets of it is described in `docs/user` or
+  `docs/maintaining.md`. `retired` means deleted, with a pointer in the note
+  that superseded it. When a header changes, run
+  `uv run python tooling/notes.py index`, which writes the README's table;
+  `uv run python tooling/notes.py check` fails a note without the header, a
+  `design` or `building` note tracked in `closed` or `none`, and a table that
+  disagrees with the headers.
+- **A gate is a `blockedBy`, never a sentence.** A prerequisite written only
+  in a brief or a note is one nobody sees close. An issue gets `agent-ready`
+  only when every prerequisite it names is a filed issue it is blocked by.
 - **Branch names and PR bodies link the two.** A branch named from the Linear
   issue (`mas-NN-...`) or `Fixes MAS-NN` in the PR body moves the Linear issue
   by itself. GitHub Issues Sync and the bulk importer stay off.
@@ -136,9 +149,13 @@ Feature) carries the kind. Milestones are not used.
 - Conventional Commits (`type(scope): description`); ASCII-only commit messages,
   no Co-Authored-By trailers.
 - **Rebase PR branches, never merge into them** - a PR should stay a linear
-  series of commits on top of `develop`. When a branch conflicts or falls
-  behind, `git fetch origin develop && git rebase origin/develop`, resolve the
-  conflicts, and force-push with `--force-with-lease`. Do not merge `develop`
+  series of commits on top of `develop`. When a branch conflicts,
+  `git fetch origin develop && git rebase origin/develop`, resolve the
+  conflicts, and force-push with `--force-with-lease`. A branch that is merely
+  behind needs no rebase: `develop` merges through a merge queue, which tests
+  each PR on the current `develop` plus the PRs queued ahead of it and
+  rebases it on when they pass, so "Merge when ready" (or `gh pr merge <n>`)
+  adds the PR to the queue rather than merging it. Do not merge `develop`
   into a PR branch - no "Merge branch 'develop' into ..." commits. If one was
   already made, `git reset --hard <pre-merge-commit>` and rebase instead;
   comparing `git rev-parse HEAD^{tree}` against the merge's tree confirms the

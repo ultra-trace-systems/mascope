@@ -1,0 +1,58 @@
+Name: Atrazine
+Synon: $:00in-source
+DB#: TEST000101
+InChIKey: MXWJVTOOROXGIU-UHFFFAOYSA-N
+Precursor_type: [M+H]+
+Spectrum_type: MS2
+PrecursorMZ: 216.1010
+Instrument_type: LC-ESI-QFT
+Instrument: Test Orbitrap
+Ion_mode: P
+Collision_energy: 35 %
+Formula: C8H14ClN5
+MW: 215
+ExactMass: 215.0938
+Comments: "SMILES=CCNC1=NC(Cl)=NC(NC(C)C)=N1" "InChI=InChI=1S/C8H14ClN5/c1-4-10-7-12-6(9)13-8(14-7)11-5(2)3/h5H,4H2,1-3H3,(H2,10,11,12,13,14)" "accession=TEST000101" "license=CC BY" "SPLASH=splash10-test"
+Num Peaks: 3
+174.0541 100.000000
+104.0010 12.500000; 132.0323 30.250000
+
+Name: Perfluorooctanoic acid
+DB#: TEST000102
+InChIKey: SNGREZUHAYWORS-UHFFFAOYSA-N
+Precursor_type: [M-H]-
+Spectrum_type: MS2
+PrecursorMZ: 412.9664
+Instrument_type: LC-ESI-QTOF
+Ion_mode: N
+Collision_energy: Ramp 5-45 V
+Formula: C8HF15O2
+Comments: "computed SMILES=OC(=O)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)C(F)(F)F" "submitter=Mascope test fixture"
+Num Peaks: 2
+368.9765 100.0 "[M-H-CO2]-"
+168.9888 22.5
+
+Name: 23-THAHLIA
+DB#: TEST000103
+InChIKey: FQTMKYFVGFKIBX-JWMXSWRLSA-N
+Precursor_type: [M-H]-
+Spectrum_type: MS2
+PrecursorMZ: 721.613485
+Instrument_type: in-silico QTOF
+Ion_mode: N
+Collision_energy: 40 CID
+Formula: C48H82O4
+Comments: "license=CC BY"
+Num Peaks: 1
+355.26371 100.000000
+
+Name: Methyl vanillate
+DB#: TEST000104
+InChIKey: BVWTXUYLKBHMOX-UHFFFAOYSA-N
+Instrument_type: EI-B
+Ion_mode: P
+Formula: C9H10O4
+Comments: "chromatography type=GC"
+Num Peaks: 2
+151.0 99.99
+182.0 80.71

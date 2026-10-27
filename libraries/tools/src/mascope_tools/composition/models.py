@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 
 from mascope_tools.composition import config
@@ -66,12 +67,19 @@ class PatternScoring:
         floor, the same floor Stage A generates its isotopes at. How deep it
         actually goes is decided per peak by what that peak's noise allows
         (:func:`heuristic_filter.envelope_floor_for_peak`); this only bounds it.
+    :param resolution: The file's resolving power as a function of m/z. Where
+        it is known, the predicted lines one peak of that width cannot separate
+        are merged into one line before matching and scoring
+        (:func:`heuristic_filter.merge_unresolved_lines`): on a TOF the peak at
+        the 13C position also holds the 15N, 2H and 17O lines. ``None`` keeps
+        every line apart, as a caller that knows nothing of the file did.
     """
 
     sigma_ppm: float | None = None
     mu_ppm: float = 0.0
     mz_tolerance_ppm: float = config.ISOTOPE_MATCHING_MZ_TOLERANCE_PPM
     abundance_floor: float = config.ISOTOPE_ABUNDANCE_THRESHOLD
+    resolution: Callable[[float], float] | None = None
 
 
 @dataclass(frozen=True)

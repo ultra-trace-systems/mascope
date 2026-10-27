@@ -10,7 +10,7 @@ import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 
-import { BaseTabbedPanel, BaseCopyableField } from '@/lib/base'
+import { BaseTabbedPanel, BaseCopyableField, BaseEmptyState } from '@/lib/base'
 import { useApp } from '@/stores'
 
 import { useDatasetContextMenu, useDatasetTableConfig } from './stores'
@@ -137,6 +137,32 @@ const hasDatasets = computed(() => (app.data.dataset.list?.length ?? 0) > 0)
       :scrollHeight="`${tableHeight}px`"
       :virtualScrollerOptions="{ itemSize: 35.74 }"
     >
+      <!-- The table also renders this when the search hides every row, and
+           while the list loads; in neither case is a workspace with datasets
+           told it has none. -->
+      <template #empty>
+        <BaseEmptyState
+          v-if="hasDatasets"
+          icon="pi pi-search"
+          title="No datasets match the search"
+        />
+        <BaseEmptyState
+          v-else-if="!app.data.dataset.pending"
+          icon="pi ph ph-folders"
+          title="No datasets yet"
+          hint="A dataset groups the batches of one study or campaign."
+          note="Or right-click here to paste a copied batch or samples, or a cut dataset."
+        >
+          <template #actions>
+            <Button
+              label="Create the first dataset"
+              icon="pi pi-plus"
+              size="small"
+              @click="contextMenu.dialog.op = 'create'"
+            />
+          </template>
+        </BaseEmptyState>
+      </template>
       <Column header="Dataset" field="dataset_name" sortable>
         <template #body="{ data }">
           <div class="row" style="justify-content: flex-start">

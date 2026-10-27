@@ -75,6 +75,12 @@ def file_converter_socket_auth(minimum_role: str):
     """
     Decorator for file-converter events that validates access token and permissions.
 
+    A rejected event (no token, an invalid or expired one, a role below
+    ``minimum_role``) is dropped, and the wrapper returns
+    ``{"error": <error code>}``, which python-socketio sends as the event's
+    acknowledgement to a client that asked for one. An accepted event returns
+    whatever the handler returns.
+
     :param minimum_role: Minimum role required
     :type minimum_role: str
     """
@@ -108,13 +114,20 @@ def file_converter_socket_auth(minimum_role: str):
                 )
 
                 return await handler(sid, data, *args, **kwargs)
-            except InvalidTokenException as e:
-                # Expected 401-class rejection; the raise carries it upstream
+            except (InvalidTokenException, SocketAuthError) as e:
+                # Expected rejection (no token, a bad or expired one, too low
+                # a role): log it and drop the event, as socket_auth does.
+                # Re-raising reached nobody: python-socketio runs each handler
+                # as a task nothing awaits, so asyncio reported the exception
+                # as "Task exception was never retrieved" at ERROR. A missing
+                # role configuration is still logged at ERROR above.
                 runtime.logger.info(f"File converter auth error: {str(e)}")
-                raise SocketUnauthenticatedError(str(e)) from e
-            except SocketAuthError as e:
-                runtime.logger.info(f"File converter auth error: {str(e)}")
-                raise
+                # Tell a client that asked for an acknowledgement why, so it
+                # can tell a dropped event from an accepted one. A token
+                # rejected by validation is an unauthenticated event.
+                if isinstance(e, SocketAuthError):
+                    return {"error": e.error_code}
+                return {"error": SocketUnauthenticatedError().error_code}
             except Exception:
                 # Not an auth rejection: this broad catch also swallows
                 # exceptions from the handler itself, so record the traceback

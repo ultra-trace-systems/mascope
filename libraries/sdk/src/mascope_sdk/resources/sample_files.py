@@ -2,6 +2,7 @@
 
 import os
 from collections.abc import Iterable
+from datetime import datetime
 from email.message import Message
 from pathlib import Path
 from typing import Any
@@ -11,11 +12,28 @@ from loguru import logger
 from requests.exceptions import RequestException
 
 from ..exceptions import MascopeConnectionError
-from ._base import BaseResource
+from ._base import BaseResource, _coerce_datetime_columns, _coerce_utc_columns
 
 
 #: How much of a downloaded file is held in memory at once.
 _DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+
+#: Files requested per page of :meth:`SampleFilesResource.list` when no
+#: ``limit`` is given.
+LIST_PAGE_LIMIT = 1000
+
+#: The columns an empty listing still has, so a caller can select them.
+_LIST_COLUMNS = [
+    "sample_file_id",
+    "filename",
+    "instrument",
+    "instrument_type",
+    "datetime",
+    "datetime_utc",
+    "acquisition_timezone",
+    "length",
+    "polarity",
+]
 
 #: The characters a path given as text may end in to name a directory.
 _SEPARATORS = tuple(sep for sep in (os.sep, os.altsep) if sep)
@@ -53,6 +71,11 @@ class SampleFilesResource(BaseResource):
         from mascope_sdk import MascopeClient
 
         mascope = MascopeClient(workspace="My Workspace")
+
+        # Every file acquired in September, in a batch or not
+        files = mascope.sample_files.list(
+            datetime_min="2026-09-01", datetime_max="2026-10-01"
+        )
 
         file_id = mascope.samples.get("sample-456")["sample_file_id"]
         scans = mascope.sample_files.get_scans(
@@ -172,6 +195,53 @@ class SampleFilesResource(BaseResource):
             )
         return df
 
+    def get_axis_fingerprint(self, sample_file_id: str) -> dict:
+        """Get the axis fingerprint of a raw Orbitrap file.
+
+        On some Orbitrap models the data system divides the frequency axis
+        into frequency bands, and each mass calibration stores one m/z offset
+        per band on top of a smooth trend. The fingerprint reads those offsets
+        back from the file's stored profile, per acquisition mode: the table of
+        bands, the grid of their edges, and the lock mass each scan was
+        corrected with. It describes the raw file's own m/z axis; Mascope
+        computes it when the file is converted and never alters an m/z with
+        it.
+        :meth:`~mascope_sdk.resources.samples.SamplesResource.get_axis_fingerprint`
+        adds what one sample reads of it.
+
+        The document follows the JSON schema ``mascope.axis_fingerprint``,
+        version 1, with ``sample_file_id`` added. Read its ``status`` first:
+        ``ok`` (at least one mode has a table of bands; a mode without one
+        has ``segments`` None), ``no_fingerprint`` (read, but no mode gave
+        one), and three that carry nothing else:
+        ``missing`` (not computed for this file), ``unavailable`` (the
+        server's reader cannot read the stored profile) and ``error`` (the
+        computation failed; ``error`` says how).
+
+        :param sample_file_id: The ID of the sample file.
+        :type sample_file_id: str
+        :return: The fingerprint document.
+        :rtype: dict
+        :raises NotFoundError: If the file is not an Orbitrap file, does not
+            exist (for an administrator), or the server predates the route.
+        :raises AuthenticationError: If authentication fails, or the token's
+            user may not read the file.
+        :raises MascopeAPIError: If the API request fails.
+
+        Example::
+
+            file_id = mascope.samples.get(sample_id)["sample_file_id"]
+            fingerprint = mascope.sample_files.get_axis_fingerprint(file_id)
+            if fingerprint["status"] == "ok":
+                # Some mode has a table of bands, not every one
+                mode = next(mode for mode in fingerprint["modes"] if mode["segments"])
+                bands = pd.DataFrame(
+                    mode["segments"]["rows"], columns=mode["segments"]["columns"]
+                )
+        """
+        logger.debug("Fetching the axis fingerprint of sample file {}", sample_file_id)
+        return self._get(f"sample/files/{sample_file_id}/axis_fingerprint")
+
     def download_raw(self, sample_file_id: str, path: str | os.PathLike) -> Path:
         """Download the source data file of a sample file to disk.
 
@@ -254,3 +324,91 @@ class SampleFilesResource(BaseResource):
                 raise
         os.replace(partial, target)
         return target
+
+    def list(
+        self,
+        *,
+        datetime_min: "str | datetime | pd.Timestamp | None" = None,
+        datetime_max: "str | datetime | pd.Timestamp | None" = None,
+        instrument: str | None = None,
+        page: int | None = None,
+        limit: int | None = None,
+    ) -> pd.DataFrame:
+        """List the sample files acquired in a time range, whether or not a
+        batch holds a sample of them, oldest first.
+
+        Listed are the files of the instruments whose acquisition workspace
+        the token's user belongs to, and the files of samples in any
+        workspace they belong to. The listing is paged on the server; this
+        pages through all of it unless ``page`` is given.
+
+        :param datetime_min: Only files acquired at this time or later. A
+            time without a timezone is taken as UTC.
+        :type datetime_min: str | datetime | pd.Timestamp, optional
+        :param datetime_max: Only files acquired at this time or earlier. A
+            time without a timezone is taken as UTC.
+        :type datetime_max: str | datetime | pd.Timestamp, optional
+        :param instrument: Only the files of this instrument, by its exact
+            name.
+        :type instrument: str, optional
+        :param page: Only this page of the listing, counted from 0.
+        :type page: int, optional
+        :param limit: Files per page, at least 1. Defaults to 1000.
+        :type limit: int, optional
+        :return: A DataFrame with one row per file: ``sample_file_id``,
+                 ``filename``, ``instrument``, ``instrument_type``,
+                 ``datetime_utc`` (the acquisition's start, tz-aware UTC),
+                 ``datetime`` (the same in the instrument's local time,
+                 naive), ``acquisition_timezone`` (the zone that local time
+                 is in, where known), ``length`` [s], ``polarity`` and the
+                 file's other fields; empty when no file is in the range,
+                 with the columns named here alone.
+                 Stamped with the server's ``attrs["provenance"]`` as the
+                 loaders' frames are.
+        :rtype: pd.DataFrame
+        :raises ValueError: If ``limit`` is below 1.
+        :raises AuthenticationError: If authentication fails.
+        :raises MascopeAPIError: If the API request fails.
+        """
+        if limit is not None and limit < 1:
+            raise ValueError(f"limit must be at least 1, not {limit}")
+        page_size = limit or LIST_PAGE_LIMIT
+        params: dict[str, Any] = {"limit": page_size}
+        for name, value in (
+            ("datetime_min", datetime_min),
+            ("datetime_max", datetime_max),
+        ):
+            if value is not None:
+                moment = pd.Timestamp(value)
+                if moment.tzinfo is None:
+                    moment = moment.tz_localize("UTC")
+                params[name] = moment.isoformat()
+        if instrument is not None:
+            params["instrument"] = instrument
+
+        rows: list[dict[str, Any]] = []
+        number = page or 0
+        while True:
+            envelope = self._get_envelope("sample/files", {**params, "page": number})
+            batch = envelope.get("data") or []
+            rows.extend(batch)
+            total = int(envelope.get("results") or 0)
+            if (
+                page is not None
+                or not batch
+                or number * page_size + len(batch) >= total
+            ):
+                break
+            number += 1
+
+        if not rows:
+            frame = pd.DataFrame(columns=_LIST_COLUMNS).astype(
+                {"datetime": "datetime64[ns]", "datetime_utc": "datetime64[ns, UTC]"}
+            )
+        else:
+            frame = pd.DataFrame(rows).drop_duplicates(
+                "sample_file_id", ignore_index=True
+            )
+            frame = _coerce_utc_columns(_coerce_datetime_columns(frame))
+        logger.info("Listed {} sample file(s)", len(frame))
+        return self._client._with_provenance(frame)

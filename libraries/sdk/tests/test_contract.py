@@ -145,8 +145,9 @@ def ms2_sample_id(mascope):
     ``MASCOPE_SDK_TEST_MS2_SAMPLE`` names one directly. Otherwise the MS2
     summary of the first sample in each batch is probed - one request per
     batch, not per sample, since an MS2 acquisition in the demo bundle goes in
-    a batch of its own (docs/demo_dataset.md). The bundle is MS1-only today,
-    so absence is an environment gap rather than a contract violation.
+    a batch of its own (docs/demo_dataset.md). A bundle without one (every
+    one before 1.4.0) makes absence an environment gap rather than a contract
+    violation.
 
     A probe the server cannot answer - a non-Orbitrap file, a raw missing from
     the filestore - is passed over rather than failed on: it says nothing
@@ -356,6 +357,35 @@ class TestSpectraContract:
         assert sample_id in centroids
         assert {"masses", "intensities", "resolutions"} <= set(centroids[sample_id])
 
+    def test_centroids_carry_scan_numbers_and_flags(self, mascope):
+        _skip_unless_param(mascope.samples.get_centroids, "exclude")
+        sample_id = _first_sample_id(mascope)
+
+        every = mascope.samples.get_centroids([sample_id])[sample_id]
+        kept = mascope.samples.get_centroids(
+            [sample_id], exclude=["reference", "exception"]
+        )[sample_id]
+
+        assert len(every["scan"]) == len(every["masses"]) > 0
+        assert every["scan"] == sorted(set(every["scan"]))
+        for masses, flags in zip(every["masses"], every["flags"]):
+            assert len(flags) == len(masses)
+        assert kept["scan"] == every["scan"]
+        assert all(flag & 24 == 0 for flags in kept["flags"] for flag in flags)
+        excluded = sum(flag & 24 != 0 for flags in every["flags"] for flag in flags)
+        assert sum(map(len, kept["masses"])) == (
+            sum(map(len, every["masses"])) - excluded
+        )
+
+    def test_centroids_say_the_factor_each_scan_is_on(self, mascope):
+        sample_id = _first_sample_id(mascope)
+
+        every = mascope.samples.get_centroids([sample_id])[sample_id]
+
+        factors = every["mz_calibration_factor"]
+        assert len(factors) == len(every["scan"]) > 0
+        assert all(factor is None or factor > 0 for factor in factors)
+
     def test_peak_timeseries_by_peak_id(self, top_peak_timeseries):
         peak, ts = top_peak_timeseries
 
@@ -400,8 +430,8 @@ class TestMs2Contract:
     is opt-in (``by_activation``) and keys each spectrum
     ``"<parent m/z>@<activation>"``.
 
-    The demo bundle is MS1-only today, so only the summary runs there; the
-    centroid tests skip until the stack carries an MS2 acquisition.
+    Against a bundle without an MS2 acquisition (every one before 1.4.0) only
+    the summary runs; the centroid tests skip until the stack carries one.
     """
 
     def test_summary_reports_scan_counts(self, mascope):
@@ -426,6 +456,19 @@ class TestMs2Contract:
             assert summary["groups"] == []
         else:
             assert summary["parent_peaks"]
+        for group in summary["groups"]:
+            # Every width the group's scans used; its one width only when
+            # they share one.
+            widths = [entry["isolation_width"] for entry in group["isolation_widths"]]
+            assert widths == sorted(set(widths))
+            assert (
+                sum(e["scan_count"] for e in group["isolation_widths"])
+                <= (group["scan_count"])
+            )
+            if len(widths) == 1:
+                assert group["isolation_width"] == widths[0]
+            else:
+                assert group["isolation_width"] is None
 
     def test_averaged_centroids_are_keyed_by_parent_mz(self, mascope, ms2_sample_id):
         centroids = mascope.samples.ms2(ms2_sample_id).get_averaged_centroids()
@@ -507,6 +550,73 @@ class TestReferenceDataContract:
             "ionization_mechanism_polarity",
         } <= set(df.columns)
 
+    def test_ionization_modes_shape(self, mascope):
+        _skip_unless_attr(mascope.ionization, "modes")
+        df = mascope.ionization.modes()
+
+        # The demo's samples are processed, so a mode is there to name them.
+        assert df is not None and not df.empty
+        assert {
+            "ionization_mode_id",
+            "ionization_mode_name",
+            "ionization_mode_polarity",
+        } <= set(df.columns)
+
+    def test_collections_listing_and_one_collection(self, mascope):
+        _skip_unless_attr(mascope, "collections")
+        _skip_unless_attr(mascope.collections, "list")
+        df = mascope.collections.list()
+
+        # The demo's samples are matched, so some collection is there to match
+        # them against.
+        assert df is not None and not df.empty
+        assert {
+            "target_collection_id",
+            "target_collection_name",
+            "target_collection_type",
+            "workspace_id",
+        } <= set(df.columns)
+
+        collection = mascope.collections.get(df.iloc[0]["target_collection_id"])
+
+        assert collection["target_collection_id"] == df.iloc[0]["target_collection_id"]
+        assert {"target_compounds", "sample_batches"} <= set(collection)
+
+    def test_collections_of_a_batch(self, mascope):
+        _skip_unless_attr(mascope, "collections")
+        _skip_unless_attr(mascope.collections, "list")
+        batch_id = _first_batches(mascope).iloc[0]["sample_batch_id"]
+
+        df = mascope.collections.list(batch_id)
+
+        for collection_id in [] if df is None else df["target_collection_id"]:
+            batches = mascope.collections.get(collection_id)["sample_batches"]
+            assert batch_id in {batch["sample_batch_id"] for batch in batches}
+
+    def test_find_structures_reads_the_reference_rows_of_a_formula(self, mascope):
+        _skip_unless_attr(mascope, "compounds")
+        _skip_unless_attr(mascope.compounds, "find_structures")
+
+        # Any formula: the lists the demo ships name formulas without a
+        # structure, so the answer may be empty, but it is an answer, read
+        # with the SDK's token.
+        rows = mascope.compounds.find_structures("C6H5NO3", limit=5)
+
+        assert isinstance(rows, list)
+        assert len(rows) <= 5
+        for row in rows:
+            assert {
+                "name",
+                "inchikey",
+                "inchi",
+                "smiles",
+                "cas_number",
+                "source",
+                "license",
+                "cas_match",
+                "name_match",
+            } <= set(row)
+
     def test_cheminfo_query_around_a_matched_peak(self, mascope, matched_peaks):
         # A CHON-only compound is guaranteed to be found again by the default
         # composition search (its formula ranges cover C/H/O/N only).
@@ -548,6 +658,33 @@ class TestReferenceDataContract:
                 * 1e6
             )
             assert error_ppm <= 31, candidate
+
+    def test_cheminfo_query_reads_an_isotopologue_line(self, mascope):
+        # 126.9223 is the 81Br line of CH2BrO2-, formic acid's bromide
+        # adduct: 2 Da above its monoisotopic line, so only a query that may
+        # read the m/z at another line of the ion (the default) finds the
+        # formula.
+        _skip_unless_param(mascope.cheminfo.query_by_mz, "isotopologues")
+        mechanisms = mascope.ionization.list()
+        bromide = mechanisms[mechanisms["ionization_mechanism"] == "[M+Br]-"]
+        if bromide.empty:
+            pytest.skip("the stack carries no [M+Br]- mechanism")
+        mech_ids = list(bromide["ionization_mechanism_id"])
+        mz = 126.9223
+
+        def formulas(**flags):
+            results = mascope.cheminfo.query_by_mz(
+                mz, ionization_mechanism_ids=mech_ids, mz_tolerance=5.0, **flags
+            )
+            return {r["target_compound_formula"]: r for r in results}
+
+        assert "CH2O2" not in formulas(isotopologues=False)
+        # The default call reads every isotopologue line.
+        found = formulas()
+        assert "CH2O2" in found
+        # The candidate's m/z is the line it was read at, not its
+        # monoisotopic line, and its error is against that line.
+        assert abs(found["CH2O2"]["target_isotope_mz"] - mz) / mz * 1e6 <= 5
 
 
 @requires_stack
@@ -776,6 +913,179 @@ class TestSampleFileContract:
     def test_a_window_no_scan_is_in_is_none(self, mascope, sample_file_id):
         assert mascope.sample_files.get_scans(sample_file_id, first_scan=10**9) is None
 
+    def test_the_axis_fingerprint_is_the_files_document(self, mascope, sample_file_id):
+        _skip_unless_attr(mascope.sample_files, "get_axis_fingerprint")
+        document = mascope.sample_files.get_axis_fingerprint(sample_file_id)
+
+        assert document["schema"] == "mascope.axis_fingerprint"
+        assert document["version"] == 1
+        # Missing where the stack's files were converted before the
+        # fingerprint existed
+        assert document["status"] in {
+            "ok",
+            "no_fingerprint",
+            "unavailable",
+            "missing",
+            "error",
+        }
+        assert document["sample_file_id"] == sample_file_id
+        assert "item" not in document
+
+    def test_a_samples_axis_fingerprint_names_its_scans(self, mascope, sample_file_id):
+        _skip_unless_attr(mascope.samples, "get_axis_fingerprint")
+        sample_id = _first_sample_id(mascope)
+        document = mascope.samples.get_axis_fingerprint(sample_id)
+
+        assert document["sample_file_id"] == sample_file_id
+        if document["status"] not in ("ok", "no_fingerprint"):
+            # A document of no scans has nothing to say of the sample's
+            assert "item" not in document
+            return
+        item = document["item"]
+        assert item["sample_item_id"] == sample_id
+        assert item["scans"] and item["scans"] == sorted(item["scans"])
+        if item["mode_id"] is not None:
+            assert document["modes"][0]["mode_id"] == item["mode_id"]
+
+
+@requires_stack
+class TestSeriesContract:
+    """The per-batch series and the files listing, over the compact routes a
+    campaign store fills itself from (`/api/match/records/ion/series`,
+    `/api/batch-peaks/records/series`, `GET /api/sample/files`).
+
+    Each is checked against the slower read it stands in for: the ion series
+    against `load_peaks`, the batch-peak series against the ledger's
+    members, the files listing against the files the batches' samples name.
+    """
+
+    def test_ion_series_is_the_peaks_heights_summed_per_sample_and_ion(self, mascope):
+        import numpy as np
+        import pandas as pd
+
+        _skip_unless_attr(mascope.batches, "ion_series")
+        dataset, batches = _first_dataset_and_batches(mascope)
+        batch = batches.iloc[0]
+
+        series = mascope.batches.ion_series(batch["sample_batch_id"])
+
+        assert not series.empty, "expected matched ions in the demo batch"
+        assert {
+            "sample_item_id",
+            "target_ion_id",
+            "target_compound_name",
+            "target_compound_formula",
+            "ion_formula",
+            "ionization_mechanism",
+            "intensity",
+            "match_category",
+        } <= set(series.columns)
+        key = ["sample_item_id", "target_ion_id"]
+        assert not series.duplicated(key).any()
+        assert series.attrs["provenance"]["deployment_id"]
+
+        peaks = mascope.load_peaks(
+            dataset=dataset["dataset_id"],
+            batches=batch["sample_batch_name"],
+            exact=True,
+            confirm_above=None,
+        )
+        heights = peaks.dropna(subset=["target_ion_id"]).groupby(key)["height"].sum()
+        intensity = series.set_index(key)["intensity"]
+        # Every matched peak's pair is a series row. A pair matched with no
+        # peak (category 0) is a row of intensity 0, and no peak row.
+        assert set(heights.index) <= set(intensity.index)
+        both = pd.concat([heights.rename("height"), intensity], axis=1).fillna(0.0)
+        np.testing.assert_allclose(both["intensity"], both["height"], rtol=1e-9)
+
+    def test_batch_peak_series_are_the_ledgers_members(self, mascope):
+        _skip_unless_attr(mascope.batch_peaks, "series")
+        _, batches = _first_dataset_and_batches(mascope)
+
+        for batch_id in batches["sample_batch_id"]:
+            series = mascope.batch_peaks.series(batch_id, min_n_present=1)
+
+            assert {
+                "sample_item_id",
+                "batch_peak_id",
+                "sample_peak_id",
+                "batch_mz",
+                "consensus_formula",
+                "consensus_ion_formula",
+                "consensus_tier",
+                "intensity",
+                "tier",
+            } <= set(series.columns)
+            key = ["sample_item_id", "batch_peak_id"]
+            assert not series.duplicated(key).any()
+            runs = mascope.batch_peaks.runs(batch_id)
+            current = (
+                None
+                if runs is None
+                else runs.loc[runs["current"], "batch_peak_run_id"].iloc[0]
+            )
+            assert series.attrs["run_id"] == current
+            assert series.attrs["provenance"]["deployment_id"]
+
+            # Every point joins to its sample, with no loss.
+            samples = mascope.samples.list(batch_id)
+            joined = series.merge(
+                samples[["sample_item_id", "datetime_utc"]],
+                on="sample_item_id",
+                validate="many_to_one",
+            )
+            assert len(joined) == len(series)
+
+            # And the points are the members, as the paged ledger read has them.
+            members = mascope.batch_peaks.members(batch_id)
+            if members is None:
+                assert series.empty
+                continue
+            expected = members.set_index(key)["intensity"].sort_index()
+            assert series.set_index(key)["intensity"].sort_index().equals(expected)
+
+    def test_the_files_listing_is_the_files_the_batches_hold(self, mascope):
+        _skip_unless_attr(mascope.sample_files, "list")
+        held = set()
+        for _, dataset in mascope.datasets.list().iterrows():
+            batches = mascope.batches.list(dataset["dataset_id"])
+            if batches is None:
+                continue
+            for batch_id in batches["sample_batch_id"]:
+                samples = mascope.samples.list(batch_id)
+                if samples is not None:
+                    held.update(samples["sample_file_id"])
+        assert held, "expected samples in the demo batches"
+        # The range is bounded by the files' own start times, which a
+        # sample cut from later in its file does not share.
+        everything = mascope.sample_files.list()
+        starts = everything.loc[everything["sample_file_id"].isin(held), "datetime_utc"]
+        assert len(starts) == len(held), "a held file is missing from the listing"
+
+        files = mascope.sample_files.list(
+            datetime_min=starts.min(), datetime_max=starts.max()
+        )
+
+        assert set(files["sample_file_id"]) == held
+        assert not files["sample_file_id"].duplicated().any()
+        assert str(files["datetime_utc"].dt.tz) == "UTC"
+        assert "acquisition_timezone" in files.columns
+        assert files["datetime_utc"].is_monotonic_increasing
+        assert files.attrs["provenance"]["deployment_id"]
+
+    def test_the_files_listing_pages_through_the_server_pages(self, mascope):
+        _skip_unless_attr(mascope.sample_files, "list")
+        whole = mascope.sample_files.list()
+        assert len(whole) > 7, "expected more demo files than a page holds"
+
+        paged = mascope.sample_files.list(limit=7)
+        second = mascope.sample_files.list(page=1, limit=7)
+
+        assert paged["sample_file_id"].tolist() == whole["sample_file_id"].tolist()
+        assert (
+            second["sample_file_id"].tolist() == whole["sample_file_id"][7:14].tolist()
+        )
+
 
 @pytest.fixture(scope="module")
 def scratch(mascope):
@@ -831,19 +1141,31 @@ def scratch_matched(mascope, scratch):
 
     Copied over the session, so the matching tests do not hang on the SDK's
     own copy, and saved to only there: the demo data is never written to.
+
+    Returned once the copy has finished. Its batch reads ``ready`` from the
+    start, and its samples are listed before their matches are copied, one
+    level and one sample at a time, for several seconds. A save sent before
+    then races the copy, and can find every row it would write already
+    stored by it, so it answers ``skipped``. The sample level is copied last
+    for each sample, so the copy is done when it holds as many of those rows
+    as the demo batch does.
     """
-    demo_batch = _first_batches(mascope).iloc[0]
+    demo_batch_id = _first_batches(mascope).iloc[0]["sample_batch_id"]
+    demo_matches = len(_stored_match_samples(scratch, demo_batch_id))
+    assert demo_matches, "the demo batch carries its matches"
     scratch.session.post(
-        f"{BASE_URL}/api/sample/batches/{demo_batch['sample_batch_id']}/copy",
+        f"{BASE_URL}/api/sample/batches/{demo_batch_id}/copy",
         json={"dataset_id": scratch.dataset_id, "sample_batch_name": "matched"},
         timeout=60,
     ).raise_for_status()
     copy = _eventually(scratch.client, lambda: _ready_batch(scratch, "matched"))
-    samples = _eventually(
+    batch_id = copy["sample_batch_id"]
+    _eventually(
         scratch.client,
-        lambda: scratch.client.samples._list_by_id(copy["sample_batch_id"]),
+        lambda: len(_stored_match_samples(scratch, batch_id)) == demo_matches,
     )
-    return copy["sample_batch_id"], samples.iloc[0]["sample_item_id"]
+    samples = scratch.client.samples._list_by_id(batch_id)
+    return batch_id, samples.iloc[0]["sample_item_id"]
 
 
 @pytest.fixture(scope="module")
@@ -1057,14 +1379,19 @@ class TestWriteContract:
             assert set(ran) == levels
             assert ran["match_samples"], "the copied batch carries its matches"
 
-        for saved in (
-            matching.save_sample(sample_id),
-            matching.save_batch(batch_id),
-            matching.resave_batch(batch_id, match_ions=False),
+        for name, save in (
+            ("save_sample", lambda: matching.save_sample(sample_id)),
+            ("save_batch", lambda: matching.save_batch(batch_id)),
+            (
+                "resave_batch",
+                lambda: matching.resave_batch(batch_id, match_ions=False),
+            ),
         ):
-            # A level some of whose rows were refused is "partial".
-            assert saved["status"] in ("success", "partial")
-            assert "created or updated" in saved["message"]
+            # Each save clears the sample level and writes it again, so it is
+            # never "skipped"; it is "partial" when other levels are unchanged.
+            saved = save()
+            assert saved["status"] in ("success", "partial"), (name, saved)
+            assert "created or updated" in saved["message"], (name, saved)
 
     def test_an_unauthorised_write_names_the_object_and_the_role(self, scratch, guest):
         """The server's 403 names neither; the SDK's error does."""
@@ -1134,6 +1461,16 @@ def _scratch_batch(scratch, name: str) -> str:
 def _batch_ids(scratch) -> list[str]:
     batches = scratch.client.batches._list_by_id(scratch.dataset_id)
     return [] if batches is None else batches["sample_batch_id"].tolist()
+
+
+def _stored_match_samples(scratch, batch_id: str) -> list:
+    """The sample-level match rows stored for batch *batch_id*."""
+    return _api(
+        scratch.session,
+        "GET",
+        "match/samples",
+        params={"sample_batch_id": batch_id},
+    )
 
 
 def _ready_batch(scratch, name: str):

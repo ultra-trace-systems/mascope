@@ -79,14 +79,18 @@ export const useMzFit = () => {
     affectedSamples.value = []
   }
 
+  // A preview: the fit is rendered where it was asked for, so its outcome is
+  // claimed and not toasted as well (an error still is). No `use` handler: the
+  // process id rides on the `Process-ID` response header, and the `process`
+  // handler throws the response itself away.
   async function compute(sample) {
     await unload()
     const { sample_item_id } = sample ?? active.value
-    await api.http.post(`/calibration/mz_fit`, mzCalibrationParams, {
+    const response = await api.http.post(`/calibration/mz_fit`, mzCalibrationParams, {
       params: { sample_item_id },
-      use: 'process',
       type: 'mz_fit'
     })
+    app.ui.notification.claim(response?.headers?.['process-id'])
   }
 
   // `acceptQualityIssues`: store the fit as verified even though it misses the

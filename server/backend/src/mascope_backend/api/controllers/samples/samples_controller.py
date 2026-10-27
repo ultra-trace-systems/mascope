@@ -4,7 +4,7 @@ from datetime import datetime
 
 import numpy as np
 from fastapi import HTTPException
-from sqlalchemy import Float, Integer, and_, cast, func, select
+from sqlalchemy import Integer, func, select
 
 import mascope_signal.compute as m_compute
 from mascope_backend.api.controllers.sample.files.process.census import (
@@ -16,6 +16,7 @@ from mascope_backend.api.controllers.samples.lib.samples_segments import (
     with_stream_rows,
 )
 from mascope_backend.api.lib.api_features import api_controller
+from mascope_backend.api.lib.datetimes import as_utc
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     NotFoundException,
@@ -33,6 +34,7 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.db.views import Sample
+from mascope_backend.json_safe import non_finite_to_none
 from mascope_backend.runtime import runtime
 from mascope_file.io import load_coord, load_peak_data
 from mascope_file.name import get_sample_file_type
@@ -99,9 +101,11 @@ async def get_samples(
     :type instrument: str | None
     :param sample_item_type: Filter by sample item types, defaults to None
     :type sample_item_type: list[str] | None
-    :param datetime_min: Filter samples after this datetime, defaults to None
+    :param datetime_min: Keep samples acquired at or after this time (inclusive;
+        a value with no offset is read as UTC), defaults to None
     :type datetime_min: datetime | None
-    :param datetime_max: Filter samples before this datetime, defaults to None
+    :param datetime_max: Keep samples acquired at or before this time (inclusive;
+        a value with no offset is read as UTC), defaults to None
     :type datetime_max: datetime | None
     :param polarity: Filter by ion polarity modes, defaults to None
     :type polarity: list[str] | None
@@ -166,15 +170,10 @@ async def get_samples(
         if sample_item_type:
             stmt = stmt.filter(Sample.sample_item_type.in_(sample_item_type))
 
-        if datetime_min and datetime_max:
-            stmt = stmt.where(
-                and_(
-                    cast(func.julianday(Sample.datetime_utc), Float)
-                    >= func.julianday(datetime_min),
-                    cast(func.julianday(Sample.datetime_utc), Float)
-                    <= func.julianday(datetime_max),
-                )
-            )
+        if datetime_min:
+            stmt = stmt.where(Sample.datetime_utc >= as_utc(datetime_min))
+        if datetime_max:
+            stmt = stmt.where(Sample.datetime_utc <= as_utc(datetime_max))
 
         if polarity is not None:
             stmt = stmt.filter(Sample.polarity.in_(polarity))
@@ -432,8 +431,12 @@ async def get_sample_peaks(
         # None for a file that stores no noise estimate, never a zero: an
         # engine reading this endpoint scores an absent isotopologue against
         # the noise where there is one and against abundance alone where there
-        # is not, and a zero would say "measured, and noise-free".
-        "signal_to_noise": peak_data.signal_to_noise,
+        # is not, and a zero would say "measured, and noise-free". The same
+        # for one peak with no estimate, which the store holds as NaN: a TOF
+        # peak with no baseline left around it, or a flat one. The route sends
+        # it as None itself: the response's fallback render would log every
+        # such answer as a route that left a value undecided.
+        "signal_to_noise": non_finite_to_none(peak_data.signal_to_noise),
         "segment": peak_data.streams if segments else None,
         "segments": segments.described if segments else None,
     }
@@ -845,11 +848,15 @@ async def get_samples_centroids(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    exclude: tuple[str, ...] = (),
 ) -> dict:
     """Extracts centroids for a list of sample items by their IDs.
 
     :param sample_item_ids: List of sample item IDs for which to extract centroids.
     :type sample_item_ids: list[str]
+    :param exclude: Names of the centroid flags whose centroids are left out
+        (``mascope_thermo.backend.CENTROID_FLAGS``), defaults to none.
+    :type exclude: tuple[str, ...], optional
     :param independent_transaction: Flag to indicate if the operation should be treated as an independent transaction, defaults to False.
     :type independent_transaction: bool, optional
     :param user_id: Current user triggered operation (for user notifications)
@@ -920,15 +927,21 @@ async def get_samples_centroids(
                 t_min=t0,
                 t_max=t1,
                 polarity=polarity,
+                exclude=exclude,
             )
             return {
+                "scan": [cen["scan"] for cen in per_scan],
                 "masses": [cen["masses"].tolist() for cen in per_scan],
                 "intensities": [cen["intensities"].tolist() for cen in per_scan],
                 "resolutions": [cen["resolutions"].tolist() for cen in per_scan],
                 "signal_to_noise": [
                     cen["signal_to_noise"].tolist() for cen in per_scan
                 ],
+                "flags": [cen["flags"].tolist() for cen in per_scan],
                 "timestamp": [cen["timestamp"] for cen in per_scan],
+                "mz_calibration_factor": [
+                    cen["mz_calibration_factor"] for cen in per_scan
+                ],
             }
 
         centroids[sample.sample_item_id] = await asyncio.to_thread(_centroid_lists)

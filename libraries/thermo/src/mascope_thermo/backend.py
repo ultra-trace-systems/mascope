@@ -33,9 +33,11 @@ from typing import Literal, Protocol, runtime_checkable
 
 import numpy as np
 
-from mascope_thermo import v66_scan_events
 from mascope_thermo.run_header import records_no_run_header
-from mascope_thermo.scan_events import refuse_misread_analyzers
+from mascope_thermo.scan_events import (
+    refuse_misread_analyzers,
+    refuse_unconverted_profile,
+)
 from mascope_thermo.scan_filter import parse_scan_filter
 
 
@@ -74,6 +76,59 @@ _SECONDS_PER_MINUTE = 60
 # single number rather than a run of digits and dots, so a malformed filter
 # yields no event instead of a ValueError out of float().
 _MS2_EVENT = re.compile(r"ms2 (\d+(?:\.\d+)?)((?:@[A-Za-z]+[\d.]*)+)")
+
+# A centroid's flags, by name, as the bit values of Thermo's PeakOptions. The
+# instrument marks the lock-mass peak a scan was corrected with (Reference), a
+# weak side-lobe peak (Exception), a peak merged from two (Merged) and the two
+# lobes of a split weak peak (Fragmented). A centroid can carry more than one:
+# a fragmented lobe is often an exception too.
+CENTROID_FLAGS = {"fragmented": 2, "merged": 4, "exception": 8, "reference": 16}
+
+# Every bit CENTROID_FLAGS names. The vendor library's PeakOptions has more
+# (saturated, modified, ...), which OpenTFRaw cannot read; they are left out so
+# both backends report the same flags.
+_CENTROID_FLAG_BITS = sum(CENTROID_FLAGS.values())
+
+# Where each flag sits in the word OpenTFRaw stores per centroid
+# (``centroid_labels()["descriptor"]``): bit 20 Exception, 21 Reference,
+# 22 Merged, 23 Fragmented. Bit 21 is the one OpenTFRaw documents as the lock
+# mass; the four together give the vendor library's flags, centroid for
+# centroid, on every file compared.
+_DESCRIPTOR_FLAG_BITS = ((20, 8), (21, 16), (22, 4), (23, 2))
+
+
+def centroid_flags_from_descriptor(descriptor) -> np.ndarray:
+    """The flags of each centroid, from OpenTFRaw's per-centroid descriptor.
+
+    :param descriptor: The scan's ``descriptor`` array, one word per centroid.
+    :return: One integer per centroid: the sum of the :data:`CENTROID_FLAGS`
+        values it carries, 0 for an unflagged one.
+    """
+    descriptor = np.asarray(descriptor, dtype=np.uint32)
+    flags = np.zeros(descriptor.shape, dtype=np.int64)
+    for bit, value in _DESCRIPTOR_FLAG_BITS:
+        flags |= ((descriptor >> bit) & 1).astype(np.int64) * value
+    return flags
+
+
+def centroid_flag_mask(exclude: Iterable[str] = ()) -> int:
+    """The flag bits of the centroids named to be left out.
+
+    :param exclude: Names of :data:`CENTROID_FLAGS`, in any case: a centroid
+        carrying any of them is left out.
+    :return: Their bits, 0 when none is named.
+    :raises ValueError: For a name that is not a flag's.
+    """
+    mask = 0
+    for name in exclude:
+        bit = CENTROID_FLAGS.get(name.strip().lower())
+        if bit is None:
+            raise ValueError(
+                f"Unknown centroid flag {name!r}; expected one of "
+                f"{', '.join(CENTROID_FLAGS)}"
+            )
+        mask |= bit
+    return mask
 
 
 def _parse_ms2_event(filter_string: str) -> tuple[float, str] | None:
@@ -124,6 +179,9 @@ class ReaderBackend(Protocol):
     first scan's own stream, which measure what it measured; a stream that
     does not hold the first scan loses nothing.
     """
+
+    #: Path of the raw file the backend reads.
+    datafile_path: str
 
     def __enter__(self) -> ReaderBackend: ...
     def __exit__(self, *exc) -> None: ...
@@ -341,9 +399,34 @@ class ReaderBackend(Protocol):
         mz_min: float | None = None,
         mz_max: float | None = None,
         stream: str | None = None,
+        exclude: Iterable[str] = (),
     ) -> list[dict]:
-        """Per-scan centroids: list of dicts with ``masses``, ``intensities``,
-        ``resolutions``, ``signal_to_noise``, ``timestamp``."""
+        """Per-scan centroids: list of dicts with ``scan`` (the scan number),
+        ``masses``, ``intensities``, ``resolutions``, ``signal_to_noise``,
+        ``flags`` (:meth:`centroid_flags` of the centroids kept) and
+        ``timestamp``. Every stored centroid is kept, flagged ones included,
+        except those carrying a flag ``exclude`` names
+        (:func:`centroid_flag_mask`)."""
+        ...
+
+    def centroid_flags(self, scan_number: int) -> np.ndarray:
+        """The flags of every centroid the scan stores, in stored order.
+
+        One integer per centroid: the sum of the :data:`CENTROID_FLAGS`
+        values it carries (2 Fragmented, 4 Merged, 8 Exception, 16
+        Reference), 0 for an unflagged one. The Thermo backend reads them
+        from the vendor library's centroid stream, the OpenTFRaw backend from
+        the descriptor word stored per centroid. A scan with no centroids
+        gives an empty array."""
+        ...
+
+    def centroid_masses(self, scan_number: int) -> np.ndarray:
+        """The m/z of every centroid the scan stores, in stored order.
+
+        The centroids :meth:`centroid_flags` reports, in its order, so the
+        two pair up centroid for centroid: the flagged ones included, and
+        those without FT label data, which :meth:`centroids_per_scan` leaves
+        out. A scan with no centroids gives an empty array."""
         ...
 
     def average_centroids(
@@ -359,12 +442,17 @@ class ReaderBackend(Protocol):
         backend reimplements ppm binning in NumPy."""
         ...
 
-    def centroids_meta(self) -> dict:
+    def centroids_meta(self, exclude: Iterable[str] = ()) -> dict:
         """All-scan centroid arrays for legacy metadata: ``{"time": [...],
-        "data": [{"mzs", "intensities", "resolutions", "noises"}]}``."""
+        "data": [{"scan", "mzs", "intensities", "resolutions", "noises",
+        "flags"}]}``, ``scan`` being the scan number and ``flags`` the
+        :meth:`centroid_flags` of the centroids kept. A centroid carrying a
+        flag ``exclude`` names is left out."""
         ...
 
-    def iter_centroids_meta(self) -> Iterator[tuple[int, float, dict]]:
+    def iter_centroids_meta(
+        self, exclude: Iterable[str] = ()
+    ) -> Iterator[tuple[int, float, dict]]:
         """:meth:`centroids_meta` one scan at a time, in scan order:
         ``(scan_number, time_s, data)``, where ``time_s`` and ``data`` are
         the scan's entries of its ``"time"`` and ``"data"``.
@@ -376,6 +464,27 @@ class ReaderBackend(Protocol):
 
     def mass_range(self) -> tuple[float, float]:
         """Run-level ``(low_mass, high_mass)`` from the run header."""
+        ...
+
+    def run_time_range(self) -> tuple[float, float]:
+        """The run's ``(start, end)`` times [s], as its run header records
+        them: the MS controller's.
+
+        Not the first and last scan's start times. A trailing scan can carry
+        the time 0, and the header still records the run's end."""
+        ...
+
+    def scan_profile(self, scan_number: int) -> tuple[np.ndarray, np.ndarray]:
+        """One scan's profile, ``(mz, intensity)``, as the reader returns it.
+
+        For a caller that reads a few scans by number, where
+        :meth:`profile_per_scan` reads every scan of a selection. OpenTFRaw
+        returns the points the file stores. The Thermo library also returns
+        the zero-intensity points it adds around each run of stored points,
+        so the two differ by those. A scan OpenTFRaw gives no m/z for
+        refuses the file with
+        :class:`mascope_thermo.scan_events.UnconvertedProfileError`, as
+        :meth:`profile_per_scan` does."""
         ...
 
     def profile_per_scan(
@@ -391,7 +500,10 @@ class ReaderBackend(Protocol):
         """Per-scan profile spectra: ``(scan_mzs, scan_intensities, scan_times)``,
         the m/z and intensity arrays already restricted to ``[mz_min, mz_max]``.
 
-        The profile arrays come from the ``opentfraw`` profile accessor."""
+        The profile arrays come from the ``opentfraw`` profile accessor. A
+        scan it gives no m/z for refuses the file with
+        :class:`mascope_thermo.scan_events.UnconvertedProfileError` rather
+        than come back empty."""
         ...
 
     def average_profile(
@@ -407,7 +519,10 @@ class ReaderBackend(Protocol):
         The measured signal, never a model of it: the instrument-function fit
         needs the real peak shapes, and the spectrum views draw it as measured.
 
-        Builds on the profile accessor and the NumPy ppm averaging above."""
+        Builds on the profile accessor and the NumPy ppm averaging above. A
+        scan the accessor gives no m/z for refuses the file with
+        :class:`mascope_thermo.scan_events.UnconvertedProfileError`, as
+        :meth:`profile_per_scan` does."""
         ...
 
     def xic(
@@ -470,6 +585,34 @@ class ReaderBackend(Protocol):
         leaves it empty does.
 
         :raises ValueError: No MS2 scan stores a width.
+        """
+        ...
+
+    def ms2_scan_records(
+        self,
+        polarity: Polarity | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
+    ) -> list[dict]:
+        """One record per MS2 scan, in scan order: what was measured and how.
+
+        Each record holds the fields of :data:`MS2_SCAN_RECORD_SOURCES` and
+        ``sources``, which says for each field where it was read: ``"index"``
+        (``scan_number``, ``time_s`` in seconds, ``tic``), ``"filter"``
+        (``polarity``, ``precursor_mz``, ``activation`` as
+        :meth:`ms2_events_by_scan` gives it, ``activation_kind`` and ``nce``
+        parsed from it, and ``low_mass`` and ``high_mass``, the outer bounds
+        of the filter's scan ranges) or ``"trailer"`` (``hcd_energy_v``, a
+        list of volts, several when the energy stepped within the scan;
+        ``isolation_width``; ``injection_time_ms``).
+
+        A field the scan does not hold is ``None``, and so is its source: a
+        trailer without the label, a width or injection time the trailer
+        holds as text (as :meth:`trailer_numbers`), a filter with no MS2
+        event or no scan range. Each record is read from its own scan alone,
+        so a missing value is never a neighbouring scan's.
+
+        :raises NoScansFoundError: No MS2 scan is selected.
         """
         ...
 
@@ -672,6 +815,27 @@ def _common_isolation_width(widths: Iterable[float]) -> float | None:
     return distinct.pop() if len(distinct) == 1 else None
 
 
+def _isolation_width_counts(widths: Iterable[float]) -> list[dict]:
+    """Every isolation width these MS2 scans used, with its scan count.
+
+    ``[{"isolation_width": 1.0, "scan_count": 12}, ...]``, narrowest first,
+    each width rounded as :func:`_common_isolation_width` rounds it, so the
+    one width that function names is the one entry here when the scans
+    share it.
+
+    :param widths: The widths the scans' trailers store, one per scan that
+        stores one.
+    """
+    counts: dict[float, int] = {}
+    for width in widths:
+        rounded = round(width, 6)
+        counts[rounded] = counts.get(rounded, 0) + 1
+    return [
+        {"isolation_width": width, "scan_count": counts[width]}
+        for width in sorted(counts)
+    ]
+
+
 def _ms2_isolation_widths(
     scan_idx_to_width: dict[int, float],
 ) -> tuple[float | None, dict[int, float]]:
@@ -683,6 +847,119 @@ def _ms2_isolation_widths(
     if not scan_idx_to_width:
         raise ValueError("No MS2 scan stores an isolation width")
     return _common_isolation_width(scan_idx_to_width.values()), scan_idx_to_width
+
+
+#: The trailer label of the time an MS2 scan's ions were accumulated for.
+MS2_INJECTION_TIME = "Ion Injection Time (ms):"
+
+#: The numbers an MS2 scan record reads from the scan's trailer, as stored.
+_MS2_RECORD_TRAILER_NUMBERS = (MS2_ISOLATION_WIDTH, MS2_INJECTION_TIME)
+
+#: The fields of an MS2 scan record (:meth:`ReaderBackend.ms2_scan_records`),
+#: each with where it is read from: the scan index, the scan's filter, or its
+#: trailer.
+MS2_SCAN_RECORD_SOURCES = {
+    "scan_number": "index",
+    "time_s": "index",
+    "polarity": "filter",
+    "precursor_mz": "filter",
+    "activation": "filter",
+    "activation_kind": "filter",
+    "nce": "filter",
+    "hcd_energy_v": "trailer",
+    "isolation_width": "trailer",
+    "low_mass": "filter",
+    "high_mass": "filter",
+    "injection_time_ms": "trailer",
+    "tic": "index",
+}
+
+# One stage of an activation as _parse_ms2_event gives it: "hcd25.00", "etd".
+_ACTIVATION_STAGE = re.compile(r"^([a-z]+)(\d+(?:\.\d+)?)?$")
+
+
+def _activation_kind_and_nce(activation: str | None) -> tuple[str | None, float | None]:
+    """The kind of an activation and its collision energy, as the filter
+    renders them.
+
+    ``"hcd25.00"`` is ``("hcd", 25.0)``. A chained activation names every
+    stage, ``"cid30.00@hcd20.00"`` is ``("cid@hcd", None)``: it has an
+    energy per stage, which ``activation`` keeps, and no one energy. One
+    rendered without an energy (``"etd"``) has none either, and one whose
+    energy does not read as a number has neither.
+    """
+    if not activation:
+        return None, None
+    stages = [_ACTIVATION_STAGE.match(stage) for stage in activation.split("@")]
+    if not all(stages):
+        return None, None
+    kind = "@".join(stage.group(1) for stage in stages)
+    energy = stages[0].group(2) if len(stages) == 1 else None
+    return kind, None if energy is None else float(energy)
+
+
+def _hcd_energy_volts(value) -> list[float] | None:
+    """A trailer's ``"HCD Energy V:"`` as its volts, or None.
+
+    The instrument writes one value per energy it stepped through within the
+    scan, comma-separated (``"28.5,57.0,85.5"``); the Thermo library writes
+    the text in the invariant culture, so no comma here is a decimal mark.
+    An empty or unreadable value is None, never a part of it.
+    """
+    if value is None:
+        return None
+    parts = [part for part in str(value).split(",") if part.strip()]
+    volts = [trailer_float(part) for part in parts]
+    if not volts or any(v is None for v in volts):
+        return None
+    return volts
+
+
+def _ms2_scan_record(
+    scan_number: int,
+    time_s: float,
+    tic: float,
+    filter_string: str | None,
+    trailer_numbers: dict[str, float],
+    hcd_energy: object,
+) -> dict:
+    """One MS2 scan's record, from what both backends read of it.
+
+    :param scan_number: The scan's number, from 1.
+    :param time_s: Its start time in seconds.
+    :param tic: Its total ion current.
+    :param filter_string: Its filter, as the backend renders it.
+    :param trailer_numbers: The numbers its trailer stores under
+        :data:`_MS2_RECORD_TRAILER_NUMBERS` (:meth:`ReaderBackend.trailer_numbers`);
+        a label the trailer lacks is absent.
+    :param hcd_energy: Its trailer's ``"HCD Energy V:"`` value as the backend
+        reads it, None when the trailer has no such field.
+    """
+    event = _parse_ms2_event(filter_string or "")
+    precursor_mz, activation = event if event else (None, None)
+    activation_kind, nce = _activation_kind_and_nce(activation)
+    parsed = parse_scan_filter(filter_string)
+    ranges = parsed.scan_ranges
+    record = {
+        "scan_number": int(scan_number),
+        "time_s": float(time_s),
+        "polarity": parsed.polarity,
+        "precursor_mz": precursor_mz,
+        "activation": activation,
+        "activation_kind": activation_kind,
+        "nce": nce,
+        "hcd_energy_v": _hcd_energy_volts(hcd_energy),
+        "isolation_width": trailer_numbers.get(MS2_ISOLATION_WIDTH),
+        "low_mass": min(low for low, _ in ranges) if ranges else None,
+        "high_mass": max(high for _, high in ranges) if ranges else None,
+        "injection_time_ms": trailer_numbers.get(MS2_INJECTION_TIME),
+        "tic": float(tic),
+    }
+    record["sources"] = {
+        field: None if record[field] is None else source
+        for field, source in MS2_SCAN_RECORD_SOURCES.items()
+    }
+    return record
 
 
 def _method_scan_event(index_event: int) -> int | None:
@@ -908,6 +1185,21 @@ def _scan_window(
         )
 
     return holds
+
+
+def _vendor_flags(centroid_stream) -> np.ndarray:
+    """The :data:`CENTROID_FLAGS` of each centroid of a Thermo CentroidStream,
+    its other PeakOptions bits cleared."""
+    if centroid_stream is None or centroid_stream.Length == 0:
+        return np.zeros(0, dtype=np.int64)
+    return (
+        np.fromiter(
+            (int(flag) for flag in centroid_stream.Flags),
+            dtype=np.int64,
+            count=centroid_stream.Length,
+        )
+        & _CENTROID_FLAG_BITS
+    )
 
 
 def _centroids_meta(scans: Iterable[tuple[int, float, dict]]) -> dict:
@@ -1377,28 +1669,47 @@ class ThermoBackend:
         mz_min: float | None = None,
         mz_max: float | None = None,
         stream: str | None = None,
+        exclude: Iterable[str] = (),
     ) -> list[dict]:
         from mascope_thermo.thermo import _validate_mz_range
 
+        excluded = centroid_flag_mask(exclude)
         mz_min, mz_max = _validate_mz_range(self._raw, mz_min, mz_max)
         selector = self._selector(polarity, t_min, t_max, ms_type, stream)
 
         out: list[dict] = []
-        for scan, timestamp in zip(selector.scans, selector.scan_times):
+        for scan_number, scan, timestamp in zip(
+            selector.scan_indices_1based, selector.scans, selector.scan_times
+        ):
             masses, intensities, resolutions, signal_to_noise = _label_peaks(
                 scan.CentroidScan
             )
-            mz_mask = np.logical_and(mz_min <= masses, masses <= mz_max)
+            flags = _vendor_flags(scan.CentroidScan)
+            mask = (mz_min <= masses) & (masses <= mz_max) & ((flags & excluded) == 0)
             out.append(
                 {
-                    "masses": masses[mz_mask],
-                    "intensities": intensities[mz_mask],
-                    "resolutions": resolutions[mz_mask],
-                    "signal_to_noise": signal_to_noise[mz_mask],
+                    "scan": scan_number,
+                    "masses": masses[mask],
+                    "intensities": intensities[mask],
+                    "resolutions": resolutions[mask],
+                    "signal_to_noise": signal_to_noise[mask],
+                    "flags": flags[mask],
                     "timestamp": timestamp,
                 }
             )
         return out
+
+    def centroid_flags(self, scan_number: int) -> np.ndarray:
+        # Reference and exception peaks included, as everywhere else here
+        # (RawFileManager sets IncludeReferenceAndExceptionData).
+        return _vendor_flags(self._raw.GetCentroidStream(scan_number, True))
+
+    def centroid_masses(self, scan_number: int) -> np.ndarray:
+        # The stream centroid_flags reads, so the masses are in its order.
+        stream = self._raw.GetCentroidStream(scan_number, True)
+        if stream is None or stream.Length == 0:
+            return np.zeros(0, dtype=np.float64)
+        return np.frombuffer(stream.Masses).copy()
 
     def average_centroids(
         self,
@@ -1412,13 +1723,16 @@ class ThermoBackend:
             self._raw, scan_indices, ppm=ppm, average=average
         )
 
-    def centroids_meta(self) -> dict:
-        return _centroids_meta(self.iter_centroids_meta())
+    def centroids_meta(self, exclude: Iterable[str] = ()) -> dict:
+        return _centroids_meta(self.iter_centroids_meta(exclude))
 
-    def iter_centroids_meta(self) -> Iterator[tuple[int, float, dict]]:
+    def iter_centroids_meta(
+        self, exclude: Iterable[str] = ()
+    ) -> Iterator[tuple[int, float, dict]]:
         # The Thermo library hands over the scans of a selection together
         # (selector.scans), so here only their conversion to lists - most of
         # what a scan costs in Python - waits for the scan's turn.
+        excluded = centroid_flag_mask(exclude)
         selector = self._selector(ms_type=None)
         for scan_number, timestamp, scan in zip(
             selector.scan_indices_1based, selector.scan_times, selector.scans
@@ -1429,36 +1743,59 @@ class ThermoBackend:
                 intensities = np.frombuffer(centroid_scan.Intensities)
                 resolutions = np.frombuffer(centroid_scan.Resolutions)
                 noises = np.frombuffer(centroid_scan.Noises)
+                flags = _vendor_flags(centroid_scan)
 
                 valid = (
                     np.isfinite(resolutions)
                     & (resolutions > 0)
                     & np.isfinite(intensities)
                     & (intensities > 0)
+                    & ((flags & excluded) == 0)
                 )
                 mzs = mzs[valid].tolist()
                 intensities = intensities[valid].tolist()
                 resolutions = resolutions[valid].tolist()
                 noises = noises[valid].tolist()
+                flags = flags[valid].tolist()
             else:
                 mzs = []
                 intensities = []
                 resolutions = []
                 noises = []
+                flags = []
             yield (
                 scan_number,
                 timestamp,
                 {
+                    "scan": scan_number,
                     "intensities": intensities,
                     "mzs": mzs,
                     "resolutions": resolutions,
                     "noises": noises,
+                    "flags": flags,
                 },
             )
 
     def mass_range(self) -> tuple[float, float]:
         header = self._raw.RunHeaderEx
         return header.LowMass, header.HighMass
+
+    def run_time_range(self) -> tuple[float, float]:
+        header = self._raw.RunHeaderEx
+        return (
+            header.StartTime * _SECONDS_PER_MINUTE,
+            header.EndTime * _SECONDS_PER_MINUTE,
+        )
+
+    def scan_profile(self, scan_number: int) -> tuple[np.ndarray, np.ndarray]:
+        from ThermoFisher.CommonCore.Data import Extensions
+
+        # The scan profile_per_scan reads its segmented scan from.
+        scan = list(Extensions.GetScans(self._raw, scan_number, scan_number))[0]
+        return (
+            np.frombuffer(scan.SegmentedScan.Positions).copy(),
+            np.frombuffer(scan.SegmentedScan.Intensities).copy(),
+        )
 
     def profile_per_scan(
         self,
@@ -1633,6 +1970,32 @@ class ThermoBackend:
             scan_idx_to_hcd[scan_idx] = "" if hcd is None else str(hcd)
         return *_ms2_isolation_widths(scan_idx_to_width), scan_idx_to_hcd
 
+    def ms2_scan_records(
+        self,
+        polarity: Polarity | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
+    ) -> list[dict]:
+        selector = self._selector(polarity, t_min, t_max, ms_type="Ms2")
+        records = []
+        for scan_idx, scan_filter, scan_stats in zip(
+            selector.scan_indices_1based,
+            selector.scan_filters,
+            selector.scan_stats,
+            strict=True,
+        ):
+            records.append(
+                _ms2_scan_record(
+                    scan_idx,
+                    scan_stats.StartTime * _SECONDS_PER_MINUTE,
+                    scan_stats.TIC,
+                    scan_filter.ToString(),
+                    self.trailer_numbers(scan_idx, _MS2_RECORD_TRAILER_NUMBERS),
+                    self.scan_trailer(scan_idx).get(MS2_HCD_ENERGY),
+                )
+            )
+        return records
+
     def ms2_centroids_for_scans(
         self, scan_indices: list[int]
     ) -> tuple[list[dict], list[float]]:
@@ -1684,18 +2047,6 @@ class OpenTFRawBackend:
         except OSError as e:
             _raise_if_unfinished(self.datafile_path, e)
             raise
-        # Interim until the pinned OpenTFRaw reads named scan-event records
-        # (GitHub #2391); remove with the module (MAS-170).
-        try:
-            self._raw = v66_scan_events.redecode_if_misread(
-                self._raw, self.datafile_path
-            )
-        except v66_scan_events.UnreadableScanEventsError as refused:
-            # Let go of the file: the refusal's traceback would otherwise
-            # hold the reader, and with it the file, open for as long as the
-            # refusal is handled, which is while the converter moves it aside.
-            self._raw = None
-            raise refused.with_traceback(None) from None
         return self
 
     def __exit__(self, *exc) -> None:
@@ -1934,6 +2285,17 @@ class OpenTFRawBackend:
             float(max(s["high_mz"] for s in scans)),
         )
 
+    def run_time_range(self) -> tuple[float, float]:
+        from mascope_thermo.thermo import NoScansFoundError
+
+        for controller in self._raw.controllers():
+            if controller.get("is_ms_controller"):
+                return (
+                    float(controller["start_time"]) * _SECONDS_PER_MINUTE,
+                    float(controller["end_time"]) * _SECONDS_PER_MINUTE,
+                )
+        raise NoScansFoundError("No scans found: the file has no MS controller.")
+
     # -- Phase-4 metadata remap --
 
     def instrument_details(self) -> dict:
@@ -2123,17 +2485,21 @@ class OpenTFRawBackend:
         mz_min: float | None = None,
         mz_max: float | None = None,
         stream: str | None = None,
+        exclude: Iterable[str] = (),
     ) -> list[dict]:
+        excluded = centroid_flag_mask(exclude)
         mz_min, mz_max = self._validate_mz_range(mz_min, mz_max)
         selected = self._selected(polarity, t_min, t_max, ms_type, stream)
 
         out: list[dict] = []
         for s in selected:
-            labels = self._raw.centroid_labels(int(s["scan_number"]))
+            scan_number = int(s["scan_number"])
+            labels = self._raw.centroid_labels(scan_number)
             masses = np.asarray(labels["mz"], dtype=np.float64)
             intensities = np.asarray(labels["intensity"], dtype=np.float64)
             resolutions = np.asarray(labels["resolution"], dtype=np.float64)
             signal_to_noise = np.asarray(labels["signal_to_noise"], dtype=np.float64)
+            flags = centroid_flags_from_descriptor(labels["descriptor"])
             # Keep only FT label peaks (finite resolution / S:N), mirroring
             # Thermo, where non-FT scans return no centroid label peaks at all.
             mask = (
@@ -2141,17 +2507,28 @@ class OpenTFRawBackend:
                 & (masses <= mz_max)
                 & np.isfinite(resolutions)
                 & np.isfinite(signal_to_noise)
+                & ((flags & excluded) == 0)
             )
             out.append(
                 {
+                    "scan": scan_number,
                     "masses": masses[mask],
                     "intensities": intensities[mask],
                     "resolutions": resolutions[mask],
                     "signal_to_noise": signal_to_noise[mask],
+                    "flags": flags[mask],
                     "timestamp": s["retention_time"] * _SECONDS_PER_MINUTE,
                 }
             )
         return out
+
+    def centroid_flags(self, scan_number: int) -> np.ndarray:
+        labels = self._raw.centroid_labels(int(scan_number))
+        return centroid_flags_from_descriptor(labels["descriptor"])
+
+    def centroid_masses(self, scan_number: int) -> np.ndarray:
+        labels = self._raw.centroid_labels(int(scan_number))
+        return np.asarray(labels["mz"], dtype=np.float64)
 
     def average_centroids(
         self,
@@ -2502,10 +2879,13 @@ class OpenTFRawBackend:
         out[apply] = cand[apply]
         return out
 
-    def centroids_meta(self) -> dict:
-        return _centroids_meta(self.iter_centroids_meta())
+    def centroids_meta(self, exclude: Iterable[str] = ()) -> dict:
+        return _centroids_meta(self.iter_centroids_meta(exclude))
 
-    def iter_centroids_meta(self) -> Iterator[tuple[int, float, dict]]:
+    def iter_centroids_meta(
+        self, exclude: Iterable[str] = ()
+    ) -> Iterator[tuple[int, float, dict]]:
+        excluded = centroid_flag_mask(exclude)
         for s in self._all_scans():
             scan_number = int(s["scan_number"])
             labels = self._raw.centroid_labels(scan_number)
@@ -2513,21 +2893,25 @@ class OpenTFRawBackend:
             intensities = np.asarray(labels["intensity"], dtype=np.float64)
             resolutions = np.asarray(labels["resolution"], dtype=np.float64)
             noises = np.asarray(labels["noise"], dtype=np.float64)
+            flags = centroid_flags_from_descriptor(labels["descriptor"])
 
             valid = (
                 np.isfinite(resolutions)
                 & (resolutions > 0)
                 & np.isfinite(intensities)
                 & (intensities > 0)
+                & ((flags & excluded) == 0)
             )
             yield (
                 scan_number,
                 s["retention_time"] * _SECONDS_PER_MINUTE,
                 {
+                    "scan": scan_number,
                     "intensities": intensities[valid].tolist(),
                     "mzs": mzs[valid].tolist(),
                     "resolutions": resolutions[valid].tolist(),
                     "noises": noises[valid].tolist(),
+                    "flags": flags[valid].tolist(),
                 },
             )
 
@@ -2547,14 +2931,26 @@ class OpenTFRawBackend:
         scan_mzs: list[np.ndarray] = []
         scan_specs: list[np.ndarray] = []
         for s in selected:
-            mz, intensities = self._raw.profile(int(s["scan_number"]))
-            mz = np.asarray(mz, dtype=np.float64)
-            intensities = np.asarray(intensities, dtype=np.float64)
+            mz, intensities = self._profile(int(s["scan_number"]))
             mask = np.logical_and(mz_min <= mz, mz <= mz_max)
             scan_mzs.append(mz[mask])
             scan_specs.append(intensities[mask])
         times = np.array([s["retention_time"] * _SECONDS_PER_MINUTE for s in selected])
         return scan_mzs, scan_specs, times
+
+    def scan_profile(self, scan_number: int) -> tuple[np.ndarray, np.ndarray]:
+        return self._profile(int(scan_number))
+
+    def profile_chunks(self, scan_number: int) -> dict | None:
+        """How the scan's profile is stored: each chunk's first FFT bin,
+        number of points and m/z correction (``fudge``), with the bin axis.
+
+        OpenTFRaw's ``RawFile.profile_chunks``, as it returns it; None for a
+        scan with no stored profile. Only this backend has it: the axis
+        fingerprint checks its band table against the corrections
+        (:mod:`mascope_thermo.axis_fingerprint.direct`).
+        """
+        return self._raw.profile_chunks(int(scan_number))
 
     def average_profile(
         self,
@@ -2576,8 +2972,12 @@ class OpenTFRawBackend:
         #      native-density (FFT-bin) grid -- occupied cells only, so it is
         #      bounded and matches the density Thermo emits (~30k points).
         #   3. Linear-interpolate each scan onto the freq grid and sum. The peaks
-        #      are aligned, so this reproduces Thermo's apex (= mean *
-        #      ScansCombined) and FWHM; no integral rescale is needed.
+        #      are aligned, so the sum keeps a single scan's FWHM and its apex is
+        #      the scans' apexes summed; no integral rescale is needed. Thermo's
+        #      own AverageScans keeps the peak area but widens the peaks past
+        #      its single scans' FWHM (a few to several tens of percent), so do
+        #      not tune this toward its shape: the test_backend_parity
+        #      averaged-profile test measures the shape against single scans.
         #   4. Convert the freq grid back to m/z, each profile peak on the
         #      intensity-weighted mean of the scans' calibrations, the one its
         #      averaged centroid sits on.
@@ -2589,9 +2989,7 @@ class OpenTFRawBackend:
         num_combined = len(scan_indices)
         scans: list[tuple[np.ndarray, np.ndarray, float | None, float | None]] = []
         for scan_number in scan_indices:
-            mz, intensity = self._raw.profile(int(scan_number))
-            mz = np.asarray(mz, dtype=np.float64)
-            intensity = np.asarray(intensity, dtype=np.float64)
+            mz, intensity = self._profile(int(scan_number))
             if mz.size:
                 b, c = self._profile_conversion_params(int(scan_number))
                 scans.append((mz, intensity, b, c))
@@ -2663,6 +3061,24 @@ class OpenTFRawBackend:
         new_v = np.concatenate([summed, np.zeros(zeros.size)])
         order = np.argsort(new_mz, kind="stable")
         return new_mz[order], new_v[order]
+
+    def _profile(self, scan_number: int) -> tuple[np.ndarray, np.ndarray]:
+        """One scan's profile, ``(mz, intensity)``, as float64 arrays.
+
+        The m/z is the reader's, and a scan the reader gives no m/z for
+        refuses the file here, before a ``NaN`` reaches a range mask, which
+        would drop the scan's points without a word, or an average, which
+        would lose every other scan's to it.
+
+        :raises UnconvertedProfileError: When a point of the scan's profile
+            has no finite m/z (:mod:`mascope_thermo.scan_events`).
+        """
+        mz, intensity = self._raw.profile(scan_number)
+        mz = np.asarray(mz, dtype=np.float64)
+        refuse_unconverted_profile(
+            scan_number, mz, f"OpenTFRaw {_distribution_version('opentfraw')}"
+        )
+        return mz, np.asarray(intensity, dtype=np.float64)
 
     def _profile_conversion_params(
         self, scan_number: int
@@ -2989,6 +3405,28 @@ class OpenTFRawBackend:
             scan_idx_to_hcd[scan_number] = "" if hcd is None else str(hcd)
         return *_ms2_isolation_widths(scan_idx_to_width), scan_idx_to_hcd
 
+    def ms2_scan_records(
+        self,
+        polarity: Polarity | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
+    ) -> list[dict]:
+        records = []
+        for s in self._selected(polarity, t_min, t_max, ms_type="Ms2"):
+            scan_number = int(s["scan_number"])
+            trailer = self.scan_trailer(scan_number)
+            records.append(
+                _ms2_scan_record(
+                    scan_number,
+                    s["retention_time"] * _SECONDS_PER_MINUTE,
+                    s["total_ion_current"],
+                    self._raw.scan_filter(scan_number) or s.get("filter_string"),
+                    _trailer_numbers(trailer, _MS2_RECORD_TRAILER_NUMBERS),
+                    trailer.get(MS2_HCD_ENERGY),
+                )
+            )
+        return records
+
     def ms2_centroids_for_scans(
         self, scan_indices: list[int]
     ) -> tuple[list[dict], list[float]]:
@@ -3017,20 +3455,30 @@ class OpenTFRawBackend:
         return centroids, tic_values
 
 
+def backend_name() -> str:
+    """The reader backend ``MASCOPE_THERMO_BACKEND`` selects.
+
+    :return: ``"opentfraw"`` (the default) or ``"thermo"``
+    :rtype: str
+    :raises ValueError: When the variable names neither.
+    """
+    name = os.environ.get(ENV_BACKEND, "opentfraw").lower()
+    if name not in ("thermo", "opentfraw"):
+        raise ValueError(
+            f"Unknown {ENV_BACKEND}={name!r}; expected 'thermo' or 'opentfraw'."
+        )
+    return name
+
+
 def open_backend(datafile_path: str) -> ReaderBackend:
     """Open ``datafile_path`` with the backend selected by ``MASCOPE_THERMO_BACKEND``.
 
     Returns a context manager. Defaults to the OpenTFRaw backend; set
     ``MASCOPE_THERMO_BACKEND=thermo`` to use the legacy Thermo RawFileReader.
     """
-    name = os.environ.get(ENV_BACKEND, "opentfraw").lower()
-    if name == "thermo":
+    if backend_name() == "thermo":
         return ThermoBackend(datafile_path)
-    if name == "opentfraw":
-        return OpenTFRawBackend(datafile_path)
-    raise ValueError(
-        f"Unknown {ENV_BACKEND}={name!r}; expected 'thermo' or 'opentfraw'."
-    )
+    return OpenTFRawBackend(datafile_path)
 
 
 def averaged_profile_signature() -> str:
@@ -3050,15 +3498,10 @@ def averaged_profile_signature() -> str:
     :return: The signature, e.g. ``"otf2.0.0-g5"``
     :rtype: str
     """
-    name = os.environ.get(ENV_BACKEND, "opentfraw").lower()
-    if name == "thermo":
+    if backend_name() == "thermo":
         return "thermo"
-    if name == "opentfraw":
-        version = _distribution_version("opentfraw")
-        return f"otf{version}-g{AVERAGED_PROFILE_GENERATION}"
-    raise ValueError(
-        f"Unknown {ENV_BACKEND}={name!r}; expected 'thermo' or 'opentfraw'."
-    )
+    version = _distribution_version("opentfraw")
+    return f"otf{version}-g{AVERAGED_PROFILE_GENERATION}"
 
 
 @functools.cache

@@ -10,6 +10,7 @@ from mascope_backend.api.new.instrument_configs.service import fit_instrument_fu
 from mascope_backend.file_converter.base_processor import (
     BaseFileProcessor,
     SampleFileProps,
+    computes_axis_fingerprints,
     with_file_context,
 )
 from mascope_backend.file_converter.errors import (
@@ -18,7 +19,10 @@ from mascope_backend.file_converter.errors import (
     EmptyAcquisitionError,
 )
 from mascope_signal.instrument_func.fit import ORBI_FIT_DMZ
-from mascope_thermo.backend import open_backend
+from mascope_signal.ms2_store import holds_fragmentation, write_ms2_store
+from mascope_thermo.axis_fingerprint import compute_axis_fingerprint
+from mascope_thermo.axis_fingerprint.reference import minimal_document
+from mascope_thermo.backend import backend_name, open_backend
 from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_thermo.streams import pooled_ms1_streams, scan_streams
 from mascope_thermo.thermo import (
@@ -201,6 +205,65 @@ class RawProcessor(BaseFileProcessor):
 
     @property
     @with_file_context
+    def axis_fingerprint(self) -> dict:
+        """The file's axis fingerprint: the m/z offset its mass calibration
+        stored in each frequency band, read back from the stored profile.
+
+        See :func:`mascope_thermo.axis_fingerprint.compute_axis_fingerprint`,
+        which reads the profile of at most eight scans per acquisition mode.
+        Computed unless the deployment sets ``[backend] axis_fingerprint`` to
+        ``"off"``, which stores ``{}``.
+
+        A measurement served to others, like the censuses above, so it must
+        never cost us a file. The library hands back a document whatever
+        fails: its ``error`` document is stored and logged as a warning, and
+        so is any failure around the call. An ``unavailable`` document says
+        that the reader cannot read the stored points, which is how this
+        deployment is set up rather than a fault, and is logged at INFO. A
+        file with no scans stores ``{}``, at INFO as in
+        ``acquisition_params``: it is refused as an empty acquisition by the
+        property that reads its length. A file whose scan events the reader
+        misread does not get here: the census properties ``SampleFileProps``
+        declares before this one refuse it first, where the library would
+        hand back its ``error`` document and this would log a warning.
+
+        :return: The fingerprint document, or {} when not computed
+        :rtype: dict
+        """
+        if not computes_axis_fingerprints():
+            return {}
+        try:
+            reader = backend_name()
+            document = compute_axis_fingerprint(self.file_handle, reader_name=reader)
+        except NoScansFoundError:
+            _log.info(
+                "No scans to compute the axis fingerprint of %s from",
+                self.file_to_process,
+            )
+            return {}
+        except Exception as e:
+            _log.warning(
+                "Could not compute the axis fingerprint of %s",
+                self.file_to_process,
+                exc_info=True,
+            )
+            return minimal_document("error", f"{type(e).__name__}: {e}")
+        if document["status"] == "error":
+            _log.warning(
+                "Could not compute the axis fingerprint of %s: %s",
+                self.file_to_process,
+                document["error"],
+            )
+        elif document["status"] == "unavailable":
+            _log.info(
+                "The axis fingerprint of %s is unavailable under the %s reader",
+                self.file_to_process,
+                reader,
+            )
+        return document
+
+    @property
+    @with_file_context
     def _records_survey_scans(self) -> bool:
         """Whether the acquisition recorded any MS1 scans.
 
@@ -229,6 +292,34 @@ class RawProcessor(BaseFileProcessor):
                 raise
             return False
         return True
+
+    def _store_ms2(self, sample_file_props: SampleFileProps) -> None:
+        """Write the file's MS2 store, when its census holds fragmentation
+        scans.
+
+        Its fragmentation scans read once into a store beside the peak store,
+        which the MS2 routes read instead of the raw file
+        (:mod:`mascope_signal.ms2_store`), and recorded in the props and in
+        ``sample_file_props`` (``ms2_store``). A file whose census holds no
+        fragmentation stream, or holds no census, has none.
+
+        Like the censuses, it must never cost us a file: a store that cannot
+        be written is logged as a warning, and the file is stored without
+        one, its MS2 routes reading the raw file as before the store existed.
+
+        :param sample_file_props: The file's properties, as written.
+        :type sample_file_props: SampleFileProps
+        """
+        if not holds_fragmentation(sample_file_props.scan_streams):
+            return
+        try:
+            sample_file_props.ms2_store = write_ms2_store(sample_file_props.filename)
+        except Exception:
+            _log.warning(
+                "Could not write the MS2 store of %s; its MS2 routes read the raw file",
+                sample_file_props.filename,
+                exc_info=True,
+            )
 
     def _get_sample_file_props(self) -> SampleFileProps:
         """Extract the sample file properties, naming as data what is data.

@@ -120,7 +120,10 @@ from mascope_sdk import MascopeClient
 # Auto-loads credentials from .env
 mascope = MascopeClient(workspace="My Workspace")
 
-# List datasets (returns a DataFrame)
+# List datasets (returns a DataFrame). Besides the name, type and instrument,
+# each row carries the dataset's descriptive metadata: license, authors
+# (name, orcid, affiliation), keywords, related_identifiers and funding,
+# empty where the dataset has none
 datasets = mascope.datasets.list()
 
 # List batches by dataset name
@@ -426,7 +429,7 @@ Each failure names the sample (`sample_batch_name`, `sample_item_id`, `sample_it
 
 ### Provenance
 
-Every frame a high-level loader returns carries the provenance of the server that served it, on `df.attrs["provenance"]`: the deployment's id, the Mascope version it runs, the match-score and peak-assignment engine versions in force, and when this client first heard from that build. Keep it with what you derive from the frame, and a published figure can name the build its numbers came from.
+Every frame a high-level loader returns, and those of `batches.ion_series`, `batch_peaks.series` and `sample_files.list`, carries the provenance of the server that served it, on `df.attrs["provenance"]`: the deployment's id, the Mascope version it runs, the match-score and peak-assignment engine versions in force, and when this client first heard from that build. Keep it with what you derive from the frame, and a published figure can name the build its numbers came from.
 
 ```python
 peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium")
@@ -653,7 +656,7 @@ The role each write needs is listed in the
 
 ## Caching
 
-Dataset, batch, sample, and ionization mechanism listings are cached (in volatile memory) automatically after the first call. This speeds up repeated name resolution and avoids redundant API calls. Each call hands out a copy of the cached listing, so editing what you got leaves the cache, and the next call, as fetched. A write made through the SDK clears it. When data on the server changes otherwise (e.g. a batch created in the web app, or a copy the server finishes in the background), the cache needs to be cleared to reload the data on the next call. The cache is not persisted on disk, so restarting the kernel always clears the cache.
+Dataset, batch, sample, ionization mechanism and ionization mode listings are cached (in volatile memory) automatically after the first call. This speeds up repeated name resolution and avoids redundant API calls. Each call hands out a copy of the cached listing, so editing what you got leaves the cache, and the next call, as fetched. A write made through the SDK clears it. When data on the server changes otherwise (e.g. a batch created in the web app, or a copy the server finishes in the background), the cache needs to be cleared to reload the data on the next call. The cache is not persisted on disk, so restarting the kernel always clears the cache.
 
 ```python
 # Clear the cache when server data changes
@@ -688,8 +691,15 @@ comes from its flags. For example,
 | `update(dataset_id, name=, description=, icon=, workspace_id=)` | Rename it, or change its description or icon | `dict` |
 | `move(dataset_id, target_workspace_id, workspace_id=)` | Move it into another workspace | `dict` |
 | `delete(dataset_id, workspace_id=)` | Delete it and everything in it | `dict` |
+| `tombstones()` | What deleted datasets were, newest delete first | `list[dict]` |
 
 The writes act in the client's workspace unless `workspace_id` names another.
+
+A deleted dataset leaves a tombstone: its name, description, descriptive
+metadata, how many batches, samples and files it held, who deleted it and
+when, and whether alone or with its workspace. `tombstones()` returns those of
+every workspace you are a member of (a global admin's: all of them), across
+workspaces, not only the client's.
 
 #### `mascope.batches`
 
@@ -699,6 +709,9 @@ The writes act in the client's workspace unless `workspace_id` names another.
 | `update(batch_id, target_collection_ids, name=, description=)` | Rename it and set its target collections | `dict` |
 | `copy(batch_id, dataset_id, name, description=)` | Copy it into a dataset, in the background | `dict` |
 | `delete(batch_id)` | Delete it and its samples, in the background | `dict` |
+| `ion_series(batch_id, collection=, ions=)` | Each sample's matched intensity of each target ion, one request per collection | `pd.DataFrame` |
+
+`ion_series` returns one row per (sample, target ion) the server holds a match record for: `sample_item_id`, `target_ion_id`, `target_compound_name`, `target_compound_formula`, `ion_formula`, `ionization_mechanism`, `intensity` and `match_category`. The misses are rows too: `match_category` 0 is no match, at intensity 0, so filter on `match_category > 0` before counting detections or averaging. It reads the ions of `collection` (an ID), or the `ions` named by ID, or else those of every target collection the batch has, with one request each; that last list is the client's cached `collections.list`, so call `clear_cache()` after attaching a collection in the same session. Join `samples.list(batch=...)` on `sample_item_id` for each sample's time.
 
 #### `mascope.samples`
 
@@ -711,7 +724,8 @@ The writes act in the client's workspace unless `workspace_id` names another.
 | `compute_peak_timeseries(sample_id, peak_ids=)` | Have the server compute the timeseries peaks lack    | `int`               |
 | `get_spectrum(sample_id, ...)`                  | Get averaged spectrum                                | `pd.DataFrame│None` |
 | `get_spectra(sample_ids, ...)`                  | Get spectra for multiple samples                     | `pd.DataFrame│None` |
-| `get_centroids(sample_ids)`                     | Get centroid data                                    | `dict│None`         |
+| `get_centroids(sample_ids, exclude=)`           | Per-scan centroids, flagged ones left out on request | `dict│None`         |
+| `get_axis_fingerprint(sample_id)`               | Its file's axis fingerprint, with the sample's scans | `dict`              |
 | `update(sample_id, sample_item)`                | Update a sample's fields (the whole sample)          | `dict`              |
 | `move(sample_ids, batch_id)`                    | Move samples into a batch, in the background         | `dict`              |
 | `copy(sample_ids, batch_id)`                    | Copy samples into a batch, in the background         | `dict`              |
@@ -720,12 +734,27 @@ A `get_peaks` over a time range (`t_min` / `t_max`) leaves out the peaks whose t
 
 `list` accepts exactly one of `batch` (must match a single batch; raises if ambiguous) or `batches` (returns samples from all matching batches, with an added `sample_batch_name` column).
 
+`get_centroids` returns a dict keyed by sample ID. Each sample's value holds parallel lists with one entry per scan: `scan` (the scan number), `timestamp` in seconds, and the scan's centroids as lists of `masses`, `intensities`, `resolutions`, `signal_to_noise` and `flags`. A centroid's `flags` are the sum of the instrument's marks on it: 2 fragmented, 4 merged, 8 exception (a weak side-lobe peak), 16 reference (the lock-mass peak the scan was corrected with), 0 for none. So `flag & 16` finds a scan's lock mass. `exclude` leaves out the centroids that carry any of the flags it names (`"reference"`, `"exception"`, `"merged"`, `"fragmented"`); without it every stored centroid comes back. A server older than the flags ignores `exclude`, so given one, an answer without `flags` raises `MascopeAPIError` rather than return the centroids asked to be left out.
+
+```python
+centroids = mascope.samples.get_centroids(
+    [sample_id], exclude=["reference", "exception"]
+)
+kept = centroids[sample_id]
+for scan, masses in zip(kept["scan"], kept["masses"]):
+    print(scan, len(masses))
+```
+
 #### `mascope.sample_files`
 
 | Method                                                              | Description                                           | Returns             |
 | ------------------------------------------------------------------- | ----------------------------------------------------- | ------------------- |
 | `get_scans(sample_file_id, fields=, first_scan=, last_scan=, ...)`  | A file's scan table: one row per scan, no centroids   | `pd.DataFrame│None` |
 | `download_raw(sample_file_id, path)`                                | The file's source `.raw` / `.h5`, streamed to disk    | `Path`              |
+| `get_axis_fingerprint(sample_file_id)`                              | A raw Orbitrap file's axis fingerprint                | `dict`              |
+| `list(datetime_min=, datetime_max=, instrument=, page=, limit=)`   | The files acquired in a time range, in a batch or not | `pd.DataFrame`      |
+
+`list` pages through the whole range unless `page` is given (pages count from 0, `limit` files each, 1000 by default), oldest file first. `datetime_utc` is the acquisition's start in tz-aware UTC; `datetime` is the same moment in the instrument's local time, and `acquisition_timezone` names that zone where it is known. A time given without a zone is taken as UTC.
 
 A sample names the file it was cut from in `sample_file_id` (`mascope.samples.get(sample_id)["sample_file_id"]`). `get_scans` returns one row per scan of that file with the scan's statistics (`ScanNumber`, `StartTime` in minutes, `TIC`, `ScanType`, `MsType`) and its trailer under the instrument's own labels, colon included (`"FT Resolution:"`, `"Conversion Parameter B:"`). Scans of every MS order are in it and none is left out; filter on `MsType` for the MS1 scans alone. No peak is read for it, so it stays under a megabyte for a file whose centroids run to hundreds.
 
@@ -752,6 +781,31 @@ scans = mascope.sample_files.get_scans(
 raw = mascope.sample_files.download_raw(file_id, "downloads/")
 ```
 
+`get_axis_fingerprint` returns what Mascope measured of a raw Orbitrap file's m/z axis when it converted the file. On some Orbitrap models the data system divides the frequency axis into frequency bands, and each mass calibration leaves one m/z offset per band on top of a smooth trend; the fingerprint reads those offsets back from the stored profile, per acquisition mode, with the lock mass each scan was corrected with. Mascope never alters an m/z with it. It is a JSON document under the schema `mascope.axis_fingerprint`, version 1 (`libraries/thermo/src/mascope_thermo/axis_fingerprint/axis_fingerprint.schema.json`). Read its `status` first: `ok` and `no_fingerprint` carry the whole document; `missing` (not computed for the file), `unavailable` and `error` carry nothing else. `ok` means that some mode has a table of frequency bands, not that every mode has one: a mode without one, flagged `no_segment_table` or `centroid_only`, has `segments` null. A file that is not an Orbitrap file raises `NotFoundError`.
+
+```python
+fingerprint = mascope.sample_files.get_axis_fingerprint(file_id)
+if fingerprint["status"] in ("ok", "no_fingerprint"):
+    for mode in fingerprint["modes"]:
+        print(mode["mode_id"], mode["flags"], mode["segments"] is not None)
+```
+
+How the fingerprint is measured, and what its flags mean (`grid_unmeasured`, `grid_weak`, `not_stepwise`), is in [the reader pipeline notes](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/thermo/docs/reader_pipeline.md#71-the-axis-fingerprint).
+
+`mascope.samples.get_axis_fingerprint(sample_id)` returns the same document for the sample's file with an `item` block: `scans`, the scan numbers its peak list is built from; `mode_id`, the mode they belong to, which `modes` lists first; `lock`, that mode's lock shares and effective lock mass over those scans; and `mz_calibration_factor` and `file_mz_calibration_factor`, what Mascope multiplies into the m/z it serves of the sample's stream and of the file. `dominant_mode` stays the file's. A stitched sample's `mz_calibration_factor` is the file's, while its peaks carry the factor of each stream that owns a run of it: `streams` lists the streams its peak list is read from, each with its `stream_key`, its `scans` and its `mz_calibration_factor`, and `get_peaks` names each peak's stream in its `segment` column (the `index` of an entry of `attrs["segments"]`, whose `key` is a `stream_key`). `streams` is None for a sample over every MS1 scan of its polarity, whose peaks carry the file's factor.
+
+```python
+fingerprint = mascope.samples.get_axis_fingerprint(sample_id)
+item = fingerprint.get("item")
+if item and item["mode_id"]:
+    mode = fingerprint["modes"][0]  # the sample's mode
+    print(item["lock"]["m_lock_eff"], item["mz_calibration_factor"])
+    if mode["segments"]:
+        bands = pd.DataFrame(
+            mode["segments"]["rows"], columns=mode["segments"]["columns"]
+        )
+```
+
 #### `mascope.matching`
 
 | Method                                 | Description                  | Returns           |
@@ -770,6 +824,8 @@ The saves take `target_ion_id` and `match_params` as the runs do. The batch save
 
 | Method | Description | Returns |
 | ------ | ----------- | ------- |
+| `list(batch_id=, workspace_id=, all_workspaces=)` | List the workspace's collections and the global ones, or those of one batch | `pd.DataFrame│None` |
+| `get(collection_id)` | One collection, with its compounds and batches | `dict` |
 | `create(name, description=, collection_type=, compounds=, compound_ids=, batch_ids=, workspace_id=, is_global=)` | Create a target collection | `dict` |
 | `update(collection_id, name=, description=, collection_type=, compounds=, compound_ids=)` | Change it or its compounds | `dict` |
 | `associate(collection_id, batch_ids)` | Set the batches it is associated with | `dict` |
@@ -784,8 +840,11 @@ A collection belongs to the client's workspace unless `workspace_id` names anoth
 | `add(compounds)` | Add compounds, each `{"target_compound_formula": ..., "target_compound_name": ...}` | `dict` |
 | `update(compounds)` | Update compounds, each with its `target_compound_id` | `dict` |
 | `remove(compound_id)` | Delete a compound, taking it out of every collection | `dict` |
+| `find_structures(formula, cas_number=, name=, limit=)` | The reference compounds that could give a compound of the formula its structure | `list[dict]` |
 
-The compound list is shared by every workspace, so these need the global editor role. `add` lists a compound that already exists (the same name and formula, or CAS number) under `existing_compounds` instead of creating it again.
+The compound list is shared by every workspace, so `add`, `update` and `remove` need the global editor role. `add` lists a compound that already exists (the same name and formula, or CAS number) under `existing_compounds` instead of creating it again.
+
+`find_structures` reads, with any role, the rows of the server's active reference lists whose Hill formula is the one given and that carry an InChIKey, an InChI or a SMILES: each with its `name`, `inchikey`, `inchi`, `smiles`, `cas_number`, `source` (the list) and `license`. The rows recording `cas_number` come first, flagged `cas_match`, then those named `name`, flagged `name_match`. A row is a candidate, not an identification; to give a compound one, send its fields with `update`.
 
 #### `mascope.peak_assignments`
 
@@ -797,19 +856,37 @@ The compound list is shared by every workspace, so these need the global editor 
 
 `get` reads the latest completed run unless `run_id` is given, and pages through the API internally — the whole run comes back as one DataFrame. See [Peak Assignments](#peak-assignments).
 
+#### `mascope.batch_peaks`
+
+| Method                                           | Description                                                    | Returns             |
+| ------------------------------------------------ | -------------------------------------------------------------- | ------------------- |
+| `list(batch_id, tier=, min_n_present=, run_id=)` | The batch's species table, one row per batch peak              | `pd.DataFrame│None` |
+| `members(batch_id, sample_id=)`                  | The whole ledger, one row per member                           | `pd.DataFrame│None` |
+| `series(batch_id, tier=, min_n_present=2, run_id=)` | Each sample's intensity of each batch peak, in one read per batch | `pd.DataFrame` |
+| `verdicts(batch_id)`                             | The batch-level verdicts on its species                        | `pd.DataFrame│None` |
+| `runs(batch_id)`                                 | The batch runs that rewrote its ledger, newest first           | `pd.DataFrame│None` |
+| `import_run(batch_id, rows, engine=, engine_version=)` | Land an external engine's batch-level result as a run    | `dict│None`         |
+
+`series` is the slim counterpart of `members`: one row per (sample, batch peak) with the member's `sample_item_id`, `sample_peak_id`, `intensity` and `tier` beside its batch peak's `batch_peak_id`, `batch_mz`, `consensus_formula`, `consensus_ion_formula` and `consensus_tier`. `min_n_present=2` leaves out the batch peaks only one sample saw. `df.attrs["run_id"]` names the run the rows are from: `run_id` when given, else the batch's current run. While a rebuild or search is running, the previous run is still the current one but the live ledger is being rewritten, so the rows may be half of each; `series` logs a warning then, and a read after the run finishes is the reliable one. See [`load_batch_ledger`](#load_batch_ledger-the-batch-ledger).
+
 #### `mascope.ionization`
 
-| Method   | Description                          | Returns             |
-| -------- | ------------------------------------ | ------------------- |
-| `list()` | List available ionization mechanisms | `pd.DataFrame│None` |
+| Method                        | Description                          | Returns             |
+| ----------------------------- | ------------------------------------ | ------------------- |
+| `list()`                      | List available ionization mechanisms | `pd.DataFrame│None` |
+| `modes(include_system=False)` | List the ionization modes            | `pd.DataFrame│None` |
 
-Columns: `ionization_mechanism_id`, `ionization_mechanism` (the mechanism in the standard adduct notation: `[M+H]+`, `[M-H]-`, `[M+Br]-`, `[M]+.` for electron transfer), `ionization_mechanism_polarity`, `shipped` (whether Mascope ships the mechanism, so that every server holds it from its first start).
+`list()` columns: `ionization_mechanism_id`, `ionization_mechanism` (the mechanism in the standard adduct notation: `[M+H]+`, `[M-H]-`, `[M+Br]-`, `[M]+.` for electron transfer), `ionization_mechanism_polarity`, `shipped` (whether Mascope ships the mechanism, so that every server holds it from its first start).
+
+`modes()` gives the chemistries samples are acquired under, one row per mode: `ionization_mode_id`, `ionization_mode_name`, `ionization_mode_polarity`, `ionization_mode_token` (the file-name token that routes a file to it), `instrument` (the one instrument it routes files for, or empty for every instrument), `ionization_mechanism_ids`, `system_key` (set on a mode Mascope ships), `calibration_collection_id` and `diagnostic_collection_id`. A sample names its mode by `ionization_mode_id` alone; join on it for the name. `include_system=True` adds the modes Mascope ships that the server has not adopted, which no sample is processed under.
 
 #### `mascope.cheminfo`
 
 | Method                                | Description                               | Returns      |
 | ------------------------------------- | ----------------------------------------- | ------------ |
 | `query_by_mz(mz, mechanism_ids, ...)` | Query potential formulas for an m/z value | `list[dict]` |
+
+By default the m/z may be any line of a candidate's ion, not only its monoisotopic one: a 13C or 81Br line, a dibromide's brighter 79Br81Br line, as a peak's m/z often is. A candidate read at another line has that line's m/z as its `target_isotope_mz`. `isotopologues=False` searches the monoisotopic line only. `known_only=True` keeps only formulas of a known reference compound. Both are keyword-only; a server that predates them ignores them, and then searches the monoisotopic line only. The server does not honour `limit`: it returns every composition it finds, in no ranked order.
 
 ## Examples
 
@@ -915,6 +992,11 @@ os.environ["MASCOPE_SDK_LOG_LEVEL"] = "DEBUG"
 
 from mascope_sdk import MascopeClient
 ```
+
+The SDK writes its lines to stderr through a handler of its own, filtered to
+`mascope_sdk`. The first client removes loguru's default stderr handler, so
+those lines are not printed twice. Handlers your application added, before or
+after, stay in place and receive the SDK's lines too.
 
 ### SSL Verification
 

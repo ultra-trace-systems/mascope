@@ -9,16 +9,22 @@ import Tooltip from 'primevue/tooltip'
 // the icon beside a full one. It is named for a screen reader in both states,
 // and explained in a tooltip only while the label is hidden.
 
-const mocks = vi.hoisted(() => ({ app: null }))
+const mocks = vi.hoisted(() => ({ app: null, menu: null }))
 vi.mock('@/stores', () => ({ useApp: () => mocks.app }))
 
 vi.mock('@/lib/base', () => ({
+  BaseEmptyState: {
+    props: ['icon', 'title', 'hint', 'note'],
+    template:
+      '<div class="empty-state"><strong class="title">{{ title }}</strong><span class="hint">{{ hint }}</span><slot name="actions" /><span class="note">{{ note }}</span></div>'
+  },
   BaseTabbedPanel: { template: '<div class="panel"><slot name="menu" /><slot /></div>' },
   BaseCopyableField: true
 }))
 
 vi.mock('@/lib/panes/PaneBrowserSample/stores', () => ({
-  useDatasetContextMenu: () => ({ dialog: { op: null }, selection: null, onClick: vi.fn() }),
+  useDatasetContextMenu: () =>
+    (mocks.menu = { dialog: { op: null }, selection: null, onClick: vi.fn() }),
   useDatasetTableConfig: () => ({
     config: { filters: { global: { value: null } }, sortField: null, sortOrder: null }
   })
@@ -49,7 +55,10 @@ const mountTable = () =>
       plugins: [PrimeVue],
       directives: { tooltip: Tooltip },
       stubs: {
-        DataTable: { template: '<div class="datatable"><slot /></div>' },
+        // The table decides when its #empty slot shows (no rows, or none the
+        // search left); the stub always renders it, so what the pane puts
+        // in it is what these tests read.
+        DataTable: { template: '<div class="datatable"><slot name="empty" /><slot /></div>' },
         Column: true,
         IconField: { template: '<div><slot /></div>' },
         InputIcon: true,
@@ -109,5 +118,53 @@ describe('the Create dataset button', () => {
     mocks.app.data.dataset.list = []
     await wrapper.vm.$nextTick()
     expect(createButton(wrapper).classes()).not.toContain('hiddenlabel')
+  })
+})
+
+// The table's empty slot: a workspace with no datasets is told what a
+// dataset is and offered the first one; one whose datasets the search hid is
+// told that instead, with no create offer that would read as "you have none".
+describe('the empty dataset list', () => {
+  it('names the empty list and offers to create the first dataset', async () => {
+    mocks.app = makeApp([])
+    const empty = mountTable().get('.empty-state')
+
+    expect(empty.get('.title').text()).toBe('No datasets yet')
+    expect(empty.get('.hint').text()).toMatch(/study or campaign/)
+
+    await empty.get('button').trigger('click')
+    expect(mocks.menu.dialog.op).toBe('create')
+  })
+
+  // Copying acquisition data into a private workspace is the usual start, and
+  // the empty list says how: what the dataset list's own menu pastes.
+  it('says a batch, samples or a cut dataset can be pasted in', () => {
+    mocks.app = makeApp([])
+    const note = mountTable().get('.empty-state .note').text()
+
+    expect(note).toMatch(/right-click here to paste/)
+    expect(note).toMatch(/a copied batch or samples/)
+    expect(note).toMatch(/a cut dataset/)
+  })
+
+  it('says the search hid the rows when there are datasets', () => {
+    mocks.app = makeApp([DATASET])
+    const empty = mountTable().get('.empty-state')
+
+    expect(empty.get('.title').text()).toBe('No datasets match the search')
+    expect(empty.find('button').exists()).toBe(false)
+  })
+
+  // The list is still [] while the first load runs: that is not "none yet".
+  it('says nothing while the list loads', async () => {
+    mocks.app = makeApp([])
+    mocks.app.data.dataset.pending = true
+    const wrapper = mountTable()
+
+    expect(wrapper.find('.empty-state').exists()).toBe(false)
+
+    mocks.app.data.dataset.pending = false
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('.empty-state .title').text()).toBe('No datasets yet')
   })
 })

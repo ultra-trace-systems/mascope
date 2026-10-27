@@ -2,6 +2,17 @@
 
 # Public Chemistry & Spectral Database Integration: Design & Plan
 
+- **Status:** building
+- **As of:** 2026-10-27
+- **Tracked in:** [MS2 analysis](https://linear.app/ultra-trace/project/ms2-analysis-7fdc525bca51)
+  milestone 6, "Spectral library matching", for phase 4 (Linear: MAS-429 the
+  `reference_spectrum` table and the library adapters, MAS-360 the ranking); for
+  phase 5, MAS-427 the SDK surface in [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f)
+  milestone 1 and MAS-428 the refresh cadence and version pinning in
+  [Ops workflows and dev tooling](https://linear.app/ultra-trace/project/ops-workflows-and-dev-tooling-0dd3555613f9)
+- **Supersedes:** `reference_peak_assignment_convergence.md` (retired 2026-10-22; Phase 3 records it)
+- **What:** Mirroring public compound databases to give assigned formulas an identity.
+
 ## Purpose
 
 Mascope assigns chemistry to peaks entirely from first principles: given an m/z,
@@ -28,7 +39,7 @@ Stage A is designed to consume.
 
 ---
 
-## 1. Current state (as-is)
+## 1. Current state as this was written (before phases 0 to 3 shipped)
 
 Composition assignment is **de novo only**. `find_compositions(mz, config)`
 ([finder.py](../../libraries/tools/src/mascope_tools/composition/finder.py))
@@ -68,15 +79,10 @@ matter for storage and provenance (Section 3).
 
 ### 2.1 Structure / identity (MS1 annotation)
 
-| Database | Content | Access | License |
-| --- | --- | --- | --- |
-| **PubChem** | ~120M compounds; name, SMILES, InChIKey, exact & monoisotopic mass, formula, xrefs | [PUG-REST](https://pubchem.ncbi.nlm.nih.gov/docs/pug-rest) (<=5 req/s) + FTP bulk dumps | Public domain |
-| **EPA CompTox / CCTE** | ~1.2M environment-relevant chemicals, "MS-ready" structures, formula & mass search | [CCTE REST APIs](https://api-ccte.epa.gov) + bulk downloads | Public domain |
-| **ChEBI** | ~200k curated biologically-relevant molecules + ontology | SDF/FTP dump, API | CC BY 4.0 |
-| **HMDB** | ~250k human metabolites, some predicted MS/MS | XML/SDF bulk download | Free/open (attribution; verify commercial terms) |
-| **LIPID MAPS (LMSD)** | ~48k curated lipids, systematic nomenclature | SDF download | CC BY 4.0 |
-| **COCONUT** | ~400k natural products | Bulk download, API | CC0 / open |
-| **NORMAN Suspect List Exchange** | Curated suspect lists (PFAS, pesticides, ...) | Downloadable lists via CompTox | Open |
+The seven sources as shipped - what each holds, the dump its adapter reads
+and its licence - are listed under "Sources" in
+[libraries/reference/README.md](../../libraries/reference/README.md#sources)
+since 2026-10-22.
 
 ### 2.2 MS/MS spectral libraries (MS2 matching)
 
@@ -88,12 +94,8 @@ matter for storage and provenance (Section 3).
 
 ### 2.3 Deliberately excluded
 
-Not free-to-use, so out of scope unless a licensing decision changes: **NIST**
-MS library (paid), **mzCloud** (browse-only, not redistributable), **METLIN**
-(restricted), **CAS**/SciFinder (paid), **ChemSpider** (non-commercial key).
-**KEGG** is conditional - the web/REST API is free for academic use but bulk FTP
-is a paid subscription and commercial use is restricted; treat it as
-conditional, not free.
+The databases left out for not being free to use, and KEGG's conditional
+status, are in the same README section.
 
 ### 2.4 Priority for this codebase
 
@@ -198,7 +200,7 @@ a peak whose winning formula matches a `reference_compound` gets `source=databas
 and populated identity, so annotation and the two-stage assignment reinforce each
 other rather than duplicating logic.
 
-### 3.6 MS2 spectral matching (later phase)
+### 3.6 MS2 spectral matching
 
 Ingest MassBank/MoNA/GNPS spectra into a `reference_spectrum` table keyed by
 precursor m/z + formula + InChIKey (carrying peak lists and license), then add a
@@ -207,38 +209,84 @@ runs against the extracted MS2 centroids
 ([ms2.py](../../libraries/sdk/src/mascope_sdk/resources/ms2.py)). This is a
 distinct, larger subsystem and is sequenced after MS1 annotation is proven.
 
+**The ingestion half, as built (MAS-429).** `reference_spectrum` sits beside
+`reference_compound`, one row per spectrum per source version: the compound's
+name, canonical formula, InChIKey, SMILES and InChI where the library gives
+them; the precursor m/z, adduct and polarity; the collision energy as a number
+with its kind (`nce` or `ev`) where the library names one value and its unit,
+and as the library wrote it always (a ramp, steps, a bare number); the centroid
+list as JSON pairs in ascending m/z, intensities as given; and the per-record
+licence. `precursor_mz`, `inchikey` and `formula` are indexed.
+
+- **Versioned loads, one kind per name.** A library loads through `mascope
+  reference sync <massbank|mona|gnps> <dump> --version <tag>` (or the backend's
+  `reference_sync` script) as a load on its own `reference_source` row, which
+  records its `kind`, `compound` or `spectrum`. Activation, staging, pruning
+  and `status` work as they do for compounds. A name holds loads of one kind,
+  so a library loaded as `--name hmdb` cannot deactivate the HMDB compound
+  mirror.
+- **The dumps.** MassBank in its record format, from the source archive of a
+  MassBank-data release (its MSP files leave the licence out, and its JSON is
+  a metadata catalogue without peaks). MoNA as an MSP export. GNPS as a
+  library MGF, the adduct read off the compound's name and the formula off
+  the InChI.
+- **What is admitted.** MS2 spectra that were measured, with a precursor m/z
+  and a peak: MS1, MS3+ and deprecated records, MoNA's in-silico spectra (most
+  of its "All Spectra" export) and GNPS library classes other than gold, silver
+  and bronze are counted by reason and left out.
+- **Licences.** Each spectrum keeps the licence its record states (MassBank
+  mixes CC0, CC BY, CC BY-SA, the non-commercial CC BY-NC and CC BY-NC-SA, and
+  others); a record that states none carries `mona-unstated` or
+  `gnps-unstated` rather than an assumed licence, and GNPS's own libraries are
+  `CC0`. The read path, `by_inchikey` and `by_precursor` in
+  `mascope_reference.spectral_query`, takes the licences to keep from its
+  caller. The deployment gate `reference_licenses` is Stage A's and does not
+  read spectra; which setting gates the scorer is MAS-360's to wire.
+
 ---
 
 ## 4. Phased plan
 
 Each phase is intended to land independently and leave the system shippable.
 
-### Phase 0 - Foundations
+### Phase 0 - Foundations (shipped)
 - New `mascope_reference` library skeleton: common record model, `by_formula` /
   `by_mass_window` query interface, formula normalization reuse.
 - `reference_source` + `reference_compound` tables + Alembic migration.
 - No ingestion yet - schema, query interface, and read path only.
 
-### Phase 1 - PubChem + EPA CompTox (highest ROI)
+### Phase 1 - PubChem + EPA CompTox (highest ROI; shipped)
 - ETL adapters for PubChem and CompTox bulk dumps -> normalized records.
 - `mascope reference sync` CLI command with versioned loads.
 - Wire `by_formula` annotation into `retrieve_compositions_by_mz`. Proves the
   full path end to end.
 
-### Phase 2 - Curated & suspect-screening sources
+### Phase 2 - Curated & suspect-screening sources (shipped)
 - Adapters for ChEBI, HMDB, LIPID MAPS, COCONUT, and NORMAN suspect lists.
 - InChIKey-based cross-source dedup and a collapsed view.
 - "Known compounds only" prior surfaced through the cheminfo path.
 
-### Phase 3 - Peak-centric integration
-- Expose `reference_compound` as the known-composition set for Stage A of the
-  peak-centric engine; annotate `source=database` assignments with identity.
+### Phase 3 - Peak-centric integration (shipped)
 
-### Phase 4 - MS/MS spectral matching
-- `reference_spectrum` table + MassBank/MoNA/GNPS adapters (license-filtered).
-- Spectral-similarity scorer against extracted MS2 centroids; surface hits.
+Shipped in PR [#1633](https://github.com/ultra-trace-systems/mascope/pull/1633) (commit
+53282ce75): `mascope_reference.known.iter_known_compositions` is the known-composition set
+Stage A pre-computes isotopologues from - one entry per unique neutral formula of the active
+reference sources with the identities that share it, deduplicated on formula,
+licence-filterable, and bounded by the Stage A window (`KnownWindow`, polarity) rather than
+the whole mirror - and a `source=database` assignment carries the matched identities in its
+provenance. Matching stays formula-based; identity is one-to-many and attached, never
+matched on. The seam was designed in `reference_peak_assignment_convergence.md` (retired
+2026-10-22; in git history) and is documented in the
+[reference library's README](../../libraries/reference/README.md) ("Ownership boundary")
+and the [`known.py`](../../libraries/reference/src/mascope_reference/known.py) docstring.
 
-### Phase 5 - Productization
+### Phase 4 - MS/MS spectral matching (ingestion shipped; scorer not started)
+- `reference_spectrum` table + MassBank/MoNA/GNPS adapters (license-filtered):
+  shipped in MAS-429, described in section 3.6.
+- Spectral-similarity scorer against extracted MS2 centroids; surface hits:
+  MAS-360.
+
+### Phase 5 - Productization (partly shipped: identities in the ledger and inspector, licence gating)
 - UI/SDK surfaces for annotations and spectral hits.
 - Refresh cadence for source dumps; version pinning for reproducibility.
 - Performance: keep annotation an indexed lookup; bound live-API fallback.

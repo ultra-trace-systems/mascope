@@ -34,6 +34,50 @@ sample that failed and why. A script that loads more samples than the
 prompt, so the load raises `ConfirmationRequiredError` instead of starting;
 pass `confirm_above=None` to load without asking.
 
+## The axis fingerprint of an Orbitrap file
+
+On some Orbitrap models the mass calibration leaves one small m/z offset in
+each frequency band of the Orbitrap axis. Mascope reads those offsets back
+from every raw Orbitrap file it converts, and serves them as the file's axis
+fingerprint, for a client that corrects its own mass assignments with them.
+Mascope never changes an m/z with it.
+
+```python
+fingerprint = mascope.sample_files.get_axis_fingerprint(sample_file_id)
+fingerprint = mascope.samples.get_axis_fingerprint(sample_id)
+```
+
+A sample's fingerprint also names the scans its peaks come from, the lock
+mass those scans used and the calibration factor Mascope applies to them. A
+file converted before the fingerprint existed has none yet: its `status` is
+`missing`. The
+[SDK readme](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/sdk/README.md#mascopesample_files)
+describes the document, and
+[How it works: calibration](../how-it-works/calibration.md#the-orbitrap-axis-fingerprint)
+says what it measures.
+
+A client that corrects the axis also reads the scans and centroids the
+fingerprint describes. `get_scans` returns a file's scan table without its
+centroids: one row per scan, with the conversion coefficients and lock-mass
+fields of its trailer.
+
+```python
+scans = mascope.sample_files.get_scans(
+    sample_file_id,
+    fields=["Conversion Parameter B:", "Conversion Parameter C:", "MsType"],
+)
+```
+
+`get_centroids` gives each centroid the instrument's flags, and `exclude`
+leaves flagged ones out: here the lock-mass peaks (`reference`) and weak
+side-lobe peaks (`exception`).
+
+```python
+centroids = mascope.samples.get_centroids(
+    [sample_id], exclude=["reference", "exception"]
+)
+```
+
 ## Built on the SDK: Peaky
 
 Want the analysis without writing the notebook code?
@@ -99,7 +143,9 @@ Besides these, a token can:
   (`POST /api/sample/files/delete`, admin in the instrument's workspace);
 - add an instrument function (`POST /api/instrument_configs`, the global
   editor role);
-- run and review peak assignments and the batch peak ledger, and refit an
+- run and review peak assignments and the batch peak ledger, publish an
+  external engine's assignment run
+  ([Publishing an assignment run](publishing-assignments.md)), and refit an
   instrument's peak-assignment confidence calibration (a superuser).
 
 Everything else, such as workspaces and their members, m/z calibration,

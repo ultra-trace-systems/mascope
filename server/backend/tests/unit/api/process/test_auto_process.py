@@ -189,7 +189,9 @@ def status():
     ``status.declares``, and the rung that reads it is covered in
     test_auto_process_declared.py. So is the count of the samples an earlier
     run made, which a park reads: none, unless ``status.samples`` says
-    otherwise. Request the fixture by name to read what
+    otherwise. And the chemistry detector, which would read the file's peak
+    store: ``status.detect`` gives what it was asked to read. Request the
+    fixture by name to read what
     was recorded:
     ``[(status, detail), ...]`` in order via :func:`_recorded`.
     """
@@ -208,6 +210,7 @@ def status():
         patch(
             f"{_SVC}._pipeline_item_count", new_callable=AsyncMock, return_value=0
         ) as samples,
+        patch(f"{_SVC}.record_chemistry_detection", new_callable=AsyncMock) as detect,
     ):
         census.return_value = []
         stitched.return_value = StoreStitch()
@@ -219,6 +222,7 @@ def status():
         record.stitched = stitched
         record.learn = learn
         record.samples = samples
+        record.detect = detect
         yield record
 
 
@@ -2682,6 +2686,119 @@ async def test_a_retry_is_told_when_its_run_has_cleared_the_file():
     ]
 
 
+@pytest.mark.asyncio
+async def test_a_callers_rebuild_runs_once_the_file_is_bound_and_not_again():
+    """Re-processing's rebuild is owed to the first attempt that binds the
+    file, which need not be the first attempt, and goes ahead of the
+    clearing of what an earlier attempt left: a retry clears again, and does
+    not rebuild again."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    done: list[str] = []
+    rebuild = AsyncMock(side_effect=lambda _: done.append("rebuilt"))
+    cleanup = AsyncMock(side_effect=lambda _: done.append("cleared"))
+    body = _attempts(
+        (False, ApiException("busy", {}, 503)),
+        (True, ApiException("busy", {}, 503)),
+        (True, {"message": "ok"}),
+    )
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", cleanup),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-rebuilt", independent_transaction=True, rebuild=rebuild
+        )
+
+    assert done == ["rebuilt", "cleared", "cleared"]
+    # The attempt's own row
+    assert rebuild.await_args.args[0].sample_file_id == "sf-rebuilt"
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_that_raises_is_owed_to_the_retry():
+    """A rebuild that raised did not run to its end, so the retry that binds
+    the file runs it again before it clears anything."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    rebuild = AsyncMock(side_effect=[ApiException("busy", {}, 503), None])
+    cleanup = AsyncMock()
+    body = _attempts((True, None), (True, {"message": "ok"}))
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", cleanup),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-rebuilt", independent_transaction=True, rebuild=rebuild
+        )
+
+    assert rebuild.await_count == 2
+    cleanup.assert_awaited_once()
+    # The first attempt raised in its clearing: the second is not told it
+    # cleared the file
+    assert [call.kwargs["cleared_by_this_run"] for call in body.call_args_list] == [
+        False,
+        False,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_that_stops_the_run_clears_nothing():
+    """What the rebuild says it stopped on is what the attempt is told, and
+    nothing of the file is cleared after it. Only a rebuild that ran to its
+    end says the file's store is to be read again."""
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    told = []
+
+    async def attempt(**kwargs):
+        told.append(
+            await kwargs["clear_earlier_run"](
+                _make_sample_file(sample_file_id=kwargs["sample_file_id"])
+            )
+        )
+        return {"status": "failed", "message": "m", "_notification_data": {}}
+
+    cleanup = AsyncMock()
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", AsyncMock(side_effect=attempt)),
+        patch(f"{_SVC}._delete_partial_acquisition_items", cleanup),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-stopped",
+            independent_transaction=True,
+            rebuild=AsyncMock(return_value="Its peaks could not be detected again."),
+        )
+        await service.auto_process_sample_file(
+            sample_file_id="sf-rebuilt",
+            independent_transaction=True,
+            rebuild=AsyncMock(return_value=None),
+        )
+        await service.auto_process_sample_file(
+            sample_file_id="sf-plain", independent_transaction=True
+        )
+
+    assert told == [
+        service._Cleared(stopped="Its peaks could not be detected again."),
+        service._Cleared(rebuilt=True),
+        service._Cleared(),
+    ]
+    assert [call.args[0] for call in cleanup.await_args_list] == [
+        "sf-rebuilt",
+        "sf-plain",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # MS2 parts: a file of fragmentation scans alone, which nothing binds
 # ---------------------------------------------------------------------------
@@ -3029,6 +3146,138 @@ async def test_filing_clears_what_an_earlier_run_left_first(status):
 
 
 @pytest.mark.asyncio
+async def test_filing_stops_where_a_callers_rebuild_stopped_the_run(status):
+    """Re-processing's rebuild runs before filing, as before making samples,
+    and a rebuild that stopped the run leaves the file unfiled: its MS2 part
+    is not cleared, and no other is made."""
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+    cleanup = AsyncMock()
+
+    with (
+        patch(f"{_SVC}._delete_partial_acquisition_items", cleanup),
+        _filing(),
+    ):
+        result = await _run_pipeline(
+            rebuild=AsyncMock(return_value="Its peaks could not be detected again.")
+        )
+        _filer().assert_not_awaited()
+
+    assert result["status"] == "failed"
+    assert result["message"] == "Its peaks could not be detected again."
+    cleanup.assert_not_awaited()
+    assert _recorded(status) == []
+
+
+@pytest.mark.asyncio
+async def test_a_reprocessing_rebuild_does_each_step_once():
+    """A clearing that raised is retried by the pipeline, which runs the
+    rebuild again: the calibration is not reset again, which would lose what
+    the first reset cleared, and the peaks are not detected again, which
+    they were. The clearing is, and the batches its items were in are
+    reloaded."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    reset, detect, ms2 = AsyncMock(), AsyncMock(), AsyncMock()
+    clear = AsyncMock(side_effect=[ApiException("busy", {}, 503), {"batch-1"}])
+    affected: set[str] = set()
+    rebuild = service._reprocessing_rebuild(True, False, affected)
+    sample_file = _make_sample_file(sample_file_id="sf-rebuilt")
+    with (
+        patch(f"{_SVC}.reset_mz_calibration", reset),
+        patch(f"{_SVC}.redetect_peaks", detect),
+        patch(f"{_SVC}._rewrite_ms2_store", ms2),
+        patch(f"{_SVC}._clear_sample_items_for_reprocessing", clear),
+    ):
+        with pytest.raises(ApiException):
+            await rebuild(sample_file)
+        assert await rebuild(sample_file) is None
+
+    reset.assert_awaited_once_with(sample_file)
+    detect.assert_awaited_once_with(sample_file, True)
+    ms2.assert_awaited_once_with(sample_file)
+    assert clear.await_count == 2
+    assert clear.await_args.kwargs == {
+        "sample_file_id": "sf-rebuilt",
+        "independent_transaction": False,
+    }
+    assert affected == {"batch-1"}
+
+
+@pytest.mark.asyncio
+async def test_a_reprocessing_rebuild_writes_the_ms2_store_from_the_file():
+    """By the file's name, from its raw file and its census
+    (``refresh_ms2_store``); its peaks are detected first, and its samples
+    cleared after."""
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    calls = []
+    rebuild = service._reprocessing_rebuild(True, True, set())
+    with (
+        patch(f"{_SVC}.reset_mz_calibration", AsyncMock()),
+        patch(
+            f"{_SVC}.redetect_peaks",
+            AsyncMock(side_effect=lambda *_: calls.append("peaks")),
+        ),
+        patch(
+            f"{_SVC}.refresh_ms2_store",
+            side_effect=lambda filename: calls.append(("ms2", filename)),
+        ),
+        patch(
+            f"{_SVC}._clear_sample_items_for_reprocessing",
+            AsyncMock(side_effect=lambda **_: calls.append("clear") or set()),
+        ),
+    ):
+        assert await rebuild(_make_sample_file(filename="ORBI-1_ms2")) is None
+
+    assert calls == ["peaks", ("ms2", "ORBI-1_ms2"), "clear"]
+
+
+@pytest.mark.asyncio
+async def test_an_ms2_store_that_cannot_be_written_does_not_stop_the_rebuild():
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    rebuild = service._reprocessing_rebuild(None, True, set())
+    with (
+        patch(f"{_SVC}.reset_mz_calibration", AsyncMock()),
+        patch(f"{_SVC}.refresh_ms2_store", side_effect=OSError("disk full")),
+        patch(
+            f"{_SVC}._clear_sample_items_for_reprocessing",
+            AsyncMock(return_value=set()),
+        ) as clear,
+        captured_logs() as records,
+    ):
+        assert await rebuild(_make_sample_file(filename="ORBI-1_ms2")) is None
+
+    clear.assert_awaited_once()
+    (warning,) = [r for r in records if r["level"].name == "WARNING"]
+    assert "Could not write the MS2 store of ORBI-1_ms2" in warning["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_reprocessing_rebuild_detects_nothing_where_nothing_is_decided():
+    """Nearly every file: its store is the one any decision gives it."""
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    detect = AsyncMock()
+    rebuild = service._reprocessing_rebuild(None, True, set())
+    with (
+        patch(f"{_SVC}.reset_mz_calibration", AsyncMock()),
+        patch(f"{_SVC}.redetect_peaks", detect),
+        patch(
+            f"{_SVC}._clear_sample_items_for_reprocessing",
+            AsyncMock(return_value=set()),
+        ) as clear,
+    ):
+        assert await rebuild(_make_sample_file()) is None
+
+    detect.assert_not_awaited()
+    assert clear.await_args.kwargs["independent_transaction"] is True
+
+
+@pytest.mark.asyncio
 async def test_a_bound_file_with_no_ms1_scans_is_not_called_a_blank(status):
     """It has no peaks for another reason, and its sample is worth opening.
 
@@ -3073,3 +3322,130 @@ async def test_a_blank_whose_file_also_fragments_is_still_a_blank(status):
         "done",
         "Blank measurement: no peaks to calibrate, match or assign.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Chemistry detection: rung 5, as an audit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chosen, kept, rung",
+    [
+        (None, None, "token"),
+        (["im-001"], None, "explicit"),
+        (["im-001"], {"im-001": ItemProvenance("token", "mb-000000000001")}, "token"),
+        (["im-001"], {"im-001": ItemProvenance()}, None),
+    ],
+    ids=["a token", "a person", "a kept token", "a kept mode of no rung"],
+)
+async def test_the_detector_reads_each_bound_polarity_beside_its_rung(
+    status, chosen, kept, rung
+):
+    """What is stored beside the call is the rung the polarity's sample
+    records, so the audit and a count of samples by rung read one column."""
+    from mascope_backend.api.controllers.sample.files.process.detection import (
+        PolarityBinding,
+    )
+
+    mocks, sample_file = _start_single()
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=mocks["resolve"].return_value,
+    ):
+        await _run_pipeline(ionization_mode_ids=chosen, kept_provenance=kept)
+
+    status.detect.assert_awaited_once_with(
+        sample_file, [], ["-"], {"-": PolarityBinding("im-001", rung)}
+    )
+    assert _recorded_provenance(mocks)["im-001"].bound_by == rung
+
+
+@pytest.mark.asyncio
+async def test_the_detector_reads_a_file_its_method_bound(status):
+    from mascope_backend.api.controllers.sample.files.process.detection import (
+        PolarityBinding,
+    )
+
+    mocks, sample_file = _start_single()
+    mode = mocks["resolve"].return_value[0]
+    mocks["resolve"].side_effect = _no_token()
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=True):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=([_routing(mode)], None),
+        ):
+            await _run_pipeline()
+
+    status.detect.assert_awaited_once_with(
+        sample_file, [], ["-"], {"-": PolarityBinding("im-001", "method")}
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_detector_reads_the_store_the_clearing_left_before_any_sample(
+    status,
+):
+    """After the clearing, which can detect the file's peaks again under
+    another stitch, and before the samples are made, so a run that fails
+    later has still stored what the spectrum names."""
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        _auto_process_sample_file,
+        _Cleared,
+    )
+
+    mocks, sample_file = _start_single()
+    before = [{"key": "before", "signature": {"polarity": "-", "ms_order": 1}}]
+    after = [{"key": "after", "signature": {"polarity": "-", "ms_order": 1}}]
+    status.census.return_value = before
+    order = []
+
+    async def rebuild(_sample_file):
+        order.append("clear")
+        status.census.return_value = after
+        return _Cleared(rebuilt=True)
+
+    status.detect.side_effect = lambda *args: order.append("detect")
+    made = mocks["create_batches"].return_value
+
+    def create(**kwargs):
+        order.append("create")
+        return made
+
+    mocks["create_batches"].side_effect = create
+
+    await _auto_process_sample_file(sample_file_id="sf-001", clear_earlier_run=rebuild)
+
+    assert order == ["clear", "detect", "create"]
+    assert status.detect.await_args.args[:3] == (sample_file, after, ["-"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unbound",
+    [_no_token(), ValueError("Found too many matching ionization modes")],
+    ids=["no token", "an ambiguous name"],
+)
+async def test_a_parked_file_is_read_with_nothing_beside_it(status, unbound):
+    """The spectrum of a file no rung binds is read too: what it names is
+    the suggestion rung 5 makes once it is measured."""
+    mocks, sample_file = _start_single()
+    census = [
+        {"key": "A", "signature": {"polarity": "-", "ms_order": 1}},
+        {"key": "B", "signature": {"polarity": "+", "ms_order": 2}},
+    ]
+    status.census.return_value = census
+    sample_file.polarity = "+-"
+    mocks["resolve"].side_effect = unbound
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=False):
+        result = await _run_pipeline()
+
+    assert result["status"] == "parked"
+    # Its MS1 polarity only, and no binding beside it.
+    status.detect.assert_awaited_once_with(sample_file, census, ["-"])

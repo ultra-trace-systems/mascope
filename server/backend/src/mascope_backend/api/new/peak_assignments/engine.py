@@ -13,7 +13,7 @@ persistence.
 
 import math
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -147,12 +147,13 @@ UNTARGETED_IONIZATION = "()"
 PATTERN_SCORING_KEY = "pattern_scoring"
 
 #: Key under which a run records the mass calibration it fitted from its own
-#: corroborated commits, and what that gating cost: the offset and width every
-#: committed row's ``mass_z`` is measured in, how many rows anchored them, and
-#: how many uncorroborated rows the distance capped. Separate from
-#: :data:`PATTERN_SCORING_KEY` because the two are measured over different rows
-#: at different points - that one is what Stage A had to score the search with,
-#: this one is what the finished ledger turned out to be able to measure.
+#: corroborated commits and its source's own lines, and what that gating cost:
+#: the offset and width every committed row's ``mass_z`` is measured in, how
+#: many rows anchored them, and how many uncorroborated rows the distance
+#: capped. Separate from :data:`PATTERN_SCORING_KEY` because the two are
+#: measured over different rows at different points - that one is what Stage A
+#: had to score the search with, this one is what the finished ledger turned
+#: out to be able to measure.
 MASS_CALIBRATION_KEY = "mass_calibration"
 
 #: Key under which a run records what its own channels corroborated: the
@@ -440,7 +441,9 @@ def is_reference_mirror_row(assignment: dict) -> bool:
 
 
 def sample_mass_accuracy(
-    match_isotope_df, reagent: ReagentOffset | None = None
+    match_isotope_df,
+    reagent: ReagentOffset | None = None,
+    min_anchor_ions: int | None = None,
 ) -> SampleMassAccuracy:
     """Fit a sample's mass accuracy off the frame its Stage A fit was scored on.
 
@@ -453,15 +456,27 @@ def sample_mass_accuracy(
     :param reagent: What the reagent pre-pass's lines said
         (:func:`reagent_line_offset`), carried beside the fit and never into
         it: the offset falls back to it only where the fit measured none.
+    :param min_anchor_ions: The distinct ions the anchors must come from for
+        either number to be measured; fewer, and the frame measured neither,
+        however many lines they matched. One ion's lines share that ion's own
+        mass error, so a bright ion matching eight of them alone would fit its
+        own error as the offset and the floor as the width
+        (``seeded_scoring.gate_and_score``). None counts lines alone.
     :return: The fitted offset and width, how many of the target library's
         matched lines they were fitted from, and the reagent lines' reading.
     """
-    anchors = target_library_rows(match_isotope_df)
-    mu, sigma = fit_sample_mass_accuracy(anchors)
+    rows = target_library_rows(match_isotope_df)
+    anchors = mass_accuracy_anchors(rows)
+    if min_anchor_ions is not None and (
+        "target_ion_id" not in rows.columns
+        or rows.loc[anchors.index, "target_ion_id"].nunique() < min_anchor_ions
+    ):
+        return SampleMassAccuracy(anchors=len(anchors), reagent=reagent)
+    mu, sigma = fit_sample_mass_accuracy(rows)
     return SampleMassAccuracy(
         mu_ppm=mu,
         sigma_ppm=sigma,
-        anchors=len(mass_accuracy_anchors(anchors)),
+        anchors=len(anchors),
         reagent=reagent,
     )
 
@@ -470,6 +485,7 @@ def pattern_scoring_for(
     match_params,
     mass_accuracy: SampleMassAccuracy,
     instrument_accuracy_ppm: float,
+    resolution: Callable[[float], float] | None = None,
 ) -> PatternScoring:
     """How the untargeted stage scores this sample's isotope envelopes.
 
@@ -501,6 +517,10 @@ def pattern_scoring_for(
     :param match_params: The sample's resolved match parameters.
     :param mass_accuracy: What Stage A measured of this sample's mass error.
     :param instrument_accuracy_ppm: The class width to use when it measured none.
+    :param resolution: The file's resolving power as a function of m/z, or None
+        where the run could not read one. With it, the predicted lines one peak
+        of the file cannot separate are scored as one line, the sum of their
+        shares: on a TOF the 13C peak also holds the 15N, 2H and 17O lines.
     :return: The scoring parameters for this sample's search.
     """
     return PatternScoring(
@@ -513,6 +533,7 @@ def pattern_scoring_for(
         mu_ppm=float(mass_accuracy.scoring_mu_ppm or 0.0),
         mz_tolerance_ppm=float(match_params.mz_tolerance),
         abundance_floor=float(match_params.isotope_abundance_threshold),
+        resolution=resolution,
     )
 
 
@@ -606,6 +627,10 @@ def pattern_scoring_snapshot(
         "fitted_anchors": int(mass_accuracy.anchors),
         "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
         "abundance_floor": float(scoring.abundance_floor),
+        # Whether the envelope was predicted at the file's resolving power, one
+        # line per peak it can separate, or one line per isotopologue because
+        # the run could read no resolution for the file.
+        "lines_merged_at_resolution": scoring.resolution is not None,
     }
     reagent = mass_accuracy.reagent
     if reagent is not None:
@@ -913,6 +938,7 @@ def score_ions_by_fit(
     match_isotope_df: pd.DataFrame,
     fallback_sigma_ppm: float | None = None,
     reagent_offset: ReagentOffset | None = None,
+    min_anchor_ions: int | None = None,
 ) -> pd.DataFrame:
     """Set each isotopologue's ``match_score`` to its ion's fit score (Stage A).
 
@@ -980,6 +1006,9 @@ def score_ions_by_fit(
         too few once its workaround entries are gone, the lines put the axis
         at -1.26 ppm and the run's own commits at -1.10, where the sample was
         otherwise scored at zero. None leaves such a sample uncorrected.
+    :param min_anchor_ions: The distinct ions a fit's anchors must come from
+        (:func:`sample_mass_accuracy`); a frame with fewer is scored at the two
+        stand-ins above. None, as Stage A runs, counts lines alone.
     :return: The gated frame with every ion's fit as its rows' ``match_score``.
     """
     if match_isotope_df.empty or not _FIT_SCORE_COLS.issubset(match_isotope_df.columns):
@@ -999,7 +1028,9 @@ def score_ions_by_fit(
     # the width.
     # The offset is None where neither measured one; the scorer reads that as
     # an uncorrected sample rather than a centred one.
-    accuracy = sample_mass_accuracy(df, reagent=reagent_offset)
+    accuracy = sample_mass_accuracy(
+        df, reagent=reagent_offset, min_anchor_ions=min_anchor_ions
+    )
     sigma = accuracy.sigma_ppm if accuracy.sigma_ppm is not None else fallback_sigma_ppm
     mu = accuracy.scoring_mu_ppm
     noise = sample_noise_floor(df)

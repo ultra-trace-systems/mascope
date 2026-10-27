@@ -86,6 +86,7 @@ def run_concurrent(
     max_workers: int = 8,
     desc: str = "Processing",
     unit: str = "it",
+    on_result: Callable[[tuple[Any, ...], T], None] | None = None,
 ) -> tuple[list[T], list[TaskFailure]]:
     """Execute *func* concurrently over *tasks* with a progress bar.
 
@@ -100,6 +101,14 @@ def run_concurrent(
     logged at the end when any task failed. ``BaseException`` (e.g.
     ``KeyboardInterrupt``) still propagates immediately after cancelling
     pending futures.
+
+    *on_result*, when given, is called with each task's args-tuple and its
+    non-None result as the result arrives, in the thread that collects them
+    (in the order tasks finish). It is how a caller watches a load as it runs
+    - a running row count against a cap, say. Whatever it raises stops the
+    run: the tasks not yet started are cancelled, those already running are
+    waited for and their results dropped, and the exception propagates. It is
+    not a task failure.
     """
     if max_workers > 8:
         raise ValueError("max_workers cannot exceed 8 to avoid overloading the API")
@@ -120,12 +129,15 @@ def run_concurrent(
                 index, args = futures[future]
                 try:
                     result = future.result()
-                    if result is not None:
-                        results.append((index, result))
                 except Exception as exc:
                     failed.append((index, TaskFailure(args, exc)))
                     # INFO per task; the summary below warns once for the run
                     logger.info("Task failed ({}): {}", desc, exc)
+                else:
+                    if result is not None:
+                        results.append((index, result))
+                        if on_result is not None:
+                            on_result(args, result)
                 pbar.update(1)
         except BaseException:
             # Cancel remaining futures so shutdown() doesn't block

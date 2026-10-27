@@ -1,5 +1,10 @@
 # The acquisition record: what an instrument's control program says of a file
 
+- **Status:** built
+- **As of:** 2026-10-23
+- **Tracked in:** [Automatic ingest: routing and splitting](https://linear.app/ultra-trace/project/automatic-ingest-routing-and-splitting-68acd9575fa9) (Linear; the FAIR export of its ids is MAS-33)
+- **What:** The acquisition record a control program writes and the File Agent sends with a file: how it travels, routing and export. The schema itself is the user page [Acquisition records](../user/instruments/acquisition-records.md).
+
 Status: **built** (2026-10-07): the schema, the File Agent's half and the
 server's. A control program writes a record, an agent sends it with the
 file's upload, and the server keeps it on the file, binds the file by the
@@ -31,115 +36,12 @@ Two things in Mascope want it:
 
 ## The sidecar
 
-| | |
-|---|---|
-| Where | Beside the data file, under the file's whole name and `.mascope.json`: `run_0042.raw` has `run_0042.raw.mascope.json` |
-| What | One JSON object, UTF-8, 16 KB at most |
-| When | Before the agent uploads the file. A program that embeds the agent writes it in an `Agent.on_ready` step, which runs before the uploader has the file. A program beside a standalone agent writes it before the file has been left alone for the agent's `timeout` |
-| How often | Once. A retried upload sends the same document, so the record of an acquisition never changes its identifiers |
-
-The agent never uploads a sidecar as a file, never changes one and never
-deletes one. A sidecar that appears after its file was uploaded is not sent.
-
-The schema is `mascope-acquisition/1`, and
-`mascope_sdk.acquisition` is its definition: `AcquisitionRecord` is the model,
-`parse()` reads a document, `dump()` writes one and `read_sidecar()` finds a
-file's. Both ends of an upload use them, so there is one answer to whether a
-document is a record.
-
-```json
-{
-  "schema": "mascope-acquisition/1",
-  "source_filename": "run_0042.raw",
-  "agent_id": "3f0e8f0c-5d0b-4c7e-9a43-0d8f6c1b2a10",
-  "sequence_run_id": "0199b6a0-7c00-7000-8000-000000000001",
-  "step_id": "0199b6a0-7c00-7000-8000-000000000002",
-  "acquisition_id": "0199b6a0-7c00-7000-8000-000000000003",
-  "ionization": "NO3",
-  "triggered_at": "2026-10-07T12:00:00.000Z"
-}
-```
-
-### Fields
-
-Only the first six are required. A program writes what it knows.
-
-| Field | Content |
-|---|---|
-| `schema` | `mascope-acquisition/1` |
-| `source_filename` | The data file's name where it was written, with no folder. The record of another file is not used |
-| `agent_id` | The installation that wrote the record. A UUID, made once and kept across upgrades and pairings |
-| `sequence_run_id` | One run of a sequence, with all its cycles |
-| `step_id` | One step of one cycle. A step that goes on after a pause keeps it; one triggered again is another step |
-| `acquisition_id` | This file's acquisition. Normally one to a step |
-| `machine` | The computer: `name` (its host name, as the agent reports it when pairing), `windows_machine_guid` |
-| `control_program` | `name`, `version`, `brand` |
-| `instrument` | The instrument, by the name the server files its data under |
-| `kecu` | The unit between the program and the instrument's hardware: `fw_version` |
-| `nodes` | The configured devices that were online, each with `name`, `device_name`, `hw_version`, `fw_version` |
-| `sequence` | `name`, `cycle`, `step_index`, `loop`, `steps` (each a `mode` and a `duration` in seconds) and the `hash` of the definition as run |
-| `configuration` | The configuration files as loaded when the run started, each a `path` relative to the program's configuration folder and a `sha256` |
-| `mode` | The mode the step put the instrument in: `name`, its `definition` in full, and the definition's `hash` |
-| `ionization` | The chemistry, as the token of an ionization mode on the server: the string that would otherwise have to be in the file's name. The whole token and nothing else ([The server](#the-server)) |
-| `triggered_at`, `acknowledged_at` | When the program asked the instrument to acquire, and when the instrument answered |
-| `step_started_at`, `step_finished_at` | The step's own start and end |
-| `settle_time` | Seconds the step waited for the mode to settle |
-| `setpoints`, `heaters` | What the mode set, as a flat mapping of `device.setting` to a value |
-| `events` | What happened to the step while it ran, each with `at` and `event`: a pause, a resume, a device set up again |
-| `channel_csv` | The file of channel readings the program wrote for the step: `name`, `sha256`. Named, not uploaded |
-| `clock` | The clock the times were read off: `source`, `timezone` (IANA), `utc_offset` (`+03:00`) |
-
-Three rules hold for every field:
-
-- **Identifiers are UUIDs** (RFC 9562), so they are unique without a registry
-  and read the same on every server. A version 7 UUID sorts by when it was
-  made, which suits runs, steps and acquisitions. The schema does not ask for
-  a version. It does ask for the UUID's own spelling, lowercase with its
-  hyphens (`0199b6a0-7c00-7000-8000-000000000001`): uppercase, braces,
-  `urn:uuid:` and bare digits are refused, so that the id in the document is
-  spelled as the column made from it.
-- **Content is identified by its SHA-256**, as 64 lowercase hex digits: a
-  configuration file, a mode's definition, a sequence's definition, the
-  channel file. The raw file's own hash is not in the record. The agent
-  computes it and sends it beside the record ([How it travels](#how-it-travels)).
-- **A time is an instant, written one way**: an RFC 3339 date-time with its
-  offset, UTC by convention (`2026-10-07T12:00:00.000Z`). That is the date,
-  `T`, the time to the second or finer, and `Z` or `+03:00`. A time without
-  an offset is refused, and so is one written any other way, a count of
-  seconds among them.
-
-### Compatibility
-
-A field the schema does not name is kept as it came, at every level, so a
-program can write more than a reader knows of. Adding a field is therefore
-not a new schema. Anything else - a field that changes its type or its
-meaning, a field that becomes required - is `mascope-acquisition/2`, which a
-reader of `/1` refuses by name.
-
-Reading is strict otherwise. A UUID and a time are strings, a number is not
-read out of a string, and a record with one field that is not what the schema
-says is not a record. That is deliberate: the control program's tests validate
-what it writes against the same model, so a fault shows there and not as a
-record that half arrived.
-
-It is as strict as it will ever be. A document this version reads is a record
-for good, since refusing it later would be the change that needs a new
-schema. So the document also has to be JSON and nothing more:
-
-- **No `NaN`, `Infinity` or `-Infinity`**, anywhere, in a field of the schema
-  or outside it. They are not numbers JSON has, and a database that stores
-  JSON refuses them. Python's `json.dumps` writes them unasked, so a failed
-  reading passed straight to it makes one: write `null`, or leave the
-  setting out. A number too large to be read as anything but infinity,
-  `1e999`, is refused with them.
-- **No key twice** in one object. Two readers need not pick the same one.
-- **32 levels of nesting at most**, the record itself being the first.
-
-`parse()` is where all of this is held, the spellings of an identifier and a
-time included, so a document is a record when `parse()` says so; the model
-alone reads more. `dump()` writes nothing `parse()` would not read back, and
-refuses a record that holds a number that is not finite. A field that was
-read as `null` is written as `null`.
+The document itself - where it is written, when, the schema
+`mascope-acquisition/1` and `mascope_sdk.acquisition` as its definition, the
+field table, the three rules (UUIDs, SHA-256, RFC 3339 times) and the
+compatibility rules a reader holds to - is the user page
+[Acquisition records](../user/instruments/acquisition-records.md) since
+2026-10-22. What follows is the agent's half and the server's.
 
 ## How it travels
 
@@ -262,10 +164,9 @@ one that turns out unusable later is left out with a line in the log.
 
 **In the API** the four identifiers and the hash are part of every sample
 file row: in listings, in the file's socket events, and in the sample view,
-which is where the spreadsheet export reads them (the columns "Acquisition
-ID", "Step ID", "Sequence run ID", "Agent ID" and "File SHA-256" of its
-samples sheet). The record itself is up to 16 KB, so it is loaded only by
-`GET /api/sample/files/{id}`.
+which is where the spreadsheet export reads them (the *Samples* sheet of
+[Export files](../user/reference/exports.md#samples)). The record itself is
+up to 16 KB, so it is loaded only by `GET /api/sample/files/{id}`.
 
 What bound a file is on its samples, and is returned with them. A sample
 item carries `bound_by` (`declared`, `explicit`, `token`, `method`, or null
@@ -389,10 +290,16 @@ Not built:
 
 ## Reading the record as provenance
 
-For the deposit-ready package of the FAIR roadmap's phase 3, which is JSON-LD
-on schema.org and PROV. Nothing builds the package yet; this is the reading
-both sides hold to, so that the package will have what it needs from the
-instrument side. The identifiers export as `urn:uuid:<id>`.
+For the deposit-ready package of the FAIR roadmap's phase 3. The package is
+built (MAS-33): it carries each file's record as the sidecar beside its raw
+file, `raw/<file>.mascope.json`, and the record's four identifiers in the
+manifest's entry for the file, as they are stored. The sidecar it publishes
+leaves out the record's `machine` block, the instrument computer's host name
+and Windows machine GUID (MAS-482); the database keeps it, and nothing below
+reads it. Its JSON-LD view on
+schema.org and PROV is MAS-34's to write; this is the reading both sides hold
+to, so that the view has what it needs from the instrument side. There the
+identifiers export as `urn:uuid:<id>`.
 
 | In the record | In PROV |
 |---|---|

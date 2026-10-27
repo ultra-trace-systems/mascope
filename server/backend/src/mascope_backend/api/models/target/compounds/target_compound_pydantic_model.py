@@ -4,6 +4,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
+from mascope_reference.query import STRUCTURE_PAGE_CAP, STRUCTURE_PAGE_SIZE
 from mascope_tools.composition.utils import assert_valid_formula
 
 
@@ -59,7 +60,87 @@ def validate_compound_formula(value: Optional[str]) -> Optional[str]:
     return value
 
 
-class TargetCompoundBase(BaseModel):
+# An InChIKey: 14 letters of skeleton hash, 10 of stereo, isotope and version
+# flags, one of protonation.
+_INCHIKEY = re.compile(r"[A-Z]{14}-[A-Z]{10}-[A-Z]")
+
+
+def validate_inchikey(value: Optional[str]) -> Optional[str]:
+    """Check an InChIKey's shape, after stripping it.
+
+    Shape only: the key is a hash, so nothing short of the structure it was
+    computed from can say it is the right one.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if not _INCHIKEY.fullmatch(value):
+        raise ValueError(
+            f"'{value}' is not an InChIKey (expected 14 capital letters, a "
+            "hyphen, 10 capital letters, a hyphen and one capital letter, as "
+            "in WQZGKKKJIJFFOK-GASJEMHNSA-N)."
+        )
+    return value
+
+
+def validate_inchi(value: Optional[str]) -> Optional[str]:
+    """Check that an InChI starts with ``InChI=``, after stripping it.
+
+    Whether its formula layer agrees with the compound's formula is checked in
+    the controllers, against the formula the row will have
+    (``target_compound_identity.check_inchi_formula``): an update may change
+    the InChI alone, and the formula it has to agree with is then the stored
+    one, which this model never sees.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if not value.startswith("InChI="):
+        raise ValueError("An InChI starts with 'InChI=', as in InChI=1S/CH4/h1H4.")
+    return value
+
+
+def validate_smiles(value: Optional[str]) -> Optional[str]:
+    """Strip a SMILES string, refusing an empty one.
+
+    Not parsed: reading it would take a cheminformatics dependency, and the
+    InChI and the InChIKey are the identity a reader resolves.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        raise ValueError("SMILES cannot be empty or contain only whitespace.")
+    return value
+
+
+class TargetCompoundIdentity(BaseModel):
+    """The structure identity a compound may carry (FAIR I3), all optional.
+
+    The InChIKey is the link to reference chemistry: it is matched against the
+    active reference compounds' keys when it is read, never stored as a link
+    to one reference row. On an update, ``null`` clears a field, and a formula
+    change clears all three unless the update gives them again.
+    """
+
+    inchikey: Optional[str] = Field(
+        None, description="InChIKey of the compound's structure"
+    )
+    inchi: Optional[str] = Field(
+        None,
+        description=(
+            "Standard InChI of the compound's structure; its formula layer "
+            "must agree with the compound's formula"
+        ),
+    )
+    smiles: Optional[str] = Field(None, description="SMILES of the structure")
+
+    _validate_inchikey = field_validator("inchikey")(validate_inchikey)
+    _validate_inchi = field_validator("inchi")(validate_inchi)
+    _validate_smiles = field_validator("smiles")(validate_smiles)
+
+
+class TargetCompoundBase(TargetCompoundIdentity):
     target_compound_id: Optional[str] = Field(
         None, description="ID of the target compound"
     )
@@ -84,7 +165,7 @@ class TargetCompoundMatches(TargetCompoundBase):
     )
 
 
-class TargetCompoundUpdate(BaseModel):
+class TargetCompoundUpdate(TargetCompoundIdentity):
     target_compound_id: str = Field(..., description="ID of the target compound")
     target_collection_id: Optional[str] = Field(
         None, description="ID of the target collection"
@@ -144,6 +225,40 @@ class GetTargetCompoundsQueryParams(QueryParamsModel):
     limit: int | None = Field(
         None,
         description="The number of results per page, optional. None for no pagination.",
+    )
+
+
+class FindTargetCompoundStructuresQueryParams(QueryParamsModel):
+    """What *Find structure* asks: a formula, and what to rank its rows on."""
+
+    formula: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "The compound's formula, in any notation; the reference rows of "
+            "its Hill formula are listed."
+        ),
+    )
+    cas_number: Optional[str] = Field(
+        None,
+        description=(
+            "The compound's CAS number: the rows recording it come first. "
+            "Compared as digits, so dashes do not matter."
+        ),
+    )
+    name: Optional[str] = Field(
+        None,
+        description=(
+            "The compound's name: the rows of that name, case aside, come "
+            "after the CAS matches."
+        ),
+    )
+    page: int = Field(0, ge=0, description="The page, counted from 0.")
+    limit: int = Field(
+        STRUCTURE_PAGE_SIZE,
+        ge=1,
+        le=STRUCTURE_PAGE_CAP,
+        description=f"Rows per page, at most {STRUCTURE_PAGE_CAP}.",
     )
 
 

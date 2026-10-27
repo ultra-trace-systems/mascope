@@ -14,6 +14,11 @@ factor check of its own.
 
 Logout is the library's implementation, restated here rather than mounted from
 a second router so that both halves of the session's lifecycle read together.
+It also signs out the tab's socket, which login authenticated from the same
+``X-SID`` header: clearing the cookie alone left the socket in its rooms, its
+session still naming the account. The cookie is the browser's, so the
+browser's other tabs are signed out with it, and their sockets go too: every
+socket the ending token authenticated (:func:`sign_out_session`).
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -34,6 +39,7 @@ from mascope_backend.api.new.users.user_manager.dependencies import get_user_man
 from mascope_backend.api.new.users.user_manager.service import UserManager
 from mascope_backend.db import User
 from mascope_backend.runtime import runtime
+from mascope_backend.socket.eviction import sign_out_session
 
 
 login_router = APIRouter()
@@ -99,15 +105,21 @@ async def login_route(
 
 @login_router.post("/logout", name="auth:jwt.logout")
 async def logout_route(
+    request: Request,
     user_token: tuple[User, str] = Depends(_current_user_token),
     strategy: Strategy[User, int] = Depends(auth_backend_jwt.get_strategy),
 ):
     """
-    End the current session.
+    End the current session, and the socket sessions it authenticated.
 
+    :param request: The incoming request; its ``X-SID`` names the tab's socket.
     :param user_token: The authenticated user and their session token.
     :param strategy: Session token strategy for the cookie backend.
     :return: The transport's logout response, which clears the cookie.
     """
     user, token = user_token
-    return await auth_backend_jwt.logout(strategy, user, token)
+    response = await auth_backend_jwt.logout(strategy, user, token)
+    await sign_out_session(
+        user.id, strategy.issued_at(token), request.headers.get("x-sid")
+    )
+    return response

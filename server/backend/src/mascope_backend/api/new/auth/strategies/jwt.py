@@ -51,6 +51,46 @@ class SessionJWTStrategy(JWTStrategy[User, int]):
             before tokens carried one; ``None`` when the token is invalid, its
             account is gone, or its session has been revoked.
         """
+        claims = self._decode(token)
+        if claims is None:
+            return None
+        user_id, issued_at = claims
+
+        try:
+            user = await user_manager.get(user_manager.parse_id(user_id))
+        except (exceptions.UserNotExists, exceptions.InvalidID):
+            return None
+
+        if session_revoked(user, issued_at):
+            runtime.logger.info(
+                f"Refused a web session of user {user.id} issued before its "
+                "session cutoff"
+            )
+            return None
+        return user, issued_at
+
+    def issued_at(self, token: Optional[str]) -> Optional[int]:
+        """
+        The issue time of a token, without looking its account up.
+
+        For a caller that has already authenticated the token and needs only
+        which session it is: logout signs out the sockets that session
+        authenticated (:func:`mascope_backend.socket.eviction.sign_out_session`).
+
+        :param token: The encoded token.
+        :return: Its ``iat``, or ``None`` when it has none or is invalid.
+        """
+        claims = self._decode(token)
+        return claims[1] if claims else None
+
+    def _decode(self, token: Optional[str]) -> Optional[tuple[str, Optional[int]]]:
+        """
+        A token's subject and issue time, once its signature and audience hold.
+
+        :param token: The encoded token.
+        :return: ``(sub, iat)``, with ``iat`` ``None`` for a token minted before
+            tokens carried one; ``None`` when the token is invalid.
+        """
         if token is None:
             return None
         try:
@@ -65,27 +105,15 @@ class SessionJWTStrategy(JWTStrategy[User, int]):
                 # "in the future" with no tolerance at all.
                 options={"verify_iat": False},
             )
-            user_id = data.get("sub")
-            if user_id is None:
-                return None
-            issued_at = data.get("iat")
-            if issued_at is not None and not isinstance(issued_at, int):
-                return None
         except jwt.PyJWTError:
             return None
-
-        try:
-            user = await user_manager.get(user_manager.parse_id(user_id))
-        except (exceptions.UserNotExists, exceptions.InvalidID):
+        user_id = data.get("sub")
+        if user_id is None:
             return None
-
-        if session_revoked(user, issued_at):
-            runtime.logger.info(
-                f"Refused a web session of user {user.id} issued before its "
-                "session cutoff"
-            )
+        issued_at = data.get("iat")
+        if issued_at is not None and not isinstance(issued_at, int):
             return None
-        return user, issued_at
+        return user_id, issued_at
 
     async def read_token(
         self, token: Optional[str], user_manager: BaseUserManager[User, int]

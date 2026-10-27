@@ -34,6 +34,10 @@ Deleting flows down the tree: removing a dataset removes its batches, their
 samples, and all results. Sample files are not deleted with them — they are
 managed separately (see [Instruments & acquisition](../instruments/index.md)).
 
+Deleting a dataset keeps a record of what it was: its name and workspace, who
+deleted it and when, what it held, and how it was described. **Settings** →
+**Deleted datasets** lists these records.
+
 ## Workspaces and sharing
 
 A **workspace** is the unit of access control. Each workspace has its own member
@@ -105,9 +109,11 @@ graph TD
   **targets** (the compounds you want to detect and be alarmed about),
   **calibrants** (reference compounds used to calibrate the mass axis), and
   **diagnostics** (compounds used to monitor instrument health).
-- A **target compound** is a molecule, defined by its formula (plus an optional
-  name and CAS number). Compounds are shared reference data — the same compound
-  can appear in many collections.
+- A **target compound** is a molecule, defined by its formula, plus an
+  optional name, CAS number and structure (InChIKey, InChI, SMILES) that say
+  what the target stands for; a match on the formula does not confirm the
+  structure. Compounds are shared reference data — the same compound can
+  appear in many collections.
 - A **target ion** is a compound as it actually appears in the spectrum: the
   neutral molecule combined with a specific **ionization mechanism** (for example
   a protonated form or an adduct). One compound can produce several ions.

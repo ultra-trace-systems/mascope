@@ -19,12 +19,45 @@ export const useIonContextMenu = defineStore('ionContextMenu', () => {
       'Unknown Compound'
   )
 
+  /**
+   * Open an ion's match: visualize it in the focused sample and bring the Match
+   * tab forward. The one way to enable that tab, shared by this menu, Enter on
+   * a focused row and the row's expander button. Selecting a row does not open
+   * its match: rows are multi-selectable, and the selection drives the Batch
+   * chart. A match is per sample, so there is none to open without a focused one.
+   */
+  function openMatch(ion) {
+    const sampleId = app.data.sample.focusedId
+    if (!ion || !sampleId) return
+    // `set` is debounced and returns before the match loads, so the tab is
+    // made active up front, and enables once the visualized ion arrives.
+    // Explicitly, since the tab store follows a newly visualized ion
+    // everywhere but out of the Sample tab.
+    app.data.match.visualized.set({
+      sampleId,
+      ionId: ion.target_ion_id,
+      collectionId: app.data.match.collection.focusedId
+    })
+    app.ui.tab.active = 'match'
+  }
+
   const entries = computed(() => {
     if (!selection.value) return []
 
     const collection = app.data.target.collection.detailed
+    const ion = selection.value
 
     return [
+      ...(app.data.sample.focusedId
+        ? [
+            {
+              label: 'Open match',
+              icon: 'pi ph ph-seal-question',
+              command: () => openMatch(ion)
+            },
+            { separator: true }
+          ]
+        : []),
       {
         label: `Edit compound '${compoundLabel.value}'`,
         icon: 'pi pi-pen-to-square',
@@ -58,6 +91,7 @@ export const useIonContextMenu = defineStore('ionContextMenu', () => {
     dialog,
     entries,
     compoundLabel,
+    openMatch,
     onClick,
     clear
   }

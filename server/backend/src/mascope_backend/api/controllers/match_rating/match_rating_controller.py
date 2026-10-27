@@ -7,6 +7,7 @@ from sqlalchemy import (
 )
 
 from mascope_backend.api.lib.api_features import api_controller
+from mascope_backend.api.lib.datetimes import as_utc
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.match_rating.match_rating_pydantic_model import (
@@ -55,9 +56,11 @@ async def get_match_ratings(
     :type page: int | None, optional
     :param limit: Number of items per page, defaults to None (no pagination).
     :type limit: int | None, optional
-    :param datetime_min: Filter by minimum datetime, defaults to None.
+    :param datetime_min: Keep ratings created at or after this time (inclusive;
+        a value with no offset is read as UTC), defaults to None.
     :type datetime_min: datetime, optional
-    :param datetime_max: Filter by maximum datetime, defaults to None.
+    :param datetime_max: Keep ratings created at or before this time (inclusive;
+        a value with no offset is read as UTC), defaults to None.
     :type datetime_max: datetime, optional
     :return: Dictionary containing total count and list of match ratings.
     :rtype: dict
@@ -79,9 +82,13 @@ async def get_match_ratings(
         if rating is not None:
             stmt = stmt.filter(MatchRating.rating == rating)
         if datetime_min:
-            stmt = stmt.where(MatchRating.match_rating_utc_created >= datetime_min)
+            stmt = stmt.where(
+                MatchRating.match_rating_utc_created >= as_utc(datetime_min)
+            )
         if datetime_max:
-            stmt = stmt.where(MatchRating.match_rating_utc_created <= datetime_max)
+            stmt = stmt.where(
+                MatchRating.match_rating_utc_created <= as_utc(datetime_max)
+            )
 
         # Step 3: Apply sorting
         if sort:

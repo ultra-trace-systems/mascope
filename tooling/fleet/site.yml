@@ -15,3 +15,4 @@
     - docker_daemon
     - unattended_upgrades
     - deploy_env
+    - postgres_readonly

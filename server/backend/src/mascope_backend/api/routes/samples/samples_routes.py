@@ -12,6 +12,7 @@ from mascope_backend.api.controllers.samples.spectrum_service import (
     get_samples_spectra_for,
 )
 from mascope_backend.api.lib.api_features import api_route
+from mascope_backend.api.lib.centroid_flags import centroid_exclusion
 from mascope_backend.api.models.samples.sample_pydantic_model import (
     GetSamplePeaksQueryParams,
     GetSamplePeakTimeseriesBody,
@@ -19,6 +20,9 @@ from mascope_backend.api.models.samples.sample_pydantic_model import (
     GetSamplesQueryParams,
 )
 from mascope_backend.api.new.auth.dependencies import current_active_user
+from mascope_backend.api.new.axis_fingerprint.routes import (
+    sample_axis_fingerprint_router,
+)
 from mascope_backend.api.new.ms2.routes import ms2_router
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access,
@@ -31,6 +35,7 @@ from mascope_backend.db import User
 
 samples_router = APIRouter(prefix="/api/samples", tags=["Samples Loading"])
 samples_router.include_router(ms2_router)
+samples_router.include_router(sample_axis_fingerprint_router)
 
 
 @samples_router.get("")
@@ -59,17 +64,42 @@ async def get_samples_route(
 @api_route(token_access=True)
 async def get_samples_centroids_route(
     sample_item_ids: list[str] = Query(..., description="List of sample item IDs"),
+    exclude: tuple[str, ...] = Depends(centroid_exclusion),
     user: User = Depends(current_active_user),
 ) -> dict:
-    """Retrieve centroids for multiple sample items.
+    """Retrieve the centroids of every scan of several sample items.
+
+    Per sample item, one list entry per scan: `scan` (the scan number),
+    `timestamp` [s], `mz_calibration_factor`, and per centroid its `masses`,
+    `intensities`, `resolutions`, `signal_to_noise` and `flags`. A
+    centroid's flags are the sum of the instrument's marks on it: 2
+    fragmented (a lobe of a split weak peak), 4 merged, 8 exception (a weak
+    side-lobe peak), 16 reference (the lock-mass peak the scan was corrected
+    with); 0 for an unflagged one. Every stored centroid is served unless
+    `exclude` names its flag.
+
+    The scans are every scan of the sample's polarity starting in its
+    window, MS2 scans and the scans of every scan stream included. The
+    sample's peak list is read from fewer: the MS1 scans of its own stream,
+    or of the streams that own some m/z of a stitched sample, which `GET
+    /api/samples/{sample_item_id}/axis_fingerprint` lists in `item.scans`.
+
+    A scan's `masses` are on the file's calibrated m/z axis: as the
+    instrument recorded them, times `mz_calibration_factor`. That is the
+    factor of the stream the scan is of, where the file was calibrated
+    stream by stream and its calibration names the stream, so a scan sits
+    where its stream's peaks do. Any other scan, an MS2 scan among them, is
+    on the file's own factor. Null for a file never calibrated, whose
+    masses are as recorded.
 
     :param sample_item_ids: List of sample item IDs to retrieve centroids for.
+    :param exclude: The flags whose centroids are left out.
     :param user: The current authenticated user. Requires workspace guest role.
     :type user: User
-    :return: A dictionary containing the process ID for retrieving centroids.
+    :return: The per-scan centroids, keyed by sample item ID.
     """
     await check_sample_access_bulk(sample_item_ids, user, "guest")
-    return await get_samples_centroids(sample_item_ids=sample_item_ids)
+    return await get_samples_centroids(sample_item_ids=sample_item_ids, exclude=exclude)
 
 
 @samples_router.get("/spectra")

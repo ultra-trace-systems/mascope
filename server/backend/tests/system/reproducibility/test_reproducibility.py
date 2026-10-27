@@ -43,7 +43,7 @@ import time
 import pytest
 
 from mascope_cli.cmd.demo import _rebuild, bundles
-from mascope_cli.cmd.demo.verify import compare_peaks
+from mascope_cli.cmd.demo.verify import compare_ms2, compare_peaks
 
 
 APP_URL = os.environ.get("MASCOPE_REPRO_APP_URL", "http://127.0.0.1:8080")
@@ -156,6 +156,17 @@ def test_pipeline_reproduces_goldens():
     diffs = compare_peaks(
         expected=expected, actual=actual, tolerances=manifest.get("tolerances")
     )
+
+    # --- The MS2 goldens, where the bundle has an MS2 acquisition -----------
+    # Compared the same way: a change that moves an MS2 spectrum is caught as
+    # one that moves an MS1 peak is. An MS1-only bundle records no `ms2` block.
+    ms2_rel = manifest.get("expected", {}).get("ms2")
+    if ms2_rel:
+        diffs += compare_ms2(
+            expected=pd.read_parquet(bundle_root / ms2_rel),
+            actual=pd.DataFrame(_export_actual_ms2()),
+            tolerances=manifest.get("tolerances"),
+        )
 
     shown = "\n".join(f"  - {d}" for d in diffs[:50])
     if len(diffs) > 50:
@@ -545,6 +556,34 @@ def _export_actual_peaks() -> list[dict]:
     rows = json.loads(res.stdout)
     assert rows, "golden export returned no matched peaks"
     return rows
+
+
+def _export_actual_ms2() -> list[dict]:
+    """
+    Export the produced MS2 spectra from inside the backend container.
+
+    The same seam as :func:`_export_actual_peaks`, with ``--ms2-json``: the
+    rows `mascope demo snapshot --update` captured as ``expected/ms2.parquet``.
+    Empty when no ingested file records fragmentation scans, which against a
+    bundle with MS2 goldens is a difference the comparison reports.
+    """
+    remote_path = "/tmp/repro_actual_ms2.json"
+    res = _docker(
+        "exec",
+        BACKEND_CONTAINER,
+        CONTAINER_PYTHON,
+        "-m",
+        "mascope_backend.db.scripts.export_goldens",
+        "--ms2-json",
+        remote_path,
+        timeout=900,
+    )
+    assert res.returncode == 0, (
+        f"MS2 golden export failed in {BACKEND_CONTAINER}:\n{res.stderr[-2000:]}"
+    )
+    res = _docker("exec", BACKEND_CONTAINER, "cat", remote_path)
+    assert res.returncode == 0, f"could not read {remote_path}: {res.stderr.strip()}"
+    return json.loads(res.stdout)
 
 
 def _assert_raw_reader_pin(manifest: dict) -> None:

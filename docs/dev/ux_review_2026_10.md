@@ -2,7 +2,19 @@
 
 # Dashboard UX review, October 2026
 
-Status: **review recorded, nothing built** (2026-10-16). The findings below
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) (Linear, MAS-148 to MAS-163)
+- **What:** The dashboard UX review of October 2026 and its three tiers of fixes.
+
+Status: **review recorded 2026-10-16; four of the six quick wins have shipped**
+(2026-10-22): QW2 (MAS-149), QW3 (MAS-150) and QW4 (MAS-151) as filed, and QW1 in
+a different shape in 1.13.0 (a default "Last 7 days" with an `acquisition_filter`
+override and an "All time" option) while MAS-148 is still open and needs
+reconciling with that; QW5 (MAS-152) and QW6 (MAS-153) are open. The medium
+items are MAS-155 to MAS-160 under MAS-154, the decisions MAS-161 to MAS-163;
+of the small items, S2 and S4 were delivered by MAS-151 and MAS-149, and S1,
+S3, S5 and S6 were filed on 2026-10-22 as MAS-314 to MAS-317. The findings below
 were taken from a walk through the dashboard against a running instance and
 then re-verified against the frontend code on `develop` the same day; every
 finding names the file it rests on. The plan at the end is in three tiers:
@@ -587,20 +599,22 @@ so they follow them; M1 and M3 wait on decision D1.
   drives table row height and type size; the fixed widths in
   `PanePeakSearch.vue` and the toolbar audited at 1280px.
 
-### 4.3 Smaller follow-ups not yet filed
+### 4.3 Smaller follow-ups
 
 Each is a small change that fits a quick-win PR but did not make the first
-six. File them when picked up.
+six. S1, S3, S5 and S6 were filed on 2026-10-22; S2 and S4 were delivered by
+MAS-151 and MAS-149.
 
 - **S1.** A grace period after a manual tab pick before the watchers in
-  `stores/ui/tab.js` may switch (F5).
+  `stores/ui/tab.js` may switch (F5). MAS-314.
 - **S2.** The notifications pane's empty state if QW4 does not reach it (F9).
-- **S3.** An overlay in the batch chart in place of empty axes (F11).
+- **S3.** An overlay in the batch chart in place of empty axes (F11). MAS-315.
 - **S4.** The calibration dialog previews silently and toasts on Apply (F15;
   needs QW2's claim).
 - **S5.** On-demand composition search in the embedded targeted layout (F16).
+  MAS-316.
 - **S6.** Replace the hand-tuned height constants with flex and a
-  `ResizeObserver` (F23).
+  `ResizeObserver` (F23). MAS-317.
 
 ### 4.4 Decisions for the plan owner
 
@@ -649,7 +663,7 @@ the medium items named wait on it.
 
 - The peak-centric layout with the flag on (assignment ledgers, inspector,
   verification capture) beyond the code the two paradigms share; it has its
-  own notes (`peak_assignment_frontend.md`, `verification_capture_frontend.md`).
+  own notes (`peak_assignment_frontend.md`, `verification_calibration_loop.md`).
 - The sidebar drawer's workspace and user management dialogs, the import
   dialogs and the user guide text.
 - Accessibility beyond labels and tooltips (focus order, screen-reader

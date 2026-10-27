@@ -2,6 +2,11 @@
 
 # Mascope AI layer: Design & Plan
 
+- **Status:** building
+- **As of:** 2026-10-26
+- **Tracked in:** [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) (Linear, MAS-123 to MAS-142)
+- **What:** A natural-language agent over the SDK, read-only first, with a confirmed write path later.
+
 ## Purpose
 
 Mascope computes; users interrogate. Today the interrogation surface is the web
@@ -18,9 +23,16 @@ open questions that draft flagged are resolved here against the backend source,
 its appendix is corrected, and the staging is revised around a constraint the
 draft missed (section 1.3).
 
-> **Status (2026-10-19).** Design revision after codebase verification. No code
-> written. Written and verified against the tree on 2026-08-11 and committed
-> 2026-10-14 as written. Section 1 and the appendix were re-read against
+> **Status (2026-10-26).** Building, in the Linear project
+> [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) (appendix B):
+> phase 0 is mostly done (MAS-123, MAS-125, MAS-126, MAS-127, MAS-142, MAS-202,
+> MAS-264, MAS-277 and MAS-278 Done; MAS-433 open), phase 1 has started
+> (MAS-128 part 1 merged 2026-10-21 as `libraries/ai`; MAS-129, the oracle and
+> the manifest, done; MAS-131 adds the evaluation fixture, phase 1 below;
+> MAS-130 open), the backend half of phase 3 is done (MAS-136, the
+> write routes; MAS-137, the SDK write wrappers; MAS-138 open), and phases 2 and
+> 4 have not started. The design revision below is from 2026-10-19: written and
+> verified against the tree on 2026-08-11 and committed 2026-10-14 as written. Section 1 and the appendix were re-read against
 > `develop` on 2026-10-19, the first step of the plan: the SDK's write path
 > (the batch-ledger import), the provenance block on SDK frames, unified name
 > matching, the token-reachable assignment and upload routes, device-token
@@ -69,10 +81,12 @@ through a helper that fetches the block once
 ([client.py:460-485](../../libraries/sdk/src/mascope_sdk/client.py)). That is
 what an agent's answer cites (section 3.4), but it is best effort: an older
 server without the provenance route, or a failed call, returns the frame
-unstamped, so the toolkit must check for the key rather than assume it. There is still no collections
-resource: collections surface only as the `target_collection_ids` and
-`target_collection_names` columns on peaks
-([samples.py:332-345](../../libraries/sdk/src/mascope_sdk/resources/samples.py)).
+unstamped, so the toolkit must check for the key rather than assume it.
+Collections are listed and read by `collections.list()` and
+`collections.get()` since phase 1's first toolkit issue
+([collections.py](../../libraries/sdk/src/mascope_sdk/resources/collections.py));
+before it they surfaced only as the `target_collection_ids` and
+`target_collection_names` columns on peaks.
 
 **One write path exists: the batch-ledger import.**
 `batch_peaks.import_run` posts an external engine's batch-level result to
@@ -538,7 +552,8 @@ Each phase is intended to land independently and leave the system shippable.
 ### Phase 1 - `mascope_ai` toolkit + MCP server, read-only
 
 - The library: `Ref`/`Frame` types, session store, `find`/`describe`, the four
-  loaders with `max_rows`, oracle wrappers with condensed verdicts, `chart`/
+  loaders with `max_rows` (these in [libraries/ai](../../libraries/ai/), the
+  package `mascope_ai`), oracle wrappers with condensed verdicts, `chart`/
   `table`, provenance manifest.
 - MCP server exposing the thin tool set; heavy work documented as the
   local-Python path (Bash + `mascope_ai` imports), mirroring peaky.
@@ -547,6 +562,82 @@ Each phase is intended to land independently and leave the system shippable.
   runnable as pytest against the demo stack. This is the acceptance test for
   the tool surface — "validates the tool design against real questions" needs
   a definition of validate.
+
+#### The evaluation fixture (MAS-131)
+
+The fixture is [`libraries/ai/tests/ai_golden.py`](../../libraries/ai/tests/ai_golden.py),
+with its tests in `test_ai_golden.py` beside it. Each question has a known
+answer and a *solver*: a short program that answers it through the tool
+surface alone (`find`, `resolve`, `describe`, the four loaders,
+`query_by_mz`, `match_compounds`, `derive`), standing in for the model. The
+SDK client is not on that surface. The harness runs every solver and checks
+its answer against the known one. It reports each question as answered,
+answered wrongly, failed, or **not answerable**: a solver raises
+`Unanswerable` and says what the surface lacks.
+
+- **Run it.** `MASCOPE_SDK_CONTRACT=1 uv run pytest
+  libraries/ai/tests/test_ai_golden.py` against a demo stack, with the
+  contract tests' settings. CI's demo-stack job runs it with them. A
+  question the surface cannot answer is an expected failure that says
+  why, and the session ends with the run's report. `uv run python
+  libraries/ai/tests/ai_golden.py run --url ...` prints the same report
+  without pytest; `list` prints the table below.
+- **Reference values.** The answers are those of demo bundle 1.4.1, the
+  registry's default, which CI's stack loads. The numbers come from the
+  bundle's goldens (`expected/peaks.parquet`, `expected/ions.parquet`).
+  Where a question can be checked against them, a hermetic test holds the
+  known answer to the goldens whenever the bundle is on disk. Tolerances are
+  the bundle's own: an intensity within 1% (a ratio of two within 2%), an
+  m/z within 0.1 ppm. A4's answer is the profile spectrum's highest point,
+  held to those tolerances too. The goldens hold the fitted peak instead, so
+  the goldens test holds the apex within 5 ppm and 2% of it. A test fails
+  when the registry's default bundle changes: re-run the questions on the
+  new bundle before moving the fixture to it.
+- **A stack that is not pristine.** CI's demo-stack job runs the
+  end-to-end suite first, and its upload test leaves a second sample of one
+  demo raw file, whichever it took (`upload.spec.js`). A demo sample is named
+  by its acquisition time, which the copy shares. So M3 counts a batch's
+  acquisitions, its samples' distinct names. A solver that names one sample
+  looks for it within its batch and takes the one recorded first. The
+  analysis questions group by sample name.
+- **What the surface cannot answer** (2026-10-26): M8. `describe` names no
+  ionization mode or mechanism of a batch or a sample, so the
+  interpretation solvers take a sample's mechanisms from its stored matches
+  ([#2635](https://github.com/ultra-trace-systems/mascope/issues/2635)).
+  Building A5 also found that a stage load leaves out the peaks whose time
+  series was never computed, while its Frame still says it is complete. The
+  surface cannot compute an unmatched peak's series
+  ([#2636](https://github.com/ultra-trace-systems/mascope/issues/2636)), so
+  A5 asks for its target's series before the stage.
+- **The model in the loop** is a separate, manual check: a coding agent
+  given the toolkit and `ai_golden.py prompts`. Its transcript is kept
+  under [`libraries/ai/tests/golden_transcripts/`](../../libraries/ai/tests/golden_transcripts/README.md),
+  which says how to run it. MAS-130's verification is the first such run.
+- **Extending it.** A skill (phase 2) or a new oracle wrapper adds its
+  questions to `QUESTIONS` with known answers from the demo data, and
+  regenerates the table below.
+
+<!-- golden questions: start -->
+
+| ID | Kind | Question | Known answer | Through |
+| --- | --- | --- | --- | --- |
+| M1 | metadata | Which datasets does the workspace hold, and how many batches has each? | 2025 (2 batches), 2026 (3) | `describe`, `find` |
+| M2 | metadata | Which batches are in the 2025 dataset? | the bromide and the uronium acquisitions of 2025-08-11 | `find`, `resolve` |
+| M3 | metadata | How many acquisitions does each batch of the 2025 dataset hold? | bromide 80, uronium 81 | `find`, `resolve` |
+| M4 | metadata | Which target collections is the 2025 bromide batch matched against? | Bromide high m/z calibrants, Bromide monitor | `describe`, `resolve` |
+| M5 | metadata | Over what time span was the 2025 uronium batch measured? | 2025-08-11 11:23:12 to 13:00:32 UTC | `describe`, `resolve` |
+| M6 | metadata | Which batches have 'Uronium' in their name? | the 2025-08-11 uronium and the 2026-10-15 Uronium RI acquisitions | `find` |
+| M7 | metadata | How many compounds does the Uronium monitor collection have? | 50 | `describe`, `resolve` |
+| M8 | metadata | Which ionization mode and mechanisms do the 2025 bromide batch's samples use? | Bromide m/z 82-750: [M+Br]- and [M-H]- | `describe`, `find`, `resolve` |
+| A1 | analysis | When did C10H16O2's protonated ion (C10H17O2+) peak in the 2025 uronium batch's time series, and how high? | at the 14:34:03 sample, height 1.176e6 | `derive`, `load_timeseries`, `resolve` |
+| A2 | analysis | In the 2025 bromide batch, what is formic acid's signal (CH2BrO2-) normalised to the reagent ion Br3- (its [81Br]Br2- line): its mean, and its maximum and where? | mean 0.0959 over 80 samples, maximum 0.1074 at 15:21:13 | `derive`, `load_peaks`, `resolve` |
+| A3 | analysis | How far above its background did C10H17O2+ rise in the 2025 uronium batch, the background being the mean of the batch's first five samples? | 1.130e6 above a background of 4.59e4, at 14:34:03 | `derive`, `load_peaks`, `resolve` |
+| A4 | analysis | Where is the apex of the 14:34:03 uronium sample's spectrum between m/z 169.10 and 169.15, how intense is it, and how many points has the window? | m/z 169.1222 at 1.166e6, near the fitted peak; 102 points in the window | `find`, `load_spectrum`, `resolve` |
+| A5 | analysis | Read as one stage over its whole acquisition, how high is C10H17O2+ in the 14:34:03 uronium sample? | 1.176e6, the averaged peak list's height | `describe`, `find`, `load_peaks_by_stage`, `load_timeseries`, `resolve` |
+| I1 | interpretation | What is the peak at m/z 124.9244 in the bromide sample measured at 14:34:57? | formic acid, CH2O2 as CH2BrO2- [M+Br]-, probable; the 13C-labelled suggestion unscored | `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |
+| I2 | interpretation | What is the peak at m/z 169.1223 in the uronium sample measured at 14:34:03? | C10H16O2 as C10H17O2+ [M+H]+, probable; three other candidates unmatched; the numeric-mass suggestion unscored | `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |
+
+<!-- golden questions: end -->
 
 ### Phase 2 - Skills
 

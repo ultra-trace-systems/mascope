@@ -17,6 +17,14 @@ Fourier-transform centroiding of short transients produces weak sidelobe ("satel
 To avoid isobaric interference, adjacent candidate peaks are checked for Full-Width at Half-Maximum (FWHM) overlap.
 Each peak is given an expected width envelope, and any overlapping pairs are discarded to keep only clean calibration points.
 
+On a TOF file the numbers are these.
+A calibrant's isotopes are kept when their relative abundance is at least 0.15.
+Peaks of the mode's polarity with a signal-to-noise ratio of at least 10 are candidates, and the refinement window is 100 ppm around each calibrant.
+A peak that overlaps a neighbour within one FWHM by the instrument's resolution function is dropped, and so is the neighbour; the local-dominance guard is an Orbitrap rule and is off for TOF.
+Each calibrant then takes the strongest remaining peak in its window, by time-averaged peak area.
+A fit needs at least three matched points; fewer leaves the file with the warning *Not enough calibration peaks*.
+The residual rule that keeps or drops a point in the fit below is 15 ppm, and a fit whose mean post-fit residual exceeds 15 ppm, or whose points all come from one ion, warns *Calibration inaccurate*.
+
 ## Quality Assessment and Scoring
 
 Each target isotope is matched to the highest-intensity sample peak located within the chosen mass tolerance range.
@@ -93,6 +101,13 @@ The optimized parameters are used to re-calculate the mass axis according to the
 
 $$m = \left( \frac{\text{TOF} - p_1}{p_0} \right)^2$$
 
+A TOF fit is absolute.
+Applying it recomputes the m/z axis from the stored time-of-flight index of every point of the spectrum and every detected peak, and nothing depends on the axis the file had before (an Orbitrap fit, by contrast, rescales the stored axis by a cumulative factor).
+So re-calibrating needs no peak re-detection, an earlier fit is restored exactly from its two parameters, and applying the same fit twice changes nothing.
+Applying a fit clears the file's matches and marks its batches for rematching.
+Editing the calibration collection a mode already uses only marks its batches: the files stay on their old calibration until someone re-calibrates them.
+A TOF file that has never been fitted carries the axis the acquisition software wrote, stamped `unfitted` in its calibration record.
+
 ### Orbitrap One-Point Scaling Calibration
 
 The Orbitrap pipeline applies a localized, linear adjustment based on a single-point scaling approach, requiring a minimum of 1 calibration point.
@@ -107,6 +122,26 @@ $$\text{Calibration Factor}_{\text{new}} = \text{Calibration Factor}_{\text{old}
 Calibrated mass values are computed by directly multiplying the observed mass values by the scaling factor:
 
 $$m_{\text{calibrated}} = m_{\text{observed}} \times \text{Scaling Factor}$$
+
+### The Orbitrap Axis Fingerprint
+
+An Orbitrap measures how often each ion oscillates in the trap, and converts that frequency $f$ to m/z with the instrument's mass calibration, $m/z = B/f^2 + C/f^4$ ([Makarov, 2000](https://doi.org/10.1021/ac991131p); the [OpenTFRaw format documentation](https://github.com/Sigilweaver/OpenTFRaw/blob/main/docs/docs/format/10-frequency-to-mz.md)).
+On some Orbitrap models, the Q Exactive Plus among them, the data system divides the frequency axis into bands about 16 kHz wide.
+Each mass calibration of the instrument stores one small m/z offset per band, on top of a smooth trend.
+After a good calibration the offsets are a fraction of a ppm to a few ppm; after a poor one they can reach tens of ppm.
+The instrument does not report them, and a lock mass cannot remove them: it scales a whole scan by one factor, while the offset steps from band to band.
+
+The raw file keeps these offsets: it stores one m/z correction with each stretch of a scan's profile ([OpenTFRaw changelog](https://github.com/Sigilweaver/OpenTFRaw/blob/main/CHANGELOG.md), 1.4.1).
+When Mascope converts a raw Orbitrap file, it reads the offset of each frequency band back from the spacing of the stored profile points, for each acquisition mode of the file, and records which lock mass each scan was corrected with.
+This per-file description is the file's **axis fingerprint**.
+It is stored with the file and served through the API and the SDK ([The axis fingerprint of an Orbitrap file](../sdk/index.md#the-axis-fingerprint-of-an-orbitrap-file)), for clients that correct the mass axis band by band themselves, such as [Peaky](https://github.com/ultra-trace-systems/peaky).
+
+Mascope itself changes no m/z with the fingerprint.
+Its own Orbitrap calibration is the one-point scaling above: one factor per file, or per scan range, multiplied into every m/z.
+On a model whose data system uses no such bands, as on the Exploris models measured, the fingerprint shows no steps between bands.
+A file converted before the fingerprint existed has none until an operator runs the backfill script for it.
+
+The measurement, its quality flags and the code are described in the [reader pipeline notes](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/thermo/docs/reader_pipeline.md#71-the-axis-fingerprint).
 
 ## Verification
 

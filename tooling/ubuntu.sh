@@ -216,11 +216,14 @@ function install_mascope() {
     # native extensions (e.g. numcodecs blosc typedef bool).
     # Pin Python 3.12 so uv downloads a managed interpreter matching
     # the project's requires-python constraint (<3.13).
-    # --reinstall (implies --refresh) forces a rebuild from source: every
-    # mascope package is pinned to version 0.0.0 (the real version is derived
-    # from git at runtime), so uv's cache cannot tell releases apart and would
-    # otherwise reuse a stale wheel - silently shipping old CLI code after an
-    # update to a new release.
+    # --reinstall (implies --refresh) forces a rebuild from source: the root
+    # project, the backend and most libraries are versioned 0.0.0 (the
+    # release's version is derived from git at runtime), and the packages
+    # published to PyPI (the CLI, the runtime, the SDK, the tools) carry a
+    # calver that moves when they are published, not with every release. So a
+    # version does not tell releases apart, and uv's cache would otherwise
+    # reuse a stale wheel - silently shipping old CLI code after an update to
+    # a new release.
     # --with-executables-from: `uv tool install` only links executables
     # declared by the requested package itself, and the `mascope` entry point
     # lives in the mascope_cli workspace member (so the standalone PyPI wheel

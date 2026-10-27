@@ -22,6 +22,16 @@ class PairingCodeAlreadyApprovedException(HTTPException):
         super().__init__(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
 
+class PairingCodeUnavailableException(HTTPException):
+    """No free pairing code could be drawn; the agent should start again."""
+
+    def __init__(
+        self,
+        detail: str = "No pairing code is free right now. Please try again.",
+    ):
+        super().__init__(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+
+
 class PairingServiceNotAllowedException(HTTPException):
     """The requested service cannot obtain tokens via pairing."""
 

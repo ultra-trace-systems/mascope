@@ -331,3 +331,42 @@ def test_failed_manual_update_keeps_the_pending_record(
 
     assert result.exit_code == 1
     assert au.load_pending(str(mascope_home)).version == "v1.12.0"
+
+
+# --- a wheel install says that --version does not outlive the update ---
+
+
+def _update_warnings(monkeypatch, cli_runner, args):
+    # Captured at the logger, as above: result.output misses loguru's sink.
+    warnings = []
+    monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
+    result = cli_runner.invoke(prod_main.prod_app, ["update", *args])
+    assert result.exit_code == 0, result.output
+    return [w for w in warnings if "lasts only for this command" in w]
+
+
+def test_update_without_a_checkout_says_the_pin_lapses(manual_update, cli_runner):
+    lapses = _update_warnings(manual_update, cli_runner, ["--version", "v1.12.0"])
+
+    assert len(lapses) == 1
+    assert "MASCOPE_VERSION=v1.12.0" in lapses[0]
+
+
+def test_update_from_a_checkout_says_nothing_of_the_pin(
+    manual_update, cli_runner, release_repo
+):
+    """A checkout keeps the release itself: _align_checkout moves it."""
+    manual_update.setenv("MASCOPE_PATH", str(release_repo))
+
+    assert _update_warnings(manual_update, cli_runner, ["--version", "v9.0.2"]) == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],  # no --version: the update deploys what `prod up` would
+        ["--version", "latest"],  # what `prod up` falls back to anyway
+    ],
+)
+def test_update_without_a_pin_says_nothing_of_it(manual_update, cli_runner, args):
+    assert _update_warnings(manual_update, cli_runner, args) == []

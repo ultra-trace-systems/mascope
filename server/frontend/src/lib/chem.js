@@ -61,11 +61,25 @@ export function isValidChemicalFormula(formula) {
 }
 
 /**
- * Checks if two compounds are the same using matching by CAS number OR formula
+ * A compound's InChIKey for comparing: trimmed and upper-cased, null when it
+ * has none.
+ *
+ * @param {Object} compound
+ * @returns {?string}
+ */
+export function inchikeyOf(compound) {
+  const value = compound?.inchikey
+  return typeof value === 'string' ? value.trim().toUpperCase() || null : null
+}
+
+/**
+ * Checks if two compounds are the same: by CAS number, else by InChIKey when
+ * both carry one, else by formula. Two compounds of one formula whose
+ * InChIKeys differ are isomers, not the same compound.
  *
  * @param {Object} compound1 - First compound to compare
  * @param {Object} compound2 - Second compound to compare
- * @returns {boolean} True if compounds match by CAS OR formula
+ * @returns {boolean} True if compounds match
  */
 export function isSameCompound(compound1, compound2) {
   if (!compound1?.target_compound_formula?.trim() || !compound2?.target_compound_formula?.trim()) {
@@ -76,28 +90,140 @@ export function isSameCompound(compound1, compound2) {
     compound1.cas_number &&
     compound2.cas_number &&
     norm(compound1.cas_number) === norm(compound2.cas_number)
+  if (casMatch) return true
 
-  const formulaMatch =
+  const key1 = inchikeyOf(compound1)
+  const key2 = inchikeyOf(compound2)
+  if (key1 && key2) return key1 === key2
+
+  return (
     norm(compound1.target_compound_formula, true) === norm(compound2.target_compound_formula, true)
-
-  return casMatch || formulaMatch
+  )
 }
 
 /**
- * Finds existing compound in database using backend matching logic
- * Matches by CAS number OR formula
+ * Whether two compounds are isomers the dialog tells apart: one formula, and
+ * an InChIKey on each that differs.
+ *
+ * @param {Object} compound1
+ * @param {Object} compound2
+ * @returns {boolean}
+ */
+export function isIsomer(compound1, compound2) {
+  const key1 = inchikeyOf(compound1)
+  const key2 = inchikeyOf(compound2)
+  return (
+    !!key1 &&
+    !!key2 &&
+    key1 !== key2 &&
+    !!compound1.target_compound_formula?.trim() &&
+    norm(compound1.target_compound_formula, true) === norm(compound2.target_compound_formula, true)
+  )
+}
+
+/**
+ * Finds the compound of a list a search compound is the same as
+ * Matches as `isSameCompound` does, by priority over the whole list: a CAS
+ * match first, then an InChIKey match, then a formula match. A keyless
+ * compound of the formula earlier in the list does not win over the one
+ * that carries the search compound's InChIKey.
  *
  * @param {Array} compoundList - List of existing compounds to search in
  * @param {Object} searchCompound - Compound to search for with properties:
  *   - target_compound_formula: Chemical formula
  *   - cas_number: CAS registry number
+ *   - inchikey: InChIKey, optional
  * @returns {Object|null} Existing compound if found, null otherwise
  */
 export function findExistingCompound(compoundList, searchCompound) {
   if (!searchCompound?.target_compound_formula?.trim()) return null
 
-  return compoundList.find((comp) => isSameCompound(comp, searchCompound))
+  const cas = searchCompound.cas_number && norm(searchCompound.cas_number)
+  const key = inchikeyOf(searchCompound)
+  const candidates = compoundList.filter((comp) => isSameCompound(comp, searchCompound))
+  return (
+    (cas && candidates.find((comp) => comp.cas_number && norm(comp.cas_number) === cas)) ||
+    (key && candidates.find((comp) => inchikeyOf(comp) === key)) ||
+    candidates[0]
+  )
 }
+
+/** The structure identity a target compound may carry, all optional. */
+export const IDENTITY_FIELDS = ['inchikey', 'inchi', 'smiles']
+
+const INCHIKEY = /^[A-Z]{14}-[A-Z]{10}-[A-Z]$/
+
+/**
+ * A compound's structure identity as the API takes it: each field trimmed, a
+ * blank one null. The API refuses an empty string, and an emptied input means
+ * "none".
+ *
+ * @param {Object} source - an object with `inchikey`, `inchi`, `smiles`
+ * @returns {{inchikey: ?string, inchi: ?string, smiles: ?string}}
+ */
+export function compoundIdentity(source) {
+  return Object.fromEntries(
+    IDENTITY_FIELDS.map((field) => {
+      const value = source?.[field]
+      return [field, typeof value === 'string' ? value.trim() || null : null]
+    })
+  )
+}
+
+/**
+ * The identity fields an edit changes, and only those. An update sends no
+ * field it does not change: a field sent empty would clear the stored value,
+ * so an edit opened on a record that lacks the identity must not send it.
+ *
+ * @param {Object} initial - the identity the edit started from
+ * @param {Object} edited - the identity as edited
+ * @returns {Object} the changed fields, normalised by `compoundIdentity`
+ */
+export function identityChanges(initial, edited) {
+  const before = compoundIdentity(initial)
+  const after = compoundIdentity(edited)
+  return Object.fromEntries(
+    IDENTITY_FIELDS.filter((field) => before[field] !== after[field]).map((field) => [
+      field,
+      after[field]
+    ])
+  )
+}
+
+/**
+ * Whether an InChIKey input can be sent: blank, or shaped like a key
+ * (`WQZGKKKJIJFFOK-GASJEMHNSA-N`). The shape is all the API checks too.
+ *
+ * @param {?string} value
+ * @returns {boolean}
+ */
+export function isValidInchikey(value) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  return !text || INCHIKEY.test(text)
+}
+
+/**
+ * Whether an InChI input can be sent: blank, or starting `InChI=`. Whether it
+ * describes the compound's formula is the API's to check.
+ *
+ * @param {?string} value
+ * @returns {boolean}
+ */
+export function isValidInchi(value) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  return !text || text.startsWith('InChI=')
+}
+
+/**
+ * The columns of a compound paste of more than one column, in order. A paste
+ * of n columns takes the first n; a single column is a formula.
+ */
+const PASTE_COLUMNS = [
+  'target_compound_name',
+  'target_compound_formula',
+  'cas_number',
+  ...IDENTITY_FIELDS
+]
 
 /**
  * Parses spreadsheet cells pasted as target compounds.
@@ -106,6 +232,7 @@ export function findExistingCompound(compoundList, searchCompound) {
  * - 1 column:  formula
  * - 2 columns: name, formula
  * - 3 columns: name, formula, CAS number
+ * - 4 to 6 columns: the same, then InChIKey, InChI and SMILES in that order
  *
  * A single-column paste may start with a header cell (e.g. "Formula"); it is
  * dropped when it is not a valid formula but the row below it is.
@@ -116,10 +243,7 @@ export function findExistingCompound(compoundList, searchCompound) {
 export function parseCompoundPaste(text) {
   const lines = text.split('\n').filter((line) => line.trim().length)
   const cols = lines[0] ? lines[0].split('\t').length : 0
-  const fields =
-    cols === 1
-      ? ['target_compound_formula']
-      : ['target_compound_name', 'target_compound_formula', 'cas_number']
+  const fields = cols === 1 ? ['target_compound_formula'] : PASTE_COLUMNS
   const { rows } = fromSpreadsheet(text, fields)
   if (
     cols === 1 &&
@@ -137,7 +261,9 @@ export function parseCompoundPaste(text) {
  *
  * Every row needs a formula. Single-column pastes are additionally checked
  * against isValidChemicalFormula, so that pasting a name-only column is
- * rejected instead of imported as bogus formulas.
+ * rejected instead of imported as bogus formulas. A pasted InChIKey or InChI
+ * must have the shape the API takes, so one bad cell is named here rather
+ * than failing the whole save.
  *
  * @param {Array<Object>} data - Rows from parseCompoundPaste
  * @returns {{valid: boolean, severity: string, message: string}}
@@ -147,11 +273,11 @@ export function validateCompoundPaste(data) {
     return { valid: false, severity: 'error', message: 'No valid data found in paste' }
   }
   const cols = Object.keys(data[0]).length
-  if (cols > 3) {
+  if (cols > PASTE_COLUMNS.length) {
     return {
       valid: false,
       severity: 'warn',
-      message: `You pasted ${cols} columns but 1 to 3 are expected`
+      message: `You pasted ${cols} columns but 1 to ${PASTE_COLUMNS.length} are expected`
     }
   }
   if (data.some((row) => !row?.target_compound_formula?.length)) {
@@ -169,6 +295,22 @@ export function validateCompoundPaste(data) {
         severity: 'warn',
         message: `'${invalid.target_compound_formula}' is not a valid chemical formula`
       }
+    }
+  }
+  const badInchikey = data.find((row) => !isValidInchikey(row.inchikey))
+  if (badInchikey) {
+    return {
+      valid: false,
+      severity: 'warn',
+      message: `'${badInchikey.inchikey}' is not an InChIKey (it reads like WQZGKKKJIJFFOK-GASJEMHNSA-N)`
+    }
+  }
+  const badInchi = data.find((row) => !isValidInchi(row.inchi))
+  if (badInchi) {
+    return {
+      valid: false,
+      severity: 'warn',
+      message: `'${badInchi.inchi}' is not an InChI (it starts with InChI=)`
     }
   }
   return {

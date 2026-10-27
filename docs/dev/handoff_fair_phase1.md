@@ -1,5 +1,10 @@
 # Handoff - FAIR Phase 1 (describable, licensable datasets)
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear, MAS-24 to MAS-28; item 9 is PR #2475)
+- **What:** FAIR phase 1 brief: dataset licence and authors, InChIKey on compounds, tombstones.
+
 *The plan is [fair_roadmap.md](fair_roadmap.md); this document designs and
 hands off its §6 Phase 1 - items 6 to 9. Phase 0 is built and merged
 ([handoff_fair_phase0.md](handoff_fair_phase0.md) records it as built);

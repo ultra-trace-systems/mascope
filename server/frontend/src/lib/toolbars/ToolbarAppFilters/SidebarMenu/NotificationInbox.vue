@@ -11,10 +11,20 @@ import { useSidebarMenu } from './state.js'
 const app = useApp()
 const sidebarMenu = useSidebarMenu()
 
+// Uploads the file converter set aside with no record made of them: there is
+// nothing in Raw files to show, so the digest names every file it lists, with
+// what is known of why, for an admin to check and upload again.
+const UPLOAD_LOST = 'upload_lost'
+
 // Titled by the status its files ended in, as Raw files names it; a digest
 // of a status this build does not know shows its kind.
 const title = (item) =>
-  [PROCESSING_STATUSES[item.payload?.status]?.label ?? item.kind, item.instrument]
+  [
+    item.kind === UPLOAD_LOST
+      ? 'Upload lost'
+      : (PROCESSING_STATUSES[item.payload?.status]?.label ?? item.kind),
+    item.instrument
+  ]
     .filter(Boolean)
     .join(' · ')
 
@@ -66,7 +76,16 @@ function showFiles(item) {
       <div class="col" style="gap: 0.35rem; width: 250px">
         <h4 style="margin: 0">{{ title(item) }}</h4>
         <p style="margin: 0">{{ item.message }}</p>
-        <p v-if="latest(item)" class="latest">
+        <ul v-if="item.kind === UPLOAD_LOST" class="latest files">
+          <li v-for="file in item.payload?.files ?? []" :key="file.filename">
+            <span class="filename">{{ file.filename }}</span>
+            <template v-if="file.detail">
+              <br />
+              <span class="detail">{{ file.detail }}</span>
+            </template>
+          </li>
+        </ul>
+        <p v-else-if="latest(item)" class="latest">
           Latest: {{ latest(item).filename }}
           <template v-if="latest(item).detail">
             <br />
@@ -108,6 +127,14 @@ function showFiles(item) {
   font-size: 12px;
   opacity: 0.8;
   overflow-wrap: anywhere;
+}
+
+.files {
+  padding-left: 1rem;
+}
+
+.files li + li {
+  margin-top: 0.25rem;
 }
 
 .meta {

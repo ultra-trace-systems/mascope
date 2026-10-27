@@ -1,0 +1,90 @@
+"""MS2: the fragment composition core, the one place an MS2 peak becomes formula
+readings - for the engine's MS2 pass, the readings route and peaky alike.
+
+The package mirrors ``peaky/ms2/`` module for module. :mod:`.readings` reads
+every peak of a spectrum as a sub-formula of every ion of its isolation window,
+keeps a reading only when the neutral loss it implies splits into real
+molecules, ranks the readings of one (peak, parent), and gates a fourth loss
+piece on a ladder across energies. :mod:`.frame` tabulates the readings. The
+rules and every threshold are in ``libraries/tools/docs/ms2.md``.
+"""
+
+from mascope_tools.composition.ms2.frame import READINGS_COLUMNS, readings_frame
+from mascope_tools.composition.ms2.readings import (
+    CLOSED_SHELL_LOSSES,
+    DEFAULT_TOLERANCE,
+    ELEMENTS,
+    FRAGMENT_DBE_MIN_EVEN,
+    FRAGMENT_DBE_MIN_ODD,
+    FRAGMENT_SENIOR_MARGIN,
+    GRID_MAX_ROWS,
+    H_OR_HALOGEN,
+    K_MAX_DEFAULT,
+    K_MAX_LIMIT,
+    LADDER_K,
+    RADICAL_LOSSES,
+    READING_TOLERANCE_MDA,
+    READING_TOLERANCE_PPM,
+    SENIOR_CAP_BASE,
+    SENIOR_CAP_PER_ATOM,
+    VALENCES,
+    AnchorResidual,
+    FragmentCandidate,
+    LossDecomposition,
+    MassOffset,
+    Reading,
+    Tolerance,
+    apply_offset,
+    best_readings,
+    decompose_loss,
+    format_ion,
+    fragment_candidates,
+    fragment_ok,
+    ion_mz,
+    ion_parity,
+    ladder_gate,
+    mass_offset,
+    parse_ion,
+    read_fragments,
+)
+
+
+__all__ = [
+    "AnchorResidual",
+    "apply_offset",
+    "best_readings",
+    "CLOSED_SHELL_LOSSES",
+    "decompose_loss",
+    "DEFAULT_TOLERANCE",
+    "ELEMENTS",
+    "format_ion",
+    "FRAGMENT_DBE_MIN_EVEN",
+    "FRAGMENT_DBE_MIN_ODD",
+    "FRAGMENT_SENIOR_MARGIN",
+    "fragment_candidates",
+    "fragment_ok",
+    "FragmentCandidate",
+    "GRID_MAX_ROWS",
+    "H_OR_HALOGEN",
+    "ion_mz",
+    "ion_parity",
+    "K_MAX_DEFAULT",
+    "K_MAX_LIMIT",
+    "LADDER_K",
+    "ladder_gate",
+    "LossDecomposition",
+    "mass_offset",
+    "MassOffset",
+    "parse_ion",
+    "RADICAL_LOSSES",
+    "read_fragments",
+    "Reading",
+    "READING_TOLERANCE_MDA",
+    "READING_TOLERANCE_PPM",
+    "READINGS_COLUMNS",
+    "readings_frame",
+    "SENIOR_CAP_BASE",
+    "SENIOR_CAP_PER_ATOM",
+    "Tolerance",
+    "VALENCES",
+]

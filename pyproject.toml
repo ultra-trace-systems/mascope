@@ -6,11 +6,20 @@ authors = [{ name = "Ultra Trace Systems Oy", email = "support@ultratrace.eu" }]
 requires-python = ">=3.12,<3.13"
 license.text = "Apache-2.0"
 dependencies = [
-    # The monorepo needs the CLI's developer commands and demo tooling; a
-    # standalone (wheel) install of mascope_cli gets the operator surface only.
-    "mascope_cli[dev,demo]",
+    # The monorepo needs the CLI's demo tooling; a standalone (wheel) install
+    # of mascope_cli gets the operator surface only.
+    "mascope_cli[demo]",
+    # The CLI's developer commands (`mascope dev migrate`, `mascope dev db`,
+    # `mascope fleet`, `mascope reference`), registered only in a checkout.
+    # Not a mascope_cli extra: mascope_reference is not on PyPI, so a
+    # published extra naming it could never be installed.
+    "alembic>=1.19.1",
+    "sqlalchemy~=2.0",
+    "psycopg2-binary>=2.9.12",
+    "pyyaml>=6,<7",
     "mascope_backend",
     # libraries
+    "mascope_ai",
     "mascope_runtime",
     "mascope_chem",
     "mascope_match",
@@ -20,6 +29,7 @@ dependencies = [
     "mascope_tofwerk",
     "mascope_thermo",
     "mascope_tools",
+    "mascope_viz",
 ]
 
 [project.scripts]
@@ -65,6 +75,7 @@ members = [
 mascope_backend = { workspace = true }
 mascope_cli = { workspace = true }
 # libraries
+mascope_ai = { workspace = true }
 mascope_chem = { workspace = true }
 mascope_file = { workspace = true }
 mascope_match = { workspace = true }
@@ -75,6 +86,7 @@ mascope_tofwerk = { workspace = true }
 mascope_thermo = { workspace = true }
 mascope_tools = { workspace = true }
 mascope_runtime = { workspace = true }
+mascope_viz = { workspace = true }
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.14"]

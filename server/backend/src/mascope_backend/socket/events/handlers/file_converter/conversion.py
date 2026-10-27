@@ -1,4 +1,9 @@
+from mascope_backend.api.new.notifications.lost_uploads import (
+    UNREGISTERED_DETAIL,
+    notify_lost_uploads,
+)
 from mascope_backend.db.id import gen_id
+from mascope_backend.runtime import runtime
 from mascope_backend.socket import sio
 from mascope_backend.socket.auth.decorators import file_converter_socket_auth
 from mascope_backend.socket.notifications import (
@@ -35,6 +40,32 @@ async def file_processing_error(sid, error_data):
 
     await emit_user_notification(
         notification=file_processing_notification, user_id=user_id
+    )
+
+
+@sio.event(namespace="/file-converter")
+async def upload_lost(sid, data):
+    """Tell the admins and owners of a file the converter could not store.
+
+    The converter sends it for a file it found with no upload registered for
+    it, so with no uploader's credential: unlike the events above, it acts
+    for nobody, and is taken on the strength of the connection alone, which
+    only the converter's service secret opens (``connection.connect``). What
+    it can cause is a notification naming a file, to the admins.
+    """
+    filename = data.get("filename") if isinstance(data, dict) else None
+    if not isinstance(filename, str) or not filename:
+        runtime.logger.info("Ignoring an upload_lost event that names no file")
+        return
+    instrument = data.get("instrument")
+    await notify_lost_uploads(
+        [
+            (
+                filename,
+                instrument if isinstance(instrument, str) else None,
+                UNREGISTERED_DETAIL,
+            )
+        ]
     )
 
 

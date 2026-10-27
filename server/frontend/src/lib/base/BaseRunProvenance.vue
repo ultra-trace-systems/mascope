@@ -40,7 +40,8 @@ const props = defineProps({
 const IN_APP_ENGINE = 'mascope'
 
 // The identity of a run this deployment produced by copying another sample's
-// assignments (docs/dev/peak_assignment_copy.md section 5). Reserved server-side
+// assignments (docs/dev/peak_assignment_batch_primary.md section 6.4; the retired
+// copy design, section 5, is in git history). Reserved server-side
 // exactly as the in-app name is, so a run carrying it really was copied here -
 // which is what lets this render it as first-party rather than foreign. It
 // still reaches the ledger through the import channel, so it carries a

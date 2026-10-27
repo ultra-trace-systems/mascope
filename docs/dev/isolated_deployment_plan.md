@@ -1,5 +1,10 @@
 # Isolated deployments: reaching and updating a server with no internet route
 
+- **Status:** design
+- **As of:** 2026-10-22
+- **Tracked in:** [Isolated deployments](https://linear.app/ultra-trace/project/isolated-deployments-7585d72b2a80) (Linear: MAS-301, MAS-302 and MAS-307 for phase A; MAS-303 re-bases the bundle on the wheel install, MAS-116 option b, before phases B to E are filed)
+- **What:** Running and updating a server with no internet route.
+
 Goal: run a Mascope server at a customer site where the server itself has no
 route to the internet, the instrument PC next to it has one only when the
 customer says so, and maintaining that server is not harder than maintaining a
@@ -80,23 +85,11 @@ route will frequently accept an outbound firewall rule to a fixed list of
 names. If they do, the whole existing update path works unchanged, the fleet
 tooling works unchanged, and only the access problem (section 4) remains.
 
-The list, from the table above:
-
-- `api.github.com` and `github.com` - release discovery, the manifest, the tag
-  fetch;
-- `ghcr.io` and `pkg-containers.githubusercontent.com` - image manifests and
-  blobs;
-- `pypi.org` and `files.pythonhosted.org` - the CLI reinstall;
-- the Ubuntu security and archive mirrors, or the customer's own mirror - OS
-  patching;
-- an NTP source;
-- optionally the monitoring endpoints (a healthchecks.io-style URL, and the
-  monitoring box if a tunnel to it exists).
-
-Nothing in the repository blocks egress today: the fleet firewall role sets
-`default allow outgoing` (`tooling/fleet/roles/firewall/tasks/main.yml`). An
-allow-listed site is simply a fleet server whose *customer* firewall does the
-restricting, and it can be put in the Ansible inventory like any other.
+The list, with what each name is for, and the fact that nothing in the
+repository blocks egress (the fleet firewall role sets `default allow
+outgoing`, so an allow-listed site is a fleet server whose *customer* firewall
+does the restricting), is in [hosting.md](../hosting.md#isolated-and-restricted-sites)
+since 2026-10-22, where every prospect can be pointed at it.
 
 The rest of this document is for the sites that say no to this.
 
@@ -390,16 +383,11 @@ every behaviour that differs:
 ## 8. Host hygiene on an isolated server
 
 None of this is Mascope code, but every item has bitten some isolated Linux
-box, and the runbook should carry a checklist:
-
-| Concern | Do this |
-|---|---|
-| Time | Point the host's time sync (`systemd-timesyncd` on Ubuntu) at the customer's NTP server, or at the instrument PC, whose Windows Time service can be configured to serve NTP. Say why in the runbook: a minute of skew locks every two-factor user out. |
-| TLS | Use the internal-CA or self-signed option from `docs/hosting.md`. The DNS-01 option needs egress at every renewal and is out. |
-| OS patching | Unattended upgrades cannot run. Either apply security updates during a section 4 window (the fleet's `reboot.yml` already verifies the stack after a reboot), or agree that the customer's own patching regime covers the host. Write down which, per site. |
-| Backups | Keep `backup-cron.sh`'s local layer; point restic at a local path or a customer NAS over SFTP instead of an internet target. If off-site copies are required, the instrument PC can push the local restic repository out when it is online. |
-| Monitoring | Leave `HEALTHCHECK_URL` and the DSN unset so nothing fails nightly for want of a route. The heartbeat in section 6 is the replacement; until it exists, the doctor report in the support bundle is. |
-| Disk | The disk-check timer is local and keeps working; enable it as usual. |
+box. The checklist - time, TLS, OS patching, backups, monitoring, disk - is in
+[hosting.md](../hosting.md#isolated-and-restricted-sites) since 2026-10-22.
+Two of its rows wait on this plan: OS patching names a hand-applied window
+until section 4 gives a scheduled one, and monitoring names `prod doctor`
+until the heartbeat of section 6 exists.
 
 ## 9. Provisioning
 

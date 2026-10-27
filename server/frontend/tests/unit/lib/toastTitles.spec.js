@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 
 import {
   TOAST_TITLES,
+  notificationSeverity,
   notificationTitle,
   toastFor,
   toastTitle,
@@ -56,35 +57,88 @@ describe('the heading of a toast', () => {
   })
 })
 
-describe('whether a toast is shown at all', () => {
-  // The search pane says "No results found" where the results would be; a
-  // toast saying "No matching compositions found" on top of it is the same
-  // news twice.
-  it('spares a composition search that found nothing', () => {
+describe('the severity of a notification', () => {
+  // A search that found nothing went right, but there is nothing to be
+  // pleased about: it is an info, not a green success.
+  it('is info for a composition search that found nothing', () => {
     expect(
-      toastWanted({
+      notificationSeverity({
         type: 'match_compositions_by_mz',
         status: 'success',
         data: { results: 0, total: 0 }
       })
+    ).toBe('info')
+  })
+
+  it('is success for a composition search that found something', () => {
+    expect(
+      notificationSeverity({
+        type: 'match_compositions_by_mz',
+        status: 'success',
+        data: { results: 12 }
+      })
+    ).toBe('success')
+  })
+
+  // A failure carries no result count, and keeps the weight of its status.
+  it('keeps the status of a composition search that failed', () => {
+    expect(notificationSeverity({ type: 'match_compositions_by_mz', status: 'error' })).toBe(
+      'error'
+    )
+    expect(
+      notificationSeverity({ type: 'match_compositions_by_mz', status: 'warning', data: {} })
+    ).toBe('warn')
+  })
+
+  it('follows the status for everything else', () => {
+    expect(
+      notificationSeverity({ type: 'rematch_batch', status: 'success', data: { results: 0 } })
+    ).toBe('success')
+    expect(notificationSeverity({ type: 'shared_link', status: 'warning' })).toBe('warn')
+    expect(notificationSeverity()).toBeUndefined()
+  })
+})
+
+describe('whether a toast is shown at all', () => {
+  // A pane that renders the outcome where the user is looking has claimed it;
+  // a toast on top of that is the same news twice.
+  it('spares a claimed outcome', () => {
+    expect(toastWanted({ type: 'calibration_mz_fit', status: 'success', claimed: true })).toBe(
+      false
+    )
+    expect(toastWanted({ type: 'calibration_mz_fit', status: 'warning', claimed: true })).toBe(
+      false
+    )
+    expect(
+      toastWanted({
+        type: 'match_compositions_by_mz',
+        status: 'success',
+        claimed: true,
+        data: { results: 0 }
+      })
     ).toBe(false)
   })
 
-  it('shows a composition search that found something', () => {
+  // A failure is news whoever claimed it.
+  it('shows a claimed outcome that failed', () => {
+    expect(toastWanted({ type: 'calibration_mz_fit', status: 'error', claimed: true })).toBe(true)
+  })
+
+  // The pane claims its search once the launch is acknowledged, and an empty
+  // search can finish first; it says "No results found" all the same.
+  it('spares an empty composition search even unclaimed', () => {
+    expect(
+      toastWanted({ type: 'match_compositions_by_mz', status: 'success', data: { results: 0 } })
+    ).toBe(false)
+  })
+
+  it('shows an unclaimed outcome', () => {
     expect(
       toastWanted({ type: 'match_compositions_by_mz', status: 'success', data: { results: 12 } })
     ).toBe(true)
-  })
-
-  // A failure carries no result count, and is news whatever the pane shows.
-  it('shows a composition search that failed', () => {
-    expect(toastWanted({ type: 'match_compositions_by_mz', status: 'error' })).toBe(true)
-    expect(toastWanted({ type: 'match_compositions_by_mz', status: 'warning', data: {} })).toBe(
-      true
-    )
-  })
-
-  it('shows everything else', () => {
+    expect(
+      toastWanted({ type: 'match_compositions_by_mz', status: 'warning', data: { results: 0 } })
+    ).toBe(true)
     expect(toastWanted({ type: 'rematch_batch', status: 'success', data: { results: 0 } })).toBe(
       true
     )
@@ -133,6 +187,9 @@ describe('the toast a notification gets', () => {
 
   it('is none where no toast is wanted', () => {
     expect(
+      toastFor({ type: 'calibration_mz_fit', status: 'success', message: 'm', claimed: true })
+    ).toBeNull()
+    expect(
       toastFor({
         type: 'match_compositions_by_mz',
         status: 'success',
@@ -140,6 +197,12 @@ describe('the toast a notification gets', () => {
         data: { results: 0 }
       })
     ).toBeNull()
+  })
+
+  it('is still an error toast for a claimed failure', () => {
+    expect(
+      toastFor({ type: 'calibration_mz_fit', status: 'error', message: 'm', claimed: true })
+    ).toMatchObject({ severity: 'error', summary: 'Calibration fit failed', life: 10000 })
   })
 
   it('is none for nothing', () => {

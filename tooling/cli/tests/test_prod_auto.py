@@ -233,7 +233,7 @@ def _plan(classification, target="v1.4.0"):
 
 
 @pytest.fixture
-def auto_env(monkeypatch):
+def auto_env(monkeypatch, tmp_path):
     """Baseline stubs: stack up, latest release resolvable, no manifest."""
     monkeypatch.setattr(prod_main, "is_container_running", lambda mode: True)
     monkeypatch.setattr(
@@ -247,6 +247,12 @@ def auto_env(monkeypatch):
     # (they have their own tests) so the orchestration tests stay hermetic.
     monkeypatch.setattr(prod_main.auto_update, "disk_precheck", lambda: None)
     monkeypatch.setattr(prod_main, "_prune_images", lambda: None)
+    # The updater's state lands under MASCOPE_PATH: keep it out of the shared
+    # test home, where one test's recorded failure would hold the next's update.
+    # Build the runtime singleton first: built from the empty temp dir, its
+    # config would not load.
+    prod_main.runtime.full_config  # noqa: B018
+    monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
     monkeypatch.delenv("MASCOPE_UPDATE_WINDOW", raising=False)
     return monkeypatch
 

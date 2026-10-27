@@ -102,19 +102,40 @@ class DataExtractor:
         # The width every scan shares, or None when the events of a targeted
         # method isolate with different widths.
         self.isolation_width = isolation_width
-        # Each group's own width. A server older than per-group widths gives
-        # only the file's one width, so that stands in for every group; so it
-        # does for a group whose scans store no numeric width, which the server
-        # sends as null. The file's width is None when the groups disagree, so
-        # it never stands in for a width of its own.
+        # Each group's own width. A group whose scans isolate at more than one
+        # width has a null width and lists them all in its `isolation_widths`;
+        # it takes the widest, so the MS1 window covers every ion any of its
+        # scans isolated. A server older than per-group widths gives only the
+        # file's one width, so that stands in for every group; so it does for a
+        # group whose scans store no numeric width, which the server sends as
+        # null with no widths listed. The file's width is None when the groups
+        # disagree, so it never stands in for a width of its own.
         self.isolation_widths: dict[Ms2Group, float] = {}
+        # Every width each group's scans used, narrowest first, with the number
+        # of scans at it; empty from a server that does not list them.
+        self.isolation_width_counts: dict[Ms2Group, list[tuple[float, int]]] = {}
         for group, g in zip(self.groups, summary_groups, strict=True):
+            counts = [
+                (float(entry["isolation_width"]), int(entry["scan_count"]))
+                for entry in g.get("isolation_widths") or []
+            ]
+            self.isolation_width_counts[group] = counts
             width = g.get("isolation_width")
+            if width is None and counts:
+                width = max(w for w, _ in counts)
             if width is None:
                 width = isolation_width
+            if width is None and "isolation_widths" not in g:
+                # A server older than the widths list sends a group whose
+                # scans used several widths as null too: upgrading it answers.
+                raise ValueError(
+                    f"The MS2 scans of {group} store no single isolation "
+                    "width, and this server does not list the widths they "
+                    "use; upgrade the Mascope server to analyse the sample."
+                )
             if width is None:
                 raise ValueError(
-                    f"The MS2 scans of {group} store no single isolation width; "
+                    f"The MS2 scans of {group} store no isolation width; "
                     "MS2 analysis requires a valid isolation width per group."
                 )
             self.isolation_widths[group] = width

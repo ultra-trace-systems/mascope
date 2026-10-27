@@ -478,7 +478,9 @@ async def backfill_method_bindings() -> None:
         f"gave {len(records)} method keys"
     )
     if tally["unknown"]:
-        runtime.logger.warning(
+        # INFO: the designed outcome on any server with files from before the
+        # census, not a fault. Every WARNING record becomes a monitoring event.
+        runtime.logger.info(
             f"{tally['unknown']} observations were skipped: their files were "
             "converted before the scan-stream census existed, so what they "
             "measured is not known and a guess would split their methods' "

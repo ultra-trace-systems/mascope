@@ -1,0 +1,120 @@
+{
+  "_about": "Rows as a demo stack lists them, trimmed and de-identified (names, files, instrument); test_viz_scope.py builds a campaign from them. The samples, batches and datasets come from mascope_ai's recorded_api.json, the file row from SampleFile.to_dict.",
+  "batch_row": {
+    "dataset_id": "jvLwU8nQ6We3V3Gh",
+    "locked": 1,
+    "polarity": "-",
+    "sample_batch_description": null,
+    "sample_batch_id": "j5RWaDZ1ByAjWxL1",
+    "sample_batch_name": "Batch 1",
+    "sample_batch_type": "ACQUISITION",
+    "sample_batch_utc_created": "2026-10-06T11:14:00.777459+00:00",
+    "sample_batch_utc_modified": "2026-10-06T11:15:36.626406+00:00",
+    "status": "ready"
+  },
+  "collection_row": {
+    "target_collection_description": null,
+    "target_collection_id": "c-x",
+    "target_collection_name": "Collection X",
+    "target_collection_type": "TARGETS",
+    "workspace_id": "ws1"
+  },
+  "dataset_row": {
+    "dataset_description": null,
+    "dataset_id": "pYaBmz32gMbPkA8J",
+    "dataset_name": "Dataset A",
+    "dataset_type": "ACQUISITION",
+    "dataset_utc_created": "2026-10-06T11:14:00.544442+00:00",
+    "dataset_utc_modified": null,
+    "icon": null,
+    "instrument": "instrument X",
+    "locked": 1,
+    "workspace_id": "KS5ydorbY73Yua5o"
+  },
+  "file_row": {
+    "acquisition_timezone": "Europe/Helsinki",
+    "datetime": "2025-08-11T14:23:58.949900",
+    "datetime_utc": "2025-08-11T11:23:58.949900+00:00",
+    "filename": "file-x.raw",
+    "instrument": "instrument X",
+    "instrument_type": "orbi",
+    "length": 10.41332802581787,
+    "polarity": "-",
+    "sample_file_id": "sf-x",
+    "sample_file_utc_created": "2026-10-06T11:14:22.802942+00:00"
+  },
+  "provenance": {
+    "data": {
+      "deployment_id": "deployment-x",
+      "generated_utc": "2026-10-20T21:00:20Z",
+      "produced_with": {
+        "mascope_version": "v1.12.0",
+        "match_score_version": 1,
+        "peak_assignment_engine_version": "0.5.0"
+      },
+      "provenance_version": 1
+    },
+    "message": "Provenance of this deployment."
+  },
+  "sample_row": {
+    "acquisition_id": null,
+    "agent_id": null,
+    "bound_by": null,
+    "datetime": "2025-08-11T14:23:58.949900",
+    "datetime_utc": "2025-08-11T11:23:58.949900+00:00",
+    "filename": "file-x",
+    "filter_id": null,
+    "instrument": "instrument X",
+    "instrument_function_id": "if-x",
+    "instrument_type": "orbi",
+    "ionization_mode_id": "im-x",
+    "length": 10.41332802581787,
+    "locked": 1,
+    "method_binding_id": null,
+    "method_file": null,
+    "polarity": "-",
+    "sample_batch_id": "j5RWaDZ1ByAjWxL1",
+    "sample_file_id": "sf-x",
+    "sample_item_id": "KjneCdOrhjBGDr53",
+    "sample_item_name": "Sample 1",
+    "sample_item_type": "ACQUISITION",
+    "sample_item_utc_created": "2026-10-06T11:14:22.802942+00:00",
+    "sample_item_utc_modified": "2026-10-06T11:14:25.525575+00:00",
+    "sequence_run_id": null,
+    "sha256": null,
+    "source_filename": "file-x.raw",
+    "step_id": null,
+    "t0": 2.559264991760254,
+    "t1": 10.41332802581787,
+    "tic": 21160727.0
+  },
+  "workspaces": {
+    "data": [
+      {
+        "instrument": null,
+        "is_member": true,
+        "is_system": false,
+        "my_role": "editor",
+        "workspace_description": null,
+        "workspace_id": "ws1",
+        "workspace_name": "Workspace A",
+        "workspace_status": "active",
+        "workspace_utc_created": null,
+        "workspace_utc_modified": null
+      },
+      {
+        "instrument": null,
+        "is_member": false,
+        "is_system": false,
+        "my_role": "guest",
+        "workspace_description": null,
+        "workspace_id": "ws2",
+        "workspace_name": "Workspace B",
+        "workspace_status": "active",
+        "workspace_utc_created": "2026-06-23T14:35:08.474417+00:00",
+        "workspace_utc_modified": "2026-06-23T14:35:08.474417+00:00"
+      }
+    ],
+    "total": 2
+  }
+}

@@ -79,6 +79,7 @@ def pipeline():
         ) as create,
         patch(f"{_SVC}.record_processing_status", new_callable=AsyncMock) as status,
         patch(f"{_SVC}._pipeline_item_count", new_callable=AsyncMock, return_value=0),
+        patch(f"{_SVC}.record_chemistry_detection", new_callable=AsyncMock) as detect,
     ):
         fetch.return_value = _sample_file()
         census.return_value = []
@@ -92,12 +93,15 @@ def pipeline():
             learn=learn,
             create=create,
             status=status,
+            detect=detect,
         )
 
 
 async def _run(**arguments):
     return await service._auto_process_sample_file(
-        sample_file_id="sf-001", clear_earlier_run=AsyncMock(), **arguments
+        sample_file_id="sf-001",
+        clear_earlier_run=AsyncMock(return_value=service._Cleared()),
+        **arguments,
     )
 
 

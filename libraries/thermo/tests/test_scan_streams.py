@@ -24,13 +24,19 @@ from mascope_thermo.backend import (
     _method_experiment,
     _method_scan_event,
     _summarize_acquisition_parameters,
+    _trailer_numbers,
     open_backend,
 )
 from mascope_thermo.streams import (
+    _resolution,
+    _scan_resolution,
+    file_scan_stream_keys,
     measured,
     microscans,
     peak_streams,
     pooled_ms1_streams,
+    scan_stream_keys,
+    scan_stream_numbers,
     scan_streams,
     stream_report,
 )
@@ -62,6 +68,11 @@ class _ScriptedReader:
     def scan_trailer(self, scan_number):
         return self._scans[scan_number - 1][1]
 
+    def trailer_numbers(self, scan_number, labels, trailer=None):
+        if trailer is None:
+            trailer = self.scan_trailer(scan_number)
+        return _trailer_numbers(trailer, labels)
+
     def acquisition_parameters(self, max_scans=5, scan_numbers=None):
         return _summarize_acquisition_parameters(
             "scripted", [self.scan_trailer(n) for n in scan_numbers[:max_scans]]
@@ -71,6 +82,7 @@ class _ScriptedReader:
 NEG_LOW = "FTMS - p NSI Full ms [40.0000-160.0000]"
 NEG_HIGH = "FTMS - p NSI Full ms [128.0000-600.0000]"
 POS_LOW = "FTMS + p NSI Full ms [40.0000-160.0000]"
+POS_HIGH = "FTMS + p NSI Full ms [128.0000-600.0000]"
 
 
 def _trailer(resolution=120000, **extra):
@@ -258,6 +270,90 @@ def test_a_scan_without_a_resolution_is_keyed_without_one():
     )
     assert census[0]["key"] == "ITMS + c NSI Full ms [100.0000-1000.0000]"
     assert census[0]["signature"]["resolution"] is None
+
+
+class _TextTrailerReader(_ScriptedReader):
+    """A reader that gives its trailer as text, as the Thermo library does,
+    and the numbers it stores apart from it: one ``(filter, text trailer,
+    stored numbers)`` per scan. Counts the text trailers read."""
+
+    def __init__(self, scans):
+        super().__init__([(text, trailer) for text, trailer, _numbers in scans])
+        self._numbers = [numbers for _text, _trailer, numbers in scans]
+        self.text_reads = []
+
+    def scan_trailer(self, scan_number):
+        self.text_reads.append(scan_number)
+        return super().scan_trailer(scan_number)
+
+    def trailer_numbers(self, scan_number, labels, trailer=None):
+        stored = self._numbers[scan_number - 1]
+        return {label: stored[label] for label in labels if label in stored}
+
+
+def test_a_stored_whole_resolution_keys_a_scan_without_its_text_trailer():
+    """Under the Thermo library, a scan's whole trailer as text costs far
+    more than the one number the key needs."""
+    reader = _TextTrailerReader(
+        [(NEG_LOW, {"FT Resolution:": "120000"}, {"FT Resolution:": 120000.0})] * 3
+    )
+
+    assert scan_stream_keys(reader) == [f"{NEG_LOW} R=120000"] * 3
+    assert reader.text_reads == []
+
+
+@pytest.mark.parametrize(
+    ("text", "stored", "resolution"),
+    [
+        # The library shows a stored fraction rounded; the key has always
+        # held what the text shows.
+        ("15000", 15000.4, 15000),
+        ("15000.4", 15000.4, 15000.4),
+        # Text the trailer stores as text, which reads as no number.
+        ("High", None, "High"),
+        (None, None, None),
+    ],
+    ids=["rounded-fraction", "fraction", "text", "none"],
+)
+def test_a_resolution_stored_as_no_whole_number_is_read_from_the_text(
+    text, stored, resolution
+):
+    trailer = {} if text is None else {"FT Resolution:": text}
+    numbers = {} if stored is None else {"FT Resolution:": stored}
+    reader = _TextTrailerReader([(NEG_LOW, trailer, numbers)])
+
+    census = scan_streams(reader)
+
+    assert census[0]["signature"]["resolution"] == resolution
+    assert scan_stream_keys(reader) == [census[0]["key"]]
+    assert reader.text_reads[0] == 1
+
+
+def test_a_stored_whole_resolution_keys_a_scan_as_its_text_does():
+    """Whatever decimals the library shows, a whole number keys alike."""
+    by_text = scan_streams(_ScriptedReader([(NEG_LOW, _trailer("120000.00"))]))
+    by_number = scan_streams(
+        _TextTrailerReader(
+            [(NEG_LOW, _trailer("120000.00"), {"FT Resolution:": 120000.0})]
+        )
+    )
+
+    assert by_number[0]["key"] == by_text[0]["key"] == f"{NEG_LOW} R=120000"
+    assert by_number[0]["signature"] == by_text[0]["signature"]
+
+
+def test_the_numbers_asked_for_beside_the_keys_are_those_asked_for():
+    stored = {"FT Resolution:": 120000.0, "AGC Target:": 100000.0, "Other:": 1.0}
+    reader = _TextTrailerReader([(NEG_LOW, {}, stored)])
+
+    assert [numbers for _row, _key, numbers in scan_stream_numbers(reader, [])] == [{}]
+    assert [
+        numbers
+        for _row, _key, numbers in scan_stream_numbers(
+            reader, ["AGC Target:", "FT Resolution:", "Missing:"]
+        )
+    ] == [{"AGC Target:": 100000.0, "FT Resolution:": 120000.0}]
+    assert reader.text_reads == []
 
 
 def test_a_file_without_scans_has_no_streams():
@@ -503,28 +599,28 @@ def test_a_polarity_that_only_runs_one_experiment_again_is_detected_whole():
     assert peak_streams(census) == []
 
 
-@pytest.mark.parametrize("setting", ["Micro Scan Count:", "AGC Target:"])
-def test_one_filter_at_two_settings_is_two_things_measured(setting):
+@pytest.mark.parametrize("measuring_resolution", [120000, 240000])
+def test_one_range_at_two_microscan_counts_is_two_things_measured(
+    measuring_resolution,
+):
     """A short scan while the source settles, and then the measurement: one
-    filter, and the microscans or the AGC target are all that says they are
-    two experiments. Told apart by the filter alone they would be read as
-    one experiment run twice, and pooled, which is what detecting per stream
-    is there to undo."""
-    settling = _trailer(**{setting: 1})
-    measuring = _trailer(**{setting: 10})
+    range, and the microscans are what says they are two experiments, one
+    filter or two. Read as one experiment run twice they would be pooled,
+    which is what detecting per stream is there to undo; stitched, the
+    measurement owns the range."""
+    settling = _trailer(**{"Micro Scan Count:": 1, "AGC Target:": 300000})
+    measuring = _trailer(
+        measuring_resolution, **{"Micro Scan Count:": 10, "AGC Target:": 1000000}
+    )
     census = scan_streams(
         _ScriptedReader([(NEG_LOW, settling, 1)] * 2 + [(NEG_LOW, measuring, 2)] * 4)
     )
 
-    assert census[0]["signature_key"] == census[1]["signature_key"]
     assert measured(census[0]) != measured(census[1])
-    assert [stream["key"] for stream in peak_streams(census)] == [
-        f"{NEG_LOW} R=120000 event=1",
-        f"{NEG_LOW} R=120000 event=2",
-    ]
+    assert [stream["scan_event"] for stream in peak_streams(census)] == [1, 2]
 
 
-def test_what_a_stream_measured_is_its_signature_and_its_two_settings():
+def test_what_a_stream_measured_is_its_scan_ranges_and_its_microscans():
     """And not where it sits in the method: the segment and the scan event
     are how a file names an experiment, not what the experiment is."""
     trailer = _trailer(**{"Micro Scan Count:": 10})
@@ -534,9 +630,30 @@ def test_what_a_stream_measured_is_its_signature_and_its_two_settings():
 
     assert [_identity(stream)[1:] for stream in census] == [(1, 1), (2, 3)]
     assert [measured(stream) for stream in census] == [
-        (f"{NEG_LOW} R=120000", 10.0, 100000.0)
+        ((("40.0000", "160.0000"),), 10.0)
     ] * 2
     assert peak_streams(census) == []
+
+
+def test_the_ranges_measured_are_read_as_a_stream_key_states_them():
+    """At four decimals and in m/z order, as the stitch reads them: a
+    multiplexed scan that lists its ranges in another order, or one whose
+    filter renders an edge to more decimals, claims the same m/z."""
+    trailer = _trailer(**{"Micro Scan Count:": 10})
+    one = scan_streams(
+        _ScriptedReader(
+            [("FTMS - p NSI SIM ms [200.0000-300.0000, 40.0000-100.0000]", trailer)]
+        )
+    )[0]
+    other = scan_streams(
+        _ScriptedReader(
+            [("FTMS - p NSI SIM ms [40.00001-100.0000, 200.0000-300.0000]", trailer)]
+        )
+    )[0]
+
+    assert one["key"] != other["key"]
+    assert measured(one) == measured(other)
+    assert measured(one)[0] == (("40.0000", "100.0000"), ("200.0000", "300.0000"))
 
 
 def test_what_a_scan_reports_of_itself_sets_no_streams_apart():
@@ -573,19 +690,15 @@ def test_what_a_scan_reports_of_itself_sets_no_streams_apart():
         (float("inf"), None),
     ],
 )
-@pytest.mark.parametrize("place", [1, 2])
-def test_a_setting_is_a_number_however_the_reader_reports_it(reported, value, place):
+def test_a_setting_is_a_number_however_the_reader_reports_it(reported, value):
     """One backend reports trailer values as text and the other as typed
     scalars, and a setting is the same setting either way, also in text a
     server captured in its own regional format before ``load_dotnet``
     pinned the culture. What is no number is unknown."""
-    name = {1: "Micro Scan Count:", 2: "AGC Target:"}[place]
-    stream = {"signature_key": "", "acquisition_params": {"constant": {name: reported}}}
+    stream = {"acquisition_params": {"constant": {"Micro Scan Count:": reported}}}
 
-    assert measured(stream)[place] == value
-    assert measured(stream)[3 - place] is None
-    if place == 1:
-        assert microscans(stream) == value
+    assert microscans(stream) == value
+    assert measured(stream) == ((), value)
 
 
 def test_a_setting_the_census_does_not_hold_is_unknown():
@@ -607,7 +720,7 @@ def test_a_setting_the_census_does_not_hold_is_unknown():
     assert {"Micro Scan Count:", "AGC Target:"} <= set(
         varying["acquisition_params"]["varying"]
     )
-    assert measured(varying)[1:] == (None, None)
+    assert measured(varying)[1] is None
     assert microscans(varying) is None
     assert microscans({"acquisition_params": {"constant": {}}}) is None
     assert microscans({"acquisition_params": {}}) is None
@@ -632,7 +745,7 @@ def test_streams_whose_settings_the_census_does_not_hold_count_as_one_experiment
         )
     )
 
-    assert measured(unreadable[0]) == (f"{NEG_LOW} R=120000", None, None)
+    assert measured(unreadable[0]) == ((("40.0000", "160.0000"),), None)
     assert peak_streams(unreadable) == []
     assert "Micro Scan Count:" in varying[0]["acquisition_params"]["varying"]
     assert peak_streams(varying) == []
@@ -670,6 +783,128 @@ def test_a_run_that_repeats_beside_another_experiment_is_a_stream_of_its_own():
         f"{NEG_LOW} R=120000",
         f"{NEG_HIGH} R=120000 event=2",
         f"{NEG_HIGH} R=120000 event=3",
+    ]
+
+
+# -- streams on one range at one microscan count are one thing measured ------
+
+
+def _measuring(resolution=120000, **extra):
+    """The trailer of a measurement scan: ten microscans at 1e6."""
+    return _trailer(
+        resolution, **{"Micro Scan Count:": 10, "AGC Target:": 1000000, **extra}
+    )
+
+
+@pytest.mark.parametrize("events", [(None, None), (1, 2)], ids=["no-event", "events"])
+def test_one_range_measured_at_two_resolutions_in_turn_is_detected_whole(events):
+    """A targeted method that runs its survey scan at one resolution and
+    then at another, on the same range and microscans, for the rest of the
+    run. Stitched, the two would tie on every m/z and the first would own
+    them all: the sample would be matched on its first scans alone. They
+    are one thing measured, so the file is detected whole."""
+    first, second = events
+    census = scan_streams(
+        _ScriptedReader(
+            [(NEG_HIGH, _measuring(60000), first)] * 3
+            + [(NEG_HIGH, _measuring(120000), second)] * 5
+        )
+    )
+
+    assert [stream["key"] for stream in census] == [
+        f"{NEG_HIGH} R=60000",
+        f"{NEG_HIGH} R=120000",
+    ]
+    assert [stream["blocks"] for stream in census] == [1, 1]
+    assert pooled_ms1_streams(census) == {"-": [stream["key"] for stream in census]}
+    assert measured(census[0]) == measured(census[1])
+    assert peak_streams(census) == []
+
+
+def test_one_range_at_two_resolutions_that_interleave_is_detected_whole():
+    """Time order is no part of it: the same two streams, alternating."""
+    census = scan_streams(
+        _ScriptedReader(
+            [(NEG_HIGH, _measuring(60000), 1), (NEG_HIGH, _measuring(120000), 2)] * 3
+        )
+    )
+
+    assert [stream["blocks"] for stream in census] == [3, 3]
+    assert peak_streams(census) == []
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        (NEG_HIGH.replace(" Full ", " SIM "), _measuring()),
+        (NEG_HIGH, _measuring(**{"AGC Target:": 300000})),
+    ],
+    ids=["scan-mode", "agc-target"],
+)
+def test_a_scan_mode_or_an_agc_target_sets_no_streams_of_one_range_apart(other):
+    """Two streams on one range at one microscan count tie in the stitch
+    whatever else they differ in, and file order would pick one. Pooled,
+    which is what detection without the setting does, neither is lost."""
+    census = scan_streams(
+        _ScriptedReader([(NEG_HIGH, _measuring(), 1)] * 2 + [(*other, 2)] * 2)
+    )
+
+    assert len(census) == 2
+    assert peak_streams(census) == []
+
+
+@pytest.mark.parametrize("interleaved", [False, True], ids=["in-turn", "interleaved"])
+def test_a_composite_of_two_ranges_is_detected_per_stream(interleaved):
+    """A composite method runs each window's scans as one block, then the
+    next window's: in turn, as every stitched file in reach does, or
+    alternating. Two ranges are two things measured either way."""
+    low, high = (NEG_LOW, _measuring(), 1), (NEG_HIGH, _measuring(), 2)
+    scans = [low, high] * 3 if interleaved else [low] * 3 + [high] * 3
+    census = scan_streams(_ScriptedReader(scans))
+
+    assert [stream["key"] for stream in peak_streams(census)] == [
+        f"{NEG_LOW} R=120000",
+        f"{NEG_HIGH} R=120000",
+    ]
+
+
+def test_a_group_of_one_range_beside_another_range_is_detected_per_stream():
+    """What pooling a polarity of one thing measured does not reach: a wide
+    scan, then a narrower one at one resolution and at another. The polarity
+    measured two things, so every stream of it is a stream of its own, and
+    the stitch gives the narrower range to the first of the two."""
+    census = scan_streams(
+        _ScriptedReader(
+            [(NEG_LOW, _measuring(), 1)] * 2
+            + [(NEG_HIGH, _measuring(60000), 2)] * 2
+            + [(NEG_HIGH, _measuring(120000), 3)] * 2
+        )
+    )
+
+    assert [stream["key"] for stream in peak_streams(census)] == [
+        f"{NEG_LOW} R=120000",
+        f"{NEG_HIGH} R=60000",
+        f"{NEG_HIGH} R=120000",
+    ]
+
+
+def test_a_group_of_one_range_is_a_stream_each_where_another_polarity_is_a_composite():
+    """A file is detected whole or per stream, not a polarity: a positive
+    composite takes the negative streams apart too, one range or not."""
+    census = scan_streams(
+        _ScriptedReader(
+            [(NEG_HIGH, _measuring(60000), 1)] * 2
+            + [(POS_LOW, _measuring(), 2)] * 2
+            + [(POS_HIGH, _measuring(), 3)] * 2
+            + [(NEG_HIGH, _measuring(120000), 4)] * 2
+        )
+    )
+
+    assert [stream["key"] for stream in peak_streams(census)] == [
+        f"{NEG_HIGH} R=60000",
+        f"{POS_LOW} R=120000",
+        f"{POS_HIGH} R=120000",
+        f"{NEG_HIGH} R=120000",
     ]
 
 
@@ -951,6 +1186,36 @@ def test_both_backends_group_the_same_scripted_scans_alike():
 
 
 # -- the committed sample files, through each backend available --------------
+
+
+@pytest.mark.parametrize("path", [POS_ORBI_FILE_PATH, NEG_ORBI_FILE_PATH])
+def test_a_files_stored_resolution_keys_each_scan_as_its_text_trailer_does(
+    backend, path
+):
+    """The key read from the stored number is the one the whole trailer gave."""
+    with open_backend(path) as reader:
+        for row in reader.scan_filters():
+            numbers = reader.trailer_numbers(row["scan"], ["FT Resolution:"])
+            assert "FT Resolution:" in numbers
+            assert _scan_resolution(reader, row["scan"], numbers) == _resolution(
+                reader.scan_trailer(row["scan"])
+            )
+
+
+@pytest.mark.parametrize("path", [POS_ORBI_FILE_PATH, NEG_ORBI_FILE_PATH])
+def test_every_scan_of_a_file_is_keyed_by_the_number_a_scan_read_carries(backend, path):
+    """What a read of several streams' scans at once looks each scan's
+    stream up in: the keys selection compares, by the scan number each
+    per-scan entry carries, for every scan a read can hand back."""
+    keys = file_scan_stream_keys(path)
+    with open_backend(path) as reader:
+        rows = reader.scan_filters()
+        in_order = scan_stream_keys(reader)
+        read = [scan["scan"] for scan in reader.centroids_per_scan()]
+
+    assert list(keys) == [row["scan"] for row in rows]
+    assert list(keys.values()) == in_order
+    assert read and set(read) <= set(keys)
 
 
 @pytest.mark.parametrize(

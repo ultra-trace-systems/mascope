@@ -14,6 +14,10 @@ and the published OpenAPI document names the version its image was built for),
 so these tests assert the status codes and that an anonymous body carries no
 version, not that the version is unobtainable system-wide.
 
+``GET /api/version/public`` answers a caller with no account, such as a
+monitoring host comparing a fleet's releases: the version alone, never the
+capabilities.
+
 ``GET /api/version/third-party-notices`` serves the attributions the backend
 image build generates for the Python packages it ships.
 """
@@ -111,6 +115,36 @@ async def test_anonymous_callers_are_challenged(monkeypatch):
 
     assert resp.status_code == 401
     assert VERSION_SENTINEL not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_anonymous_callers_read_the_version_alone(monkeypatch):
+    """No session and no token: the public route gives the version and nothing
+    else. The capabilities are for signed-in users and paired agents."""
+    monkeypatch.setattr(runtime, "_version", VERSION_SENTINEL, raising=False)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=fast), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/version/public")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {"version": VERSION_SENTINEL}
+    assert "capabilities" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_the_public_version_reports_unknown_when_unset(monkeypatch):
+    """The same string the signed-in route reports, ``unknown`` included."""
+    monkeypatch.setattr(runtime, "_version", None, raising=False)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=fast), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/version/public")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {"version": "unknown"}
 
 
 @pytest.mark.asyncio

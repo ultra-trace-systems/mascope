@@ -514,7 +514,9 @@ def test_every_env_var_the_db_scripts_read_is_forwarded():
     # UTC_OFFSET_HOURS, ALLOW_MATCHED_LOSS) carry no prefix, so a prefix-only
     # pattern is blind to the majority spelling of exactly what it guards.
     # Anchoring on the env-reading calls keeps that from over-matching: no
-    # script reads an unrelated variable (PATH, HOME) through them.
+    # script reads an unrelated variable (PATH, HOME) through them. A
+    # script's own reader counts by its name: any ``_..._env`` helper, which
+    # is what every script that has one calls it.
     script_dir = (
         Path(__file__).resolve().parents[3]
         / "server"
@@ -531,7 +533,7 @@ def test_every_env_var_the_db_scripts_read_is_forwarded():
     for source in script_dir.glob("*.py"):
         read_by_scripts.update(
             re.findall(
-                r'(?:_int_env|_bool_env|os\.environ\.get|os\.getenv)\(\s*"([A-Z][A-Z0-9_]*)"',
+                r'(?:\b_[a-z_]*env|os\.environ\.get|os\.getenv)\(\s*"([A-Z][A-Z0-9_]*)"',
                 source.read_text(encoding="utf-8"),
             )
         )
@@ -555,6 +557,39 @@ def test_password_change_env_vars_are_forwarded_into_the_container():
         "MASCOPE_CLEAR_PASSWORD_CHANGE_EMAILS",
     ):
         assert var in scripts._FORWARDED_ENV_VARS
+
+
+def test_the_ms2_store_backfill_runs_in_the_mode_and_bounds_the_operator_set(
+    no_host_backend, stack_up, no_backup, monkeypatch
+):
+    # Unforwarded, MS2_STORE_MODE=run would arrive unset and only count, and
+    # an operator's MS2_STORE_LIMIT and MS2_STORE_PAUSE would be dropped: an
+    # unbounded run, at the default pace, on a server that is meant to keep
+    # serving.
+    container = FakeContainer(names=["backfill_ms2_store"])
+    monkeypatch.setattr(scripts.subprocess, "run", container)
+    settings = {
+        "MS2_STORE_MODE": "run",
+        "MS2_STORE_LIMIT": "500",
+        "MS2_STORE_PAUSE": "5",
+        "MS2_STORE_RETRY": "1",
+    }
+    for var, value in settings.items():
+        monkeypatch.setenv(var, value)
+
+    result = runner.invoke(
+        scripts.prod_db_scripts_app,
+        ["run", "backfill_ms2_store", "--yes", "--skip-backup"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert container.executed_modules == [
+        "mascope_backend.db.scripts.backfill_ms2_store"
+    ]
+    run_cmd = container.calls[-1]
+    forwarded = run_cmd[: run_cmd.index(CONTAINER)]
+    for var, value in settings.items():
+        assert f"{var}={value}" in forwarded
 
 
 def test_skip_backup_warns_an_interactive_operator():

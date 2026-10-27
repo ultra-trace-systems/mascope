@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
+from test_utils import captured_logs
 
 from mascope_backend.file_converter import api
 
@@ -73,6 +74,55 @@ def test_transport_error_then_success_recovers(_no_sleep):
         result = api._request_with_retry("GET", "http://x/api/y")
 
     assert result.status_code == 200
+
+
+def _retry_records(records: list[dict]) -> list[dict]:
+    """The records ``_request_with_retry`` itself logged."""
+    return [
+        r
+        for r in records
+        if r["name"] == api.__name__ and r["function"] == "_request_with_retry"
+    ]
+
+
+def test_retries_are_logged_below_the_monitoring_threshold():
+    """
+    A blip the retry rides out logs each retry at INFO, not WARNING.
+
+    The monitoring sink subscribes at WARNING, so a retry logged there sent an
+    event for a backend restart the next attempt had already outlasted.
+    """
+    side_effects = [
+        requests.exceptions.ConnectionError("Name or service not known"),
+        _response(503),
+        _response(201),
+    ]
+    with (
+        patch.object(api.time, "sleep"),
+        patch.object(api.requests, "request", side_effect=side_effects),
+        captured_logs() as records,
+    ):
+        api._request_with_retry("POST", "http://x/api/y")
+
+    retries = _retry_records(records)
+    assert [r["level"].name for r in retries] == ["INFO", "INFO"]
+    assert "ConnectionError" in retries[0]["message"]
+    assert "HTTP 503" in retries[1]["message"]
+
+
+def test_exhausted_retries_leave_the_report_to_the_caller():
+    """Giving up raises to the caller, which reports it; the retries stay INFO."""
+    error = requests.exceptions.ConnectionError("refused")
+    with (
+        patch.object(api.time, "sleep"),
+        patch.object(api.requests, "request", side_effect=error),
+        captured_logs() as records,
+        pytest.raises(requests.exceptions.ConnectionError),
+    ):
+        api._request_with_retry("GET", "http://x/api/y")
+
+    levels = {r["level"].name for r in _retry_records(records)}
+    assert levels == {"INFO"}
 
 
 def test_default_timeout_exceeds_server_pool_patience():

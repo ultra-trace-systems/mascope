@@ -355,6 +355,162 @@ async def test_update_dataset_partial(
     assert desc_data["dataset_description"] == "Updated description only"
 
 
+# ============= Descriptive metadata =============
+
+DESCRIPTIVE_METADATA = {
+    "license": "CC-BY-4.0",
+    "authors": [
+        {
+            "name": "Author One",
+            "orcid": "0000-0002-1825-009X",
+            "affiliation": "Lab A",
+        },
+        {"name": "Author Two", "orcid": None, "affiliation": None},
+    ],
+    "keywords": ["aerosol", "CI-MS"],
+    "related_identifiers": [
+        {
+            "identifier": "10.1234/example",
+            "relation": "IsSupplementTo",
+            "identifier_type": "DOI",
+        }
+    ],
+    "funding": [{"funder": "Funder A", "award": "123"}],
+}
+METADATA_FIELDS = list(DESCRIPTIVE_METADATA)
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_without_metadata_reports_it_empty(
+    test_workspace, editor_client, dataset_create_data
+):
+    """Metadata a user does not have never blocks a create."""
+    response = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets", json=dataset_create_data
+    )
+    assert response.status_code == 201
+    dataset = response.json()["data"]
+    assert {field: dataset[field] for field in METADATA_FIELDS} == dict.fromkeys(
+        METADATA_FIELDS
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_dataset_stores_its_descriptive_metadata(
+    test_workspace, editor_client, dataset_create_data
+):
+    response = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets",
+        json={**dataset_create_data, **DESCRIPTIVE_METADATA},
+    )
+    assert response.status_code == 201
+    dataset_id = response.json()["data"]["dataset_id"]
+
+    stored = (
+        await editor_client.get(
+            f"/api/workspaces/{test_workspace}/datasets/{dataset_id}"
+        )
+    ).json()["data"]
+    assert {field: stored[field] for field in METADATA_FIELDS} == DESCRIPTIVE_METADATA
+
+
+@pytest.mark.asyncio
+async def test_update_dataset_sets_and_clears_descriptive_metadata(
+    test_workspace, editor_client, dataset_create_data
+):
+    create_response = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets", json=dataset_create_data
+    )
+    dataset_id = create_response.json()["data"]["dataset_id"]
+    url = f"/api/workspaces/{test_workspace}/datasets/{dataset_id}"
+
+    set_response = await editor_client.patch(url, json=DESCRIPTIVE_METADATA)
+    assert set_response.status_code == 200
+    stored = (await editor_client.get(url)).json()["data"]
+    assert {field: stored[field] for field in METADATA_FIELDS} == DESCRIPTIVE_METADATA
+
+    # A field left out of an update keeps its value; one sent as null is cleared
+    clear_response = await editor_client.patch(
+        url, json={"license": None, "keywords": None}
+    )
+    assert clear_response.status_code == 200
+    stored = (await editor_client.get(url)).json()["data"]
+    assert stored["license"] is None
+    assert stored["keywords"] is None
+    assert stored["authors"] == DESCRIPTIVE_METADATA["authors"]
+    assert stored["dataset_name"] == dataset_create_data["dataset_name"]
+
+
+@pytest.mark.asyncio
+async def test_acquisition_dataset_accepts_descriptive_metadata(
+    test_workspace, admin_client
+):
+    """ACQUISITION datasets carry metadata like any other (they are locked on
+    creation, so only an admin edits them, metadata included)."""
+    create_response = await admin_client.post(
+        f"/api/workspaces/{test_workspace}/datasets",
+        json={
+            "dataset_name": "Acquisition with metadata",
+            "dataset_type": "ACQUISITION",
+            "instrument": "instrument-x",
+        },
+    )
+    assert create_response.status_code == 201
+    dataset_id = create_response.json()["data"]["dataset_id"]
+
+    response = await admin_client.patch(
+        f"/api/workspaces/{test_workspace}/datasets/{dataset_id}",
+        json=DESCRIPTIVE_METADATA,
+    )
+    assert response.status_code == 200
+    updated = response.json()["data"]
+    assert {field: updated[field] for field in METADATA_FIELDS} == (
+        DESCRIPTIVE_METADATA
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"license": "  "},
+        {"license": "x" * 65},
+        {"authors": [{"name": ""}]},
+        {"authors": [{"name": "Author", "orcid": "0000-0002-1825"}]},
+        {"keywords": [" "]},
+        {"related_identifiers": [{"identifier": "10.1234/x"}]},
+        {"funding": [{"award": "123"}]},
+    ],
+    ids=[
+        "blank license",
+        "license too long",
+        "author without name",
+        "malformed orcid",
+        "blank keyword",
+        "identifier without relation",
+        "funding without funder",
+    ],
+)
+async def test_malformed_descriptive_metadata_is_a_client_error(
+    test_workspace, editor_client, dataset_create_data, metadata
+):
+    create_response = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets",
+        json={**dataset_create_data, "dataset_name": "Malformed metadata", **metadata},
+    )
+    assert create_response.status_code == 422
+
+    dataset_id = (
+        await editor_client.post(
+            f"/api/workspaces/{test_workspace}/datasets", json=dataset_create_data
+        )
+    ).json()["data"]["dataset_id"]
+    update_response = await editor_client.patch(
+        f"/api/workspaces/{test_workspace}/datasets/{dataset_id}", json=metadata
+    )
+    assert update_response.status_code == 422
+
+
 # ============= Delete Operations =============
 
 

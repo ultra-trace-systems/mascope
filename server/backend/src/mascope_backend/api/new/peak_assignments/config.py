@@ -26,7 +26,8 @@ PEAK_ASSIGNMENT_ENGINE_VERSION = "0.5.0"
 IN_APP_ENGINE = "mascope"
 
 # The identity of the runs the retired assignment-copy service published
-# (docs/dev/peak_assignment_copy.md). Still reserved: runs stamped with it may
+# (docs/dev/peak_assignment_batch_primary.md section 6.4; the copy design itself is
+# in git history). Still reserved: runs stamped with it may
 # exist, the UI presents the value as first-party, and an external import that
 # could stamp it would forge that presentation. Server-side callers pass a
 # reservation through a trusted parameter on the import entry point that the

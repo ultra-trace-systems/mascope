@@ -2,6 +2,11 @@
 
 # Making the SDK peak-assignment aware (read-first)
 
+- **Status:** building
+- **As of:** 2026-10-22
+- **Tracked in:** MAS-71 in [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) for the import contract; the SDK write wrappers (section 8.4 steps 5 and 6) are MAS-330 and MAS-345, the demo bundle MAS-331 and the reference identities in frames MAS-332, in [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) milestone 3 (filed 2026-10-22)
+- **What:** The SDK's peak-assignment surface; section 8 is the run-import contract.
+
 ## Purpose
 
 The [peak-centric assignment paradigm](peak_assignment_paradigm.md) inverts Mascope
@@ -15,13 +20,18 @@ under `/api/peak-assignments/*` (see the epic's
 Every user-facing surface has been reworked around this - the backend engine, the
 Sample view, the assignment ledger, the inspector - **except the public Python SDK**
 (`libraries/sdk`, `mascope_sdk`), which at the time of writing was entirely
-targeted-shaped and knew nothing about peak assignments. This document closes that
-gap in two phases: **v1** (read, shipped - §§1-7) and **v2** (write - §8).
+targeted-shaped and knew nothing about peak assignments. This document closed that
+gap in two phases: **v1** (read), shipped in 1.8.0 (PR #1865: the `peak_assignments`
+resource, the `load_assignments` loader and the notebook `10_peak_assignment.ipynb`;
+its design, sections 1 to 7 and the v1 decision log in section 9, was removed from
+this note on 2026-10-22 and is in git history - the SDK README documents the shipped
+surface), and **v2** (write - §8), whose run-import contract is live and whose SDK
+wrappers (§8.4 steps 5 and 6) are open.
 
 It is an engineering design + phased plan, not a user guide.
 
 > **Status (2026-08-03).** The one backend change this plan called for - dropping the
-> dead `run` field from the ledger read (§4.1) - has **landed** on the epic branch (PR
+> dead `run` field from the ledger read (v1 §4.1, removed) - has **landed** on the epic branch (PR
 > [#1696](https://github.com/ultra-trace-systems/mascope/pull/1696), commit `ee6217a9`). Since then
 > the ledger read also gained **pagination** (`limit`/`offset` + `total`) and typed enum
 > filters ([`f1e17f2c`]), and issue [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725)
@@ -33,14 +43,14 @@ It is an engineering design + phased plan, not a user guide.
 > [#1865](https://github.com/ultra-trace-systems/mascope/pull/1865)): the SDK gained the
 > `peak_assignments` resource (`get` + `list_runs` + `detail`), the
 > `load_assignments` loader, hermetic unit tests plus contract tests (which
-> **skip** until the demo bundle carries a completed run - §7's demo-dataset
+> **skip** until the demo bundle carries a completed run - the v1 demo-dataset
 > task is still open, now sequenced as §8.4 step 8), and a tutorial notebook,
 > `10_peak_assignment.ipynb` (shipped briefly as `11`; the retirement of the
 > client-side composition notebook, below, restored the planned slot).
 > [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725)
 > landed first, so `get()` reads the slim ledger rows (with the flattened
 > `p_correct` / `p_correct_provisional` / `corroboration_adducts` scalars) and
-> the open decision in §9.5 resolved to a separate `detail(sample_id,
+> the open v1 decision 9.5 resolved to a separate `detail(sample_id,
 > peak_assignment_id)` accessor over the per-assignment detail route (it takes
 > the sample id too, matching the route shape).
 
@@ -48,7 +58,7 @@ It is an engineering design + phased plan, not a user guide.
 > write-side **contract**: importing externally computed runs into the Mascope
 > ledger (§8.2, a new backend endpoint), plus the v1-deferred SDK triggering,
 > verification, and fit wrappers (§8.3). The old open question "should the SDK
-> trigger runs?" (§9.1) is resolved **yes** - §8.3 records why the ground
+> trigger runs?" (v1 decision 9.1) is resolved **yes** - §8.3 records why the ground
 > shifted. Decisions in §8 are settled unless marked otherwise; the open points
 > are collected in §8.5. The three that were **decisions pending** - holding
 > sequenced steps until answered - are all resolved and shipped in step 2; what
@@ -65,347 +75,6 @@ It is an engineering design + phased plan, not a user guide.
 > paradigm doc's own "coexist" stance (a targeted result is just an assignment whose
 > winner came from the curated library) and deliberately keeps user adaptation
 > friction low.
-
----
-
-## 1. Current SDK (as-is): targeted-shaped
-
-Everything the SDK offers today is anchored on the **target list**:
-
-- `mascope.matching.match_compound(s)` -
-  [matching.py](../../libraries/sdk/src/mascope_sdk/resources/matching.py) - matches a
-  sample against supplied target formulas (`/match/aggregate/sample/{id}/compounds`).
-- `mascope.cheminfo.query_by_mz` -
-  [cheminfo.py](../../libraries/sdk/src/mascope_sdk/resources/cheminfo.py) - per-m/z
-  candidate formulas (`/cheminfo/mz/query`), on-demand, not persisted.
-- `mascope.samples.get_peaks` -
-  [samples.py](../../libraries/sdk/src/mascope_sdk/resources/samples.py) - peaks
-  flattened with `target_*` match columns (`match_score_isotope/ion/compound`,
-  `target_compound_*`, `target_ion_*`, `target_isotope_*`). A peak with no target is
-  a single row with NaN match columns - it is never explained.
-- `mascope.load_peaks` / `load_peak_timeseries` / `load_peaks_by_stage` - high-level
-  loaders over the same targeted peak data.
-
-And the tell-tale one, the since-retired `09_composition_assignment.ipynb`:
-it hand-rolled untargeted assignment **client-side** - for each unmatched peak
-it called `cheminfo.query_by_mz` -> scored each candidate with
-`matching.match_compounds` -> picked the best -> marked isotope siblings. This
-was *exactly* Stage B, but with **no arbitration, no plausibility, no tiers,
-no calibration, and no persistence** - a per-notebook reimplementation of what
-the engine now does properly server-side. With the read surface shipped, the
-notebook was removed rather than kept as a fallback: two paths to the same
-goal with different scores confuse more than they help.
-
-**Nothing in the SDK references `/api/peak-assignments/*`.**
-
----
-
-## 2. What "keep the two in parallel" means for the SDK
-
-| Capability | Path | Status |
-| --- | --- | --- |
-| Targeted matching against a list | `matching.*`, `get_peaks` target cols | **keep unchanged** |
-| Manual client-side untargeted loop | (retired notebook) | **removed** - superseded by the read surface (§6) |
-| Read server-side peak assignments | *new* `peak_assignments.*` | **shipped (v1**, PR [#1865](https://github.com/ultra-trace-systems/mascope/pull/1865)**)** |
-| Trigger assignment runs / verify / fit | *new* write wrappers | **v2** (§8.3) |
-| Publish an externally computed run | *new* `runs/import` + `import_run` | **v2** (§8.2) |
-
-The two paradigms coexist at the API level too: a `PeakAssignment` with
-`target_compound_id IS NOT NULL` (source `database`, Stage A) *is* the targeted result,
-now peak-anchored. So "targeted vs. peak-centric" in the SDK is not two engines - it is
-the targeted resources (list-driven) beside a peak-assignment resource (peak-driven read
-of a persisted run).
-
----
-
-## 3. The API surface the SDK reads and writes
-
-All under prefix `/api/peak-assignments`, token-accessible (SDK-reachable):
-
-| Endpoint | SDK | Purpose |
-| --- | --- | --- |
-| `GET /sample/{id}` | **v1** | peaks-with-assignments (one row/peak); **paginated** (`limit` default 1000 / max 5000, `offset`; response carries `total`); filters `peak_assignment_run_id`, `tier`, `engine_tier`, `role`, `source` (typed enums - a bad value is a 422) and `tier_disagrees` (bool; rows carrying no `engine_tier` are excluded from both answers). Envelope standardized per §4.1 |
-| `GET /sample/{id}/assignment/{assignment_id}` | **v1** | one assignment in full (`alternatives` + `provenance`), the detail fetch #1725 split out of the list |
-| `GET /sample/{id}/runs` | **v1** | run history (status, engine_version, config), newest first |
-| `GET /sample/{id}/verifications` | **v2** (§8.3) | recorded verdicts (read-only) |
-| `POST /sample/{id}/assign` | **v2** (§8.3) | 202 launch run (async) |
-| `POST /batch/{id}/assign` | **v2** (§8.3) | 202 launch run for a whole batch |
-| `POST /sample/{id}/runs/import` | **v2** (§8.2) | **new endpoint**: publish an externally computed run |
-| `DELETE /sample/{id}/runs/{run_id}` | **v2** (§8.2) | **new endpoint**: abandon an `importing` run, releasing the sample before the prune's grace |
-| `POST /sample/{id}/fit/aggregate` | **v2** (§8.3) | isotope table for an arbitrary formula+adduct (POST, but non-mutating - verify an untargeted winner) |
-| `POST /sample/{id}/fit/visualize` | optional | emits socket events, which a headless client cannot receive; wrapped only if a use appears (§8.3) |
-| `POST /sample/{id}/verify` | **v2** (§8.3) | record a verdict (write) |
-| `POST /calibration/{instrument}/recalibrate` | **never (SDK)** | superuser admin op |
-
-Reference for the record shapes:
-[schemas.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/schemas.py),
-[config.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/config.py).
-
-The response envelope is `{status, message, results, total, data}`: `results` is the
-size of *this page*, `total` is the row count across all pages (how a client knows paging
-is done).
-
-**`PeakAssignmentRecord`** columns the ledger DataFrame carries:
-`peak_assignment_id`, `peak_assignment_run_id`, `sample_peak_id`,
-`sample_peak_mz/_intensity/_tof`, `role`
-(`M0`/`iso_child`/`reagent`/`artifact`/`unassigned`), `assigned_formula`, `ion_formula`,
-`ionization_mechanism_id`, `isotope_label`, `isotope_formula`, `source`
-(`database`/`untargeted`/`manual` - the last for a row a person assigned by hand;
-null on a peak nothing explained), `fit_score`, `mz_error_ppm`, `abundance_error`, `tier`
-(`assigned`/`candidate`/`below_assignability`/`unassigned`), `engine_tier` (the same
-vocabulary or null - the producing engine's own verdict, on imported runs only),
-`target_compound_id`,
-`target_ion_id`, `owner_peak_assignment_id`, plus the flattened provenance scalars
-`evidence` / `p_correct` / `p_correct_provisional` / `corroboration_adducts`. The
-`alternatives` (JSON list) and `provenance` (JSON) blobs live on the per-assignment
-detail record:
-
-`fit_score` and `tier` are two different quantities and the ledger serves both.
-`fit_score` is the pure measurement - how well the isotope envelope matches - and is
-unchanged. The `tier` is not read off it: it is read off **`evidence`**, the fit
-weighted by the chemical plausibility of `assigned_formula`, which is the quantity
-both engine stages already arbitrate a contested peak in. `evidence` is flattened
-onto every row (out of `provenance.evidence`) because the tier chip displays it
-beside the tier it produced.
-
-> **Landed (#1725).** `alternatives` + `provenance` are ~74% of the payload (2.8 KB/row
-> vs 0.74 KB core) and are inspector-only. [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725)
-> dropped them from the list response and serves them via the per-assignment **detail**
-> route (with the `p_correct` / `p_correct_provisional` / `corroboration_adducts`
-> provenance scalars flattened onto the slim rows). The SDK fetches **core rows** in
-> `get()` and the JSON detail via `detail()` (§5.1, §9).
-
-**`PeakAssignmentRunRecord`** (run metadata): `peak_assignment_run_id`, `engine_version`,
-`status` (`pending`->`running`-> terminal `completed`|`failed`|`cancelled` -
-`cancelled` is terminal like `failed` but distinguishes an interrupted run from an
-engine error), `config`, `error`,
-`peak_assignment_run_utc_created/_completed`. Reads default to the **latest completed**
-run when no run id is given (multiple completed runs can exist per sample; a run is
-refused only while another for the same sample is *in flight* - concurrency admission
-control, not a one-run-per-sample model). v2 adds `engine` and `calibration` to
-this list - to the table *and* to the record, which is a typed projection that
-silently drops any column it does not name (§8.2, §8.4 step 4).
-
----
-
-## 4. Integration constraints
-
-1. **Sequencing.** `/api/peak-assignments/*` ships in PR
-   [#1696](https://github.com/ultra-trace-systems/mascope/pull/1696) (`epic/peak-centric-assignment`
-   -> `develop`), not yet on a released `develop`. The SDK compat work must sit on top of
-   the epic (or land after #1696 merges); it cannot be exercised against a plain,
-   pre-epic `develop` demo stack. The SDK **contract tests** (§7) need a stack whose
-   backend has the endpoints *and* at least one persisted run.
-
-2. **The ledger read is paginated.** `GET /sample/{id}` returns at most `limit` rows
-   (default 1000, max 5000) from `offset`, and reports `total` (all matching rows). A
-   dense sample is tens of thousands of peaks, so the SDK **must page** - loop `offset`
-   until it has `total` rows - not assume one response is the whole run. Ordering is
-   stable (m/z with the primary key as tiebreak), so paging never drops or repeats a row.
-   Filters `tier`/`role`/`source` are typed enums server-side: a misspelled value is a
-   **422** naming the accepted set, not a silent empty page.
-
-3. **Async is why v1 is read-only.** `POST .../assign` returns **202** + a `Process-ID`
-   header and finishes in the background (the app learns completion via a socket reload
-   event). The SDK has no polling/wait plumbing today. Reading avoids all of
-   it; triggering (§8.3) takes on a poll-to-terminal loop over the run id the 202
-   returns - which is why §8.3 has the assign endpoints answer synchronously first.
-
-### 4.1 Landed: dropped the `run` field from `GET /sample/{id}`
-
-> **Shipped** as commit `ee6217a9` in PR
-> [#1696](https://github.com/ultra-trace-systems/mascope/pull/1696). Kept here for the rationale.
-
-The cleanest fit with the existing API was **not** to nest `run` into `data`, but to
-**remove `run` from the `GET /sample/{id}` response entirely**, standardizing it on the
-universal list envelope:
-
-```jsonc
-// now
-{ "status", "message", "results", "run": {...}, "data": [ ...peaks... ] }
-// proposed
-{ "status", "message", "results", "data": [ ...peaks... ] }
-```
-
-**Why removal, and why it's safe** - three findings from the shipped code:
-
-- **It is the only anomaly.** `PeakAssignmentsResponse` is the *sole* data-bearing
-  response in the entire `api/new` surface that carries a field beside `data`.
-  Match-records, the runs list, and the verifications list are all
-  `{status, message, results, data}`
-  ([match/records/schemas.py](../../server/backend/src/mascope_backend/api/new/match/records/schemas.py),
-  [peak_assignments/schemas.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/schemas.py)).
-
-- **No client can read it, and the shipped one doesn't.** Both the frontend's shared
-  `read` handler and the SDK's `_get` unwrap the response to `.data`, so a sibling
-  `run` is invisible to both. The frontend's assignment store says so in a comment and
-  takes run metadata from a **separate `/runs` store** instead
-  ([peakAssignment/assignment.js](../../server/frontend/src/stores/data/modules/peakAssignment/assignment.js):
-  *"The shared `read` handler unwraps the response to its `data` field, dropping the
-  {run, data} envelope's `run`, so we take run metadata from the run store instead"*).
-  So `run` is already **dead weight** - produced only in
-  [service.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py)
-  and read by nobody. No test asserts on it.
-
-- **Nothing is lost.** Run metadata is already a first-class resource -
-  `GET /sample/{id}/runs` - and the run identity is denormalized onto every assignment
-  row (`peak_assignment_run_id`). "Which run did I get?" is answerable from the rows;
-  "what was its config / engine version?" from `/runs`.
-
-**Why not nest it as `data: {run, assignments}` (the literal "merge into data")?** That
-would change `data` from a list to an object, which *breaks* the frontend's `useData`
-list handler (it keys `data.list` by `sample_peak_id`, expecting an array) and
-complicates the SDK's DataFrame construction - so it *increases* coupling and churn,
-the opposite of the goal. Removal is strictly cleaner than nesting.
-
-**Blast radius (as landed):** backend only, and small - dropped the field from
-`PeakAssignmentsResponse` and the two `"run": ...` keys in
-`service.get_peak_assignments`, plus two integration-test assertions that now read run
-identity from the rows. **Zero frontend change** (it already ignored the field). The SDK
-design below assumes the standardized envelope.
-
-*(This does mean the SDK resolves "which run" itself - see §5.1 - exactly as the
-frontend already does. Cheap, one extra GET, and it makes `get()` deterministic.)*
-
----
-
-## 5. Proposed SDK design (v1)
-
-### 5.1 New resource: `mascope.peak_assignments`
-
-New `libraries/sdk/src/mascope_sdk/resources/peak_assignments.py`, a `BaseResource`
-subclass, wired as a lazy property on `MascopeClient` (mirroring `matching`/`cheminfo`:
-private slot, `@property`, `TYPE_CHECKING` import in
-[client.py](../../libraries/sdk/src/mascope_sdk/client.py)).
-
-```python
-mascope.peak_assignments.get(
-    sample_id,
-    *,
-    run_id=None,        # default: latest completed run
-    tier=None,          # assigned | candidate | below_assignability | unassigned
-    role=None,          # M0 | iso_child | reagent | artifact | unassigned
-    source=None,        # database | untargeted | manual
-) -> pd.DataFrame | None
-
-mascope.peak_assignments.list_runs(sample_id) -> pd.DataFrame | None
-```
-
-**Return shape (decided):** `get()` returns a **DataFrame, one row per peak** for the
-whole run, with the run metadata attached on **`df.attrs["run"]`** (a dict). This keeps
-the SDK's "everything is a DataFrame" convention while still surfacing the run context.
-`list_runs()` returns a plain runs DataFrame. Empty result -> `None` (matching
-`get_peaks` semantics).
-
-**Paging is internal.** The endpoint caps a response at `limit` rows (§4 constraint 2),
-so `get()` loops `offset` accumulating pages until it has `total` rows, then
-concatenates - the caller gets the entire run in one DataFrame and never sees a page
-boundary. (An advanced `limit`/`offset` passthrough for streaming very large runs is a
-later option; the default is fetch-all.) A misspelled `tier`/`role`/`source` surfaces as
-the SDK's `ValidationError` (the server's 422), not a silently empty frame.
-
-**Resolving the run.** Run identity is no longer echoed in the response (§4.1), so `get()`
-sources run metadata the way the frontend does: when `run_id is None`, it calls
-`list_runs`, picks the latest `completed` run, uses its id for the assignments fetch, and
-attaches that run record to `df.attrs["run"]`. This makes the call deterministic (no
-reliance on server-side "latest" resolution the caller can't see) at the cost of one
-cheap extra GET, and the standardized envelope unwraps through the ordinary `_get` -
-**no `_base.py`/`_http.py` change is needed**.
-
-**`alternatives` / `provenance`.** [#1725](https://github.com/ultra-trace-systems/mascope/issues/1725)
-slimmed them out of the list response, so the SDK sources them on demand via the per-peak
-detail accessor - shipped as `peak_assignments.detail(sample_id, peak_assignment_id)`,
-taking the sample id too to match the route shape - and the bulk `get()` stays cheap.
-`get()` is **core-first**, which made #1725 an additive detail method rather than a
-breaking column change (§9).
-
-Datetime columns (`*_utc_*`) coerced via the existing `_coerce_datetime_columns`.
-
-### 5.2 High-level loader: `load_assignments`
-
-Parity with `load_peaks` - a `client.py` method delegating to `_loaders.py`:
-
-```python
-mascope.load_assignments(
-    dataset, batches=None, *, samples=None, exact=False,
-    run="latest", tier=None, source=None,
-    confirm_above=100, max_workers=8,
-) -> pd.DataFrame | None
-```
-
-Resolve dataset/batches/samples (reuse the existing resolution + `run_concurrent` +
-tqdm + `confirm_above` machinery), call `peak_assignments.get` per sample, and
-concatenate with `sample_batch_name` / `sample_item_name` / `datetime_utc` prepended -
-exactly the shape `load_peaks` produces. This is the natural cross-sample analysis entry
-point (tiered mass-defect, Van Krevelen, source breakdowns).
-
-Because it only *reads*, `load_assignments` returns whatever runs already exist; samples
-without a completed run contribute nothing (and are logged), rather than being assigned
-on the fly. Each per-sample fetch pages internally (§5.1); across many samples payload
-size matters, so `load_assignments` pulls **core rows only** and never the
-inspector-detail JSON (aligned with #1725).
-
-### 5.3 No changes to existing resources or shared SDK code
-
-`matching`, `cheminfo`, `samples.get_peaks`, and the three existing loaders are
-untouched. With the §4.1 cleanup already landed, the standardized envelope unwraps
-through the existing `_get`, so the new resource needs **no change to `_base.py` or
-`_http.py`** - it is purely additive on the SDK side.
-
----
-
-## 6. Notebooks (the user-facing parallel story)
-
-- **`10_peak_assignment.ipynb`** (shipped) - read + analyze a persisted run: pick a
-  sample, `peak_assignments.list_runs` -> `peak_assignments.get`, inspect the `run`
-  config on `.attrs`, filter by `tier` / `source`, plot a **tier-colored mass-defect**
-  map and a **Van Krevelen**, break peaks down by `source` (database, untargeted,
-  and manual - see below), and drill into `alternatives` for contested peaks. Assumes
-  a run already exists (created in the app) - explicitly noted, since v1 doesn't
-  trigger runs.
-
-  The source breakdown groups **one** frame rather than issuing one `get()` per
-  source, and that is load-bearing: `source` grew a third value when manual
-  curation landed, and a curated row *leaves* `database`/`untargeted` instead of
-  joining them. Two filtered reads would have stopped summing to the run the day
-  someone hand-assigned a peak, and the curated rows - the ones a curator is most
-  likely to be looking for - would have been the ones missing. A local groupby
-  cannot go stale that way, so prefer it wherever a notebook partitions a run by a
-  server-side enum.
-- **`09_composition_assignment.ipynb` retired** (reversing this doc's earlier
-  "keep as client-side fallback" call): with the read surface shipped, a second
-  hand-rolled path to the same goal - different scores, no ledger, no tiers -
-  confuses more than it helps. `10_batch_stages.ipynb` moved into the `09` slot.
-- **`01`-`08` unchanged** - they are the targeted workflow that coexists.
-- Update **both** notebook tables, which have to move together:
-  [`libraries/sdk/README.md`](../../libraries/sdk/README.md) and
-  [`docs/user/sdk/getting-started.md`](../user/sdk/getting-started.md).
-  [`docs/user/sdk/index.md`](../user/sdk/index.md) carries no table - it
-  deep-links to the README - so it is not the file to edit, and step 6 adds a
-  notebook, which is when a stale second table starts costing something.
-
----
-
-## 7. Tests & docs
-
-- **Contract tests** (`libraries/sdk/tests/test_contract.py`): add ledger/run shape
-  assertions - `list_runs` returns a run with `status == "completed"` and an
-  `engine_version`; `get` returns one row per peak with the `tier`/`source`/`fit_score`
-  columns and a populated `df.attrs["run"]`. Precondition: the **demo bundle must carry
-  a completed run** (analogous to how it already stamps `match_score_version`), or the
-  test provisions one out of band. Flag this as a demo-dataset task - it is the main new
-  test-infra dependency, and it gates the epic's own e2e demo stack too. (Sequenced as
-  §8.4 step 8: the shipped contract tests skip in CI until it lands.)
-- **Unit tests**: the **paging loop** (accumulate pages to `total`, stable order),
-  latest-completed run resolution + `.attrs` attachment, enum-filter 422 ->
-  `ValidationError`, empty-run -> `None`. Hermetic (mock `http_get`), like
-  `test_loaders.py`.
-- **Docs**: README - new `#### mascope.peak_assignments` reference table, a
-  "Peak assignments" section, project-structure entry, notebook table row; the
-  duplicate notebook table in `docs/user/sdk/getting-started.md`; CHANGELOG +
-  SDK version bump. Not `developer_guide.md` - its SDK section is PyPI publish
-  mechanics and enumerates no notebooks or resources, so there is nothing there
-  to keep in step.
 
 ---
 
@@ -460,6 +129,14 @@ confidence calibration ("Trust model" below). Most of the rules that follow are
 consequences of that line.
 
 ### 8.2 Part A - run import (the core)
+
+The contract as an importer reads it - the request and its caps, the row
+fields, the reserved provenance keys, chunking and idempotency, tiers and
+`engine_tier`, the intensity quantity per instrument, partial imports,
+retention and verdicts outside calibration - is the user page
+[Publishing an assignment run](../user/sdk/publishing-assignments.md) since
+2026-10-22. This section is the design behind it: why each rule is what it
+is, and what was tried and retracted.
 
 #### Endpoint
 
@@ -517,13 +194,14 @@ Request, top level:
 | `rows` | assignment rows (below) |
 | `chunk` | assembly control: `{run_id, import_id, index, complete}`, **required** (`import_id` with it) - see "One logical import" |
 
-Each row is **`PeakAssignmentRecord` (§3) minus the server-owned fields**. That
+Each row is **`PeakAssignmentRecord` (the read record, in `openapi.json`) minus the server-owned fields**. That
 is the whole definition: do not re-enumerate the columns here, because a second
 list drifts from the first (an earlier draft of this section did exactly that,
 silently dropping `isotope_formula` and the target ids). Concretely, every
 read-side column - including `isotope_formula`, `target_compound_id` and
-`target_ion_id`, so an imported `source='database'` row can satisfy §2's
-targeted/untargeted equivalence - **except**:
+`target_ion_id`, so an imported `source='database'` row can satisfy the
+targeted/untargeted equivalence (a targeted result is an assignment whose winner
+came from the curated library) - **except**:
 
 - **server-minted, never client-supplied**: `sample_item_id`,
   `peak_assignment_id`, `peak_assignment_run_id`;
@@ -856,7 +534,7 @@ accept what is merely the importer's judgement.
   prevent a retry from manufacturing one). This is the ledger invariant every
   consumer assumes.
 - **Enum validity.** `role` / `tier` / `source` are validated against the same
-  typed vocabularies the read filters use (§3); a bad value is a 422 naming
+  typed vocabularies the read filters use; a bad value is a 422 naming
   the accepted set. The *vocabulary* needs no mapping: the app's tier names
   (`assigned` / `candidate` / `below_assignability` / `unassigned`) and its
   fit-score scale came *from* peaky, and both engines score with `mascope_tools`
@@ -922,7 +600,7 @@ accept what is merely the importer's judgement.
   `import_service._row_values` writes the server-derived evidence into the
   stored row's `provenance["evidence"]`, over whatever the payload carried
   there, and `_provenance_scalars` flattens it onto the ledger row as the
-  `evidence` column the tier chip renders (§3). So the pairing a reader sees is
+  `evidence` column the tier chip renders. So the pairing a reader sees is
   the pairing the check enforced. `fit_score` is untouched by any of this: it is
   stored and served exactly as supplied, as the pure measurement it always was.
 
@@ -1130,8 +808,16 @@ in-app path does not:
 
 ### 8.3 Part B - triggering, verification, fit (the v1 deferrals, decided yes)
 
+> *Status (2026-10-22).* The server-side change this section asks for shipped for the
+> per-sample route (`routes.py`: 202 with the run id, 409 with the in-flight run id, 422
+> with the reason). `POST /batch/{id}/assign` was removed in the batch-primary epic
+> (PR #2049, 1.8.0) - a batch is assigned by folding at ingest and the untargeted search
+> runs once per batch peak ([peak_assignment_batch_primary.md](peak_assignment_batch_primary.md))
+> - so the batch half of this section has been cut. None of the SDK wrappers below exist
+> yet (steps 5 and 6 of §8.4).
+
 v1 deferred these behind one question - "should the SDK trigger heavy async
-runs?" (§9.1). **Decided: yes.** The ground shifted after the question was
+runs?" (the v1 decision log, removed). **Decided: yes.** The ground shifted after the question was
 raised: the write routes are now gated on the `peak_assignment` flag (403 when
 the deployment has not opted in), and admission control refuses a duplicate run
 server-side rather than queueing it. The hazard behind the question was an SDK
@@ -1155,8 +841,8 @@ socket is a success-status toast string.
 So v2 moves both decisions in front of the response, which is cheap because both
 are already synchronous computations: the route fetches the sample anyway,
 `ineligible_reason(sample)` is a pure function of that row, and the in-flight
-check is the indexed run-state query §8.2 introduces. The assign endpoints then
-answer honestly:
+check is the indexed run-state query §8.2 introduces. The assign endpoint then
+answers honestly:
 
 - **202** with the newly created run row's `peak_assignment_run_id` in the body
   (created `pending` in the request, as the import path already does), so a
@@ -1231,41 +917,9 @@ about at request time.
   `PeakAssignmentsResource._get_envelope` calls `http_get` directly. That holds
   for a **success** response only; on a non-2xx nothing returns a `Response` at
   all, which is the subject of the plumbing note after this list.)
-- **`assign_batch(batch_id, *, config=None, wait=True, ...)`** - wraps
-  `POST /batch/{id}/assign`. A batch needs its **own** observable, and today has
-  none: there is no batch-level run row (`PeakAssignmentRun`'s only FK is
-  `sample_item_id`), no batch status endpoint, samples are assigned sequentially
-  behind a concurrency-1 gate, ineligible samples produce no run at all, and
-  completion is reported only in the socket notification of the aggregate
-  result. Polling per-sample `list_runs` cannot fix that on its own: the wrapper
-  would have to reproduce the server's eligibility partition to know how many
-  runs to expect, and an all-skipped batch produces zero runs - which is
-  indistinguishable from a refusal.
-
-  So the batch endpoint's 202 body returns **the eligibility partition** - the
-  admitted `sample_item_id`s, and the skipped ones with their reasons - and
-  **not** per-sample run ids. The partition is computable in the request (the
-  batch's samples plus `ineligible_reason` per row, no engine work), which the
-  run ids are not: `_create_run` mints each id inside the engine as that
-  sample's turn arrives, behind a concurrency-1 gate, minutes after the
-  response. Returning ids would mean pre-creating runs in the request, and a
-  pre-created run is a non-terminal run for its sample - so it is refused by
-  §8.2's own admission rule, or duplicated by the engine, and a batch that stops
-  early (`_assign_eligible_samples` deliberately lets `CancelledError`
-  propagate) strands one blocking row per sample it never reached. The
-  partition removes that whole class: nothing is pre-created, so nothing
-  orphans, strands, or forces the admission rule to be widened.
-
-  `wait=True` therefore polls **by sample**, over the admitted set the body
-  named, for a completed run created after the request. The wrapper captures the
-  request time and requires a newer run, so a sample's *previous* run is never
-  mistaken for this batch's; skips are reported data, not errors. The ambiguity
-  this replaces is gone either way, because the body lists the skipped samples
-  explicitly rather than leaving zero runs to be interpreted.
-  (Stage-A-only remains the batch default, `run_untargeted=False`.)
 - **`verify(sample_id, peak_assignment_id, verdict, *, evidence_level=None, note=None)`**
   and **`list_verifications(sample_id)`** - thin wrappers over the shipped
-  verification endpoints (§3): append-only verdicts, `evidence_level` required
+  verification endpoints: append-only verdicts, `evidence_level` required
   for `confirmed` (server-enforced). Verifying an imported assignment is
   supported; see the trust model for why those verdicts stay out of the
   recalibration label pool.
@@ -1355,7 +1009,7 @@ about at request time.
 - **`recalibrate`** - still out of scope for the SDK (superuser admin op).
 
 **Step 5 is not purely additive: two pieces of shared SDK plumbing come with
-it.** v1 was able to ship with no change to `_base.py` or `_http.py` (§5.3)
+it.** v1 was able to ship with no change to `_base.py` or `_http.py`
 because reads are safe to retry and read errors only ever need a message. The
 write wrappers are neither.
 
@@ -1411,8 +1065,8 @@ write wrappers are neither.
 Corresponding notebook follow-up: the round-trip notebook of §8.4 step 6 is
 where triggering gets its worked example (`assign` -> `get`, then
 `import_run` -> `get`). No existing notebook is rewritten for this - the
-client-side composition loop that used to live in the `09` slot is retired
-(§6), so there is nothing left to demote to an appendix.
+client-side composition loop that used to live in the `09` slot is retired,
+so there is nothing left to demote to an appendix.
 
 ### 8.4 Sequencing
 
@@ -1433,11 +1087,10 @@ Each step is its own PR, and each leaves the system shippable:
    the other write tests, and must cover the retention and recalibration
    changes, which are the two places an import could otherwise damage in-app
    data.
-3. **Synchronous assign outcomes** - for the per-sample endpoint, the 202 body
-   carrying the new run id, 409 on admission refusal, 422 on ineligibility; for
-   the batch endpoint, the 202 body carrying the **eligibility partition** and a
-   409 derived from the admitted samples' run state, with no run pre-created
-   (§8.3, §8.5.4). It also carries the reclamation path for whichever
+3. **Synchronous assign outcomes** - the 202 body carrying the new run id, 409
+   on admission refusal, 422 on ineligibility (§8.3). **Shipped** for the
+   per-sample route; the batch endpoint was removed in the batch-primary epic
+   (#2049) before its half landed. It also carries the reclamation path for whichever
    non-terminal status the request creates, and pins the machine-readable shape
    of all three bodies (§8.3); both are cheap here and expensive once the
    endpoints exist. The app's two launchers currently `await` these calls inside
@@ -1457,9 +1110,9 @@ Each step is its own PR, and each leaves the system shippable:
    the list. The declared `tier_bands` ride on the engine chip's tooltip. The
    SDK needed no plumbing - `list_runs` is a passthrough - only its documented
    column list.
-5. **SDK triggering + verification + fit** - `assign` / `assign_batch` /
-   `verify` / `list_verifications` / `fit_aggregate`, the polling helper,
-   hermetic unit tests.
+5. **SDK triggering + verification + fit** - `assign` / `verify` /
+   `list_verifications` / `fit_aggregate`, the polling helper, hermetic unit
+   tests.
 6. **SDK `import_run`** + a round-trip tutorial notebook: read peaks, compute
    externally, publish, see the run in the app - and then **compare the two
    engines on the same sample**, which needs no further backend work: both runs
@@ -1479,7 +1132,7 @@ Each step is its own PR, and each leaves the system shippable:
 7. **`peaky publish`** - the consumer, in the peaky repository (out of this
    repo's scope; listed so the sequence has its end state).
 8. **Demo bundle seeds a completed assignment run** - unblocks the v1
-   contract tests that today **skip** in CI (§7), and doubles as the fixture
+   contract tests that today **skip** in CI, and doubles as the fixture
    an import contract test diffs against.
 
 **Start/hold status.** The list above is the order; this is what is safe to pick
@@ -1489,10 +1142,9 @@ can be answered once real imported ledgers exist, not prerequisites.
 - **Steps 1-2 proceed.** Step 2 now also carries the import route's body
   allowance, and the reserved-provenance-key rule (§8.5.5) that its validation
   enforces.
-- **Step 3 proceeds.** §8.5.4 is settled: the batch endpoint answers with the
-  eligibility partition and derives its 409 from the admitted samples' run
-  state, so both halves of its 202 now have machinery. The step includes the two
-  frontend call sites, which stop treating a refusal as a success.
+- **Step 3 has shipped** for the per-sample route (`routes.py`: 202 with the
+  run id, 409 with the in-flight run id, 422 with the reason); its batch half
+  is moot since the batch endpoint was removed (#2049).
 - **Step 4 has shipped.** Its prerequisite - `calibration` beside
   `engine` on `PeakAssignmentRunRecord`, without which the calibration badge has
   no data - was met: step 2 serves `engine`, `tier_bands` and `calibration` on
@@ -1505,9 +1157,7 @@ can be answered once real imported ledgers exist, not prerequisites.
   between. Step 4 keeps the run selector, the engine badge and the
   calibration badge. It needs no peak-inspector work: §8.5.5 cleans the blob at
   import instead, so what the inspector renders is Mascope's own or nothing.
-- **Step 5 proceeds** once step 3 lands, since `assign_batch` wraps its
-  partition body and polls by sample against the request timestamp. The
-  retry-safety and error-body plumbing (§8.3) is independent of both and can be
+- **Step 5 proceeds.** The retry-safety and error-body plumbing (§8.3) can be
   built first; the verify half of it is the only item in this revision that
   silently corrupts stored data, so it should not wait.
 - **Step 6 proceeds.** §8.5.2 is settled at the floor, so `import_run` resolves
@@ -1534,13 +1184,11 @@ stated cost, and §8.4 says which steps it holds. An **open question** can be
 answered after the loop works. Numbering is stable because the rest of the
 document cites it.
 
-1. **Batch-level import.** *(Open.)* peaky's batch pipeline merges per-sample
-   ledgers into a batch-level result. Should import accept a batch manifest (one call,
-   N samples' runs), or stay per-sample in v2? Per-sample is sufficient for
-   the loop - the batch fold-in derives the batch view server-side from
-   per-sample runs - so a manifest is a convenience with real transactional
-   surface. (It is not the answer to the fold-in cost noted in §8.2; a manifest
-   that loops the same fold gains nothing there.)
+1. **Batch-level import.** *Shipped* as
+   `POST /api/batch-peaks/batch/{id}/runs/import` (PR #2057, §9b): an external
+   engine's batch-level result is imported as a batch run, matched by m/z and
+   measured against every member. The per-sample import stays the way to publish
+   a per-sample run.
 2. **Ionization mechanisms: how far client-side resolution goes.** *Resolved:
    keep the floor.* `import_run` resolves an adduct by exact-string match
    against `mascope.ionization.list()` and sends `ionization_mechanism_id` null
@@ -1593,34 +1241,14 @@ document cites it.
    declared-scale rule - the run's `calibration` disclosure plus a stated fit
    scale? Worth revisiting once real imported ledgers exist; not needed for
    the loop.
-4. **The batch write contract.** *Resolved: the batch answers with the
-   eligibility partition, and derives its refusal from per-sample run state.*
-   The batch endpoint returns no run ids, and creates no runs in the request
-   (§8.3). Both halves follow from one property: the partition is computable in
-   the request, and run ids are not.
-
-   **The refusal** is one indexed query over the admitted samples - the same
-   non-terminal-run check §8.2 introduces per sample, as a single `IN` clause -
-   answered before the 202 and naming the samples that hold it up. It needs no
-   batch-level durable state, which is what makes it possible at all:
-   `PeakAssignmentRun`'s only foreign key is `sample_item_id`, and today's batch
-   guard (an in-process in-flight set plus the `assignment_claim` advisory lock)
-   is acquired *inside* the background task, so it cannot answer a request. That
-   guard stays where it is, covering the window between the response and the
-   first run's creation.
-
-   **No run is pre-created**, which is what dissolves the rest. A pre-created
-   run is a non-terminal run for its own sample, so the admission rule refuses
-   the batch's own samples, or the engine mints a second run and orphans the
-   first; and because the batch loop deliberately lets `CancelledError`
-   propagate, a batch that stops early would strand one blocking row per sample
-   it never reached. Returning the partition instead leaves nothing to orphan,
-   nothing to strand, and no reason to widen the admission rule everything else
-   depends on.
-
-   The cost is that `wait=True` polls by sample rather than by run id, which
-   §8.3 pins with a request timestamp so a sample's earlier run cannot be
-   mistaken for this batch's.
+4. **The batch write contract.** *Moot.* `POST /batch/{id}/assign` was removed
+   in the batch-primary epic (PR #2049, 1.8.0): a batch is assigned by folding
+   each sample into the batch ledger at ingest, and the untargeted search runs
+   once per batch peak ([peak_assignment_batch_primary.md](peak_assignment_batch_primary.md)
+   §5.1, §5.3). The contract as decided (a 202 carrying the eligibility
+   partition, no run pre-created, a 409 derived from the admitted samples' run
+   state, `wait=True` polling by sample against the request timestamp) is in
+   this file's git history before 2026-10-22.
 5. **Reserved keys in an imported `provenance` blob.** *Resolved: the keys the
    server derives its own judgement from are stripped at import, and an
    engine's own numbers keep a sanctioned home beside them* (§8.2, "Reserved
@@ -1648,47 +1276,6 @@ document cites it.
 
 ---
 
-## 9. Open decisions (v1) - and how they resolved
-
-1. **Should the SDK ever trigger runs?** *Resolved: yes (v2, §8.3).* The
-   leaning at the time was read-only, because runs are heavy async jobs and
-   client discipline was the only guard. Admission control (cross-process
-   advisory-lock refusal of duplicates) and the `peak_assignment` write gating
-   both landed after this was written, moving the safety property server-side -
-   which is what settles it.
-2. **`load_assignments` on samples with no run.** *Resolved: skip-and-log
-   (shipped in v1).*
-3. **Reference identity surfacing.** Still open. Once the reference x
-   peak-centric convergence
-   ([reference_peak_assignment_convergence.md](reference_peak_assignment_convergence.md))
-   attaches reference identities to `source=database` assignments, decide how the SDK
-   exposes them (a `provenance`/`identity` column vs. flattened name columns).
-4. **Contract-test data.** *Resolved: seed the demo bundle* (§8.4 step 8); the
-   shipped contract tests skip until it lands.
-5. **`alternatives` / `provenance` after #1725.** *Resolved: a separate
-   `detail(sample_id, peak_assignment_id)` accessor (shipped in v1)* - it takes
-   the sample id too, matching the route shape; no `get(..., detail=True)`
-   opt-in.
-
-The open v2 questions live in §8.5. The three decisions that used to hold
-sequenced steps are resolved and implemented in step 2, so nothing there gates a
-step any more.
-
-**Related tracker issues:**
-[#1725](https://github.com/ultra-trace-systems/mascope/issues/1725) (ledger response slimming -
-reshapes the read),
-[#1494](https://github.com/ultra-trace-systems/mascope/issues/1494) (SDK peak dataframe: add target
-collection name),
-[#1044](https://github.com/ultra-trace-systems/mascope/issues/1044) (batch-level aggregation /
-assignment, notebook),
-[#1004](https://github.com/ultra-trace-systems/mascope/issues/1004) (score an arbitrary
-peak+composition - the `fit_aggregate` wrapper, §8.3),
-[#1736](https://github.com/ultra-trace-systems/mascope/issues/1736) (retired the Fit view; the
-composition-verify endpoints stay as API/SDK surface - PR
-[#1867](https://github.com/ultra-trace-systems/mascope/pull/1867)).
-
----
-
 ## 9b. The batch ledger (shipped 2026-09-03, batch-primary epic)
 
 With the batch ledger primary (`peak_assignment_batch_primary.md`), the SDK gained
@@ -1712,7 +1299,7 @@ hidden inside `get()`), the high-level `load_assignments` loader, and the
 read/analyze notebook `10_peak_assignment.ipynb` - with no shared SDK plumbing
 change. Targeted matching stays exactly as it is, so the two paradigms run in
 parallel with no adaptation friction; the old client-side untargeted notebook
-is retired in favour of the read surface (§6).
+is retired in favour of the read surface.
 
 v2 (§8) makes the ledger **writable from outside**. Its core is run import:
 `POST .../runs/import` accepts a complete externally computed run - engine name
@@ -1736,15 +1323,16 @@ can no longer evict a sample's in-app history. One migration adds `engine`
 (backfilled `mascope` and reserved from client payloads, so the badge cannot be
 forged), `calibration`, `tier_bands` and the new status, parented on the current
 head `c3a9e6f2b8d1`. Around it the v1-deferred wrappers are decided in:
-`assign`/`assign_batch` (202 carrying the run id, 409 on refusal, 422 on
+`assign` (202 carrying the run id, 409 on refusal, 422 on
 ineligibility, then poll-to-terminal), `verify`/`list_verifications`,
 `fit_aggregate` (#1736's deliberately kept surface), and `import_run`
 (DataFrame -> chunked publish -> run id). The sequence (§8.4) lands each piece
 as its own PR - provenance in the app before the first real import, since the
 trust model is only as good as the badge that shows it - and ends with `peaky
 publish` consuming the whole loop and the demo bundle carrying a completed run,
-which also un-skips the v1 contract tests. Three decisions are still pending and
-hold parts of that sequence - the batch write contract, how far client-side
-ionization-mechanism resolution goes, and the reserved-key policy for an
-imported `provenance` blob; §8.5 states the options and their costs, and §8.4's
-start/hold status maps them onto the steps they block.
+which also un-skips the v1 contract tests. The three decisions that once held
+parts of that sequence are resolved (§8.5): the batch write contract became
+moot when the batch endpoint was removed, client-side ionization-mechanism
+resolution stays at the exact-string floor, and the reserved keys of an
+imported `provenance` blob are stripped at import. What §8.5 still holds open
+are two questions that block nothing.

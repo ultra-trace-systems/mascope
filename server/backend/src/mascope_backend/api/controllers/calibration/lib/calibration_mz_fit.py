@@ -863,6 +863,13 @@ class BaseCalibrationHandler:
                 self.warning = "No calibration peaks found after filtering."
             return None, selected_matches_df
 
+        # Too few for the model: the residual filter of a large sample can
+        # keep a single TOF calibrant, which the two-parameter fit refuses
+        # with an error. No fit instead, which the caller reports as "not
+        # enough calibration peaks", a warning the pipeline retries.
+        if len(selected_matches_df) < self._minimum_calibration_points:
+            return None, selected_matches_df
+
         final_fit_result, _ = self._fit_matches(selected_matches_df)
         final_calibration_df = self._build_calibration_df(
             selected_matches_df,
@@ -944,6 +951,16 @@ class TofCalibrationHandler(BaseCalibrationHandler):
             "post_dmz": 1e6 * (calibrated_mzs - target_mzs) / target_mzs,
         }
 
+    def _total_ion_current(self) -> float:
+        """The file's total ion current, which calibrant shares are taken of.
+
+        A method of its own so that a refit that only reads
+        (``tof_calibration_audit``) can leave it out: on a Tofwerk file it
+        reads every scan, and nothing in the fit depends on it.
+        """
+        _, tic_per_scan = m_compute.get_tic_per_scan(self.filename)
+        return np.sum(tic_per_scan)
+
     @api_controller()
     async def fit(self):
         """Fit the m/z calibration for a TOF instrument."""
@@ -959,10 +976,7 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         if target_isotopes_df is None:
             return
 
-        _, tic_per_scan = await asyncio.to_thread(
-            m_compute.get_tic_per_scan, self.filename
-        )
-        tic = np.sum(tic_per_scan)
+        tic = await asyncio.to_thread(self._total_ion_current)
 
         await self._send_progress(0.35)
 
@@ -1570,7 +1584,7 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
                 "old_factor": old_factor,
                 "tic": tic,
                 "rows": calibration_df.assign(
-                    segment=index, segment_label=segment_label(key)
+                    segment=index, segment_label=segment_label(key, keys)
                 ),
             }
         self.warning = None
@@ -1585,7 +1599,10 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         )
         if not placed:
             self.warning = _why_no_stream_was_fitted(
-                {segment_label(keys[index]): note for index, note in notes.items()}
+                {
+                    segment_label(keys[index], keys): note
+                    for index, note in notes.items()
+                }
             )
             return
 
@@ -1637,12 +1654,12 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
                 {
                     "index": index,
                     "key": keys[index],
-                    "label": segment_label(keys[index]),
+                    "label": segment_label(keys[index], keys),
                     "source": entry["source"],
                     "origin": (
                         None
                         if entry["origin"] is None
-                        else segment_label(keys[entry["origin"]])
+                        else segment_label(keys[entry["origin"]], keys)
                     ),
                     "calibration_factor": entry["calibration_factor"],
                     "shift_ppm": _finite_or_none(entry["shift_ppm"]),

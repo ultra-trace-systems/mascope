@@ -78,6 +78,20 @@ describe('NotificationPane', () => {
     expect(wrapper.get('h4').text()).toBe('Match refresh warning')
   })
 
+  // Coloured as its toast was: the store reads the severity off the full
+  // notification, which the log entry no longer carries.
+  it('colours an entry by the severity the store read', () => {
+    notification.log = [
+      { ...entry('nothing'), type: 'match_compositions_by_mz', severity: 'info' },
+      { ...entry('older'), type: 'rematch_batches', status: 'warning' }
+    ]
+    const wrapper = mountPane()
+    const [empty, older] = wrapper.findAll('.entry')
+
+    expect(empty.attributes('severity')).toBe('info')
+    expect(older.attributes('severity')).toBe('warn')
+  })
+
   it('finds an entry by that heading', async () => {
     notification.log = [
       { ...entry('one'), type: 'rematch_batches', status: 'warning' },
@@ -107,5 +121,22 @@ describe('NotificationPane', () => {
 
     expect(wrapper.findAll('.entry')).toHaveLength(1)
     expect(wrapper.get('h4').text()).toBe('Upload failed')
+  })
+
+  // An empty log says what will fill it, instead of a search field over
+  // nothing; the first entry replaces the explanation.
+  it('explains an empty log, and gives way to the first entry', async () => {
+    const wrapper = mountPane()
+
+    expect(wrapper.get('.empty-state .title').text()).toBe('Nothing yet')
+    expect(wrapper.get('.empty-state .hint').text()).toMatch(
+      /Results and warnings of what you run appear here and stay until you clear them/
+    )
+
+    notification.log = [entry('a')]
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.empty-state').exists()).toBe(false)
+    expect(wrapper.findAll('.entry')).toHaveLength(1)
   })
 })

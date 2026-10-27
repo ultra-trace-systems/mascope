@@ -1,6 +1,8 @@
-from fastapi import APIRouter, Body, Depends
+import ipaddress
 
-from mascope_backend.api.lib.rate_limit import rate_limit
+from fastapi import APIRouter, Body, Depends, Request
+
+from mascope_backend.api.lib.rate_limit import client_ip, rate_limit
 from mascope_backend.api.new.auth.dependencies import editor_user
 from mascope_backend.api.new.auth.mfa.reauth import require_recent_mfa
 from mascope_backend.api.new.auth.pairing.schemas import (
@@ -22,12 +24,32 @@ from mascope_backend.api.new.auth.pairing.service import (
 pairing_router = APIRouter(prefix="/pairing")
 
 
+def _requested_from(request: Request) -> str | None:
+    """Client address for the pairing audit log, always an address or None.
+
+    :func:`client_ip` trusts ``X-Real-IP``, which nginx overwrites; where the
+    backend is reached without it, a client could put any string there and
+    have it recorded as where the pairing was asked for. Anything that does
+    not parse as an address falls back to the peer address.
+
+    :param request: Incoming request.
+    :return: The client address, or None when neither source is one.
+    """
+    for candidate in (client_ip(request), request.client and request.client.host):
+        try:
+            return str(ipaddress.ip_address(candidate))
+        except ValueError:
+            continue
+    return None
+
+
 @pairing_router.post(
     "/start",
     name="auth:pairing.start",
     dependencies=[Depends(rate_limit(times=10, seconds=60, scope="pairing-start"))],
 )
 async def pairing_start_route(
+    request: Request,
     pairing_start_request: PairingStartRequest = Body(...),
 ):
     """
@@ -39,6 +61,7 @@ async def pairing_start_route(
         machine_name=pairing_start_request.machine_name,
         instrument=pairing_start_request.instrument,
         agent_version=pairing_start_request.agent_version,
+        requested_from=_requested_from(request),
     )
 
 

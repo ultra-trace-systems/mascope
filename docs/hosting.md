@@ -119,6 +119,44 @@ and the checkout.
    This applies to any front proxy, whether Mascope terminates TLS itself or
    runs with `MASCOPE_TLS=off` behind yours.
 
+   Docker itself becomes such a proxy when it runs with `iptables: false` (so
+   that the host firewall, not Docker's NAT rules, governs the published port):
+   its userland proxy then relays every connection, and nginx sees each one
+   arrive from the Docker bridge gateway. Behind Cloudflare that is handled for
+   you - the HTTPS config trusts `CF-Connecting-IP` from the gateway as well as
+   from Cloudflare's ranges, so each visitor keeps a budget of their own. It
+   also means that a client reaching the published port *without* passing
+   through Cloudflare can name its own address in that header, so let the
+   firewall admit only Cloudflare to the port if the per-client limits matter
+   to you.
+
+   **With no Cloudflare in front, turn that trust off.** The trust is on by
+   default, and it applies to every HTTPS deployment, not only those behind
+   Cloudflare. Without Cloudflare there is no address for it to restore, and
+   every client the gateway relays could send the header to pick a fresh
+   budget for itself. On a host running Docker with `iptables: false` that is
+   every client; under Docker's default rules, it is the host's own
+   connections and IPv6 clients of the stack's IPv4-only network. To turn it
+   off:
+
+   ```sh
+   # Persist it: the boot service and the auto-update service read this file.
+   echo MASCOPE_TRUST_DOCKER_GATEWAY=off | sudo tee -a /etc/environment
+   # Apply it: `up` recreates the frontend with the new value; `restart` does not.
+   export MASCOPE_TRUST_DOCKER_GATEWAY=off
+   mascope prod up --detach
+   # Check it took.
+   docker logs mascope_prod_frontend 2>&1 | grep MASCOPE_TRUST_DOCKER_GATEWAY
+   ```
+
+   The last command should print `MASCOPE_TRUST_DOCKER_GATEWAY=off -> trusting
+   CF-Connecting-IP from Cloudflare's ranges only`. A value set only in your
+   shell does not last: the next boot or unattended update recreates the
+   frontend with the trust back on, and nothing reports it. Re-running
+   `tooling/ubuntu.sh` as `reinstall` (what it does with no argument) or
+   `uninstall` deletes every `MASCOPE` line from `/etc/environment` and writes
+   back only `MASCOPE_PATH`, so add this line again afterwards.
+
    A front proxy must also keep the browser-visible origin intact: pass the
    browser's `Host` header through unchanged (nginx: `proxy_set_header Host
    $host;`, Apache: `ProxyPreserveHost On`) - or forward it in
@@ -187,10 +225,62 @@ schedule - see the [maintainer runbook](maintaining.md).
 #### Persistence & backups
 
 State lives under `.runtime/` (PostgreSQL data + the filestore) - back it up.
-`mascope prod db backup` takes a manual dump; see the database section of the
-developer guide.
+`mascope prod db backup` takes a manual dump; the nightly two-layer backup and
+restoring are under [Backups](maintaining.md#backups) in the maintainer runbook.
+
+### Isolated and restricted sites
+
+Some sites will not give the server a default route to the internet. Ask
+first whether "no internet" means "no unrestricted internet": an IT department
+that refuses a default route will often accept an outbound firewall rule to a
+fixed list of names, and with that list the whole update path above works
+unchanged, and so does everything else in the
+[maintainer runbook](maintaining.md). Nothing in Mascope restricts egress
+itself - the fleet firewall role allows all outgoing traffic - so an
+allow-listed site is an ordinary server whose own firewall does the
+restricting.
+
+**The egress allow-list.** Everything a self-hosted server reaches out to once
+it is installed:
+
+| Name | What for |
+|---|---|
+| `api.github.com`, `github.com` | Release discovery and the release manifest (`mascope prod update --check`, the [unattended updater](maintaining.md#unattended-updates-the-timer)), and the tag fetch that aligns the checkout with the release |
+| `ghcr.io`, `pkg-containers.githubusercontent.com` | The release images (`mascope prod docker pull`) |
+| `pypi.org`, `files.pythonhosted.org` | The CLI reinstall at each release |
+| The Ubuntu archive and security mirrors, or the customer's own mirror | OS patching |
+| An NTP source | Time |
+| Optional: the monitoring endpoints | A healthchecks.io-style URL for the [backup](maintaining.md#backups) and [disk-monitor](maintaining.md#the-monitor-early-warning) pings, and the [error-tracking](maintaining.md#error-reporting-to-glitchtip-opt-in) box where a tunnel to it exists |
+
+A first install (`tooling/ubuntu.sh install`) needs more than that - the apt
+mirrors, Docker's apt repository, the NodeSource script,
+`packages.microsoft.com`, the snap store for uv, restic from apt - so install
+with the route open, or from a mirror of those.
+
+**Without any route**, the update path stops: release discovery fails (so
+leave `mascope-update.timer` off, or its unit fails every night), the image
+pull fails before anything running is touched, and the CLI reinstall fails.
+Releases then have to be carried in by hand, and the server's own
+diagnostics carried out; Mascope ships no tooling for that yet (the design is
+[isolated_deployment_plan.md](dev/isolated_deployment_plan.md), which also
+lists every outbound contact with its code path). The File Agent is
+unaffected - it reaches the server over the LAN and the instrument PC's
+internet state never enters into it - and so are the user docs, which the
+frontend image bundles with their fonts and scripts for exactly this case.
+
+**Host hygiene on such a server.** None of this is Mascope code, but every
+item has bitten some isolated Linux box:
+
+| Concern | Do this |
+|---|---|
+| Time | Point the host's time sync (`systemd-timesyncd` on Ubuntu) at the customer's NTP server, or at the instrument PC, whose Windows Time service can be configured to serve NTP. A minute of skew locks every two-factor user out: TOTP verifies with a 30 s step and one step of tolerance either way, and token expiry is time-based too. |
+| TLS | Use the internal-CA or self-signed option above. The DNS-01 option needs egress at every renewal and is out. |
+| OS patching | Unattended upgrades cannot run. Either apply security updates by hand when someone is on the host (the fleet's `reboot.yml` verifies the stack after a reboot), or agree that the customer's own patching regime covers the host. Write down which, per site. |
+| Backups | Keep [`backup-cron.sh`](maintaining.md#backups)'s local layer; point restic at a local path or a customer NAS over SFTP instead of an internet target. If off-site copies are required, a machine that is online - the instrument PC, say - can push the local restic repository out. |
+| Monitoring | Leave `HEALTHCHECK_URL` and `MASCOPE_SENTRY_DSN` unset, so nothing fails nightly for want of a route; error events would be dropped anyway, as the SDK keeps no on-disk queue. `mascope prod doctor` on the host is the status report. |
+| Disk | The [disk-check timer](maintaining.md#the-monitor-early-warning) is local and keeps working; enable it as usual. |
 
 For the full operations reference - provisioning, updates, backups, and
-troubleshooting - see the [maintainer runbook](maintaining.md). For deployment
-internals (runtime, database tuning, env sync) see the
+troubleshooting, PostgreSQL tuning and copying an environment between hosts -
+see the [maintainer runbook](maintaining.md). For the runtime internals see the
 [developer guide](dev/developer_guide.md).

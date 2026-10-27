@@ -19,6 +19,7 @@ from signal_test_support import SIGNAL_TEST_FILENAME
 
 import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
+from mascope_thermo.scan_events import MisreadScanEventsError, UnconvertedProfileError
 from mascope_thermo.thermo import UnknownStreamError
 
 
@@ -141,6 +142,19 @@ def test_a_read_given_no_stream_asks_the_reader_for_none(raw_orbitrap, read):
     assert STREAM not in asked["args"]
 
 
+def test_per_scan_centroids_hand_the_excluded_flags_to_the_reader(raw_orbitrap):
+    m_compute.get_orbi_centroids_per_scan(
+        SIGNAL_TEST_FILENAME, exclude=("reference", "exception")
+    )
+    assert raw_orbitrap["get_centroids_per_scan"]["exclude"] == (
+        "reference",
+        "exception",
+    )
+
+    m_compute.get_orbi_centroids_per_scan(SIGNAL_TEST_FILENAME)
+    assert tuple(raw_orbitrap["get_centroids_per_scan"]["exclude"]) == ()
+
+
 # The reads a sample type without streams can answer at all. Centroids are
 # refused for them whatever is asked.
 _READS_OF_ANY_TYPE = [
@@ -213,6 +227,43 @@ def test_a_reader_fault_is_still_answered_with_an_empty_signal(
     monkeypatch.setattr(m_compute.m_thermo, "get_signal", fails)
 
     signal = m_compute.load_signal(SIGNAL_TEST_FILENAME, stream=STREAM)
+
+    assert signal.signal.shape == (0, 0)
+
+
+@pytest.mark.parametrize("stream", [None, STREAM])
+@pytest.mark.parametrize("refusal", [MisreadScanEventsError, UnconvertedProfileError])
+def test_a_file_refused_as_misread_is_not_answered_with_an_empty_signal(
+    raw_orbitrap, monkeypatch, refusal, stream
+):
+    """The reader refuses a file whose scan events it has misread (GitHub
+    issue #2394), and the refusal is a ``ValueError``, the class
+    ``load_signal`` answers an empty range with. Answered with an empty
+    signal, the file would show "no data" and not why; let through, its text
+    reaches the person who asked for the signal."""
+    reason = "The scan events of this file cannot be read"
+
+    def refuses(datafile_path, *args, **kwargs):
+        raise refusal(reason)
+
+    monkeypatch.setattr(m_compute.m_thermo, "get_signal", refuses)
+
+    with pytest.raises(refusal, match=reason):
+        m_compute.load_signal(SIGNAL_TEST_FILENAME, stream=stream)
+
+
+def test_an_empty_range_is_still_answered_with_an_empty_signal(
+    raw_orbitrap, monkeypatch
+):
+    """Only the misread refusal among the ``ValueError``s is let through: the
+    reader's other ones are a selection that holds no data."""
+
+    def empty(datafile_path, *args, **kwargs):
+        raise ValueError("No scans in the range asked for")
+
+    monkeypatch.setattr(m_compute.m_thermo, "get_signal", empty)
+
+    signal = m_compute.load_signal(SIGNAL_TEST_FILENAME)
 
     assert signal.signal.shape == (0, 0)
 

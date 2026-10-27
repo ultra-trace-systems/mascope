@@ -1,7 +1,13 @@
 # Batch-Primary Peak Assignment: the Batch Ledger as the Durable Object — Design Note
 
+- **Status:** built
+- **As of:** 2026-10-22
+- **Tracked in:** closed; decisions 10.4 and 10.5 are carried inside MAS-321 and MAS-322 ([Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) milestone 4)
+- **Supersedes:** `peak_assignment_batch.md` (section 12), `peak_assignment_copy.md` and `peak_assignment_continuity.md` (sections 6.3 and 6.4); all three retired 2026-10-22
+- **What:** The batch ledger as the durable assignment object; samples fold in at ingest.
+
 *Ingest-time assignment writes a per-sample ledger for every processed sample, and the
-batch ledger ([`peak_assignment_batch.md`](peak_assignment_batch.md)) is derived from it
+batch ledger (section 12: the batch-peak design this note inverted) is derived from it
 afterwards. This note proposes inverting that: the batch ledger becomes the object that is
 written and kept, samples fold into it at ingest without a per-sample ledger row, and the
 per-sample run becomes an opt-in deep dive. It is motivated by disk, argued from
@@ -22,7 +28,7 @@ measurements, and justified by the product shape it produces.*
 > | D | The slim batch ledger member, ~0.27 KB per member with indexes (§4.2, §7) | [#2041](https://github.com/ultra-trace-systems/mascope/pull/2041) |
 > | - | `batch` becomes the default ingest ledger | [#2042](https://github.com/ultra-trace-systems/mascope/pull/2042) |
 > | E | The untargeted search once per batch peak, propagated to the members by measurement (§5.3) | [#2043](https://github.com/ultra-trace-systems/mascope/pull/2043) |
-> | F | One verdict per species at the batch peak, overlaying the samples (§6.3; continuity note §4-5) | [#2047](https://github.com/ultra-trace-systems/mascope/pull/2047) |
+> | F | One verdict per species at the batch peak, overlaying the samples (§6.3) | [#2047](https://github.com/ultra-trace-systems/mascope/pull/2047) |
 > | G | Curate a species for the whole batch from a derived row's inspector (§6.3) | [#2048](https://github.com/ultra-trace-systems/mascope/pull/2048) |
 > | H | *Rebuild batch ledger* folds every sample; the assignment copy and the batch-wide run are retired (§6.4) | [#2049](https://github.com/ultra-trace-systems/mascope/pull/2049) |
 > | I | The ledger in the SDK (`load_batch_ledger`, `batch_peaks`) and as a CSV export | [#2050](https://github.com/ultra-trace-systems/mascope/pull/2050) |
@@ -144,7 +150,7 @@ Three conclusions:
    dropped. It has to be made cheap.
 3. **Most recurring species are unassigned.** 73 % of anchors carry no formula, and they
    recur. The settled rule that an unassigned anchor is a first-class, drawable trace
-   ([`peak_assignment_batch.md`](peak_assignment_batch.md) §5.1) is right, and it rules out
+   (§12.1) is right, and it rules out
    the naive tier 3: "no occurrences for unassigned peaks" measures -80 % of occurrences
    precisely because it deletes the trend data of most recurring species in the batch.
 
@@ -315,6 +321,17 @@ the disagreement is visible per member exactly as it is now.
 > isotope pattern is scored against the whole spectrum; propagation runs the seeded chain per
 > sample and leaves a member the envelope does not reach unassigned. Registry entries now
 > record the `source` of the identity they hold.
+>
+> *Status (2026-10-22, MAS-366):* the samples' rows are merged before any is written
+> (`merge_search_rows`). An anchor and its M+1 are often represented in different samples,
+> and the M+1's own sample, where the parent is no target, read the line as a compound of
+> its own; which reading the anchor kept followed the order the samples were searched in.
+> The merge applies the finder's in-sample rule across samples: a line one sample reads as
+> an isotopologue of a committed ion (its anchor stands on its own) takes that reading, its
+> standalone reading is dropped, and that sample is searched again without the peak, up to
+> `MAX_RESEARCH_ROUNDS` times. A claim by an ion that is itself another ion's line does not
+> hold. On a 12-sample uronium Orbitrap batch 134 of 2,946 searched anchors had both
+> readings, and the standalone one held the consensus on 24.
 
 Untargeted assignment is where the compute cost is: it is off for batches today because it
 multiplies by the sample count. Per anchor it is bounded by the number of unassigned
@@ -326,8 +343,8 @@ each such sample run `assign_compositions` on that sample's own peaks — the re
 with its real neighbours for the isotope envelope — restricted to the anchors it represents.
 The results annotate the anchors; each member's candidate index is then refreshed by
 checking its peak against the winner's predicted isotopologues, which is the seeded
-re-score chain the copy service already runs (one `compute_match_isotopes` pass per sample,
-[`copy_service.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/copy_service.py)).
+re-score chain the retired assignment copy introduced (one `compute_match_isotopes` pass per sample,
+[`seeded_scoring.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/seeded_scoring.py)).
 Stage B stays user-triggered per batch **[settled]**; running it at ingest for *new* anchors
 only becomes affordable and is an **[open]** follow-up (decision 5).
 
@@ -398,20 +415,27 @@ already read anchors and occurrences only. They change by column types, not by s
 > state archived on the pin so release is a true undo. The registry made "rewriting
 > the head of the candidate list" unnecessary: members address identities by index,
 > so the pin names an index and nothing else moves.
+>
+> *Status (2026-10-22, MAS-366):* an identity whose ion has its monoisotopic line elsewhere
+> is refused (`batch_peak_candidate_isotope_line`, 422), and the refusal names the batch
+> peak of the same ionization mode that holds that line. The registry holds isotope lines
+> too, and the propagation measured a pinned one as an M0 carrying its parent's envelope
+> fit, at its parent's tier and with no family link. The check reads the ion's mass, not
+> the brackets in its formula, since a labelled reagent's own ion carries its label in
+> brackets as well.
 
 Manual curation today is run-local
 ([`curation.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/curation.py)):
 it edits one row of one run, and a later run supersedes it. On the anchor it is batch-wide:
 overriding the winner rewrites the head of the candidate list, archives the displaced winner
 in `provenance.manual` exactly as the row-level path does, and every member that points at
-index 0 now reads the curated formula. That is what the copy feature
-([`peak_assignment_copy.md`](peak_assignment_copy.md)) exists to approximate today, and for
-the in-batch case it stops being needed.
+index 0 now reads the curated formula. That is what the assignment copy approximated
+before it was retired (§6.4).
 
 Verification is keyed on `(sample_item_id, sample_peak_id)` today
 ([`AssignmentVerification`](../../server/backend/src/mascope_backend/db/models.py)). The
-continuity note ([`peak_assignment_continuity.md`](peak_assignment_continuity.md)) already
-proposes an anchor-scoped verdict that overlays per-sample verdicts; under this design the
+continuity design (`peak_assignment_continuity.md`, retired from docs/dev on 2026-10-22; the
+status note above is its record) proposed an anchor-scoped verdict that overlays per-sample verdicts; under this design the
 anchor verdict is the primary one, and a per-sample verdict remains possible on an explicit
 run. The calibration label pool keeps counting one label per anchor, never one per member,
 for the reason that note gives.
@@ -425,9 +449,9 @@ for the reason that note gives.
 
 The SDK import contract ([`sdk_peak_assignment.md`](sdk_peak_assignment.md) §8.2)
 publishes a per-sample run and is untouched: an imported run folds into the batch as today,
-and its members link to their ledger rows through `peak_assignment_id`. Copy remaps
-through the occurrence join it already prefers; with every ingest sample folded, that fast
-path becomes the common case rather than the exception.
+and its members link to their ledger rows through `peak_assignment_id`. The assignment
+copy this section was written around is gone (status above); the seeded re-score chain it
+introduced lives on in `seeded_scoring.py`, which §5.3's propagation and §6.3's curation run.
 
 ---
 
@@ -578,8 +602,8 @@ is user-triggered; anchor tolerance is resolution-adaptive; an unassigned anchor
 first-class trace; every sample is assigned, never a subset; no synthetic spectrum is
 scored.
 
-**Superseded by this note, if agreed:** "assignment stays per-sample; the batch peak only
-aggregates" ([`peak_assignment_batch.md`](peak_assignment_batch.md) §2). The per-sample
+**Superseded by this note:** "assignment stays per-sample; the batch peak only
+aggregates" (§12.1). The per-sample
 *computation* stays; the per-sample *record* becomes opt-in.
 
 **Open, with recommendations:**
@@ -603,14 +627,182 @@ aggregates" ([`peak_assignment_batch.md`](peak_assignment_batch.md) §2). The pe
 
 ## 11. Related documents
 
-- [`peak_assignment_batch.md`](peak_assignment_batch.md) — batch peaks, the fold and the
-  consensus this note builds on.
+- §12 below — batch peaks, the fold and the consensus this note builds on, carried over
+  from `peak_assignment_batch.md` when that note was retired (2026-10-22).
 - [`peak_assignment_paradigm.md`](peak_assignment_paradigm.md) — the per-sample ledger and
   the two-stage engine.
-- [`peak_assignment_copy.md`](peak_assignment_copy.md) — the seeded re-score chain §5.3 and
-  §5.4 reuse.
-- [`peak_assignment_continuity.md`](peak_assignment_continuity.md) — anchor-scoped
-  verdicts.
+- `peak_assignment_copy.md` (retired 2026-09-03, removed from docs/dev 2026-10-22; in git
+  history) — the seeded re-score chain §5.3 and §5.4 reuse, now `seeded_scoring.py`.
+- `peak_assignment_continuity.md` (removed from docs/dev 2026-10-22; in git history) —
+  the anchor-scoped verdicts §6.3 records as shipped. Its unbuilt half, ratio stability as
+  display-only evidence on the anchor, is the subject of the assignment quality plan's step
+  4.2 (MAS-62), which takes a different stance on the signal and on whether it touches
+  tiers; the two must be reconciled before that step starts. Filed 2026-10-22: the
+  ratio-stability pass as MAS-323 (the MAS-62 reconciliation inside it, the owner's call),
+  the column, badge and overlay as MAS-346, the ceiling-scale measurement as MAS-347.
 - [`sdk_peak_assignment.md`](sdk_peak_assignment.md) — the import contract that stays.
 - [`maintaining.md`](../maintaining.md) — the operator view of the cost and the two ingest
   settings.
+
+---
+
+## 12. Foundations: batch peaks and the fold
+
+*Carried over on 2026-10-22 from `peak_assignment_batch.md` (its sections 2, 3, 5.3 and 8),
+the design note this one inverted, when that note was retired. Its phases shipped in 1.7.0
+as PR [#1841](https://github.com/ultra-trace-systems/mascope/pull/1841): `BatchPeak` and
+`BatchPeakOccurrence` with the append-only fold-in and the backfill, the series and
+counterpart routes, the batch assignments chart and the ledger browser. What this note then
+changed is recorded above (§3, §4, §5.1, §10): members carry their assignment, and ingest
+folds a sample without a per-sample run, so where the text below says a per-sample Stage A
+run precedes the fold, read §5.1. Blend splitting shipped as an `is_ambiguous` flag only;
+the `sample_batch_peak_created` event was never built (the coarse `peak_assignment_reload`
+is used); the occurrence no longer carries formula and tier strings (§4.2). Its items still
+open - seeding anchors from a target list, splitting blends, refusing or segregating
+mixed-instrument batches at fold, and the fold-in and series benchmarks - are MAS-319,
+MAS-320, MAS-321 and MAS-322 in the assignment quality plan's milestone 4 (filed 2026-10-22).*
+
+### 12.1 The core idea
+
+**Identity is m/z; formula is an annotation.** A **batch peak** is a cross-sample m/z
+cluster (an *anchor*). Every per-sample peak — assigned or not — belongs to exactly one batch
+peak, so even unassigned m/z get a batch identity and a trend (this is the "keep all the
+data, don't omit anything" requirement). The batch peak's **formula and tier** are a
+**consensus of the per-sample `PeakAssignment` rows** that fall in it — never a fresh
+assignment of a synthetic spectrum.
+
+Two properties make this work and are validated below:
+
+1. The batch peak's m/z anchors are **append-only and frozen** — a new sample can join an
+   existing anchor or create a new one, but never re-draws existing anchors. This gives a
+   **stable `batch_peak_id`** that genuinely replaces `target_ion_id` as the thing the chart
+   draws one trace per, and it makes the aggregate correct under **incremental arrival**.
+2. Assignment stays **per-sample**; the batch peak only **aggregates** it. The fit score
+   needs a real per-sample isotope envelope + SNR, so a bare consensus m/z cannot be scored
+   honestly — the formula must come from the members' own per-sample fits.
+
+### 12.2 Evidence base
+
+These numbers come from driving the **real production binning code**
+([`Spectra._cluster_and_map_peaks`](../../libraries/tools/src/mascope_tools/alignment/calibration.py))
+on the demo bundle's golden peak table (`.runtime/demo/1.1.0/expected/peaks.parquet`):
+161 real Orbitrap samples over ~1.5 h (80 neg_Br + 81 pos_Ur), 76–373 matched peaks each,
+with the target formula per peak as ground truth.
+
+**(a) m/z alone cannot define a batch peak.** Resolution/bin-width sweep on the 80 neg_Br
+samples (14,710 peaks):
+
+| bin width | batch peaks | mixed (≥2 formulas collide) | split (1 formula fragmented) |
+|---|---|---|---|
+| wide (R≈30k) | 268 | 58 clusters (22%) | 14.7% of formulas |
+| mid (R≈60k) | 307 | 52 (17%) | 21.4% |
+| narrow (R≈240k) | 349 | 35 (10%) | 25.4% |
+
+Widen the window and distinct formulas **collide**; narrow it and one formula **splits**
+across adjacent bins. No width is clean on both — **m/z must be disambiguated by the
+assigned formula.**
+
+**(b) Greedy re-binning is unstable under streaming; append-only anchors are not.** Re-running
+the greedy clusterer on time-ordered prefixes, the representative m/z of *existing* batch
+peaks drifts with median 0.01–0.1 ppm but **p95–max of 23–87 ppm** — i.e. a tail of bins
+jump identity when a new sample arrives (the greedy leftmost-leader window re-anchors and
+cascades). Replacing it with **frozen append-only anchors** (snap-or-create, symmetric ±tol):
+existing traces have **zero drift by construction**; a new sample only *adds* traces. After
+10 samples ~90% of all final traces already exist and are immutable; the rest are genuinely
+late-appearing species plus a noise-singleton tail.
+
+**(c) The per-sample assignment consensus resolves (a).** With append-only anchors
+(±4 ppm) + an **evidence-weighted** consensus (weight each member vote by `fit_score` × signal):
+**92% of anchors get a clean dominant formula** (consensus support ≥ 0.9). Collapsing anchors
+that share a consensus formula heals the split (393 raw m/z anchors → **295 clean species**);
+the ~10% mixed anchors are flagged as blends/degeneracies to **split**, not averaged. The
+same profile reproduces on pos_Ur (574 → 427 species). Per-sample calibration on this
+Orbitrap demo is negligible (offset spread 0.12 ppm; residual jitter 2% better than raw), but
+the design keeps a per-sample offset step for TOF / long runs.
+
+**Conclusion:** batch peak = **frozen m/z anchor (identity) + evidence-weighted per-sample
+consensus (formula/tier), append-only under arrival.**
+
+### 12.3 Stage A on arrival: the append-only fold-in
+
+Stage A runs for the batch on **every sample arrival**. On the arrival path a sample is
+processed → targeted match runs (yielding μ) → per-sample Stage-A assignment runs
+(`auto_assign_sample_peaks`,
+[`service.py:842`](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py)).
+Immediately after, fold that sample into the batch peaks:
+
+```
+for each peak p in the arriving sample:
+    p_mz' = p_mz * (1 - mu_sample / 1e6)          # per-sample offset onto the batch axis
+    a = nearest BatchPeak of this batch+mode with |a.mz - p_mz'| within a.mz_tol   # binary search
+    if a exists:  insert BatchPeakOccurrence(a, sample, p, join PeakAssignment)
+    else:         create BatchPeak(anchor = p_mz'),  insert its first occurrence
+recompute consensus for the TOUCHED batch peaks only
+```
+
+Cost is **O(P·log A)** per sample (P peaks, A anchors) — bounded per arrival, not the
+O(N²) full re-bin the Zarr path would incur. No global re-cluster, no cache wipe. A backfill
+(`backfill_sample_batch_peaks`) folds every sample with that recompute deferred, collecting the
+anchors those folds touched, and recomputes each of them once at the end
+(`recompute_batch_consensus`) — per-sample recomputes there are O(N·A) writes
+for a result the last one determines — and any recompute writes an anchor only when its consensus
+actually changed. **Touched, never the whole batch:** the ion formula, mechanism and family link come from
+`PeakAssignment` alone, so recomputing an anchor whose members' assignment rows were deleted (an
+import run abandoned, an external engine's quota evicted by the across-engine bound — the
+occurrences survive with a NULL link) writes those columns away for good. Scoping the pass to
+anchors a fold has just put live members into removes that exposure; it does not eliminate it,
+since a winner backed only by dead-linked members still loses those columns on the per-arrival
+path too.
+The hard
+"virtual lock mass present in every sample" requirement of the VLM aligner is **dropped** for
+the live path (it is a single point of failure that worsens as the batch grows); the per-sample
+μ replaces it, and VLM stays only as an optional offline refinement.
+
+**Seeding [open, recommended].** Where a target-ion m/z list exists for the batch, seed the
+initial anchors from it, so bins are not hostage to the first sample's calibration and line up
+with existing target identities; data-created anchors fill the rest.
+
+**Backfill.** For batches assigned before this feature, a one-time fold-in walks each sample's
+latest completed run in time order through the same routine. It reports as it goes, on the
+`compute_batch_peaks` notification channel the launching button already listens on: pending
+packets carrying `_item_index`/`_total_samples`, which the shared progress calculator turns into
+a bar, and which the background-task decorator's terminal packet ends
+([`service.py`](../../server/backend/src/mascope_backend/socket/notifications/service.py)). Every
+sample reports up to a step count, past which the batch is sampled — the per-sample cost here is
+not the assignment loop's (a sample with no completed run returns after two selects), so an
+unbounded stream would be a burst of socket traffic with no work between the packets. The bar
+counts samples *walked*, not samples folded: it can fill while nothing was folded at all, which
+is the outcome the terminal notification exists to name.
+
+**Serialization [settled].** The fold's read-mint-insert step is a critical section per batch,
+held by a transaction-scoped Postgres advisory lock keyed on `sample_batch_id`
+([`batch_peaks_controller.py`](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_controller.py)).
+Anchor identity is tolerance-based, so *no unique constraint can express it* — a duplicate anchor
+is not something the database can reject, and the append-only rule then makes it permanent. Two
+folds that both read the anchor set before either commits therefore each mint an anchor for a
+shared species, splitting one trace in two for good. Three paths reach the fold, and they do
+overlap: run finalize and import publish are admitted per *sample*, so two samples of one batch
+can be in flight at once, and the backfill is not admitted at all — it can overlap either of
+those, or a second backfill of the same batch. Production runs parallel workers, so no
+in-process gate would be enough. The lock is taken *after* the
+instrument-configuration lookup, which opens sessions of its own — blocking while holding a
+connection and only then needing more is the hold-and-wait that deadlocks a worker — and is
+released by the fold's own commit. Different batches stay parallel. The fix also rests on
+READ COMMITTED: the fold's transaction is already open when the lock is taken, so the waiting
+fold only sees the winner's anchors because its post-lock read takes a fresh snapshot.
+
+### 12.4 What not to do (rejected options, with reasons)
+
+- **Don't reuse the `get_sample_batch_peaks` Zarr cache as the identity.** It is positional
+  (no stable key), wiped+recomputed on every batch change, stores membership as lossy
+  comma-joined `peak_id` strings, and its greedy clustering re-anchors under arrival. Good
+  algorithm to seed/backfill from; wrong identity.
+- **Don't score a summed/consensus spectrum.** `score_pattern_v2` needs real per-peak SNR (the
+  alignment path's SNR is a `np.ones` placeholder) and a single-offset mass axis; the consensus
+  axis is a mixture. Consensus m/z is for candidate *enumeration* only.
+- **Don't use greedy or single-linkage clustering as the live identity.** Any partition
+  "defined by the data seen so far" changes on every arrival. Use frozen append-only anchors.
+- **Don't key the chart trace on formula.** That drops every unassigned peak — exactly the data
+  the m/z-keyed design keeps.
+- **Don't require a VLM in every sample.** `min_fraction=1.0` throws away the whole batch if one
+  sample lacks the shared lock mass; use the per-sample μ instead.
