@@ -365,6 +365,30 @@ def test_a_spectral_library_syncs_its_spectra(library_dump, captured_spectra, lo
     assert "Matched as" not in log
 
 
+def test_a_spectral_library_records_the_publication_its_flags_name(
+    library_dump, captured_spectra
+):
+    result = runner.invoke(
+        reference_app,
+        [
+            "sync",
+            "massbank",
+            str(library_dump),
+            "--version",
+            "2026.03",
+            "--citation",
+            "A. Author, A library.",
+            "--doi",
+            "10.1234/lib",
+            "--yes",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured_spectra["citations"] == [
+        {"citation": "A. Author, A library.", "doi": "10.1234/lib"}
+    ]
+
+
 def test_a_spectral_library_stages_prunes_and_takes_a_name(
     library_dump, captured_spectra, logged
 ):

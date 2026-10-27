@@ -49,7 +49,7 @@ from mascope_reference import (
     is_spectrum_source,
 )
 from mascope_reference.ingest import EmptyIngest, SourceKindConflict
-from mascope_reference.peaklist import cited_reference
+from mascope_reference.peaklist import citation_text, given_citations
 from mascope_reference.scope import UNBOUNDED_TOKEN, scope_of
 
 
@@ -138,7 +138,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        citations = _cited(args)
+        citations = given_citations(args.citation, args.doi, args.isbn)
     except ValueError as error:
         raise SystemExit(str(error))
 
@@ -200,18 +200,7 @@ def main() -> None:
     )
     runtime.logger.info(f"Matched as: {result.scope.describe()}.")
     for reference in result.citations:
-        found_by = reference.get("doi") or reference.get("isbn")
-        runtime.logger.info(f"Cites: {reference.get('citation')} ({found_by})")
-
-
-def _cited(args: argparse.Namespace) -> list[dict] | None:
-    """The publication the flags name, or None when they name none.
-
-    :raises ValueError: For one that does not cite its source.
-    """
-    if args.citation is None and args.doi is None and args.isbn is None:
-        return None
-    return [cited_reference(args.citation, doi=args.doi, isbn=args.isbn)]
+        runtime.logger.info(f"Cites: {citation_text(reference)}")
 
 
 def _sync_spectra(args: argparse.Namespace, citations: list[dict] | None) -> None:

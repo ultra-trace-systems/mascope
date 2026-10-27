@@ -342,6 +342,37 @@ def cited_reference(
     return recorded_reference(reference)
 
 
+def given_citations(
+    citation: str | None, doi: str | None, isbn: str | None
+) -> list[dict] | None:
+    """The publication a sync's ``--citation``, ``--doi`` and ``--isbn`` name.
+
+    :param citation: The ``--citation`` flag, or None.
+    :param doi: The ``--doi`` flag, or None.
+    :param isbn: The ``--isbn`` flag, or None.
+    :raises ValueError: As :func:`cited_reference`, for a publication the flags
+        name that does not cite its source.
+    :return: The one reference, or None when no flag is given, so the load
+        records what its dump cites.
+    """
+    if citation is None and doi is None and isbn is None:
+        return None
+    return [cited_reference(citation, doi=doi, isbn=isbn)]
+
+
+def citation_text(reference: dict) -> str:
+    """One recorded reference for a person: its citation and what finds it.
+
+    A list loaded from outside the shipped ones may give only one of the two
+    (:func:`recorded_reference`), and then that one is the text.
+    """
+    citation = reference.get("citation")
+    found_by = reference.get("doi") or reference.get("isbn")
+    if citation and found_by:
+        return f"{citation} ({found_by})"
+    return citation or found_by or ""
+
+
 def list_problems(
     peak_list: PeakList, *, licenses: Collection[str] | None = None
 ) -> list[str]:

@@ -302,3 +302,25 @@ def test_a_source_row_without_a_kind_is_a_compound_source(sync_engine, tmp_path)
     with pytest.raises(SourceKindConflict):
         ingest_spectra(sync_engine, MonaAdapter(), MONA, version="1", source_name="old")
     ingest(sync_engine, PubChemAdapter(), path, version="2", source_name="old")
+
+
+def _citations(engine) -> list:
+    with engine.connect() as conn:
+        return (
+            conn.execute(
+                select(reference_source.c.citations).order_by(
+                    reference_source.c.reference_source_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+def test_a_library_records_the_publications_it_is_given(sync_engine):
+    cited = [{"citation": "A. Author, A library.", "doi": "10.1234/lib"}]
+    ingest_spectra(sync_engine, MonaAdapter(), MONA, version="v1", citations=cited)
+    ingest_spectra(sync_engine, MonaAdapter(), MONA, version="v2")
+    # A library's dump names no publication, so a load given none records an
+    # empty list: it cites nothing, where NULL would say nobody recorded it.
+    assert _citations(sync_engine) == [cited, []]
