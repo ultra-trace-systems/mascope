@@ -10,16 +10,57 @@ without a code change, while an empty store still behaves exactly as before.
 ``mascope_tools`` stays DB-free: it defines the ``Calibration`` value object and the pure
 ``apply_calibration`` / ``apply_corroboration`` math; this backend module is the only place that
 knows about the DB table.
+
+A stored curve also records the ionization setups its labels were scored under
+(:class:`StoredCalibration`), since a curve is valid per reagent chemistry and the
+``(instrument, score_version)`` key cannot say which. The lookup still answers with the
+instrument's curve, but warns when a run's setup is not among them: the record-it form of
+``docs/dev/ingest_routing_and_splitting.md`` phase 8 (the retired ionization note's 8.2),
+before the setup becomes part of the key.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from sqlalchemy import select, update
 
 from mascope_backend.db import AssignmentCalibration, async_session
+from mascope_backend.runtime import runtime
 from mascope_tools.composition.calibration import Calibration, calibration_for
+
+
+@dataclass(frozen=True)
+class StoredCalibration(Calibration):
+    """A curve read from the store, with the setups it was fit under.
+
+    ``ionization_setups`` holds ``{"ionization_mode_id", "version"}`` records,
+    each a version of an ionization mode some of the curve's labels were scored
+    under. Empty where the row records none: a curve fit before setups were
+    recorded, whose labels the migration could not trace to a sample.
+    """
+
+    ionization_setups: tuple[dict, ...] = field(default=())
+
+
+def fit_under(
+    calibration: Calibration | None, ionization_setup: dict | None
+) -> bool | None:
+    """Whether a curve was fit under the setup a run searches under.
+
+    :return: True or False where both are known, None where the curve records
+        no setups (the in-code provisional curve, an unrecorded fit) or the run
+        has none (a sample bound under no mode).
+    """
+    setups = getattr(calibration, "ionization_setups", ())
+    if not setups or ionization_setup is None:
+        return None
+    return ionization_setup in setups
+
+
+#: (row, setup) pairs already warned about: once per process, not once per sample.
+_warned: set[tuple[int, str, int | None]] = set()
 
 
 def _to_calibration(row: AssignmentCalibration) -> Calibration:
@@ -39,15 +80,29 @@ def _to_calibration(row: AssignmentCalibration) -> Calibration:
     )
 
 
+def _to_stored(row: AssignmentCalibration) -> StoredCalibration:
+    plain = _to_calibration(row)
+    return StoredCalibration(
+        **{name: getattr(plain, name) for name in plain.__dataclass_fields__},
+        ionization_setups=tuple(row.ionization_setups or ()),
+    )
+
+
 async def load_calibration(
-    instrument: str | None, score_version: int
+    instrument: str | None,
+    score_version: int,
+    ionization_setup: dict | None = None,
 ) -> Calibration | None:
     """The calibration for ``(instrument, score_version)``: the active DB row if present, else
     the in-code provisional curve, else ``None`` (uncalibrated instrument).
 
     ``None`` stays a first-class answer -- callers must report the assignment uncalibrated rather
     than borrow another instrument's curve. A DB row always wins over the in-code default, so
-    refitting a curve (a new active row) overrides the shipped provisional without code changes."""
+    refitting a curve (a new active row) overrides the shipped provisional without code changes.
+
+    A row is returned as a :class:`StoredCalibration`. Given the setup the run searches under,
+    a curve fit under other setups only is still applied - it is the instrument's curve - but
+    with a warning, once per curve and setup, rather than silently."""
     if not instrument:
         return None
     inst = str(instrument).lower()
@@ -68,14 +123,37 @@ async def load_calibration(
             .first()
         )
     if row is not None:
-        return _to_calibration(row)
+        stored = _to_stored(row)
+        if fit_under(stored, ionization_setup) is False:
+            warned = (
+                row.assignment_calibration_id,
+                ionization_setup["ionization_mode_id"],
+                ionization_setup.get("version"),
+            )
+            if warned not in _warned:
+                _warned.add(warned)
+                runtime.logger.warning(
+                    f"The confidence calibration of '{inst}' was fit under "
+                    f"{len(stored.ionization_setups)} ionization setup(s), not "
+                    f"under version {ionization_setup.get('version')} of mode "
+                    f"{ionization_setup['ionization_mode_id']}, which this run "
+                    "searches under. It is applied all the same; refit it from "
+                    "verifications of this setup's samples to calibrate them."
+                )
+        return stored
     return calibration_for(inst)
 
 
-async def save_calibration(calibration: Calibration, score_version: int) -> None:
+async def save_calibration(
+    calibration: Calibration,
+    score_version: int,
+    ionization_setups: list[dict] | None = None,
+) -> None:
     """Persist ``calibration`` as the new **active** row for its instrument + ``score_version``,
     deactivating any previously active row (the V2 recalibration write). Append-only: old rows are
-    kept (``is_active=False``) as history, so a bad refit can be traced and rolled back."""
+    kept (``is_active=False``) as history, so a bad refit can be traced and rolled back.
+
+    ``ionization_setups`` are the setups the labels were scored under, recorded on the row."""
     inst = (calibration.instrument or "").lower()
     async with async_session() as session:
         await session.execute(
@@ -103,6 +181,7 @@ async def save_calibration(calibration: Calibration, score_version: int) -> None
                     if calibration.corroboration_weights
                     else None
                 ),
+                ionization_setups=ionization_setups or None,
                 is_active=True,
                 fit_utc=datetime.now(timezone.utc),
                 created_utc=datetime.now(timezone.utc),

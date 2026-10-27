@@ -1056,7 +1056,7 @@ def _row_reference_identities(row) -> list | None:
     return value if isinstance(value, list) and value else None
 
 
-def calibration_meta(calibration) -> dict | None:
+def calibration_meta(calibration, ionization_setup: dict | None = None) -> dict | None:
     """What a run records about the confidence calibration it applied.
 
     The instrument class, whether the curve is provisional, and what it was fit
@@ -1065,16 +1065,28 @@ def calibration_meta(calibration) -> dict | None:
     and folded back into each row by the detail read. ``None`` when the run was
     uncalibrated, which is what a reader takes to mean "no curve".
 
+    A curve that records the ionization setups it was fit under adds them
+    (``fit_setups``), and, given the setup the run searched under, whether it
+    was not among them (``setup_mismatch``): the curve is applied either way,
+    and this is where the run says it was applied across setups.
+
     :param calibration: The calibration the run applied, or None.
+    :param ionization_setup: The setup the run searched under, or None.
     :return: The record for the run row, or None.
     """
     if calibration is None:
         return None
-    return {
+    meta = {
         "instrument": calibration.instrument,
         "provisional": calibration.provisional,
         "source": calibration.source,
     }
+    setups = list(getattr(calibration, "ionization_setups", ()))
+    if setups:
+        meta["fit_setups"] = setups
+        if ionization_setup is not None:
+            meta["setup_mismatch"] = ionization_setup not in setups
+    return meta
 
 
 def _alternative_dict(

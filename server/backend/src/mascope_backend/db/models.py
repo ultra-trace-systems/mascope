@@ -3194,7 +3194,8 @@ class AssignmentCalibration(Base):
     Keyed by ``(instrument, score_version)`` because a curve is only valid for the fit-score
     version it was fit against; ``is_active`` marks the row the loader reads (refitting flips the
     previous one inactive). When the table has no active row the loader falls back to the in-code
-    provisional curve, so this is additive and safe to ship empty.
+    provisional curve, so this is additive and safe to ship empty. ``instrument`` is the
+    instrument class ("orbi", "tof"), not an instrument's name, so it links no ``instrument`` row.
     """
 
     __tablename__ = "assignment_calibration"
@@ -3212,6 +3213,12 @@ class AssignmentCalibration(Base):
     source: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     provisional: Mapped[bool] = mapped_column(Boolean, default=True)
     corroboration_weights: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    #: The ionization setups the curve's labels were scored under, each
+    #: ``{"ionization_mode_id": ..., "version": ...}``: the reagent chemistry
+    #: the key above cannot say. Recorded, not keyed on - a run under another
+    #: setup still reads this curve, with a warning
+    #: (``calibration_store.load_calibration``). NULL where none is known.
+    ionization_setups: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     fit_utc: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
