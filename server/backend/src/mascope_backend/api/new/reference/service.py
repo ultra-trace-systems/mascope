@@ -24,6 +24,11 @@ from mascope_reference.record import ReferenceRecord
 from mascope_tools.composition.known_window import KnownWindow
 
 
+#: The keys of a list-level reference, in the order the sources route gives
+#: them.
+_REFERENCE_KEYS = ("citation", "doi", "isbn", "note")
+
+
 def _to_dict(record: ReferenceRecord) -> dict:
     """Serialize a reference record for API responses."""
     return record.model_dump()
@@ -120,11 +125,33 @@ def shipped_labels() -> dict[str, str]:
     }
 
 
+@cache
+def shipped_references() -> dict[str, tuple[dict, ...]]:
+    """The publications every list Mascope ships cites, by its source name.
+
+    Read once per process, as :func:`shipped_labels` is. Each reference keeps
+    the keys a list file may give one (``citation``, ``doi``, ``isbn``,
+    ``note``), None where the file leaves one out.
+
+    :return: Each shipped list's id mapped to its references, in the file's
+        order.
+    """
+    return {
+        peak_list.id: tuple(
+            {key: reference.get(key) for key in _REFERENCE_KEYS}
+            for reference in peak_list.references
+        )
+        for peak_list in catalogue()
+    }
+
+
 async def list_sources() -> dict:
     """The active reference sources, one row each, sorted by label.
 
     A shipped list is labelled as its file labels it, any other source by its
-    name. ``admitted`` says whether the deployment's licence gate
+    name. ``references`` are the publications a shipped list cites, and empty
+    for any other source: the database keeps no citation for a list loaded
+    from elsewhere. ``admitted`` says whether the deployment's licence gate
     (:func:`reference_license_gate`) lets Stage A match the source: true for
     every source when no gate is configured, else whether the source's licence
     is one the gate names.
@@ -134,12 +161,14 @@ async def list_sources() -> dict:
     async with async_session() as session:
         rows = await _active_sources(session)
     labels = shipped_labels()
+    references = shipped_references()
     gate = reference_license_gate()
     data = [
         {
             "name": row.name,
             "version": row.version,
             "label": labels.get(row.name, row.name),
+            "references": [dict(ref) for ref in references.get(row.name, ())],
             "license": row.license,
             "polarity": row.polarity,
             "allow_radicals": bool(row.allow_radicals),
