@@ -16,6 +16,11 @@ from mascope_backend.api.models.target.isotopes.target_isotope_pydantic_model im
     GetTargetIsotopesQueryParams,
 )
 from mascope_backend.api.new.auth.dependencies import guest_user
+from mascope_backend.api.new.workspaces.dependencies import (
+    accessible_workspace_ids_for_user,
+    check_batch_access,
+    check_target_collection_access,
+)
 
 
 target_isotopes_router = APIRouter(
@@ -31,6 +36,13 @@ async def get_target_isotopes_route(
 ):
     """Retrieve a list of target isotopes.
 
+    A named ``sample_batch_id`` or ``target_collection_id`` needs the guest
+    role on its workspace, as the collection and association routes do; a
+    global collection is readable by anyone signed in. Without either filter
+    the list is the shared isotope library. ``show_target_collection`` lists
+    only the collections the caller can read: the global ones and those of
+    the workspaces they are a member of (superusers see all).
+
     :param query_params: Query parameters for sorting, filtering, and pagination.
     :type query_params: GetTargetIsotopesQueryParams
     :param user: The current authenticated user with guest permissions.
@@ -38,7 +50,18 @@ async def get_target_isotopes_route(
     :return: A dictionary containing total count and list of target isotopes.
     :rtype: dict
     """
-    return await get_target_isotopes(**query_params.model_dump())
+    if query_params.sample_batch_id:
+        await check_batch_access(query_params.sample_batch_id, user, "guest")
+    if query_params.target_collection_id:
+        await check_target_collection_access(
+            query_params.target_collection_id, user, "guest"
+        )
+    ws_ids = (
+        None if user.is_superuser else await accessible_workspace_ids_for_user(user)
+    )
+    return await get_target_isotopes(
+        **query_params.model_dump(), accessible_workspace_ids=ws_ids
+    )
 
 
 @target_isotopes_router.get("/{target_isotope_id}")

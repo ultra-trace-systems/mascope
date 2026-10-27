@@ -1,9 +1,10 @@
 """
-Tests: the target ion and compound lists check the batch or collection they
-filter by.
+Tests: the target ion, compound and isotope lists check the batch or
+collection they filter by.
 
-``GET /api/target/ions`` and ``GET /api/target/compounds`` are open to every
-signed-in user: unfiltered, they list the shared compound and ion library.
+``GET /api/target/ions``, ``GET /api/target/compounds`` and
+``GET /api/target/isotopes`` are open to every signed-in user: unfiltered,
+they list the shared compound, ion and isotope library.
 Their ``target_collection_id`` filter returns the contents of one collection,
 and their ``sample_batch_id`` filter those of a batch's collections, so a
 guest could read another workspace's collection through them. Now a named
@@ -30,25 +31,28 @@ from mascope_backend.db import (
     TargetCompound,
     TargetCompoundInTargetCollection,
     TargetIon,
+    TargetIsotope,
 )
 from mascope_backend.db.id import gen_id
 
 
 IONS = "/api/target/ions"
 COMPOUNDS = "/api/target/compounds"
+ISOTOPES = "/api/target/isotopes"
 
-BOTH_LISTS = pytest.mark.parametrize("url", [IONS, COMPOUNDS])
+EVERY_LIST = pytest.mark.parametrize("url", [IONS, COMPOUNDS, ISOTOPES])
 
 
 @pytest_asyncio.fixture
 async def scope(async_session_factory, ws_alpha, ws_beta):
-    """A collection in ws_alpha, ws_beta and none, one compound and ion each."""
+    """A collection in ws_alpha, ws_beta and none, one compound, ion and isotope each."""
     ids = SimpleNamespace(
         mechanism=gen_id(),
         collection={"alpha": gen_id(), "beta": gen_id(), "global": gen_id()},
     )
     ids.compound = {name: gen_id() for name in ids.collection}
     ids.ion = {name: gen_id() for name in ids.collection}
+    ids.isotope = {name: gen_id() for name in ids.collection}
     workspace_of = {
         "alpha": ws_alpha["workspace_id"],
         "beta": ws_beta["workspace_id"],
@@ -93,6 +97,18 @@ async def scope(async_session_factory, ws_alpha, ws_beta):
                     target_ion_formula="C6H13O6+",
                 )
             )
+        await session.flush()
+        for name, ion_id in ids.ion.items():
+            session.add(
+                TargetIsotope(
+                    target_isotope_id=ids.isotope[name],
+                    target_ion_id=ion_id,
+                    target_isotope_formula="C6H13O6+",
+                    mz=181.0707,
+                    relative_abundance=1.0,
+                    resolution="HIGH",
+                )
+            )
         await session.commit()
     yield ids
     async with async_session_factory() as session:
@@ -114,20 +130,27 @@ async def scope(async_session_factory, ws_alpha, ws_beta):
         await session.commit()
 
 
+_ROW_KEY = {
+    IONS: ("target_ion_id", "ion"),
+    COMPOUNDS: ("target_compound_id", "compound"),
+    ISOTOPES: ("target_isotope_id", "isotope"),
+}
+
+
 def _ids(url: str, resp) -> list[str]:
-    key = "target_ion_id" if url == IONS else "target_compound_id"
+    key = _ROW_KEY[url][0]
     return [row[key] for row in resp.json()["data"]]
 
 
 def _expected(url: str, scope, name: str) -> list[str]:
-    return [(scope.ion if url == IONS else scope.compound)[name]]
+    return [getattr(scope, _ROW_KEY[url][1])[name]]
 
 
 # --- A named target collection ----------------------------------------------
 
 
 @pytest.mark.asyncio
-@BOTH_LISTS
+@EVERY_LIST
 async def test_a_guest_naming_another_workspaces_collection_is_refused(
     guest_client, scope, url
 ):
@@ -139,7 +162,7 @@ async def test_a_guest_naming_another_workspaces_collection_is_refused(
 
 
 @pytest.mark.asyncio
-@BOTH_LISTS
+@EVERY_LIST
 @pytest.mark.parametrize("collection", ["alpha", "global"])
 async def test_a_guest_reads_a_collection_of_their_workspace_or_a_global_one(
     guest_client, scope, url, collection
@@ -153,7 +176,7 @@ async def test_a_guest_reads_a_collection_of_their_workspace_or_a_global_one(
 
 
 @pytest.mark.asyncio
-@BOTH_LISTS
+@EVERY_LIST
 async def test_a_collection_that_does_not_exist_is_refused(guest_client, url):
     resp = await guest_client.get(url, params={"target_collection_id": gen_id()})
 
@@ -161,7 +184,7 @@ async def test_a_collection_that_does_not_exist_is_refused(guest_client, url):
 
 
 @pytest.mark.asyncio
-@BOTH_LISTS
+@EVERY_LIST
 async def test_a_superuser_reads_a_collection_of_any_workspace(
     owner_client, scope, url
 ):
@@ -177,7 +200,7 @@ async def test_a_superuser_reads_a_collection_of_any_workspace(
 
 
 @pytest.mark.asyncio
-@BOTH_LISTS
+@EVERY_LIST
 async def test_a_guest_naming_another_workspaces_batch_is_refused(
     guest_client, beta_batch, url
 ):
@@ -187,7 +210,7 @@ async def test_a_guest_naming_another_workspaces_batch_is_refused(
 
 
 @pytest.mark.asyncio
-@BOTH_LISTS
+@EVERY_LIST
 async def test_a_guest_reads_by_a_batch_of_their_workspace(
     guest_client, alpha_batch, url
 ):
@@ -197,7 +220,7 @@ async def test_a_guest_reads_by_a_batch_of_their_workspace(
 
 
 @pytest.mark.asyncio
-@BOTH_LISTS
+@EVERY_LIST
 async def test_a_batch_that_does_not_exist_is_refused(guest_client, url):
     resp = await guest_client.get(url, params={"sample_batch_id": gen_id()})
 
@@ -205,7 +228,7 @@ async def test_a_batch_that_does_not_exist_is_refused(guest_client, url):
 
 
 @pytest.mark.asyncio
-@BOTH_LISTS
+@EVERY_LIST
 async def test_a_readable_batch_does_not_open_another_workspaces_collection(
     guest_client, scope, alpha_batch, url
 ):
@@ -225,7 +248,7 @@ async def test_a_readable_batch_does_not_open_another_workspaces_collection(
 
 
 @pytest.mark.asyncio
-@BOTH_LISTS
+@EVERY_LIST
 async def test_the_unfiltered_library_stays_open_to_a_guest(guest_client, scope, url):
     """The shared library is a separate question; this change leaves it open."""
     resp = await guest_client.get(url)
@@ -251,7 +274,7 @@ def _collections(url: str, scope, resp) -> set[str]:
 
 
 @pytest.mark.asyncio
-@BOTH_LISTS
+@EVERY_LIST
 async def test_show_target_collection_hides_another_workspaces_collection(
     guest_client, scope, url
 ):
@@ -267,7 +290,7 @@ async def test_show_target_collection_hides_another_workspaces_collection(
 
 
 @pytest.mark.asyncio
-@BOTH_LISTS
+@EVERY_LIST
 async def test_show_target_collection_lists_every_collection_to_a_superuser(
     owner_client, scope, url
 ):
