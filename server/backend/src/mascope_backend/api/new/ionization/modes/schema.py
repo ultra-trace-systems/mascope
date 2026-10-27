@@ -1,6 +1,19 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
+from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
+
+
+#: The isotopic purity of a labelled reagent where the setup names none: the
+#: library's own, which the engine read for every run before setups carried it.
+DEFAULT_LABEL_PURITY = CUSTOM_ELEMENTS["^N"].default_purity
+
+_LABEL_PURITY_DESCRIPTION = (
+    "Isotopic purity of the setup's labelled reagent: the heaviest isotope's "
+    "fraction of the labelled element, 0.98 for a 98% 15N nitrate. Read "
+    "wherever a run predicts a labelled ion's envelope. Changing it makes the "
+    "mode's next version."
+)
 
 
 #: The instrument a mode belongs to. One definition, used by both the create and
@@ -94,6 +107,9 @@ class IonizationModeBase(
         description="ID of the diagnostic collection to use for the scheme",
     )
     instrument: str | None = _INSTRUMENT_FIELD
+    label_purity: float = Field(
+        DEFAULT_LABEL_PURITY, gt=0, le=1, description=_LABEL_PURITY_DESCRIPTION
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -153,6 +169,12 @@ class IonizationModeUpdate(
         ),
     )
     instrument: str | None = _INSTRUMENT_FIELD
+    label_purity: float | None = Field(
+        None,
+        gt=0,
+        le=1,
+        description=f"{_LABEL_PURITY_DESCRIPTION} Left as it is when omitted.",
+    )
 
 
 class GetIonizationModesQueryParams(QueryParamsModel):

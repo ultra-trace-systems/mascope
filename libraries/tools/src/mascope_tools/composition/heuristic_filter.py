@@ -19,7 +19,7 @@ from mascope_tools.composition.config import (
     ISOTOPE_MATCHING_MZ_TOLERANCE_PPM,
     UNRESOLVED_MEMBER_DEPTH,
 )
-from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
+from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
 from mascope_tools.composition.grid import admits
 from mascope_tools.composition.models import (
     CompositionSearchConfig,
@@ -1754,7 +1754,8 @@ def predict_isotopes(
     :param purity: Isotopic purity of labelled '^X' elements (heaviest-isotope
         fraction, e.g. 0.98 for a 98% 15N reagent). A property of the labelled
         reagent; the caller passes its value. Ignored for non-labelled ions.
-        Defaults to ``LABELLED_REAGENT_PURITY``.
+        Defaults to the purity in effect (``custom_elements.label_purity``):
+        the ionization setup's inside a run, else ``LABELLED_REAGENT_PURITY``.
     :type purity: float, optional
     :param threshold: Abundance below which a line is left out of the envelope,
         relative to the most abundant one. Defaults to
@@ -1778,7 +1779,7 @@ def predict_isotopes(
             return _predict_isotopes_custom(
                 ion_formula,
                 ion_charge,
-                LABELLED_REAGENT_PURITY if purity is None else purity,
+                label_purity("^N") if purity is None else purity,
                 cutoff,
             )
         except Exception:

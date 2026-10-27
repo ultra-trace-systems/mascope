@@ -12,6 +12,9 @@ table. Consolidating it here is what allows that fork to be retired: nothing
 depends on molmass's custom ``^N`` element any more.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 
@@ -60,3 +63,40 @@ CUSTOM_ELEMENTS: dict[str, CustomElement] = {
 def is_custom_element(symbol: str) -> bool:
     """Return True if ``symbol`` (e.g. ``"^N"``) is a known labelled custom element."""
     return symbol in CUSTOM_ELEMENTS
+
+
+#: The purity a labelled element is read at, where a caller has set one.
+_LABEL_PURITY: ContextVar[float | None] = ContextVar("label_purity", default=None)
+
+
+def label_purity(symbol: str) -> float:
+    """The isotopic purity a labelled element is read at.
+
+    An ionization setup carries the purity of its labelled reagent, and a run
+    reads its sample's setup inside :func:`labelled_purity`; there this answers
+    the setup's value. Elsewhere it is the element's ``default_purity``. A setup
+    names one labelled reagent, so one value serves every labelled element in
+    the formulas it searches.
+
+    :param symbol: A labelled element, ``"^N"``.
+    :return: Its heaviest isotope's fraction.
+    """
+    configured = _LABEL_PURITY.get()
+    return CUSTOM_ELEMENTS[symbol].default_purity if configured is None else configured
+
+
+@contextmanager
+def labelled_purity(purity: float | None) -> Iterator[None]:
+    """Read labelled elements at ``purity`` inside the block.
+
+    Context-local, so concurrent runs each read their own setup's, and carried
+    into ``asyncio.to_thread`` and the tasks the block starts. ``None`` keeps
+    each element's default.
+
+    :param purity: The labelled reagent's heaviest-isotope fraction, or None.
+    """
+    token = _LABEL_PURITY.set(purity)
+    try:
+        yield
+    finally:
+        _LABEL_PURITY.reset(token)

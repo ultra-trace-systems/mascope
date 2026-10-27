@@ -93,8 +93,13 @@ async def system_mode(async_session_factory, sys_mechanisms):
         await session.commit()
     yield mode_id
     async with async_session_factory() as session:
+        # Every version of it: an edit of its collections makes the next one,
+        # which carries the key.
         await session.execute(
-            delete(IonizationMode).where(IonizationMode.ionization_mode_id == mode_id)
+            delete(IonizationMode).where(
+                (IonizationMode.ionization_mode_id == mode_id)
+                | (IonizationMode.system_key == f"{_SYSTEM_KEY}-{mode_id}")
+            )
         )
         await session.commit()
 
@@ -265,6 +270,24 @@ async def test_a_seeded_mode_takes_the_deployments_collection(
     )
     assert resp.status_code == 200
     assert resp.json()["data"]["calibration_collection_id"] == sys_collection
+
+
+@pytest.mark.asyncio
+async def test_a_seeded_mode_takes_the_deployments_reagent_purity(
+    admin_client, system_mode, sys_mechanisms
+):
+    """A labelled reagent's purity is the site's bottle, not the chemistry."""
+    resp = await admin_client.patch(
+        f"/api/ionization/modes/{system_mode}",
+        json=_body(
+            sys_mechanisms,
+            ionization_mode_name=f"Seeded Chemistry {system_mode}",
+            label_purity=0.99,
+        ),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["label_purity"] == 0.99
+    assert resp.json()["data"]["version"] == 2
 
 
 @pytest.mark.asyncio

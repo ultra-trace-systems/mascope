@@ -45,6 +45,7 @@ VERSIONED_FIELDS = (
     "ionization_mechanism_ids",
     "calibration_collection_id",
     "diagnostic_collection_id",
+    "label_purity",
 )
 
 #: Columns a new version does not copy from the row it supersedes.
@@ -319,3 +320,22 @@ async def sample_setup(sample_item_id: str) -> dict | None:
             )
         ).one_or_none()
     return setup_stamp(*row) if row is not None else None
+
+
+async def sample_label_purity(sample_item_id: str) -> float | None:
+    """The labelled reagent's purity the sample's setup carries.
+
+    None for an item bound under no mode, which leaves the library's default
+    in effect.
+    """
+    async with async_session() as session:
+        return (
+            await session.execute(
+                select(IonizationMode.label_purity)
+                .join(
+                    SampleItem,
+                    SampleItem.ionization_mode_id == IonizationMode.ionization_mode_id,
+                )
+                .where(SampleItem.sample_item_id == sample_item_id)
+            )
+        ).scalar_one_or_none()

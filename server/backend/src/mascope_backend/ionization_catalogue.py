@@ -132,7 +132,9 @@ SYSTEM_MODES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
 )
 
 # What a deployment may change on a seeded mode: its target collections, which
-# are its own data. Everything else is the chemistry's definition.
+# are its own data, and its labelled reagent's isotopic purity, which is the
+# bottle's - one site's 15N nitrate is 98% and another's 99%. Everything else
+# is the chemistry's definition.
 #
 # `instrument` is deliberately not here. The scope filters which modes a file
 # name's tokens are matched against, and a seeded mode ships with no token and
@@ -140,7 +142,7 @@ SYSTEM_MODES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
 # permission for behaviour that does not exist is worse than none. It belongs
 # here on the day a seeded mode can carry a token, with a test.
 SYSTEM_MODE_EDITABLE_FIELDS: frozenset[str] = frozenset(
-    {"calibration_collection_id", "diagnostic_collection_id"}
+    {"calibration_collection_id", "diagnostic_collection_id", "label_purity"}
 )
 
 

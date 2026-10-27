@@ -21,3 +21,13 @@
   record says so (`setup_mismatch`). The upgrade records version 1 on
   existing in-app runs and, on existing curves, the versions of the
   verifications their fit could have drawn on.
+
+- **An ionization mode carries its labelled reagent's isotopic purity.**
+  `label_purity` on a mode (0.98 by default, the figure every run used
+  until now) is what a run of its samples reads a labelled ion's envelope
+  at - the 15N of a 15N nitrate in the reagent pre-pass, the reference
+  lines, the untargeted search and the tiering - so a site whose reagent is
+  99% can say so. It is set through `POST` and `PATCH
+  /api/ionization/modes`, also on a mode Mascope ships, and changing it
+  makes the mode's next version. The target library's own isotopes are
+  still computed at the default.
