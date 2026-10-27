@@ -17,10 +17,12 @@ from mascope_reference.adapters.peaklist import PeakListAdapter
 from mascope_reference.peaklist import (
     PeakListError,
     admitted_species,
+    cited_reference,
     dbe,
     is_odd_electron,
     list_problems,
     read_peak_list,
+    recorded_reference,
 )
 from mascope_reference.sources import get_adapter
 
@@ -173,6 +175,47 @@ def test_every_reference_cites_its_source(tmp_path, reference, expected):
 def test_an_isbn_with_a_valid_check_digit_cites(tmp_path):
     thesis = _good(references=[{"citation": "A thesis.", "isbn": "978-3-95806-596-3"}])
     assert _problems(tmp_path, thesis) == []
+
+
+# --- What a source row records it cites ------------------------------------------
+
+
+def test_the_adapter_reads_what_a_list_cites(tmp_path):
+    references = [
+        {"citation": "  A thesis. ", "isbn": "978-3-95806-596-3", "note": "Ch. 3"},
+        # Nothing a reader could follow: left out rather than recorded empty.
+        {"note": "see above"},
+        # Unchecked keys and blanks are not carried onto the row.
+        {"citation": "A paper.", "doi": "10.1234/t.2", "url": "u", "isbn": " "},
+    ]
+    path = _write(tmp_path, _good(references=references))
+    assert PeakListAdapter().citations(path) == (
+        {"citation": "A thesis.", "isbn": "978-3-95806-596-3", "note": "Ch. 3"},
+        {"citation": "A paper.", "doi": "10.1234/t.2"},
+    )
+
+
+def test_a_list_with_no_references_cites_nothing(tmp_path):
+    path = _write(tmp_path, _good(references="none"))
+    assert PeakListAdapter().citations(path) == ()
+
+
+def test_a_reference_with_only_a_doi_is_still_recorded():
+    # A list from outside the shipped ones met no check; its DOI still cites it.
+    assert recorded_reference({"doi": "10.1234/x"}) == {"doi": "10.1234/x"}
+
+
+def test_a_reference_given_at_load_is_checked_as_a_shipped_lists_is():
+    assert cited_reference("A paper.", doi="10.1234/x") == {
+        "citation": "A paper.",
+        "doi": "10.1234/x",
+    }
+    with pytest.raises(ValueError, match="neither a DOI nor an ISBN"):
+        cited_reference("A paper.")
+    with pytest.raises(ValueError, match="no citation"):
+        cited_reference(None, doi="10.1234/x")
+    with pytest.raises(ValueError, match="not a valid ISBN"):
+        cited_reference("A thesis.", isbn="978-3-95806-596-4")
 
 
 def test_a_list_needs_a_reference_and_a_licence(tmp_path):

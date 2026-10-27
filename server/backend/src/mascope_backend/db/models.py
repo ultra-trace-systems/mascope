@@ -2902,6 +2902,13 @@ class ReferenceSource(Base):
     kind: Mapped[str] = mapped_column(
         String(16), default="compound", server_default=text("'compound'")
     )
+    # The publications the source comes from, written at load: a list of
+    # objects with a citation and its doi or isbn, empty for a load that cites
+    # none. NULL for a row loaded before rows recorded them - none_as_null, so
+    # a row given None reads as that rather than as the JSON value null.
+    citations: Mapped[Optional[list]] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
 
     # Relationships
     reference_compound = relationship(

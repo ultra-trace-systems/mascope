@@ -10,7 +10,9 @@ while older loads stay on disk for reproducibility (``prune=True`` drops them).
 
 The source row also records how the load's compounds may be matched - its
 window, its radical allowance and its polarity (:mod:`mascope_reference.scope`) -
-as the adapter says of the dump unless the caller says otherwise.
+as the adapter says of the dump unless the caller says otherwise, and the
+publications the source comes from: a list file's own references, or the ones
+the caller gives.
 
 :func:`ingest_spectra` loads a spectral library the same way, into
 ``reference_spectrum``: a versioned load on its own source row, promoted only
@@ -23,7 +25,7 @@ request path, and streams so a multi-gigabyte dump never lands in memory.
 """
 
 from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha1
@@ -91,6 +93,8 @@ class IngestResult:
     skipped: int
     #: What the source row records about how the compounds may be matched.
     scope: SourceScope
+    #: The publications the source row records it comes from.
+    citations: tuple[dict, ...] = ()
 
 
 @dataclass
@@ -202,6 +206,16 @@ def _spectrum_row(source_id: int, spectrum: SpectrumRecord) -> dict:
     data["peaks"] = [[mz, intensity] for mz, intensity in spectrum.peaks]
     data["reference_source_id"] = source_id
     return data
+
+
+def _citations_of(adapter, path: Path) -> tuple[dict, ...]:
+    """The publications a load of this dump records, before any the caller gives.
+
+    An adapter whose dump names them - a list file's header does - reads them
+    with a ``citations(path)`` method of its own; any other cites none.
+    """
+    read = getattr(adapter, "citations", None)
+    return () if read is None else tuple(read(path))
 
 
 def _refuse_other_kind(conn: Connection, name: str, kind: str) -> None:
@@ -329,6 +343,7 @@ def ingest(
     prune: bool = False,
     progress: Callable[[int], None] | None = None,
     scope: SourceScope | None = None,
+    citations: Sequence[dict] | None = None,
 ) -> IngestResult:
     """Ingest one source dump as a new versioned load.
 
@@ -352,6 +367,10 @@ def ingest(
         matched. Defaults to what the adapter says of the dump
         (:func:`mascope_reference.scope.scope_of`): the mirror window for a
         database, unbounded for a list.
+    :param citations: The publications the source row records it comes from,
+        each a reference as :func:`mascope_reference.peaklist.recorded_reference`
+        keeps one. Defaults to what the dump names: a list file's references,
+        none for anything else.
     :return: An :class:`IngestResult` summarizing the load.
     :raises FileNotFoundError: If ``path`` does not exist.
     :raises EmptyIngest: If an activating load yielded no usable records. The
@@ -364,6 +383,7 @@ def ingest(
     name = source_name or adapter.name
     if scope is None:
         scope = scope_of(adapter, path)
+    citations = _citations_of(adapter, path) if citations is None else tuple(citations)
     with engine.begin() as conn:
         source_id = _begin_load(
             conn,
@@ -371,6 +391,7 @@ def ingest(
             version=version,
             license=adapter.license,
             kind=COMPOUND_KIND,
+            citations=list(citations),
             **scope.row_values(),
         )
         ingested, skipped = _insert_rows(
@@ -403,6 +424,7 @@ def ingest(
         ingested=ingested,
         skipped=skipped,
         scope=scope,
+        citations=citations,
     )
 
 
@@ -435,6 +457,7 @@ def ingest_spectra(
     activate: bool = True,
     prune: bool = False,
     progress: Callable[[int], None] | None = None,
+    citations: Sequence[dict] = (),
 ) -> SpectrumIngestResult:
     """Ingest one spectral library dump as a new versioned load.
 
@@ -456,6 +479,8 @@ def ingest_spectra(
     :param prune: After a successful activated load, delete the name's earlier
         loads and their spectra.
     :param progress: Optional callback with the running inserted count.
+    :param citations: The publications the source row records the library
+        comes from, as :func:`ingest` takes them; none by default.
     :return: A :class:`SpectrumIngestResult`, with why records were left out.
     :raises FileNotFoundError: If ``path`` does not exist.
     :raises EmptyIngest: If an activating load admitted no spectrum. Nothing is
@@ -474,6 +499,7 @@ def ingest_spectra(
             version=version,
             license=adapter.license,
             kind=SPECTRUM_KIND,
+            citations=list(citations),
         )
         ingested, _ = _insert_rows(
             conn,

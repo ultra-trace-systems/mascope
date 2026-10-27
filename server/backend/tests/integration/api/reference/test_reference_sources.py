@@ -13,15 +13,15 @@ from datetime import datetime, timezone
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 from mascope_backend.api.new.auth.config import auth_settings
-from mascope_backend.api.new.reference import service
 from mascope_backend.app.fast import fast
 from mascope_backend.db import ReferenceCompound, ReferenceSource, User
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_reference import canonical_formula, catalogue, monoisotopic_mass
+from mascope_reference.adapters.peaklist import list_citations
 
 
 _NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -34,6 +34,9 @@ _CUSTOM = "d-test-custom-list"
 _RETIRED = "d-test-retired-list"
 
 _HOM = ("C10H16O3", "C10H16O4", "C10H16O5")
+
+#: What the custom source's load recorded it cites.
+_CUSTOM_CITATIONS = [{"citation": "A. Author, A paper.", "doi": "10.1234/t.1"}]
 
 
 def _compound(source_id: int, formula: str, native_id: str, license: str):
@@ -73,6 +76,8 @@ async def sources(async_session_factory):
                 known_window={"c_max": 20},
                 allow_radicals=name == _CUSTOM,
                 polarity="negative" if name == _CUSTOM else None,
+                # The shipped list's rows predate the column.
+                citations=_CUSTOM_CITATIONS if name == _CUSTOM else None,
             )
             session.add(source)
             await session.flush()
@@ -144,14 +149,9 @@ async def test_the_active_sources_are_listed_by_label(outsider_client, sources):
         "name": _SHIPPED.id,
         "version": "new",
         "label": _SHIPPED.label,
-        "references": [
-            {
-                "citation": _SHIPPED.references[0]["citation"],
-                "doi": "10.1016/j.aca.2008.04.043",
-                "isbn": None,
-                "note": None,
-            }
-        ],
+        # Its row records no citations, and the version loaded is not the
+        # installed file's, so nothing is read from the file either.
+        "references": [],
         "license": "CC-BY-4.0",
         "polarity": None,
         "allow_radicals": False,
@@ -162,20 +162,65 @@ async def test_the_active_sources_are_listed_by_label(outsider_client, sources):
     # A source no shipped list names is labelled by its name.
     assert (custom["name"], custom["label"]) == (_CUSTOM, _CUSTOM)
     assert (custom["polarity"], custom["allow_radicals"]) == ("negative", True)
-    # ... and cites no publication: the database keeps none for it.
-    assert custom["references"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_source_is_cited_as_its_load_recorded(outsider_client, sources):
+    custom, _ = await _sources(outsider_client)
+    assert custom["references"] == [
+        {
+            "citation": "A. Author, A paper.",
+            "doi": "10.1234/t.1",
+            "isbn": None,
+            "note": None,
+        }
+    ]
+
+
+async def _load_shipped_version(session_factory, **values) -> None:
+    """Make the shipped list's active row the installed file's version."""
+    async with session_factory() as session:
+        await session.execute(
+            update(ReferenceSource)
+            .where(ReferenceSource.name == _SHIPPED.id)
+            .where(ReferenceSource.is_active.is_(True))
+            .values(version=_SHIPPED.data_version, **values)
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_row_predating_citations_is_cited_from_the_installed_list(
+    outsider_client, sources, async_session_factory
+):
+    await _load_shipped_version(async_session_factory)
+    _, shipped = await _sources(outsider_client)
+    expected = [
+        {key: ref.get(key) for key in ("citation", "doi", "isbn", "note")}
+        for ref in list_citations(_SHIPPED)
+    ]
+    assert expected
+    assert shipped["references"] == expected
+
+
+@pytest.mark.asyncio
+async def test_what_a_row_recorded_is_cited_over_the_installed_list(
+    outsider_client, sources, async_session_factory
+):
+    # A load that recorded no citations cites none, whatever the file says.
+    await _load_shipped_version(async_session_factory, citations=[])
+    _, shipped = await _sources(outsider_client)
+    assert shipped["references"] == []
 
 
 @pytest.mark.asyncio
 async def test_a_list_cited_by_isbn_gives_its_isbn_and_note(
-    outsider_client, sources, monkeypatch
+    outsider_client, sources, async_session_factory
 ):
     """A thesis is cited by ISBN with a note on where it is open; no DOI."""
     thesis = next(p for p in catalogue() if p.id == "monoterpene-hom-kang2021")
-    monkeypatch.setitem(
-        service.shipped_references(),
-        _SHIPPED.id,
-        service.shipped_references()[thesis.id],
+    await _load_shipped_version(
+        async_session_factory, citations=list(list_citations(thesis))
     )
     _, shipped = await _sources(outsider_client)
     [reference] = shipped["references"]

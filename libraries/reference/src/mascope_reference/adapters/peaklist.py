@@ -20,13 +20,21 @@ A radical is held back unless the list says ``allow_radicals``, which a
 schema 1 list cannot say.
 
 A list is its own bound, so its source row is written unbounded, with the
-allowance and the polarity its header names (:func:`list_scope`).
+allowance and the polarity its header names (:func:`list_scope`). The row also
+records the publications the list comes from, its header's ``references``
+(:func:`list_citations`), so a list loaded from a file of its own is cited as
+a shipped one is.
 """
 
 from collections.abc import Iterator
 from pathlib import Path
 
-from mascope_reference.peaklist import PeakList, admitted_species, read_peak_list
+from mascope_reference.peaklist import (
+    PeakList,
+    admitted_species,
+    read_peak_list,
+    recorded_reference,
+)
 from mascope_reference.record import ReferenceRecord
 from mascope_reference.scope import POLARITIES, UNBOUNDED, SourceScope
 
@@ -47,6 +55,20 @@ def list_scope(peak_list: PeakList) -> SourceScope:
     )
 
 
+def list_citations(peak_list: PeakList) -> tuple[dict, ...]:
+    """The publications a list's source row records: its header's references.
+
+    :param peak_list: The list, read.
+    :return: Each reference as :func:`recorded_reference` keeps it, in the
+        file's order; one that names no citation, DOI or ISBN is left out.
+    """
+    return tuple(
+        reference
+        for reference in map(recorded_reference, peak_list.references)
+        if reference is not None
+    )
+
+
 class PeakListAdapter:
     """Adapter for reference list files (JSON, schema 1 or 2)."""
 
@@ -64,6 +86,10 @@ class PeakListAdapter:
     def scope(self, path: Path) -> SourceScope:
         """What a load of this list file writes on its source row."""
         return list_scope(read_peak_list(path))
+
+    def citations(self, path: Path) -> tuple[dict, ...]:
+        """The publications a load of this list file records on its source row."""
+        return list_citations(read_peak_list(path))
 
     def parse(self, path: Path) -> Iterator[ReferenceRecord]:
         peak_list = read_peak_list(path)
