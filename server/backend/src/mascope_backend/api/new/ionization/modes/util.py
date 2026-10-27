@@ -1,4 +1,4 @@
-from sqlalchemy import exists, or_, select
+from sqlalchemy import and_, exists, or_, select
 
 from mascope_backend.db import (
     IonizationMode,
@@ -6,6 +6,7 @@ from mascope_backend.db import (
     SampleItem,
     async_session,
 )
+from mascope_backend.ionization_catalogue import seeded_collection_ids
 from mascope_backend.method_keys import instrument_key
 from mascope_backend.runtime import runtime
 
@@ -118,13 +119,23 @@ def system_mode_adopted():
     target collection, a sample bound to it, or an edit. Anything less and the
     mode is still exactly as it was seeded. A version that supersedes another
     is the deployment's edit, and the samples of the mode it replaced are
-    bound under the earlier version, not under it.
+    bound under the earlier version, not under it. A collection Mascope seeds
+    for the chemistry is not the deployment's, so a mode pointed at one is not
+    adopted by that alone: offering the shipped chemistries is the browser's
+    change to make, not a side effect of shipping their collections.
 
     :return: A SQL predicate over ``IonizationMode``.
     """
+    seeded = seeded_collection_ids()
     return or_(
-        IonizationMode.calibration_collection_id.is_not(None),
-        IonizationMode.diagnostic_collection_id.is_not(None),
+        and_(
+            IonizationMode.calibration_collection_id.is_not(None),
+            IonizationMode.calibration_collection_id.not_in(seeded),
+        ),
+        and_(
+            IonizationMode.diagnostic_collection_id.is_not(None),
+            IonizationMode.diagnostic_collection_id.not_in(seeded),
+        ),
         IonizationMode.supersedes_id.is_not(None),
         exists().where(
             SampleItem.ionization_mode_id == IonizationMode.ionization_mode_id
