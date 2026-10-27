@@ -386,7 +386,7 @@ attached to them, not scheduled against them.
 
 | Workstream | Relationship |
 |---|---|
-| **Ionization/method redesign** (`ionization_method_config.md`, retired 2026-10-22; its target model is in [ingest_routing_and_splitting.md](ingest_routing_and_splitting.md) phase 8) | **Hard prerequisite** for most of I and R. Its `Instrument` table closes A2's root cause, and its versioned `IonizationSetup` is what a provenance block points at; neither is built, and MAS-300 files them (blocked by the Decisions MAS-350 and MAS-351). Phase 2 item 10 hangs directly off it |
+| **Ionization/method redesign** (`ionization_method_config.md`, retired 2026-10-22; its target model is in [ingest_routing_and_splitting.md](ingest_routing_and_splitting.md) phase 8) | **Hard prerequisite** for most of I and R. Its `Instrument` table closes A2's root cause, and its versioned `IonizationSetup` is what a provenance block points at; both are built (MAS-300, 2026-10-27): an `instrument` row per instrument name, and a mode's versions with each run's `config.ionization_setup`. Phase 2 item 10 hangs directly off it |
 | **Peak-centric assignment epic** | **Already the model to copy.** `engine_version` + `config` + per-row `provenance` is the pattern; the classic matching path is what lacks it. Do not invent a second provenance design |
 | **Identification confidence** ([assignment_confidence.md](assignment_confidence.md)) | **Owns Phase 2 item 12.** Schymanski levels are already P4 there. FAIR adds a reason, not a task |
 | **Public database integration** ([public_database_integration.md](public_database_integration.md)) | **Already delivered the I3 half that is done.** Phase 1 item 9 is a small extension of its annotation path |
