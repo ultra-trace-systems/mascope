@@ -712,6 +712,16 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         """
         return INSTRUMENT_TYPE_BY_EXTENSION[self.file_extension]
 
+    @property
+    def instrument_model(self) -> str | None:
+        """The instrument model the file names, or None where it names none.
+
+        None here, which is what a TofDaq file gives: it records its digitizer
+        and its acquisition software, not the instrument. A processor whose
+        reader reports a model overrides this (``RawProcessor``).
+        """
+        return None
+
     def _get_sample_file_props(self) -> SampleFileProps:
         """Extract sample file properties from the opened file.
 

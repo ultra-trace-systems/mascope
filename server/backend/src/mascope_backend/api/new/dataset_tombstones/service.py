@@ -100,6 +100,7 @@ async def write_tombstones(
             "dataset_description": dataset.dataset_description,
             "dataset_type": dataset.dataset_type,
             "instrument": dataset.instrument,
+            "instrument_id": dataset.instrument_id,
             "descriptive_metadata": {
                 field: getattr(dataset, field) for field in DESCRIPTIVE_FIELDS
             },

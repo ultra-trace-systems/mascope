@@ -123,6 +123,7 @@ def test_the_registration_the_converter_posts_carries_them(monkeypatch):
         acquisition_timezone=None,
         utc_offset_source="guess",
         instrument_type="orbi",
+        instrument_model="Orbitrap Exploris 120",
     )
 
     converter_api.create_sample_file_db_record(
@@ -132,3 +133,5 @@ def test_the_registration_the_converter_posts_carries_them(monkeypatch):
     body = posted.call_args.kwargs["json"]
     assert body["acquisition"] == RECORD
     assert body["sha256"] == SHA256
+    # The model fills the instrument's own row on the server.
+    assert body["instrument_model"] == "Orbitrap Exploris 120"

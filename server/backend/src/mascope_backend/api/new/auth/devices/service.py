@@ -24,6 +24,7 @@ from mascope_backend.api.new.auth.exceptions import (
     InvalidTokenException,
 )
 from mascope_backend.api.new.auth.reported import INSTRUMENT_NAME_RE
+from mascope_backend.api.new.instruments.registry import instrument_id_for
 from mascope_backend.db import AccessToken, AgentDevice, User, async_session
 from mascope_backend.runtime import runtime
 
@@ -105,7 +106,10 @@ async def record_reported_instrument(
             update(AgentDevice)
             .where(AgentDevice.device_id == device_id)
             .where(AgentDevice.instrument.is_distinct_from(instrument))
-            .values(instrument=instrument)
+            .values(
+                instrument=instrument,
+                instrument_id=await instrument_id_for(session, instrument),
+            )
         )
         await session.commit()
     # Marked after the commit, so a failed write is retried by the next upload

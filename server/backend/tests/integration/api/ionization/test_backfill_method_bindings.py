@@ -19,12 +19,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from test_utils import captured_logs
 
 from mascope_backend.api.controllers.sample.files.process.bindings import (
     REPOINT_AFTER,
 )
+from mascope_backend.api.new.instruments.registry import instrument_id_for
 from mascope_backend.db import (
     Dataset,
     IonizationMode,
@@ -222,11 +223,21 @@ async def test_it_runs_at_all(async_session_factory, history):
     """
     mode = await history["add_mode"]()
     await history["add_file"](mode)
+    async with async_session_factory() as session:
+        instrument_id = await instrument_id_for(session, history["instrument"])
+        await session.execute(
+            update(SampleFile)
+            .where(SampleFile.instrument == history["instrument"])
+            .values(instrument_id=instrument_id)
+        )
+        await session.commit()
 
     await backfill_method_bindings()
 
     rows = await _rows(async_session_factory, history["instrument"])
     assert len(rows) == 1
+    # The binding links the instrument row its files do.
+    assert rows[0].instrument_id == instrument_id
     assert rows[0].method_key == TOF_METHOD
     assert rows[0].signature_class == "-"
     assert rows[0].source == "history"

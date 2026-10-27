@@ -35,6 +35,7 @@ from mascope_backend.api.models.sample.files.config import (
     IN_PROGRESS,
     ProcessingStatus,
 )
+from mascope_backend.api.new.instruments.registry import instrument_id_for
 from mascope_backend.api.new.notifications.config import (
     DIGEST_FILES,
     PROCESSING_NOTIFICATIONS,
@@ -221,6 +222,9 @@ async def add_to_digests(
                     user_id=user_id,
                     kind=kind.value,
                     instrument=taken[0][0]["instrument"],
+                    instrument_id=await instrument_id_for(
+                        session, taken[0][0]["instrument"]
+                    ),
                     instrument_key=key,
                     severity=severity,
                     message="",

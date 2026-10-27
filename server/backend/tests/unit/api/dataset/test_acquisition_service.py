@@ -22,7 +22,7 @@ import pytest
 from sqlalchemy import delete, select, text
 from test_utils import gen_test_id
 
-from mascope_backend.db import Dataset, Workspace
+from mascope_backend.db import Dataset, Instrument, Workspace
 
 
 _SVC = "mascope_backend.api.controllers.dataset.acquisition.service"
@@ -122,6 +122,19 @@ async def test_lookup_tolerates_preexisting_duplicates(async_session_factory):
             first = await get_acquisition_dataset(instrument=DUP_INSTRUMENT, year=2031)
             oldest_id = first["data"]["dataset_id"]
             workspace_id = first["data"]["workspace_id"]
+            # The dataset it made links the instrument's own row.
+            async with async_session_factory() as session:
+                made = await session.get(Dataset, oldest_id)
+                assert (
+                    made.instrument_id
+                    == (
+                        await session.execute(
+                            select(Instrument.instrument_id).where(
+                                Instrument.name == DUP_INSTRUMENT
+                            )
+                        )
+                    ).scalar_one()
+                )
 
             # Simulate the pre-index poisoned state: a second, newer duplicate.
             async with async_session_factory() as session:

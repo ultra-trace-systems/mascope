@@ -8,6 +8,7 @@ from mascope_backend.api.controllers.sample.lib.sample_file_fetch import (
 )
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.new.instruments.registry import instrument_id_for
 from mascope_backend.api.new.ionization.modes.schema import (
     IonizationModeCreate,
     IonizationModeUpdate,
@@ -122,6 +123,9 @@ async def create_ionization_mode(
         new_ionization_mode = IonizationMode(
             ionization_mode_id=gen_id(16),
             **ionization_mode_data.model_dump(),
+            instrument_id=await instrument_id_for(
+                session, ionization_mode_data.instrument
+            ),
         )
 
         # Step 4: Add to session and commit
@@ -438,6 +442,10 @@ async def update_ionization_mode(
         # Update the fields that were provided
         for field, value in update_data.items():
             setattr(ionization_mode, field, value)
+        if "instrument" in update_data:
+            ionization_mode.instrument_id = await instrument_id_for(
+                session, ionization_mode.instrument
+            )
 
         # Commit and return
         await session.commit()

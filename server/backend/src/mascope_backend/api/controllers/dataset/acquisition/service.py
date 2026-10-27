@@ -15,6 +15,7 @@ from mascope_backend.api.models.dataset.dataset_pydantic_model import (
     DatasetRead,
 )
 from mascope_backend.api.new.auth.config import auth_settings
+from mascope_backend.api.new.instruments.registry import instrument_id_for
 from mascope_backend.api.new.instruments.service import get_instruments
 from mascope_backend.db import (
     Dataset,
@@ -288,6 +289,7 @@ async def get_acquisition_dataset(
                 dataset_description=f"{year} acquisitions for {instrument}",
                 dataset_type="ACQUISITION",
                 instrument=instrument,
+                instrument_id=await instrument_id_for(session, instrument),
                 locked=1 if dataset_config.ACQUISITION_AUTO_LOCK else 0,
                 dataset_utc_created=datetime.now(timezone.utc),
             )
