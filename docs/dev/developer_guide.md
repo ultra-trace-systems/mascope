@@ -1623,14 +1623,18 @@ acknowledgement is an error payload naming why:
 | `{"error": "SOCKET_UNAUTHENTICATED"}` | no `access_token`, or an invalid, expired or revoked one |
 | `{"error": "SOCKET_FORBIDDEN"}` | the token's user is below editor |
 | `{"error": "SOCKET_AUTH_CONFIG_ERROR"}` | the backend's role configuration is broken (logged at ERROR) |
+| `{"error": "SOCKET_AUTH_UNAVAILABLE"}` | the token could not be checked, for example the database failed for a moment (logged at ERROR) |
 
 An accepted event's acknowledgement is whatever its handler returns, today nothing. Only a
 client that emits with a callback (`sio.emit(..., callback=...)` or `sio.call`) receives it.
 The converter emits every event with one (`FileConverterSocketClient.emit`). On a rejection
-it logs a WARNING once per file and token, naming the event and the code, and sends no
+it logs a WARNING once per file, token and code, naming the event and the code. When the
+code is a verdict on the token (`SOCKET_UNAUTHENTICATED`, `SOCKET_FORBIDDEN`), it sends no
 further events for that file with that token: the backend would drop them too. A fresh token
 for the file, from a new upload context or a new peak detection request, is sent as usual.
-What the converter does with the file itself is unchanged.
+The other codes say nothing about the next event, so only the rejected one is lost and the
+file's later events, its result included, are still sent. What the converter does with the
+file itself is unchanged.
 
 **Axis fingerprint** — for every raw Orbitrap file the converter computes its axis
 fingerprint (`mascope_thermo.axis_fingerprint`): the m/z offset the file's mass calibration

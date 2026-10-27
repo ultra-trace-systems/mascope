@@ -108,6 +108,51 @@ def test_a_rejection_is_logged_once_and_stops_the_files_events(client):
     assert len(_sent(client)) == 2
 
 
+def test_a_forbidden_token_is_held_back_too(client):
+    client.context_manager.register_file(_context("sample.raw", "token-1"))
+    client.emit("file_processing_progress", {"filename": "sample", "progress": 10})
+    _acknowledge(client, {"error": "SOCKET_FORBIDDEN"})
+
+    client.emit("file_processing_success", {"filename": "sample"})
+
+    assert [event for event, _ in _sent(client)] == ["file_processing_progress"]
+
+
+@pytest.mark.parametrize(
+    "code", ["SOCKET_AUTH_UNAVAILABLE", "SOCKET_AUTH_CONFIG_ERROR"]
+)
+def test_a_rejection_not_about_the_token_holds_nothing_back(client, code):
+    """The token could not be checked (the backend's database failed for a
+    moment), or the backend's role configuration is broken: the next event
+    may pass, and a file's final event above all must still be sent."""
+    client.context_manager.register_file(_context("sample.raw", "token-1"))
+    client.emit("file_processing_progress", {"filename": "sample", "progress": 10})
+    client.emit("file_processing_progress", {"filename": "sample", "progress": 20})
+
+    with captured_logs() as records:
+        _acknowledge(client, {"error": code}, index=0)
+        _acknowledge(client, {"error": code}, index=1)
+        client.emit("file_processing_success", {"filename": "sample"})
+
+    warnings = _rejection_warnings(records)
+    assert len(warnings) == 1
+    assert code in warnings[0]["message"]
+    assert "later events are still sent" in warnings[0]["message"]
+    assert warnings[0]["extra"][SENTRY_FINGERPRINT] == [
+        "file-converter-event-rejected",
+        code,
+    ]
+    assert [event for event, _ in _sent(client)][-1] == "file_processing_success"
+
+    # The token itself refused afterwards is logged, and holds back
+    with captured_logs() as records:
+        _acknowledge(client, REJECTED)
+    client.emit("file_processing_success", {"filename": "sample"})
+
+    assert len(_rejection_warnings(records)) == 1
+    assert len(_sent(client)) == 3
+
+
 def test_a_fresh_token_for_the_file_is_sent(client):
     client.context_manager.register_file(_context("sample.raw", "token-1"))
     client.emit("file_processing_progress", {"filename": "sample", "progress": 10})

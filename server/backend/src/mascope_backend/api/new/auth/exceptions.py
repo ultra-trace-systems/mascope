@@ -58,6 +58,20 @@ class InvalidTokenException(HTTPException):
         )
 
 
+class TokenValidationUnavailableException(InvalidTokenException):
+    """A token that could not be checked, as opposed to one found bad.
+
+    Raised when validating it failed for a reason of the backend's own (a
+    database pool timeout, a dropped connection). Still an
+    :class:`InvalidTokenException`, so every caller that refuses an invalid
+    token refuses this one too; a caller that can tell its client to try
+    again, as the file converter's socket events do, catches it first.
+    """
+
+    def __init__(self, detail: str = "Token validation failed"):
+        super().__init__(detail=detail)
+
+
 class AgentCredentialRefusedException(InvalidTokenException, ClientFacingDetail):
     """An agent credential was refused, with remediation the operator can act on.
 
