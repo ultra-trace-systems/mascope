@@ -201,6 +201,26 @@ def test_a_refresh_with_an_unreadable_prior_ms2_golden_and_no_spectra_is_refused
     assert any("Cannot read the prior MS2 golden" in w for w in warnings)
 
 
+def test_a_refresh_with_an_unreadable_prior_ms2_golden_that_reads_spectra_writes_them(
+    backend_goldens, tmp_path, warnings
+):
+    """With the prior file unreadable, which files it covered is unknown: a
+    run that exports spectra replaces it, and only the read is warned about."""
+    prior = _prior_ms2(tmp_path, [_ms2_row(_db_name(MS2))])
+    (tmp_path / "expected" / "ms2.parquet").write_bytes(b"not parquet")
+    backend_goldens.peaks = [_peak(_db_name(MS1))]
+    backend_goldens.ms2 = [_ms2_row(_db_name(MS2), intensity=1600.0)]
+    backend_goldens.ingested = [_db_name(MS1), _db_name(MS2)]
+
+    expected = build_bundle.export_goldens(tmp_path, _raw_entries(MS1, MS2), prior)
+
+    assert expected["ms2"] == "expected/ms2.parquet"
+    ms2_path = tmp_path / "expected" / "ms2.parquet"
+    assert pd.read_parquet(ms2_path).to_dict("records") == backend_goldens.ms2
+    assert [w for w in warnings if "Cannot read the prior MS2 golden" in w]
+    assert not [w for w in warnings if "is written without them" in w]
+
+
 def test_a_refresh_that_reads_the_prior_ms2_files_again_writes_them(
     backend_goldens, tmp_path, warnings
 ):
