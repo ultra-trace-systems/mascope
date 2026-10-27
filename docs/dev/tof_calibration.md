@@ -1,7 +1,7 @@
 # TOF mass calibration
 
 - **Status:** building
-- **As of:** 2026-10-23
+- **As of:** 2026-10-27
 - **Tracked in:** [TOF mass calibration](https://linear.app/ultra-trace/project/tof-mass-calibration-8271ef05d142) (Linear, MAS-171 to MAS-197)
 - **What:** TOF mass calibration across the analysed range: measure, fix calibrants, model, re-calibrate.
 
@@ -14,8 +14,9 @@ this note is its record.*
 
 **Status.** Milestone 0 (measure) is done: the assessment that started the project, the audit
 tool and the fleet baseline (section 2). One instrument's calibrant set has been corrected
-(milestone 1). Every code change is still to come. Sites are named by letter and instruments by
-neutral labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this repository.
+(milestone 1). Of the node's changes (milestone 2), the record that says what a fit was made on is
+in (MAS-182); the rest are still to come. Sites are named by letter and instruments by neutral
+labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this repository.
 
 ## 1. The problem
 
@@ -408,9 +409,11 @@ stored `verified`; the record's `status` is `ok` or `poor`. A pre-fit error abov
 (`TOF_ACQUISITION_DRIFT_WARNING_PPM`) is reported as acquisition drift, at most once a day per
 instrument.
 
-The block does not say which ions the fit kept or their residuals, which m/z span it covers, which
-model it used, or which version of the calibrant collection it came from. The handler builds a row
-per match (`self.stats`) and the block keeps only the counts and means. Two other kinds of record
+Since MAS-182 the block of a TOF fit also says what the fit was made on: every line it chose from,
+kept or left out, with its ion, residual and S/N (`points`); the m/z span of the lines kept
+(`span`); the collection's id and a hash of its isotopes (`collection`); the `model`; and the
+`node_version` ([calibration.md](../user/how-it-works/calibration.md#what-a-tof-record-says)).
+A record fitted before then keeps only the counts and means. Two other kinds of record
 exist: the converter's `{"mode": 0, "par": [...]}` with the acquisition software's coefficients,
 stamped `status: "unfitted"` since 2026-09-18 and recognised without the stamp before that
 (`is_unfitted_record`), and the legacy records of the same shape, with or without
