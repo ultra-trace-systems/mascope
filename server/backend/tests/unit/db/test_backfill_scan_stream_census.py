@@ -210,6 +210,33 @@ async def test_the_survey_stops_at_the_cap():
     # more than it needs - not every props on the server.
     assert counts["surveyed"] == script._SURVEY_BATCH
     assert len(read) == script._SURVEY_BATCH
+    assert counts["beyond_cap"] == script._SURVEY_BATCH - 5
+
+
+@pytest.mark.asyncio
+async def test_the_survey_counts_the_files_a_cap_inside_one_batch_leaves():
+    """A server with fewer files than one batch is surveyed whole, so only
+    this count tells the run that work is left."""
+    pending, counts = await script._survey(
+        _candidates("a.raw", "b.raw", "c.raw"),
+        _always({"range": [50, 750]}),
+        _always(True),
+        limit=1,
+    )
+
+    assert pending == ["a.raw"]
+    assert counts["surveyed"] == 3
+    assert counts["beyond_cap"] == 2
+
+
+@pytest.mark.asyncio
+async def test_an_uncapped_survey_leaves_nothing_beyond_the_cap():
+    pending, counts = await script._survey(
+        _candidates("a.raw", "b.raw"), _always({"range": [50, 750]}), _always(True)
+    )
+
+    assert pending == ["a.raw", "b.raw"]
+    assert counts["beyond_cap"] == 0
 
 
 # --- what to do with each answer --------------------------------------------
@@ -381,6 +408,63 @@ def test_a_limit_that_is_not_a_positive_number_is_refused(monkeypatch, value):
     monkeypatch.setenv("CENSUS_LIMIT", value)
     with pytest.raises(script.BadLimit):
         script._limit()
+
+
+# --- a whole run -------------------------------------------------------------
+
+
+@pytest.fixture
+def stand_ins(monkeypatch):
+    """``run()`` on stand-ins: two files with no census, their raw data kept,
+    each read to ``A_CENSUS``. Records every props write."""
+
+    async def no_engine():
+        pass
+
+    async def candidates():
+        return _candidates("a.raw", "b.raw")
+
+    updates: dict[str, dict] = {}
+
+    def update_props(filename, fields):
+        updates[filename] = fields
+
+    monkeypatch.setattr(script, "configure_database_engine", no_engine)
+    monkeypatch.setattr(script, "_candidates", candidates)
+    monkeypatch.setattr(script, "_read_props", _always({"range": [50, 750]}))
+    monkeypatch.setattr(script, "_has_raw", _always(True))
+    monkeypatch.setattr(script, "_read_census", _always((A_CENSUS, None, None)))
+    monkeypatch.setattr(script.m_io, "update_props", update_props)
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    monkeypatch.delenv("CENSUS_LIMIT", raising=False)
+    monkeypatch.delenv("CENSUS_RETRY", raising=False)
+    return updates
+
+
+@pytest.mark.parametrize(
+    "limit, left", [("1", True), ("2", False), (None, False)], ids=str
+)
+@pytest.mark.asyncio
+async def test_a_capped_run_that_leaves_files_says_to_run_again(
+    stand_ins, monkeypatch, limit, left
+):
+    """Both files are surveyed in one batch: a cap of one leaves the other.
+
+    The survey read every candidate, so only its count of the files the cap
+    cut tells the run that work is left.
+    """
+    updates = stand_ins
+    if limit:
+        monkeypatch.setenv("CENSUS_LIMIT", limit)
+
+    with captured_logs() as records:
+        await script.run()
+
+    log = "\n".join(r["message"] for r in records)
+    assert len(updates) == (1 if left else 2)
+    assert ("run this again" in log) is left
+    assert "2 need a census" in log
+    assert f"reading {len(updates)} this run" in log
 
 
 # --- the read itself --------------------------------------------------------

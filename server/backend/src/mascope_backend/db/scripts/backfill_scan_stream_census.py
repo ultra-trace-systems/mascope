@@ -295,7 +295,8 @@ async def _survey(
     :param retry: Include files a previous run tried and got no census from.
     :return: The filenames to read, best first, and the counts of the
         candidates left out. ``surveyed`` says how many were looked at, which
-        is every candidate only on an uncapped run.
+        is every candidate only on an uncapped run, and ``beyond_cap`` how
+        many of the files found to need a census the cap left for a later run.
     :rtype: tuple[list[str], dict[str, int]]
     """
     gate = asyncio.Semaphore(_PROPS_CONCURRENCY)
@@ -311,6 +312,7 @@ async def _survey(
         "no_props": 0,
         "no_raw": 0,
         "already_tried": 0,
+        "beyond_cap": 0,
     }
     for start in range(0, len(candidates), _SURVEY_BATCH):
         batch = candidates[start : start + _SURVEY_BATCH]
@@ -329,6 +331,7 @@ async def _survey(
             else:
                 pending.append(filename)
         if limit is not None and len(pending) >= limit:
+            counts["beyond_cap"] = len(pending) - limit
             return pending[:limit], counts
     return pending, counts
 
@@ -474,12 +477,17 @@ async def run() -> None:
     pending, survey = await _survey(
         candidates, _read_props, _has_raw, None if dry_run else limit, retry
     )
-    capped = survey["surveyed"] < len(candidates)
+    # Work is left when the survey stopped early or the cap cut what it found.
+    # A server with fewer candidates than one survey batch is surveyed whole,
+    # so there only the cut says so.
+    capped = survey["surveyed"] < len(candidates) or survey["beyond_cap"] > 0
     runtime.logger.info(
         f"Surveyed {survey['surveyed']} of {len(candidates)}: "
-        f"{len(pending)} to read, already recorded {survey['has_census']}, "
+        f"{len(pending) + survey['beyond_cap']} need a census, "
+        f"already recorded {survey['has_census']}, "
         f"raw data not kept {survey['no_raw']}, "
-        f"tried before {survey['already_tried']}, no props {survey['no_props']}"
+        f"tried before {survey['already_tried']}, no props {survey['no_props']}; "
+        f"reading {len(pending)} this run"
     )
     if survey["already_tried"] and not retry:
         runtime.logger.info(
@@ -529,8 +537,8 @@ async def run() -> None:
     )
     if capped:
         runtime.logger.info(
-            "The survey stopped at the cap, so run this again until it reports "
-            "nothing left to do."
+            f"CENSUS_LIMIT={limit} left files for later runs, so run this again "
+            f"until it reports nothing left to do."
         )
     runtime.logger.info("=" * 80)
     if counts["reader"] or counts["empty"] or counts["unwritable"]:
