@@ -27,7 +27,8 @@ the reference documents, so it is not edited here; where its comments cite
 ``SPEC`` or ``checks/``, they mean the request's specification and the
 measurements behind it, which are not in this repository. This module reads
 its input through a reader backend and assembles the document as the
-reference documents were built.
+reference documents were built. :mod:`.direct` then checks the table against
+the m/z corrections the file stores, and logs the bands that disagree.
 
 A sample is built from some of its file's scans, so a client of one sample
 needs the document read for those: :func:`describe_scans` names the mode they
@@ -48,7 +49,7 @@ from importlib.resources import files
 
 import numpy as np
 
-from mascope_thermo.axis_fingerprint import reference
+from mascope_thermo.axis_fingerprint import direct, reference
 from mascope_thermo.backend import CENTROID_FLAGS, ReaderBackend
 from mascope_thermo.scan_filter import parse_scan_filter
 from mascope_thermo.streams import FT_RESOLUTION, MICROSCANS, scan_stream_numbers
@@ -297,7 +298,7 @@ def _fingerprint(backend: ReaderBackend, reader: str, params: dict) -> dict:
     cost["profile_read"] = read[0]
     cost["compute"] = time.perf_counter() - started - read[0]
 
-    return {
+    document = {
         "schema": reference.SCHEMA,
         "version": reference.VERSION,
         "status": body["status"],
@@ -314,6 +315,48 @@ def _fingerprint(backend: ReaderBackend, reader: str, params: dict) -> dict:
         "flags": body["flags"],
         "cost_seconds": {name: round(value, 3) for name, value in cost.items()},
     }
+    _check_stored_corrections(backend, document, params)
+    return document
+
+
+def _check_stored_corrections(
+    backend: ReaderBackend, document: dict, params: dict
+) -> None:
+    """Log the bands whose deviation the corrections the file stores do not
+    give back (:mod:`.direct`).
+
+    The document is left as it is: the check only reads. A reader backend
+    that cannot read the stored chunks is not checked, and a check that
+    fails is logged, never the document's failure.
+    """
+    read_chunks = getattr(backend, "profile_chunks", None)
+    if read_chunks is None:
+        return
+    try:
+        checks = direct.check_document(document, read_chunks, params)
+    except Exception as e:  # noqa: BLE001 - a check never costs a fingerprint
+        _log.warning(
+            "The axis fingerprint of %s could not be checked against the "
+            "stored m/z corrections: %s: %s",
+            backend.datafile_path,
+            type(e).__name__,
+            e,
+        )
+        return
+    for mode_id, check in checks.items():
+        if check["bands_off"]:
+            _log.warning(
+                "The axis fingerprint of %s, mode %s: %d of %d frequency bands "
+                "are more than %g ppm off the stored m/z corrections, up to "
+                "%g ppm, bands %s",
+                backend.datafile_path,
+                mode_id,
+                len(check["bands_off"]),
+                check["n_bands"],
+                direct.TOLERANCE_PPM,
+                check["max_abs_dev_ppm"],
+                check["bands_off"],
+            )
 
 
 def _census(backend: ReaderBackend) -> list[dict]:

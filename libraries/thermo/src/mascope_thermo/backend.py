@@ -2941,6 +2941,17 @@ class OpenTFRawBackend:
     def scan_profile(self, scan_number: int) -> tuple[np.ndarray, np.ndarray]:
         return self._profile(int(scan_number))
 
+    def profile_chunks(self, scan_number: int) -> dict | None:
+        """How the scan's profile is stored: each chunk's first FFT bin,
+        number of points and m/z correction (``fudge``), with the bin axis.
+
+        OpenTFRaw's ``RawFile.profile_chunks``, as it returns it; None for a
+        scan with no stored profile. Only this backend has it: the axis
+        fingerprint checks its band table against the corrections
+        (:mod:`mascope_thermo.axis_fingerprint.direct`).
+        """
+        return self._raw.profile_chunks(int(scan_number))
+
     def average_profile(
         self,
         scan_indices: list[int],

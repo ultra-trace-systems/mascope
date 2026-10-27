@@ -27,6 +27,7 @@ from mascope_thermo.axis_fingerprint import (
     PARAMS,
     compute_axis_fingerprint,
     describe_scans,
+    direct,
     reference,
     validate_document,
 )
@@ -88,25 +89,56 @@ def scattered_ratio(band, run):
     return 1.0 + (-0.5, 0.0, 0.5)[run % 3]
 
 
-def band_profile(ratio=stepped_ratio):
-    """A profile scan over the bands FIRST_BAND..LAST_BAND: ``(mz, intensity)``.
+def band_runs(ratio=stepped_ratio):
+    """The runs of stored points over the bands FIRST_BAND..LAST_BAND: for
+    each, its band, its first FFT bin's frequency [kHz] and its correction,
+    ``ratio(band, run)`` ppm of the law's m/z at the run's centre.
 
-    Each run is POINTS_PER_RUN consecutive FFT bins, the m/z of every point
-    the law's plus the run's correction, ``ratio(band, run)`` ppm of the
-    law's m/z at the run's centre. The runs of a band are spread over its
-    middle, away from its edges.
+    Each run is POINTS_PER_RUN consecutive FFT bins. The runs of a band are
+    spread over its middle, away from its edges.
     """
-    shape = np.exp(-0.5 * ((np.arange(POINTS_PER_RUN) - 3.5) / 1.5) ** 2)
-    mzs, intensities = [], []
     for band in range(FIRST_BAND, LAST_BAND + 1):
         middle = PHASE_KHZ + (band + 0.5) * PERIOD_KHZ
         offsets = (np.arange(RUNS_PER_BAND) - (RUNS_PER_BAND - 1) / 2) * RUN_SPACING_KHZ
         for run, centre in enumerate(middle + offsets):
             first = np.round(centre / STEP_KHZ) * STEP_KHZ
-            f = first - np.arange(POINTS_PER_RUN) * STEP_KHZ
-            mzs.append(law(f) + ratio(band, run) * 1e-6 * law(centre))
-            intensities.append(1e5 * shape)
+            yield band, first, ratio(band, run) * 1e-6 * law(centre)
+
+
+def band_profile(ratio=stepped_ratio):
+    """A profile scan of :func:`band_runs`: ``(mz, intensity)``, the m/z of
+    every point the law's plus its run's correction."""
+    shape = np.exp(-0.5 * ((np.arange(POINTS_PER_RUN) - 3.5) / 1.5) ** 2)
+    mzs, intensities = [], []
+    for _, first, correction in band_runs(ratio):
+        f = first - np.arange(POINTS_PER_RUN) * STEP_KHZ
+        mzs.append(law(f) + correction)
+        intensities.append(1e5 * shape)
     return np.concatenate(mzs), np.concatenate(intensities)
+
+
+# The bin axis of the scripted chunks: bin 0 above every band, the frequency
+# falling with the bin as on the FT files OpenTFRaw reads.
+FIRST_VALUE_KHZ = 1200.0
+
+
+def band_chunks(ratio=stepped_ratio):
+    """How :func:`band_profile` is stored, as ``RawFile.profile_chunks``
+    gives it: each run's first bin, its points and its correction, which
+    ``ratio`` sets here apart from the profile's."""
+    runs = list(band_runs(ratio))
+    return {
+        "first_value": FIRST_VALUE_KHZ,
+        "step": -STEP_KHZ,
+        "nbins": int(FIRST_VALUE_KHZ / STEP_KHZ),
+        "first_bin": np.asarray(
+            [round((FIRST_VALUE_KHZ - first) / STEP_KHZ) for _, first, _ in runs],
+            dtype=np.uint32,
+        ),
+        "n_points": np.full(len(runs), POINTS_PER_RUN, dtype=np.uint32),
+        "fudge": np.asarray([correction for *_, correction in runs], dtype=np.float32),
+        "coefficients": np.asarray([0.0, 0.0, 0.0, B, C]),
+    }
 
 
 def ms1_trailer(locks=(LOCK, SECOND_LOCK), found=1, resolution=280000):
@@ -130,6 +162,8 @@ class Scan:
 
     ``centroids`` are ``(mz, reference)`` pairs, ``reference`` whether the
     centroid is flagged as the lock mass the scan was corrected with.
+    ``chunks`` is how its profile is stored (:func:`band_chunks`), None when
+    the reader gives none.
     """
 
     def __init__(
@@ -139,12 +173,14 @@ class Scan:
         centroids=((LOCK, True), (200.0, False), (300.0, False)),
         profile=None,
         event=_SCAN_INDEX_UNSET,
+        chunks=None,
     ):
         self.filter_string = filter_string
         self.trailer = ms1_trailer() if trailer is None else trailer
         self.centroids = centroids
         self.profile = profile
         self.event = event
+        self.chunks = chunks
 
 
 class ScriptedRawFile:
@@ -215,6 +251,10 @@ class ScriptedRawFile:
             return np.zeros(0), np.zeros(0, dtype=np.float32)
         return profile
 
+    def profile_chunks(self, number):
+        self.calls.append(("profile_chunks", number))
+        return self._scan(number).chunks
+
     def controllers(self):
         return [
             {"index": 0, "is_ms_controller": False, "start_time": 0.0, "end_time": 0.0},
@@ -246,10 +286,12 @@ def fingerprint(raw_path, scans, **raw):
     return compute_axis_fingerprint(backend, reader_name="opentfraw"), backend._raw
 
 
-def profile_scans(n=4, ratio=stepped_ratio, **kwargs):
-    """``n`` profile-mode MS1 scans on one calibration."""
+def profile_scans(n=4, ratio=stepped_ratio, stored=None, **kwargs):
+    """``n`` profile-mode MS1 scans on one calibration, each stored with the
+    corrections of ``stored``, the profile's ``ratio`` by default."""
     profile = band_profile(ratio)
-    return [Scan(profile=profile, **kwargs) for _ in range(n)]
+    chunks = band_chunks(ratio if stored is None else stored)
+    return [Scan(profile=profile, chunks=chunks, **kwargs) for _ in range(n)]
 
 
 @pytest.fixture(scope="module")
@@ -341,6 +383,215 @@ def test_a_flat_table_measures_no_grid_and_no_steps(raw_path):
     assert {"grid_unmeasured", "not_stepwise"} <= set(mode["flags"])
     assert mode["grid"]["source"] == "seed"
     assert mode["brackets"]["rows"] == []
+
+
+# ---- the stored corrections ------------------------------------------------
+
+
+def stored_check(document, scans):
+    """``direct.check_document`` of a document, its scans' chunks read off
+    the scripted acquisition."""
+    return direct.check_document(
+        document, ScriptedRawFile(scans).profile_chunks, PARAMS
+    )
+
+
+def shifted_band(band, by_ppm):
+    """:func:`stepped_ratio` with one band's correction moved by ``by_ppm``."""
+    return lambda k, run: stepped_ratio(k, run) + (by_ppm if k == band else 0.0)
+
+
+def test_the_stored_corrections_give_back_every_band(stepped):
+    check = stored_check(stepped, profile_scans())
+    assert check[MODE]["n_bands"] == LAST_BAND - FIRST_BAND + 1
+    assert check[MODE]["bands_off"] == []
+    assert check[MODE]["max_abs_dev_ppm"] < 1e-3
+
+
+def test_a_band_its_stored_correction_does_not_give_back_is_named(stepped):
+    # 0.01 ppm of r is about 0.015 ppm of s, past the tolerance
+    check = stored_check(stepped, profile_scans(stored=shifted_band(40, 0.01)))
+    assert check[MODE]["bands_off"] == [40]
+    assert check[MODE]["max_abs_dev_ppm"] == pytest.approx(0.015, abs=1e-3)
+
+
+def test_a_band_within_the_tolerance_is_not_named(stepped):
+    check = stored_check(stepped, profile_scans(stored=shifted_band(40, 0.004)))
+    assert check[MODE]["bands_off"] == []
+    assert 0.003 < check[MODE]["max_abs_dev_ppm"] < direct.TOLERANCE_PPM
+
+
+def test_a_band_with_too_few_stored_chunks_is_not_compared(stepped):
+    scans = profile_scans(stored=shifted_band(40, 1.0))
+    in_band = np.flatnonzero([band == 40 for band, *_ in band_runs()])
+    chunks = scans[0].chunks
+
+    def keeping(n):
+        """The scans' chunks with only ``n`` of band 40's."""
+        keep = np.ones(chunks["fudge"].size, bool)
+        keep[in_band[n:]] = False
+        kept = {key: chunks[key][keep] for key in ("first_bin", "n_points", "fudge")}
+        return {**chunks, **kept}
+
+    # Two of the band's chunks over the scans read: fewer than three agree
+    for scan, n in zip(scans, (0, 1, 0, 1)):
+        scan.chunks = keeping(n)
+    assert stepped["modes"][0]["profile"]["scans_used"] == [2, 3, 4]
+    check = stored_check(stepped, scans)
+    assert check[MODE]["n_bands"] == LAST_BAND - FIRST_BAND
+    assert check[MODE]["bands_off"] == []
+
+
+def test_an_interpolated_band_is_not_compared(stepped):
+    document = json.loads(json.dumps(stepped))
+    (mode,) = document["modes"]
+    at_k, at_interp = (mode["segments"]["columns"].index(n) for n in ("k", "interp"))
+    for row in mode["segments"]["rows"]:
+        if row[at_k] == 40:
+            row[at_interp] = True
+    check = stored_check(document, profile_scans(stored=shifted_band(40, 1.0)))
+    assert check[MODE]["n_bands"] == LAST_BAND - FIRST_BAND
+    assert check[MODE]["bands_off"] == []
+
+
+def test_a_band_the_table_holds_no_level_in_is_not_compared(stepped):
+    document = json.loads(json.dumps(stepped))
+    (mode,) = document["modes"]
+    at_k, at_share = (
+        mode["segments"]["columns"].index(n) for n in ("k", "level_share")
+    )
+    for row in mode["segments"]["rows"]:
+        if row[at_k] == 40:
+            row[at_share] = 0.45
+    check = stored_check(document, profile_scans(stored=shifted_band(40, 1.0)))
+    assert check[MODE]["n_bands"] == LAST_BAND - FIRST_BAND
+    assert check[MODE]["bands_off"] == []
+
+
+def test_a_band_the_stored_corrections_hold_no_level_in_is_not_compared(stepped):
+    def spread(band, run):
+        """Band 40's runs a third each at 1, 2 and 3 ppm off."""
+        return stepped_ratio(band, run) + (1.0 + run % 3 if band == 40 else 0.0)
+
+    check = stored_check(stepped, profile_scans(stored=spread))
+    assert check[MODE]["n_bands"] == LAST_BAND - FIRST_BAND
+    assert check[MODE]["bands_off"] == []
+
+
+@pytest.mark.parametrize(
+    "flag", ["grid_unmeasured", "not_stepwise", "fft_step_not_power_of_two"]
+)
+def test_a_mode_without_a_measured_band_structure_is_not_checked(stepped, flag):
+    document = json.loads(json.dumps(stepped))
+    document["modes"][0]["flags"].append(flag)
+    raw = ScriptedRawFile(profile_scans(stored=shifted_band(40, 1.0)))
+    assert direct.check_document(document, raw.profile_chunks, PARAMS) == {}
+    assert raw.read("profile_chunks") == []
+
+
+def test_the_check_reads_the_scans_the_mode_read(stepped):
+    scans = profile_scans(6)
+    raw = ScriptedRawFile(scans)
+    direct.check_document(stepped, raw.profile_chunks, PARAMS)
+    assert raw.read("profile_chunks") == stepped["modes"][0]["profile"]["scans_used"]
+
+
+def test_a_chunk_without_a_stored_correction_or_below_the_range_is_left_out():
+    chunks = band_chunks()
+    fudge = chunks["fudge"].copy()
+    fudge[0] = np.nan
+    first_bin = chunks["first_bin"].copy()
+    # The last run moved to m/z 53, inside the margin above the scan range
+    first_bin[-1] = round((FIRST_VALUE_KHZ - reference.law_khz(53.0, B, C)) / STEP_KHZ)
+    f_khz, s_ppm = direct.chunk_s(
+        {**chunks, "fudge": fudge, "first_bin": first_bin}, B, C, 50.0, PARAMS
+    )
+    assert f_khz.size == s_ppm.size == fudge.size - 2
+    assert np.isfinite(s_ppm).all()
+    # Without the margin the moved run counts
+    _, s_ppm = direct.chunk_s(
+        {**chunks, "fudge": fudge, "first_bin": first_bin},
+        B,
+        C,
+        50.0,
+        {**PARAMS, "low_mass_margin": 0.0},
+    )
+    assert s_ppm.size == fudge.size - 1
+
+
+def test_a_chunk_falls_in_the_band_its_points_do():
+    chunks = band_chunks()
+    f_khz, s_ppm = direct.chunk_s(chunks, B, C, 50.0, PARAMS)
+    bands = [band for band, *_ in band_runs()]
+    assert (np.floor((f_khz - PHASE_KHZ) / PERIOD_KHZ).astype(int) == bands).all()
+    expected = [s_of_ratio(stepped_ratio(band, 0)) for band in bands]
+    np.testing.assert_allclose(s_ppm, expected, atol=1e-4)
+    # At the law's frequency of the corrected m/z of the run's middle, the
+    # frame the band table was read in, not at the bin's own
+    mz, _ = band_profile()
+    middle = mz.reshape(-1, POINTS_PER_RUN)[:, 3:5].mean(axis=1)
+    np.testing.assert_allclose(f_khz, reference.law_khz(middle, B, C), rtol=1e-8)
+
+
+def test_a_fingerprint_its_stored_corrections_give_back_logs_nothing(raw_path, caplog):
+    with caplog.at_level(logging.WARNING, logger=m_fingerprint.__name__):
+        document, raw = fingerprint(raw_path, profile_scans())
+    assert document["status"] == "ok"
+    assert raw.read("profile_chunks") == raw.read("profile")
+    assert caplog.records == []
+
+
+def test_a_band_off_its_stored_correction_is_logged_and_the_document_kept(
+    raw_path, caplog
+):
+    agreeing, _ = fingerprint(raw_path, profile_scans())
+    with caplog.at_level(logging.WARNING, logger=m_fingerprint.__name__):
+        document, _ = fingerprint(raw_path, profile_scans(stored=shifted_band(40, 1.0)))
+    (record,) = caplog.records
+    assert record.levelno == logging.WARNING
+    message = record.getMessage()
+    assert f"mode {MODE}: 1 of {LAST_BAND - FIRST_BAND + 1} frequency bands" in message
+    assert "bands [40]" in message
+    for name in ("extractor", "cost_seconds"):
+        document.pop(name)
+        agreeing.pop(name)
+    assert document == agreeing
+
+
+def test_a_check_that_fails_is_logged_and_the_document_kept(raw_path, caplog):
+    class Failing(ScriptedRawFile):
+        def profile_chunks(self, number):
+            raise RuntimeError("truncated packet")
+
+    backend = OpenTFRawBackend(str(raw_path))
+    backend._raw = Failing(profile_scans())
+    with caplog.at_level(logging.WARNING, logger=m_fingerprint.__name__):
+        document = compute_axis_fingerprint(backend, reader_name="opentfraw")
+    assert document["status"] == "ok"
+    (record,) = caplog.records
+    assert "RuntimeError: truncated packet" in record.getMessage()
+
+
+def test_a_mode_without_a_band_table_is_not_checked(raw_path):
+    # Profile scans that store no points: read, but no chunk to measure
+    scans = [Scan(chunks=band_chunks()) for _ in range(4)]
+    document, raw = fingerprint(raw_path, scans)
+    assert document["status"] == "no_fingerprint"
+    assert document["modes"][0]["profile"]["scans_used"] == [2, 3, 4]
+    assert raw.read("profile_chunks") == []
+
+
+def test_a_reader_backend_without_stored_chunks_is_not_checked(
+    raw_path, monkeypatch, caplog
+):
+    monkeypatch.delattr(OpenTFRawBackend, "profile_chunks")
+    with caplog.at_level(logging.WARNING, logger=m_fingerprint.__name__):
+        document, raw = fingerprint(
+            raw_path, profile_scans(stored=shifted_band(40, 1.0))
+        )
+    assert document["status"] == "ok"
+    assert raw.read("profile_chunks") == []
+    assert caplog.records == []
 
 
 # ---- the census ----------------------------------------------------------------
