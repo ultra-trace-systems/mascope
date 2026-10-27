@@ -185,6 +185,21 @@ def scan_stream_keys(backend: ReaderBackend) -> list[str]:
     return [scan.key for scan in _keyed_scans(backend)]
 
 
+def file_scan_stream_keys(datafile_path: str) -> dict[int, str]:
+    """The stream key of every scan of a raw file, by scan number.
+
+    :func:`scan_stream_keys` for a caller that holds scans read from several
+    streams at once, each by its scan number, and has to tell which stream
+    each one is of. Taken from the file as it reads now, as
+    :func:`file_scan_streams` is.
+
+    :param datafile_path: Path to a Thermo ``.raw`` file.
+    :return: ``{scan number: stream key}``, for every scan of the file.
+    """
+    with open_backend(datafile_path) as backend:
+        return {int(scan.row["scan"]): scan.key for scan in _keyed_scans(backend)}
+
+
 def scan_stream_numbers(
     backend: ReaderBackend, labels: Iterable[str]
 ) -> list[tuple[dict, str, dict[str, float]]]:

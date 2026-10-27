@@ -1759,7 +1759,10 @@ def get_orbi_centroids_per_scan(
     :type exclude: Iterable[str], optional
     :return: List of dictionaries with per-scan centroid data, each containing
             the scan number, centroid masses, intensities, resolutions,
-            signal-to-noise ratios, flags, and timestamps.
+            signal-to-noise ratios, flags, and timestamps, and
+            ``mz_calibration_factor``: the factor its masses were multiplied
+            by, the one of the stream the scan is of
+            (``mascope_signal.mz_factor``), None for a file never calibrated.
     :rtype: list
     :raises ValueError: If ``exclude`` names something that is not a flag.
     """
@@ -1778,10 +1781,26 @@ def get_orbi_centroids_per_scan(
             )
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
-            if calibration:
-                factor = m_factor.stream_factor(calibration, stream)
-                for scan_centroids in centroids_per_scan:
+            # Each scan goes by the factor of the stream it is of, as that
+            # stream's peaks do. Asked for one stream, every scan is of it.
+            # Asked for every stream of a file calibrated stream by stream,
+            # each scan's stream is looked up; a stream the record does not
+            # name, an MS2 scan's among them, goes by the file's factor.
+            stream_of: dict[int, str] = {}
+            if (
+                calibration
+                and stream is None
+                and calibration.get(m_factor.STREAM_FACTORS)
+            ):
+                stream_of = m_streams.file_scan_stream_keys(datafile_path)
+            for scan_centroids in centroids_per_scan:
+                factor = None
+                if calibration:
+                    factor = m_factor.stream_factor(
+                        calibration, stream_of.get(scan_centroids["scan"], stream)
+                    )
                     scan_centroids["masses"] = scan_centroids["masses"] * factor
+                scan_centroids["mz_calibration_factor"] = factor
 
             return centroids_per_scan
         case _:

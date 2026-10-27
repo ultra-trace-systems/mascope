@@ -5,8 +5,9 @@ a ppm apart, so the streams of a file whose peaks are detected per stream
 carry a factor each, in the file's calibration record
 (``mascope_signal.mz_factor``; ``docs/dev/ingest_routing_and_splitting.md``,
 sections 4.3 and 4.5). Everything that reads one stream of the raw file again
-goes by that stream's factor, the stitched signal places each run by its
-owner's, and a detection cuts the file in the same places whatever its
+goes by that stream's factor, a read of every stream's scans at once puts
+each scan on the factor of its own, the stitched signal places each run by
+its owner's, and a detection cuts the file in the same places whatever its
 streams carry.
 
 Moving each stream's peaks by its own factor carries two readings of one ion
@@ -21,8 +22,10 @@ import numpy as np
 import pytest
 import xarray as xr
 from composite_acquisition import (
+    COMPOSITE,
     IN_LOW,
     KEYS,
+    MICROSCANS,
     cached_sum_signals,
     store_rows,
 )
@@ -125,10 +128,9 @@ def test_an_axis_of_no_fixed_rows_is_set_apart_as_a_detection_sets_it():
 # -- a stream read by its own factor ------------------------------------------------
 
 
-@pytest.fixture
-def named(composite):
-    """The composite with a calibration record that names three streams, as
-    an apply leaves one - and nothing moved, for the tests of what reads."""
+def name_three_streams():
+    """Record a calibration that names three of the composite's streams, as
+    an apply leaves one - and move nothing, for the tests of what reads."""
     m_io.update_props(
         SAMPLE_FILENAME,
         {
@@ -142,6 +144,12 @@ def named(composite):
             }
         },
     )
+
+
+@pytest.fixture
+def named(composite):
+    """The composite with a calibration record that names three streams."""
+    name_three_streams()
     return composite
 
 
@@ -177,24 +185,6 @@ async def test_a_streams_centroids_are_on_its_own_factor(named):
         121.0 * FACTORS[LOW],
     ]
     assert pooled[0] == 62.0 * FILE
-
-
-def test_a_streams_scans_are_on_its_own_factor(named, monkeypatch):
-    def per_scan(path, *args, stream=None, **kwargs):
-        return [{"masses": np.array([62.0, 80.0])}]
-
-    monkeypatch.setattr(m_compute.m_thermo, "get_centroids_per_scan", per_scan)
-
-    (reagent,) = m_compute.get_orbi_centroids_per_scan(
-        SAMPLE_FILENAME, stream=KEYS[REAGENT]
-    )
-    (pooled,) = m_compute.get_orbi_centroids_per_scan(SAMPLE_FILENAME, polarity="-")
-
-    assert reagent["masses"].tolist() == [
-        62.0 * FACTORS[REAGENT],
-        80.0 * FACTORS[REAGENT],
-    ]
-    assert pooled["masses"].tolist() == [62.0 * FILE, 80.0 * FILE]
 
 
 def test_a_streams_signal_is_on_its_own_factor(named, monkeypatch):
@@ -381,6 +371,116 @@ def test_a_run_takes_its_own_samples_where_its_edge_falls_among_anothers(composi
         assert set(segment[run["from"] : run["to"]]) == {run["segment"]}
     assert [run["to"] for run in exact][:-1] == [run["from"] for run in exact][1:]
     assert exact[0]["to"] == by_edges[0]["to"] - 1
+
+
+# -- each scan read by its own stream's factor ---------------------------------------
+
+#: The composite's scans and a fragmentation scan after them: a stream no
+#: calibration record names.
+FRAGMENTATION = "FTMS - c NSI Full ms2 80.0000@hcd30.00 [50.0000-200.0000]"
+SCANS = COMPOSITE + [(FRAGMENTATION, None, {62.0: 5.0, 79.0: 3.0})]
+
+#: The factor each of them is on, under the record of ``named``: the
+#: reagent scans, the low, the mid and the high window, the MS2 scan.
+SCAN_FACTORS = (
+    [FACTORS[REAGENT]] * 5 + [FACTORS[LOW]] * 3 + [FACTORS[MID]] * 4 + [FILE] * 3
+)
+
+
+@pytest.fixture
+def scanned(acquire, monkeypatch):
+    """The scans of ``SCANS``, no peaks detected, and a count of how often
+    the per-scan read looks up the stream of every scan of the file. A
+    test writes the calibration record it reads under."""
+    acquire(SCANS, MICROSCANS)
+    looked_up = []
+    look_up = m_compute.m_streams.file_scan_stream_keys
+
+    def counted(datafile_path):
+        looked_up.append(datafile_path)
+        return look_up(datafile_path)
+
+    monkeypatch.setattr(m_compute.m_streams, "file_scan_stream_keys", counted)
+    return looked_up
+
+
+def _as_recorded(scan):
+    return sorted(SCANS[scan["scan"] - 1][2])
+
+
+def test_every_scan_read_at_once_is_on_its_own_streams_factor(scanned):
+    """A scan of a stream sits where that stream's peaks do, and says by how
+    much it was moved. The high window, which the record does not name, and
+    the MS2 scan go by the file's factor."""
+    name_three_streams()
+
+    per_scan = m_compute.get_orbi_centroids_per_scan(SAMPLE_FILENAME, polarity="-")
+
+    assert [scan["scan"] for scan in per_scan] == list(range(1, 16))
+    assert [scan["mz_calibration_factor"] for scan in per_scan] == SCAN_FACTORS
+    for scan in per_scan:
+        assert scan["masses"].tolist() == [
+            mz * scan["mz_calibration_factor"] for mz in _as_recorded(scan)
+        ]
+    # The low window's reading of the ion at 80 is on the low window's factor
+    low = per_scan[5]
+    assert low["masses"][0] == IN_LOW * FACTORS[LOW]
+    assert len(scanned) == 1
+
+
+def test_a_window_of_scans_goes_by_the_streams_its_scans_are_of(scanned):
+    """Each scan is looked up by its number, wherever the window starts."""
+    name_three_streams()
+
+    per_scan = m_compute.get_orbi_centroids_per_scan(
+        SAMPLE_FILENAME, t_min=6.0, t_max=8.0, polarity="-"
+    )
+
+    assert [scan["scan"] for scan in per_scan] == [7, 8, 9]
+    assert [scan["mz_calibration_factor"] for scan in per_scan] == [
+        FACTORS[LOW],
+        FACTORS[LOW],
+        FACTORS[MID],
+    ]
+
+
+def test_one_streams_scans_are_on_its_factor_with_no_scan_looked_up(scanned):
+    """Every scan read is of the stream asked for."""
+    name_three_streams()
+
+    per_scan = m_compute.get_orbi_centroids_per_scan(
+        SAMPLE_FILENAME, stream=KEYS[REAGENT]
+    )
+
+    assert [scan["scan"] for scan in per_scan] == [1, 2, 3, 4, 5]
+    assert {scan["mz_calibration_factor"] for scan in per_scan} == {FACTORS[REAGENT]}
+    assert per_scan[0]["masses"].tolist() == [
+        mz * FACTORS[REAGENT] for mz in _as_recorded(per_scan[0])
+    ]
+    assert scanned == []
+
+
+def test_a_file_calibrated_as_one_is_on_its_factor_with_no_scan_looked_up(scanned):
+    """A record that names no stream: every file calibrated before streams
+    were, and every file detected whole. It reads as it always did."""
+    m_io.update_props(
+        SAMPLE_FILENAME, {"mz_calibration": {"par": {"calibration_factor": FILE}}}
+    )
+
+    per_scan = m_compute.get_orbi_centroids_per_scan(SAMPLE_FILENAME, polarity="-")
+
+    assert {scan["mz_calibration_factor"] for scan in per_scan} == {FILE}
+    assert per_scan[5]["masses"][0] == IN_LOW * FILE
+    assert scanned == []
+
+
+def test_a_file_never_calibrated_is_as_recorded_and_says_so(scanned):
+    per_scan = m_compute.get_orbi_centroids_per_scan(SAMPLE_FILENAME, polarity="-")
+
+    assert {scan["mz_calibration_factor"] for scan in per_scan} == {None}
+    for scan in per_scan:
+        assert scan["masses"].tolist() == _as_recorded(scan)
+    assert scanned == []
 
 
 # -- a signal made while the file is calibrated again -----------------------------------

@@ -88,8 +88,9 @@ async def get_sample_axis_fingerprint_route(
     - `mz_calibration_factor`, the factor the file's mass calibration gives
       the sample's stream: the stream's own where the calibration names one,
       else the file's; and `file_mz_calibration_factor`, the file's own,
-      which `/api/samples/centroids` multiplies into every mass it serves of
-      the file. Both null for a file that was never calibrated. A
+      which a reading of the file as a whole goes by
+      (`/api/samples/centroids` says which factor each scan it serves is
+      on). Both null for a file that was never calibrated. A
       calibration never names a composite, so a stitched sample's factor is
       the file's, while its peaks carry the factor of each stream that owns
       a run of it, which `streams` lists;

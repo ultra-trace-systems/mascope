@@ -1,13 +1,15 @@
 """
 Tests: the per-scan centroids of sample items, ``GET /api/samples/centroids``.
 
-Each scan's entry carries its scan number and each centroid its flags, and
-``exclude`` names the flags whose centroids are left out. The route is driven
-the way a client calls it - the query string parsed, the permission check
-run on the real sample item, the body encoded - over a scripted read: the
-sample row the controller selects and the centroids
-``mascope_signal.compute`` would hand back for it. That the reader leaves the
-named centroids out is pinned in ``mascope_thermo``'s own tests.
+Each scan's entry carries its scan number and the m/z calibration factor
+its masses are on, each centroid its flags, and ``exclude`` names the flags
+whose centroids are left out. The route is driven the way a client calls
+it - the query string parsed, the permission check run on the real sample
+item, the body encoded - over a scripted read: the sample row the controller
+selects and the centroids ``mascope_signal.compute`` would hand back for it.
+That the reader leaves the named centroids out is pinned in
+``mascope_thermo``'s own tests, and that each scan is on its own stream's
+factor in ``tests/unit/libraries/signal/test_stream_factor_readers.py``.
 
 Fixtures used:
 - ``alpha_item`` - a sample item in ws_alpha, of which every user is a member
@@ -22,7 +24,9 @@ from mascope_backend.api.controllers.samples import samples_controller
 
 
 #: Two scans of the scripted read: the second was the file's last, at
-#: retention time 0.0, which only its number tells apart from the first.
+#: retention time 0.0, which only its number tells apart from the first. They
+#: are of two streams of a file calibrated stream by stream, each on its own
+#: stream's factor.
 _PER_SCAN = [
     {
         "scan": 7,
@@ -32,6 +36,7 @@ _PER_SCAN = [
         "signal_to_noise": np.array([3.0, 4.0]),
         "flags": np.array([16, 0]),
         "timestamp": 0.0,
+        "mz_calibration_factor": 1.0000012,
     },
     {
         "scan": 8,
@@ -41,6 +46,7 @@ _PER_SCAN = [
         "signal_to_noise": np.array([5.0]),
         "flags": np.array([10]),
         "timestamp": 0.0,
+        "mz_calibration_factor": 1.0000009,
     },
 ]
 
@@ -102,6 +108,25 @@ async def test_each_scan_carries_its_number_and_each_centroid_its_flags(
     assert centroids["masses"] == [[61.9884, 100.0], [100.0]]
     assert centroids["timestamp"] == [0.0, 0.0]
     assert [asked["exclude"] for asked in per_scan] == [()]
+
+
+@pytest.mark.asyncio
+async def test_each_scan_says_the_factor_its_masses_are_on(
+    guest_client, alpha_item, per_scan
+):
+    """A client that compares a scan with the sample's peaks, or takes the
+    calibration off again, reads it scan by scan: in a file calibrated
+    stream by stream, two scans of one sample can be on two factors."""
+    resp = await guest_client.get(
+        "/api/samples/centroids", params={"sample_item_ids": [alpha_item]}
+    )
+
+    assert resp.status_code == 200, resp.text
+    centroids = resp.json()["data"][alpha_item]
+    assert centroids["mz_calibration_factor"] == [1.0000012, 1.0000009]
+    # Every stream of the sample's polarity and window is read: the route
+    # asks for no one stream
+    assert [asked.get("stream") for asked in per_scan] == [None]
 
 
 @pytest.mark.asyncio

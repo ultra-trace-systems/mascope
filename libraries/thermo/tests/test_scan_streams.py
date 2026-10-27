@@ -30,6 +30,7 @@ from mascope_thermo.backend import (
 from mascope_thermo.streams import (
     _resolution,
     _scan_resolution,
+    file_scan_stream_keys,
     measured,
     microscans,
     peak_streams,
@@ -1199,6 +1200,22 @@ def test_a_files_stored_resolution_keys_each_scan_as_its_text_trailer_does(
             assert _scan_resolution(reader, row["scan"], numbers) == _resolution(
                 reader.scan_trailer(row["scan"])
             )
+
+
+@pytest.mark.parametrize("path", [POS_ORBI_FILE_PATH, NEG_ORBI_FILE_PATH])
+def test_every_scan_of_a_file_is_keyed_by_the_number_a_scan_read_carries(backend, path):
+    """What a read of several streams' scans at once looks each scan's
+    stream up in: the keys selection compares, by the scan number each
+    per-scan entry carries, for every scan a read can hand back."""
+    keys = file_scan_stream_keys(path)
+    with open_backend(path) as reader:
+        rows = reader.scan_filters()
+        in_order = scan_stream_keys(reader)
+        read = [scan["scan"] for scan in reader.centroids_per_scan()]
+
+    assert list(keys) == [row["scan"] for row in rows]
+    assert list(keys.values()) == in_order
+    assert read and set(read) <= set(keys)
 
 
 @pytest.mark.parametrize(
