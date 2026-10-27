@@ -280,8 +280,12 @@ Not built:
 
 - **The keys of the chemistries Mascope ships** (`nitrate`, `bromide`, ...)
   are not read as `ionization`. They are the one vocabulary that is the same
-  on every server, but a shipped mode calibrates and matches nothing until a
-  site adopts it, so binding to one today would leave a file unprocessed.
+  on every server. Seven shipped modes carry calibrant and diagnostic
+  collections of their own since MAS-312, but a file bound to one would
+  adopt it, putting it in the browser's lists as a side effect of a record,
+  and offering the shipped chemistries is the browser's step (MAS-337). The
+  four without a reagent still calibrate and match nothing, so binding to
+  one of those would leave a file unprocessed.
 - **The FAIR roadmap's phase 1 exports** do not exist yet. When they do, the
   identifiers go into them as `urn:uuid:<id>`.
 - **The web app** shows none of this beyond the status sentence. Each

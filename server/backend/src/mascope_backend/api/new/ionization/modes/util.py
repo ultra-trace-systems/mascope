@@ -147,10 +147,11 @@ async def fetch_listable_ionization_modes() -> list[IonizationMode]:
     """Fetch the ionization modes a deployment should be offered.
 
     A mode Mascope ships is left out until the deployment adopts it. Before
-    that it calibrates and matches nothing, so offering it would only invite a
-    sample that cannot be processed. After it, the mode has to be listed: it
-    is a mode like any other, and a sample bound to one carries an id the
-    browser must resolve.
+    that, offering it is the browser's step (MAS-337), not the listing's: the
+    collections Mascope seeds for a chemistry let its mode calibrate, but do
+    not adopt it (``system_mode_adopted``). After it, the mode has to be
+    listed: it is a mode like any other, and a sample bound to one carries an
+    id the browser must resolve.
 
     Current versions only; a sample bound under an earlier one is resolved
     through its successor's ``superseded_ids`` (``service.listed``).

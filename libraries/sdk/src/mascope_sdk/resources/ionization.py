@@ -58,9 +58,9 @@ class IonizationResource(BaseResource):
         """List the ionization modes.
 
         :param include_system: Also list the modes Mascope ships that this
-            server has not adopted. They calibrate and match nothing until it
-            does, so no sample is processed under one, and they are left out
-            by default as the web app leaves them out.
+            server has not adopted. They are left out by default, as the web
+            app leaves them out until it offers the shipped chemistries
+            itself.
         :type include_system: bool
         :return: A DataFrame with one row per mode and columns including
                  ``ionization_mode_id``, ``ionization_mode_name``,

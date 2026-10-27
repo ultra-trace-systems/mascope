@@ -368,7 +368,7 @@ async def test_a_deployments_own_mode_can_still_be_renamed(
 async def test_the_listing_leaves_an_unadopted_seeded_mode_out(
     admin_client, system_mode, own_mode
 ):
-    """Without collections it calibrates and matches nothing."""
+    """Offering the shipped chemistries is the browser's step (MAS-337)."""
     resp = await admin_client.get("/api/ionization/modes")
     assert resp.status_code == 200
     listed = {mode["ionization_mode_id"] for mode in resp.json()["data"]}

@@ -470,8 +470,10 @@ async def delete_ionization_mechanism(ionization_mechanism_id: str) -> dict:
         # -- Drop the seeded modes nobody adopted that hold this mechanism -- #
         # A mode Mascope ships cannot be deleted through its own route, so one
         # built on a mechanism the deployment is retiring would pin that
-        # mechanism for good. Unadopted, the mode has no collections and no
-        # samples, so nothing is lost; seeding leaves it out from now on,
+        # mechanism for good. Unadopted, the mode has no samples and no
+        # collection of the deployment's, so nothing of the deployment's is
+        # lost: the collections Mascope seeds for its chemistry, which it may
+        # point at, stay behind. Seeding leaves the mode out from now on,
         # because the mechanism it needs is gone.
         released = await _release_unadopted_system_modes(
             session, ionization_mechanism_id

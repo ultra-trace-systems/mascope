@@ -184,9 +184,8 @@ class GetIonizationModesQueryParams(QueryParamsModel):
         False,
         description=(
             "Include the modes Mascope ships that this deployment has not "
-            "adopted. They are left out by default: without target "
-            "collections such a mode calibrates and matches nothing, so "
-            "offering it would only invite a sample that cannot be processed. "
-            "Ask for them to adopt one."
+            "adopted. They are left out by default, as the web app leaves "
+            "them out until it offers the shipped chemistries itself. Ask "
+            "for them to adopt one."
         ),
     )
