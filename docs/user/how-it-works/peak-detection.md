@@ -98,7 +98,20 @@ The cumulative peak area is computed by evaluating the predefined empirical peak
 ## Quality Control Filtering
 
 ### Signal-to-Noise Ratio
-Peaks exhibiting a signal-to-noise ratio ($\text{SNR}$) below a strict threshold ($\text{SNR} < 3$) are flagged as weak.
+Peaks exhibiting a signal-to-noise ratio ($\text{SNR}$) below a strict threshold ($\text{SNR} < 3$) are flagged as weak, on Orbitrap and on TOF files alike.
+A peak with no $\text{SNR}$ is not flagged by this cutoff.
+
+A weak peak stays in the file's peak store but is left out wherever peaks are read by default: the peak list, the peak marks on the spectrum, m/z calibration and assignment.
+
+On a TOF file whose baseline is mostly empty, typically an ambient-mode file with no reagent ion, the noise is the height of one ion, so the cutoff means about three ions.
+The fit keeps a cluster of one or two stray ions at most unit masses of such a spectrum, and these are now weak: such a file lists a fraction of the peaks it did.
+A real ion of only one or two counts is hidden with them.
+What decides how many peaks a TOF file loses is how full its baseline is, not whether it has a reagent ion.
+A file with a sparse baseline, a reagent-ion one included, loses most of its small peaks as well.
+Where the baseline holds many counts, as on most reagent-ion files, nearly every peak stands well above the cutoff.
+
+TOF files detected before this flag existed keep their peaks unflagged until they are reprocessed.
+An Orbitrap file without its raw file, detected on the TOF path, keeps its earlier $\text{SNR}$ and flags no peak weak.
 
 ### Local Floor (Orbitrap)
 An Orbitrap peak's $\text{SNR}$ is the instrument's: its noise is one figure for a wide stretch of the spectrum, and it does not follow a floor that rises locally.
