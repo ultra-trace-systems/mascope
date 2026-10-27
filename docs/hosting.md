@@ -64,8 +64,9 @@ and the checkout.
    mode included, so keep them readable by their owner alone: at the usual
    umask they come out 0644, and every user on the server and every uid in the
    backend container could read the database password. The backend reads them
-   as uid 1000, its image's `mascope` user, so create them as the user with
-   that uid (the first user on Ubuntu). `mascope init` and `mascope prod up`
+   as the uid its image runs as, so create them as the user with that uid:
+   1000 for the published image (the first user on Ubuntu), or the
+   `MASCOPE_UID` the image was built with. `mascope init` and `mascope prod up`
    write the secrets they generate 0600 already.
 
    `mascope prod up` generates a missing *newly introduced* secret on its own
