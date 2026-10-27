@@ -171,6 +171,10 @@ def _largest_list(value: Any) -> tuple[dict, str] | None:
     return None if best is None else (best[1], best[2])
 
 
+#: The error a result that cannot fit is replaced with.
+TOO_LARGE = "too_large"
+
+
 def fit(result: dict[str, Any], limit: int = MAX_RESULT_BYTES) -> dict[str, Any]:
     """*result*, made inert and cut to *limit* bytes of JSON.
 
@@ -178,7 +182,7 @@ def fit(result: dict[str, Any], limit: int = MAX_RESULT_BYTES) -> dict[str, Any]
     holds it says how many items it left out (``<key>_omitted``). If every
     list is down to one item and it still does not fit, its strings are
     cut shorter; a result that cannot fit even so is replaced by a
-    ``too_large`` error.
+    :data:`TOO_LARGE` error.
     """
     out = inert(result)
     while _size(out) > limit:
@@ -197,7 +201,7 @@ def fit(result: dict[str, Any], limit: int = MAX_RESULT_BYTES) -> dict[str, Any]
         out = inert(out, chars)
     if _size(out) > limit:
         return {
-            "error": "too_large",
+            "error": TOO_LARGE,
             "message": "The result would not fit in a tool result. Narrow the "
             "call, or read it in Python.",
         }
@@ -230,6 +234,7 @@ PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
+INTERNAL_ERROR = -32603
 
 
 def _ref(ref: Ref) -> dict[str, Any]:
@@ -733,6 +738,8 @@ class Server:
             return {"tools": [tool.to_dict() for tool in self.tools.values()]}
         if method == "tools/call":
             name = params.get("name")
+            if not isinstance(name, str):
+                raise RpcError(INVALID_PARAMS, "params.name is a tool's name")
             if name not in self.tools:
                 raise RpcError(INVALID_PARAMS, f"Unknown tool: {name!r}")
             return self.call(name, params.get("arguments"))
@@ -743,7 +750,8 @@ class Server:
 
         A failure is a result too, which the model reads and acts on: a
         :class:`ToolkitError` as its ``to_dict()``, anything else as its
-        type and message (the traceback goes to the server's log).
+        type and message (the traceback goes to the server's log). So is a
+        result too large to fit (:data:`TOO_LARGE`).
         """
         tool = self.tools[name]
         try:
@@ -755,25 +763,40 @@ class Server:
             logger.exception("The {} tool failed", name)
             result = {"error": "internal", "message": f"{type(e).__name__}: {e}"}
             failed = True
+        out = fit(result)
         return {
-            "content": [{"type": "text", "text": render(result)}],
-            "isError": failed,
+            "content": [{"type": "text", "text": _dumps(out)}],
+            "isError": failed or out.get("error") == TOO_LARGE,
         }
 
     def serve(self, stdin: BinaryIO, stdout: BinaryIO) -> None:
         """Answer messages from *stdin*, one JSON object a line, on
-        *stdout*, until *stdin* closes."""
+        *stdout*, until *stdin* closes.
+
+        No message ends it: one that is not JSON, or that fails in a way
+        :meth:`handle` does not foresee, is answered with an error, and the
+        next is read. The answers are ASCII, so that whatever a client sent
+        - a lone surrogate in an ``id``, which JSON allows and UTF-8 cannot
+        encode - can be echoed back.
+        """
         for line in stdin:
             if not line.strip():
                 continue
             try:
                 message = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 response = _error(None, PARSE_ERROR, "Parse error: not JSON")
             else:
-                response = self.handle(message)
+                try:
+                    response = self.handle(message)
+                except Exception:
+                    logger.exception("A message could not be answered")
+                    request_id = (
+                        message.get("id") if isinstance(message, dict) else None
+                    )
+                    response = _error(request_id, INTERNAL_ERROR, "Internal error")
             if response is not None:
-                stdout.write(_dumps(response).encode() + b"\n")
+                stdout.write(json.dumps(response).encode("ascii") + b"\n")
                 stdout.flush()
 
     # --- the tools ---------------------------------------------------------------
