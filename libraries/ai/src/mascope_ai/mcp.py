@@ -86,9 +86,10 @@ Mascope's data, as handles: these tools find and describe Mascope objects, \
 load tables as Frames and score candidate formulas, and never return a table.
 - Metadata (what there is, how many, when): find and describe answer it.
 - Analysis (a maximum, a mean, a ratio): load a Frame with a tool, then \
-compute in Python on this machine. The session tool gives the Python and \
-the line that opens the session; a Frame's rows_in_python is its rows as a \
-pandas DataFrame. Print a few numbers, never the table.
+compute in Python on this machine. The session tool gives the Python, the \
+line that opens the session and the one that opens a toolkit on it; a \
+Frame's rows_in_python is its rows as a pandas DataFrame. Print a few \
+numbers, never the table.
 - Interpretation (what the peak at m/z X is): query_by_mz proposes \
 formulas, match_compounds has Mascope score them in a sample. Never compute \
 a mass or a score yourself; a candidate Mascope did not score is \
@@ -659,7 +660,9 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         "session",
         "This server's session: its directory, the Python to run on this "
-        "machine, the line that opens the session there, and its Frames.",
+        "machine, the line that opens the session there (open), the line "
+        "that opens a toolkit on it in the server's workspace, to load more "
+        "there (toolkit), and its Frames.",
         {},
         "_session",
     ),
@@ -712,6 +715,24 @@ class Server:
     def opener(self) -> str:
         """The Python expression that opens this session."""
         return f"Session({self.session.id!r}, root={str(self.session.path.parent)!r})"
+
+    @property
+    def toolkit_opener(self) -> str:
+        """The Python that opens a toolkit on this session in the server's
+        workspace: its toolkit's, once made, else the one it was given.
+
+        ``Toolkit()`` reads neither ``MASCOPE_WORKSPACE`` nor the server's
+        ``--workspace``, so the line names it, by ID when the server knows
+        it.
+        """
+        workspace = (
+            self._kit.client.workspace_id if self._kit is not None else self.workspace
+        )
+        on = f", workspace={str(workspace)!r}" if workspace else ""
+        return (
+            "from mascope_ai import Session, Toolkit; "
+            f"kit = Toolkit(session={self.opener}{on})"
+        )
 
     # --- the protocol ----------------------------------------------------------
 
@@ -1018,6 +1039,7 @@ class Server:
             "directory": Own(self.session.path),
             "python": Own(sys.executable),
             "open": Own(f"from mascope_ai import Session; session = {self.opener}"),
+            "toolkit": Own(self.toolkit_opener),
             "frames": [
                 {
                     "frame": frame.id,

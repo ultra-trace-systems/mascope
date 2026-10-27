@@ -863,6 +863,8 @@ class TestAnswerAndSession:
         scope: dict = {}
         exec(out["open"], scope)
         assert scope["session"].path == session.path
+        compile(out["toolkit"], "toolkit", "exec")
+        assert repr(str(session.path.parent)) in out["toolkit"]
 
     def test_session_needs_no_connection(self, kit):
         def make(session):
@@ -870,3 +872,45 @@ class TestAnswerAndSession:
 
         out = ok(Server(kit.session, make_toolkit=make), "session")
         assert out["frames"] == []
+
+
+class TestTheToolkitLine:
+    """The session tool's ``toolkit``: a toolkit in this machine's Python, on
+    the server's session and in its workspace, which ``Toolkit()`` would not
+    find by itself among several."""
+
+    @pytest.fixture
+    def configured(self, kit, tmp_path, monkeypatch):
+        # (kit: the fake server, whose token's user has two workspaces)
+        monkeypatch.setenv("MASCOPE_URL", "http://mascope.test")
+        monkeypatch.setenv("MASCOPE_ACCESS_TOKEN", "token")
+        monkeypatch.delenv("MASCOPE_WORKSPACE", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+    def opened(self, server: Server) -> Toolkit:
+        scope: dict = {}
+        exec(ok(server, "session")["toolkit"], scope)
+        assert scope["kit"].session.path == server.session.path
+        return scope["kit"]
+
+    def test_it_is_on_the_workspace_of_the_server_s_toolkit(
+        self, kit, server, configured
+    ):
+        ok(server, "find", query="")
+        # By its ID: the one a name would also match is not the toolkit's
+        kit.client._workspace_id = "ws2"
+        assert self.opened(server).client.workspace_id == "ws2"
+
+    def test_before_a_toolkit_it_is_on_the_workspace_the_server_was_given(
+        self, kit, configured
+    ):
+        server = Server(kit.session, workspace="Workspace B")
+        assert self.opened(server).client.workspace_name == "Workspace B"
+        assert server._kit is None
+
+    def test_with_no_workspace_given_it_names_none(self, kit, configured):
+        server = Server(kit.session)
+        line = ok(server, "session")["toolkit"]
+        assert "workspace=" not in line
+        with pytest.raises(Exception, match="Multiple workspaces"):
+            exec(line, {})
