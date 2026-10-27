@@ -69,9 +69,9 @@ class ReferenceResource(BaseResource):
                  ``version``, ``label`` (a shipped list's own label, any
                  other source's name), ``references`` (the publications the
                  list comes from: a list of dicts with ``citation``, ``doi``,
-                 ``isbn`` and ``note``, None where the list gives none; empty
-                 for a list loaded from outside the shipped catalogue, whose
-                 citation the server does not keep yet), ``license``, ``polarity`` (None for a
+                 ``isbn`` and ``note``, None where the list gives none, as
+                 recorded when it was loaded; empty for a source that cites
+                 none), ``license``, ``polarity`` (None for a
                  list of either), ``allow_radicals``, ``known_window`` (the
                  window its compounds are matched in, a dict), ``record_count``,
                  ``ingested_at`` (UTC) and ``admitted``: whether the
