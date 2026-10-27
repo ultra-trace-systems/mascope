@@ -46,11 +46,11 @@ def _setting(monkeypatch, value):
     )
 
 
-def test_no_deployment_detects_per_stream_unless_it_says_so():
-    """What keeps every file processed as before: the shipped default. Read
-    off the model, not off this machine's config, which a developer may have
-    set either way."""
-    assert BackendConfig.model_fields["composite_scan_streams"].default is False
+def test_every_deployment_detects_per_stream_unless_it_says_otherwise():
+    """The shipped default stitches; a deployment that must keep pooling sets
+    it false. Read off the model, not off this machine's config, which a
+    developer may have set either way."""
+    assert BackendConfig.model_fields["composite_scan_streams"].default is True
 
 
 def test_the_setting_is_read_from_the_backend_config(monkeypatch):
