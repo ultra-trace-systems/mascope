@@ -3,7 +3,7 @@
 # Reagent-Ion Chemistry Profiles & Chemistry Context: Design & Plan
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-10-27
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear: MAS-59, MAS-61, MAS-63, MAS-65; MAS-328 the mismatched-context harm bound; MAS-342 is where 4.4's `reference_tags` activation lives)
 - **What:** Reagent-ion chemistry profiles and chemistry contexts as the unit a run searches under.
 
@@ -518,6 +518,10 @@ designed not to touch the same files until then.
 
 1. **Context scope.** Per-run with a batch default, a workspace default, or
    both? (Same open question as ionization §10.1 — settle them together.)
+   The ionization side is settled (MAS-350, 2026-10-27): a setup is global,
+   with the optional instrument scope a mode already has. The context's is a
+   different question - which default a run's context falls back to, not
+   who may hold the definition - and stays open here.
 2. **Preset opinionation.** Ship the NO3 preset marked provisional, or hold it
    back until a NO₃⁻ campaign validates it? (BR/UR are demo-validated; NO3 is
    peaky-provisional.)

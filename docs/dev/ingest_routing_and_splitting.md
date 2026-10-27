@@ -16,11 +16,12 @@ acquired before the switch were re-processed on the two sites that acquire
 composites, and it is on by default from 1.14.0 (decision 19); what phases
 3 and 4 still owe is step 9's overlap-drift warning
 and layout override, the per-stream stale rebuild (step 6) and MS2 routes
-taking the stream; phase 8, the profiles, is unbuilt and filed as
-milestone 9 of the Linear project (MAS-300, MAS-312, MAS-313, MAS-337,
-MAS-344);
+taking the stream; phase 8, the profiles, is filed as milestone 9 of the
+Linear project, and of its target model the `Instrument` row and the
+versioned ionization setup are built (MAS-300, 2026-10-27), the rest
+unbuilt (MAS-312, MAS-313, MAS-337, MAS-344);
 detection is built as an audit: it reads each file's chemistry off its
-reagent ions and binds nothing** (2026-10-26). Written for issue #2098 ("Split files into
+reagent ions and binds nothing** (2026-10-27). Written for issue #2098 ("Split files into
 samples by scan attributes"), which carries the checklist of pull
 requests. Decisions 1 to 5, 7, 9, 11 to 16, 18 and 19 in section 12 are
 settled; 6, 8 and 10 are open; 17 was decided on 2026-10-10 (a layout
@@ -3150,11 +3151,23 @@ unchanged.
 and acquisition-method redesign of 2026-07, when that note was retired. Of its five rows,
 `AcquisitionMethod` and `MethodBinding` have their first concrete pieces in
 `acquisition_stream` and `method_binding` (phase 2; section 13), with the routing order of
-4.5 revised by 2.4 and 5.7; `Instrument` and `IonizationSetup` are unbuilt and filed as
-MAS-300 in milestone 9 (blocked by the Decisions MAS-350, setup scope, and MAS-351,
-migration; MAS-255 is the decision that found the gap), and the structured `Adduct` as
-MAS-318 in the assignment quality plan. The notation of 4.4 shipped as the
-assignment plan's step 3.3b. The text is the proposal as written.*
+4.5 revised by 2.4 and 5.7; `Instrument` and `IonizationSetup` are built (MAS-300, "As
+built" below each; MAS-255 is the decision that found the gap), and the structured `Adduct`
+is filed as MAS-318 in the assignment quality plan. The notation of 4.4 shipped as the
+assignment plan's step 3.3b. The text is the proposal as written, with what was built
+after it.*
+
+*The two decisions the retired note's section 10 asked for before its Phase 1, answered
+2026-10-27:*
+
+- *Scope of a setup (its decision 1, MAS-350): **global, with the optional instrument
+  scope** a mode already has (#1463). A seeded profile reads the same on every server,
+  and a site's own mode can name its instrument. The chemistry context's scope
+  (`chemistry_profiles.md` section 11, decision 1) is another question - per run against
+  a batch or workspace default - and stays open there.*
+- *Migration (its decision 2, MAS-351): **mint version 1 for every existing mode and
+  repoint**, no compatibility shim. Every existing mode became its own version 1, and the
+  references to it - sample items, run configs, calibration curves - name it.*
 
 ##### 4.1 `Instrument` - promote to a first-class row
 
@@ -3178,6 +3191,21 @@ work upstream. Make those columns nullable and treat them as a later fill.
 
 Promoting the row is still worth it on its own: it also satisfies the FAIR
 requirement that metadata outlive the data it describes.
+
+**As built (MAS-300).** The `instrument` table, one row per distinct name, spelled
+exactly as the files spell it (as `GET /api/instruments` groups them), with
+`instrument_type`, `vendor`, `model`, `serial_number`, `software_version`, `cv_term`,
+`created_utc` and `last_seen_utc`. Registering a file makes or touches its row
+(`api/new/instruments/registry.py`): the converter now records the model a Thermo file
+names (`instrument_details()["Model"]`, props `instrument_model`) and the class and
+vendor follow from the reader; a TofDaq file names its digitizer, not the instrument, so
+it gives no model. Serial number and software version stay NULL on the default reader,
+and `cv_term` waits for MAS-29's mapping (MAS-353). Every table that names an instrument
+(`sample_file`, `dataset`, `dataset_tombstone`, `ionization_mode`, `method_binding`,
+`instrument_function`, `agent_device`, `notification`) carries `instrument_id` beside
+its `instrument` string, written wherever the string is; the migration made a row per
+distinct string and linked every row. The strings stay, and every read still uses them.
+`assignment_calibration.instrument` is the instrument class, not a name, and links none.
 
 ##### 4.2 `AcquisitionMethod` - observed, immutable, auto-created
 
@@ -3226,6 +3254,26 @@ append-only with an `is_active` flag - this is the same pattern, and it closes
 the reproducibility hole the retired note's 2.3 named (two runs with the same recorded
 config differing because an admin edited the adduct panel in between). Every `PeakAssignmentRun`, match run and calibration stamps the
 `(setup_id, version)` it used.
+
+**As built (MAS-300).** On `ionization_mode` rather than a renamed table: each row is
+one version (`version`, `is_active`, `supersedes_id`; `api/new/ionization/modes/versions.py`).
+An edit of what a run computes from - polarity, mechanisms, either collection, the
+labelled reagent's `label_purity` - inserts the next version and marks the edited one
+inactive; a rename, a token or an instrument scope is edited in place. A sample item
+keeps the version it was bound under, and a re-process moves it onto the current one
+before reading its mode: a rematch or recalibration (what the edit flags its batches
+for), an assignment run, a re-bound or re-processed file. Method bindings follow the
+edit; routing, listing, token and system-key uniqueness and seeding see current versions
+only; the listing gives each its earlier ids (`superseded_ids`). The batch ledger and
+batch alignment group samples by setup, keyed by its first version. A run records
+`config.ionization_setup` (`{ionization_mode_id, version}`; server state, not a
+`PeakAssignmentConfig` field), and a confidence curve records the setups its labels were
+scored under (`assignment_calibration.ionization_setups`); the lookup warns when a run's
+setup is not among them and applies the curve - the "record it" form of the retired
+note's 8.2, before the setup joins the key. `label_purity` replaces the module constant
+wherever the engine read it, through the purity in effect a run sets from its sample's
+setup (`custom_elements.labelled_purity`). Allowed charge states stay +/-1 until the
+structured adduct (4.4, MAS-318) can express another.
 
 ##### 4.4 `Adduct` - structured, replacing the notation string
 
@@ -4046,7 +4094,7 @@ through a short-lived stacked branch, merged as one unit.
 |---|---|
 | #749 chunk model (one `sample_file` per part) | Not adopted (3.4). Parts are streams and items. |
 | `multi_sample_items_per_file.md` | Its phase 1 is phase 3 here. Its segment API and chromatogram UI are phase 6. m/z-range splitting is covered by streams, because the scan range is in the signature. |
-| `ionization_method_config.md` (retired 2026-10-22) | Its Phase 0 items 3 (`method_file`, #2155) and 4 (the delete fan-out, #2156) are done. Its routing order (4.5) is revised by 2.4 and 5.7: a confirmed method identity above the token, a learned one below it, and no instrument-plus-polarity default. `acquisition_stream` and `method_binding` are the first concrete pieces of its `AcquisitionMethod` and `MethodBinding`. Its target model (section 4: `Instrument`, `AcquisitionMethod`, `IonizationSetup`, `Adduct`, `MethodBinding`) is carried into phase 8 here; its section 5 notation shipped as the assignment plan's step 3.3b; its section 7 was superseded by `fair_roadmap.md`; its Phase 1 (`Instrument`, `IonizationSetup`, `Adduct`) is unbuilt and filed as MAS-300 (blocked by the Decisions MAS-350 and MAS-351) and MAS-318. |
+| `ionization_method_config.md` (retired 2026-10-22) | Its Phase 0 items 3 (`method_file`, #2155) and 4 (the delete fan-out, #2156) are done. Its routing order (4.5) is revised by 2.4 and 5.7: a confirmed method identity above the token, a learned one below it, and no instrument-plus-polarity default. `acquisition_stream` and `method_binding` are the first concrete pieces of its `AcquisitionMethod` and `MethodBinding`. Its target model (section 4: `Instrument`, `AcquisitionMethod`, `IonizationSetup`, `Adduct`, `MethodBinding`) is carried into phase 8 here; its section 5 notation shipped as the assignment plan's step 3.3b; its section 7 was superseded by `fair_roadmap.md`; of its Phase 1, `Instrument` and `IonizationSetup` are built (MAS-300, after the Decisions MAS-350 and MAS-351) and `Adduct` is filed as MAS-318. |
 | `chemistry_profiles.md` and assignment quality plan step 3.5 | The profiles and their future rows stay there; the seeded profile of 5.1 is the interim form of its `reagent_profile` row, and `system_key` is the identity that migrates. Routing by detection moves here (phase 5), with the guards 2.3 shows it needs. |
 | Setup-simplification proposal (2026-09-03) | Its steps 1, 2 and 4 shipped (#2044, #2046, #2070). Step 3 (presets) shipped half in phase 2 - mechanisms and modes - and completes in phase 8 with the collections; step 5 (instrument-scoped modes) is phase 2; steps 6 and 7 (notifications, per-file status) are phase 1; step 8 (the profile's reagent ions as calibration anchors) is phase 8, its further tiers later; step 9 (detection with review) is split between phases 1 and 5. Its routing ladder gains the method rung and loses the implicit instrument-plus-polarity rule. Its "profiles as shipped data" is section 5.1 here. |
 

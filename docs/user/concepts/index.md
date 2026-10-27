@@ -139,6 +139,17 @@ changing a mode's collections flags the affected batches for **re-calibration**
 or **re-matching**. Ionization modes are shared reference data; editors and above
 can manage them.
 
+An ionization mode is **versioned**. Changing what it computes from - its
+polarity, its mechanisms, either collection, or the isotopic purity of its
+labelled reagent - makes its next version, shown beside its name in the
+ionization settings. Samples already processed keep the version they were
+processed under, so their results still say what produced them; the
+re-calibration or re-match their batch is flagged for moves them onto the new
+version, as does a peak assignment run or reprocessing their file. Renaming a
+mode, or changing its token or the instrument it belongs to, changes no result
+and makes no version. Each peak assignment run records the version it
+searched under.
+
 ## Matching and match scores
 
 **Matching** links the targets attached to a batch to the peaks detected in each
