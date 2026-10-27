@@ -17,8 +17,10 @@ from mascope_reference.adapters.peaklist import PeakListAdapter
 from mascope_reference.peaklist import (
     PeakListError,
     admitted_species,
+    citation_text,
     cited_reference,
     dbe,
+    given_citations,
     is_odd_electron,
     list_problems,
     read_peak_list,
@@ -216,6 +218,33 @@ def test_a_reference_given_at_load_is_checked_as_a_shipped_lists_is():
         cited_reference(None, doi="10.1234/x")
     with pytest.raises(ValueError, match="not a valid ISBN"):
         cited_reference("A thesis.", isbn="978-3-95806-596-4")
+
+
+def test_no_flag_leaves_the_load_to_record_what_its_dump_cites():
+    assert given_citations(None, None, None) is None
+    assert given_citations("A paper.", "10.1234/x", None) == [
+        {"citation": "A paper.", "doi": "10.1234/x"}
+    ]
+    # The flags are held to the same check: an ISBN alone cites nothing.
+    with pytest.raises(ValueError, match="no citation"):
+        given_citations(None, None, "978-3-95806-596-3")
+
+
+@pytest.mark.parametrize(
+    ("reference", "text"),
+    [
+        ({"citation": "A paper.", "doi": "10.1234/x"}, "A paper. (10.1234/x)"),
+        (
+            {"citation": "A book.", "isbn": "978-3-95806-596-3"},
+            "A book. (978-3-95806-596-3)",
+        ),
+        # What a list from outside the shipped ones may record.
+        ({"doi": "10.1234/x"}, "10.1234/x"),
+        ({"citation": "A paper."}, "A paper."),
+    ],
+)
+def test_a_recorded_reference_reads_without_a_none(reference, text):
+    assert citation_text(reference) == text
 
 
 def test_a_list_needs_a_reference_and_a_licence(tmp_path):

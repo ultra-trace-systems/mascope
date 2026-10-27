@@ -89,8 +89,8 @@ def main() -> None:
             )
         else:
             refreshed = (
-                "; its window, radical allowance and polarity were brought up to "
-                "date with the list"
+                "; its row was brought up to date with what the list says of its "
+                "window, radical allowance, polarity and citations"
                 if outcome.refreshed
                 else ""
             )

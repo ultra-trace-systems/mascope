@@ -47,7 +47,11 @@ from mascope_reference.ingest import (
     SourceKindConflict,
     deactivate,
 )
-from mascope_reference.peaklist import admitted_species, cited_reference
+from mascope_reference.peaklist import (
+    admitted_species,
+    citation_text,
+    given_citations,
+)
 from mascope_reference.schema import (
     COMPOUND_KIND,
     SPECTRUM_KIND,
@@ -287,7 +291,7 @@ def sync(
     for it.
     """
     try:
-        citations = _cited(citation, doi, isbn)
+        citations = given_citations(citation, doi, isbn)
     except ValueError as error:
         # Refused before the prompt: a citation that cannot be followed would
         # otherwise be found out only once the load is serving.
@@ -381,7 +385,7 @@ def sync(
     )
     runtime.logger.info(f"Matched as: {result.scope.describe()}.")
     for reference in result.citations:
-        runtime.logger.info(f"Cites: {_citation_text(reference)}")
+        runtime.logger.info(f"Cites: {citation_text(reference)}")
     if stage:
         runtime.logger.info(
             f"Load staged (inactive). Expose it with: mascope reference activate "
@@ -413,26 +417,6 @@ def _skipped_text(skipped: dict[str, int]) -> str:
         return "0 skipped"
     reasons = ", ".join(f"{count:,} {reason}" for reason, count in skipped.items())
     return f"{total:,} skipped: {reasons}"
-
-
-def _cited(
-    citation: str | None, doi: str | None, isbn: str | None
-) -> list[dict] | None:
-    """The publication a sync's flags name, or None when they name none.
-
-    :raises ValueError: For one that does not cite its source: no citation,
-        neither a DOI nor an ISBN, or one that is not valid.
-    """
-    if citation is None and doi is None and isbn is None:
-        return None
-    return [cited_reference(citation, doi=doi, isbn=isbn)]
-
-
-def _citation_text(reference: dict) -> str:
-    """One recorded reference for a person: the citation and what finds it."""
-    found_by = reference.get("doi") or reference.get("isbn")
-    citation = reference.get("citation") or ""
-    return f"{citation} ({found_by})" if found_by else citation
 
 
 def _sync_spectra(
@@ -709,8 +693,8 @@ def seed(
     for outcome in outcomes:
         if not outcome.loaded:
             refreshed = (
-                "; its window, radical allowance and polarity were brought up to "
-                "date with the list"
+                "; its row was brought up to date with what the list says of its "
+                "window, radical allowance, polarity and citations"
                 if outcome.refreshed
                 else ""
             )
