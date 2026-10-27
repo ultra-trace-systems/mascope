@@ -956,7 +956,7 @@ def _manage_pending(*, confirm: bool, snooze: Optional[int]) -> None:
             f"Confirmed a retry of {pending.kind} update {pending.version}, which "
             f"failed to apply at {held.failed_at}; it will apply at the next "
             "maintenance window. If it was fixed in place and already runs "
-            "healthily, that run finds it up to date and only lifts the hold."
+            "healthily, the next run finds it up to date and only lifts the hold."
         )
     runtime.logger.success(message)
     auto_update.record_status(mascope_path, message)

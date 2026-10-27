@@ -19,7 +19,7 @@ Everything below assumes an Ubuntu host provisioned with
 | **Status at a glance** | `mascope prod doctor` (add `--json` to script it) |
 | **Check for an update (applies nothing)** | `mascope prod update --check` |
 | Update now | `mascope prod update` |
-| Approve / defer a pending migration update | `mascope prod update --confirm` / `--snooze 7` |
+| Approve / defer a pending migration update, or retry / quiet a held release | `mascope prod update --confirm` / `--snooze 7` |
 | Enable unattended updates | edit `/etc/mascope/update.env`, then `sudo systemctl enable --now mascope-update.timer` |
 | Update history | `cat "$(mascope path)/.runtime/update/status.log"` |
 | Back up now | `mascope prod db backup create` |
@@ -307,9 +307,10 @@ Each run:
   retries it once at the next window; `--snooze <days>` keeps it held but
   quiet for those days. A newer release is tried as usual. Deploying the
   failed release by hand (`mascope prod update --version <tag>`) lifts the
-  hold too. If you fixed it in place instead (a config fix, then
-  `mascope prod up`) and it now runs healthily, `--confirm` acknowledges
-  that: the next run finds the stack up to date and only clears the record.
+  hold too. If the stack still runs the held release and came up healthy
+  once you fixed the cause in place, with no redeploy, `--confirm`
+  acknowledges that: the next run finds the stack up to date and only clears
+  the record. After a rollback, a `--confirm` retries the release instead.
 
 An applied update also moves the deployment checkout to the release it
 deployed, so a reboot redeploys that same release and `mascope prod doctor`
@@ -358,10 +359,10 @@ git fetch --tags && git checkout vX.Y.Z   # the release the update applied
 CFLAGS="-std=c17" uv tool install --force --reinstall --python 3.12 .   --with-executables-from mascope-cli
 ```
 
-Steer a pending migration update:
+Steer a pending migration update, or a release held after its apply failed:
 
 ```sh
-mascope prod update --confirm    # apply at the next window, skip the grace wait
+mascope prod update --confirm    # apply at the next window: skip the grace wait, or retry a held release
 mascope prod update --snooze 7   # postpone 7 days
 ```
 

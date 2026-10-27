@@ -357,6 +357,8 @@ def test_confirm_says_it_retries_a_failed_release(auto_env, root):
     assert "Confirmed a retry of fast update v1.4.0" in log
     # Fixed in place, the release already runs: the confirm acknowledges that.
     assert "fixed in place" in log
+    # The hold lifts at the next timer run, not only at the window's.
+    assert "the next run finds it up to date" in log
 
 
 def test_confirm_of_a_fix_in_place_lifts_the_hold(auto_env, root):
