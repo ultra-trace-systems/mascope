@@ -566,7 +566,14 @@ def _whole_acquisition_stage(kit: Surface) -> dict[str, float]:
     # a series is computed when it is first asked for (the stage load's
     # warning says so): ask for it first, whatever ran before
     kit.load_timeseries(isotope=PROTONATED, samples=sample)
-    found = _found(kit.load_peaks_by_stage(sample, [(first, last, "whole")]))
+    frame = kit.load_peaks_by_stage(sample, [(first, last, "whole")])
+    # The peaks it still leaves out are others, whose series nothing asked
+    # for: that makes the stage incomplete, and this answer no less whole.
+    # A read that failed still does.
+    if any(note.error_type != "TimeseriesNotComputed" for note in frame.failures):
+        _whole(frame)
+    df = frame.df
+    found = df[df["match_score_isotope"] > 0]
     rows = found[found["target_isotope_formula"] == PROTONATED]
     return {"height": float(rows["height"].max()) if not rows.empty else None}
 

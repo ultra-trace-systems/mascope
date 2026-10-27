@@ -70,6 +70,9 @@ never prompt.
 
 **Completeness.** Every Frame says whether it is the whole answer:
 `complete` is False when some read failed, and `failures` names each one.
+A stage of `load_peaks_by_stage` is incomplete too when the server left
+peaks out of it because their time series was not computed yet: its
+failure (`TimeseriesNotComputed`) says how many (`excluded_peaks`).
 `warnings` carries what the server warned about the reads, and
 `provenance` the server's provenance block.
 

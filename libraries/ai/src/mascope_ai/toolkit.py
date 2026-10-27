@@ -36,6 +36,7 @@ import pandas as pd
 
 from mascope_sdk import MascopeClient, _loaders
 from mascope_sdk.exceptions import ValidationError
+from mascope_sdk.resources.samples import _EMPTY_RANGE_UNEXPLAINED
 
 from .errors import (
     LISTED,
@@ -262,6 +263,32 @@ class _RowCap:
                 left=[item for k, item in self.items.items() if k not in self.done],
                 hint=self.hint,
             )
+
+
+#: The server's warning on a time-ranged peak read that left peaks out,
+#: their count first (``_aggregate_time_range`` in the backend's
+#: ``samples_peaks``).
+_EXCLUDED = re.compile(
+    r"(\d+) peak\(s\) were excluded because their timeseries have not been "
+    r"computed yet"
+)
+
+
+def _excluded(warnings: Iterable[str]) -> int | None:
+    """How many peaks a time-ranged read's *warnings* say it left out.
+
+    0 when they say none was; None when they say some may have been
+    without a count - the SDK's own warning on an empty read from a server
+    that does not list its warnings.
+    """
+    total, uncounted = 0, False
+    for text in warnings:
+        found = _EXCLUDED.search(str(text))
+        if found:
+            total += int(found.group(1))
+        elif str(text) == _EMPTY_RANGE_UNEXPLAINED:
+            uncounted = True
+    return None if uncounted and not total else total
 
 
 def _check_cap(max_rows: Any, name: str = "max_rows") -> int:
@@ -1364,6 +1391,13 @@ class Toolkit:
     ) -> Frame:
         """Load a sample's averaged peaks for each time range (stage).
 
+        A stage is a time-ranged read, and the server leaves out of it every
+        peak whose time series it has not computed yet - typically the peaks
+        no target matched. Such a Frame is not complete: each stage short of
+        peaks is in its ``failures``, with how many it left out
+        (``excluded_peaks``). ``load_peaks`` reads the sample's whole peak
+        list, those peaks included.
+
         :param stages: ``(t_min, t_max)`` or ``(t_min, t_max, name)`` each.
         :raises RowCapExceeded: With the rows reached and the stages left.
         """
@@ -1415,6 +1449,16 @@ class Toolkit:
                 hint=hint,
             )
         cap = _RowCap(max_rows, "stage", items, lambda args: args[0], hint)
+        # The stages' warnings come back merged, each once; the count each
+        # stage left out is read as it arrives
+        excluded: dict[int, int | None] = {}
+
+        def watch(args: tuple[Any, ...], frame: pd.DataFrame) -> None:
+            left_out = _excluded(frame.attrs.get("warnings", ()))
+            if left_out != 0:
+                excluded[args[0]] = left_out
+            cap(args, frame)
+
         with self._errors("read the stage peaks of", sample):
             try:
                 df = _loaders.load_peaks_by_stage(
@@ -1425,7 +1469,7 @@ class Toolkit:
                     areas=areas,
                     heights=heights,
                     max_workers=self.max_workers,
-                    on_result=cap,
+                    on_result=watch,
                 )
             except ValueError as e:  # the SDK's "Sample ... not found."
                 raise NotFound(
@@ -1433,6 +1477,27 @@ class Toolkit:
                     "sample",
                     "It may have been deleted, or never been visible to this user.",
                 ) from e
+        if df is not None and excluded:
+            # Rows are missing as surely as from a read that failed: the
+            # stage is not the whole answer, whatever the reads say
+            df.attrs["failures"] = list(df.attrs.get("failures", [])) + [
+                {
+                    "sample_item_id": sample.id,
+                    **items[stage],
+                    "excluded_peaks": left_out,
+                    "error_type": "TimeseriesNotComputed",
+                    "error": (
+                        f"{left_out} peak(s) left out: the server has not "
+                        "computed their time series."
+                        if left_out is not None
+                        else "No peak came back, and this server does not say "
+                        "whether their time series were missing."
+                    )
+                    + " load_peaks reads the whole peak list.",
+                }
+                for stage, left_out in sorted(excluded.items())
+            ]
+            df.attrs["complete"] = False
         return df, [sample]
 
     # --- the oracle ----------------------------------------------------------

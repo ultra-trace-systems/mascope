@@ -171,11 +171,20 @@ class TestLoaders:
 
     def test_stages(self, kit, peaks):
         sample_id = peaks.df["sample_item_id"].iloc[0]
+        listed = peaks.df.loc[peaks.df["sample_item_id"] == sample_id, "peak_id"]
 
         frame = kit.load_peaks_by_stage(sample_id, [(0, 1e6, "all")])
 
-        assert frame.complete
         assert "stage_name" in frame.columns or frame.n_rows == 0
+        staged = frame.df["peak_id"].nunique() if frame.n_rows else 0
+        # A stage over the whole acquisition is the sample's peak list, or
+        # says which of its peaks it left out: those without a time series
+        left_out = [note.where.get("excluded_peaks") for note in frame.failures]
+        assert all(
+            note.error_type == "TimeseriesNotComputed" for note in frame.failures
+        ), frame.failures
+        assert frame.complete == (not left_out)
+        assert staged + sum(left_out) == listed.nunique()
 
     def test_timeseries_of_a_matched_compound(self, kit, peaks):
         df = peaks.df
