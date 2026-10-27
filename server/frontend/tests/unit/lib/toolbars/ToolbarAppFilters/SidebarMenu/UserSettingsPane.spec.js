@@ -5,7 +5,9 @@ import { createPinia, setActivePinia } from 'pinia'
 // Settings opens the Deleted datasets dialog for every signed-in user, a guest
 // included: the server decides which records each one sees, so the button is
 // not kept to the Admin section. It sits in a Data section of its own, after
-// API Access Tokens and before Admin, with its own help text.
+// API Access Tokens and before Admin, with its own help text. The Reference
+// lists dialog sits beside it, open to everyone too: the lists are the
+// deployment's, not a workspace's.
 
 const mocks = vi.hoisted(() => ({ app: null }))
 
@@ -24,7 +26,8 @@ vi.mock('@/lib/dialogs', () => {
     DialogAgentPairing: dialog('DialogAgentPairing'),
     DialogMfaSetup: dialog('DialogMfaSetup'),
     DialogMfaReauth: dialog('DialogMfaReauth'),
-    DialogDeletedDatasets: dialog('DialogDeletedDatasets')
+    DialogDeletedDatasets: dialog('DialogDeletedDatasets'),
+    DialogReferenceLists: dialog('DialogReferenceLists')
   }
 })
 vi.mock('@/lib/dialogs/useMfaReauth', async () => {
@@ -90,7 +93,19 @@ describe('UserSettingsPane', () => {
     expect(wrapper.find('.DialogDeletedDatasets').exists()).toBe(true)
   })
 
-  it('puts the button in a Data section with its own help, not in Account', () => {
+  it('opens the Reference lists dialog from its button, for a guest too', async () => {
+    const wrapper = mountPane()
+    expect(wrapper.find('.DialogReferenceLists').exists()).toBe(false)
+
+    const button = wrapper.findAll('button').find((b) => b.text() === 'Reference lists')
+    expect(button, 'no Reference lists button').toBeDefined()
+    expect(button.attributes('data-icon')).toContain('ph-books')
+    await button.trigger('click')
+    expect(wrapper.find('.DialogReferenceLists').exists()).toBe(true)
+    expect(wrapper.find('.DialogDeletedDatasets').exists()).toBe(false)
+  })
+
+  it('puts the buttons in a Data section with its own help, not in Account', () => {
     mocks.app.auth.user.role_id = 400
     const wrapper = mountPane()
     const sections = wrapper.findAll('section')
@@ -99,9 +114,13 @@ describe('UserSettingsPane', () => {
 
     const section = (title) => sections[titles.indexOf(title)]
     const data = section('Data')
-    expect(data.findAll('button').map((b) => b.text())).toEqual(['Deleted datasets'])
+    expect(data.findAll('button').map((b) => b.text())).toEqual([
+      'Deleted datasets',
+      'Reference lists'
+    ])
     expect(data.element.dataset.help).toContain('<b>Data</b>')
     expect(data.element.dataset.help).toContain('Deleted datasets lists a record')
+    expect(data.element.dataset.help).toContain('Reference lists shows the compound lists')
 
     const account = section('Account')
     expect(account.text()).not.toContain('Deleted datasets')

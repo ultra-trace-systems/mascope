@@ -16,7 +16,8 @@ import {
   DialogAgentPairing,
   DialogMfaSetup,
   DialogMfaReauth,
-  DialogDeletedDatasets
+  DialogDeletedDatasets,
+  DialogReferenceLists
 } from '@/lib/dialogs'
 import { useMfaReauth } from '@/lib/dialogs/useMfaReauth'
 import { deviceMetaLabel } from '@/lib/devices'
@@ -34,7 +35,8 @@ const dialog = reactive({
   password: false,
   pairing: false,
   mfa: false,
-  deleted: false
+  deleted: false,
+  reference: false
 })
 
 // The shared step-up-and-retry protocol: token regeneration below runs through
@@ -402,6 +404,7 @@ const vHelpLayer = app.ui.help.directive(layer)
       `
     <b>Data</b>
     <p>Deleted datasets lists a record of each dataset deleted in your workspaces: the data itself is gone, the record stays.</p>
+    <p>Reference lists shows the compound lists this deployment has loaded, and the species each holds.</p>
   `
     "
   >
@@ -412,6 +415,13 @@ const vHelpLayer = app.ui.help.directive(layer)
       severity="secondary"
       text
       icon="pi ph ph-clock-counter-clockwise"
+    />
+    <Button
+      label="Reference lists"
+      @click="() => (dialog.reference = true)"
+      severity="secondary"
+      text
+      icon="pi ph ph-books"
     />
   </section>
   <section
@@ -431,6 +441,7 @@ const vHelpLayer = app.ui.help.directive(layer)
   <DialogAgentPairing v-model:visible="dialog.pairing" />
   <DialogMfaSetup v-model:visible="dialog.mfa" />
   <DialogDeletedDatasets v-model:visible="dialog.deleted" />
+  <DialogReferenceLists v-model:visible="dialog.reference" />
   <DialogMfaReauth v-model:visible="reauthVisible" @verified="onReauthVerified" />
 </template>
 
