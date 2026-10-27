@@ -93,7 +93,12 @@ run_origin() {
     # running. The operator header is deliberately not passed: the origin run
     # does not cross the edge, and the target host has no business holding the
     # edge's bypass.
+    #
+    # The previous run's report is cleared first: report/ persists, and a run
+    # that aborts before writing one (a WAF-refused 403, a usage error, a
+    # crash) would otherwise archive the last good report under today's date.
     local remote_cmd="cd ${SUITE_DIR} && \
+  rm -f report/pentest-report.json report/pentest-report.md && \
   MASCOPE_PENTEST_TARGET='${MASCOPE_PENTEST_TARGET}' \
   MASCOPE_PENTEST_EMAIL='${MASCOPE_PENTEST_EMAIL}' \
   MASCOPE_PENTEST_PASSWORD='${MASCOPE_PENTEST_PASSWORD}' \
@@ -122,6 +127,8 @@ run_cdn() {
     # that sends the bypass, so it must not send it to an impostor.
     (
         cd "$CDN_SUITE_DIR" || exit 2
+        # As at the origin: an aborted run must leave no report to archive.
+        rm -f report/pentest-report.json report/pentest-report.md
         MASCOPE_PENTEST_TARGET="$CDN_TARGET" \
         MASCOPE_PENTEST_EMAIL="${MASCOPE_PENTEST_EMAIL}" \
         MASCOPE_PENTEST_PASSWORD="${MASCOPE_PENTEST_PASSWORD}" \
