@@ -243,7 +243,7 @@ claude mcp add mascope -- python -m mascope_ai mcp  # the Python mascope_ai is i
 | `query_by_mz` | Mascope's candidates for an m/z |
 | `match_compounds` | one condensed verdict per candidate, the unscored apart, the tree's handle |
 | `answer` | closes an answer in the manifest |
-| `session` | the session's directory, the Python to run, the line that opens it |
+| `session` | the session's directory, the Python to run, the lines that open it and a toolkit on it |
 
 `chart` and `table` are not served yet: they come with the toolkit's
 `mascope_viz` artifacts.
@@ -286,10 +286,25 @@ EOF
 ```
 
 Reading a Frame needs no credentials: its rows are in the session's
-directory. `Toolkit(session=session)` in that Python loads more and derives
-Frames into the same session and manifest; it reads the URL and the token as
-the server does. The agent then records its answer with the `answer` tool,
-the code included.
+directory. To load more in that Python, and derive Frames into the same
+session and manifest, the `session` tool's `toolkit` line opens a toolkit:
+
+```python
+from mascope_ai import Session, Toolkit
+
+kit = Toolkit(
+    session=Session(
+        "s-20261027T120000Z-1a2b3c", root="/home/me/.cache/mascope_ai/sessions"
+    ),
+    workspace="ws-1",  # the server's workspace
+)
+```
+
+`Toolkit()` reads the URL and the token as the server does, but not
+`MASCOPE_WORKSPACE` or `--workspace`: given no `workspace`, it opens the
+token's only workspace, and refuses when the token's user has several. The
+line names the server's workspace, by ID once the server has connected. The
+agent then records its answer with the `answer` tool, the code included.
 
 ## The command line
 
