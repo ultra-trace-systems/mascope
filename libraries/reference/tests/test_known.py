@@ -394,6 +394,55 @@ async def test_known_state_fingerprint_tracks_active_sources(sync_engine, db_pat
         await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_a_spectral_library_load_leaves_the_known_state_fingerprint_alone(
+    sync_engine, db_path
+):
+    """A library holds no compound Stage A matches, so its loads are not state.
+
+    Counting them would turn the empty fingerprint of a mirror without compound
+    sources into a non-empty one, so Stage A's no-mirror shortcut stops firing,
+    and every library sync would throw away the cached reference expansion.
+    """
+    from pathlib import Path
+
+    from sqlalchemy import update
+
+    from mascope_reference.adapters.massbank import MassBankAdapter
+    from mascope_reference.ingest import ingest_spectra
+    from mascope_reference.known import known_state_fingerprint
+
+    massbank = Path(__file__).parent / "fixtures" / "msms" / "massbank_records.txt"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        async with async_sessionmaker(engine)() as s:
+            ingest_spectra(sync_engine, MassBankAdapter(), massbank, version="1")
+            # No compound source: still the no-mirror fast path.
+            assert await known_state_fingerprint(s) == ()
+
+            _seed(
+                sync_engine,
+                [({"name": "src-a"}, [{"formula": "C10H16O3", "mass": 184.11}])],
+            )
+            before = await known_state_fingerprint(s)
+            assert len(before) == 1
+            # A second version of the library, and a staged third, change nothing.
+            ingest_spectra(sync_engine, MassBankAdapter(), massbank, version="2")
+            ingest_spectra(
+                sync_engine, MassBankAdapter(), massbank, version="3", activate=False
+            )
+            assert await known_state_fingerprint(s) == before
+            # Nor does a library's scope, which Stage A never reads.
+            await s.execute(
+                update(reference_source)
+                .where(reference_source.c.kind == "spectrum")
+                .values(polarity="negative")
+            )
+            assert await known_state_fingerprint(s) == before
+    finally:
+        await engine.dispose()
+
+
 async def _listings(db_path, formulas, **kw):
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     try:
