@@ -138,6 +138,7 @@ Unzipped, it is one folder, `mascope-package_<dataset id>_<dataset name>`:
 | `target_collections/` | Each collection a batch was matched against, or an ionization mode calibrates with: its compounds with their CAS number, InChIKey, InChI and SMILES where recorded, and the ions formed from them |
 | `instrument_functions.json` | The peak shape and resolution each raw file was processed with |
 | `manifest.json` | All of the above for a program, below |
+| `ro-crate-metadata.json` | The same as an [RO-Crate](#the-ro-crate), the format data repositories and RO-Crate viewers read |
 | `SHA256SUMS` | The SHA-256 of every other file. In the folder, `sha256sum -c SHA256SUMS` checks them all |
 
 `manifest.json` is laid out as the demo dataset's manifest is. Its `schema`
@@ -169,6 +170,29 @@ as it is, both values in its entry.
 
 After the repository mints a DOI, add it to the dataset's related
 identifiers. A package written again then points at the deposit.
+
+### The RO-Crate
+
+`ro-crate-metadata.json` describes the package as an
+[RO-Crate 1.2](https://w3id.org/ro/crate/1.2): JSON-LD in
+[schema.org](https://schema.org) terms. Data repositories, harvesters and
+generic RO-Crate viewers read it without knowing Mascope. It says nothing
+`manifest.json` does not, and the manifest keeps its keys.
+
+| In the crate | What it holds |
+|---|---|
+| The root `Dataset` | The dataset's name, description, licence, keywords, global id, and the time its files were acquired in |
+| `author` | Each author as a `Person`, with their ORCID iD as the `@id` where it is recorded, and their affiliation |
+| `funding`, `funder` | Each funding entry as a `Grant`, its award the `identifier`, and the funder as an `Organization` |
+| `citation`, `isBasedOn`, `isPartOf` | The related identifiers, a DOI or URL as the `@id`. `IsDerivedFrom`, `IsNewVersionOf` and `IsVersionOf` become `isBasedOn`, `IsPartOf` becomes `isPartOf`, and any other relation `citation`. Each one's description keeps the relation as written |
+| `measurementTechnique` | The PSI-MS terms of the instrument models, ion sources, mass analysers and detectors |
+| `hasPart` | Every file, with its SHA-256 (`sha256`) and size, and each folder |
+| `mentions` | The action that wrote the package: when, and with which Mascope and raw-file reader versions |
+
+A licence the dataset dialog suggests is named by its SPDX entry. Any other
+licence, or none, is named as it was recorded: RO-Crate asks for a licence,
+and the crate does not guess one. `SHA256SUMS` has its size in the crate but
+no checksum, since it holds the crate's own.
 
 ## Provenance
 

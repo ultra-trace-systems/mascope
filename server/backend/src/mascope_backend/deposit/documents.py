@@ -256,6 +256,12 @@ def _files(manifest: dict) -> list[str]:
             f"`{manifest['schema']}`.",
         ),
         (
+            "`ro-crate-metadata.json`",
+            "The same as an RO-Crate (https://w3id.org/ro/crate/1.2): "
+            "JSON-LD in schema.org terms, which data repositories and "
+            "generic RO-Crate viewers read.",
+        ),
+        (
             "`SHA256SUMS`",
             "The SHA-256 of every other file. In the package's directory, "
             "`sha256sum -c SHA256SUMS` checks them all.",
