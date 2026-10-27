@@ -363,11 +363,18 @@ N2O.
   order, which puts `[15N]` before `N` (`C6H17[15N]NO5+`; peaky writes
   `C6H17N^NO5+`). Peaky's spelling is read on input.
 - **Masses.** Mascope's monoisotopic masses (pyteomics) differ from peaky's
-  table in the last digits, most for I (1.1 uDa) and S (0.3 uDa). A reading's
-  ppm moves by at most 0.01 ppm, so a candidate within 0.01 ppm of the window's
-  edge, or two candidates whose |ppm| differ by less than that, can come out
-  differently. Over 288,000 random candidate lists the two engines agreed but
-  for such near-ties.
+  table in the last digits, most for I (1.1 uDa) and S (0.3 uDa). Pyteomics
+  ships NIST's table as it stood before 2015 (AME2003); peaky's mixes older and
+  newer values. Neither is current throughout: against NIST's current masses
+  (AME2012), peaky's I, F and Si are exact and pyteomics' S, O and N are
+  closer, and both carry the older P and Br values. Pyteomics' I is 1.1 uDa
+  high but within 127I's own uncertainty (3.9 uDa); S is off in both,
+  pyteomics' by 0.17 uDa and peaky's by 0.48, against an uncertainty of
+  0.0014 uDa. A reading's ppm moves by at most 0.01 ppm (0.0097: an ion's
+  relative difference cannot exceed its worst element's, S's), so a candidate
+  within 0.01 ppm of the window's edge, or two candidates whose |ppm| differ
+  by less than that, can come out differently. Over 288,000 random candidate
+  lists the two engines agreed but for such near-ties.
 - **Shape.** `read_fragments` is peaky's `assign_fragments` returning `Reading`
   rows rather than a DataFrame (`readings_frame` builds one), with the window
   as one `Tolerance` and a `spectrum` key on each row; `ladder_gate` takes those
@@ -381,5 +388,8 @@ N2O.
   formulas obtained by accurate mass spectrometry.* **BMC Bioinformatics**
   2007, 8:105.
   [link](https://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-8-105)
+- NIST. *Atomic Weights and Isotopic Compositions for All Elements*, version
+  4.1 (2015), relative atomic masses from AME2012.
+  [link](https://physics.nist.gov/cgi-bin/Compositions/stand_alone.pl)
 - Peaky, `docs/MS2.md` sections 1 to 9 and 11.2;
   [github.com/ultra-trace-systems/peaky](https://github.com/ultra-trace-systems/peaky).
