@@ -169,6 +169,15 @@ MATRIX = [
         0,
         "lag=unknown current=v1.7.2",
     ),
+    # The pattern is anchored at both ends: a prefixed build names no release.
+    (
+        "prefixed-build",
+        "build-v1.7.9",
+        _tag("v1.7.10"),
+        0,
+        0,
+        "lag=unknown current=v1.7.10",
+    ),
     # An assessment failure outranks a deployment one.
     (
         "failing-and-behind",
