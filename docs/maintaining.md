@@ -1890,6 +1890,36 @@ docker compose exec backend python -m mascope_backend.db.scripts.reference_deact
 Annotation and peak assignment stop reading it at once. `reference_seed` loads a
 shipped list again, and a new `reference_sync` loads any other source.
 
+#### MS/MS spectral libraries
+
+The same script loads the open MS/MS libraries - MassBank, MoNA and GNPS - as
+reference spectra, for the spectral-similarity ranking to score a sample's MS2
+spectra against. Nothing reads them yet: loading one changes no annotation and
+no assignment.
+
+```sh
+docker compose exec backend python -m mascope_backend.db.scripts.reference_sync massbank /data/MassBank-data-2026.03.tar.gz --version 2026.03
+```
+
+- `massbank` reads the source archive of a
+  [MassBank-data release](https://github.com/MassBank/MassBank-data/releases)
+  as downloaded, `mona` a MoNA MSP export (unzipped), `gnps` a GNPS library
+  MGF.
+- Each load is versioned, and `--stage`, `--prune` and `--name` work as for
+  any source. Load two exports of one library under names of their own, such
+  as `--name mona-positive`.
+- A library cannot be loaded under the name of a compound source, nor a
+  compound source under a library's: the load is refused before it starts.
+- The window, radical and polarity flags are refused: Stage A never matches a
+  spectrum.
+- The load reports how many records it left out and why: MS1 or MS3 records,
+  predicted (in-silico) spectra, records without a precursor.
+
+Every spectrum keeps the licence its record states. MassBank alone holds
+non-commercial ones (`CC-BY-NC`, `CC-BY-NC-SA`), and a MoNA or GNPS record that
+states none is tagged `mona-unstated` or `gnps-unstated`. The licence gate
+below is Stage A's and does not apply to spectra.
+
 ### Reference licence gating
 
 Every mirrored record carries a licence **tag** - a short exact string, not a
