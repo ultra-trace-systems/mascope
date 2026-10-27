@@ -9,26 +9,37 @@ identity and its ion, and an instrument function. Its package is built from
 the test database and a filestore of the test's own, and read back as a
 stranger would: the zip, its README, its checksums and its manifest.
 
+The app's "Prepare for publication" is tested on the same dataset, through its
+routes: the preview, the gaps, the build in the background, the download, and
+that the archive downloaded is the one the operator command's builder writes.
+
 The spreadsheets read their samples through ``sample_view``, which the test
 schema does not create, so it is created here.
 """
 
+import datetime as datetime_module
 import hashlib
 import io
 import json
 import os
+import time
+import types
 import uuid
 import zipfile
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from urllib.parse import unquote
 
+import openpyxl.packaging.core
+import openpyxl.writer.excel
 import pandas as pd
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
+from mascope_backend import provenance
 from mascope_backend.api.controllers.sample.batches.export import service
+from mascope_backend.api.lib import api_features
 from mascope_backend.db import (
     Dataset,
     InstrumentFunction,
@@ -43,6 +54,7 @@ from mascope_backend.db import (
     TargetCompoundInTargetCollection,
     TargetIon,
     Workspace,
+    WorkspaceMember,
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.db.views import Sample
@@ -1094,3 +1106,320 @@ async def test_a_build_that_fails_leaves_no_archive(dataset, out, monkeypatch):
     with pytest.raises(RuntimeError, match="no spreadsheet"):
         await build_package(dataset.ids.dataset, str(out / "failed.zip"))
     assert list(out.iterdir()) == []
+
+
+# ============= The app's path: "Prepare for publication" =============
+
+
+@pytest_asyncio.fixture
+async def members(async_session_factory, dataset, test_users):
+    """The guest and the editor as members of the dataset's workspace, by
+    those roles, and the editor of a second workspace that holds nothing."""
+    other = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            Workspace(
+                workspace_id=other,
+                workspace_name=f"Other WS {other}",
+                workspace_status="active",
+                workspace_utc_created=_NOW,
+                workspace_utc_modified=_NOW,
+            )
+        )
+        await session.flush()
+        for workspace_id, role in (
+            (dataset.ids.workspace, "guest"),
+            (dataset.ids.workspace, "editor"),
+            (other, "editor"),
+        ):
+            session.add(
+                WorkspaceMember(
+                    workspace_member_id=gen_id(),
+                    workspace_id=workspace_id,
+                    user_id=test_users[role].id,
+                    workspace_role=role,
+                    granted_at=_NOW,
+                    granted_by=test_users[role].id,
+                )
+            )
+        await session.commit()
+    return SimpleNamespace(other_workspace=other)
+
+
+@pytest.fixture
+def temp(tmp_path, monkeypatch):
+    """The env's temp directory, the test's own: where the users' downloads
+    and the builds' own directories go."""
+    root = tmp_path / "env"
+    path = runtime.env.path
+    monkeypatch.setattr(
+        runtime.env,
+        "path",
+        lambda *parts: (
+            str(root.joinpath(*parts)) if parts[:1] == ("temp",) else path(*parts)
+        ),
+    )
+    return root / "temp"
+
+
+#: The instant every build under ``frozen_clock`` is made at.
+_FROZEN = datetime(2026, 3, 4, 5, 6, 8, tzinfo=timezone.utc)
+
+
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return (
+            _FROZEN.astimezone(tz) if tz else _FROZEN.astimezone().replace(tzinfo=None)
+        )
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """
+    One instant for every clock a package reads: the provenance block's, and
+    those openpyxl and zipfile stamp a spreadsheet with. zipfile dates a
+    member written from a string by the time now, and one written from a
+    file by that file's mtime, through ``localtime``: openpyxl writes each
+    worksheet to a temp file and adds it so. Two builds of one dataset differ
+    in nothing else, so under it they are the same bytes.
+    """
+    clock = types.ModuleType("datetime")
+    clock.__dict__.update(vars(datetime_module))
+    clock.datetime = _FrozenDatetime
+    monkeypatch.setattr(provenance, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(openpyxl.packaging.core, "datetime", clock)
+    monkeypatch.setattr(openpyxl.writer.excel, "datetime", clock)
+    zip_clock = types.ModuleType("time")
+    zip_clock.__dict__.update(vars(time))
+    zip_clock.time = _FROZEN.timestamp
+    zip_clock.localtime = lambda secs=None: time.localtime(_FROZEN.timestamp())
+    monkeypatch.setattr(zipfile, "time", zip_clock)
+
+
+@pytest.fixture
+def notifications(monkeypatch):
+    """What the background tasks tell their user, as (status, message, data)."""
+    sent = []
+
+    async def record(rooms, notification, kwargs, result):
+        sent.append((notification.status, notification.message, notification.data))
+
+    monkeypatch.setattr(api_features, "handle_notifications", record)
+    return sent
+
+
+def _preview_path(workspace_id: str, dataset_id: str) -> str:
+    return (
+        f"/api/workspaces/{workspace_id}/datasets/{dataset_id}/export/package/preview"
+    )
+
+
+def _export_path(workspace_id: str, dataset_id: str) -> str:
+    return f"/api/workspaces/{workspace_id}/datasets/{dataset_id}/export/package"
+
+
+@pytest.mark.asyncio
+async def test_the_preview_shows_what_the_package_will_hold(
+    editor_client, members, dataset, temp
+):
+    """Before anything is built: the archive's name, the metadata record as
+    it stands, the batches and their samples, the raw files and their size,
+    and a dataset with all a deposit needs has no gap."""
+    ids, names, raw = dataset.ids, dataset.names, dataset.raw
+    resp = await editor_client.get(_preview_path(ids.workspace, ids.dataset))
+    assert resp.status_code == 200
+    preview = resp.json()["data"]
+    root = f"mascope-package_{ids.dataset}_Package_DS_{ids.dataset}"
+    assert preview["archive"] == f"{root}.zip"
+    assert preview["dataset"]["dataset_id"] == ids.dataset
+    assert preview["dataset"]["dataset_global_id"] == (
+        f"{_DEPLOYMENT}:dataset:{ids.dataset}"
+    )
+    assert preview["dataset"]["license"] == "CC-BY-4.0"
+    assert [a["name"] for a in preview["dataset"]["authors"]] == [
+        "Author One",
+        "Author Two",
+    ]
+    assert preview["dataset"]["keywords"] == ["aerosol", "CI-MS"]
+    assert preview["batches"] == [
+        {
+            "sample_batch_id": ids.first_batch,
+            "sample_batch_name": "First batch",
+            "samples": 2,
+        },
+        {
+            "sample_batch_id": ids.second_batch,
+            "sample_batch_name": _LONG_NAME,
+            "samples": 2,
+        },
+    ]
+    assert preview["raw_files"] == 3
+    assert preview["raw_files_included"] == 2
+    assert preview["raw_files_not_kept"] == [names.gone]
+    assert preview["raw_bytes"] == len(raw.orbi) + len(raw.tof)
+    assert preview["acquisition_records"] == 1
+    assert preview["target_collections"] == [
+        {
+            "target_collection_id": ids.calibrants,
+            "target_collection_name": f"Calibrants {ids.calibrants}",
+            "used_as": ["calibration"],
+        },
+        {
+            "target_collection_id": ids.matched,
+            "target_collection_name": f"Matched compounds {ids.matched}",
+            "used_as": ["matched", "diagnostic"],
+        },
+    ]
+    assert preview["ionization_modes"] == [
+        {"ionization_mode_id": ids.mode, "ionization_mode_name": "Bromide package test"}
+    ]
+    assert preview["gaps"] == []
+    # Nothing is written to preview a package.
+    assert not temp.exists()
+
+
+@pytest.mark.asyncio
+async def test_the_preview_counts_the_files_the_archive_holds(
+    editor_client, members, dataset, out, temp
+):
+    resp = await editor_client.get(
+        _preview_path(dataset.ids.workspace, dataset.ids.dataset)
+    )
+    summary = await build_package(dataset.ids.dataset, str(out))
+    assert resp.json()["data"]["files"] == summary["files"]
+    assert resp.json()["data"]["archive"] == os.path.basename(summary["archive"])
+
+
+@pytest.mark.asyncio
+async def test_the_preview_flags_what_a_deposit_lacks(
+    editor_client, members, dataset, async_session_factory, temp
+):
+    """The descriptive metadata is optional in Mascope; here its absence
+    shows, as the fields to fill in."""
+    async with async_session_factory() as session:
+        row = await session.get(Dataset, dataset.ids.dataset)
+        row.license = None
+        row.authors = None
+        row.dataset_description = ""
+        await session.commit()
+    resp = await editor_client.get(
+        _preview_path(dataset.ids.workspace, dataset.ids.dataset)
+    )
+    assert [gap["field"] for gap in resp.json()["data"]["gaps"]] == [
+        "license",
+        "authors",
+        "dataset_description",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_app_builds_the_archive_the_command_builds(
+    editor_client, members, dataset, out, temp, frozen_clock, notifications, test_users
+):
+    """
+    The acceptance: from the app alone, a dataset goes from its metadata to
+    an archive downloaded, and the archive is byte for byte the one the
+    operator command's builder writes for it at the same instant.
+    """
+    ids = dataset.ids
+    resp = await editor_client.post(_export_path(ids.workspace, ids.dataset))
+    assert resp.status_code == 202
+    assert resp.headers["Process-ID"]
+
+    # The task ran with the request, and told the user which file to fetch.
+    [(status, message, data)] = notifications
+    root = f"mascope-package_{ids.dataset}_Package_DS_{ids.dataset}"
+    assert status == "success"
+    assert data == {"dataset_id": ids.dataset, "download": f"{root}.zip"}
+    assert message.startswith(
+        f"The deposit package of dataset 'Package DS {ids.dataset}' is ready: "
+        "13 files, "
+    )
+    assert "1 sample file(s) have no raw file kept" in message
+    assert "differ from the file uploaded" not in message
+
+    download = await editor_client.get(f"/api/temp/{root}.zip")
+    assert download.status_code == 200
+    command = await build_package(ids.dataset, str(out))
+    with open(command["archive"], "rb") as archive:
+        assert download.content == archive.read()
+
+    # The archive is the user's alone, and the build left no directory.
+    assert sorted(p.name for p in temp.iterdir()) == sorted(
+        ["packages", str(test_users["editor"].id)]
+    )
+    assert list((temp / "packages").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_changed_raw_file_is_named_in_the_notification(
+    editor_client, members, dataset, async_session_factory, temp, notifications
+):
+    async with async_session_factory() as session:
+        sample_file = await session.get(SampleFile, dataset.ids.orbi_file)
+        sample_file.sha256 = "0" * 64
+        await session.commit()
+    await editor_client.post(_export_path(dataset.ids.workspace, dataset.ids.dataset))
+    [(status, message, _)] = notifications
+    assert status == "success"
+    assert (
+        "1 raw file(s) differ from the file uploaded; the manifest gives both "
+        "checksums." in message
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_build_that_fails_leaves_no_download_and_no_directory(
+    editor_client, members, dataset, temp, notifications, monkeypatch, test_users
+):
+    async def broken(sample_batch_id):
+        raise RuntimeError("no spreadsheet")
+
+    monkeypatch.setattr(service, "build_batch_sheets", broken)
+    resp = await editor_client.post(
+        _export_path(dataset.ids.workspace, dataset.ids.dataset)
+    )
+    assert resp.status_code == 202
+    [(status, _, data)] = notifications
+    assert status == "error"
+    assert not data
+    assert list((temp / "packages").iterdir()) == []
+    assert list((temp / str(test_users["editor"].id)).glob("*")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_", ["preview", "export"])
+async def test_a_guest_is_refused(guest_client, members, dataset, temp, request_):
+    """An editor's, as the batch spreadsheet export is: the package holds the
+    spreadsheets, and every raw file of the dataset."""
+    if request_ == "preview":
+        resp = await guest_client.get(
+            _preview_path(dataset.ids.workspace, dataset.ids.dataset)
+        )
+    else:
+        resp = await guest_client.post(
+            _export_path(dataset.ids.workspace, dataset.ids.dataset)
+        )
+    assert resp.status_code == 403
+    assert not temp.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_", ["preview", "export"])
+async def test_a_dataset_of_another_workspace_is_not_found(
+    editor_client, members, dataset, temp, notifications, request_
+):
+    """An editor of one workspace cannot package another's dataset by
+    naming their own workspace in the path."""
+    if request_ == "preview":
+        resp = await editor_client.get(
+            _preview_path(members.other_workspace, dataset.ids.dataset)
+        )
+    else:
+        resp = await editor_client.post(
+            _export_path(members.other_workspace, dataset.ids.dataset)
+        )
+    assert resp.status_code == 404
+    assert notifications == []
+    assert not temp.exists()

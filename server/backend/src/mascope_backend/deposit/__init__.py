@@ -62,9 +62,13 @@ the reason. One whose SHA-256 is not the one recorded at its upload is packed
 as it is, both hashes in its entry, and reported.
 
 The archive is built from the database and the filestore of one deployment,
-by :func:`build_package`: the operator command ``mascope export package``
-(``python -m mascope_backend.deposit``) runs it on the server. It checks no
-workspace role; whoever runs it has the database.
+by :func:`build_package`, and by nothing else. The operator command
+``mascope export package`` (``python -m mascope_backend.deposit``) runs it on
+the server, and checks no workspace role: whoever runs it has the database.
+The app's "Prepare for publication" runs it too, for an editor of the
+dataset's workspace (``mascope_backend.api.new.dataset_package``), so the
+archive a user downloads is the one the command writes. What it shows before
+the build, and the gaps it flags, are :func:`preview_package`'s.
 """
 
 import os
@@ -76,6 +80,7 @@ from mascope_backend.deposit.collect import (
     Package,
     collect_package,
 )
+from mascope_backend.deposit.preview import package_gaps, preview_package
 
 
 __all__ = [
@@ -84,6 +89,8 @@ __all__ = [
     "Package",
     "build_package",
     "collect_package",
+    "package_gaps",
+    "preview_package",
     "write_package",
 ]
 

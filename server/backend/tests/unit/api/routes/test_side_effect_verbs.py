@@ -19,6 +19,7 @@ SIDE_EFFECT_PATHS = {
     "/api/sample/items/{sample_item_id}/export_peak_data",
     "/api/sample/batches/{sample_batch_id}/export_peaks",
     "/api/sample/batches/{sample_batch_id}/export/spreadsheet",
+    "/api/workspaces/{workspace_id}/datasets/{dataset_id}/export/package",
     "/api/sample/batches/{sample_batch_id}/peaks",
     "/api/visualization/ion_focus",
 }
