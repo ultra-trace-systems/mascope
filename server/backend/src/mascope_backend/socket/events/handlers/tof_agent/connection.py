@@ -12,12 +12,7 @@ from mascope_backend.socket.auth import authenticate_socket_connection
 from mascope_backend.socket.auth.exceptions import (
     SocketUnauthenticatedError,
 )
-from mascope_backend.socket.storage import (
-    SocketSessionError,
-    clear_user_session,
-    get_session_user,
-    room_tracker,
-)
+from mascope_backend.socket.storage import clear_user_session
 
 
 @sio.event(namespace="/tof-agent")
@@ -79,27 +74,13 @@ async def connect(sid: str, environ: dict, auth: dict) -> bool:
 async def disconnect(sid):
     """
     Handle socket disconnections on tof-agent namespace.
-    - Remove user from all room memberships (room_tracker)
     - Clear authentication session (session manager)
+
+    A TOF agent's socket joins no rooms, so it leaves none: the room
+    memberships of the user it signed in as belong to that user's web sockets.
 
     :param sid: Socket session ID
     :type sid: str
     """
     runtime.logger.debug(f"TOF-Agent disconnecting: {sid}")
-
-    try:
-        # Clean up room memberships
-        session = await get_session_user(sid, namespace="/tof-agent")
-        user_id = session["user_id"]
-        await room_tracker.leave_all(user_id)
-
-        runtime.logger.debug(
-            f"TOF-Agent disconnected: cleaned up rooms for user {user_id} (sid={sid})"
-        )
-
-    except SocketSessionError:
-        runtime.logger.trace(f"TOF-Agent disconnect: no session found for {sid}")
-
-    finally:
-        # Clear authentication session
-        await clear_user_session(sid, namespace="/tof-agent")
+    await clear_user_session(sid, namespace="/tof-agent")

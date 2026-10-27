@@ -41,6 +41,9 @@ from mascope_backend.socket.events.handlers.default.subscription import (
     subscribe,
     unsubscribe,
 )
+from mascope_backend.socket.events.handlers.tof_agent.connection import (
+    disconnect as tof_agent_disconnect,
+)
 from mascope_backend.socket.eviction import evict_ended_sessions
 from mascope_backend.socket.signed_in import SIGNED_IN_ROOM
 from mascope_backend.socket.storage import (
@@ -968,6 +971,30 @@ async def test_a_service_socket_is_not_indexed(person):
     """Service namespaces join no rooms through subscribe; nothing to evict."""
     await save_user_session("sid-svc", person, namespace="/file-converter")
     assert await get_user_socket_sids(person.id) == set()
+
+
+@pytest.mark.asyncio
+async def test_a_tof_agent_disconnecting_keeps_its_users_web_rooms(person, sio):
+    """
+    A TOF agent signed in as a user holds none of that user's rooms.
+
+    Its disconnect, which follows every reconnect after a network blip, leaves
+    the rooms the user's open tab holds, and clears only the agent's session.
+    """
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await save_user_session("sid-agent", person, namespace="/tof-agent")
+
+    await tof_agent_disconnect("sid-agent")
+
+    assert await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    assert await room_tracker.is_in_room(person.id, f"user-{person.id}")
+    assert await room_tracker.socket_rooms("sid-a") >= {
+        RESOURCE_ROOM,
+        f"user-{person.id}",
+    }
+    with pytest.raises(SocketSessionError):
+        await get_session_user("sid-agent", namespace="/tof-agent")
+    assert await get_session_user("sid-a")
 
 
 @pytest.mark.asyncio
