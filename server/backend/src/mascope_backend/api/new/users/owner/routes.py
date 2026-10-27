@@ -26,11 +26,7 @@ from mascope_backend.db.admin.user.require_password_change import (
     require_password_change_for_all_users,
 )
 from mascope_backend.runtime import runtime
-from mascope_backend.socket.eviction import evict_ended_sessions
-from mascope_backend.socket.records.service import (
-    emit_record_reload,
-    emit_record_updated,
-)
+from mascope_backend.socket.password_change import notify_password_change
 
 
 owner_router = APIRouter(prefix="/api/users/owner", tags=["User Management Owner"])
@@ -117,20 +113,7 @@ async def owner_require_password_change_route(
 
     # Step 3: Notify open sessions. The bulk update fires no ORM events, so
     # without this nothing reaches a browser until its next request is refused.
-    # The auth store re-fetches the current user on this event and ignores the
-    # payload, so a minimal record is enough.
-    # Sockets subscribed before the sweep are evicted from their rooms first,
-    # so nothing more reaches them.
-    for user_id in data["user_ids"]:
-        await evict_ended_sessions(user_id)
-        await emit_record_updated(
-            record_type="user_me",
-            record_id=str(user_id),
-            record={"id": user_id, "must_change_password": True},
-            room=f"user-{user_id}",
-        )
-    # Open user-management tables would otherwise show stale flags.
-    await emit_record_reload(record_type="user")
+    await notify_password_change(data["user_ids"], required=True)
 
     return {
         "message": (
