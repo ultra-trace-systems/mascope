@@ -1448,6 +1448,14 @@ our zone.
    CDN's origin-pull certificate`. The CLI creates the CA file empty on every
    server, so compose starts without it; with the switch on and the file still
    empty, the frontend refuses to start and says why.
+
+   A reinstall turns origin pulls off without a word. Re-running
+   `tooling/ubuntu.sh` as `reinstall` (what it does with no argument) or
+   `uninstall` deletes every `MASCOPE` line from `/etc/environment` and writes
+   back only `MASCOPE_PATH`. The next boot or update then brings the frontend
+   up with origin pulls off, and `:443` answers anyone again. The origin
+   vantage probes `:8443`, so it cannot see this. After a reinstall, add the
+   line again and re-run step 4's `:443` check (403).
 4. Check it. Through the public URL the site works as before. From the host,
    `:443` answers 403 and `:8443` answers 422:
 
