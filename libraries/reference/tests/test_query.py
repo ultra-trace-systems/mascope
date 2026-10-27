@@ -516,6 +516,33 @@ async def test_source_compounds_read_the_active_version_by_mass(sync_engine, db_
 
 
 @pytest.mark.asyncio
+async def test_source_compounds_come_by_mass_before_formula(sync_engine, db_path):
+    # C11H8 sorts after C10H16O3 by formula but is the lighter of the two.
+    with sync_engine.begin() as conn:
+        source = _source(conn, "pah")
+        _compound(conn, source, "heavy", formula="C10H16O3", monoisotopic_mass=184.1)
+        _compound(conn, source, "light", formula="C11H8", monoisotopic_mass=140.06)
+    page = await _read(db_path, source_compounds, "pah")
+    assert [r.source_native_id for r in page.records] == ["light", "heavy"]
+
+
+@pytest.mark.asyncio
+async def test_source_compounds_of_a_reloaded_version_are_its_newest_load(
+    sync_engine, db_path
+):
+    # Re-seeding a list at the same version inserts a second row of that name
+    # and version and deactivates the first.
+    with sync_engine.begin() as conn:
+        first = _source(conn, "hom", active=False)
+        second = _source(conn, "hom")
+        _compound(conn, first, "first-load", monoisotopic_mass=180.06)
+        _compound(conn, second, "second-load", monoisotopic_mass=180.06)
+    page = await _read(db_path, source_compounds, "hom", version="v1")
+    assert page.version == "v1"
+    assert [r.source_native_id for r in page.records] == ["second-load"]
+
+
+@pytest.mark.asyncio
 async def test_source_compounds_read_a_named_version_even_inactive(
     sync_engine, db_path
 ):
