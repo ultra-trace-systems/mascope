@@ -8,6 +8,1087 @@ Changes merged since the newest release below are described in
 [`changelog.d/`](changelog.d/), one file per pull request, until the next
 release gathers them here.
 
+## [1.14.0] - 2026.10.27
+
+### Added
+
+- **A read-only audit of a TOF instrument's m/z calibration.** `db script run
+  audit_tof_calibration`, for one instrument over a date range
+  (`TOF_AUDIT_INSTRUMENT`, `TOF_AUDIT_FROM`, `TOF_AUDIT_TO`; every file, or
+  `TOF_AUDIT_PER_DAY` of each day), refits each file's stored peaks with
+  the calibration node's own matching, selection and fit, under the mode's
+  calibration collection and any calibrant sets named in `TOF_AUDIT_SETS`,
+  and reports per ion and per mass band how far each fit reads: the error
+  where the fit used the ion and where it did not, how often each calibrant
+  is found and kept, the offset of strong peaks from the nearest CHO formula
+  under each of the mode's mechanisms, and the members of the nitrate,
+  sulfate and bromide cluster series. It checks that its refit under the
+  mode's collection lands on the stored fit to 0.01 ppm on every file the
+  node fitted, and says why where it does not. It writes nothing, so no
+  backup is taken before it; `TOF_AUDIT_JSON=1` adds the whole result as
+  JSON. It is the yardstick of the TOF calibration plan
+  (`docs/dev/tof_calibration.md`).
+
+- **An API token reads a batch's two chart series.**
+  `POST /api/match/records/ion/series` (per target ion, each sample's
+  intensity sum and match category) and `POST /api/batch-peaks/records/series`
+  (per batch peak, each sample's peak, intensity and tier), which the app's
+  two batch charts draw from, now answer an SDK token as well as a signed-in
+  browser, with the same workspace permissions; before, a token got 401
+  there. A script gets a batch's series in one call instead of one per
+  sample.
+
+- **A read-only database role on every fleet server.** The fleet's Ansible
+  (`tooling/fleet/`) has a new role, `postgres_readonly`, that keeps a
+  `mascope_readonly` login in each server's Postgres: SELECT on every table
+  and view of the app databases, with default privileges for the tables later
+  migrations add, `default_transaction_read_only = on`, and nothing else. Its
+  password is made on the first run in the checkout's `.runtime/secrets/`,
+  and `--check --diff` shows any drift. Audits and other read-only scripts
+  connect as it from the backend container instead of with the app's own
+  credentials; the fleet README's "Read-only database access" says how.
+
+- **A dataset can say who made it, under which licence, and what it relates
+  to.** The dataset dialog has a descriptive-metadata section: a licence
+  (suggested CC-BY-4.0, CC0-1.0, CC-BY-NC-4.0 or proprietary, or any other),
+  authors in citation order with their ORCID iD and affiliation, keywords,
+  related identifiers such as the DOI of the paper the data supplements, and
+  funding. Every field is optional. The API reports and accepts the fields on
+  datasets, the SDK's dataset listing carries them, and the *Batch* sheet of
+  the batch spreadsheet export appends License, Authors, Keywords, Related
+  identifiers and Funding rows, empty when the dataset has none.
+
+- **A deleted dataset leaves a tombstone.** Deleting a dataset, alone or with
+  its workspace, now keeps a record of what it was: its name, description,
+  type, instrument and descriptive metadata, how many batches, samples and
+  files it held, who deleted it, when and how, and the provenance block of the
+  build that deleted it. `GET /api/datasets/tombstones` lists them, newest
+  first, to members of the dataset's workspace and to global admins and
+  owners, who also see those of deleted workspaces; the SDK reads them with
+  `mascope.datasets.tombstones()`. Datasets removed by raw SQL or a database
+  restore leave none.
+
+- **The SDK lists and reads target collections.** `collections.list()`
+  returns the client's workspace's collections and the global ones as a
+  frame (`batch_id=` narrows it to the collections a batch is matched
+  against, `all_workspaces=True` widens it to every workspace the user
+  belongs to), and `collections.get(collection_id)` returns one collection
+  with its compounds and batches. Until now collections surfaced only as the
+  `target_collection_ids` and `target_collection_names` columns of peaks.
+
+- **`mascope_ai`, a toolkit for AI agents over the SDK.** A new library
+  (`libraries/ai`) that finds, describes and loads Mascope's data as
+  handles rather than tables, the first part of the AI layer in
+  `docs/dev/ai_layer.md`. `find` matches names as literal text (a compiled
+  pattern by regex) across workspaces, datasets, batches, samples and target
+  collections and returns candidates rather than failing on several;
+  `describe` sums up one object in a few lines. The loaders (`load_peaks`,
+  `load_timeseries`, `load_spectrum`, `load_peaks_by_stage`) return a
+  `Frame` whose printed form is its schema, size, completeness and five rows,
+  however large the table; its rows stay in Python behind `.df`, kept as
+  parquet in a per-conversation session directory and loaded again from the
+  recorded query when evicted. A `max_rows` cap holds during the load and
+  stops it with the rows reached and the samples left, loads never prompt,
+  and failures come back as structured errors that say what to do next (a
+  403 names the object and the roles).
+
+- **Global ids in the provenance of an export.** The *Provenance* sheet of a
+  batch's *Batch data* spreadsheet now names its dataset and batch by global
+  id as well, `inputs.dataset_global_id` and `inputs.sample_batch_global_id`,
+  in the form `<deployment_id>:<entity>:<local_id>`, which tells apart records
+  of two deployments that happen to share a local id. A deployment without an
+  id gives none. The format is in `docs/maintaining.md`, *Deployment
+  identity*.
+
+- **The SDK reads a batch's series in one call, and lists files by time.**
+  `batches.ion_series(batch_id)` returns each sample's matched intensity of
+  each target ion of the batch's collections (or of `collection=` or
+  `ions=`), and `batch_peaks.series(batch_id)` each sample's intensity of
+  each batch peak, with the run it was read from on `attrs["run_id"]`: a
+  request or two per batch where `load_peaks` makes one per sample.
+  `sample_files.list(datetime_min=, datetime_max=, instrument=)` lists every
+  file acquired in a time range, in a batch or not, paging through the whole
+  range. All three return long frames stamped with the server's provenance,
+  as the loaders' are.
+
+- **`mascope_viz` resolves a scope of data to its batches and files.**
+  `Scope(dataset=, batches=, instrument=, start=, end=, polarity=, mode=,
+  collection=, tz=)` names what a digest is about, and
+  `resolve(client, scope)` returns its batches in time order (each with its
+  sample count and first and last acquisition time), every file acquired in
+  its range whether or not a batch holds it, the target collections on its
+  batches and the instrument's time zone. A time without a zone is read in
+  the instrument's acquisition zone unless `tz=` names another. Names match
+  as literal text (a compiled pattern by regex); a name that matches several
+  objects returns them as candidates, and one that matches none fails with
+  the names there are. A resolved scope has a short stable key, the same for
+  every spelling of it, for the campaign store to name its directory by.
+
+- **`cheminfo.query_by_mz` reads a peak at any line of its ion.** The SDK's
+  composition query now searches every isotopologue line by default, so an
+  m/z that is a 13C or 81Br line, or a dibromide's brighter 79Br81Br line,
+  finds its formula. This changes what an existing call returns: candidates
+  read at another line come back too, with that line's m/z as their
+  `target_isotope_mz`. Pass keyword-only `isotopologues=False` for the old
+  monoisotopic-only answer. `known_only=True` keeps only formulas of a known
+  reference compound. A server that predates the flags ignores them and
+  searches the monoisotopic line only. The docstring now says the server
+  ignores `limit`.
+
+- **The batch spreadsheet names each sample's instrument in PSI-MS terms.**
+  The Samples sheet ends with ten new columns: the instrument model, ion
+  source, mass analyser, detector and scan polarity as PSI-MS terms, each by
+  name and accession (`MS:1003095`, `MS:1000484`, ...). Another tool can read
+  them without knowing Mascope's own names for things. A value with no term,
+  such as a TOF instrument's model, is left empty. The terms come from one
+  table, `mascope_backend.vocabulary`, checked against PSI-MS release 4.2.6.
+
+- **`mascope_ai` scores candidates through Mascope and records what each
+  answer rests on.** `query_by_mz` returns the formulas Mascope's mass query
+  proposes for an m/z, the closest first. `match_compounds` has Mascope score
+  candidate formulas in a sample. It condenses Mascope's compound to ion to
+  isotopologue tree to one verdict per candidate: the compound score, the
+  status (probable, possible or unmatched), each ion's score and the peaks
+  attributed to it. The tree itself stays a `Frame`. A model's own
+  suggestions are scored the same way, and a formula Mascope refuses or
+  returns nothing for is listed as unscored, with the reason. Each session
+  now keeps a `manifest.jsonl`. It records every call with the objects it
+  touched, the versions and the server's provenance block. It also records
+  each `answer()`, with its code and its values split into those Mascope
+  returned, those the SDK computed client-side (a peak load's ion and
+  compound scores), those code in the session computed, unscored candidates
+  and the model's own statements. `derive()` keeps a table computed from
+  Frames as a Frame whose sources are theirs.
+
+- **The SDK lists the ionization modes.** `mascope.ionization.modes()`
+  gives each mode's ID, name, polarity, file-name token and mechanisms, so
+  a script can turn a sample's `ionization_mode_id` into the mode's name.
+  `GET /api/ionization/modes` and `GET /api/ionization/modes/{id}` now
+  answer an API token as well as a signed-in browser; before, a token got
+  401 there. Changing a mode still needs the web app.
+
+- **A `mascope_viz` scope names its ionization mode by name.**
+  `Scope(mode="Bromide")` now matches a mode's name as the scope's other
+  names match: literal text, a compiled pattern by regex, an ID first. A
+  name two modes share, such as one per instrument, returns both as
+  candidates; with `instrument=`, only that instrument's modes and the
+  shared ones are looked at.
+
+- **The MS2 summary answers every isolation width a group used.** A parent
+  peak group whose scans isolate at two widths reported no width at all. Each
+  group of
+  `GET /api/samples/{id}/ms2/summary` (`ms2(...).get_summary()` in the SDK)
+  now carries `isolation_widths`, every width its scans used with their scan
+  counts, narrowest first. `isolation_width` stays the group's one width when
+  its scans share one, and the group keys of the centroid and timeseries
+  routes do not move.
+
+- **The Thermo reader gives one record per MS2 scan.**
+  `ms2_scan_records()` on both reader backends returns, for every MS2 scan,
+  its time, polarity, precursor m/z, activation and its collision energy, the
+  HCD volts, the isolation width, the scan range, the injection time and the
+  TIC, and says for each field whether it was read from the scan's filter,
+  its trailer or the scan index. A field a scan's trailer lacks is `None`
+  there, never another scan's value.
+
+- **A target compound can say which structure it is.** Compounds take an
+  optional InChIKey, InChI and SMILES, accepted by the compound routes and
+  the SDK. In the app they are set in a *Structure* group with the CAS
+  number, in *Edit compound* and in the collection dialog's *Create new*, and
+  a spreadsheet paste takes them as three more columns. A pasted structure is
+  not applied to a compound that already exists, and its row says so.
+  The structure says what the target stands for, and a match on its formula
+  does not confirm it. An InChI must describe the compound's formula, or the
+  save is refused; a formula change makes the compound another substance and
+  clears all three, unless the update gives them again. The collection dialog
+  finds compounds by InChIKey, and the *Match compounds* sheet of the batch
+  spreadsheet export appends CAS number and InChIKey columns. For compounds
+  stored before, the `backfill_target_compound_identity` maintenance script
+  fills the identity from the active reference chemistry, where a compound
+  with no identity yet has a CAS number and formula that match exactly one
+  InChIKey; run it with `DRY_RUN=1` first.
+
+- **Centroid flags and scan numbers in the per-scan centroids.** Each scan of
+  `GET /api/samples/centroids` and of `centroids_meta` in
+  `GET /api/sample/files/{id}/metadata` now carries its scan number (`scan`),
+  and each centroid its `flags`: the instrument's marks on it, as Thermo's
+  bit values, 2 fragmented, 4 merged, 8 exception (a weak side-lobe peak) and
+  16 reference (the lock-mass peak the scan was corrected with). A client can
+  find a scan's lock mass by its flag rather than by its m/z, and join scans
+  by number rather than by time, which a trailing scan at retention time 0.0
+  defeated. Both routes take `exclude=reference,exception` (any of the four
+  names) to leave such centroids out; nothing is left out by default, so the
+  responses only gain the two keys. The SDK's `samples.get_centroids` takes
+  `exclude` too, and raises when a server too old for the flags ignores it.
+  Both reader backends report the same flags. Averaged centroids and peak
+  detection are unchanged.
+
+- **`mascope_ai`'s `query_by_mz` takes `isotopologues` and `known_only`.**
+  `isotopologues=False` reads the m/z as the ion's monoisotopic line only;
+  by default it may be any line above the server's floor, a 13C or 81Br line
+  among them. `known_only=True` keeps only the formulas of known reference
+  compounds. Both reach the SDK's mass query and the session's manifest.
+
+- **Find structure in *Edit compound*.** The dialog's *Structure* group has a
+  *Find structure* action: it lists the compounds of the active reference
+  lists that have the compound's formula and a structure, the ones with its
+  CAS number first and then the ones with its name, each with its InChIKey,
+  CAS number, list and licence. *Use* on a row fills the InChIKey, InChI and
+  SMILES from it, and the CAS number when the row records one; *Save* keeps
+  them, with the InChI checked against the formula as before. Picking from
+  the compounds of the formula keeps a user from pasting another isomer's
+  identifier; pasting stays possible. The same lookup is
+  `GET /api/target/compounds/structures` and, in the SDK,
+  `compounds.find_structures(formula, cas_number=, name=)`.
+
+- **Sample files and samples export as mzML.** `POST /api/file/mzml`
+  writes a sample file whole, or a sample as its time window: its file's
+  scans of its polarity between its start and end. Each spectrum holds the
+  scan's centroids, the peaks Mascope reads. It runs in the background like
+  the raw download, and its notification names one `.mzML` file or a zip.
+  Thermo raw files only.
+
+- **A dataset's deposit package, for a data repository.** `mascope export
+  package <dataset id>` writes one zip archive of a dataset to upload to a
+  repository such as Zenodo: its raw files, beside each the acquisition
+  record it came with if there was one, its batch spreadsheets, the target collections matched and
+  calibrated against, its instrument functions, a README that says what was
+  measured, how, under what licence, by whom and with which software, a
+  `DATA_LICENSE`, and a `manifest.json` modelled on the demo dataset's, with
+  the SHA-256 of every file and a `SHA256SUMS` that `sha256sum -c` checks.
+  The standalone CLI builds it in the prod backend container and copies it
+  out. *Export files* in the user guide lists what it holds, and
+  `docs/maintaining.md` how to write one.
+
+- **`GET /api/version/public` reports the running version without signing
+  in.** A monitoring host with no account on a server can read which release
+  it runs, for instance to find the servers of a fleet that are behind. It
+  answers the version string alone; the capabilities stay behind
+  `GET /api/version`, which still asks for a signed-in user or a device
+  token and answers them as before.
+
+- **The demo bundle carries MS2 acquisitions, and the reproducibility check
+  compares their spectra.** Bundle 1.4.1 adds four hand-started,
+  stepped-energy MS2 acquisitions of alpha-pinene oxidation products in three
+  reagent-ion chemistries (15N-nitrate, ammonium and uronium) to the 161 MS1
+  acquisitions of 1.3.2, with the three ionization modes and the reference
+  collections they bind to in the seed, so a demo stack serves MS2 spectra
+  and the SDK contract suite's MS2 tests run rather than skip. The bundle
+  build de-identifies a hand-started acquisition's plain name (no polarity
+  segment, no run index) and aliases the second source instrument to the
+  demo's label, so the files join the workspace the test suites bind to.
+  `mascope demo snapshot --update` writes `expected/ms2.parquet`: every
+  (precursor, activation) group of each sample with fragmentation scans, with
+  its averaged centroids down to the peak store's signal-to-noise floor and
+  its scan count and isolation width, and a file with MS2 spectra counts as
+  covered by the goldens. The reproducibility test and `mascope demo verify`
+  compare it group by group, pairing centroids by m/z within the m/z
+  tolerance, so a change that moves an MS2 spectrum is caught as one that
+  moves an MS1 peak is.
+
+- **A file's MS2 scans are read once, when it is converted, and kept.** The
+  converter writes an MS2 store beside the peak store (`ms2.zarr`) for a raw
+  Orbitrap file whose scan census holds fragmentation scans, an MS2-only part
+  included: each (polarity, precursor, activation) group's scans, their
+  records and centroids, and the group's averaged spectrum. The MS2 summary,
+  centroid and timeseries routes answer from it instead of opening the raw
+  file on every request, with the same numbers, and each response says
+  `source: "store"` or `"raw"`. A file converted before this, or whose store
+  could not be written, is read from the raw file as before, and
+  re-processing a file writes its store again. The store's groups are made at
+  0.001 Da: a request at another `parent_peak_tolerance` is answered from
+  them, and the response gives the tolerance its groups were made at. A
+  sample whose time window holds only some of a group's scans has its
+  averaged spectra read from the raw file, and so does one whose window
+  holds several of a precursor's collision energies but not all, when they
+  are averaged together.
+
+- **The scans behind an MS2 spectrum can be read.**
+  `GET /api/samples/{id}/ms2/scans?group=137.0960@hcd25.00` returns each scan
+  of one (precursor, activation) group: its time, precursor, activation,
+  collision energies, isolation width, scan range, injection time and TIC,
+  where each was read from, and its centroids at or above `noise_threshold`.
+  A group is keyed by its parent m/z with four decimals, `@` and its
+  activation.
+
+- **`mascope_tools` reads MS2 fragment peaks as formulas.** The new
+  `mascope_tools.composition.ms2` package reads every peak of an MS2 spectrum
+  as a sub-formula of every ion of its isolation window. It keeps a reading
+  only when the neutral loss splits into at most three molecules - library
+  ones, and at most one unnamed but plausible one - within max(5 ppm,
+  0.3 mDa) of the recalibrated m/z. `read_fragments` ranks the readings of
+  each peak and window ion, and `ladder_gate` admits a fourth loss molecule
+  only when the same ion shows the step before it at some energy. The rules
+  are peaky's, ported with peaky's known answers as tests, so both read one
+  spectrum alike. Formulas are written with 15N as `[15N]`; peaky's `^N` is
+  read too. `libraries/tools/docs/ms2.md` documents every rule and threshold.
+
+- **A list of deleted datasets.** Settings has a *Deleted datasets* button
+  that lists a record of each dataset deleted in your workspaces.
+
+- **Open MS/MS spectral libraries can be mirrored as reference spectra.**
+  `mascope reference sync` and the backend's `reference_sync` script load
+  MassBank (a MassBank-data release archive), MoNA (an MSP export) and GNPS
+  (a library MGF) into a new `reference_spectrum` table, as versioned loads
+  like the compound sources. Each spectrum keeps its precursor m/z, adduct,
+  polarity, collision energy and its kind, centroids, the compound's InChIKey
+  where the library gives one, and the licence its record states; MS1, MS3+,
+  in-silico and deprecated records are left out and counted. `mascope
+  reference status` shows a library's loads as spectra. The library reads them
+  back `by_inchikey` and `by_precursor`, licence-filtered. Nothing scores
+  against them yet.
+
+- **The API lists the loaded reference sources.** `GET /api/reference/sources`
+  returns every active reference source with its label, version, licence,
+  polarity, radical allowance, matching window, compound count, load date and
+  whether the deployment's `[backend] reference_licenses` gate lets peak
+  assignment match it. `GET /api/reference/sources/{name}/compounds` pages
+  through the compounds of a source's active version, or of a named one, with
+  each compound's formula, mass, InChIKey, the DOI its list cites and its tags.
+  Any signed-in user can read both, and an API token too.
+
+- **Mascope measures and serves the axis fingerprint of every raw Orbitrap
+  file.** On some Orbitrap models, the Q Exactive Plus among them, each mass
+  calibration leaves one m/z offset in each frequency band of the Orbitrap
+  axis, which a lock mass cannot remove. As the file converter converts a
+  raw Orbitrap file, it reads those offsets back from the stored profile,
+  per acquisition mode and with the lock mass each scan was corrected with,
+  and keeps the document in the file's `.props` for clients that correct the
+  axis themselves. Mascope alters no m/z with it: its own calibration stays
+  the one-factor scaling. It adds about a second to a conversion and never
+  fails a file: a computation that fails is stored as an `error` document
+  and logged as a warning. It needs the OpenTFRaw reader, 1.4.1 or later; a
+  TofDaq file has none, and `axis_fingerprint = "off"` in the `[backend]`
+  section of the config switches it off.
+
+  `GET /api/sample/files/{id}/axis_fingerprint` serves the stored document,
+  whatever its status, and `missing` for a file converted before it existed.
+  `GET /api/samples/{id}/axis_fingerprint` adds what the sample reads of it:
+  the scans its peak list is built from, the mode they belong to with its
+  lock mass shares over those scans, and the calibration factors Mascope
+  multiplies into the m/z it serves. Both take an API token, and the SDK
+  reads them with `sample_files.get_axis_fingerprint(sample_file_id)` and
+  `samples.get_axis_fingerprint(sample_id)`.
+
+  The `backfill_axis_fingerprint` maintenance script
+  (`mascope prod db script run backfill_axis_fingerprint`) computes the
+  document for files that have none: those converted before the fingerprint
+  existed or while the setting was `"off"`. It reopens the raw data kept
+  beside each file, and also recomputes a document whose status is
+  `unavailable` or `error`, or that another version of the algorithm or
+  other parameters computed. Nothing is re-converted and no sample changes.
+  A run is bounded (`AXF_LIMIT`) and resumable: a file it could not compute
+  is passed over next time until `AXF_RETRY=1`, and `DRY_RUN=1` says what it
+  would do. The reader pipeline notes
+  (`libraries/thermo/docs/reader_pipeline.md`), the calibration page of the
+  user guide and the SDK docs describe what is measured and how to read it.
+
+- **A sample's axis fingerprint lists its scan streams, each with its scans
+  and its calibration factor.** `GET /api/samples/{id}/axis_fingerprint`
+  (and the SDK's `samples.get_axis_fingerprint`) adds `item.streams`: the
+  sample's own stream, or each stream that owns some m/z of a stitched
+  sample. A stitched sample's peaks are on the factor of their own stream,
+  not on the one `item.mz_calibration_factor` gives, which is the file's; a
+  client joins a peak to its factor by the stream its peak listing names.
+  `streams` is null for a sample over every MS1 scan of its polarity, whose
+  peaks are all on the file's factor.
+
+- **Each processed file's chemistry is read off its reagent ions, as an
+  audit.** When a file is bound to an ionization mode, or parked waiting for
+  one, each of its polarities is read for the reagent ions of the shipped
+  chemistries - bromide, iodide, nitrate, 15N-nitrate, uronium and the
+  EASY-IC fluoranthene beam - and what the spectrum names is stored on the
+  file beside the rung and mode that bound it. It binds nothing and changes
+  no result: it is how the detector is measured before it may route a file
+  nothing else binds. A spectrum whose method leaves the reagent ions outside
+  its scan ranges is not called, and neither is one with too few peaks, two
+  reagents alike or a mix of 15N- and 14N-nitrate. `backend.chemistry_detection
+  = "off"` switches it off. The migration adds the nullable
+  `sample_file.binding_evidence` column, empty on every existing file until it
+  is processed again.
+
+- **The MS2 store can be written for files converted before it.**
+  `mascope prod db script run backfill_ms2_store` counts, per instrument, the
+  Orbitrap files whose scan census holds fragmentation scans and no MS2
+  store, and the files with no census, which it leaves alone. With
+  `MS2_STORE_MODE=run` it writes those stores, one raw file at a time with a
+  pause after each (`MS2_STORE_PAUSE`, 1 s), and logs each file's groups. A
+  run can be stopped and started again, `MS2_STORE_LIMIT` caps how many files
+  one run reads, and a file whose store could not be written is passed over
+  until `MS2_STORE_RETRY=1`. The maintaining guide names the step for the
+  update that adds the store.
+
+### Changed
+
+- **No toast for a result the screen already shows.** The composition search
+  pane and the calibration dialog's preview fit render their outcome where it
+  was asked for, so that outcome is no longer toasted on top; it is still kept
+  in the notification log, and a failure is toasted as before. Opening the
+  calibration dialog no longer toasts the preview fit, while applying the
+  calibration still does. A composition search that finds nothing is logged
+  as an info rather than a green success.
+
+- **"Open match" is an action of its own.** An ion's match opens in the Match
+  tab from the ion's right-click menu (*Open match*), with Enter on its row, or
+  with its expander button, whose tooltip now says *Open match* (*Close match*
+  once it is open). Clicking a row still only selects it, for the Batch chart.
+  The disabled Match tab's tooltip names the action: "Open a match from the
+  ion table".
+
+- **Empty lists say what they are for.** The dataset, batch and target
+  collection lists, when empty, show what the list holds and a button to
+  create the first one. The empty dataset and batch lists also say that a
+  copied batch or samples can be pasted in with a right click, the usual
+  way to start from acquisition data. A search that hides every dataset or
+  batch says so instead of reading as an empty list. With no batch open, the target
+  collection pane is headed "Target collections" and asks for a batch, and
+  an empty notification log says what will appear in it.
+
+- **A wheel install says when an update's `--version` will not last.**
+  Without a source checkout at `MASCOPE_PATH`, `prod update --version vX.Y.Z`
+  pins the release for that command only, so the next `prod up` deploys
+  `latest` again. The update now ends with a warning saying so and how to keep
+  the release: set `MASCOPE_VERSION` in the environment the stack is started
+  from. The CLI's README gains a "Limits of a wheel install" section listing
+  this and the other gaps a wheel install still has next to a checkout.
+
+- **The own-backup-server recipe gives each backed-up server an account of its
+  own.** The developer guide's "Using your own backup server" described one
+  shared account with an ordinary shell, which handed every server a key that
+  could delete the other servers' backups, open a shell on the backup server
+  and tunnel through it. It now sets up one SFTP-only account per server,
+  chrooted to its own directory by an sshd `Match Group` drop-in, its key
+  usable only from that server's VPN address, and checks the drop-in with
+  `sshd -t` and `sshd -T` under an automatic revert before reloading. A server
+  reaches its repository through an ssh alias as `sftp:<backup-host>:/repo`,
+  as `tooling/backup.env.example` now shows, and the guide says how to move an
+  existing shared account over one server at a time. It also says what this
+  does not cover: restic over SFTP cannot be append-only, so a compromised
+  server can still delete its own history. The monitoring box's "Receiving
+  the fleet's backups" points to the same recipe.
+
+- **The hosting guide has a section for isolated and restricted sites.** It
+  lists the outbound names a self-hosted server reaches once installed - the
+  egress allow-list to put in front of an IT department that refuses a
+  default route - says what stops without any route, and carries the host
+  hygiene checklist for such a server: time, TLS, OS patching, backups,
+  monitoring and disk. Moved from the isolated-deployment design note, which
+  points there now.
+
+- **The operator sections of the developer guide are in the maintainer
+  runbook.** The nightly backup's full setup (including a backup server of
+  your own), restoring and the notes on large databases, the PostgreSQL tuning
+  reference, and `mascope env sync` (copying an environment's filestore and
+  database between hosts) moved from `docs/dev/developer_guide.md` to
+  `docs/maintaining.md`, which now holds every operator procedure; the guide
+  points there, and its Deploying section defers the host setup and release
+  walkthrough to `docs/hosting.md` and keeps the image pipeline and how a
+  release is cut. The guide's frontend section gains an as-built summary of
+  `lib/location`, the reload restore and shareable links.
+
+- **The contract for publishing an external engine's assignment run is a user
+  page.** *SDK & API > Publishing an assignment run* says what
+  `POST /api/peak-assignments/sample/{id}/runs/import` takes and refuses: the
+  request and its caps, the row fields and the intensity quantity per
+  instrument, how tiers are derived and checked and where an engine's own
+  verdict goes, the provenance keys the server reserves, how an import is
+  chunked and retried, and what an import replaces and keeps. The reference
+  library's README lists the public sources its adapters mirror, with the
+  dump each reads and its licence. Both moved from design notes under
+  `docs/dev`, which point there now.
+
+- **The operator documentation covers the method-binding switch, the TOF
+  calibration audit, and what a backend start does for peak assignment.**
+  `docs/maintaining.md` gains "Method bindings" (`backend.method_binding`,
+  the two backfills that prime the table from a server's history, and the
+  two read-only reports, `report_method_binding_disagreements` and
+  `report_stitch_overlaps`), "Auditing a TOF instrument's mass calibration"
+  (`audit_tof_calibration` and its `TOF_AUDIT_*` variables), and, under peak
+  assignment, what every start seeds and why the first one may be slow, the
+  standard mechanism notation and its migration, and how interrupted runs are
+  reclaimed at startup. The how-it-works calibration page states the TOF
+  matching constants and that a TOF fit is absolute. All of it moved from
+  design notes under `docs/dev`, which point there now.
+
+- **Authoring and loading a reference compound list has a user guide.** The
+  CSV schema the `custom` adapter reads, the sync flags that bound a list, how
+  loads are staged, activated and pruned, and the format of the lists Mascope
+  ships moved from a design note under `docs/dev` to *Guides > Reference
+  compound lists* in the user documentation; the operator and developer pages
+  that described them point there.
+
+- **The file converter no longer reports its retries to error monitoring.**
+  When a request to the backend fails and is retried, each retry is now
+  logged at INFO instead of WARNING. A backend restart that the next attempt
+  outlasts no longer opens a GlitchTip issue. A request that still fails
+  after the last retry is reported as before, by the step that made it.
+
+- **The acquisition record's schema and the export files have user pages.**
+  *Instruments & acquisition > Acquisition records* is the reference for a
+  program that writes a record beside each raw file: the sidecar's place and
+  size, the fields, the rules for identifiers, hashes and times, and what a
+  reader of the schema keeps and refuses. *Reference > Export files* lists the
+  sheets and columns of the batch data spreadsheet, the peak data CSVs and
+  the provenance block they carry. Both moved from design notes under
+  `docs/dev`, which point there now.
+
+- **The raw-file reader is OpenTFRaw 3.1.0, which reads targeted MS2 files
+  with a named inclusion list itself.** Mascope's interim decoder for those
+  files (`mascope_thermo/v66_scan_events.py`) is removed, and with it the
+  warning such a file logged each time it was read. The reader reads every
+  scan-event record at its own size, so these files read as before: on the
+  four of the internal regression corpus, every scan's filter, centroids and
+  profile are the ones the interim gave them. Three more things the new
+  reader brings:
+  - `GET /api/sample/files/{id}/scans` now gives a file's
+    `calibration_status`, the overdue mass calibrations its first and last
+    scan name, under the default reader too. The reader decodes the
+    instrument's status log, which it never found before; the status agrees
+    with the Thermo library's on all 164 files compared.
+  - A method that sets an in-source CID energy now shows it in the scan
+    filter (`sid=20.00`) wherever the method's layout hid it before, so the
+    scan stream of such a file gets a new name.
+  - Fusion Lumos, Eclipse and Orbitrap Elite MS1 profiles come back in m/z,
+    where they came back as frequencies.
+
+  Everything else reads as before on 433 files (the demo bundle's 161, the
+  two committed sample files and the corpus's 270 Orbitrap files): every
+  scan's centroids and profile, MS2 scans included, and the averaged
+  centroids and profiles (GitHub #2391).
+
+  A raw Orbitrap file's cached profile is named after the reader that
+  averaged it, so each sample is averaged anew on its first view after the
+  upgrade, to the profile it had.
+
+  Operators: the caches OpenTFRaw 2.0.0 averaged (`...otf2.0.0-g5.zarr`) are
+  never read again. Reclaim the space with
+  `python -m mascope_backend.db.admin.filestore delete-stale-sum-signal`.
+
+- **The demo dataset is now bundle v1.3.2**
+  ([10.5281/zenodo.23562417](https://doi.org/10.5281/zenodo.23562417)),
+  built with OpenTFRaw 3.1.0, the reader the reproducibility check now
+  expects. Same 161 acquisitions, the same reference data and the same
+  goldens: all 42,521 peaks and 17,254 ions hold the values 1.3.1 gave them.
+  Bundle 1.4.1, which adds MS2 acquisitions to it (under Added), is the one
+  `mascope demo` picks up by default; 1.3.1 and 1.3.2 stay registered so a
+  pinned run still resolves.
+
+- **The TOF calibration audit no longer reports a family offset that reads nothing.**
+  `audit_tof_calibration` now narrows the family window to half the spacing between CcHhOo
+  formulas where that is under 30 ppm, so an offset that would alias onto the next formula is
+  not counted. A band whose offsets fill the window reads "no reading: flat" instead of a
+  median. Two new settings tune it: `TOF_AUDIT_FAMILY_WINDOW_SPACING` and
+  `TOF_AUDIT_FAMILY_PEAKED_IQR`.
+
+- **The password-change script moves open tabs to the password screen at once.**
+  `require_password_change` now notifies open sessions as **Manage users** does,
+  instead of leaving them until their next request is refused.
+
+- **The untargeted search reads a TOF isotope peak against every line it holds.**
+  On a TOF, the peak one mass unit above a compound holds its 13C line and also
+  its 15N, 2H and 17O lines. The search predicted the 13C line alone, so that peak
+  read high against its prediction, by 6% for C10H15NO3. It now merges the lines
+  one peak of the file's resolving power cannot separate, on every instrument.
+  A file with no recorded resolving power is read as before. The run's scoring
+  record says which it was.
+
+- **A file-converter event rejected for its token now says so.** When the
+  backend drops an event from the file converter because its access token is
+  missing, invalid or expired, or its user is below editor, the event's
+  acknowledgement now carries `{"error": "<code>"}`, such as
+  `SOCKET_UNAUTHENTICATED`. Before, a rejected event was acknowledged exactly
+  like an accepted one. The codes are listed in the developer guide.
+
+- **The assignment mass gate also calibrates on the source's own lines.** A run
+  measures its mass calibration over its corroborated commits and needs eight of
+  them to fit one. The reagent pre-pass claims the source's ions before either
+  stage sees them, and on a charge-transfer source those ions are the mode's
+  calibration compounds: on a certified-cylinder set four of seven files kept
+  seven commits and ran with no calibration at all. The fit now pools the
+  monoisotopic lines the pre-pass claimed (the reagent's ladder, the air's ions
+  and the calibrant beam) with the commits, in a run and in the ingest fold
+  alike. The centre's mass trend is still drawn over the commits alone.
+  `config.mass_calibration` counts every point the fit used in `anchors` and
+  the source's lines among them in `reagent_anchors`. A source's brightest lines
+  can read above its analytes' axis, so on such a sample the constant centre
+  moves toward them.
+
+- **The TOF calibration audit says why it could not read a file.**
+  `audit_tof_calibration` counted each file it could not audit by the
+  exception's type alone, so a mode whose files were all stored as blanks
+  read only as a column of `ValueError`. It now counts and lists them by
+  cause: stored as a blank (an empty peak store and no instrument
+  functions), no peak store, no instrument functions, or instrument
+  functions it could not read. `TOF_AUDIT_JSON=1` lists each such file with
+  its cause under `unreadable`.
+
+- **`mascope dev run --instance` skips a slot whose ports are taken.** A new
+  instance no longer takes a slot when another process already listens on its
+  API or frontend port, such as a bare `mascope dev run` or another service on
+  8090. It takes the next slot that is free in the registry and on the host,
+  and logs which slot it skipped. A worktree that already has an instance
+  keeps its slot.
+
+- **A peak on a neighbour's TOF isotope peak is read against that whole peak.**
+  On a TOF, the peak one mass unit above a compound holds its 13C, 15N, 2H and 17O
+  lines. The check that reads a peak as a committed neighbour's isotope line, and the
+  claim that then files it under that neighbour, predicted the 13C line alone. For a
+  nitrogen-rich ion that line sits 20 ppm off the peak and far under its height. Both
+  now read the lines one peak of the file's resolving power holds, as the untargeted
+  search already does. The run's tiering record says which way it read them, and the
+  tiering rule set is now 10.
+
+- **The reagent pass claims a TOF reagent ion's isotope peak as one line.**
+  On a TOF, a reagent ion's peak one mass unit up holds its 13C and 15N lines and the
+  rest. The pass looked for each line on its own, at a TOF's 10 ppm, but that peak sits
+  at their joint centre: 14 ppm from the nitrate dimer's 15N line, and 19 ppm from the
+  urea dimer's 13C line. So it found no line there, and left the peak for the search to
+  explain. It now looks for the lines one peak of the file's resolving power holds, at
+  their combined height. A file with no recorded resolving power is read as before.
+
+- **The deposit package no longer publishes the instrument computer.**
+  `mascope export package` leaves the `machine` block, the host name and
+  Windows machine GUID, out of each `raw/<file>.mascope.json`; the database
+  keeps the record whole. The package README and the user guide also say that
+  raw file headers are copied unchanged and may name the instrument.
+
+- **The composite cut is on by default.** A raw Orbitrap file whose
+  acquisition method measures several m/z ranges in a polarity now has the
+  peaks of each range detected over that range's own scans and stitched into
+  one spectrum per polarity, with each range calibrated and fitted an
+  instrument function of its own, as on the servers that have run
+  `composite_scan_streams` since 1.11.0. Until now the default pooled every
+  MS1 scan of a polarity, so an ion that a short range measured read low,
+  divided by the scans of every range. A file with one range in each
+  polarity, which is nearly every file, is processed as before. Only files
+  converted after the upgrade change: a file already converted stays pooled
+  until it is re-processed, so a batch that mixes the two shows a step where
+  they meet. "The composite cut" in `docs/maintaining.md` has the paced
+  runbook for re-processing older files. A server that has to keep pooling
+  sets `composite_scan_streams = false` in the `[backend]` section of its
+  env's `prod.mascope.toml`.
+
+### Removed
+
+- **`mascope-cli` no longer publishes a `dev` extra.** It named a package
+  that is not on PyPI, so `pip install "mascope-cli[dev]"` could not
+  resolve. The developer commands it served run only in a source checkout,
+  which installs their packages itself. CI now checks the CLI's declared
+  dependencies with `deptry`.
+
+### Performance
+
+- **Under the Thermo library, a stream's scans are found without reading
+  each scan's whole trailer as text.** Selecting a stream and taking a
+  file's census read every scan's trailer as text for its FT resolution
+  alone. They now read the one number the file stores, and the text only
+  where that number is missing or not whole, so every stream key stays as
+  it was. The OpenTFRaw reader, the default, is unchanged.
+
+### Fixed
+
+- **Per-client rate limits are per client again on a host whose Docker runs
+  with `iptables: false`.** Such a host relays every connection to the
+  frontend through Docker's userland proxy, so nginx saw each request arrive
+  from the Docker bridge gateway and never read Cloudflare's
+  `CF-Connecting-IP`. Every client of the deployment shared one budget: the
+  login limit (10 attempts a minute), the stricter `/api/auth/` edge bucket and
+  the API's request and connection caps were all deployment-wide, so one
+  misbehaving client could throttle everyone, and the access logs recorded the
+  gateway instead of the client. The HTTPS config now trusts
+  `CF-Connecting-IP` from the gateway as well, which the container works out
+  from its own default route at start. A client that reaches the published
+  port directly, not through Cloudflare, can then name its own address in
+  that header, so the firewall should admit only Cloudflare to the port. A
+  deployment with no Cloudflare in front should set
+  `MASCOPE_TRUST_DOCKER_GATEWAY=off` (`docs/hosting.md` has the details).
+
+- **`mascope demo` on a wheel install points at the demo stack instead of
+  crashing.** The bare command, `snapshot` and `verify` drive the source tree,
+  so a CLI installed from PyPI now offers only `demo fetch` and `demo info`.
+  `mascope demo` there exits with the `docker compose` command that starts the
+  demo stack `mascope init` wrote, rather than a `psycopg2` import error.
+
+- **The m/z drift warning reaches error monitoring once a day per instrument
+  again, not once per backend worker.** Each worker kept its own once-a-day
+  window, and production runs one worker per two CPU cores, so one drifting
+  instrument still raised the warning dozens of times a day. The window is now
+  shared through Redis. If Redis does not answer within a second, each worker
+  falls back to its own window, and the calibration is never held up.
+
+- **A rejected file-converter event is no longer reported as an error.** An
+  event the file converter sent without a valid token, or from an account
+  below editor, was logged as a routine rejection and then raised again. The
+  exception reached no one and showed up in error monitoring as "Task
+  exception was never retrieved". The event is now dropped after the log
+  line, as the browser's socket events already were.
+
+- **The method-binding backfill no longer files a monitoring event for files it skips.**
+  `backfill_method_bindings` counts the files converted before the
+  scan-stream census and skips them by design; it now reports that count at
+  INFO instead of WARNING, so a routine run raises nothing in error
+  monitoring.
+
+- **A script run on stdin no longer reports to GlitchTip.** Code piped to
+  `python -` in a server's container, or typed at its prompt, imported Mascope
+  with the server's `MASCOPE_SENTRY_DSN` and filed its own errors, a typo
+  included, as production errors of that server. Such code now leaves error
+  reporting off; the backend and its workers report as before.
+
+- **The sample peaks listing no longer logs a warning for a peak without a
+  signal-to-noise.** Since 1.13.0 a TOF peak with no baseline around it, or a
+  flat one, has no signal-to-noise, and every read of
+  `GET /api/samples/{sample_item_id}/peaks` that listed one logged a warning
+  that the route returned non-finite floats. The route now sends that peak's
+  `signal_to_noise` as `null` itself. The response is the same as before.
+
+- **A file the converter can no longer store fails at once, with a reason.**
+  The converter keeps who uploaded each file in memory, so after a restart
+  it cannot store a file left over from before it. Such a file used to be
+  read and fitted first and then fail with "not registered in file converter
+  service". It now fails before it is read, with a reason in the converter's
+  log, and error monitoring gathers every such file under one issue with how
+  long the file had waited. A file written moments ago still gets a few
+  seconds for its upload's record to arrive.
+
+- **A TOF sample whose calibrants scatter no longer fails calibration with an
+  error.** With more than five calibrants matched, the residual filter could
+  keep only one, and the fit refused it as a server error. Such a sample is
+  now reported as not having enough calibration peaks, retried with a wider
+  tolerance like any other, and left uncalibrated if that does not help.
+
+- **The security suite no longer reports a broadcast as a room leak.** RT-02
+  failed whenever an event sent to every socket, such as a target list's
+  reload hint, arrived while it watched a workspace's room. RT-02 and RT-03
+  now leave out what a socket subscribed to no room also receives, and RT-03
+  counts every room event again rather than workspace events alone.
+
+- **`GET /api/samples` filters by acquisition time again.** Given both
+  `datetime_min` and `datetime_max`, the route answered 500: the filter
+  called a SQLite function Postgres does not have. Each bound now works on
+  its own as well, where one alone used to be ignored. Both are inclusive,
+  and a bound written without an offset is read as UTC, as `datetime_utc`
+  is.
+
+- **The batch's *Search untargeted* no longer reads an isotope line as a
+  compound of its own.** A compound's 13C line is often brightest in another
+  sample than the compound itself, and each batch peak is searched in its
+  brightest sample. There the compound is not searched, so the line was read
+  as a formula of its own, and whether the batch peak kept that or the line
+  reading depended only on the order the samples were searched in. The line
+  reading now wins, as it does within one sample, the other reading is
+  dropped and that sample is searched again without the peak. On a 12-sample
+  Orbitrap batch 134 batch peaks had both readings. A batch searched before
+  keeps its readings until its ledger is rebuilt and searched again.
+
+- **A composition measured on its own is scored at the instrument's width.**
+  A batch peak's *Use this*, the inspector's measured evidence and its
+  alternatives measure a handful of formulas against a sample, too few lines
+  to fit the sample's own mass width from. They were scored at a generic 2 ppm,
+  several times an Orbitrap's, so a formula well off the peak still read
+  as a good fit there while a search of the same sample read it as a poor one.
+  They are now scored at the instrument class's width, as an assignment run
+  scores a sample whose library fits no width.
+
+- **An isotope line's identity can no longer be pinned on a batch peak.**
+  *Use this* on a batch peak's identity that reads the peak as the 13C line
+  of a compound pinned the line as an ion of its own: it carried the
+  compound's envelope fit, at the compound's tier and with no link to the
+  compound's batch peak. Such a request is now refused, and the message names
+  the batch peak that holds the compound's monoisotopic line, where the
+  compound can be pinned.
+
+- **The composite cut no longer stitches a scan range against itself.** For
+  servers that run `composite_scan_streams`. A file whose polarity runs one
+  scan range twice at the same microscans, with another setting the second
+  time - a survey scan whose resolution changes part way through the run,
+  say - was detected per stream, and the stitch gave the whole range to
+  whichever stream came first: a targeted MS2 file was matched on its first
+  37 survey scans and none of the 90 that followed. Such a polarity is now
+  detected whole, every scan averaged together, as it is with the setting
+  off. Stitched files of several ranges, and the settle-then-measure layout,
+  whose measurement owns its range by its microscans, are stitched as before.
+  A file already stitched this way is detected whole when it is re-processed.
+  Where such streams still sit beside another range, the processing detail
+  and the calibration name them apart by resolution (`m/z 40-600, R=60000`)
+  instead of by the same range twice.
+
+- **A multiplexed PRM file from a Q Exactive or an Exploris is read instead
+  of refused.** Such a scan stores one reaction per precursor, so its record
+  is longer than a single-precursor scan's, and the reader read every record
+  after the first from the wrong bytes. Mascope refused the file for the
+  analyzers that gave its scans. The pinned reader walks these records at
+  their own sizes: a public Q Exactive HF-X PRM run that was refused now
+  reads as 4,142 Orbitrap MS2 scans, each with the filter the Thermo library
+  gives it. A file refused under 1.13.0 is not read again by itself: it
+  needs processing again, by *Re-process* in Raw files.
+
+- **The MS2 notebook toolkit opens a sample whose precursor was isolated at
+  two widths.** It refused such a sample, because the group has no single
+  isolation width. It now windows the MS1 spectrum at the widest width, so
+  the window covers every ion any of the group's scans isolated, and the
+  dashboard lists each width with its scan count.
+
+- **`mascope prod mfa status` shows machine accounts as `exempt`.** A File
+  Agent device's machine account never signs in interactively and is exempt
+  from the two-factor policy, but the listing printed it as `off`, a gap in
+  two-factor coverage that could never be closed. Person accounts still show
+  `on` or `off`.
+
+- **The SDK makes a client after loguru was reset.** A second
+  `MascopeClient` no longer fails with "There is no existing handler" when
+  the application removed every loguru handler (`logger.remove()`) after the
+  first one was made. The SDK now adds its handler afresh.
+
+- **An Orbitrap file with a scan the reader gives no m/z for is refused.**
+  OpenTFRaw 3.x, the reader this release moves to, gives no m/z for the
+  profile of a scan whose calibration layout it does not know, where 2.0.0
+  gave the scan's frequencies, which Mascope drew as m/z. Unchecked, the
+  averaged profile of a selection holding such a scan would come back as a
+  single point, every other scan's signal lost with it. Reading such a
+  scan's profile now refuses the file, with the scan and how many of its
+  points have no m/z in its status. No file measured so far has such a
+  scan: none of the demo bundle's files, the two committed sample files or
+  the internal regression corpus's Orbitrap files is refused (GitHub #2518).
+
+- **A re-processed file that can no longer be bound keeps its samples.**
+  Re-processing reset a file's m/z calibration, detected its peaks again and
+  deleted its samples before the pipeline bound it. A file whose chemistry
+  went while the batch waited for its turn, a chosen mode deleted or a token
+  changed, was parked as needing a chemistry with nothing left. The pipeline
+  now does all three only once it has bound the file, so such a file keeps
+  its samples, its calibration and its peaks, and its status says so (#2347).
+
+- **A restored database is readable by the fleet's read-only role again.**
+  `mascope prod db restore` restores without privileges, so the role
+  `mascope_readonly` lost its grants in the restored database, and read-only
+  scripts failed with `permission denied` until the fleet role ran again.
+  The restore, `mascope prod db create` and a `mascope env sync` into a local
+  stack now grant the role read access to the database when the cluster has
+  the role, and exit non-zero if that fails.
+
+- **Closing one tab no longer doubles another tab's notifications.** With two
+  tabs open on the same workspace, closing one, or leaving a batch in one,
+  made the server think the user had stopped listening there. It then sent
+  each notification to the workspace and to the user's personal channel as
+  well, so the tab still open showed it twice. The user's membership of a
+  room now stays while any of their tabs is still in it.
+
+- **The update timer no longer re-applies a release that failed its health
+  check.** After an unattended apply failed, the next maintenance window
+  applied the same release again, undoing the operator's manual rollback and,
+  for a migration update, migrating the restored database again, every night.
+  `--auto` now records the failure, whether the migration failed or the
+  backend never turned healthy, and holds that release: each run exits 2
+  without applying it, and `prod doctor` reports it as failed.
+  `--confirm` retries it once; `--snooze <days>` keeps it held but quiet. A
+  newer release is tried as usual.
+
+- **`GET /api/sample/files` reads a time bound without an offset as UTC.**
+  `datetime_min` and `datetime_max` written with no offset were read in the
+  server's local time zone, so on a server not running in UTC the same
+  request listed other files. They are now UTC, as `datetime_utc` is, and
+  as `GET /api/samples` already reads them.
+
+- **The TOF calibration audit no longer scores a file converter's own
+  calibration as the stored fit.** `audit_tof_calibration` read every stored
+  record as a fit at the peak store's TOF index, but the converter's record
+  counts samples from the start of the raw file's own axis. On a mode without
+  calibrants, where every file carries one, its `stored` errors ran to
+  hundreds of thousands of ppm. Such files are now counted as `unfitted`, per
+  mode and per file, and have no `stored` fit.
+
+- **The collection dialog tells isomers apart by their InChIKey.** A pasted or
+  entered compound whose InChIKey differs from that of a compound with the same
+  formula is now created as another compound, rather than dropped or merged
+  into the stored one, and its row says it is an isomer. A row with the stored
+  compound's InChIKey reuses it with no "structure not applied" mark, and says
+  it matched. A row without an InChIKey matches by CAS number or formula as
+  before.
+
+- **An upload the file converter cannot store is no longer lost without
+  notice.** A file left in the streams folder across a converter restart has
+  no uploader on record, so it cannot be stored and its uploader cannot be
+  told. Every active global admin and owner now finds it under "Needs
+  attention" in the notifications pane, as "Upload lost" with the file's
+  name and why it was set aside, so it can be uploaded again. The server also
+  looks through the converter's `failed_files` folder at every start and
+  names each file there that has no record, each file once (#2535).
+
+- **An mzML export names the instrument in PSI-MS terms.** The file's
+  instrument configuration is the model, ion source, mass analyser and
+  detector the batch spreadsheet gives, checked against the ontology, in
+  place of the raw-file reader's own model table, whose accession for a
+  model could be a term that is no instrument at all. A model Mascope does
+  not know is written as a Thermo Fisher Scientific instrument.
+
+- **A backend worker that dies uncleanly no longer leaves its users' tabs
+  missing notifications.** A worker killed without running its disconnect
+  handlers (out of memory, `docker kill`, power loss) left its tabs' sessions
+  in Redis for up to a day, and those tabs still counted as open. When the
+  user's last real tab closed, their room memberships stayed, and a tab they
+  opened next on another page missed notifications that were sent only to
+  those rooms. Each worker now keeps a short-lived heartbeat in Redis, and a
+  tab counts as open only while its worker's heartbeat is there, so the tabs
+  of a dead worker stop counting within 30 seconds.
+
+- **A composition measured on its own is centred where an assignment run of
+  the sample scores it.** A batch peak's *Use this*, the inspector's
+  measured evidence and its alternatives, and the batch search's re-score
+  measure a handful of formulas, too few lines to measure the sample's mass
+  offset from. They were scored as if the axis were centred, while an
+  assignment run of the same sample is centred on its reagent ions' offset
+  when that lies beyond the instrument's width. On an Orbitrap sample whose
+  axis sits 1.3 ppm low, the same ion read about two widths off there and
+  near the centre in a run. They are now centred where the sample's
+  latest run in Mascope scored it, and on its reagent ions where no such run
+  recorded that.
+
+- **A bright ion measured on its own is no longer judged against itself.** A
+  batch peak's *Use this*, the inspector's measured evidence and its
+  alternatives, the batch import and a run's re-score of its untargeted
+  commits measure a few formulas against a sample. When one ion matched eight
+  or more of its own lines, its own mass error was taken as the sample's
+  offset and its lines' agreement as the width, so it read as a near-perfect
+  fit wherever it sat inside the tolerance. The sample's width and offset are
+  now measured only from lines of at least eight different ions. A shorter
+  list is scored as a lone formula is, at the instrument class's width and the
+  centre the sample's run scored at, so the tiers of a run's untargeted
+  commits from fewer than eight ions can move.
+
+- **The TOF calibration audit no longer reads a family offset from two or
+  three peaks.** A band's family offset is a reading of the axis only where it
+  rests on at least `TOF_AUDIT_FAMILY_MIN_PEAKS` peaks (default 10). A handful
+  of offsets has a small IQR by chance, so a band of two peaks could be
+  reported as a -16 ppm reading. Below the minimum the report now says "no
+  reading: too few peaks", and the JSON has `"peaked": false` beside the
+  band's `n` and `min_peaks`.
+
+- **A TOF agent reconnecting no longer drops its user out of open workspaces.**
+  The agent's disconnect removed every room membership of the account it
+  signs in as, so a browser tab of that account stopped counting as in its
+  workspace until it subscribed again. The agent's socket holds no rooms, and
+  now leaves none.
+
+- **The SDK keeps the application's own loguru handlers.** The first
+  `MascopeClient` in a process removed every loguru handler to drop
+  loguru's default one, so a file or error-reporting sink the application
+  had added before it silently stopped receiving lines. It now removes only
+  loguru's default stderr handler (#2566).
+
+- **An Orbitrap file whose scans store centroids alone is imported with its
+  peaks.** A method can store each scan's centroids without its profile. Such
+  a file has no profile to average, so it used to be filed as a blank
+  measurement, with no peaks to calibrate, match or assign; under the Thermo
+  library its centroids stood in for a profile instead. Its peaks are now the
+  instrument's centroids, averaged over its scans as every Orbitrap file's
+  are, and its spectrum draws each one as a line. Its instrument function is
+  read off the resolution its centroids report, with a Gaussian peak shape,
+  since no peak shape can be fitted without a profile. Files converted
+  before stay as they were (#1241).
+
+- **Match ratings filtered by date read a bound without an offset as UTC.**
+  `GET /api/match_ratings` read a `datetime_min` or `datetime_max` given
+  without an offset in the server's local time zone, so the same request
+  listed other ratings on a server not running in UTC. Such a bound is now
+  UTC, as it already was on `GET /api/samples` and `GET /api/sample/files`.
+
+- **The demo bundle's goldens come out in the same order on every rebuild.**
+  Two target ions of one formula, such as an oxygenate's `[M+NH4]+` and an
+  amine's `[M+H]+`, each get a match row with the same score. The ions and
+  peaks goldens now order such a pair by its target id. Before, the pair came
+  out in whichever order the database read it, so two rebuilds of one bundle
+  wrote different `expected/ions.parquet` files from identical results.
+
+- **`prod update` messages name a held release's kind.** The settle message
+  after a manual deploy, the `--confirm` and `--snooze` help and their
+  "nothing pending" warnings no longer call every pending record a migration
+  update. `--help` now says `--confirm` retries a release held after a failed
+  apply, and a confirm says it also lifts the hold on a release fixed in place.
+
+- **`GET /api/samples/centroids` puts each scan of a stitched file on its own
+  stream's calibration.** A file whose peaks are detected per scan stream is
+  calibrated stream by stream, and its peaks carry each stream's factor. The
+  route multiplied every scan's masses by the file's factor instead, so a
+  stream's scans sat a few ppm off the sample's own peaks. Each scan now goes
+  by the factor of the stream it is of; an MS2 scan, and a stream the
+  calibration does not name, by the file's. Each scan also says the factor
+  its masses are on, as `mz_calibration_factor`, null for a file never
+  calibrated. Files calibrated as a whole read as before.
+
+- **A capped `backfill_scan_stream_census` run says when files are left.**
+  With `CENSUS_LIMIT` set, a server with fewer than 2000 Orbitrap files ended
+  its run without the "run this again" line, so a run that left files looked
+  finished. The survey now counts the files the cap leaves for later, and its
+  line says how many need a census and how many this run reads.
+
+### Security
+
+- **Pairing logs say where a pairing was asked for, and no longer log its
+  code.** The server log line for an agent starting a pairing now carries
+  the client address it came from, and the line for an approval names the
+  approving user's id, the device and machine account it created and that
+  address, so a paired credential can be traced back to its request. The
+  approval line used to carry the pairing code; it no longer does. Starting a
+  pairing also claims its code atomically: in the rare case that no free code
+  is drawn it answers 503 instead of writing over another pairing's code.
+
+- **Updating a sample checks a new batch and a new file.** `PATCH
+  /api/sample/items/{id}` moved a sample into whatever batch its body named,
+  one in a workspace the caller has no role in included, and linked it to any
+  file. A new batch now needs the editor role and must not be locked, as for
+  `/api/sample/items/move`, and a locked sample cannot change batch. A new
+  file must be one the caller can read.
+
+- **Deleting an account, or requiring a password change with the maintenance
+  script, now cuts its open tabs off live updates.** Their sockets leave
+  every room but the account's own, as they already did after the owner's
+  forced password change, a password change, a disable or a sign-out
+  everywhere. Until now they kept receiving record updates until they
+  disconnected or reconnected.
+
+- **Match ion and isotope records check the target collection they are asked
+  for.** `POST /api/match/records/ion`, `POST /api/match/records/ion/series`
+  and `GET /api/match/records/isotope` checked the caller's access to the
+  samples or batch and nothing else, so a guest of any batch could name a
+  target collection of another workspace and read the names and formulas of
+  its compounds and ions. A named collection now needs the guest role in its
+  workspace, as `GET /api/target/collections/{id}` does, and each named target
+  ion must be in a global collection or one of a workspace the caller is a
+  member of. Either is refused with 403 otherwise.
+
+- **A browser that has not signed in no longer hears when records change.**
+  Updates sent to every open tab, such as a workspace created or deleted, a
+  target list changed or a user edited, reached every connected socket: the
+  login page's too, and a tab held at a forced password change. They now go
+  only to tabs whose session may read. A held tab starts receiving them once
+  it changes its password. The security suite's RT-01 now provokes such an
+  update itself instead of relying on other traffic.
+
+- **Signing out also signs the tab's live connection out.** Before, a
+  signed-out tab kept receiving the updates of the workspaces, batches and
+  datasets it had open until it was reloaded. Now the server ends that tab's
+  realtime session at sign-out, and the app opens a new connection that
+  carries no session. The account's sessions in other browsers carry on, and
+  signing in again in the same tab picks the open views' updates back up.
+
+- **The target ion and compound lists check the batch or collection they
+  filter by.** `GET /api/target/ions` and `GET /api/target/compounds` answered
+  their `target_collection_id` and `sample_batch_id` filters for a collection
+  or batch of any workspace. Either filter now needs the guest role on its
+  workspace, as `GET /api/target/collections/{id}` and the association routes
+  do, and a global collection stays readable by anyone signed in. Their
+  `show_target_collection` flag lists only the collections the caller can
+  read: the global ones and those of their workspaces. The lists without a
+  filter, the shared compound and ion library, are unchanged.
+
+- **Signing out signs every tab of the browser out of live updates.**
+  Signing out in one tab ends the session of every tab of that browser, but
+  only the signing-out tab's realtime connection was signed out. The others
+  kept receiving the updates of what they had open, and could open more.
+  Now the server signs out every connection that the ending session
+  authenticated. The account's sessions in other browsers carry on.
+
 ## [1.13.0] - 2026.10.20
 
 ### Added
