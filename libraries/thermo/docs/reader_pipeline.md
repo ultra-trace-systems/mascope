@@ -882,8 +882,11 @@ adds an `item` block: the scans the sample's peak list is built from, the mode
 they belong to with its lock recomputed over them (`describe_scans`), and the
 calibration factors Mascope multiplies into the m/z it serves of the sample's
 stream and of the file, so a client can relate the axis the fingerprint
-describes to the m/z Mascope serves. The SDK reads both with
-`get_axis_fingerprint`.
+describes to the m/z Mascope serves. Its `streams` lists the streams the
+peak list is read from, each with its scans and its factor: the sample's
+own, or each owner of a stitched sample's runs, whose peaks are on their
+owner's factor rather than the one the sample's stream gives. The SDK reads
+both with `get_axis_fingerprint`.
 
 **The direct route, a future simplification.** The fingerprint infers each
 chunk's correction from the spacing of its points. The correction itself is

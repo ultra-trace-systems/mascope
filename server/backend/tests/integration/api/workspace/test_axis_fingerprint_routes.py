@@ -137,13 +137,20 @@ async def make_item(async_session_factory, alpha_batch, stream_key):
 
     ``reads``: None for a sample over its whole polarity, ``"stream"`` for one
     reading the committed file's stream, ``"composite"`` for one reading a
-    composite the stream is the one owner of.
+    composite the stream is the one owner of, or of the owners ``runs`` names.
     """
     files = []
 
     async def make(
-        *, polarity="+", t0=0.0, t1=60.0, reads=None, instrument_type="orbi"
+        *,
+        polarity="+",
+        t0=0.0,
+        t1=60.0,
+        reads=None,
+        instrument_type="orbi",
+        runs=None,
     ):
+        runs = runs or [[40.0, 500.0, stream_key]]
         file_id, item_id = gen_id(), gen_id()
         async with async_session_factory() as session:
             session.add(
@@ -173,27 +180,29 @@ async def make_item(async_session_factory, alpha_batch, stream_key):
                             signature={"polarity": "+", "composite": True},
                             stitch={
                                 "rule": 1,
-                                "runs": [[40.0, 500.0, stream_key]],
+                                "runs": runs,
                                 "source": "rule",
                                 "notes": [],
                             },
                         )
                     )
                     await session.flush()
-                session.add(
-                    AcquisitionStream(
-                        stream_id=gen_id() if composite else stream_id,
-                        sample_file_id=file_id,
-                        stream_key=stream_key,
-                        signature_key=stream_key,
-                        signature={"polarity": "+"},
-                        scan_count=2,
-                        blocks=1,
-                        t_first=0.0,
-                        t_last=60.0,
-                        composite_stream_id=stream_id if composite else None,
+                owners = dict.fromkeys(owner for *_edges, owner in runs)
+                for key in owners if composite else [stream_key]:
+                    session.add(
+                        AcquisitionStream(
+                            stream_id=gen_id() if composite else stream_id,
+                            sample_file_id=file_id,
+                            stream_key=key,
+                            signature_key=key,
+                            signature={"polarity": "+"},
+                            scan_count=2,
+                            blocks=1,
+                            t_first=0.0,
+                            t_last=60.0,
+                            composite_stream_id=stream_id if composite else None,
+                        )
                     )
-                )
                 await session.flush()
             session.add(
                 SampleItem(
@@ -365,6 +374,8 @@ async def test_a_sample_over_every_scan_has_the_modes_lock(
         "lock": {key: mode["lock"][key] for key in LOCK_KEYS},
         "mz_calibration_factor": None,
         "file_mz_calibration_factor": None,
+        # Its streams are read pooled, on the file's factor
+        "streams": None,
     }
     assert props.opened == [str(KORBI_POS)]
 
@@ -411,6 +422,13 @@ async def test_a_sample_of_a_stream_reads_its_stream_and_its_factor(
     assert item["scans"] == [1, 2]
     assert item["mz_calibration_factor"] == STREAM_FACTOR
     assert item["file_mz_calibration_factor"] == FILE_FACTOR
+    assert item["streams"] == [
+        {
+            "stream_key": stream_key,
+            "scans": [1, 2],
+            "mz_calibration_factor": STREAM_FACTOR,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -427,6 +445,109 @@ async def test_a_stitched_sample_reads_the_streams_that_own_it(
     # The calibration names the composite's segment, not the composite
     assert item["mz_calibration_factor"] == FILE_FACTOR
     assert item["file_mz_calibration_factor"] == FILE_FACTOR
+    # while the segment's peaks carry its own
+    assert item["streams"] == [
+        {
+            "stream_key": stream_key,
+            "scans": [1, 2],
+            "mz_calibration_factor": STREAM_FACTOR,
+        }
+    ]
+
+
+class StreamScans:
+    """A reader that answers each stream's selection with the scans given
+    for it, out of order, and raises as the reader does for a stream none
+    of whose scans is selected."""
+
+    def __init__(self, scans: dict):
+        self.scans = scans
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def scan_indices(self, *args, stream=None, **kwargs):
+        if not self.scans.get(stream):
+            raise m_thermo.NoScansFoundError(f"no scans of {stream}")
+        return self.scans[stream]
+
+
+@pytest.mark.asyncio
+async def test_a_stitched_sample_says_each_owners_scans_and_factor(
+    guest_client, make_item, props, monkeypatch
+):
+    # Two owners, the one the record names first in m/z and again above the
+    # other: a stream is listed once, where the map first names it
+    runs = [[40.0, 100.0, "stream A"], [100.0, 200.0, "stream B"]]
+    runs.append([200.0, 500.0, "stream A"])
+    monkeypatch.setattr(
+        m_thermo,
+        "open_backend",
+        lambda _path: StreamScans({"stream A": [7, 1, 5], "stream B": [6, 2]}),
+    )
+    made = await make_item(reads="composite", runs=runs)
+    props.stored["mz_calibration"] = calibration("stream A")
+
+    item = served(await guest_client.get(ITEM_ROUTE.format(made.item)))["item"]
+
+    assert item["scans"] == [1, 2, 5, 6, 7]
+    assert item["mz_calibration_factor"] == FILE_FACTOR
+    # The stream the record does not name goes by the file's factor
+    assert item["streams"] == [
+        {
+            "stream_key": "stream A",
+            "scans": [1, 5, 7],
+            "mz_calibration_factor": STREAM_FACTOR,
+        },
+        {
+            "stream_key": "stream B",
+            "scans": [2, 6],
+            "mz_calibration_factor": FILE_FACTOR,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_owner_with_no_scans_in_the_window_is_listed_without_any(
+    guest_client, make_item, props, monkeypatch
+):
+    runs = [[40.0, 100.0, "stream A"], [100.0, 500.0, "stream B"]]
+    monkeypatch.setattr(
+        m_thermo, "open_backend", lambda _path: StreamScans({"stream B": [4, 3]})
+    )
+    made = await make_item(reads="composite", runs=runs)
+    props.stored["mz_calibration"] = calibration("stream A")
+
+    item = served(await guest_client.get(ITEM_ROUTE.format(made.item)))["item"]
+
+    assert item["scans"] == [3, 4]
+    # It still owns its m/z, and its factor is still the one it carries
+    assert item["streams"] == [
+        {"stream_key": "stream A", "scans": [], "mz_calibration_factor": STREAM_FACTOR},
+        {
+            "stream_key": "stream B",
+            "scans": [3, 4],
+            "mz_calibration_factor": FILE_FACTOR,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reads", ["stream", "composite"])
+async def test_the_streams_of_a_file_never_calibrated_have_no_factor(
+    guest_client, make_item, props, stream_key, reads
+):
+    made = await make_item(reads=reads)
+
+    item = served(await guest_client.get(ITEM_ROUTE.format(made.item)))["item"]
+
+    assert item["mz_calibration_factor"] is None
+    assert item["streams"] == [
+        {"stream_key": stream_key, "scans": [1, 2], "mz_calibration_factor": None}
+    ]
 
 
 @pytest.mark.asyncio
@@ -440,6 +561,7 @@ async def test_a_sample_over_its_polarity_goes_by_the_files_factor(
 
     assert item["mz_calibration_factor"] == FILE_FACTOR
     assert item["file_mz_calibration_factor"] == FILE_FACTOR
+    assert item["streams"] is None
 
 
 def _other_mode(mode: dict, polarity: str, resolution: int, streams: list) -> dict:

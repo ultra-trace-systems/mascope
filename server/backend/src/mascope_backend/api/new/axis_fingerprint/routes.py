@@ -92,7 +92,15 @@ async def get_sample_axis_fingerprint_route(
       the file. Both null for a file that was never calibrated. A
       calibration never names a composite, so a stitched sample's factor is
       the file's, while its peaks carry the factor of each stream that owns
-      a run of it, which the block does not list.
+      a run of it, which `streams` lists;
+    - `streams`, the scan streams its peak list is read from, each with its
+      `stream_key`, its `scans` (those of `scans` that are of the stream)
+      and its `mz_calibration_factor`: the sample's own stream, or each
+      stream that owns some m/z of a stitched sample, in its stitch map's
+      order. The sample's peak listing names the stream each peak of a
+      stitched sample is of, which joins a peak to its factor here. Null for
+      a sample that reads every MS1 scan of its polarity, whose peaks all
+      carry the file's factor.
 
     :param sample_item_id: The unique identifier of the sample.
     :param user: The current authenticated user. Requires workspace guest role.

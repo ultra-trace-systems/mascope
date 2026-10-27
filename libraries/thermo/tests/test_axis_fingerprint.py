@@ -924,3 +924,39 @@ def test_the_stepped_document_is_valid(stepped):
 def test_a_document_that_breaks_the_schema_is_refused(broken):
     with pytest.raises(jsonschema.ValidationError):
         validate_document(broken)
+
+
+#: The item block the per-item route adds, without its streams.
+ITEM = {"sample_item_id": "item-1", "sample_file_id": "file-1", "scans": [1, 2]}
+
+
+@pytest.mark.parametrize(
+    "streams",
+    [
+        None,
+        [{"stream_key": STREAM, "scans": [1, 2], "mz_calibration_factor": 1.000002}],
+        [
+            {"stream_key": STREAM, "scans": [1], "mz_calibration_factor": None},
+            {"stream_key": FULL_MS, "scans": [], "mz_calibration_factor": None},
+        ],
+    ],
+    ids=["pooled", "one", "uncalibrated-owners"],
+)
+def test_an_items_streams_are_valid(stepped, streams):
+    validate_document({**stepped, "item": {**ITEM, "streams": streams}})
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"scans": [1, 2], "mz_calibration_factor": 1.0},
+        {"stream_key": None, "scans": [1, 2], "mz_calibration_factor": 1.0},
+        {"stream_key": STREAM, "mz_calibration_factor": 1.0},
+        {"stream_key": STREAM, "scans": ["1"], "mz_calibration_factor": 1.0},
+        {"stream_key": STREAM, "scans": [1, 2]},
+    ],
+    ids=["no-key", "key-null", "no-scans", "scan-not-a-number", "no-factor"],
+)
+def test_an_items_stream_without_its_key_scans_or_factor_is_refused(stepped, entry):
+    with pytest.raises(jsonschema.ValidationError):
+        validate_document({**stepped, "item": {**ITEM, "streams": [entry]}})
