@@ -7,9 +7,13 @@ import { test, expect } from './fixtures'
 
 const HOM_LABEL = 'Monoterpene OH-oxidation HOM'
 const HOM_SPECIES = 573
+// The thesis the list comes from, which has an ISBN and no DOI.
+const HOM_ISBN = 'ISBN 978-3-95806-596-3'
 
 test.describe('reference lists', () => {
-  test('Settings lists the loaded lists and pages through a list species', async ({ page }) => {
+  test('Settings lists the loaded lists, cites them, and pages through a list species', async ({
+    page
+  }) => {
     const drawer = page.locator('.p-drawer')
     if (!(await drawer.isVisible())) {
       await page.locator('menu.breadcrum button').first().click()
@@ -25,6 +29,7 @@ test.describe('reference lists', () => {
     const row = dialog.getByRole('row').filter({ hasText: HOM_LABEL })
     await expect(row).toHaveCount(1)
     await expect(row.getByRole('cell', { name: String(HOM_SPECIES), exact: true })).toBeVisible()
+    await expect(row.getByText(HOM_ISBN)).toBeVisible()
 
     await row.locator('button.p-datatable-row-toggle-button').click()
     await expect(dialog.getByText(`1-25 of ${HOM_SPECIES}`)).toBeVisible()

@@ -242,8 +242,9 @@ backend container.
 **See what is loaded.** `mascope reference status` lists the sources on your
 own machine. On a server, any signed-in user can ask the API:
 `GET /api/reference/sources` returns each active source with its label,
-version, licence, polarity, compound count and load date, and `admitted`, which
-says whether the deployment's licence gate lets peak assignment match it.
+version, licence, polarity, compound count and load date, the publications a
+shipped list cites (`references`), and `admitted`, which says whether the
+deployment's licence gate lets peak assignment match it.
 `GET /api/reference/sources/<name>/compounds` pages through what one source
 holds (`page`, `limit` up to 1000, and `version` for a load other than the
 active one). In the app, the same is under
@@ -273,6 +274,10 @@ Each row is one loaded list:
   A list someone authored is *Unbounded*.
 - **Species** and **Loaded**: how many compounds it holds, and when it was
   loaded.
+- **References**: the publications the list comes from, each with its DOI
+  linked to doi.org, or its ISBN. A list citing more than two shows the rest
+  behind a button. A list Mascope ships cites the publications its file names;
+  a list loaded any other way cites none yet.
 
 Open a row with its arrow to page through its species by mass: name, formula,
 monoisotopic mass and the DOI the list cites for it, linked to doi.org.

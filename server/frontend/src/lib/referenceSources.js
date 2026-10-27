@@ -13,6 +13,9 @@ import { docUrl } from '@/stores/ui/help'
 /** Species per page in a source's expander. */
 export const SPECIES_PAGE_SIZE = 25
 
+/** Publications a list's row shows before a button opens the rest. */
+export const CITATIONS_SHOWN = 2
+
 /** The user guide on loading a list, in the docs the app serves, which the empty state links to. */
 export const REFERENCE_LISTS_GUIDE_URL = docUrl('guides/reference-lists/')
 
@@ -68,8 +71,8 @@ export function loadedLabel(stamp) {
 }
 
 /**
- * Where a species' reference leads: doi.org for a DOI, nothing for anything
- * else, which is shown as written.
+ * Where a species' or a list's reference leads: doi.org for a DOI, nothing
+ * for anything else, which is shown as written.
  *
  * @param {string|null|undefined} reference
  * @returns {string|null}
