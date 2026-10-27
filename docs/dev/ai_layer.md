@@ -3,7 +3,7 @@
 # Mascope AI layer: Design & Plan
 
 - **Status:** building
-- **As of:** 2026-10-26
+- **As of:** 2026-10-27
 - **Tracked in:** [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) (Linear, MAS-123 to MAS-142)
 - **What:** A natural-language agent over the SDK, read-only first, with a confirmed write path later.
 
@@ -23,14 +23,15 @@ open questions that draft flagged are resolved here against the backend source,
 its appendix is corrected, and the staging is revised around a constraint the
 draft missed (section 1.3).
 
-> **Status (2026-10-26).** Building, in the Linear project
+> **Status (2026-10-27).** Building, in the Linear project
 > [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) (appendix B):
 > phase 0 is mostly done (MAS-123, MAS-125, MAS-126, MAS-127, MAS-142, MAS-202,
 > MAS-264, MAS-277 and MAS-278 Done; MAS-433 open), phase 1 has started
 > (MAS-128 part 1 merged 2026-10-21 as `libraries/ai`; MAS-129, the oracle and
 > the manifest, done; MAS-131 adds the evaluation fixture, phase 1 below;
-> MAS-130 open), the backend half of phase 3 is done (MAS-136, the
-> write routes; MAS-137, the SDK write wrappers; MAS-138 open), and phases 2 and
+> MAS-130 adds the MCP server, `mascope-ai mcp`), the backend half of phase 3
+> is done (MAS-136, the write routes; MAS-137, the SDK write wrappers;
+> MAS-138 open), and phases 2 and
 > 4 have not started. The design revision below is from 2026-10-19: written and
 > verified against the tree on 2026-08-11 and committed 2026-10-14 as written. Section 1 and the appendix were re-read against
 > `develop` on 2026-10-19, the first step of the plan: the SDK's write path
@@ -556,7 +557,14 @@ Each phase is intended to land independently and leave the system shippable.
   package `mascope_ai`), oracle wrappers with condensed verdicts, `chart`/
   `table`, provenance manifest.
 - MCP server exposing the thin tool set; heavy work documented as the
-  local-Python path (Bash + `mascope_ai` imports), mirroring peaky.
+  local-Python path (Bash + `mascope_ai` imports), mirroring peaky. Built
+  in MAS-130 as `mascope_ai.mcp`, run as `mascope-ai mcp` beside an
+  idempotent `setup`, a `list` of what there is and the skill text
+  (`mascope-ai skill`); the [library's README](../../libraries/ai/README.md#the-mcp-server)
+  describes it. Its loaders answer with a Frame's handle, which Python on the
+  same machine opens from the shared session directory; no result passes
+  4 KB, and every name Mascope returns comes back as an inert JSON string.
+  `chart` and `table` wait for the `mascope_viz` artifacts (MAS-237).
 - **Evaluation fixture**: a golden-question set against the demo dataset
   (metadata, analysis, and interpretation questions with known answers),
   runnable as pytest against the demo stack. This is the acceptance test for
@@ -619,6 +627,12 @@ answered wrongly, failed, or **not answerable**: a solver raises
   given the toolkit and `ai_golden.py prompts`. Its transcript is kept
   under [`libraries/ai/tests/golden_transcripts/`](../../libraries/ai/tests/golden_transcripts/README.md),
   which says how to run it. MAS-130's verification is the first such run.
+  **Runs:** 2026-10-27, Claude Sonnet 5.5 over the MCP server, the analysis
+  questions with the machine's Python too
+  ([transcript](../../libraries/ai/tests/golden_transcripts/2026-10-27-sonnet-mcp.md)):
+  15 of 15 right, the largest tool result 2.2 KB. The round before missed A1
+  and A2: it read a batch's time series scan by scan, until the skill and
+  the loaders' descriptions said it is one point per sample.
 - **Extending it.** A skill (phase 2) or a new oracle wrapper adds its
   questions to `QUESTIONS` with known answers from the demo data, and
   regenerates the table below.
