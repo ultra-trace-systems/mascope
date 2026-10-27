@@ -2046,3 +2046,26 @@ class TestSampleAdmissionControl:
         assert result["status"] == "skipped"
         assert "already running" in result["message"]
         assert result["data"]["peak_assignment_run_id"] == "run-elsewhere"
+
+
+@pytest.mark.asyncio
+async def test_the_run_records_the_setup_it_searched_under():
+    """Every write of the run's config carries the version of the sample's
+    ionization mode, and the calibration is looked up for it."""
+    from mascope_backend.api.new.peak_assignments.config import (
+        PeakAssignmentConfig,
+    )
+
+    stamp = {"ionization_mode_id": "mode-v2", "version": 2}
+    peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+    recorder = _Recorder()
+    mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+    setup = patch(f"{_MOD}.sample_setup", new_callable=AsyncMock, return_value=stamp)
+    setup.start()
+
+    await _run(PeakAssignmentConfig(run_untargeted=False))
+
+    configs = recorder.recorded_configs()
+    assert len(configs) == 2
+    assert [config["ionization_setup"] for config in configs] == [stamp, stamp]
+    assert mocks["calibration"].await_args.kwargs["ionization_setup"] == stamp

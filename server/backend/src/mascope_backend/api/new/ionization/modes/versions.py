@@ -291,3 +291,31 @@ async def move_to_current_versions(
             "ionization mode before re-processing them"
         )
     return moved
+
+
+def setup_stamp(ionization_mode_id: str | None, version: int | None) -> dict | None:
+    """The record of a setup a result was computed under, or None for none."""
+    if ionization_mode_id is None:
+        return None
+    return {"ionization_mode_id": ionization_mode_id, "version": version}
+
+
+async def sample_setup(sample_item_id: str) -> dict | None:
+    """The setup a sample item is bound under, as a run records it.
+
+    ``{"ionization_mode_id": ..., "version": ...}``, the version's own id and
+    its number: the id names the version exactly, the number says where it
+    stands. None for an item bound under no mode.
+    """
+    async with async_session() as session:
+        row = (
+            await session.execute(
+                select(IonizationMode.ionization_mode_id, IonizationMode.version)
+                .join(
+                    SampleItem,
+                    SampleItem.ionization_mode_id == IonizationMode.ionization_mode_id,
+                )
+                .where(SampleItem.sample_item_id == sample_item_id)
+            )
+        ).one_or_none()
+    return setup_stamp(*row) if row is not None else None

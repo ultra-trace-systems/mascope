@@ -48,7 +48,11 @@ from mascope_backend.api.new.instrument_configs.lib import read_instrument_funct
 from mascope_backend.api.new.ionization.modes.util import (
     fetch_sample_ionization_mechanism_ids,
 )
-from mascope_backend.api.new.ionization.modes.versions import move_to_current_versions
+from mascope_backend.api.new.ionization.modes.versions import (
+    move_to_current_versions,
+    sample_setup,
+    setup_stamp,
+)
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.match.params.lib import (
     apply_match_params,
@@ -160,6 +164,7 @@ from mascope_backend.db import (
     AssignmentVerification,
     BatchPeakOccurrence,
     IonizationMechanism,
+    IonizationMode,
     PeakAssignment,
     PeakAssignmentRun,
     Sample,
@@ -1003,10 +1008,17 @@ async def recalibrate_instrument(
                     AssignmentVerification.evidence,
                     AssignmentVerification.evidence_level,
                     Sample.filename,
+                    PeakAssignmentRun.config,
+                    Sample.ionization_mode_id,
+                    IonizationMode.version,
                 )
                 .join(
                     Sample,
                     Sample.sample_item_id == AssignmentVerification.sample_item_id,
+                )
+                .outerjoin(
+                    IonizationMode,
+                    IonizationMode.ionization_mode_id == Sample.ionization_mode_id,
                 )
                 # Outer, and NULL passes: peak_assignment_run_id is nullable and
                 # carries no foreign key, so a label whose run has since been
@@ -1038,12 +1050,31 @@ async def recalibrate_instrument(
         ).all()
 
     scores, labels, levels = [], [], []
-    for verdict, evidence, evidence_level, filename in rows:
+    # The setups the labels were scored under, recorded on the curve: the run
+    # the evidence came from says which, and a label whose run is gone is
+    # taken under its sample's version.
+    setups: list[dict] = []
+    for (
+        verdict,
+        evidence,
+        evidence_level,
+        filename,
+        run_config,
+        mode_id,
+        version,
+    ) in rows:
         if get_instrument_type(filename) != inst:
             continue
         scores.append(float(evidence))
         labels.append(1 if verdict == "confirmed" else 0)
         levels.append(evidence_level)
+        setup = (
+            (run_config or {}).get(IONIZATION_SETUP_KEY)
+            if IONIZATION_SETUP_KEY in (run_config or {})
+            else setup_stamp(mode_id, version)
+        )
+        if setup is not None and setup not in setups:
+            setups.append(setup)
 
     current = await load_calibration(inst, score_version)
     try:
@@ -1068,7 +1099,11 @@ async def recalibrate_instrument(
             "n_neg": len(labels) - sum(labels),
         }
 
-    await save_calibration(result["calibration"], score_version)
+    await save_calibration(
+        result["calibration"],
+        score_version,
+        sorted(setups, key=lambda s: (s["ionization_mode_id"], s.get("version") or 0)),
+    )
     return {
         "status": "success",
         "message": (
@@ -2043,6 +2078,15 @@ RUNNING_RUN_STATUS = "running"
 #: It is server state that a run *reports*, not configuration a client supplies.
 REFERENCE_LICENSES_KEY = "reference_licenses"
 
+#: Key under which a run's stored config records the ionization setup it
+#: searched under: ``{"ionization_mode_id": ..., "version": ...}``, the
+#: version's own id and its number, or None for a sample bound under no mode.
+#: Server state like the licence gate, for the same reason: the mode is the
+#: sample's, not something a request chooses. With it, two runs whose recorded
+#: config is the same searched the same adduct panel; without it, an edit of
+#: the mode in between could make them differ and nothing would say so.
+IONIZATION_SETUP_KEY = "ionization_setup"
+
 
 def _stored_run_config(
     config: PeakAssignmentConfig,
@@ -2054,6 +2098,7 @@ def _stored_run_config(
     tiering: dict | None = None,
     partner_gate: dict | None = None,
     fragments: dict | None = None,
+    ionization_setup: dict | None = None,
 ) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
@@ -2100,6 +2145,10 @@ def _stored_run_config(
     which it left and why. A peak that reads as a reagent row on one run and a
     molecule on another is otherwise unexplained.
 
+    The ionization setup is the ninth, and the first the run does not compute:
+    the version of the sample's ionization mode it searched under. Its key is
+    always present, None for a sample bound under no mode.
+
     :param config: The validated client-supplied run configuration.
     :param resolved_profile: The chemistry the run resolved to, when known.
     :param search_scope: What the untargeted stage was offered, once it is known.
@@ -2110,10 +2159,13 @@ def _stored_run_config(
     :param partner_gate: What the partner gate decided, and at what margin.
     :param fragments: What the fragment claim took, where the profile names a
         ladder.
+    :param ionization_setup: The setup the sample is bound under
+        (:func:`~mascope_backend.api.new.ionization.modes.versions.sample_setup`).
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
     stored[REFERENCE_LICENSES_KEY] = reference_license_gate()
+    stored[IONIZATION_SETUP_KEY] = ionization_setup
     if resolved_profile is not None:
         stored[RESOLVED_PROFILE_KEY] = resolved_profile.snapshot()
     if search_scope is not None:
@@ -2144,6 +2196,7 @@ async def _record_resolved_profile(
     tiering: dict | None = None,
     partner_gate: dict | None = None,
     fragments: dict | None = None,
+    ionization_setup: dict | None = None,
 ) -> None:
     """Write the resolved chemistry onto a run that is about to use it.
 
@@ -2167,6 +2220,8 @@ async def _record_resolved_profile(
     :param partner_gate: What the partner gate decided, and at what margin.
     :param fragments: What the fragment claim took, where the profile names a
         ladder.
+    :param ionization_setup: The setup the sample is bound under, kept as the
+        run was created with it.
     """
     async with async_session() as session:
         await session.execute(
@@ -2183,6 +2238,7 @@ async def _record_resolved_profile(
                     tiering,
                     partner_gate,
                     fragments,
+                    ionization_setup,
                 )
             )
         )
@@ -2203,7 +2259,9 @@ async def _create_run(
         engine=IN_APP_ENGINE,
         engine_version=PEAK_ASSIGNMENT_ENGINE_VERSION,
         status=status,
-        config=_stored_run_config(config),
+        config=_stored_run_config(
+            config, ionization_setup=await sample_setup(sample_item_id)
+        ),
         # The same thresholds an import has to declare, recorded here too so a
         # tier means the same thing on either engine's run without reading into
         # the config blob.
@@ -2778,6 +2836,7 @@ async def _stage_a_assignments(
     fallback_sigma_ppm: float,
     known_window: KnownWindow | None,
     reagent_offset: ReagentOffset | None = None,
+    ionization_setup: dict | None = None,
 ) -> tuple[list[dict], dict | None, SampleMassAccuracy]:
     """Stage A: database-first assignment from the known composition set.
 
@@ -2883,8 +2942,10 @@ async def _stage_a_assignments(
         # Load this instrument's confidence calibration from the D6 store (active DB row,
         # else the in-code provisional curve, else None -> uncalibrated). Passing it in keeps
         # the engine DB-free; its corroboration_weights drive the P3 adduct fold-in.
-        calibration = await load_calibration(instrument, SCORE_VERSION)
-        confidence_calibration = calibration_meta(calibration)
+        calibration = await load_calibration(
+            instrument, SCORE_VERSION, ionization_setup=ionization_setup
+        )
+        confidence_calibration = calibration_meta(calibration, ionization_setup)
         stage_a_assignments = invert_matches_to_peak_assignments(
             match_isotope_df,
             sample_item_id=sample.sample_item_id,
@@ -2931,6 +2992,7 @@ async def _run_sample_assignment(
     # mode and records it; a sample bound under an earlier one moves first.
     await move_to_current_versions(sample_item_ids=[sample_item_id])
     sample = await fetch_sample(sample_item_id)
+    ionization_setup = await sample_setup(sample_item_id)
     config = config or PeakAssignmentConfig()
 
     if (reason := ineligible_reason(sample)) is not None:
@@ -3021,7 +3083,10 @@ async def _run_sample_assignment(
                 "deployment has no ionization mechanism for; not searched."
             )
         await _record_resolved_profile(
-            run.peak_assignment_run_id, config, resolved_profile
+            run.peak_assignment_run_id,
+            config,
+            resolved_profile,
+            ionization_setup=ionization_setup,
         )
         # The mechanisms a sample's channels are searched and read through:
         # Stage A reads the reference lists through them, the untargeted
@@ -3092,6 +3157,7 @@ async def _run_sample_assignment(
             fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
             known_window=resolved_profile.context.known_window,
             reagent_offset=reagent_offset,
+            ionization_setup=ionization_setup,
         )
         runtime.logger.info(
             f"Stage A assigned {len(stage_a_assignments)} of {len(peaks_df)} "
@@ -3462,6 +3528,7 @@ async def _run_sample_assignment(
             tiering,
             partner_gate,
             fragments.summary if fragments.summary["ladders"] else None,
+            ionization_setup,
         )
         await send_progress_user_notification(notification, 0.8)
 
