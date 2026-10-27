@@ -109,12 +109,17 @@ class FakeDocker:
         pkill_exit=0,
         dataset=None,
         interrupt=False,
+        during=None,
     ):
         self.python = python
         self.pkill_exit = pkill_exit
         self.copy_exit = copy_exit
         self.dataset = dataset or {}
         self.interrupt = interrupt
+        # A verb ("pkill", "rm") and how to interrupt the command while it
+        # runs; ``finished`` records the verbs that ran to their end.
+        self.during = during or {}
+        self.finished: list[str] = []
         self.calls: list[list[str]] = []
 
     def __call__(self, cmd, capture_output=False, text=False, check=False):  # noqa: ARG002
@@ -129,10 +134,14 @@ class FakeDocker:
                 return subprocess.CompletedProcess(cmd, 1, "", "")
             return subprocess.CompletedProcess(cmd, 0, self.python + "\n", "")
         if cmd[:2] == ["docker", "exec"] and "pkill" in cmd:
+            _interrupt(self.during.get("pkill"))
+            self.finished.append("pkill")
             return subprocess.CompletedProcess(
                 cmd, self.pkill_exit, "", "pkill: not found"
             )
         if cmd[:2] == ["docker", "exec"] and "rm" in cmd:
+            _interrupt(self.during.get("rm"))
+            self.finished.append("rm")
             return subprocess.CompletedProcess(cmd, 0, "", "")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -406,6 +415,38 @@ def test_a_copy_ended_by_a_signal_still_removes_the_archive_from_the_container(
     assert [cmd[-1] for cmd in docker.commands("rm")] == [f"{PACKAGES}/{_run(command)}"]
     assert docker.commands("pkill") == []
     assert [signum for _, signum, _ in resent] == [signum]
+
+
+@pytest.mark.parametrize("signum", ENDING)
+@pytest.mark.parametrize("second", ENDING)
+def test_a_second_signal_does_not_interrupt_the_stop(
+    cli_runner, operator_install, tmp_path, resent, handlers, signum, second
+):
+    """A dropped SSH session sends SIGHUP twice, from the shell and then the
+    kernel: the second, landing in the stop, lets it run to its end, and the
+    command is ended by the first alone."""
+    if signum is None or second is None:
+        pytest.skip("this platform has no SIGHUP")
+    builder, docker = operator_install
+    builder.interrupt = signum
+    docker.during = {"pkill": second}
+    cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
+    assert docker.finished == ["pkill"]
+    assert [sent for _, sent, _ in resent] == [signum]
+
+
+@pytest.mark.parametrize("signum", ENDING)
+def test_a_second_signal_does_not_interrupt_the_removal(
+    cli_runner, operator_install, tmp_path, resent, handlers, signum
+):
+    if signum is None:
+        pytest.skip("this platform has no SIGHUP")
+    builder, docker = operator_install
+    docker.interrupt = signum
+    docker.during = {"rm": signum}
+    cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
+    assert docker.finished == ["rm"]
+    assert [sent for _, sent, _ in resent] == [signum]
 
 
 def test_an_ignored_hangup_stays_ignored(

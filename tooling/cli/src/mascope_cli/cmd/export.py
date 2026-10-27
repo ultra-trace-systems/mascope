@@ -204,6 +204,9 @@ def _ended_as_interrupted():
     the signal. Once the block has unwound, the handlers before it are put
     back and the signal is sent again, so the process ends as it would have:
     by the signal, which is what a service manager or ``timeout`` expects.
+    Only the first such signal acts: one more while the clean-up runs would
+    interrupt the stop itself, and the first's re-send ends the process all
+    the same.
 
     A signal that is ignored, as ``nohup`` ignores SIGHUP, stays ignored.
     Signal handlers can only be set in the main thread; elsewhere the block
@@ -216,6 +219,10 @@ def _ended_as_interrupted():
     ended = []
 
     def end(signum, frame):  # noqa: ARG001
+        if ended:
+            # The clean-up the first one started runs to its end: a dropped
+            # SSH session sends SIGHUP twice, from the shell and the kernel.
+            return
         ended.append(signum)
         raise KeyboardInterrupt
 
