@@ -197,6 +197,18 @@ def test_a_sample_of_another_workspace_is_refused_at_planning(kit, api, elsewher
     assert kit.session.plans.plans() == []
 
 
+def test_a_dataset_of_another_workspace_is_refused_at_planning(
+    kit, api, ws2_editor, elsewhere
+):
+    # By its ID the client's listing does not find it; a Ref skips the lookup,
+    # and the plan would say it leaves the client's workspace
+    other = Ref(id="d9", kind="dataset", name="Other campaign", parent="ws2")
+    with pytest.raises(InvalidRequest, match="not in workspace 'Workspace A'"):
+        kit.plan_organize([Move(other, "Workspace B")])
+    assert changed(api) == []
+    assert kit.session.plans.plans() == []
+
+
 def test_what_the_server_refuses_whatever_the_role_fails_at_planning(
     kit, api, ws2_editor
 ):
