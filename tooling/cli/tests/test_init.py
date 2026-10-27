@@ -7,6 +7,11 @@ The command materializes bundled config/compose files, creates the
 pre-existing environment.
 """
 
+import os
+import stat
+
+import pytest
+
 from mascope_cli.cmd.init import (
     CONFIG_FILES,
     GENERATED_SECRETS,
@@ -60,6 +65,22 @@ def test_init_keeps_an_operator_supplied_ca(cli_runner, tmp_path):
 
     assert result.exit_code == 0
     assert ca.read_bytes() == b"-----BEGIN CERTIFICATE-----\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no owner-only file mode")
+def test_init_writes_secrets_only_their_owner_can_read(
+    cli_runner, tmp_path, open_umask
+):
+    # Compose mounts each secret into the containers with the host file's mode,
+    # so a secret written at the umask (0644 here) could be read by every user
+    # on the server and every uid in the backend container, not only the app.
+    home = tmp_path / "home"
+
+    _init(cli_runner, home)
+
+    for name in GENERATED_SECRETS:
+        mode = stat.S_IMODE((home / ".runtime" / "secrets" / name).stat().st_mode)
+        assert mode == 0o600, f"secret {name} is mode {oct(mode)}"
 
 
 def test_init_generates_unique_secrets(cli_runner, tmp_path):

@@ -556,11 +556,15 @@ def _ensure_secrets() -> None:
     every session. ``PLACEHOLDER_SECRETS``, which the operator supplies, are
     created empty, which their features read as "not set up". Existing files
     are never touched, so this can never rotate a key out from under a running
-    deployment.
+    deployment. A new auto-provisioned secret is mode 0600, as `mascope init`
+    writes them (see `create_secret`); a placeholder holds nothing secret and
+    is left at the umask.
     """
-    import secrets as _secrets
-
-    from mascope_cli.cmd.init import AUTO_PROVISIONED_SECRETS, PLACEHOLDER_SECRETS
+    from mascope_cli.cmd.init import (
+        AUTO_PROVISIONED_SECRETS,
+        PLACEHOLDER_SECRETS,
+        create_secret,
+    )
 
     secrets_dir = Path(runtime.path(".runtime", "secrets"))
     secrets_dir.mkdir(parents=True, exist_ok=True)
@@ -568,7 +572,7 @@ def _ensure_secrets() -> None:
         target = secrets_dir / name
         if target.exists():
             continue
-        target.write_text(_secrets.token_urlsafe(48) + "\n", encoding="utf-8")
+        create_secret(target)
         runtime.logger.warning(f"Created missing secret: {target}")
     for name in PLACEHOLDER_SECRETS:
         target = secrets_dir / name
