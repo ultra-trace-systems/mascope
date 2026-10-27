@@ -174,10 +174,14 @@ class ReaderBackend(Protocol):
 
     **The first scan.** A file's first scan is left out of every selection
     when its TIC is an outlier: five times the median of the others or more.
-    With no stream given the others are every other scan of the file, of any
-    polarity and MS order. With one given they are the other scans of the
-    first scan's own stream, which measure what it measured; a stream that
-    does not hold the first scan loses nothing.
+    The others are scans that measure what it measured. With no stream given
+    they are the other scans of its MS order and polarity: a fragmentation
+    scan carries a small fraction of a full scan's ion current, and one
+    polarity's scans can carry a small fraction of the other's. With one
+    given they are the other scans of the first scan's own stream; a stream
+    that does not hold the first scan loses nothing. A selection that does
+    not hold the first scan - another polarity, another MS order, a window
+    after it - leaves nothing out and says nothing.
     """
 
     #: Path of the raw file the backend reads.
@@ -1032,6 +1036,12 @@ def _method_experiment(
 def _stream_clause(stream: str | None) -> str:
     """How a selection's error names the stream it asked for, if it did."""
     return "" if stream is None else f", stream='{stream}'"
+
+
+def _scan_kind(scan: dict) -> tuple[int, str]:
+    """A scan-table row's MS order and polarity: what the first scan is
+    compared within when no stream is asked for."""
+    return int(scan["ms_level"]), scan["polarity"]
 
 
 def _sample_evenly(items: list, count: int) -> list:
@@ -2127,9 +2137,9 @@ class OpenTFRawBackend:
         """Mirror the ThermoBackend first-scan-outlier workaround (thermo.py
         ``_bad_first_scan``): a Mascope-side guard for a common Thermo raw-file
         quirk where the first scan has an abnormally high TIC. True when the
-        first scan's TIC is >= 5x the median TIC of the rest. Replicated here so
-        both backends select the same scan set (computed over all scans, as the
-        Thermo path does)."""
+        first scan's TIC is >= 5x the median TIC of the rest of ``scans``, the
+        scans it is compared with, itself first. Replicated here so both
+        backends select the same scan set."""
         if len(scans) <= 1:
             return False
         tic = np.array([s["total_ion_current"] for s in scans], dtype=np.float64)
@@ -2197,14 +2207,7 @@ class OpenTFRawBackend:
                 )
             mask &= np.array([int(s["ms_level"]) == level for s in scans], dtype=bool)
 
-        # Mirror the ThermoBackend first-scan-outlier exclusion (thermo.py
-        # scan_indices_1based) so both backends select the same scan set. The
-        # check and mask[0] are over the full file scan list, as on the Thermo
-        # path - or, when a stream is asked for, over that stream's own scans
-        # and only if the file's first scan is one of them.
-        if stream is None:
-            compared = scans
-        else:
+        if stream is not None:
             keys = self._scan_stream_keys()
             in_stream = np.array([key == stream for key in keys], dtype=bool)
             # The key of every scan is in hand, so "no stream of this file
@@ -2215,21 +2218,29 @@ class OpenTFRawBackend:
             if in_stream.size and not in_stream.any():
                 raise UnknownStreamError(stream, keys)
             mask &= in_stream
-            compared = (
-                [s for s, keep in zip(scans, in_stream) if keep]
-                if in_stream.size and in_stream[0]
-                else []
-            )
-        if self._bad_first_scan(compared):
-            from mascope_thermo.runtime import runtime
 
-            # INFO: a data quirk of the file, re-evaluated on every scan
-            # selection (see thermo.py scan_indices_1based)
-            runtime.logger.info(
-                "The first scan appears to be an outlier with abnormally high "
-                "TIC. Excluding the first scan from selection."
-            )
-            mask[0] = False
+        # Mirror the ThermoBackend first-scan-outlier exclusion (thermo.py
+        # scan_indices_1based) so both backends select the same scan set: the
+        # first scan is judged only by a selection that holds it, against the
+        # other scans of the stream asked for, or else of its MS order and
+        # polarity - never against scans that measure something else, whose
+        # ion current can be a small fraction of its own.
+        if mask.size and mask[0]:
+            if stream is None:
+                kind = _scan_kind(scans[0])
+                compared = [s for s in scans if _scan_kind(s) == kind]
+            else:
+                compared = [s for s, keep in zip(scans, in_stream) if keep]
+            if self._bad_first_scan(compared):
+                from mascope_thermo.runtime import runtime
+
+                # INFO: a data quirk of the file, re-evaluated on every scan
+                # selection (see thermo.py scan_indices_1based)
+                runtime.logger.info(
+                    "The first scan appears to be an outlier with abnormally high "
+                    "TIC. Excluding the first scan from selection."
+                )
+                mask[0] = False
 
         selected = [s for s, keep in zip(scans, mask) if keep]
         if not selected:

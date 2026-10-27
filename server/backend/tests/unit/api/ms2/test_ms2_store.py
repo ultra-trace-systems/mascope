@@ -155,7 +155,7 @@ class TestTheConversionWritesIt:
 
         assert recorded == {
             "layout": "mascope.ms2_store",
-            "version": 1,
+            "version": ms2_store.VERSION,
             "parent_peak_tolerance": 0.001,
             "ppm": 1,
             "reader": "opentfraw",
@@ -359,7 +359,10 @@ class TestAFileWithoutAStore:
     @pytest.mark.asyncio
     async def test_nor_does_one_whose_store_is_of_another_version(self, stored):
         recorded = m_io.read_props(stored.filename)["ms2_store"]
-        m_io.update_props(stored.filename, {"ms2_store": {**recorded, "version": 2}})
+        m_io.update_props(
+            stored.filename,
+            {"ms2_store": {**recorded, "version": ms2_store.VERSION + 1}},
+        )
         try:
             response = await _read(ms2_service.get_ms2_summary, _sample(stored))
         finally:

@@ -458,15 +458,16 @@ def test_no_trailer_is_read_when_no_stream_is_asked_for(scripted):
 
 
 def test_the_first_scan_is_compared_with_the_rest_of_its_own_stream(scripted):
-    """A first scan five times the file's median is dropped today, whatever
-    the other scans measured. Asked for a stream, it is judged against the
-    scans that measured what it did - and here it is ordinary among them."""
+    """Asked for no stream, a first scan is judged against every scan of its
+    MS order and polarity, whatever range they measured. Asked for a stream,
+    it is judged against the scans that measured what it did - and here it is
+    ordinary among them."""
     reader = scripted(
         [_scan(NEG_LOW, 1, tic=1000.0), _scan(NEG_LOW, 1, tic=900.0)]
         + [_scan(NEG_HIGH, 2, tic=100.0)] * 5
     )
 
-    # File-wide: 1000 against a median of 100.
+    # Among the negative MS1 scans: 1000 against a median of 100.
     assert reader.scan_indices() == [2, 3, 4, 5, 6, 7]
     # Within its stream: 1000 against 900.
     assert reader.scan_indices(stream=LOW) == [1, 2]
@@ -480,10 +481,74 @@ def test_a_first_scan_that_is_an_outlier_in_its_stream_is_left_out(scripted):
         + [_scan(NEG_HIGH, 2, tic=4000.0)] * 5
     )
 
-    # File-wide it passes: 5000 against a median of 4000.
+    # Among the negative MS1 scans it passes: 5000 against a median of 4000.
     assert reader.scan_indices() == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     # Within its stream it is five times the others.
     assert reader.scan_indices(stream=LOW) == [2, 3, 4]
+
+
+def test_fragmentation_scans_do_not_make_an_ordinary_first_scan_an_outlier(
+    scripted,
+):
+    """An MS2 scan carries a small fraction of a survey scan's ion current,
+    and a dependent method runs several per survey scan. Against the median
+    of every other scan, 10 here, an ordinary first survey scan reads as a
+    hundredfold outlier. It is compared with the file's other MS1 scans."""
+    reader = scripted(
+        [_scan(NEG_LOW, 1, tic=1000.0)]
+        + [
+            _scan(NEG_LOW, 1, tic=1000.0),
+            _scan(MS2, 2, tic=10.0, resolution=15000),
+            _scan(MS2, 2, tic=10.0, resolution=15000),
+        ]
+        * 3
+    )
+
+    assert reader.scan_indices() == [1, 2, 5, 8]
+    assert reader.scan_indices(ms_type=None) == list(range(1, 11))
+    assert reader.scan_indices(polarity="-", ms_type=None) == list(range(1, 11))
+
+
+def test_the_other_polarity_does_not_make_an_ordinary_first_scan_an_outlier(
+    scripted,
+):
+    """One polarity's scans can carry a small fraction of the other's ion
+    current. A file that switches polarity is compared within the first
+    scan's own."""
+    reader = scripted(
+        [_scan(NEG_LOW, 1, tic=1000.0)]
+        + [_scan(POS_LOW, 2, tic=10.0), _scan(NEG_LOW, 1, tic=1000.0)] * 3
+        + [_scan(POS_LOW, 2, tic=10.0)]
+    )
+
+    assert reader.scan_indices(polarity="-") == [1, 3, 5, 7]
+    assert reader.scan_indices() == list(range(1, 9))
+
+
+def test_a_first_scan_that_is_an_outlier_in_its_polarity_is_left_out(scripted):
+    """The other way round: a first scan five times the other scans of its
+    polarity is an outlier, however strong the other polarity's are."""
+    reader = scripted(
+        [_scan(NEG_LOW, 1, tic=5000.0)]
+        + [_scan(NEG_LOW, 1, tic=1000.0)] * 3
+        + [_scan(POS_LOW, 2, tic=4000.0)] * 5
+    )
+
+    assert reader.scan_indices(polarity="-") == [2, 3, 4]
+    assert reader.scan_indices() == [2, 3, 4, 5, 6, 7, 8, 9]
+
+
+def test_a_fragmentation_scan_first_is_compared_with_the_others(scripted):
+    """A targeted method that runs no survey scan: its first scan is one
+    fragmentation scan among the rest, and an outlier only among them."""
+    reader = scripted(
+        [_scan(MS2, 1, tic=5000.0, resolution=15000)]
+        + [_scan(MS2, 1, tic=1000.0, resolution=15000)] * 3
+    )
+    ordinary = scripted([_scan(MS2, 1, tic=1100.0, resolution=15000)] * 4)
+
+    assert reader.scan_indices(ms_type="Ms2") == [2, 3, 4]
+    assert ordinary.scan_indices(ms_type="Ms2") == [1, 2, 3, 4]
 
 
 def test_a_stream_that_does_not_hold_the_first_scan_loses_nothing(scripted):
@@ -530,6 +595,48 @@ def test_only_a_selection_that_leaves_the_first_scan_out_says_so(scripted):
     with _logged() as messages:
         opening.scan_indices(stream=f"{LOW}")
     assert [message for message in messages if "first scan" in message]
+
+
+def test_a_selection_that_does_not_hold_the_first_scan_says_nothing(scripted):
+    """Selecting the other polarity, the fragmentation scans or a window
+    after the first scan leaves nothing out, however the first scan reads.
+    Reading a file's MS2 scans makes several such selections, and a line from
+    each named an exclusion none of them made. The one selection that does
+    leave the first scan out says so once."""
+    reader = scripted(
+        [_scan(NEG_LOW, 1, tic=5000.0)]
+        + [
+            _scan(NEG_LOW, 1, tic=1000.0),
+            _scan(POS_LOW, 2, tic=1000.0),
+            _scan(MS2, 3, tic=1000.0, resolution=15000),
+        ]
+        * 3
+    )
+    for filters in (
+        {"polarity": "+"},
+        {"polarity": "+", "ms_type": None},
+        {"ms_type": "Ms2"},
+        {"t_min": 0.5},
+    ):
+        with _logged() as messages:
+            reader.scan_indices(**filters)
+        assert not [m for m in messages if "first scan" in m], filters
+
+    with _logged() as messages:
+        assert reader.scan_indices(polarity="-") == [2, 5, 8]
+    assert len([m for m in messages if "first scan" in m]) == 1
+
+
+def test_a_polarity_the_file_does_not_hold_is_an_empty_selection_and_no_more(
+    scripted,
+):
+    reader = scripted(
+        [_scan(NEG_LOW, 1, tic=5000.0)] + [_scan(NEG_LOW, 1, tic=1000.0)] * 3
+    )
+
+    with _logged() as messages, pytest.raises(NoScansFoundError):
+        reader.scan_indices(polarity="+", ms_type=None)
+    assert not [m for m in messages if "first scan" in m]
 
 
 def test_a_stream_of_one_scan_keeps_it(scripted):

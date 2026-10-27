@@ -807,19 +807,28 @@ be matched, is the same question from the store's side (4.3).
 - **Per-peak timeseries are filled with a per-scan stream mask.** This also
   removes today's normalisation of a polarity's rows over the axis of both
   polarities in `load_peak_timeseries`.
-- **The first-scan outlier rule stays evaluated as it is today for
-  single-stream files.** Any change to what the default selection returns
-  makes every existing store stale (`check_stored_scan_axis`), so per-stream
-  evaluation applies only to multi-stream files. Those are the files the
-  composite cut takes on (4.5). As built (#2278): a selection that names no
-  stream compares the file's first scan with every other scan, as before,
-  and one that names a stream compares it with the other scans of its own
-  stream - only that stream can lose it. On a single-stream file the two are
-  one comparison. They differ on one corpus file, a polarity-switching one:
-  its first scan equals the median of its own experiment and is sixty times
-  the file's median only because the other polarity's scans are that much
-  weaker, so today's rule drops an ordinary scan there, and the per-stream
-  one keeps it.
+- **The first-scan outlier rule compares the first scan with scans that
+  measure what it measures.** A selection that names a stream compares it
+  with the other scans of its own stream (#2278) - only that stream can lose
+  it. One that names none compares it with the other scans of its MS order
+  and polarity. On a single-polarity MS1 file the two are one comparison,
+  and on such a file it is the rule as it always was.
+
+  The selection that names no stream at first kept comparing the first scan
+  with every other scan of the file, because changing what the default
+  selection returns makes the stores of the files it changes stale
+  (`check_stored_scan_axis`). That rule dropped an ordinary first scan
+  wherever most of the other scans measured something weaker. In the
+  corpus's polarity-switching file, the first scan equals the median of its
+  own experiment and is sixty times the file's median only because the
+  other polarity's scans are that much weaker. In most MS2 files the
+  fragmentation scans carry 100 to 10,000 times less ion current than the
+  MS1 scans and outnumber them: 13 of the corpus's 20 MS2 files lost their
+  first MS1 scan, each within 0.97 to 1.03 times the next MS1 scans (two at
+  1.9 and 2.7 times). The rule was changed for that, and the stores of the
+  files whose selection changed go stale once: the matching and spectrum
+  views queue their peak detection on first read, and re-processing them
+  does the same at once.
 
   **That the rule stays a rule about the file's first scan is a choice the
   files in reach support and do not prove.** The other reading - leave out

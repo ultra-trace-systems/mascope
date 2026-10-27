@@ -582,7 +582,7 @@ answered wrongly, failed, or **not answerable**: a solver raises
   why, and the session ends with the run's report. `uv run python
   libraries/ai/tests/ai_golden.py run --url ...` prints the same report
   without pytest; `list` prints the table below.
-- **Reference values.** The answers are those of demo bundle 1.4.1, the
+- **Reference values.** The answers are those of demo bundle 1.4.2, the
   registry's default, which CI's stack loads. The numbers come from the
   bundle's goldens (`expected/peaks.parquet`, `expected/ions.parquet`).
   Where a question can be checked against them, a hermetic test holds the

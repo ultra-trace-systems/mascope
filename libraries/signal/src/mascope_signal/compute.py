@@ -279,8 +279,9 @@ def stored_scans_per_peak(
     the store's own axis holds for the peak. For a per-stream store that is
     its stream's scans, which the store counts for itself: a file-wide read
     of the polarity's scans can be one short of the axis - the file's first
-    scan is left out where its TIC is an outlier among the file's scans and
-    not among its own stream's, as a composite method's reagent scan is -
+    scan is left out where its TIC is an outlier among the file's scans of
+    its MS order and polarity and not among its own stream's, as a composite
+    method's reagent scan is -
     and counted by that read, the stream's ions would average a quarter
     high. A pooled store's axis holds every scan of the file with no
     polarity on it, so its count is the polarity's scans as the caller read
@@ -2223,17 +2224,20 @@ class StalePeakStoreError(ValueError):
     A store is allocated against the scans of the acquisition and keeps that
     axis for life, while the scans a reader selects are decided anew on every
     read - a file whose first scan reads as a TIC outlier loses it, and that
-    rule has not always existed. A store written before it therefore describes
-    one more scan than the file now yields.
+    rule has changed: it has not always existed, and it once compared the
+    first scan with every other scan of the file, fragmentation scans and the
+    other polarity's included, where it now compares it with the scans of its
+    own MS order and polarity. A store written under an earlier rule can
+    therefore describe one scan more, or one fewer, than the file now yields.
 
     Re-running peak detection is the only thing that repairs such a store, and
     it repairs it completely. Nothing downstream can: the store's per-peak
-    sums were measured over the scans it was allocated with, so they already
-    carry the intensity of the scan the reader now discards. Spreading a
-    recomputed timeseries over the scans that remain would move that intensity
-    onto them - the artifact the exclusion exists to drop would be smeared
-    across the good scans instead of sitting in its own, where it can still be
-    seen and skipped.
+    sums were measured over the scans it was allocated with, so they carry
+    the intensity of a scan the reader now discards, or lack that of one it
+    now reads. Spreading a recomputed timeseries over the scans that remain
+    would move a discarded scan's intensity onto them - the artifact the
+    exclusion exists to drop would be smeared across the good scans instead
+    of sitting in its own, where it can still be seen and skipped.
 
     A store that holds a peak list per scan stream is read back stream by
     stream, each under the key it was built with, and a key is a name the

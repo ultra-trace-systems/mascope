@@ -3,7 +3,8 @@
 A peak store's scan axis is fixed when peak detection allocates it, while the
 scans a reader selects are decided anew on every read. The two drift apart on
 files where the reader's first-scan-outlier exclusion applies but did not yet
-exist when the store was written.
+exist when the store was written, and on files whose first scan it left out
+when it compared the first scan with scans of another MS order or polarity.
 
 Such a store cannot be recomputed into: its per-peak sums were measured over
 the discarded scan too, so distributing a recomputed timeseries over the scans
@@ -130,6 +131,22 @@ async def test_a_store_written_before_the_exclusion_is_refused(
     stored = m_io.load_peak_data(SIGNAL_TEST_FILENAME)
     assert not stored.is_timeseries_computed.values.any(), "nothing was written"
     assert np.isnan(stored.peak_areas.values).all(), "no partial recompute was left"
+
+
+@pytest.mark.asyncio
+async def test_a_store_without_a_first_scan_the_reader_now_reads_is_refused(
+    monkeypatch, write_peak_store
+):
+    """The other way round: the store was allocated without the first scan,
+    which a rule comparing it with weaker fragmentation or other-polarity
+    scans had left out, and the reader now keeps it. The store's sums lack
+    that scan's intensity, so it is rebuilt rather than read over a shorter
+    axis."""
+    write_peak_store(SCAN_TIMES[1:], MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+    _stub_reader(monkeypatch, SCAN_TIMES)
+
+    with pytest.raises(m_compute.StalePeakStoreError, match="scan counts differ"):
+        await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
 
 
 @pytest.mark.asyncio
