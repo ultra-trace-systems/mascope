@@ -446,6 +446,10 @@ A source outside the licence gate is shown with its licence and no action.
 A person who is not an admin sees the page and the collections, and attaches
 them from the Targets panel.
 
+Built (MAS-454) as a dialog behind a **Reference lists** button in the Data
+section of Settings, `lib/dialogs/DialogReferenceLists/`, instead of a sidebar
+tab of its own: the owner's call on that issue.
+
 ### 5.4 Promote from an assignment row
 
 The assignment ledger ([PaneBrowserAssignment.vue](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserAssignment.vue))
