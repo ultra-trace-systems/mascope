@@ -56,6 +56,16 @@ GENERATED_SECRETS = (
 # every session.
 AUTO_PROVISIONED_SECRETS = ("mfa_encryption_key.txt",)
 
+# Secret files the operator supplies that compose still needs present to start,
+# so both `mascope init` and every compose "up" create them EMPTY when absent.
+# Empty means "not set up": nothing reads the file until the operator fills it
+# and turns its feature on, and the frontend refuses to start with the feature
+# on and the file still empty. Existing files are never touched.
+#   origin_pull_ca.pem - the CA of the CDN's origin-pull certificate for the
+#                        zone, read with MASCOPE_ORIGIN_PULL=on
+#                        (docs/maintaining.md, "The edge").
+PLACEHOLDER_SECRETS = ("origin_pull_ca.pem",)
+
 # Directories the containers bind-mount from the home. Docker creates missing
 # mount sources as root, so pre-create them owned by the invoking user.
 RUNTIME_DIRS = (
@@ -91,6 +101,10 @@ def _write_secrets(home: Path) -> list[str]:
             continue
         target.write_text(_secrets.token_urlsafe(48) + "\n", encoding="utf-8")
         written.append(name)
+    for name in PLACEHOLDER_SECRETS:
+        target = secrets_dir / name
+        if not target.exists():
+            target.touch()
     return written
 
 

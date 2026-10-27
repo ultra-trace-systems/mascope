@@ -136,6 +136,8 @@ const ONE_SIDED_REGIONS = {
     'hsts', // meaningless without TLS
     'hsts-docs', // ditto (the /docs/ location restates its header set)
     'http-redirect', // the :80 -> :443 vhost
+    'origin-pull', // the CDN's client certificate is a TLS check; demo has no CDN
+    'origin-pull-map', // ditto, the http-context half
     'socketio-timeout', // covered by the demo's single long timeout
     'tls-cert',
     'tls-listen',

@@ -147,6 +147,45 @@ def test_only_an_up_provisions_secrets(compose_env, secrets_dir, args):
     assert not (secrets_dir / AUTO_SECRET).exists(), f"'{args[0]}' wrote a secret"
 
 
+# The operator-supplied file compose needs present to start. Named literally,
+# like AUTO_SECRET, so an emptied PLACEHOLDER_SECRETS cannot pass vacuously.
+PLACEHOLDER_SECRET = "origin_pull_ca.pem"
+
+
+@pytest.mark.parametrize("args", UP_SHAPES, ids=lambda a: " ".join(a))
+def test_every_up_shape_creates_the_placeholder_empty(compose_env, secrets_dir, args):
+    # A deployment from before origin pulls has no CA file, and compose would
+    # refuse to recreate the frontend without it. Empty, never invented: the
+    # CA is the operator's, and an empty one reads as "origin pulls not set up".
+    compose_env(0)
+
+    prod_main._run_compose(args)
+
+    ca = secrets_dir / PLACEHOLDER_SECRET
+    assert ca.is_file(), f"'{' '.join(args)}' did not create {PLACEHOLDER_SECRET}"
+    assert ca.read_bytes() == b""
+
+
+def test_up_never_overwrites_the_operator_supplied_ca(compose_env, secrets_dir):
+    compose_env(0)
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+    ca = secrets_dir / PLACEHOLDER_SECRET
+    ca.write_bytes(b"-----BEGIN CERTIFICATE-----\n")
+
+    prod_main._run_compose(["up", "--detach"])
+
+    assert ca.read_bytes() == b"-----BEGIN CERTIFICATE-----\n"
+
+
+@pytest.mark.parametrize("args", [["build"], ["down"], ["ps"], ["pull"]])
+def test_only_an_up_creates_the_placeholder(compose_env, secrets_dir, args):
+    compose_env(0)
+
+    prod_main._run_compose(args)
+
+    assert not (secrets_dir / PLACEHOLDER_SECRET).exists(), f"'{args[0]}' wrote it"
+
+
 def test_up_never_invents_a_long_standing_secret(compose_env, secrets_dir):
     compose_env(0)
 

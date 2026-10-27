@@ -7,12 +7,15 @@ questions here are about task order and file contents, not execution).
 """
 
 import importlib
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
-from mascope_cli.cmd.init import GENERATED_SECRETS
+from mascope_cli.cmd.init import GENERATED_SECRETS, PLACEHOLDER_SECRETS
 
 
 # The prod package re-exports the `doctor` command, which shadows the module.
@@ -111,9 +114,99 @@ def test_every_runtime_secret_in_compose_is_generated_by_the_cli():
         if name in OPERATOR_SUPPLIED_SECRETS:
             continue
         source = (spec or {}).get("file", "")
-        assert Path(source).name in GENERATED_SECRETS, (
+        assert Path(source).name in GENERATED_SECRETS + PLACEHOLDER_SECRETS, (
             f"compose secret '{name}' reads {source}, which no CLI code path "
             "creates - add it to GENERATED_SECRETS (and, if it is new in this "
-            "release, to AUTO_PROVISIONED_SECRETS), or list it in "
+            "release, to AUTO_PROVISIONED_SECRETS), to PLACEHOLDER_SECRETS if "
+            "the operator fills it in later, or list it in "
             "OPERATOR_SUPPLIED_SECRETS if the operator brings it by hand"
         )
+
+
+def test_the_frontend_publishes_its_loopback_listener_on_loopback_only():
+    """
+    :8443 never asks for the CDN's client certificate, so it must not be
+    reachable from anywhere but the host itself.
+
+    With origin pulls on, :443 answers only the CDN, and the loopback listener
+    is how the reboot probe and the security suite's origin vantage still reach
+    the origin. Published on all interfaces it would be a way round the check
+    for anyone the firewall lets through - and every tailnet peer gets through
+    (fleet README, "The tailnet bypasses ufw").
+    """
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    frontend = compose["services"]["frontend"]
+
+    assert sorted(frontend["ports"]) == ["127.0.0.1:8443:8443", "443:443"]
+    assert "MASCOPE_ORIGIN_PULL" in frontend["environment"]
+    assert "origin_pull_ca" in frontend["secrets"]
+    assert compose["secrets"]["origin_pull_ca"]["file"] == (
+        ".runtime/secrets/origin_pull_ca.pem"
+    )
+
+
+# curl for the reboot probe: answers STUB_<port> for a URL on that port, and
+# logs each port it was asked to STUB_LOG. "000" is curl's own answer when the
+# connection is refused: it prints the write-out and exits non-zero.
+PROBE_CURL_STUB = """#!/bin/sh
+for arg; do url="$arg"; done
+port="${url#https://*:}"; port="${port%%/*}"
+echo "$port" >> "$STUB_LOG"
+eval "code=\\${STUB_$port:-000}"
+printf '%s' "$code"
+[ "$code" = 000 ] && exit 7
+exit 0
+"""
+
+
+@pytest.mark.skipif(not shutil.which("sh"), reason="the probe runs under sh")
+@pytest.mark.parametrize(
+    ("loopback", "tls", "answer", "asked"),
+    [
+        # The loopback listener answers: :443 is never asked, so a site with
+        # origin pulls on (403 there) passes its gate.
+        ("422", "403", "422", ["8443"]),
+        # A release from before the listener: the connection is refused, and
+        # only then is :443 asked.
+        ("000", "422", "422", ["8443", "443"]),
+        # A listener that answers wrongly is the answer: falling back on
+        # anything but a refused connection would hide a broken :8443.
+        ("502", "422", "502", ["8443"]),
+    ],
+    ids=["loopback", "older-release", "loopback-broken"],
+)
+def test_the_reboot_probe_asks_the_loopback_listener_first(
+    tmp_path, loopback, tls, answer, asked
+):
+    """
+    The probe must reach the origin whether origin pulls are on or not.
+
+    :443 answers 403 to a client without the CDN's certificate once they are
+    on, which would fail every reboot's gate and halt the batch.
+    """
+    tasks = yaml.safe_load(REBOOT_PLAYBOOK.read_text(encoding="utf-8"))[0]["tasks"]
+    probe = next(t for t in tasks if t.get("register") == "api_probe")
+    cmd = probe["ansible.builtin.shell"]["cmd"].replace(
+        "{{ app_host }}", "server.example"
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "curl"
+    stub.write_text(PROBE_CURL_STUB, encoding="utf-8")
+    stub.chmod(0o755)
+    log = tmp_path / "asked"
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "STUB_LOG": str(log),
+        "STUB_8443": loopback,
+        "STUB_443": tls,
+    }
+
+    result = subprocess.run(
+        ["sh", "-c", cmd], env=env, capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == answer
+    assert log.read_text(encoding="utf-8").split() == asked
