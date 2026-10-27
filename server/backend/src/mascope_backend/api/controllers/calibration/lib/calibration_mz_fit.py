@@ -20,6 +20,9 @@ General calibration workflow:
    for small match sets, evaluate all subsets to find the most self-consistent fit.
 - Build calibration statistics, summary metrics, and warnings when calibration is
    missing, underdetermined, or inaccurate.
+- For a TOF fit, say what it was made on: every candidate point with its
+   residual, the m/z span of the points kept, the version of the calibration
+   collection, the model and the node's version.
 - Apply the accepted calibration by updating stored calibration parameters and
    rewriting relevant m/z coordinates in the sample file.
 
@@ -34,6 +37,8 @@ and as it is where they do not (``mascope_signal.mz_factor.carry_across``).
 """
 
 import asyncio
+import hashlib
+import json
 import math
 from abc import abstractmethod
 from itertools import combinations
@@ -52,6 +57,9 @@ from mascope_backend.api.controllers.samples.lib.samples_segments import (
 )
 from mascope_backend.api.controllers.target.associations.target_compound_in_target_collection_controller import (
     get_target_compound_in_target_collection,
+)
+from mascope_backend.api.controllers.target.ions.target_ions_controller import (
+    get_target_ions,
 )
 from mascope_backend.api.controllers.target.isotopes.target_isotopes_controller import (
     get_target_isotopes,
@@ -88,6 +96,16 @@ from mascope_tofwerk.calibration import mz_calibrate, tof_to_mass
 TOF_MINIMUM_CALIBRATION_POINTS = 3
 ORBI_MINIMUM_CALIBRATION_POINTS = 1
 LARGE_SAMPLE_SIZE_THRESHOLD = 5
+
+#: The version of the TOF calibration node: how it matches calibrants, which
+#: it keeps and how it fits them. Stored with every TOF fit
+#: (``quality.node_version``), so a file one version fitted can be told from
+#: a file another did, and a change to any of the three is a new version.
+TOF_CALIBRATION_NODE_VERSION = 1
+
+#: The TOF models the node fits, by Tofwerk mode, as a TOF fit's record names
+#: its model (``quality.model``). ``tof_to_mass`` evaluates more of them.
+TOF_MODEL_EQUATIONS = {0: "i = p1*sqrt(m) + p2"}
 
 #: Mean retained residuals closer than this rank two subsets of calibrants as
 #: equally consistent. A subset the fit can absorb whole is fitted exactly - an
@@ -148,6 +166,9 @@ class BaseCalibrationHandler:
         #: How each scan stream of the sample's polarity came by its factor,
         #: for a file fitted stream by stream; None for any other.
         self.segments: list[dict] | None = None
+        #: What a TOF fit was made on, for its record's quality block
+        #: (``TofCalibrationHandler._fitted_on``); None for any other.
+        self.fitted_on: dict | None = None
 
     def _calibration_lock_path(self) -> str:
         """Path naming the lock that guards a whole ``apply`` for this sample.
@@ -314,6 +335,7 @@ class BaseCalibrationHandler:
             match_mz_error=np.nan,
             match_score=np.nan,
             sample_peak_tof=np.nan,
+            sample_peak_snr=np.nan,
             matched_peak_idx=np.nan,
         )
 
@@ -329,6 +351,7 @@ class BaseCalibrationHandler:
                     )
                 ),
                 "tof": averaged_peaks.tof.values,
+                "snr": averaged_peaks.signal_to_noise.values,
                 "intensity": averaged_peaks.values,
             }
 
@@ -359,6 +382,7 @@ class BaseCalibrationHandler:
                 "match_mz_error": "float64",
                 "match_score": "float64",
                 "sample_peak_tof": "float64",
+                "sample_peak_snr": "float64",
             }
         )
         # Fill np.nan with serializable defaults for unmatched isotopes
@@ -663,6 +687,9 @@ class BaseCalibrationHandler:
         """
         Extract peak intensities from the timeseries dataset based on the instrument type.
 
+        Each peak's signal-to-noise ratio comes along as a coordinate, so a
+        match says how far its peak stood above the noise.
+
         :param peak_timeseries: Timeseries dataset of peaks.
         :type peak_timeseries: xarray.Dataset
         :return: DataArray of peak intensities (either heights or areas).
@@ -672,9 +699,10 @@ class BaseCalibrationHandler:
 
         match instrument_type:
             case "orbi":
-                return peak_timeseries.peak_heights
+                intensity = peak_timeseries.peak_heights
             case "tof":
-                return peak_timeseries.peak_areas
+                intensity = peak_timeseries.peak_areas
+        return intensity.assign_coords(signal_to_noise=peak_timeseries.signal_to_noise)
 
     def _match_max_in_range(
         self,
@@ -690,12 +718,14 @@ class BaseCalibrationHandler:
         in_range_mask = delta_mz <= mz_tolerance + np.finfo(float).eps * target_mz
         mz_in_range = peaks["mz"][in_range_mask]
         tof_in_range = peaks["tof"][in_range_mask]
+        snr_in_range = peaks["snr"][in_range_mask]
         intensity_in_range = peaks["intensity"][in_range_mask]
 
         if np.any(in_range_mask):
             max_peak_idx = np.argmax(intensity_in_range)
             isotope_row["sample_peak_mz"] = mz_in_range[max_peak_idx]
             isotope_row["sample_peak_tof"] = tof_in_range[max_peak_idx]
+            isotope_row["sample_peak_snr"] = snr_in_range[max_peak_idx]
             isotope_row["sample_peak_intensity"] = intensity_in_range[max_peak_idx]
             isotope_row["matched_peak_idx"] = max_peak_idx
 
@@ -927,6 +957,24 @@ class TofCalibrationHandler(BaseCalibrationHandler):
     def _minimum_calibration_points(self) -> int:
         return TOF_MINIMUM_CALIBRATION_POINTS
 
+    async def _resolve_calibration_isotopes(self) -> pd.DataFrame | None:
+        """The collection's isotopes, each with the formula of its ion.
+
+        A TOF fit's record names the ion of every point it lists
+        (:meth:`_fitted_on`).
+        """
+        isotopes = await super()._resolve_calibration_isotopes()
+        if isotopes is None:
+            return None
+        ions = await get_target_ions(
+            target_collection_id=self.params.calibration_collection_id,
+            ionization_mechanism_ids=self.params.ionization_mechanism_ids,
+        )
+        formulas = {
+            ion["target_ion_id"]: ion["target_ion_formula"] for ion in ions["data"]
+        }
+        return isotopes.assign(target_ion_formula=isotopes.target_ion_id.map(formulas))
+
     def _fit_matches(self, matches_df: pd.DataFrame) -> tuple[dict, dict]:
         """Fit the m/z calibration model to the matched peaks using the tofwerk mz_calibrate function."""
         return mz_calibrate(
@@ -1037,6 +1085,9 @@ class TofCalibrationHandler(BaseCalibrationHandler):
             self.stats = selected_matches_df.to_dict("records")
             summary_row = self._get_summary_row(selected_matches_df)
             self.stats.append(summary_row)
+            self.fitted_on = self._fitted_on(
+                target_isotopes_df, good_matches_df, selected_matches_df
+            )
 
             isotopes_from_single_ion = (
                 len(selected_matches_df.target_ion_id.unique()) == 1
@@ -1054,6 +1105,70 @@ class TofCalibrationHandler(BaseCalibrationHandler):
             self.fit_result = None
             self.stats = good_matches_df.to_dict("records")
             self.warning = "Not enough calibration peaks"
+
+    def _fitted_on(
+        self,
+        isotopes: pd.DataFrame,
+        candidates: pd.DataFrame,
+        retained: pd.DataFrame,
+    ) -> dict:
+        """What the fit was made on, for its record's quality block.
+
+        - ``points``: every line the fit chose its calibrants from, in the
+          order of their peaks' m/z: its ion, its exact and observed m/z, its
+          residual under the fit in ppm, its peak's S/N, and whether the fit
+          kept it. The residual is the one the calibration audit reads
+          (``tof_calibration_audit.ppm_error``): the fit's m/z at the peak's
+          TOF index against the exact m/z. A line the match filters turned
+          down - below the abundance or the intensity floor, outside the
+          refine window, below the match score - never reached the fit and
+          is not listed, and neither is the second reading of a peak.
+        - ``span``: the exact m/z of the lowest and the highest line kept.
+        - ``collection``: the calibration collection, and a hash of the
+          isotopes it offered (:func:`calibration_isotopes_sha256`), which
+          tells one version of it from another.
+        - ``model``: the Tofwerk mode fitted, and its equation.
+        - ``node_version``: :data:`TOF_CALIBRATION_NODE_VERSION`.
+
+        :param isotopes: The isotopes the collection offered the fit.
+        :param candidates: The matches the fit chose from, one per peak in
+            the order of the peaks' m/z (:meth:`_one_reading_per_peak`).
+        :param retained: The matches it kept.
+        :return: The keys above, JSON-safe.
+        """
+        kept = set(retained["sample_peak_mz"])
+        residuals = self._evaluate_fit(candidates, self.fit_result)["post_dmz"]
+        points = [
+            {
+                "ion": ion if isinstance(ion, str) else None,
+                "target_mz": _finite_or_none(target),
+                "observed_mz": _finite_or_none(observed),
+                "residual_ppm": _finite_or_none(residual),
+                "snr": _finite_or_none(snr),
+                "retained": observed in kept,
+            }
+            for ion, target, observed, residual, snr in zip(
+                candidates["target_ion_formula"],
+                candidates["mz"],
+                candidates["sample_peak_mz"],
+                residuals,
+                candidates["sample_peak_snr"],
+            )
+        ]
+        mode = self.fit_result["mode"]
+        return {
+            "points": points,
+            "span": [
+                _finite_or_none(retained["mz"].min()),
+                _finite_or_none(retained["mz"].max()),
+            ],
+            "collection": {
+                "id": self.params.calibration_collection_id,
+                "isotopes_sha256": calibration_isotopes_sha256(isotopes),
+            },
+            "model": {"mode": mode, "equation": TOF_MODEL_EQUATIONS.get(mode)},
+            "node_version": TOF_CALIBRATION_NODE_VERSION,
+        }
 
     async def apply(self, fit: dict):
         """Applies the m/z calibration fit to the sample file.
@@ -1770,6 +1885,37 @@ def _finite_or_none(value) -> float | None:
     except (TypeError, ValueError):
         return None
     return value if math.isfinite(value) else None
+
+
+def calibration_isotopes_sha256(isotopes: pd.DataFrame) -> str:
+    """
+    A hash of the isotopes a calibration collection offers a fit.
+
+    Over what the fit reads of each isotope - its formula, exact m/z and
+    relative abundance - and nothing a database makes up for itself, such as
+    the ids or the order of the rows. So a collection's isotopes under one
+    mode's mechanisms hash alike on every server, and an edit of the
+    collection that changes what a fit is offered changes the hash. The m/z
+    and the abundance count to 6 decimals, 0.02 ppm at 50 Th: a difference
+    below that changes no fit. An isotope offered twice, by two ions of one
+    formula, offers no more than once, and is hashed once.
+
+    :param isotopes: The isotopes, with ``target_isotope_formula``, ``mz``
+        and ``relative_abundance``.
+    :return: The SHA-256 of them, in hex.
+    """
+    lines = sorted(
+        {
+            (str(formula), round(float(mz), 6), round(float(abundance), 6))
+            for formula, mz, abundance in zip(
+                isotopes["target_isotope_formula"],
+                isotopes["mz"],
+                isotopes["relative_abundance"],
+            )
+        }
+    )
+    payload = json.dumps(lines, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def axis_correction_ppm(fit: dict | None) -> float | None:
