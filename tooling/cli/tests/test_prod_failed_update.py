@@ -353,7 +353,48 @@ def test_unrecordable_failure_still_errors(auto_env, root):
 def test_confirm_says_it_retries_a_failed_release(auto_env, root):
     au.record_failure(root, "v1.4.0", _HEAD, "fast")
     _confirm()
-    assert "Confirmed a retry of fast update v1.4.0" in _status_log(root)
+    log = _status_log(root)
+    assert "Confirmed a retry of fast update v1.4.0" in log
+    # Fixed in place, the release already runs: the confirm acknowledges that.
+    assert "fixed in place" in log
+
+
+def test_confirm_of_a_fix_in_place_lifts_the_hold(auto_env, root):
+    au.record_failure(root, "v1.4.0", _HEAD, "fast")
+    _confirm()
+    code, compose = _run_auto(auto_env, classification="up-to-date")
+    assert code == au.AUTO_OK
+    assert compose == []
+    assert au.load_pending(root) is None
+
+
+def test_deploying_a_held_fast_update_by_hand_names_its_kind(auto_env, root):
+    au.record_failure(root, "v1.4.0", _HEAD, "fast")
+    prod_main._settle_pending("v1.4.0", root)
+    assert au.load_pending(root) is None
+    assert "Pending fast update v1.4.0 settled" in _status_log(root)
+
+
+@pytest.mark.parametrize("confirm, snooze", [(True, None), (False, 3)])
+def test_nothing_pending_warning_names_no_kind(auto_env, confirm, snooze):
+    warnings = []
+    auto_env.setattr(prod_main.runtime.logger, "warning", warnings.append)
+    with pytest.raises(typer.Exit):
+        prod_main._manage_pending(confirm=confirm, snooze=snooze)
+    assert warnings == [f"No pending update to {'confirm' if confirm else 'snooze'}."]
+
+
+def test_confirm_and_snooze_help_name_a_held_release():
+    update = typer.main.get_command(prod_main.prod_app).commands["update"]
+    helps = {p.name: p.help for p in update.params}
+    assert (
+        "a release held after its apply failed, which this retries"
+        in (helps["confirm"])
+    )
+    assert (
+        "migration update, or a release held after its apply failed"
+        in (helps["snooze"])
+    )
 
 
 # --- doctor ---

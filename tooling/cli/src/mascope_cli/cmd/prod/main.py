@@ -268,12 +268,14 @@ def _align_checkout(target: str, mascope_path: Optional[str]) -> None:
 
 def _settle_pending(target: str, mascope_path: Optional[str]) -> None:
     """
-    Drop the recorded pending migration update once a manual update deployed it.
+    Drop the recorded pending update once a manual update deployed it.
 
-    `--auto` clears the record when it applies the update itself. A release
-    deployed by hand (`prod update`, `--version`) has to clear it here, or
-    `mascope prod doctor` keeps reporting a migration that has already run
-    until the next timer tick classifies the stack as up to date.
+    The record is a migration update waiting for its window, or a release
+    (fast or migration) held after its unattended apply failed. `--auto`
+    clears it when it applies the update itself. A release deployed by hand
+    (`prod update`, `--version`) has to clear it here, or `mascope prod doctor`
+    keeps reporting an update that has already run until the next timer tick
+    classifies the stack as up to date.
 
     Only a release at or past the pending one settles it: rolling back to an
     older release leaves that update outstanding. ``latest`` names no release
@@ -292,7 +294,7 @@ def _settle_pending(target: str, mascope_path: Optional[str]) -> None:
         return
     auto_update.clear_pending(mascope_path)
     message = (
-        f"Pending migration update {pending.version} settled: {target} was "
+        f"Pending {pending.kind} update {pending.version} settled: {target} was "
         "deployed by hand."
     )
     runtime.logger.info(message)
@@ -914,7 +916,11 @@ def _hold_if_failed(
 
 def _manage_pending(*, confirm: bool, snooze: Optional[int]) -> None:
     """
-    Confirm or snooze the recorded pending migration update, then exit.
+    Confirm or snooze the recorded pending update, then exit.
+
+    The record is a migration update waiting for its window, or a release
+    (fast or migration) held after its unattended apply failed, which a
+    confirm retries.
 
     Never returns normally - always raises ``typer.Exit``.
     """
@@ -926,7 +932,7 @@ def _manage_pending(*, confirm: bool, snooze: Optional[int]) -> None:
             raise typer.Exit(1)
         pending = auto_update.snooze_pending(mascope_path, snooze)
         if pending is None:
-            runtime.logger.warning("No pending migration update to snooze.")
+            runtime.logger.warning("No pending update to snooze.")
             raise typer.Exit(0)
         message = (
             f"Snoozed {pending.kind} update {pending.version} until "
@@ -939,7 +945,7 @@ def _manage_pending(*, confirm: bool, snooze: Optional[int]) -> None:
     held = auto_update.load_pending(mascope_path)
     pending = auto_update.confirm_pending(mascope_path)
     if pending is None:
-        runtime.logger.warning("No pending migration update to confirm.")
+        runtime.logger.warning("No pending update to confirm.")
         raise typer.Exit(0)
     message = (
         f"Confirmed {pending.kind} update {pending.version}; it will apply at the "
@@ -949,7 +955,8 @@ def _manage_pending(*, confirm: bool, snooze: Optional[int]) -> None:
         message = (
             f"Confirmed a retry of {pending.kind} update {pending.version}, which "
             f"failed to apply at {held.failed_at}; it will apply at the next "
-            "maintenance window."
+            "maintenance window. If it was fixed in place and already runs "
+            "healthily, that run finds it up to date and only lifts the hold."
         )
     runtime.logger.success(message)
     auto_update.record_status(mascope_path, message)
@@ -1213,15 +1220,18 @@ def update(
         bool,
         typer.Option(
             "--confirm",
-            help="Confirm the pending migration update so --auto applies it at the "
-            "next maintenance window without waiting out the grace period.",
+            help="Confirm the pending update so --auto applies it at the next "
+            "maintenance window: a migration update without waiting out the "
+            "grace period, or a release held after its apply failed, which "
+            "this retries.",
         ),
     ] = False,
     snooze: Annotated[
         Optional[int],
         typer.Option(
             "--snooze",
-            help="Postpone the pending migration update by this many days, then exit.",
+            help="Postpone the pending update (a migration update, or a release "
+            "held after its apply failed) by this many days, then exit.",
         ),
     ] = None,
 ) -> None:
@@ -1252,11 +1262,11 @@ def update(
         mascope prod update --check                # classify without applying
         mascope prod update --check --json         # machine-readable preflight
         mascope prod update --auto                 # unattended (for a timer)
-        mascope prod update --confirm              # approve the pending migration
+        mascope prod update --confirm              # approve or retry the pending update
         mascope prod update --snooze 7             # postpone it 7 days
     """
     if confirm or snooze is not None:
-        # Standalone management of the recorded pending migration update.
+        # Standalone management of the recorded pending update.
         _manage_pending(confirm=confirm, snooze=snooze)
 
     if auto:
