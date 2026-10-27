@@ -226,6 +226,27 @@ async def get_session_user(sid: str, namespace: str = "/") -> dict[str, Any]:
         raise SocketSessionError(f"Session error: {e}") from e
 
 
+async def peek_session_user(sid: str, namespace: str = "/") -> Optional[dict[str, Any]]:
+    """
+    A socket's session as stored, without refreshing it as a read does.
+
+    For a caller looking over every socket of an account for the ones to sign
+    out: a socket its dead worker left must not have its records kept alive by
+    being looked at.
+
+    :param sid: Socket.IO session ID
+    :type sid: str
+    :param namespace: Socket.IO namespace
+    :type namespace: str
+    :return: The session, or ``None`` when there is none
+    :rtype: Optional[dict[str, Any]]
+    """
+    data = await redis_storage_client.client.get(
+        storage_config.session_key(sid, namespace)
+    )
+    return json.loads(data) if data else None
+
+
 async def has_session(sid: str, namespace: str = "/") -> bool:
     """
     Whether a socket has a session, without refreshing it as a read does.

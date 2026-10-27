@@ -442,10 +442,22 @@ async def test_an_update_that_ends_nothing_evicts_nothing(owner_client, person, 
 # --- Signing out of one tab signs out its socket ---
 
 
-async def _logout(user: User, sid: str | None):
-    """Sign out through the logout route, as the SPA does, naming its socket."""
+#: When the browser signing out signed in; its sockets were authenticated with
+#: a token issued then.
+THIS_BROWSER = datetime(2026, 10, 27, 9, 0, 0, tzinfo=timezone.utc)
+
+#: When another browser of the same account signed in.
+OTHER_BROWSER = THIS_BROWSER - timedelta(seconds=1)
+
+
+async def _logout(user: User, sid: str | None, issued: datetime = THIS_BROWSER):
+    """
+    Sign out through the logout route, as the SPA does, naming its socket.
+
+    The cookie is the one the browser signed in with at ``issued``.
+    """
     headers = {"X-SID": sid} if sid else None
-    async with _cookie_client(_token(user, datetime.now(timezone.utc))) as client:
+    async with _cookie_client(_token(user, issued)) as client:
         resp = await client.post("/api/auth/logout", headers=headers)
     assert resp.status_code == 204, resp.text
     # The session cookie is cleared whatever happened to the socket.
@@ -459,7 +471,7 @@ async def test_signing_out_signs_the_tab_socket_out(person, sio):
     Clearing the cookie used to be all: the tab's socket kept its rooms, the
     signed-in room among them, and its session still named the account.
     """
-    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await _open_socket("sid-a", person, THIS_BROWSER)
 
     await _logout(person, "sid-a")
 
@@ -478,12 +490,67 @@ async def test_signing_out_signs_the_tab_socket_out(person, sio):
     assert not await room_tracker.is_in_room(person.id, f"user-{person.id}")
 
 
+async def _assert_signed_out(sio, sid: str, user: User) -> None:
+    """``sid`` left every room it was in, and nothing signed in is left of it."""
+    assert _left(sio, sid) == {RESOURCE_ROOM, SIGNED_IN_ROOM, f"user-{user.id}"}
+    assert await room_tracker.socket_rooms(sid) == set()
+    with pytest.raises(SocketSessionError):
+        await get_session_user(sid)
+    assert sid not in await get_user_socket_sids(user.id)
+
+
 @pytest.mark.asyncio
-async def test_signing_out_of_one_tab_keeps_the_other_tab(person, sio):
-    """The other tab's session goes on; only the rooms no other tab holds go."""
-    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+async def test_signing_out_signs_the_browser_s_other_tabs_out(person, sio):
+    """
+    The cookie is the browser's, so every tab of it is signed out over HTTP.
+    Their sockets were authenticated with the same token and used to stay
+    signed in, in their rooms; they go with the tab that signed out.
+    """
+    await _open_socket("sid-a", person, THIS_BROWSER)
+    await _open_socket("sid-b", person, THIS_BROWSER)
+    await subscribe("sid-b", OTHER_ROOM)
+
+    await _logout(person, "sid-a")
+
+    await _assert_signed_out(sio, "sid-a", person)
+    assert _left(sio, "sid-b") == {
+        RESOURCE_ROOM,
+        OTHER_ROOM,
+        SIGNED_IN_ROOM,
+        f"user-{person.id}",
+    }
+    assert await room_tracker.socket_rooms("sid-b") == set()
+    with pytest.raises(SocketSessionError):
+        await get_session_user("sid-b")
+    # So it can no longer subscribe as the account either.
+    sio.enter_room.reset_mock()
+    await subscribe("sid-b", OTHER_ROOM)
+    sio.enter_room.assert_not_awaited()
+    assert await get_user_socket_sids(person.id) == set()
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    assert not await room_tracker.is_in_room(person.id, OTHER_ROOM)
+    assert not await room_tracker.is_in_room(person.id, f"user-{person.id}")
+
+
+@pytest.mark.asyncio
+async def test_signing_out_signs_the_named_socket_out_whatever_its_token(person, sio):
+    """
+    A tab whose socket signed in before the browser's cookie was replaced, by
+    a sign-in in another tab, still names its own socket: it goes too.
+    """
+    await _open_socket("sid-a", person, OTHER_BROWSER)
+
+    await _logout(person, "sid-a", issued=THIS_BROWSER)
+
+    await _assert_signed_out(sio, "sid-a", person)
+
+
+@pytest.mark.asyncio
+async def test_signing_out_keeps_the_account_s_other_browser(person, sio):
+    """A socket another sign-in authenticated keeps its session and rooms."""
+    await _open_socket("sid-a", person, THIS_BROWSER)
     await subscribe("sid-a", OTHER_ROOM)
-    await _open_socket("sid-b", person, datetime.now(timezone.utc))
+    await _open_socket("sid-b", person, OTHER_BROWSER)
 
     await _logout(person, "sid-a")
 
@@ -505,7 +572,9 @@ async def test_signing_out_leaves_another_accounts_socket_alone(
     person, other_person, sio
 ):
     """X-SID is the client's to send: a sid of another account changes nothing."""
-    await _open_socket("sid-b", other_person, datetime.now(timezone.utc))
+    # Signed in the same second as the account signing out, which the
+    # session's sockets are matched by: the account is what keeps it.
+    await _open_socket("sid-b", other_person, THIS_BROWSER)
 
     await _logout(person, "sid-b")
 
@@ -520,20 +589,93 @@ async def test_signing_out_leaves_another_accounts_socket_alone(
 
 
 @pytest.mark.asyncio
-async def test_signing_out_without_a_socket_touches_none(person, sio):
-    """An API sign-out names no socket; the account's tabs stay signed in."""
-    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+async def test_signing_out_without_a_socket_signs_out_the_session_s(person, sio):
+    """
+    A sign-out naming no socket still ends the cookie's session, so the
+    sockets it authenticated go; another sign-in's stay.
+    """
+    await _open_socket("sid-a", person, THIS_BROWSER)
+    await _open_socket("sid-b", person, OTHER_BROWSER)
+
+    await _logout(person, None)
+
+    await _assert_signed_out(sio, "sid-a", person)
+    assert _left(sio, "sid-b") == set()
+    assert (await get_session_user("sid-b"))["user_id"] == person.id
+
+
+@pytest.mark.asyncio
+async def test_signing_out_leaves_a_socket_indexed_under_another_account(
+    person, other_person, sio
+):
+    """
+    The account's socket index is only an index: a socket on it whose session
+    names another account, signed in the same second, keeps that session.
+    """
+    await _open_socket("sid-b", other_person, THIS_BROWSER)
+    await redis_storage_client.client.sadd(
+        storage_config.user_sockets_key(person.id), "sid-b"
+    )
 
     await _logout(person, None)
 
     sio.leave_room.assert_not_awaited()
+    assert (await get_session_user("sid-b"))["user_id"] == other_person.id
+
+
+@pytest.mark.asyncio
+async def test_signing_out_does_not_keep_another_session_s_ghost_alive(person, sio):
+    """
+    Looking a socket's session over for its issue time refreshes nothing: a
+    socket its dead worker left lapses as it would have.
+    """
+    await _open_socket("sid-ghost", person, OTHER_BROWSER)
+    await _strand("sid-ghost")
+    client = redis_storage_client.client
+
+    with patch.object(client, "expire", wraps=client.expire) as expire:
+        await _logout(person, None)
+
+    refreshed = {args[0] for args, _ in expire.await_args_list}
+    assert storage_config.session_key("sid-ghost", "/") not in refreshed
+    assert await get_session_user("sid-ghost")
+
+
+@pytest.mark.asyncio
+async def test_signing_out_survives_a_socket_that_cannot_be_read(person, sio):
+    """One socket failing to sign out leaves the session's others to go."""
+    await _open_socket("sid-a", person, THIS_BROWSER)
+    await _open_socket("sid-b", person, THIS_BROWSER)
+    peek = session_store.peek_session_user
+
+    async def fail_for_a(sid, *args, **kwargs):
+        if sid == "sid-a":
+            raise RuntimeError("down")
+        return await peek(sid, *args, **kwargs)
+
+    with patch("mascope_backend.socket.eviction.peek_session_user", fail_for_a):
+        await _logout(person, None)
+
+    await _assert_signed_out(sio, "sid-b", person)
     assert (await get_session_user("sid-a"))["user_id"] == person.id
+
+
+@pytest.mark.asyncio
+async def test_signing_out_survives_an_unreadable_socket_index(person, sio):
+    """The session has ended either way; the index failing does not change that."""
+    await _open_socket("sid-a", person, THIS_BROWSER)
+
+    with patch(
+        "mascope_backend.socket.eviction.get_user_socket_sids",
+        AsyncMock(side_effect=RuntimeError("down")),
+    ):
+        await _logout(person, None)
 
 
 @pytest.mark.asyncio
 async def test_signing_out_survives_a_failing_socket_store(person, sio):
     """The session has ended either way; the socket's cleanup is best effort."""
-    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await _open_socket("sid-a", person, THIS_BROWSER)
 
     with patch.object(
         room_tracker, "release_socket", AsyncMock(side_effect=RuntimeError("down"))

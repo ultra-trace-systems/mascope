@@ -26,11 +26,17 @@ Only the sockets subscribe would now refuse are evicted - the same comparison,
 :func:`socket_hold_reason` - so a session the cutoff's tolerance still keeps,
 the one that just changed its own password, carries on.
 
-Signing out of one tab ends that tab's session alone and moves no cutoff, so
-eviction, which works by account and keeps every socket that may still read,
-cannot reach it. :func:`sign_out_socket` does it for the one socket the
-logout request names: the tab is no longer signed in, so it leaves every room,
-its own ``user-{id}`` included, and its session goes.
+Signing out ends one web session and moves no cutoff, so eviction, which works
+by account and keeps every socket that may still read, cannot reach it.
+:func:`sign_out_socket` does it for the one socket the logout request names:
+the tab is no longer signed in, so it leaves every room, its own ``user-{id}``
+included, and its session goes. The session cookie is the browser's, though,
+so the browser's other tabs are signed out with it, and their sockets were
+authenticated with the same token: :func:`sign_out_session` signs out every
+socket of the account whose session recorded that token's ``iat``. The issue
+time is the session's only mark, to the second, so a sign-in of the same
+account in another browser within the same second goes too; that errs towards
+signing out, and its tab signs in again.
 """
 
 import os
@@ -46,6 +52,7 @@ from mascope_backend.socket.storage import (
     get_session_user,
     get_user_socket_sids,
     has_session,
+    peek_session_user,
     room_tracker,
     socket_is_held,
 )
@@ -200,23 +207,87 @@ async def sign_out_socket(sid: str, user_id: int) -> bool:
             )
             return False
 
-        await clear_user_session(sid)
-        # Out of the user's socket index (cleared above) before the others are
-        # read, so a room only this socket held goes and one another tab holds
-        # stays the user's.
-        await room_tracker.release_socket(user_id, sid)
-        rooms = await room_tracker.socket_rooms(sid)
-        for room in rooms:
-            await sio.leave_room(sid, room)
-        await room_tracker.forget_socket(sid)
-
-        runtime.logger.info(
-            f"Signed socket {sid} of user {user_id} out of {len(rooms)} room(s) "
-            f"[Worker {worker_pid}]"
-        )
+        await _sign_out(sid, user_id)
         return True
     except Exception:
         runtime.logger.exception(
             f"Failed to sign socket {sid} of user {user_id} out [Worker {worker_pid}]"
         )
         return False
+
+
+async def sign_out_session(
+    user_id: int, issued_at: Optional[int], sid: Optional[str] = None
+) -> int:
+    """
+    Sign out every socket a web session that has just ended authenticated.
+
+    The logout request's own socket, named by ``sid``, goes as
+    :func:`sign_out_socket` signs it out. Then every other socket of the
+    account whose session recorded ``issued_at`` goes the same way: the
+    browser's other tabs, whose cookie the logout has just cleared. A socket
+    of the account authenticated with another token, in another browser, keeps
+    its session and rooms.
+
+    Never raises: the session the cookie carried has ended either way.
+
+    :param user_id: The account signing out.
+    :param issued_at: The ``iat`` of the ending session's token; ``None`` for a
+        token minted before tokens carried one, which matches the sockets
+        authenticated with such a token.
+    :param sid: The socket the signing-out request names, if any.
+    :return: How many sockets were signed out.
+    """
+    signed_out = 0
+    if sid and await sign_out_socket(sid, user_id):
+        signed_out += 1
+    try:
+        others = await get_user_socket_sids(user_id)
+    except Exception:
+        runtime.logger.exception(
+            f"Failed to list the sockets of user {user_id} to sign out "
+            f"[Worker {os.getpid()}]"
+        )
+        return signed_out
+    for other in others:
+        try:
+            # Looked at without a refresh, so a socket its dead worker left
+            # keeps no longer for having been read.
+            session = await peek_session_user(other)
+            if (
+                session is None
+                or session.get("user_id") != user_id
+                or session.get("issued_at") != issued_at
+            ):
+                continue
+            await _sign_out(other, user_id)
+            signed_out += 1
+        except Exception:
+            runtime.logger.exception(
+                f"Failed to sign socket {other} of user {user_id} out "
+                f"[Worker {os.getpid()}]"
+            )
+    return signed_out
+
+
+async def _sign_out(sid: str, user_id: int) -> None:
+    """
+    Clear a socket's session and take it out of every room it is on record in.
+
+    :param sid: The socket, on the default namespace, signed in as ``user_id``.
+    :param user_id: The account it is signed in as.
+    """
+    await clear_user_session(sid)
+    # Out of the user's socket index (cleared above) before the others are
+    # read, so a room only this socket held goes and one another tab holds
+    # stays the user's.
+    await room_tracker.release_socket(user_id, sid)
+    rooms = await room_tracker.socket_rooms(sid)
+    for room in rooms:
+        await sio.leave_room(sid, room)
+    await room_tracker.forget_socket(sid)
+
+    runtime.logger.info(
+        f"Signed socket {sid} of user {user_id} out of {len(rooms)} room(s) "
+        f"[Worker {os.getpid()}]"
+    )
