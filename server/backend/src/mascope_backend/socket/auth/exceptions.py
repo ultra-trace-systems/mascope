@@ -37,3 +37,12 @@ class SocketAuthConfigError(SocketAuthError):
         self, message: str = "The required role is not defined in the configuration."
     ):
         super().__init__(message=message, error_code="SOCKET_AUTH_CONFIG_ERROR")
+
+
+class SocketAuthUnavailableError(SocketAuthError):
+    """Raised when a token could not be checked, rather than found bad."""
+
+    def __init__(
+        self, message: str = "The access token could not be validated just now."
+    ):
+        super().__init__(message=message, error_code="SOCKET_AUTH_UNAVAILABLE")

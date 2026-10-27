@@ -18,7 +18,10 @@ from test_utils import captured_logs
 # other; importing the socket side first hits the cycle mid-initialization.
 # The application boots through the api side, so do the same here.
 import mascope_backend.api.new.auth  # noqa: F401
-from mascope_backend.api.new.auth.exceptions import InvalidTokenException
+from mascope_backend.api.new.auth.exceptions import (
+    InvalidTokenException,
+    TokenValidationUnavailableException,
+)
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.auth.decorators import (
     file_converter_socket_auth,
@@ -162,6 +165,19 @@ async def test_converter_invalid_token_is_dropped_unmonitored():
     assert result == {"error": "SOCKET_UNAUTHENTICATED"}
     assert _monitored(records) == []
     assert any("Token expired" in r["message"] for r in records)
+
+
+@pytest.mark.asyncio
+async def test_converter_token_that_could_not_be_checked_is_not_unauthenticated():
+    # The database failed while validating: the token may be fine, so the
+    # converter must not take this for a verdict on it
+    records, calls, result = await _call_converter_event(
+        {"access_token": "token"}, user=TokenValidationUnavailableException()
+    )
+
+    assert calls == []
+    assert result == {"error": "SOCKET_AUTH_UNAVAILABLE"}
+    assert _monitored(records) == []
 
 
 @pytest.mark.asyncio
