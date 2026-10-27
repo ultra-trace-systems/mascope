@@ -14,7 +14,9 @@ here as well.
 """
 
 import importlib
+import os
 import shutil
+import stat
 import subprocess
 
 import pytest
@@ -131,6 +133,20 @@ def test_every_up_shape_creates_a_missing_secret(compose_env, secrets_dir, args)
     key = secrets_dir / AUTO_SECRET
     assert key.is_file(), f"'{' '.join(args)}' did not provision {AUTO_SECRET}"
     assert len(key.read_text(encoding="utf-8").strip()) >= 32
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no owner-only file mode")
+def test_up_creates_a_secret_only_its_owner_can_read(
+    compose_env, secrets_dir, open_umask
+):
+    # Compose mounts the file into the containers with its host mode, so one
+    # written at the umask (0644 here) is readable by every uid in them.
+    compose_env(0)
+
+    prod_main._run_compose(["up", "--detach"])
+
+    mode = stat.S_IMODE((secrets_dir / AUTO_SECRET).stat().st_mode)
+    assert mode == 0o600, f"{AUTO_SECRET} is mode {oct(mode)}"
 
 
 @pytest.mark.parametrize("args", [["build"], ["down"], ["ps"], ["pull"]])

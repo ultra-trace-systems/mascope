@@ -10,6 +10,7 @@ This command deliberately never touches the Runtime singleton — it must
 work before any environment exists.
 """
 
+import os
 import secrets as _secrets
 from importlib import resources
 from pathlib import Path
@@ -91,6 +92,24 @@ def _write_config_files(home: Path, force: bool) -> list[str]:
     return written
 
 
+def create_secret(path: Path) -> None:
+    """
+    Write a new random secret to `path`, readable by its owner alone (0600).
+
+    Compose mounts a file secret into each container as the file is on the
+    host, mode included, so a secret written at the usual umask (0644) could
+    be read by every user on the server and by every uid in the containers it
+    is mounted into, not just by the app. The file is created 0600 in the
+    same call that creates it, so it is never open even for a moment, and
+    exclusively: an existing file raises rather than being overwritten.
+
+    :param path: The secret file to create; it must not exist.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(_secrets.token_urlsafe(48) + "\n")
+
+
 def _write_secrets(home: Path) -> list[str]:
     """Generate missing app secrets; existing secrets are never touched."""
     written = []
@@ -99,7 +118,7 @@ def _write_secrets(home: Path) -> list[str]:
         target = secrets_dir / name
         if target.exists():
             continue
-        target.write_text(_secrets.token_urlsafe(48) + "\n", encoding="utf-8")
+        create_secret(target)
         written.append(name)
     for name in PLACEHOLDER_SECRETS:
         target = secrets_dir / name
