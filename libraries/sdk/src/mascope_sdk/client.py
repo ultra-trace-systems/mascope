@@ -116,6 +116,8 @@ class MascopeClient:
     :vartype peak_assignments: PeakAssignmentsResource
     :ivar batch_peaks: Resource for reading a batch's batch ledger.
     :vartype batch_peaks: BatchPeaksResource
+    :ivar reference: Resource for the reference lists the server has loaded.
+    :vartype reference: ReferenceResource
 
     Example::
 
@@ -284,6 +286,7 @@ class MascopeClient:
         self._ionization: Any = None
         self._peak_assignments: Any = None
         self._batch_peaks: Any = None
+        self._reference: Any = None
 
         # False once the server has answered that it has no provenance route
         self._server_has_provenance = True
@@ -422,6 +425,16 @@ class MascopeClient:
 
             self._batch_peaks = BatchPeaksResource(self)
         return self._batch_peaks
+
+    @property
+    def reference(self) -> "ReferenceResource":
+        """Resource for the reference lists the server has loaded: its
+        sources and their compounds."""
+        if self._reference is None:
+            from .resources.reference import ReferenceResource
+
+            self._reference = ReferenceResource(self)
+        return self._reference
 
     def provenance(self) -> dict[str, Any] | None:
         """The provenance block of the server this client talks to.
@@ -1194,6 +1207,7 @@ if TYPE_CHECKING:
     from .resources.ionization import IonizationResource
     from .resources.matching import MatchingResource
     from .resources.peak_assignments import PeakAssignmentsResource
+    from .resources.reference import ReferenceResource
     from .resources.sample_files import SampleFilesResource
     from .resources.samples import SamplesResource
     from .resources.workspaces import WorkspacesResource

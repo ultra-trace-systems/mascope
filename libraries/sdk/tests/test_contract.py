@@ -688,6 +688,98 @@ class TestReferenceDataContract:
 
 
 @requires_stack
+class TestReferenceListsContract:
+    """The reference lists the server has loaded, and what one holds."""
+
+    def test_sources_lists_the_active_sources(self, mascope):
+        sources = _reference_sources(mascope)
+
+        assert {
+            "name",
+            "version",
+            "label",
+            "license",
+            "polarity",
+            "allow_radicals",
+            "known_window",
+            "record_count",
+            "ingested_at",
+            "admitted",
+        } <= set(sources.columns)
+        assert sources["name"].is_unique
+        assert sources["admitted"].isin([True, False]).all()
+
+    def test_sources_cite_the_publications_of_the_lists(self, mascope):
+        sources = _reference_sources(mascope)
+        # A server older than the citations gives no such column.
+        if "references" not in sources.columns:
+            pytest.skip("server predates the references of reference sources")
+
+        references = [ref for refs in sources["references"] for ref in refs]
+        assert all(isinstance(refs, list) for refs in sources["references"])
+        # The demo stack loads shipped lists, and every one cites a DOI or an
+        # ISBN.
+        assert references
+        assert all(ref["citation"] for ref in references)
+        assert all(ref["doi"] or ref["isbn"] for ref in references)
+
+    def test_compounds_reads_a_whole_version(self, mascope):
+        source = _largest_reference_source(mascope)
+
+        compounds = mascope.reference.compounds(source["name"])
+
+        assert len(compounds) == source["record_count"]
+        assert compounds.attrs["version"] == source["version"]
+        assert {
+            "name",
+            "formula",
+            "monoisotopic_mass",
+            "inchikey",
+            "source_native_id",
+            "reference",
+            "tags",
+        } <= set(compounds.columns)
+        assert compounds["monoisotopic_mass"].is_monotonic_increasing
+
+    def test_compounds_pages_through_the_route(self, mascope, monkeypatch):
+        from pandas.testing import assert_frame_equal
+
+        source = _largest_reference_source(mascope)
+        # After the probe in _largest_reference_source: a published SDK
+        # without the resource has no module to import.
+        from mascope_sdk.resources import reference
+
+        page = 100
+        if source["record_count"] <= page:
+            pytest.skip("stack carries no reference source of more than one page")
+        whole = mascope.reference.compounds(source["name"])
+
+        monkeypatch.setattr(reference, "COMPOUNDS_PAGE_LIMIT", page)
+        paged = mascope.reference.compounds(source["name"])
+
+        assert len(paged) == source["record_count"]
+        assert_frame_equal(paged, whole)
+
+    def test_compounds_of_a_named_version(self, mascope):
+        source = _largest_reference_source(mascope)
+
+        compounds = mascope.reference.compounds(
+            source["name"], version=source["version"]
+        )
+
+        assert compounds.attrs["version"] == source["version"]
+        assert len(compounds) == source["record_count"]
+
+    def test_an_unknown_source_raises_not_found(self, mascope):
+        from mascope_sdk.exceptions import NotFoundError
+
+        _skip_unless_attr(mascope, "reference")
+
+        with pytest.raises(NotFoundError):
+            mascope.reference.compounds(f"{SCRATCH_PREFIX}no-such-list")
+
+
+@requires_stack
 class TestLoaderContract:
     """High-level loaders end to end - the surface notebooks actually use.
 
@@ -1535,6 +1627,21 @@ def _skip_unless_param(func, name: str) -> None:
 
     if name not in inspect.signature(func).parameters:
         pytest.skip(f"installed mascope_sdk predates {func.__name__}({name}=...)")
+
+
+def _reference_sources(mascope):
+    """The server's reference sources, else skip: a stack may load none."""
+    _skip_unless_attr(mascope, "reference")
+    sources = mascope.reference.sources()
+    if sources.empty:
+        pytest.skip("stack carries no reference source")
+    return sources
+
+
+def _largest_reference_source(mascope):
+    """The reference source with the most compounds, as a row of sources()."""
+    sources = _reference_sources(mascope)
+    return sources.loc[sources["record_count"].idxmax()]
 
 
 def _sample_with_completed_run(mascope) -> str:
