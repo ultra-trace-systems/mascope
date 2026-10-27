@@ -12,6 +12,7 @@ was asked for, and what the operator is told.
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import zipfile
@@ -64,10 +65,20 @@ def _package(archive, **counts) -> dict:
     }
 
 
+def _interrupt(how) -> None:
+    """Interrupt the command: ``True`` as Ctrl-C does, a number by sending
+    the process that signal."""
+    if how is True:
+        raise KeyboardInterrupt
+    if how:
+        signal.raise_signal(how)
+
+
 class FakeBuilder:
     """Stand in for :func:`export_cmd._stream`: records the command line and
     the environment, and makes the archive the builder would have. An
-    outcome may be a function of the command line."""
+    outcome may be a function of the command line; ``interrupt`` is as
+    :func:`_interrupt` takes it."""
 
     def __init__(self, *, status=0, outcome=None, make=None, interrupt=False):
         self.status = status
@@ -78,8 +89,7 @@ class FakeBuilder:
 
     def __call__(self, command, env=None):
         self.calls.append((list(command), env))
-        if self.interrupt:
-            raise KeyboardInterrupt
+        _interrupt(self.interrupt)
         if self.make is not None:
             self.make(command)
         if callable(self.outcome):
@@ -110,8 +120,7 @@ class FakeDocker:
     def __call__(self, cmd, capture_output=False, text=False, check=False):  # noqa: ARG002
         self.calls.append(list(cmd))
         if cmd[:2] == ["docker", "cp"]:
-            if self.interrupt:
-                raise KeyboardInterrupt
+            _interrupt(self.interrupt)
             if self.copy_exit == 0:
                 _write_archive(cmd[3], **self.dataset)
             return subprocess.CompletedProcess(cmd, self.copy_exit, "", "no space left")
@@ -325,6 +334,134 @@ def test_an_interrupted_copy_still_removes_the_archive_from_the_container(
         ["docker", "exec", container, "rm", "-rf", f"{PACKAGES}/{_run(command)}"]
     ]
     assert docker.commands("pkill") == []
+
+
+ENDING = [
+    pytest.param(getattr(signal, "SIGHUP", None), id="SIGHUP"),
+    pytest.param(signal.SIGTERM, id="SIGTERM"),
+]
+
+
+@pytest.fixture
+def resent(monkeypatch):
+    """Stand in for ``os.kill``, through which the command ends itself by a
+    signal it caught: records the signal and its handler by then."""
+    sent: list[tuple[int, int, object]] = []
+
+    def kill(pid, signum):
+        sent.append((pid, signum, signal.getsignal(signum)))
+
+    monkeypatch.setattr(export_cmd.os, "kill", kill)
+    return sent
+
+
+@pytest.fixture
+def handlers():
+    """Handlers of SIGHUP and SIGTERM that fail a signal the command does
+    not catch, rather than end the test run; put back after the test."""
+
+    def outside(signum, frame):  # noqa: ARG001
+        raise AssertionError(f"signal {signum} was not caught by the command")
+
+    signums = [s for s in (getattr(signal, "SIGHUP", None), signal.SIGTERM) if s]
+    before = {s: signal.signal(s, outside) for s in signums}
+    yield {s: outside for s in signums}
+    for s, handler in before.items():
+        signal.signal(s, handler)
+
+
+@pytest.mark.parametrize("signum", ENDING)
+def test_a_build_ended_by_a_signal_is_stopped_in_the_container(
+    cli_runner, operator_install, tmp_path, resent, handlers, signum
+):
+    """A dropped SSH session (SIGHUP) or a ``timeout`` or service manager
+    (SIGTERM) would end the command at once, running no clean-up: it stops
+    the builder as Ctrl-C does, then ends by the signal, as it would have."""
+    if signum is None:
+        pytest.skip("this platform has no SIGHUP")
+    builder, docker = operator_install
+    builder.interrupt = signum
+    cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
+    container = runtime.full_config.backend.get_backend_container_name("prod")
+    ((command, _),) = builder.calls
+    assert docker.commands("pkill") == [
+        ["docker", "exec", container, "pkill", "-INT", "-f", _run(command)]
+    ]
+    assert docker.commands("cp") == []
+    # Sent again once the stop has run, to the handler it had before.
+    assert resent == [(os.getpid(), signum, handlers[signum])]
+    assert signal.getsignal(signum) is handlers[signum]
+
+
+@pytest.mark.parametrize("signum", ENDING)
+def test_a_copy_ended_by_a_signal_still_removes_the_archive_from_the_container(
+    cli_runner, operator_install, tmp_path, resent, handlers, signum
+):
+    if signum is None:
+        pytest.skip("this platform has no SIGHUP")
+    builder, docker = operator_install
+    docker.interrupt = signum
+    cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
+    ((command, _),) = builder.calls
+    assert [cmd[-1] for cmd in docker.commands("rm")] == [f"{PACKAGES}/{_run(command)}"]
+    assert docker.commands("pkill") == []
+    assert [signum for _, signum, _ in resent] == [signum]
+
+
+def test_an_ignored_hangup_stays_ignored(
+    cli_runner, operator_install, tmp_path, resent, handlers
+):
+    """Under ``nohup`` the operator asked for the build to outlive the
+    session: a SIGHUP neither stops it nor ends the command."""
+    if not hasattr(signal, "SIGHUP"):
+        pytest.skip("this platform has no SIGHUP")
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    builder, docker = operator_install
+    builder.interrupt = signal.SIGHUP
+    result = cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert docker.commands("pkill") == []
+    assert resent == []
+    assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+
+
+def test_a_finished_build_puts_the_signal_handlers_back(
+    cli_runner, operator_install, tmp_path, handlers
+):
+    result = cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert {s: signal.getsignal(s) for s in handlers} == handlers
+
+
+def test_ctrl_c_is_not_sent_again(cli_runner, operator_install, tmp_path, resent):
+    """Only a signal the command caught for itself is sent again: Ctrl-C
+    ends it as before, with exit 130."""
+    builder, _ = operator_install
+    builder.interrupt = True
+    result = cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
+    assert result.exit_code == 130
+    assert resent == []
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="a POSIX signal")
+def test_a_process_ended_in_the_block_dies_by_the_signal_after_its_clean_up():
+    """Without the test's stand-ins: the clean-up runs, then the process
+    ends by the signal under its default action, not by an exit status."""
+    script = (
+        "import signal, sys\n"
+        "from mascope_cli.cmd import export\n"
+        "with export._ended_as_interrupted():\n"
+        "    try:\n"
+        "        signal.raise_signal(signal.SIGTERM)\n"
+        "    finally:\n"
+        "        print('cleaned up', flush=True)\n"
+        "print('survived', flush=True)\n"
+    )
+    ended = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+    assert ended.stdout == "cleaned up\n", ended.stderr
+    assert ended.returncode == -signal.SIGTERM
 
 
 def test_an_archive_outside_the_runs_directory_is_not_removed(
