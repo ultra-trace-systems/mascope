@@ -21,6 +21,7 @@ import {
   usePeakAssignmentRun,
   usePeakAssignmentVerification
 } from './modules/peakAssignment'
+import { useReference } from './modules/reference'
 import { useSample } from './modules/sample'
 import { useTargetCollection, useTargetCompound } from './modules/target'
 import { useTemplate } from './modules/template'
@@ -55,6 +56,7 @@ export const useData = () => ({
     compound: useTargetCompound()
   },
   user: useUser(),
+  reference: useReference(),
   match: {
     params: useMatchParams(),
     collection: useMatchCollection(),
