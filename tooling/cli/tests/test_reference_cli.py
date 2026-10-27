@@ -687,11 +687,11 @@ def test_sources_lists_the_spectral_libraries_apart(gate, monkeypatch):
     flat = _flat(result.output)
     compounds, libraries = flat.split("MS/MS spectral libraries", 1)
     assert "not matched by Stage A" in libraries
+    # A record that states no licence is not assumed open: its terms are unknown.
     for name in ("gnps", "massbank", "mona"):
-        default = reference_sources.get_spectrum_adapter(name).license
         assert (
-            f"{name} (license: per record; {default} where a record states none)"
-            in libraries
+            f"{name} (license: per record; {name}-unstated where a record states "
+            "none)" in libraries
         )
         assert f"{name} (license" not in compounds
     assert "(outside this deployment" not in libraries

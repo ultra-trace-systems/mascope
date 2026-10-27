@@ -67,6 +67,9 @@ def _spectra(engine) -> list:
         ).all()
 
 
+# The source row's licence is what `sources` and `status` show for a load. The
+# spectra each carry their own, so the row claims no terms: a GNPS load holds
+# imported libraries' spectra whose terms are unknown.
 @pytest.mark.parametrize(
     "adapter, path, ingested, skipped",
     [
@@ -84,7 +87,14 @@ def test_each_library_loads_and_says_what_it_left_out(
     assert result.skipped == skipped
     assert result.skipped_total == sum(skipped.values())
     assert _sources(sync_engine) == [
-        (adapter.name, "2026.03", True, "spectrum", ingested, adapter.license)
+        (
+            adapter.name,
+            "2026.03",
+            True,
+            "spectrum",
+            ingested,
+            f"{adapter.name}-unstated",
+        )
     ]
     assert len(_spectra(sync_engine)) == ingested
 
