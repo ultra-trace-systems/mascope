@@ -935,6 +935,10 @@ async def calibration_mz_fit(
                 calibration_data["fit"]["quality"]["segments"] = (
                     calibration_handler.segments
                 )
+            if calibration_handler.fitted_on is not None:
+                # A TOF fit: its points, span, collection version, model and
+                # node version, sealed with the rest of the block
+                calibration_data["fit"]["quality"].update(calibration_handler.fitted_on)
         # A preview for the calibration dialog, so the operator sees what the
         # fit would be stored as before applying it. Apply decides again from
         # the quality block rather than trusting this.

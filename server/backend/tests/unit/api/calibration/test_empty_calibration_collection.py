@@ -13,7 +13,7 @@ instrument's resolution. Both used to run a fit anyway:
 Both now stop where the no-peaks case stops: a warning on the handler, no fit
 and no stats, so nothing is written and the caller reports the warning.
 
-The database is not involved: the two target lookups are patched in the module
+The database is not involved: the target lookups are patched in the module
 the handler imported them into.
 """
 
@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from calibration_test_support import get_test_calibration_handler
 
+from mascope_backend.api.controllers.calibration.lib import calibration_mz_fit
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     EMPTY_CALIBRATION_COLLECTION_WARNING,
     NO_CALIBRATION_ISOTOPES_WARNING,
@@ -40,21 +41,27 @@ ISOTOPE_ROW = {
 }
 
 
-def _patch_targets(compound_ids, isotope_rows):
-    """Patch the collection and isotope lookups the resolver calls.
+#: The ion of ISOTOPE_ROW, which a TOF fit's record names.
+ION_ROW = {"target_ion_id": "ion-1", "target_ion_formula": "C6H13O6+"}
 
-    :return: The two context managers plus the isotope-query mock, so a test
-        can assert on the arguments the query was given - or that it was never
-        reached at all.
+
+def _patch_targets(compound_ids, isotope_rows, ion_rows=(ION_ROW,)):
+    """Patch the collection, ion and isotope lookups the resolver calls.
+
+    :return: The two context managers - the collection's and its ions'
+        lookups, and the isotope query - plus the isotope-query mock, so a
+        test can assert on the arguments the query was given - or that it was
+        never reached at all.
     """
     compounds = {
         "data": [{"target_compound_id": compound_id} for compound_id in compound_ids]
     }
     isotopes_mock = AsyncMock(return_value={"data": list(isotope_rows)})
     return (
-        patch(
-            f"{_LIB}.get_target_compound_in_target_collection",
-            AsyncMock(return_value=compounds),
+        patch.multiple(
+            _LIB,
+            get_target_compound_in_target_collection=AsyncMock(return_value=compounds),
+            get_target_ions=AsyncMock(return_value={"data": list(ion_rows)}),
         ),
         patch(f"{_LIB}.get_target_isotopes", isotopes_mock),
         isotopes_mock,
@@ -123,6 +130,25 @@ class TestResolveCalibrationIsotopes:
         assert handler.warning is None
         assert list(resolved["target_isotope_id"]) == ["iso-1"]
         assert isotopes_mock.await_args.kwargs["target_compound_ids"] == ["compound-1"]
+
+
+@pytest.mark.asyncio
+async def test_a_tof_fit_resolves_the_ion_of_each_isotope():
+    """A TOF fit's record names the ion of every point, so its isotopes come
+    with their ions' formulas: the ions of the collection under the mode's
+    mechanisms."""
+    handler = get_test_calibration_handler("tofwerk", "+")
+    compounds_patch, isotopes_patch, _ = _patch_targets(["compound-1"], [ISOTOPE_ROW])
+
+    with compounds_patch, isotopes_patch:
+        resolved = await handler._resolve_calibration_isotopes()
+        ions_query = calibration_mz_fit.get_target_ions
+
+    assert list(resolved["target_ion_formula"]) == ["C6H13O6+"]
+    assert ions_query.await_args.kwargs == {
+        "target_collection_id": "calib_coll_123",
+        "ionization_mechanism_ids": ["im_1", "im_2"],
+    }
 
 
 @pytest.mark.parametrize("filename", ["orbitrap", "tofwerk"])

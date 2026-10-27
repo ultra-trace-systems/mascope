@@ -531,6 +531,10 @@ async def test_a_mode_is_audited_with_its_collection_and_the_named_sets(
         "HN2O6-",
         "NO3-",
     ]
+    # As the node resolves a collection, with the ion of each line, which a
+    # TOF fit's record names; and a named set's lines name theirs as well
+    assert sorted(main.target_ion_formula) == ["H2N3O9-", "HN2O6-", "NO3-"]
+    assert set(prepared.sets["bromide"].target_ion_formula) == {"Br-"}
     assert (
         prepared.sets["by name"].mz.tolist() == prepared.sets["collection"].mz.tolist()
     )

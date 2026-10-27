@@ -39,29 +39,35 @@ class TestMatchMaxInRange:
         peaks = {
             "mz": np.array([100.0005]),
             "tof": np.array([5000.0]),
+            "snr": np.array([120.0]),
             "intensity": np.array([42.0]),
         }
         isotope_row = self.orbi_pos_handler._match_max_in_range(self.isotope_row, peaks)
 
         assert isotope_row["sample_peak_mz"] == 100.0005
         assert isotope_row["sample_peak_tof"] == 5000.0
+        assert isotope_row["sample_peak_snr"] == 120.0
         assert isotope_row["sample_peak_intensity"] == 42.0
 
     def test_highest_intensity_wins(self):
         peaks = {
             "mz": np.array([100.0002, 100.0005, 100.0008]),
             "tof": np.array([4998.0, 5000.0, 5002.0]),
+            "snr": np.array([30.0, 80.0, 400.0]),
             "intensity": np.array([10.0, 99.0, 50.0]),
         }
         isotope_row = self.orbi_pos_handler._match_max_in_range(self.isotope_row, peaks)
 
         assert isotope_row["sample_peak_mz"] == 100.0005
         assert isotope_row["sample_peak_intensity"] == 99.0
+        # The S/N of the peak that won, not of the clearest one in range
+        assert isotope_row["sample_peak_snr"] == 80.0
 
     def test_no_peaks_in_range_row_unchanged(self):
         peaks = {
             "mz": np.array([200.0]),
             "tof": np.array([8000.0]),
+            "snr": np.array([60.0]),
             "intensity": np.array([50.0]),
         }
         isotope_row = self.orbi_pos_handler._match_max_in_range(self.isotope_row, peaks)
@@ -77,6 +83,7 @@ class TestMatchMaxInRange:
         peaks = {
             "mz": np.array([boundary_mz]),
             "tof": np.array([5000.0]),
+            "snr": np.array([15.0]),
             "intensity": np.array([7.0]),
         }
         isotope_row = self.orbi_pos_handler._match_max_in_range(self.isotope_row, peaks)
