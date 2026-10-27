@@ -245,7 +245,8 @@ CREATE TABLE reference_source (
     ingested_at TEXT,
     known_window JSON,
     allow_radicals BOOLEAN,
-    polarity TEXT
+    polarity TEXT,
+    kind TEXT
 )
 """
 
@@ -299,7 +300,9 @@ def mirror(tmp_path, monkeypatch):
         conn.exec_driver_sql(_COMPOUND_DDL)
         for source_id, name, version, lic, active, records in _MIRROR:
             conn.exec_driver_sql(
-                "INSERT INTO reference_source VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO reference_source (reference_source_id, name, version, "
+                "license, record_count, is_active, ingested_at, known_window, "
+                "allow_radicals, polarity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     source_id,
                     name,

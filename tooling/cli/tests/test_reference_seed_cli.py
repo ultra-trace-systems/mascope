@@ -31,7 +31,8 @@ CREATE TABLE reference_source (
     ingested_at TEXT,
     known_window JSON,
     allow_radicals BOOLEAN,
-    polarity TEXT
+    polarity TEXT,
+    kind TEXT
 )
 """
 
