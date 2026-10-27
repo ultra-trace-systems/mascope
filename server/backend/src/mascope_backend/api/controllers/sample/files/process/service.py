@@ -2353,7 +2353,8 @@ async def re_process_sample_files(
       method declines; run the auto-process pipeline, which, once it has
       bound the file, resets its calibration, detects its peaks again where
       the deployment's scan-stream setting can give it another peak store
-      than it has, writes its MS2 store again, and deletes its existing
+      than it has or the file has outgrown its pooled store, writes its MS2
+      store again, and deletes its existing
       sample items (:func:`_reprocessing_rebuild`), so that a file it parks
       keeps them
     - Return aggregated results

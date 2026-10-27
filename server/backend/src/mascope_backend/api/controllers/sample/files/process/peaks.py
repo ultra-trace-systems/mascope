@@ -23,6 +23,15 @@ A file whose store or whose record says per stream is detected again
 whichever way the setting is, since the map its streams are stitched by is
 drawn by the rule of the day as well.
 
+**And where the file has outgrown its store.** A pooled store keeps the scan
+axis it was allocated with, while the scans the reader selects are decided
+on every read. One built while the reader left an ordinary first scan out as
+a TIC outlier lacks a scan the file now reads, and every read that divides
+its sums by the file's scans refuses it as stale
+(``mascope_signal.compute.StalePeakStoreError``). Its peaks are detected
+again, whole as it was decided: left as it stands, the re-processing would
+calibrate and match the file on peaks summed without that scan.
+
 **Peaks are detected here, in the backend.** Every other detection runs in
 the file converter, which is asked over a socket and answers whenever it is
 done. A re-processing needs the store before it makes the file's samples,
@@ -57,12 +66,41 @@ def composites_scan_streams() -> bool:
     return bool(backend is not None and backend.composite_scan_streams)
 
 
+def outgrown(filename: str, store) -> bool:
+    """Whether a raw Orbitrap file reads scans its pooled peak store lacks.
+
+    The check every read that divides the store's sums by the file's scans
+    makes (``mascope_signal.compute.stored_scans_per_peak``): the store's axis
+    against the scans the file reads now, of no one polarity. Only the scan
+    index is read, no spectrum. A store with no peaks holds no sums to divide
+    and is never outgrown; an acquisition of fragmentation scans alone has
+    such a store, over every scan, and reads no MS1 scan at all.
+
+    :param filename: The sample file's stored name.
+    :param store: Its pooled peak store, as ``mascope_file.io.load_array``
+        opens it.
+    :raises Exception: If the file's scans cannot be read.
+    :return: True when the store is stale against the file's read.
+    :rtype: bool
+    """
+    if not store.mz.size:
+        return False
+    try:
+        m_compute.check_stored_scan_axis(
+            m_compute.get_scan_timestamps(filename), store.time.values
+        )
+    except m_compute.StalePeakStoreError:
+        return True
+    return False
+
+
 def _decide(filename: str) -> bool | None:
     """Synchronous body of :func:`redetection_decision`: it reads the filestore."""
     if not m_compute.has_scan_streams(filename):
         return None
     setting = composites_scan_streams()
     per_stream_now = bool(m_io.read_props(filename).get(PER_STREAM_PROP))
+    store = None
     if not per_stream_now:
         try:
             store = m_io.load_array(filename, var="peak_timeseries")
@@ -75,10 +113,15 @@ def _decide(filename: str) -> bool | None:
                 # Labelled in part, which nothing reads: detecting writes all
                 # of it
                 per_stream_now = True
+
+    def _pooled() -> bool | None:
+        # A pooled store that stays pooled: detected again, whole, only where
+        # the file has outgrown it
+        return False if store is not None and outgrown(filename, store) else None
+
     if not (per_stream_now or setting):
-        # Pooled, and to stay so: nothing is detected, and the file is not
-        # read for its streams
-        return None
+        # Pooled, and to stay so: the file is not read for its streams
+        return _pooled()
     # Its peaks are to be detected again, or may be: the streams are read
     # here, whatever the answer, because here nothing of the file has been
     # touched yet. A file whose streams cannot be read fails this, and is
@@ -88,7 +131,7 @@ def _decide(filename: str) -> bool | None:
         return setting
     # Pooled, with no decision recorded for per stream: only a file whose
     # method measures more than one thing in a polarity is detected otherwise
-    return True if streams else None
+    return True if streams else _pooled()
 
 
 async def redetection_decision(sample_file: SampleFile) -> bool | None:
@@ -99,10 +142,12 @@ async def redetection_decision(sample_file: SampleFile) -> bool | None:
     :raises Exception: If the file's ``.props``, its peak store or its scan
         streams cannot be read. Nothing of the file has been touched then.
     :return: Whether its peaks are to be detected per scan stream, as the
-        deployment is set now; None where its store stands as it is - any
-        file but a raw Orbitrap one, a blank measurement, and a file nothing
-        says per stream of: not its record, not its store, and not the
-        setting together with its own streams.
+        deployment is set now; False as well for a pooled store the file has
+        outgrown (:func:`outgrown`); None where its store stands as it is -
+        any file but a raw Orbitrap one, a blank measurement, and a file
+        nothing says per stream of: not its record, not its store, and not
+        the setting together with its own streams, and whose pooled store it
+        still reads back.
     :rtype: bool | None
     """
     if sample_file.instrument_function_id is None:
