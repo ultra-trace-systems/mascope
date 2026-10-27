@@ -70,6 +70,11 @@ reference_source = table(
     # What the load holds: COMPOUND_KIND or SPECTRUM_KIND. One name holds loads
     # of one kind, so activating a load never deactivates the other kind's.
     column("kind", String(SOURCE_KIND_LENGTH)),
+    # The publications the source comes from, as a list of objects with a
+    # citation and its doi or isbn (mascope_reference.peaklist.REFERENCE_KEYS);
+    # empty for a load that cites none, NULL for a row loaded before rows
+    # recorded them.
+    column("citations", JSON),
 )
 
 #: One row per (compound, source version). ``xrefs`` is typed JSON so the dict
@@ -134,6 +139,7 @@ SOURCE_INSERT_COLUMNS = (
     "allow_radicals",
     "polarity",
     "kind",
+    "citations",
 )
 COMPOUND_INSERT_COLUMNS = (
     "reference_source_id",

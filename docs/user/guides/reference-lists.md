@@ -155,6 +155,24 @@ A list file's header says `allow_radicals` and `polarity` itself, and its
 radicals are held back at ingest unless the header allows them, whatever the
 flag says.
 
+### Citing the list's publication
+
+A load also records the publications the source comes from, and
+`GET /api/reference/sources` cites the source by them. A list file's header
+names them in its `references`, and its load records them.
+A CSV names none, so give its publication when you load it: a citation with
+its DOI, or its ISBN for a book.
+
+```sh
+mascope reference sync custom apinene_hom.csv --name apinene-hom-2019 -v 2019 \
+    --citation "A. Author et al., A paper on HOMs. J. Example 1 (2019) 1-10." \
+    --doi 10.1234/example.2019
+```
+
+The flags take the place of what a list file's header cites. A citation with
+neither a DOI nor an ISBN, or a DOI or ISBN that is not a valid one, is refused
+before anything is loaded.
+
 Stage A of peak assignment reads all three for every source:
 
 - **A formula is matched only inside the source's window**, intersected with a
@@ -197,7 +215,8 @@ reference data into a running deployment, depending on how it was installed:
 
   It takes the same arguments as `mascope reference sync` (`source`, `file`,
   `--version`, `--name`, `--batch-size`, `--prune`, `--stage`, `--elements`,
-  `--max-carbon`, `--max-mass`, `--allow-radicals`, `--polarity`) and runs the
+  `--max-carbon`, `--max-mass`, `--allow-radicals`, `--polarity`,
+  `--citation`, `--doi`, `--isbn`) and runs the
   identical versioned ingest - just where the dependencies live. The database
   is the one the backend is already configured for, so no connection flags are
   needed.
@@ -242,8 +261,8 @@ backend container.
 **See what is loaded.** `mascope reference status` lists the sources on your
 own machine. On a server, any signed-in user can ask the API:
 `GET /api/reference/sources` returns each active source with its label,
-version, licence, polarity, compound count and load date, the publications a
-shipped list cites (`references`), and `admitted`, which says whether the
+version, licence, polarity, compound count and load date, the publications it
+comes from (`references`), and `admitted`, which says whether the
 deployment's licence gate lets peak assignment match it.
 `GET /api/reference/sources/<name>/compounds` pages through what one source
 holds (`page`, `limit` up to 1000, and `version` for a load other than the
@@ -276,8 +295,10 @@ Each row is one loaded list:
   loaded.
 - **References**: the publications the list comes from, each with its DOI
   linked to doi.org, or its ISBN. A list citing more than two shows the rest
-  behind a button. A list Mascope ships cites the publications its file names;
-  a list loaded any other way cites none yet.
+  behind a button. They are what the list's load recorded: a list file's own
+  references, or the publication a sync was given
+  ([Citing the list's publication](#citing-the-lists-publication)). A list
+  loaded with neither cites none.
 
 Open a row with its arrow to page through its species by mass: name, formula,
 monoisotopic mass and the DOI the list cites for it, linked to doi.org.
@@ -384,8 +405,8 @@ belongs to the whole list, and its species are neutral formulas:
   for the same peak.
 - **`provenance` says where the list came from:** what it was extracted or
   compiled from, its caveats, and, for a list taken from one work, the licence
-  statement its `license` tag rests on. Like the references, it stays in the
-  file.
+  statement its `license` tag rests on. It stays in the file; the references
+  are the one part of this provenance a load records on the list's source row.
 - **`polarity` is recorded on the list's source row**, and Stage A matches the
   list only against samples measured in that polarity (`both` matches either).
 - **`applies_to_contexts` and `always_active` are read, but nothing acts on them

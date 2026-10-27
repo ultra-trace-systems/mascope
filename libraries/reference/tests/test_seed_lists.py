@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select, update
 
-from mascope_reference.adapters.peaklist import list_scope
+from mascope_reference.adapters.peaklist import list_citations, list_scope
 from mascope_reference.normalize import canonical_formula, monoisotopic_mass
 from mascope_reference.peaklist import admitted_species, is_odd_electron, list_problems
 from mascope_reference.schema import reference_compound, reference_source
@@ -266,6 +266,45 @@ def test_an_active_lists_row_is_brought_up_to_date_without_a_reload(sync_engine)
         assert _compounds(conn) == compounds
 
     # Once the rows say what the lists say, a seed has nothing to refresh.
+    assert not any(o.refreshed for o in seed(sync_engine))
+
+
+def _citations(conn) -> dict[str, list | None]:
+    return {
+        row.name: row.citations
+        for row in conn.execute(
+            select(reference_source.c.name, reference_source.c.citations).where(
+                reference_source.c.is_active.is_(True)
+            )
+        )
+    }
+
+
+def test_seeding_records_what_each_list_cites(sync_engine):
+    seed(sync_engine)
+    with sync_engine.connect() as conn:
+        citations = _citations(conn)
+    assert citations == {
+        pl.id: list(list_citations(pl)) for pl in select_lists(SHIPPED)
+    }
+    # Every shipped list cites its publication, as list_problems requires.
+    assert all(citations.values())
+
+
+def test_an_active_lists_citations_are_recorded_without_a_reload(sync_engine):
+    seed(sync_engine)
+    # What a row loaded before rows recorded citations holds.
+    with sync_engine.begin() as conn:
+        conn.execute(update(reference_source).values(citations=None))
+
+    outcomes = seed(sync_engine)
+
+    assert not any(o.loaded for o in outcomes)
+    assert all(o.refreshed for o in outcomes)
+    with sync_engine.connect() as conn:
+        assert _citations(conn) == {
+            pl.id: list(list_citations(pl)) for pl in select_lists(SHIPPED)
+        }
     assert not any(o.refreshed for o in seed(sync_engine))
 
 

@@ -120,8 +120,9 @@ def captured_ingest(monkeypatch):
     seen = {}
 
     class _Result:
-        def __init__(self, scope):
+        def __init__(self, scope, citations):
             self.scope = scope
+            self.citations = tuple(citations or ())
             self.ingested = 1
             self.skipped = 0
             self.source = "my-list"
@@ -134,7 +135,7 @@ def captured_ingest(monkeypatch):
 
     def _ingest(engine, adapter, path, version, **kwargs):
         seen.update(kwargs)
-        return _Result(kwargs["scope"])
+        return _Result(kwargs["scope"], kwargs["citations"])
 
     monkeypatch.setattr(reference_main, "_sync_engine", _Engine)
     monkeypatch.setattr(reference_main, "ingest", _ingest)
@@ -232,6 +233,63 @@ def test_a_bound_that_cannot_be_read_is_refused_before_the_prompt(dump, no_engin
     assert "Continue?" not in result.output
 
 
+# --- What a sync cites --------------------------------------------------------
+
+
+def test_a_sync_without_citation_flags_leaves_the_dump_to_say(dump, captured_ingest):
+    result = runner.invoke(
+        reference_app, ["sync", "custom", str(dump), "--version", "v1", "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+    # None: the ingest reads what the dump cites, a list file's references.
+    assert captured_ingest["citations"] is None
+
+
+def test_the_publication_the_flags_name_is_recorded(dump, captured_ingest, logged):
+    result = runner.invoke(
+        reference_app,
+        [
+            "sync",
+            "custom",
+            str(dump),
+            "--version",
+            "v1",
+            "--citation",
+            "A. Author, A paper.",
+            "--doi",
+            "10.1234/t.1",
+            "--yes",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured_ingest["citations"] == [
+        {"citation": "A. Author, A paper.", "doi": "10.1234/t.1"}
+    ]
+    assert "info: Cites: A. Author, A paper. (10.1234/t.1)" in logged
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        (["--citation", "A paper."], "neither a DOI nor an ISBN"),
+        (["--doi", "10.1234/t.1"], "no citation"),
+        (["--citation", "A paper.", "--doi", "doi:10.1234/t.1"], "is not a DOI"),
+        (["--citation", "A book.", "--isbn", "978-3-95806-596-4"], "valid ISBN"),
+    ],
+)
+def test_a_citation_that_cannot_be_followed_is_refused_before_the_prompt(
+    dump, no_engine, logged, flags, expected
+):
+    result = runner.invoke(
+        reference_app,
+        ["sync", "custom", str(dump), "--version", "v1", *flags],
+        input="y\n",
+    )
+    assert result.exit_code == 1
+    assert "Continue?" not in result.output
+    assert any(expected in line for line in logged), logged
+
+
 # --- A spectral library's sync ------------------------------------------------
 
 
@@ -297,6 +355,7 @@ def test_a_spectral_library_syncs_its_spectra(library_dump, captured_spectra, lo
     assert captured_spectra["source_name"] is None
     assert captured_spectra["activate"] is True
     assert captured_spectra["prune"] is False
+    assert captured_spectra["citations"] == ()
     log = "\n".join(logged)
     assert (
         "success: Ingested 113 spectra from 'massbank' (version '2026.03', "
@@ -427,7 +486,8 @@ CREATE TABLE reference_source (
     known_window JSON,
     allow_radicals BOOLEAN,
     polarity TEXT,
-    kind TEXT
+    kind TEXT,
+    citations JSON
 )
 """
 

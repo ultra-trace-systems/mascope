@@ -367,6 +367,9 @@ class SourceRow:
         whose null fields are unbounded; None for unbounded.
     :param allow_radicals: Whether its radicals may be matched.
     :param polarity: The polarity it is matched in; None for both.
+    :param citations: The publications it comes from, each a reference with
+        its citation and its DOI or ISBN; empty for a load that cites none, None
+        for a row loaded before rows recorded them.
     """
 
     name: str
@@ -377,6 +380,7 @@ class SourceRow:
     known_window: dict | None
     allow_radicals: bool | None
     polarity: str | None
+    citations: list[dict] | None = None
 
 
 @dataclass
@@ -402,6 +406,7 @@ _SOURCE_COLUMNS = (
     reference_source.c.known_window,
     reference_source.c.allow_radicals,
     reference_source.c.polarity,
+    reference_source.c.citations,
 )
 
 
