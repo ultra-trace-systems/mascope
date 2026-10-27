@@ -357,6 +357,9 @@ class Approver:
 
     def verify(self, plan: Plan, token: str) -> bool:
         """Whether *token* is this approver's approval of *plan*, as it is."""
+        if not isinstance(token, str) or not token.isascii():
+            # Not one of ours; compare_digest raises on a non-ASCII str
+            return False
         nonce, _, mac = token.partition(".")
         if not nonce or not mac:
             return False

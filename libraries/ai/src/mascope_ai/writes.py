@@ -181,11 +181,28 @@ def _batch_ids(record: dict[str, Any]) -> list[str]:
     )
 
 
-def _batch_name(kit: "Toolkit", batch_id: str) -> str:
-    try:
-        return kit._batch(batch_id).name
-    except ToolkitError:
-        return batch_id
+def _home_batches(kit: "Toolkit") -> dict[str, Ref]:
+    """The batches of the client's workspace, by ID."""
+    return {batch.id: batch for batch in kit._all_batches()}
+
+
+def _at_home(batches: dict[str, Ref], batch_id: str, home: Ref, target: Ref) -> Ref:
+    """The batch *batch_id*, which holds or is *target*, refused when it is
+    not in the client's workspace.
+
+    A builder checks the user's role in the client's workspace, so it plans
+    nothing elsewhere: a sample found by its ID, or a Ref passed in, can be
+    in another workspace, where the role checked would not be the one the
+    server asks for.
+    """
+    batch = batches.get(batch_id)
+    if batch is None:
+        raise InvalidRequest(
+            f"{target} is not in workspace {home.name!r}, the client's: the "
+            "toolkit plans writes in its client's workspace alone. Open a "
+            "client on the workspace it is in to plan this."
+        )
+    return batch
 
 
 def _match_inputs(kit: "Toolkit", scope: Ref) -> dict[str, Any]:
@@ -288,6 +305,7 @@ def plan_organize(kit: "Toolkit", moves: Sequence[Any]) -> Plan:
     needs: list[str] = []
     into_batch: dict[str, tuple[Ref, list[tuple[Ref, int]]]] = {}
     seen: set[tuple[str, str]] = set()
+    batches: dict[str, Ref] | None = None  # listed at the first sample move
 
     for move in moves:
         if isinstance(move, (tuple, list)) and len(move) in (2, 3):
@@ -365,8 +383,12 @@ def plan_organize(kit: "Toolkit", moves: Sequence[Any]) -> Plan:
         if (sample.kind, sample.id) in seen:
             raise InvalidRequest(f"{sample} is moved twice in one plan")
         seen.add((sample.kind, sample.id))
+        if batches is None:
+            batches = _home_batches(kit)
         record = _sample_record(kit, sample)
         before = str(record.get("sample_batch_id"))
+        source = _at_home(batches, before, home, sample)
+        _at_home(batches, to.id, home, to)
         if before == to.id:
             raise InvalidRequest(f"{sample} is in batch {to.name!r} already")
         if _locked(record.get("locked")):
@@ -392,7 +414,7 @@ def plan_organize(kit: "Toolkit", moves: Sequence[Any]) -> Plan:
                 before,
                 to.id,
                 f"Move sample {sample.name!r} from batch "
-                f"{_batch_name(kit, before)!r} into batch {to.name!r}",
+                f"{source.name!r} into batch {to.name!r}",
             )
         )
         into_batch[to.id][1].append((sample, index))
@@ -630,6 +652,9 @@ def plan_associate(
     changed = [b for b in added if b.id not in before] + [
         b for b in removed if b.id in before
     ]
+    batches = _home_batches(kit)
+    for batch in changed:
+        _at_home(batches, batch.id, home, batch)
     _need(
         roles, home, "editor", f"associate collection {target.name!r} with", changed[0]
     )
@@ -743,6 +768,10 @@ def plan_match(
         )
 
     home = _home(kit)
+    batch_id = (
+        ref.id if kind == "batch" else str(_sample_record(kit, ref)["sample_batch_id"])
+    )
+    _at_home(_home_batches(kit), batch_id, home, ref)
     _need(
         _roles(kit),
         home,
