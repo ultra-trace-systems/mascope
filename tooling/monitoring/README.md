@@ -354,6 +354,12 @@ whose currency is in question answering the question about itself. A lookup that
 cannot resolve the current release records `lag=unknown` and changes nothing —
 an unreachable third party must never be able to redden an assessment.
 
+`tooling/cli/tests/test_run_assessment.py` runs this script as it is, with
+`ssh` and `curl` stubbed, through the lag matrix and the exit-code overrides;
+CI runs it with the CLI tests. Deploy the script from a checkout, so what runs
+here is what was reviewed (`sha256sum` it against the tag), and change it by a
+pull request rather than on the box.
+
 Each run leaves three files in `RECORDS`: `<ts>-origin.log`, `<ts>-origin.tar.gz`
 and `<ts>-origin.summary`, pruned at 400 days.
 
