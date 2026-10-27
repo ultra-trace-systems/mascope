@@ -29,6 +29,7 @@ from composite_acquisition import (
     cached_sum_signals,
     store_rows,
 )
+from composite_acquisition import REAGENT as REAGENT_SCAN
 from scripted_acquisition import SAMPLE_FILENAME
 
 import mascope_file.io as m_io
@@ -386,6 +387,9 @@ SCAN_FACTORS = (
     [FACTORS[REAGENT]] * 5 + [FACTORS[LOW]] * 3 + [FACTORS[MID]] * 4 + [FILE] * 3
 )
 
+#: The factor of the reagent range measured again, as another experiment.
+AGAIN = 1 + 25e-6
+
 
 @pytest.fixture
 def scanned(acquire, monkeypatch):
@@ -426,6 +430,37 @@ def test_every_scan_read_at_once_is_on_its_own_streams_factor(scanned):
     low = per_scan[5]
     assert low["masses"][0] == IN_LOW * FACTORS[LOW]
     assert len(scanned) == 1
+
+
+def test_two_experiments_of_one_signature_are_each_on_their_own_factor(acquire):
+    """The method measures the reagent range again as another experiment.
+    The two streams share one signature, so their keys name their
+    experiments, and the record gives each a factor of its own. A scan
+    looked up by its signature alone would match neither and go by the
+    file's factor."""
+    acquire(COMPOSITE + [(REAGENT_SCAN, 5, {62.0: 900.0})] * 2, {**MICROSCANS, 5: 1})
+    first, again = f"{KEYS[REAGENT]} event=1", f"{KEYS[REAGENT]} event=5"
+    m_io.update_props(
+        SAMPLE_FILENAME,
+        {
+            "mz_calibration": {
+                "par": {"calibration_factor": FILE},
+                "streams": {
+                    first: {"calibration_factor": FACTORS[REAGENT]},
+                    again: {"calibration_factor": AGAIN},
+                },
+            }
+        },
+    )
+
+    per_scan = m_compute.get_orbi_centroids_per_scan(SAMPLE_FILENAME, polarity="-")
+
+    assert [scan["scan"] for scan in per_scan] == list(range(1, 17))
+    assert [scan["mz_calibration_factor"] for scan in per_scan] == (
+        [FACTORS[REAGENT]] * 5 + [FILE] * 9 + [AGAIN] * 2
+    )
+    assert per_scan[0]["masses"][0] == 62.0 * FACTORS[REAGENT]
+    assert per_scan[-1]["masses"].tolist() == [62.0 * AGAIN]
 
 
 def test_a_window_of_scans_goes_by_the_streams_its_scans_are_of(scanned):
