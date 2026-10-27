@@ -31,10 +31,11 @@ import DialogDatasetOp from './DialogDatasetOp.vue'
 const dataset = defineModel('dataset')
 
 const preview = ref(null)
-const loading = ref(false)
 const error = ref(null)
 const building = ref(false)
-// The dataset dialog's action, 'edit' while it is open over this one.
+// The dataset dialog's action, 'edit' while it is open over this one. Escape
+// then closes that dialog alone: every open PrimeVue Dialog listens for it on
+// the document, the one underneath included.
 const editing = ref(null)
 let request = 0
 
@@ -51,16 +52,14 @@ const editable = computed(() => gaps.value.some(gapEditable))
 const record = computed(() => metadataLines(preview.value?.dataset))
 
 const load = async () => {
+  // An answer for a dataset the dialog has since left is dropped.
   const current = ++request
-  loading.value = true
   error.value = null
   try {
     const answer = await loadPackagePreview(dataset.value)
     if (current === request) preview.value = answer
   } catch (caught) {
     if (current === request) error.value = caught
-  } finally {
-    if (current === request) loading.value = false
   }
 }
 
@@ -99,6 +98,7 @@ async function build() {
     v-model:visible="visible"
     :header="`Prepare '${name ?? ''}' for publication`"
     modal
+    :closeOnEscape="!editing"
     style="width: min(48rem, 95vw)"
   >
     <p class="intro">
