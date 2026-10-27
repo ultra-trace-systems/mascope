@@ -33,6 +33,7 @@ import mascope_cli.cmd.reference.main as reference_main
 import mascope_reference.sources as reference_sources
 from mascope_cli.cmd.reference.main import reference_app
 from mascope_cli.runtime import runtime
+from mascope_reference.ingest import SourceKindConflict, SpectrumIngestResult
 from mascope_reference.scope import MIRROR_WINDOW, UNBOUNDED, KnownWindow, SourceScope
 
 
@@ -231,6 +232,186 @@ def test_a_bound_that_cannot_be_read_is_refused_before_the_prompt(dump, no_engin
     assert "Continue?" not in result.output
 
 
+# --- A spectral library's sync ------------------------------------------------
+
+
+@pytest.fixture
+def logged(monkeypatch):
+    """What the command logs, one 'level: message' line each.
+
+    Captured at the logger: loguru's sink writes past CliRunner's capture.
+    """
+    lines: list[str] = []
+    for level in ("info", "success", "error"):
+        monkeypatch.setattr(
+            reference_main.runtime.logger,
+            level,
+            lambda message, _level=level: lines.append(f"{_level}: {message}"),
+        )
+    return lines
+
+
+@pytest.fixture
+def library_dump(tmp_path):
+    path = tmp_path / "MassBank-data-2026.03.tar.gz"
+    path.write_bytes(b"")
+    return path
+
+
+@pytest.fixture
+def captured_spectra(monkeypatch):
+    """Stand in for the spectral ingest, recording what a sync hands it."""
+    seen = {}
+
+    class _Engine:
+        def dispose(self):
+            pass
+
+    def _ingest_spectra(engine, adapter, path, version, **kwargs):
+        seen.update(kwargs, adapter=adapter, version=version)
+        return SpectrumIngestResult(
+            source=kwargs["source_name"] or adapter.name,
+            version=version,
+            reference_source_id=7,
+            ingested=113,
+            skipped={"not MS2": 22, "deprecated": 2},
+        )
+
+    def _no_compound_ingest(*args, **kwargs):
+        raise AssertionError("a spectral library is not loaded as compounds")
+
+    monkeypatch.setattr(reference_main, "_sync_engine", _Engine)
+    monkeypatch.setattr(reference_main, "ingest_spectra", _ingest_spectra)
+    monkeypatch.setattr(reference_main, "ingest", _no_compound_ingest)
+    return seen
+
+
+def test_a_spectral_library_syncs_its_spectra(library_dump, captured_spectra, logged):
+    result = runner.invoke(
+        reference_app,
+        ["sync", "massbank", str(library_dump), "--version", "2026.03", "--yes"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured_spectra["adapter"].name == "massbank"
+    assert captured_spectra["version"] == "2026.03"
+    assert captured_spectra["source_name"] is None
+    assert captured_spectra["activate"] is True
+    assert captured_spectra["prune"] is False
+    log = "\n".join(logged)
+    assert (
+        "success: Ingested 113 spectra from 'massbank' (version '2026.03', "
+        "source_id=7, 24 skipped: 22 not MS2, 2 deprecated)." in log
+    )
+    # No window is reported for what has none.
+    assert "Matched as" not in log
+
+
+def test_a_spectral_library_stages_prunes_and_takes_a_name(
+    library_dump, captured_spectra, logged
+):
+    result = runner.invoke(
+        reference_app,
+        [
+            "sync",
+            "mona",
+            str(library_dump),
+            "--version",
+            "1",
+            "--name",
+            "mona-negative",
+            "--stage",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured_spectra["source_name"] == "mona-negative"
+    assert captured_spectra["activate"] is False
+    assert "reference activate mona-negative --version 1" in "\n".join(logged)
+
+    result = runner.invoke(
+        reference_app,
+        ["sync", "mona", str(library_dump), "--version", "2", "--prune", "--yes"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured_spectra["prune"] is True
+
+
+def test_a_spectral_sync_asks_before_replacing_the_active_version(
+    library_dump, no_engine
+):
+    result = runner.invoke(
+        reference_app,
+        ["sync", "gnps", str(library_dump), "--version", "1", "--prune"],
+        input="n\n",
+    )
+    assert result.exit_code != 0
+    assert "replace the active version of 'gnps' and DELETE" in result.output
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        ["--elements", "C,H,O"],
+        ["--max-carbon", "20"],
+        ["--max-mass", "any"],
+        ["--allow-radicals"],
+        ["--no-allow-radicals"],
+        ["--polarity", "positive"],
+    ],
+)
+def test_window_flags_are_refused_for_a_spectral_library(
+    library_dump, no_engine, logged, flag
+):
+    result = runner.invoke(
+        reference_app,
+        ["sync", "massbank", str(library_dump), "--version", "1", *flag],
+        input="y\n",
+    )
+    assert result.exit_code == 1
+    assert "Continue?" not in result.output
+    # Either spelling of the radical flag is named by the option it sets.
+    named = flag[0].replace("--no-", "--")
+    assert f"error: {named} set how a compound source is matched" in logged[0]
+    assert "'massbank' is a spectral library" in logged[0]
+
+
+def test_a_spectral_sync_reports_a_name_held_by_compounds(
+    library_dump, monkeypatch, logged
+):
+    class _Engine:
+        def dispose(self):
+            pass
+
+    def _conflict(*args, **kwargs):
+        raise SourceKindConflict("'hmdb' holds compounds")
+
+    monkeypatch.setattr(reference_main, "_sync_engine", _Engine)
+    monkeypatch.setattr(reference_main, "ingest_spectra", _conflict)
+    result = runner.invoke(
+        reference_app,
+        ["sync", "mona", str(library_dump), "--version", "1", "--name", "hmdb", "-y"],
+    )
+    assert result.exit_code == 1
+    assert "error: 'hmdb' holds compounds" in logged
+
+
+def test_a_compound_sync_reports_a_name_held_by_spectra(dump, monkeypatch, logged):
+    class _Engine:
+        def dispose(self):
+            pass
+
+    def _conflict(*args, **kwargs):
+        raise SourceKindConflict("'massbank' holds spectra")
+
+    monkeypatch.setattr(reference_main, "_sync_engine", _Engine)
+    monkeypatch.setattr(reference_main, "ingest", _conflict)
+    result = runner.invoke(
+        reference_app,
+        ["sync", "custom", str(dump), "--version", "1", "--name", "massbank", "-y"],
+    )
+    assert result.exit_code == 1
+    assert "error: 'massbank' holds spectra" in logged
+
+
 # --- The Stage A licence gate reported by `status` / `sources` --------------
 
 
@@ -262,13 +443,18 @@ CREATE TABLE reference_compound (
 #: (source id, name, version, source licence, active, [record licences]).
 #: 'my-list' has records under two licences, which the `custom` adapter allows -
 #: the source's own licence is not the whole story, so the gate is reported from
-#: the per-record ones.
+#: the per-record ones. The rows record no kind, as rows from before sources had
+#: one do: they are compound sources.
 _MIRROR = [
     (1, "pubchem", "2026-01", "public-domain", True, ["public-domain"] * 3),
     (2, "hmdb", "5.0", "hmdb-attribution", True, ["hmdb-attribution"] * 2),
     (3, "my-list", "2026-07", "custom", True, ["custom", "public-domain"]),
     (4, "pubchem", "2025-01", "public-domain", False, ["public-domain"]),
 ]
+
+#: A spectral library's active load: its row has a kind, and its 40 spectra are
+#: in a table of their own, which these tests do not need.
+_LIBRARY = (5, "massbank", "2026.03", "massbank-unstated", 40, True)
 
 #: (known_window, allow_radicals, polarity) as a load writes them: a database at
 #: the mirror window, the hand-authored list unbounded with its own allowance.
@@ -320,6 +506,12 @@ def mirror(tmp_path, monkeypatch):
                     "INSERT INTO reference_compound VALUES (?, ?, ?, ?)",
                     (compound_id, source_id, "C10H16O3", record_license),
                 )
+        conn.exec_driver_sql(
+            "INSERT INTO reference_source (reference_source_id, name, version, "
+            "license, record_count, is_active, ingested_at, kind) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'spectrum')",
+            (*_LIBRARY, "2026-10-27 00:00:00.000000"),
+        )
     monkeypatch.setattr(reference_main, "_sync_engine", lambda: engine)
     # Rich wraps to the terminal width, and a wrapped verdict is unreadable in
     # a captured run as well as in a narrow terminal - pin a wide console so
@@ -379,6 +571,41 @@ def test_status_says_how_each_source_is_matched(mirror, monkeypatch):
     assert "C, H, N, O, S; C <= 40; <= 700 Da; no radicals; both polarities" in flat
     assert "my-list 2026-07 custom 2 yes" in flat
     assert "unbounded; radicals allowed; negative" in flat
+
+
+def test_status_shows_a_spectral_library_as_spectra(mirror, monkeypatch):
+    monkeypatch.setattr(reference_main.console, "width", 320)
+    result = runner.invoke(reference_app, ["status"])
+    assert result.exit_code == 0, result.output
+    flat = _flat(result.output)
+    # Its window columns hold nothing a person should read as a bound.
+    assert (
+        "massbank 2026.03 massbank-unstated 40 yes 2026-10-27 00:00:00 "
+        "spectra; not matched by Stage A" in flat
+    )
+
+
+def test_the_gate_table_leaves_spectral_libraries_out(mirror, gate, monkeypatch):
+    """The gate is Stage A's, which reads no spectrum: a library in its table
+    would read as 'no records' or as blocked by a gate that never sees it."""
+
+    rolled_up = {}
+    real = reference_main._record_licenses
+
+    def _spy(conn, source_ids):
+        rolled_up["ids"] = list(source_ids)
+        return real(conn, source_ids)
+
+    monkeypatch.setattr(reference_main, "_record_licenses", _spy)
+    gate(["public-domain"])
+    result = runner.invoke(reference_app, ["status"])
+    assert result.exit_code == 0, result.output
+    flat = _flat(result.output)
+    gate_table = flat.split("Peak assignment (Stage A) reference matching", 1)[1]
+    gate_table = gate_table.split("Reference licence tags", 1)[0]
+    assert "massbank" not in gate_table
+    assert "pubchem 2026-01 matched" in gate_table
+    assert _LIBRARY[0] not in rolled_up["ids"]
 
 
 def test_status_reports_what_the_gate_blocks(mirror, gate):
@@ -449,6 +676,25 @@ def test_sources_names_the_window_each_source_loads_at(monkeypatch):
         )
     assert "custom (license: custom; window: unbounded)" in flat
     assert "peaklist (license: custom; window: unbounded)" in flat
+
+
+def test_sources_lists_the_spectral_libraries_apart(gate, monkeypatch):
+    monkeypatch.setattr(reference_main.console, "width", 200)
+    # A gate that leaves out every library default is no verdict on them.
+    gate(["public-domain"])
+    result = runner.invoke(reference_app, ["sources"])
+    assert result.exit_code == 0, result.output
+    flat = _flat(result.output)
+    compounds, libraries = flat.split("MS/MS spectral libraries", 1)
+    assert "not matched by Stage A" in libraries
+    for name in ("gnps", "massbank", "mona"):
+        default = reference_sources.get_spectrum_adapter(name).license
+        assert (
+            f"{name} (license: per record; {default} where a record states none)"
+            in libraries
+        )
+        assert f"{name} (license" not in compounds
+    assert "(outside this deployment" not in libraries
 
 
 def test_sources_flags_nothing_when_no_gate_is_configured(monkeypatch):

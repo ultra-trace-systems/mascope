@@ -21,6 +21,13 @@ just executes where the chemistry dependencies live. The source row records how
 the compounds may be matched - a database at the mirror window, a list
 unbounded - and ``--elements``, ``--max-carbon``, ``--max-mass``,
 ``--allow-radicals`` and ``--polarity`` override it, as they do for the CLI.
+
+An MS/MS spectral library loads the same way, its spectra rather than
+compounds, with no window to override:
+
+    docker compose exec backend \\
+        python -m mascope_backend.db.scripts.reference_sync \\
+        massbank /data/MassBank-data-2026.03.tar.gz --version 2026.03
 """
 
 import argparse
@@ -31,7 +38,14 @@ from sqlalchemy.pool import NullPool
 
 from mascope_backend.db.secrets import postgres_password
 from mascope_backend.runtime import runtime
-from mascope_reference import get_adapter, ingest
+from mascope_reference import (
+    get_adapter,
+    get_spectrum_adapter,
+    ingest,
+    ingest_spectra,
+    is_spectrum_source,
+)
+from mascope_reference.ingest import EmptyIngest, SourceKindConflict
 from mascope_reference.scope import UNBOUNDED_TOKEN, scope_of
 
 
@@ -51,7 +65,9 @@ def main() -> None:
         description="Ingest reference data into the active Mascope database.",
     )
     parser.add_argument(
-        "source", help="Registered source name, e.g. 'pubchem' or 'custom'."
+        "source",
+        help="Registered source name, e.g. 'pubchem', 'custom' or a spectral "
+        "library: 'massbank', 'mona', 'gnps'.",
     )
     parser.add_argument(
         "file", type=Path, help="Path to the dump, resolved inside the container."
@@ -107,6 +123,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if is_spectrum_source(args.source):
+        _sync_spectra(args)
+        return
+
     try:
         adapter = get_adapter(args.source)
     except KeyError as error:
@@ -148,6 +168,8 @@ def main() -> None:
             progress=_report_progress,
             scope=scope,
         )
+    except SourceKindConflict as error:
+        raise SystemExit(str(error))
     finally:
         engine.dispose()
 
@@ -157,6 +179,60 @@ def main() -> None:
         f"{result.skipped:,} skipped)."
     )
     runtime.logger.info(f"Matched as: {result.scope.describe()}.")
+
+
+def _sync_spectra(args: argparse.Namespace) -> None:
+    """Load a spectral library's dump, as ``main`` does a compound source's."""
+    window_flags = {
+        "--elements": args.elements,
+        "--max-carbon": args.max_carbon,
+        "--max-mass": args.max_mass,
+        "--allow-radicals": args.allow_radicals,
+        "--polarity": args.polarity,
+    }
+    given = [flag for flag, value in window_flags.items() if value is not None]
+    if given:
+        raise SystemExit(
+            f"{', '.join(given)} set how a compound source is matched; "
+            f"'{args.source}' is a spectral library, which Stage A never matches."
+        )
+    if not args.file.exists():
+        raise SystemExit(f"Reference dump not found: {args.file}")
+    adapter = get_spectrum_adapter(args.source)
+
+    engine = _sync_engine()
+    runtime.logger.info(
+        f"Ingesting spectral library '{args.name or args.source}' "
+        f"(version '{args.version}') from {args.file.name}..."
+    )
+
+    def _report_progress(n: int) -> None:
+        # A named function: see main().
+        runtime.logger.info(f"  ...{n:,} spectra ingested")
+
+    try:
+        result = ingest_spectra(
+            engine,
+            adapter,
+            args.file,
+            args.version,
+            source_name=args.name,
+            batch_size=args.batch_size,
+            activate=not args.stage,
+            prune=args.prune,
+            progress=_report_progress,
+        )
+    except (EmptyIngest, SourceKindConflict) as error:
+        raise SystemExit(str(error))
+    finally:
+        engine.dispose()
+
+    reasons = ", ".join(f"{n:,} {reason}" for reason, n in result.skipped.items())
+    runtime.logger.success(
+        f"Ingested {result.ingested:,} spectra from '{result.source}' "
+        f"(version '{result.version}', source_id={result.reference_source_id}, "
+        f"{result.skipped_total:,} skipped{': ' + reasons if reasons else ''})."
+    )
 
 
 if __name__ == "__main__":
