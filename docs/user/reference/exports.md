@@ -184,10 +184,10 @@ generic RO-Crate viewers read it without knowing Mascope. It says nothing
 | The root `Dataset` | The dataset's name, description, licence, keywords, global id, and the time its files were acquired in |
 | `author` | Each author as a `Person`, with their ORCID iD as the `@id` where it is recorded, and their affiliation |
 | `funding`, `funder` | Each funding entry as a `Grant`, its award the `identifier`, and the funder as an `Organization` |
-| `citation`, `isBasedOn`, `isPartOf` | The related identifiers, a DOI or URL as the `@id`. `IsDerivedFrom`, `IsNewVersionOf` and `IsVersionOf` become `isBasedOn`, `IsPartOf` becomes `isPartOf`, and any other relation `citation`. Each one's description keeps the relation as written |
+| `citation`, `isBasedOn`, `isPartOf` | The related identifiers, a DOI or URL as the `@id`. `IsDerivedFrom`, `IsNewVersionOf` and `IsVersionOf` become `isBasedOn`, `IsPartOf` becomes `isPartOf`, and any other relation `citation`. Each one's description keeps the relation as written. An identifier given under two relations is one work that names both, and one that is Mascope's repository refers to Mascope itself |
 | `measurementTechnique` | The PSI-MS terms of the instrument models, ion sources, mass analysers and detectors |
 | `hasPart` | Every file, with its SHA-256 (`sha256`) and size, and each folder |
-| `mentions` | The action that wrote the package: when, and with which Mascope and raw-file reader versions |
+| `mentions` | The action that wrote the package: when, and with which Mascope and raw-file reader versions. Also a work cited by an identifier that is neither a DOI nor a URL: RO-Crate cites by URI alone |
 
 A licence the dataset dialog suggests is named by its SPDX entry. Any other
 licence, or none, is named as it was recorded: RO-Crate asks for a licence,
