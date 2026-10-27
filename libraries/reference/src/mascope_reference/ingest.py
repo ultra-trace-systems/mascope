@@ -12,33 +12,49 @@ The source row also records how the load's compounds may be matched - its
 window, its radical allowance and its polarity (:mod:`mascope_reference.scope`) -
 as the adapter says of the dump unless the caller says otherwise.
 
+:func:`ingest_spectra` loads a spectral library the same way, into
+``reference_spectrum``: a versioned load on its own source row, promoted only
+once spectra are in. The row records its kind, and a name holds loads of one
+kind only, so a spectral load can never take the place of a compound source's
+active version, nor the other way round.
+
 Runs against a synchronous SQLAlchemy engine - it is driven by the CLI, off the
 request path, and streams so a multi-gigabyte dump never lands in memory.
 """
 
-from collections.abc import Iterator
+from collections import Counter
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha1
 from pathlib import Path
 from typing import Callable
 
-from sqlalchemy import delete, insert, select, update
-from sqlalchemy.engine import Engine
+from sqlalchemy import Table, delete, func, insert, select, update
+from sqlalchemy.engine import Connection, Engine
 
-from mascope_reference.adapters.base import Adapter
+from mascope_reference.adapters.base import Adapter, SpectrumAdapter
 from mascope_reference.normalize import finalize
 from mascope_reference.record import ReferenceRecord
 from mascope_reference.schema import (
     COMPOUND_INSERT_COLUMNS,
+    COMPOUND_KIND,
     FORMULA_LENGTH,
     INCHIKEY_LENGTH,
     LICENSE_LENGTH,
     SOURCE_NATIVE_ID_LENGTH,
+    SPECTRUM_INSERT_COLUMNS,
+    SPECTRUM_KIND,
     reference_compound,
     reference_source,
+    reference_spectrum,
 )
 from mascope_reference.scope import SourceScope, scope_of
+from mascope_reference.spectrum import (
+    SkippedSpectrum,
+    SpectrumRecord,
+    finalize_spectrum,
+)
 
 
 DEFAULT_BATCH_SIZE = 5000
@@ -53,6 +69,17 @@ class EmptyIngest(RuntimeError):
     """
 
 
+class SourceKindConflict(RuntimeError):
+    """A load named after a source whose loads hold the other kind of data.
+
+    Raised before anything is written. Activating a load deactivates every other
+    load of its name, so a spectral library loaded under a compound source's
+    name (``--name hmdb`` for MoNA's HMDB library) would take that source out of
+    annotation and Stage A, and a list loaded under a library's name would take
+    the library's spectra out of the read path.
+    """
+
+
 @dataclass
 class IngestResult:
     """Outcome of one ingest load."""
@@ -64,6 +91,23 @@ class IngestResult:
     skipped: int
     #: What the source row records about how the compounds may be matched.
     scope: SourceScope
+
+
+@dataclass
+class SpectrumIngestResult:
+    """Outcome of one spectral library load."""
+
+    source: str
+    version: str
+    reference_source_id: int
+    ingested: int
+    #: Why the records left out were: reason -> count.
+    skipped: dict[str, int]
+
+    @property
+    def skipped_total(self) -> int:
+        """How many records of the dump were left out."""
+        return sum(self.skipped.values())
 
 
 @dataclass(frozen=True)
@@ -134,19 +178,143 @@ def _compound_row(source_id: int, record: ReferenceRecord) -> dict | None:
 
 def _finalized_rows(
     adapter: Adapter, path: Path, source_id: int
-) -> Iterator[tuple[dict | None, bool]]:
-    """Yield (insert_dict, skipped) for each raw record from the adapter."""
+) -> Iterator[dict | None]:
+    """Yield an insert dict for each raw record from the adapter, None if skipped."""
     for raw in adapter.parse(path):
         record = finalize(raw)
-        if record is None:
-            # Formula had no parseable elements - no usable annotation key.
-            yield None, True
-            continue
-        row = _compound_row(source_id, record)
+        # A formula with no parseable elements has no usable annotation key.
+        yield None if record is None else _compound_row(source_id, record)
+
+
+def _spectrum_row(source_id: int, spectrum: SpectrumRecord) -> dict:
+    """Build a ``reference_spectrum`` insert dict from a finalized spectrum.
+
+    The bounded columns are fitted here, as a compound's are: a load is one
+    transaction, and one over-long cell would abort it.
+    """
+    data = spectrum.model_dump(
+        include=set(SPECTRUM_INSERT_COLUMNS) - {"reference_source_id", "peaks"}
+    )
+    data["source_native_id"] = _fit_native_id(spectrum.source_native_id)
+    if len(data.get("formula") or "") > FORMULA_LENGTH:
+        data["formula"] = None
+    data["license"] = (data.get("license") or "")[:LICENSE_LENGTH]
+    data["peaks"] = [[mz, intensity] for mz, intensity in spectrum.peaks]
+    data["reference_source_id"] = source_id
+    return data
+
+
+def _refuse_other_kind(conn: Connection, name: str, kind: str) -> None:
+    """Raise SourceKindConflict when ``name`` already holds the other kind.
+
+    A row written before sources had a kind, or by a schema that has none, is a
+    compound source.
+    """
+    other = conn.execute(
+        select(func.coalesce(reference_source.c.kind, COMPOUND_KIND))
+        .where(reference_source.c.name == name)
+        .where(func.coalesce(reference_source.c.kind, COMPOUND_KIND) != kind)
+        .limit(1)
+    ).scalar()
+    if other is not None:
+        held = "compounds" if other == COMPOUND_KIND else "spectra"
+        loading = "compounds" if kind == COMPOUND_KIND else "spectra"
+        raise SourceKindConflict(
+            f"'{name}' holds {held}, and a load of {loading} under that name would "
+            f"deactivate them. Load it under a name of its own (--name)."
+        )
+
+
+def _begin_load(
+    conn: Connection, *, name: str, version: str, license: str, kind: str, **values
+) -> int:
+    """Insert a load's source row, inactive and empty, and return its id.
+
+    The load starts inactive and is promoted only once rows are in. Doing it the
+    other way round - deactivating the previous version up front - means a dump
+    that yields nothing (a misnamed file, or a header the adapter cannot see)
+    replaces a good mirror with an empty one and reports success. Ordering it
+    this way makes a failed load a no-op instead.
+    """
+    _refuse_other_kind(conn, name, kind)
+    return conn.execute(
+        insert(reference_source)
+        .values(
+            name=name,
+            version=version,
+            license=license,
+            record_count=0,
+            is_active=False,
+            ingested_at=datetime.now(timezone.utc),
+            kind=kind,
+            **values,
+        )
+        .returning(reference_source.c.reference_source_id)
+    ).scalar_one()
+
+
+def _insert_rows(
+    conn: Connection,
+    target: Table,
+    rows: Iterable[dict | None],
+    batch_size: int,
+    progress: Callable[[int], None] | None,
+) -> tuple[int, int]:
+    """Bulk insert the rows, None standing for a skipped record.
+
+    :return: (inserted, skipped).
+    """
+    inserted = 0
+    skipped = 0
+    batch: list[dict] = []
+    for row in rows:
         if row is None:
-            yield None, True
+            skipped += 1
             continue
-        yield row, False
+        batch.append(row)
+        if len(batch) >= batch_size:
+            conn.execute(insert(target), batch)
+            inserted += len(batch)
+            batch = []
+            if progress is not None:
+                progress(inserted)
+    if batch:
+        conn.execute(insert(target), batch)
+        inserted += len(batch)
+        if progress is not None:
+            progress(inserted)
+    return inserted, skipped
+
+
+def _finish_load(
+    conn: Connection,
+    name: str,
+    source_id: int,
+    ingested: int,
+    *,
+    activate: bool,
+    prune: bool,
+    target: Table,
+) -> None:
+    """Record the load's count and, when activating, promote it."""
+    conn.execute(
+        update(reference_source)
+        .where(reference_source.c.reference_source_id == source_id)
+        .values(record_count=ingested, is_active=activate)
+    )
+    if activate:
+        # Only one active version per source at a time. Deactivating the
+        # others here, after this load is known to be good, is what makes a
+        # bad load harmless.
+        conn.execute(
+            update(reference_source)
+            .where(reference_source.c.name == name)
+            .where(reference_source.c.reference_source_id != source_id)
+            .where(reference_source.c.is_active.is_(True))
+            .values(is_active=False)
+        )
+    if prune and activate:
+        _prune_inactive(conn, name, keep_source_id=source_id, target=target)
 
 
 def ingest(
@@ -188,6 +356,7 @@ def ingest(
     :raises FileNotFoundError: If ``path`` does not exist.
     :raises EmptyIngest: If an activating load yielded no usable records. The
         transaction is rolled back, so the previous active version survives.
+    :raises SourceKindConflict: If ``source_name`` holds spectra.
     """
     if not path.exists():
         raise FileNotFoundError(f"Reference dump not found: {path}")
@@ -195,73 +364,37 @@ def ingest(
     name = source_name or adapter.name
     if scope is None:
         scope = scope_of(adapter, path)
-    ingested = 0
-    skipped = 0
     with engine.begin() as conn:
-        # The load starts inactive and is promoted only once rows are in. Doing it
-        # the other way round - deactivating the previous version up front - means
-        # a dump that yields nothing (a misnamed file, or a header the adapter
-        # cannot see) replaces a good mirror with an empty one and reports
-        # success. Ordering it this way makes a failed load a no-op instead.
-        source_id = conn.execute(
-            insert(reference_source)
-            .values(
-                name=name,
-                version=version,
-                license=adapter.license,
-                record_count=0,
-                is_active=False,
-                ingested_at=datetime.now(timezone.utc),
-                **scope.row_values(),
-            )
-            .returning(reference_source.c.reference_source_id)
-        ).scalar_one()
-
-        batch: list[dict] = []
-        for row, was_skipped in _finalized_rows(adapter, path, source_id):
-            if was_skipped:
-                skipped += 1
-                continue
-            batch.append(row)
-            if len(batch) >= batch_size:
-                conn.execute(insert(reference_compound), batch)
-                ingested += len(batch)
-                batch = []
-                if progress is not None:
-                    progress(ingested)
-        if batch:
-            conn.execute(insert(reference_compound), batch)
-            ingested += len(batch)
-            if progress is not None:
-                progress(ingested)
-
+        source_id = _begin_load(
+            conn,
+            name=name,
+            version=version,
+            license=adapter.license,
+            kind=COMPOUND_KIND,
+            **scope.row_values(),
+        )
+        ingested, skipped = _insert_rows(
+            conn,
+            reference_compound,
+            _finalized_rows(adapter, path, source_id),
+            batch_size,
+            progress,
+        )
         if activate and ingested == 0:
             raise EmptyIngest(
                 f"Source '{name}' version '{version}' yielded no usable records "
                 f"from {path} ({skipped} skipped); the active version was left "
                 "in place. Check the file's format and encoding."
             )
-
-        conn.execute(
-            update(reference_source)
-            .where(reference_source.c.reference_source_id == source_id)
-            .values(record_count=ingested, is_active=activate)
+        _finish_load(
+            conn,
+            name,
+            source_id,
+            ingested,
+            activate=activate,
+            prune=prune,
+            target=reference_compound,
         )
-
-        if activate:
-            # Only one active version per source at a time. Deactivating the
-            # others here, after this load is known to be good, is what makes a
-            # bad load harmless.
-            conn.execute(
-                update(reference_source)
-                .where(reference_source.c.name == name)
-                .where(reference_source.c.reference_source_id != source_id)
-                .where(reference_source.c.is_active.is_(True))
-                .values(is_active=False)
-            )
-
-        if prune and activate:
-            _prune_inactive(conn, name, keep_source_id=source_id)
 
     return IngestResult(
         source=name,
@@ -270,6 +403,110 @@ def ingest(
         ingested=ingested,
         skipped=skipped,
         scope=scope,
+    )
+
+
+def _spectrum_rows(
+    adapter: SpectrumAdapter, path: Path, source_id: int, skipped: Counter
+) -> Iterator[dict | None]:
+    """Yield an insert dict per admitted spectrum, None per record left out.
+
+    Counts each left-out record under its reason in ``skipped``.
+    """
+    for parsed in adapter.parse(path):
+        spectrum = (
+            parsed if isinstance(parsed, SkippedSpectrum) else finalize_spectrum(parsed)
+        )
+        if isinstance(spectrum, SkippedSpectrum):
+            skipped[spectrum.reason] += 1
+            yield None
+            continue
+        yield _spectrum_row(source_id, spectrum)
+
+
+def ingest_spectra(
+    engine: Engine,
+    adapter: SpectrumAdapter,
+    path: Path,
+    version: str,
+    *,
+    source_name: str | None = None,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    activate: bool = True,
+    prune: bool = False,
+    progress: Callable[[int], None] | None = None,
+) -> SpectrumIngestResult:
+    """Ingest one spectral library dump as a new versioned load.
+
+    The same versioned load :func:`ingest` makes of a compound source: a new
+    source row, its spectra in, then promoted to the active version of its name,
+    with the earlier versions kept unless ``prune``. Each spectrum keeps its own
+    licence, which the read path filters on.
+
+    :param engine: Synchronous SQLAlchemy engine for the target database.
+    :param adapter: The library's adapter.
+    :param path: Path to the downloaded dump.
+    :param version: Version tag for this load (the library's release).
+    :param source_name: Provenance name for this load, overriding the adapter's,
+        so two exports of one library (MoNA's positive and negative modes) can
+        be loaded side by side.
+    :param batch_size: Rows per bulk insert.
+    :param activate: Mark this load active and deactivate prior loads of the
+        same name. ``False`` stages it.
+    :param prune: After a successful activated load, delete the name's earlier
+        loads and their spectra.
+    :param progress: Optional callback with the running inserted count.
+    :return: A :class:`SpectrumIngestResult`, with why records were left out.
+    :raises FileNotFoundError: If ``path`` does not exist.
+    :raises EmptyIngest: If an activating load admitted no spectrum. Nothing is
+        written, so the previous active version survives.
+    :raises SourceKindConflict: If the name holds compounds.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"Reference dump not found: {path}")
+
+    name = source_name or adapter.name
+    skipped: Counter = Counter()
+    with engine.begin() as conn:
+        source_id = _begin_load(
+            conn,
+            name=name,
+            version=version,
+            license=adapter.license,
+            kind=SPECTRUM_KIND,
+        )
+        ingested, _ = _insert_rows(
+            conn,
+            reference_spectrum,
+            _spectrum_rows(adapter, path, source_id, skipped),
+            batch_size,
+            progress,
+        )
+        if activate and ingested == 0:
+            reasons = ", ".join(
+                f"{count} {reason}" for reason, count in skipped.most_common()
+            )
+            raise EmptyIngest(
+                f"Library '{name}' version '{version}' yielded no usable spectra "
+                f"from {path} ({reasons or 'no records read'}); the active version "
+                "was left in place. Check that the file is this library's dump."
+            )
+        _finish_load(
+            conn,
+            name,
+            source_id,
+            ingested,
+            activate=activate,
+            prune=prune,
+            target=reference_spectrum,
+        )
+
+    return SpectrumIngestResult(
+        source=name,
+        version=version,
+        reference_source_id=source_id,
+        ingested=ingested,
+        skipped=dict(skipped.most_common()),
     )
 
 
@@ -316,8 +553,14 @@ def deactivate(engine: Engine, source_name: str) -> DeactivatedLoad | None:
     )
 
 
-def _prune_inactive(conn, source_name: str, keep_source_id: int) -> None:
-    """Delete all but the given load for a source (compounds then source rows)."""
+def _prune_inactive(
+    conn, source_name: str, keep_source_id: int, target: Table = reference_compound
+) -> None:
+    """Delete all but the given load for a source (its rows, then source rows).
+
+    :param target: The table the source's loads hold rows in: compounds, or
+        spectra for a spectral library. A name holds one kind.
+    """
     stale = (
         conn.execute(
             reference_source.select()
@@ -330,11 +573,7 @@ def _prune_inactive(conn, source_name: str, keep_source_id: int) -> None:
     )
     if not stale:
         return
-    conn.execute(
-        delete(reference_compound).where(
-            reference_compound.c.reference_source_id.in_(stale)
-        )
-    )
+    conn.execute(delete(target).where(target.c.reference_source_id.in_(stale)))
     conn.execute(
         delete(reference_source).where(
             reference_source.c.reference_source_id.in_(stale)
