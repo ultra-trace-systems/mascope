@@ -27,7 +27,15 @@ dependencies = [
     "pandas>=2.0.0",
     # Frames are kept as parquet in the session directory.
     "pyarrow>=14.0.0",
+    # The command line reads MASCOPE_WORKSPACE from the .env file the SDK
+    # reads its URL and token from.
+    "python-dotenv>=1.0.0",
 ]
+
+[project.scripts]
+# The MCP server (`mascope-ai mcp`), its setup preflight and the discovery
+# listing; `python -m mascope_ai` is the same command.
+mascope-ai = "mascope_ai.cli:main"
 
 [project.urls]
 homepage = "https://ultratrace.eu/"
