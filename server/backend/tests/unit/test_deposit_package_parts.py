@@ -1,8 +1,8 @@
 """
 Tests for the parts of a deposit package that need no database
 (``mascope_backend.deposit``): writing the archive, the README, the licence
-file and the RO-Crate rendered from a manifest, and the command line's
-outcome line.
+file and the RO-Crate rendered from a manifest, the gaps a deposit would
+have, and the command line's outcome line.
 
 The package as a whole, built from a dataset, is tested in
 ``tests/integration/api/export/test_deposit_package.py``.
@@ -23,7 +23,8 @@ from types import SimpleNamespace
 import pytest
 
 import mascope_backend.deposit.__main__ as deposit_main
-from mascope_backend.deposit import DatasetNotFound, collect
+from mascope_backend.api.new.dataset_package import service as dataset_package_service
+from mascope_backend.deposit import DatasetNotFound, collect, package_gaps
 from mascope_backend.deposit.archive import write_package
 from mascope_backend.deposit.collect import Package, PackageFile
 from mascope_backend.deposit.crate import render_crate
@@ -317,6 +318,57 @@ def test_rendering_does_not_change_the_manifest():
     render_readme(manifest)
     render_licence(manifest)
     assert manifest == before
+
+
+def test_a_dataset_whose_record_is_whole_has_no_gap():
+    manifest = _manifest(
+        license="CC-BY-4.0",
+        authors=[{"name": "Author One", "orcid": None, "affiliation": None}],
+        dataset_description="Ambient air.",
+    )
+    assert package_gaps(manifest) == []
+
+
+def test_each_part_a_deposit_lacks_is_a_gap_in_the_order_to_fix_it():
+    manifest = _manifest(authors=[], dataset_description=None)
+    manifest["raw"] = []
+    gaps = package_gaps(manifest)
+    assert [gap["field"] for gap in gaps] == [
+        "license",
+        "authors",
+        "dataset_description",
+        "samples",
+    ]
+    assert all(gap["message"] for gap in gaps)
+
+
+def test_keywords_related_identifiers_and_funding_are_no_gap():
+    """A repository asks for none of them, and neither does a deposit."""
+    manifest = _manifest(
+        license="proprietary",
+        authors=[{"name": "Author One", "orcid": None, "affiliation": None}],
+        dataset_description="Ambient air.",
+        keywords=None,
+        related_identifiers=None,
+        funding=None,
+    )
+    assert package_gaps(manifest) == []
+
+
+@pytest.mark.parametrize(
+    ("size", "says"),
+    [
+        (0, "0 B"),
+        (999, "999 B"),
+        (1000, "1.0 kB"),
+        (27_900, "27.9 kB"),
+        (3_400_000, "3.4 MB"),
+        (1_200_000_000, "1.2 GB"),
+        (5_000_000_000_000, "5000.0 GB"),
+    ],
+)
+def test_the_notification_gives_an_archives_size_for_a_person(size, says):
+    assert dataset_package_service._size(size) == says
 
 
 def _outcome(capsys) -> dict:
