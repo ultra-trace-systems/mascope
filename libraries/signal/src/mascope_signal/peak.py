@@ -993,8 +993,17 @@ class TofPeakDetector(BasePeakDetector):
         return snr
 
     def _flag_weak_peaks(self):
-        """Flag weak peaks. Currently no weak peak criteria for TOF data."""
-        is_weak = np.full(len(self.peak_timeseries.mz), False, dtype=bool)
+        """Flag weak peaks: a signal-to-noise below
+        :data:`SIGNAL_TO_NOISE_THRESHOLD`, as on Orbitrap.
+
+        Over a mostly empty baseline the noise is the height one ion leaves
+        (:meth:`_compute_snr`), so the cutoff is a number of ions there: the
+        clusters of one or two ions a fit keeps at most unit masses of an
+        ambient spectrum are weak. A peak with no ratio (NaN) is not weak.
+        """
+        is_weak = (
+            self.peak_timeseries.signal_to_noise.values < SIGNAL_TO_NOISE_THRESHOLD
+        )
         self._peak_timeseries = self.peak_timeseries.assign(
             {"is_weak": (("mz"), is_weak)}
         )
@@ -1163,6 +1172,15 @@ class OrbiZarrPeakDetector(TofPeakDetector):
             snr[i] = peak_heights[i] / noise_std if noise_std > 0 else np.nan
 
         return snr
+
+    def _flag_weak_peaks(self):
+        """Flag no peak weak, as before TOF peaks were: the cutoff is read
+        on :meth:`TofPeakDetector._compute_snr`'s noise, and this sample's
+        signal-to-noise is still the old one (:meth:`_compute_snr`)."""
+        is_weak = np.full(len(self.peak_timeseries.mz), False, dtype=bool)
+        self._peak_timeseries = self.peak_timeseries.assign(
+            {"is_weak": (("mz"), is_weak)}
+        )
 
     def _flag_satellite_peaks(self):
         peaks_df = pd.DataFrame(

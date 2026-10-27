@@ -372,3 +372,67 @@ def test_an_orbitrap_without_its_raw_file_keeps_its_signal_to_noise():
     assert not np.allclose(
         snr, _snr(mz_axis, signal, peak_mzs, peak_heights), equal_nan=True
     )
+
+
+def _flag(detector_class, mz_axis, signal, peak_mzs, peak_heights, snr=None):
+    """The weak flags a detector sets on peaks of these heights, their
+    signal-to-noise measured on the spectrum unless given."""
+    detector = detector_class.__new__(detector_class)
+    detector._sum_signal = xarray.DataArray(signal, coords={"mz": mz_axis}, dims="mz")
+    detector._resolution_function = _resolution
+    peak_mzs, peak_heights = np.asarray(peak_mzs), np.asarray(peak_heights)
+    if snr is None:
+        snr = detector._compute_snr(peak_mzs, peak_heights)
+    detector._peak_timeseries = xarray.Dataset(
+        {"signal_to_noise": (("mz"), np.asarray(snr, dtype=float))},
+        coords={"mz": peak_mzs},
+    )
+    detector._flag_weak_peaks()
+    return detector.peak_timeseries.is_weak.values
+
+
+def test_a_peak_of_one_or_two_ions_over_an_empty_baseline_is_weak():
+    """An ambient TOF spectrum counts single ions over an empty baseline,
+    and a fit keeps a cluster of one or two of them at most unit masses.
+    Their signal-to-noise is about the ions they hold, under the cutoff,
+    so they are weak and leave every default load; the real ions are not.
+    A peak with no ratio is not weak, as on Orbitrap."""
+    mz_axis = np.arange(99.0, 106.0, STEP)
+    stray = [99.3, 100.6, 101.4, 102.7, 103.5, 104.4, 105.6]
+    peak_mzs = [100.0, 101.0, 102.0, 103.0, 104.0]
+    peak_ions = [1, 2, 2, 40, 300]
+    signal = _ions(mz_axis, stray + list(np.repeat(peak_mzs, peak_ions)))
+
+    is_weak = _flag(TofPeakDetector, mz_axis, signal, peak_mzs, peak_ions)
+
+    assert is_weak.tolist() == [True, True, True, False, False]
+    assert not _flag(TofPeakDetector, mz_axis, signal, [100.0], [1.0], [np.nan])[0]
+
+
+def test_a_dense_baseline_keeps_its_peaks():
+    """A reagent-ion spectrum has a baseline of many counts, whose spread is
+    its noise: its real ions, ten to ten thousand times that, all stay."""
+    rng = np.random.default_rng(9)
+    mz_axis = np.arange(40.0, 300.0, STEP)
+    peak_mzs = np.arange(45.0, 295.0) + rng.uniform(-0.15, 0.25, 250)
+    level = 20.0
+    peak_heights = np.sqrt(level) * 10 ** rng.uniform(1, 4, peak_mzs.size)
+    signal = rng.poisson(_spectrum(mz_axis, peak_mzs, peak_heights, 0.3) + level)
+
+    is_weak = _flag(
+        TofPeakDetector, mz_axis, signal.astype(float), peak_mzs, peak_heights
+    )
+
+    assert not is_weak.any()
+
+
+def test_an_orbitrap_without_its_raw_file_flags_no_peak_weak():
+    """An ``orbi_zarr`` sample keeps the old signal-to-noise
+    (:func:`test_an_orbitrap_without_its_raw_file_keeps_its_signal_to_noise`),
+    which the cutoff is not read on, so it flags no peak weak, as before."""
+    mz_axis = np.arange(99.0, 101.0, STEP)
+    signal = _spectrum(mz_axis, [100.0], [1.0])
+
+    is_weak = _flag(OrbiZarrPeakDetector, mz_axis, signal, [100.0], [1.0], [0.5])
+
+    assert not is_weak.any()
