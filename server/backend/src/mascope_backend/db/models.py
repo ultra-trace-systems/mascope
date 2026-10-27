@@ -2845,6 +2845,10 @@ class ReferenceSource(Base):
     It also records how the source's compounds may be matched, written when the
     source is loaded (``mascope_reference.scope``): a database mirror at the
     atmospheric window, a list someone authored unbounded.
+
+    ``kind`` says what the load holds: compounds (``reference_compound``) or the
+    MS/MS spectra of a spectral library (``reference_spectrum``), whose window
+    columns mean nothing. One name holds loads of one kind.
     """
 
     __tablename__ = "reference_source"
@@ -2875,10 +2879,20 @@ class ReferenceSource(Base):
     # The polarity the compounds are detected in: positive or negative, NULL for
     # both.
     polarity: Mapped[Optional[str]] = mapped_column(String(8))
+    # What the load holds: "compound" or "spectrum" (mascope_reference.schema).
+    kind: Mapped[str] = mapped_column(
+        String(16), default="compound", server_default=text("'compound'")
+    )
 
     # Relationships
     reference_compound = relationship(
         "ReferenceCompound",
+        back_populates="reference_source",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
+    reference_spectrum = relationship(
+        "ReferenceSpectrum",
         back_populates="reference_source",
         cascade="all, delete",
         passive_deletes=True,
@@ -2926,6 +2940,52 @@ class ReferenceCompound(Base):
     # Relationships
     reference_source = relationship(
         "ReferenceSource", back_populates="reference_compound"
+    )
+
+
+class ReferenceSpectrum(Base):
+    """One MS/MS spectrum of a spectral library (MassBank, MoNA, GNPS) as one
+    source version holds it.
+
+    What a spectral-similarity scorer reads a sample's MS2 spectrum against
+    (``mascope_reference.spectral_query``): looked up by the compound's
+    ``inchikey`` or by ``precursor_mz``, both indexed, and filtered on the
+    per-record ``license``, since libraries mix licences, non-commercial ones
+    among them. ``formula`` is the compound's canonical neutral formula, NULL
+    where the library gives none Mascope can read. The energy is a number with
+    its kind (``nce`` or ``ev``) where the library names one value and its unit,
+    and ``collision_energy_text`` keeps it as written either way. ``peaks`` is
+    the centroid list, ``[[mz, intensity], ...]`` in ascending m/z.
+    """
+
+    __tablename__ = "reference_spectrum"
+
+    reference_spectrum_id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    reference_source_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("reference_source.reference_source_id", ondelete="CASCADE"),
+        index=True,
+    )
+    source_native_id: Mapped[str] = mapped_column(String(128))
+    name: Mapped[Optional[str]] = mapped_column(Text)
+    formula: Mapped[Optional[str]] = mapped_column(String(512), index=True)
+    inchikey: Mapped[Optional[str]] = mapped_column(String(27), index=True)
+    smiles: Mapped[Optional[str]] = mapped_column(Text)
+    inchi: Mapped[Optional[str]] = mapped_column(Text)
+    precursor_mz: Mapped[float] = mapped_column(Float, index=True)
+    adduct: Mapped[Optional[str]] = mapped_column(String(64))
+    polarity: Mapped[Optional[str]] = mapped_column(String(8))
+    collision_energy: Mapped[Optional[float]] = mapped_column(Float)
+    collision_energy_kind: Mapped[Optional[str]] = mapped_column(String(8))
+    collision_energy_text: Mapped[Optional[str]] = mapped_column(String(128))
+    peaks: Mapped[list] = mapped_column(JSON)
+    license: Mapped[str] = mapped_column(String(64))
+
+    # Relationships
+    reference_source = relationship(
+        "ReferenceSource", back_populates="reference_spectrum"
     )
 
 
@@ -3297,6 +3357,7 @@ __all__ = [
     "InstrumentFunction",
     "ReferenceSource",
     "ReferenceCompound",
+    "ReferenceSpectrum",
     "AssignmentCalibration",
     "AssignmentVerification",
 ]
