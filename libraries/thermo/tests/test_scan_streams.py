@@ -15,7 +15,11 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from thermo_test_support import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
+from thermo_test_support import (
+    NEG_ORBI_FILE_PATH,
+    POS_ORBI_FILE_PATH,
+    ScriptedThermoFilter,
+)
 
 from mascope_thermo.backend import (
     _SCAN_INDEX_UNSET,
@@ -1148,7 +1152,7 @@ class _ScriptedThermoRaw:
         self.RunHeaderEx = SimpleNamespace(SpectraCount=len(experiments))
 
     def GetFilterForScanNumber(self, number):  # noqa: N802
-        return SimpleNamespace(ToString=lambda: NEG_LOW)
+        return ScriptedThermoFilter(NEG_LOW)
 
     def GetScanStatsForScanNumber(self, number):  # noqa: N802
         segment, event = self._experiments[number - 1]

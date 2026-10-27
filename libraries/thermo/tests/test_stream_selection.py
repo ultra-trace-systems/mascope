@@ -16,7 +16,11 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from thermo_test_support import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
+from thermo_test_support import (
+    NEG_ORBI_FILE_PATH,
+    POS_ORBI_FILE_PATH,
+    ScriptedThermoFilter,
+)
 
 import mascope_thermo.thermo as m_thermo
 from mascope_thermo.backend import (
@@ -92,7 +96,7 @@ class _ScriptedOpenTFRaw:
 
 
 class _Text:
-    """A .NET enum or filter, as far as ``ToString()`` goes."""
+    """A .NET enum, as far as ``ToString()`` goes."""
 
     def __init__(self, text):
         self._text = text
@@ -118,7 +122,7 @@ class _ScriptedThermoRaw:
 
     def GetFilterForScanNumber(self, number):  # noqa: N802
         scan = self._scans[number - 1]
-        scan_filter = _Text(scan.filter)
+        scan_filter = ScriptedThermoFilter(scan.filter)
         scan_filter.Polarity = _Text("Positive" if " + " in scan.filter else "Negative")
         scan_filter.MSOrder = _Text("Ms2" if " ms2 " in scan.filter else "Ms")
         return scan_filter

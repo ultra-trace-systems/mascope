@@ -40,7 +40,7 @@ from typing import NamedTuple
 
 import numpy as np
 import pytest
-from thermo_test_support import POS_ORBI_FILE_PATH
+from thermo_test_support import POS_ORBI_FILE_PATH, ScriptedThermoFilter
 
 import mascope_thermo.thermo as m_thermo
 from mascope_thermo.backend import (
@@ -226,10 +226,14 @@ class _ScriptedThermoRawFile(_Override):
         if fragment is None:
             return real
         text = _fragment_filter(real.ToString(), fragment)
+        scripted = ScriptedThermoFilter(text)
         return _Override(
             real,
             MSOrder=SimpleNamespace(ToString=lambda: "Ms2"),
             ToString=lambda: text,
+            # The scripted range, which the backend writes from these.
+            MassRangeCount=scripted.MassRangeCount,
+            GetMassRange=scripted.GetMassRange,
         )
 
     def GetScanStatsForScanNumber(self, scan_number):
