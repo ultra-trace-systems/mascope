@@ -13,6 +13,13 @@ restored seed), unlike ``sample_item_id`` which is regenerated on every
 ingestion. That stable key is what lets the reproducibility comparison join a
 fresh rebuild's peaks back to the goldens.
 
+Both exports also end their order on that id. Two target ions of one formula
+are common: an oxygenate's ``[M+NH4]+`` and an amine's ``[M+H]+`` are the same
+ion, and matching records a row for each, with the same peak and the same
+score. Ordered by file, formula and m/z alone, such a pair comes out in
+whichever order the database read it, so two rebuilds of the same bundle would
+write the same rows in a different order and a different file.
+
 This module owns only the read: it returns plain rows so the backend stays free
 of a pandas/pyarrow dependency. The demo CLI (``build_bundle.export_goldens``)
 turns the rows into the parquet artifact.
@@ -76,11 +83,13 @@ async def _query_golden_peaks() -> list[dict]:
         # Only the peaks that were actually found; the rest are negligible-
         # abundance isotopologues scored 0 (see module docstring).
         .where(MatchIsotope.match_score > 0)
-        # Deterministic order so the exported golden file is stable across runs.
+        # Deterministic order so the exported golden file is stable across runs:
+        # isomeric ions share a formula and a peak, so the id breaks the tie.
         .order_by(
             SampleFile.filename,
             TargetIsotope.target_isotope_formula,
             MatchIsotope.sample_peak_mz,
+            MatchIsotope.target_isotope_id,
         )
     )
     async with async_session() as session:
@@ -161,7 +170,10 @@ async def _query_golden_ions() -> list[dict]:
         .join(SampleItem, SampleItem.sample_item_id == MatchIon.sample_item_id)
         .join(SampleFile, SampleFile.sample_file_id == SampleItem.sample_file_id)
         .where(MatchIon.match_score > 0)
-        .order_by(SampleFile.filename, TargetIon.target_ion_formula)
+        # Isomeric ions share a formula; the id orders the pair.
+        .order_by(
+            SampleFile.filename, TargetIon.target_ion_formula, MatchIon.target_ion_id
+        )
     )
     async with async_session() as session:
         rows = (await session.execute(stmt)).all()
