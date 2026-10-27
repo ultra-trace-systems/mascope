@@ -1625,7 +1625,17 @@ spectrum per polarity: each m/z is read from the range that owns it, averaged
 over that range's own scans, so an ion a short range measures no longer reads
 low for being divided by every range's scans. The 1.11.0 and 1.12.0 release
 notes describe it, and [the design note](dev/ingest_routing_and_splitting.md)
-(section 4.5) the design. It ships **off**; two sites run it as canaries.
+(section 4.5) the design. It is **on** by default from 1.14.0; from 1.11.0 to
+1.13.0 it shipped off, and two sites ran it as canaries. A site that has to
+keep pooling - to keep new files comparable with a pooled history it will not
+re-process - turns it off in the `[backend]` section of its env's
+`prod.mascope.toml`:
+
+```toml
+[backend]
+composite_scan_streams = false
+```
+
 The backend and the file converter read the setting when they start, so after
 changing it restart both:
 
@@ -1634,7 +1644,11 @@ mascope prod restart backend
 mascope prod restart file_converter
 ```
 
-Switching it on changes only files converted from then on. Whether a file's
+Switching it on changes only files converted from then on, and upgrading to a
+release where it is on by default is switching it on: a site whose methods
+measure several ranges in a polarity starts stitching their new files at the
+upgrade, while its older files of those methods stay pooled until they are
+re-processed (below). Whether a file's
 peaks are detected per range is decided at its first conversion and recorded
 with the file, and every later rebuild of its peak store goes by that record;
 a file converted pooled stays pooled. The one run that decides again is a

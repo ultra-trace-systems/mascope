@@ -13,7 +13,8 @@ streams are detected and stitched in the peak store, the spectrum, the peak
 listing, the item TIC and the exports read the stitch, each segment is
 calibrated and fitted an instrument function of its own, and the files
 acquired before the switch were re-processed on the two sites that acquire
-composites; what phases 3 and 4 still owe is step 9's overlap-drift warning
+composites, and it is on by default from 1.14.0 (decision 19); what phases
+3 and 4 still owe is step 9's overlap-drift warning
 and layout override, the per-stream stale rebuild (step 6) and MS2 routes
 taking the stream; phase 8, the profiles, is unbuilt and filed as
 milestone 9 of the Linear project (MAS-300, MAS-312, MAS-313, MAS-337,
@@ -21,11 +22,10 @@ MAS-344);
 detection is built as an audit: it reads each file's chemistry off its
 reagent ions and binds nothing** (2026-10-26). Written for issue #2098 ("Split files into
 samples by scan attributes"), which carries the checklist of pull
-requests. Decisions 1 to 5, 7, 9, 11 to 16 and 18 in section 12 are settled;
-6, 8 and 10 are open; 17 was decided on 2026-10-10 (a layout override is
-built when a layout needs one). One later decision is not yet in section
-12: MAS-91 (the composite default). MAS-249's, made for MAS-208, revises
-decision 14.
+requests. Decisions 1 to 5, 7, 9, 11 to 16, 18 and 19 in section 12 are
+settled; 6, 8 and 10 are open; 17 was decided on 2026-10-10 (a layout
+override is built when a layout needs one). MAS-249's, made for MAS-208,
+revises decision 14.
 
 ## Picking this up
 
@@ -4003,6 +4003,21 @@ through a short-lived stacked branch, merged as one unit.
     re-processed under phase 8. Revisited only if per-stream drift becomes
     real (Q Exactive band steps), which is the axis-fingerprint work in
     the calibration node, not the badge.
+
+19. **The composite default.** Raised 2026-10-14 (MAS-91): the cut shipped
+    behind `composite_scan_streams`, off, while one site ran it as the
+    canary. ~~Flip it in a minor release once the canary has run clean
+    through phase 8 and the corpus is re-baselined, or hold it for 2.0;
+    re-process the other sites' older files in the same campaign, or leave
+    them pooled until asked.~~ **Decided 2026-10-20 (MAS-91):** on by
+    default from the next minor release, 1.14.0, once phase 8 had run on
+    the canary and the corpus had been re-baselined under the cut (MAS-89).
+    The two sites that acquire composites already run it with their older
+    files re-processed, so the flip changes what any other site produces
+    only for the multi-range files it acquires from then on; a site that
+    holds pooled ones re-processes them by the runbook in
+    [maintaining.md](../maintaining.md#the-composite-cut), and a site that
+    must keep pooling sets the setting false in its env toml.
 
 ---
 

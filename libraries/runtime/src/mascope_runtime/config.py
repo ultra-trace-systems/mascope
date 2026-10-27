@@ -483,22 +483,19 @@ class BackendConfig(ModuleConfig):
     chemistry_detection: Literal["off", "audit"] = "audit"
     # Composite scan streams: how a raw Orbitrap file is processed whose
     # acquisition method runs more than one experiment in a polarity, most
-    # often several scan ranges of one chemistry. False (the default) pools
-    # every MS1 scan of a polarity into one peak list, as every release so
-    # far has, so each ion is divided by the scans of all the experiments,
-    # those that never measured it included. True processes the experiments
-    # one by one and stitches their ranges into one spectrum per polarity.
+    # often several scan ranges of one chemistry. True (the default) detects
+    # the peaks of each experiment over its own scans and stitches their
+    # ranges into one spectrum per polarity: each m/z is read from the range
+    # that owns it, averaged over that range's own scans, and each range is
+    # calibrated and fitted an instrument function of its own
+    # (docs/dev/ingest_routing_and_splitting.md, section 4.5). Such a file
+    # gets one sample per polarity, which reads the stitched spectrum.
     #
-    # LEAVE IT OFF ON A PRODUCTION SERVER. What it switches on is built in
-    # steps (docs/dev/ingest_routing_and_splitting.md, section 4.5). The
-    # peaks of each experiment are detected over its own scans and marked
-    # with whether they belong to the stitched spectrum of their polarity;
-    # such a file gets one sample per polarity, which points at that
-    # spectrum's row and reads its peaks - one reading of each m/z, averaged
-    # over the scans of the experiment that measured it. Still to come: the
-    # m/z calibration and the instrument functions per experiment,
-    # assignment and the views by experiment. The flag exists so
-    # that each step ships inert and can be exercised on a development server.
+    # False pools every MS1 scan of a polarity into one peak list, so each
+    # ion is divided by the scans of all the experiments, those that never
+    # measured it included. A deployment sets it false only to keep what it
+    # acquires comparable with a pooled history: a batch that mixes pooled
+    # and stitched files of one method shows a step where they meet.
     #
     # A file with one experiment in each polarity - nearly every file - is
     # processed exactly as before whichever way this is set, and so is one
@@ -512,7 +509,7 @@ class BackendConfig(ModuleConfig):
     # Read where a decision is made, when the process starts: by the file
     # converter for a file's first conversion, and by the backend for a
     # re-processing.
-    composite_scan_streams: bool = False
+    composite_scan_streams: bool = True
     # The axis fingerprint of a raw Orbitrap file: the m/z offset its mass
     # calibration stored in each frequency band of the Orbitrap axis, read
     # back from the stored profile (mascope_thermo.axis_fingerprint).

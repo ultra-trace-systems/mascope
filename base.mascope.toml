@@ -126,32 +126,21 @@ filestreams = './filestreams'
 # chemistry_detection = "audit"
 # Composite scan streams: how a raw Orbitrap file is processed whose
 # acquisition method runs more than one experiment in a polarity, most often
-# several scan ranges of one chemistry. false (the default) pools every MS1
-# scan of a polarity into one peak list, as every release so far has, so each
-# ion is divided by the scans of all the experiments, those that never
-# measured it included. true processes the experiments one by one and stitches
-# their ranges into one spectrum per polarity.
-#
-# LEAVE IT OFF ON A PRODUCTION SERVER. What it switches on is being built in
-# steps. The peaks of each experiment are detected over its own scans and
-# marked with whether they belong to the stitched spectrum of their polarity;
-# such a file gets one sample per polarity, which points at that spectrum's
-# row and reads its peaks: one reading of each m/z, averaged over the scans of
-# the experiment that measured it. Still to come: the m/z calibration and the
-# instrument functions per experiment, assignment and the views by
-# experiment. The setting is here so that each step can be exercised on a
-# development server before the last one is in.
+# several scan ranges of one chemistry. true (the default) detects each
+# experiment's peaks over its own scans and stitches the ranges into one
+# spectrum per polarity, each m/z read from the range that owns it, and
+# calibrates each range on its own. false pools every MS1 scan of a polarity
+# into one peak list, so each ion is divided by the scans of every
+# experiment, those that never measured it included; set it only to keep new
+# files comparable with a pooled history (docs/maintaining.md, "The composite
+# cut").
 #
 # A file with one experiment in each polarity - nearly every file - is
-# processed exactly as before whichever way this is set, and so is one whose
-# streams in each polarity only run the same scan ranges at the same
-# microscans: an experiment run again, or a resolution changed part way
-# through. A file already converted keeps what was decided for it then,
-# until it is re-processed: re-processing a file from Raw files detects its
-# peaks again under this setting as it is then. So this applies to files
-# converted after a restart of the file converter, and to files re-processed
-# after a restart of the backend.
-# composite_scan_streams = false
+# processed the same either way. A file already converted keeps what was
+# decided for it until it is re-processed from Raw files, which decides again
+# under the setting as it is then. Takes effect on a restart: of the file
+# converter for new files, of the backend for re-processing.
+composite_scan_streams = true
 # Axis fingerprint: the m/z offset a raw Orbitrap file's mass calibration
 # stored in each frequency band of the Orbitrap axis, read back from the
 # stored profile. "ingest" (the default) computes it as each file is converted
