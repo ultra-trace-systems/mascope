@@ -1,9 +1,9 @@
 """Shared fixtures for mascope_reference tests.
 
 Builds a throwaway SQLite database whose ``reference_source`` /
-``reference_compound`` tables mirror the backend ORM schema, so the ingest and
-query paths (which target those tables by name via the library's Core handles)
-can be exercised without Postgres or the backend.
+``reference_compound`` / ``reference_spectrum`` tables mirror the backend ORM
+schema, so the ingest and query paths (which target those tables by name via
+the library's Core handles) can be exercised without Postgres or the backend.
 """
 
 from pathlib import Path
@@ -40,6 +40,7 @@ Table(
     Column("known_window", JSON),
     Column("allow_radicals", Boolean),
     Column("polarity", String),
+    Column("kind", String),
 )
 
 Table(
@@ -60,6 +61,31 @@ Table(
     Column("inchi", Text),
     Column("source_native_id", String),
     Column("xrefs", JSON),
+    Column("license", String),
+)
+
+Table(
+    "reference_spectrum",
+    metadata,
+    Column("reference_spectrum_id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "reference_source_id",
+        Integer,
+        ForeignKey("reference_source.reference_source_id"),
+    ),
+    Column("source_native_id", String),
+    Column("name", Text),
+    Column("formula", String),
+    Column("inchikey", String),
+    Column("smiles", Text),
+    Column("inchi", Text),
+    Column("precursor_mz", Float),
+    Column("adduct", String),
+    Column("polarity", String),
+    Column("collision_energy", Float),
+    Column("collision_energy_kind", String),
+    Column("collision_energy_text", String),
+    Column("peaks", JSON),
     Column("license", String),
 )
 
