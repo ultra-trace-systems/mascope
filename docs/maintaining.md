@@ -29,6 +29,7 @@ Everything below assumes an Ubuntu host provisioned with
 | What a raw file measured (its scan streams) | `mascope file scans <file.raw>` |
 | Package a dataset for a repository such as Zenodo | `mascope export package <dataset id>` |
 | What the method bindings would route, and where a file name disagrees | `mascope prod db script run report_method_binding_disagreements` |
+| Write the MS2 stores of files converted before them (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` (fill rate and projection on each line) |
@@ -1790,6 +1791,38 @@ nothing. `STITCH_REPORT_FILES` caps the raw Orbitrap files one run walks
 ```sh
 mascope prod db script run report_stitch_overlaps
 ```
+
+### The MS2 store
+
+A raw Orbitrap file that holds fragmentation scans gets an MS2 store when it
+is converted: its MS2 scans read once, which the MS2 routes read instead of
+the raw file. A file converted before the store existed has none, and its
+MS2 routes go on opening the raw file on every request. **After updating to
+the release that adds the store** (its changelog: "A file's MS2 scans are
+read once, when it is converted, and kept"), write the stores of the files
+already there:
+
+```sh
+mascope prod db script run backfill_ms2_store                     # count only
+MS2_STORE_MODE=run mascope prod db script run backfill_ms2_store  # write; again until nothing is left
+```
+
+- The count reads only each file's `.props` and writes nothing. Per
+  instrument it says how many files hold fragmentation scans and no store,
+  how many already have one, and how many hold **no scan-stream census**.
+- A file with no census is left alone: nothing says whether it holds
+  fragmentation scans without opening it. Run `backfill_scan_stream_census`
+  (under [Method bindings](#method-bindings)) first, then this again.
+- A run reads one raw file at a time and rests `MS2_STORE_PAUSE` seconds
+  (default 1) after each, so the server keeps serving. It logs each file's
+  groups as it writes them.
+- It can be stopped at any time: a file whose store is written is not read
+  again. `MS2_STORE_LIMIT` caps how many files one run reads.
+- A file whose store could not be written is remembered and passed over;
+  `MS2_STORE_RETRY=1` tries those again once the cause is dealt with. Its MS2
+  routes read the raw file meanwhile, as before.
+- It changes no database row, only files in the filestore, so the pre-script
+  database dump restores nothing it does: `--skip-backup` loses nothing.
 
 ### Auditing a TOF instrument's mass calibration
 
