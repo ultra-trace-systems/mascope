@@ -69,6 +69,7 @@ from mascope_tools.composition.heuristic_filter import (
     propose_same_ion_readings,
 )
 from mascope_tools.composition.mass_accuracy import (
+    MASS_ACCURACY_MIN_ANCHORS,
     fit_sample_mass_accuracy,
     mass_accuracy_anchors,
     scoring_sigma_ppm,
@@ -315,14 +316,17 @@ class SampleMassAccuracy:
 
     Either number is None when it was not measured: ``sigma_ppm`` below
     :data:`mass_accuracy.MASS_ACCURACY_MIN_ANCHORS` matched lines of the target
-    library and ``mu_ppm`` below :data:`mass_accuracy.MASS_OFFSET_MIN_ANCHORS`.
-    Neither is a small measurement - it is no measurement, and ``anchors`` says
-    how close it came, so a run that fell back records why.
+    library and ``mu_ppm`` below :data:`mass_accuracy.MASS_OFFSET_MIN_ANCHORS`,
+    and both where the lines came from fewer distinct ions than the caller asked
+    for (:func:`sample_mass_accuracy`). Neither is a small measurement - it is
+    no measurement, and ``anchors`` and ``anchor_ions`` say how close it came,
+    so a run that fell back records why.
 
     ``anchors`` counts the target library's matched lines and nothing else. A
     loaded reference mirror's lines are in the same Stage A frame and are never
     among them (:func:`target_library_rows`), so the count is the same whether
-    or not a mirror is loaded.
+    or not a mirror is loaded. ``anchor_ions`` counts the target ions those
+    lines belong to.
 
     The offset is reported separately from the width because each has its own
     stand-in: the width falls back to the instrument class's, and the offset to
@@ -338,6 +342,8 @@ class SampleMassAccuracy:
     #: What the reagent pre-pass's lines said, recorded whether or not the
     #: sample is scored at it; None where the run had no pre-pass to ask.
     reagent: ReagentOffset | None = None
+    #: The distinct target ions the ``anchors`` lines belong to.
+    anchor_ions: int = 0
 
     @property
     def scoring_mu_ppm(self) -> float | None:
@@ -440,6 +446,28 @@ def is_reference_mirror_row(assignment: dict) -> bool:
     )
 
 
+#: The distinct target ions Stage A's matched lines must come from before a
+#: sample's own offset and width are fitted off them. One ion's lines share
+#: that ion's own mass error, so counted as lines, a few bright ions with many
+#: lines each - a large carbon count, S, Cl, Br - would calibrate the run on
+#: themselves: their error the offset, their lines' agreement the width, and
+#: every other row of both stages judged there. As many ions as the fit asks
+#: for lines, which is what the seeded chain asks too
+#: (``seeded_scoring.SEEDED_FIT_MIN_IONS``).
+#:
+#: Measured on the gate before it was set. Two sets fitted on fewer: the dense
+#: uronium Orbitrap set on lines of five ions in each of its six samples, and
+#: one labelled-nitrate sample on four. So few ions do not say where the axis
+#: sits: on the uronium set their own medians spread from -0.26 to +0.81 ppm,
+#: and the fits put the centre at 0.00 to -0.09 where each run's own
+#: calibration, over 101 to 414 of its commits, put it at -0.18 to -0.23.
+#: Falling back moved the centre by at most 0.09 ppm and the width from 0.17 to
+#: 0.41 ppm to the class's 0.3; 114 of 9,100 committed rows changed, and the
+#: runs' own calibrations did not move. A minimum of five would have moved the
+#: nitrate sample alone, and four nothing.
+STAGE_A_FIT_MIN_IONS = MASS_ACCURACY_MIN_ANCHORS
+
+
 def sample_mass_accuracy(
     match_isotope_df,
     reagent: ReagentOffset | None = None,
@@ -460,24 +488,31 @@ def sample_mass_accuracy(
         either number to be measured; fewer, and the frame measured neither,
         however many lines they matched. One ion's lines share that ion's own
         mass error, so a bright ion matching eight of them alone would fit its
-        own error as the offset and the floor as the width
-        (``seeded_scoring.gate_and_score``). None counts lines alone.
+        own error as the offset and the floor as the width. Stage A asks for
+        :data:`STAGE_A_FIT_MIN_IONS` and the seeded chain for
+        ``seeded_scoring.SEEDED_FIT_MIN_IONS``. None counts lines alone.
     :return: The fitted offset and width, how many of the target library's
-        matched lines they were fitted from, and the reagent lines' reading.
+        matched lines they were fitted from and of how many ions, and the
+        reagent lines' reading.
     """
     rows = target_library_rows(match_isotope_df)
     anchors = mass_accuracy_anchors(rows)
-    if min_anchor_ions is not None and (
-        "target_ion_id" not in rows.columns
-        or rows.loc[anchors.index, "target_ion_id"].nunique() < min_anchor_ions
-    ):
-        return SampleMassAccuracy(anchors=len(anchors), reagent=reagent)
+    anchor_ions = (
+        int(rows.loc[anchors.index, "target_ion_id"].nunique())
+        if "target_ion_id" in rows.columns
+        else 0
+    )
+    if min_anchor_ions is not None and anchor_ions < min_anchor_ions:
+        return SampleMassAccuracy(
+            anchors=len(anchors), reagent=reagent, anchor_ions=anchor_ions
+        )
     mu, sigma = fit_sample_mass_accuracy(rows)
     return SampleMassAccuracy(
         mu_ppm=mu,
         sigma_ppm=sigma,
         anchors=len(anchors),
         reagent=reagent,
+        anchor_ions=anchor_ions,
     )
 
 
@@ -625,6 +660,9 @@ def pattern_scoring_snapshot(
         # The target library's matched lines the width was fitted over; a
         # reference mirror's are never counted, whether or not one is loaded.
         "fitted_anchors": int(mass_accuracy.anchors),
+        # And the ions those lines belong to, which is why a sample with enough
+        # lines can still have fitted nothing: they came from too few ions.
+        "fitted_anchor_ions": int(mass_accuracy.anchor_ions),
         "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
         "abundance_floor": float(scoring.abundance_floor),
         # Whether the envelope was predicted at the file's resolving power, one
@@ -1008,7 +1046,8 @@ def score_ions_by_fit(
         otherwise scored at zero. None leaves such a sample uncorrected.
     :param min_anchor_ions: The distinct ions a fit's anchors must come from
         (:func:`sample_mass_accuracy`); a frame with fewer is scored at the two
-        stand-ins above. None, as Stage A runs, counts lines alone.
+        stand-ins above. Stage A passes :data:`STAGE_A_FIT_MIN_IONS`. None
+        counts lines alone.
     :return: The gated frame with every ion's fit as its rows' ``match_score``.
     """
     if match_isotope_df.empty or not _FIT_SCORE_COLS.issubset(match_isotope_df.columns):

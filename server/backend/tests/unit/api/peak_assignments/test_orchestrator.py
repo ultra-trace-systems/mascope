@@ -22,6 +22,7 @@ these call it with ``user_id=None`` so notification delivery stays on its quiet
 path rather than reaching Socket.IO.
 """
 
+import math
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1493,6 +1494,9 @@ class TestResolvedProfile:
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
         )
+        from mascope_backend.api.new.peak_assignments.engine import (
+            STAGE_A_FIT_MIN_IONS,
+        )
 
         peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
         recorder = _Recorder()
@@ -1506,6 +1510,7 @@ class TestResolvedProfile:
         assert mocks["fit"].call_args.kwargs == {
             "fallback_sigma_ppm": 0.3,
             "reagent_offset": None,
+            "min_anchor_ions": STAGE_A_FIT_MIN_IONS,
         }
 
     @pytest.mark.asyncio
@@ -1649,7 +1654,7 @@ class TestResolvedProfile:
             {
                 "accuracy": patch(
                     f"{_MOD}.sample_mass_accuracy",
-                    side_effect=lambda df, reagent: SampleMassAccuracy(
+                    side_effect=lambda df, reagent, **_kwargs: SampleMassAccuracy(
                         mu_ppm=0.2, sigma_ppm=0.3, anchors=9, reagent=reagent
                     ),
                 )
@@ -1782,6 +1787,143 @@ class TestResolvedProfile:
         )
         assert search_config.mass_range_ppm == 3.0
         assert heuristics.context_ratio_windows == (presets.AMBIENT_AIR.ratio_windows())
+
+
+def _bright_ion_rows(error_ppm: float = 0.6) -> list[dict]:
+    """One bright ion matching ten lines of its own, every one ``error_ppm`` off.
+
+    Ten lines are more than a fit asks for, and all of them are one ion's own
+    mass error.
+    """
+    abundances = [1.0, 0.6, 0.4, 0.25, 0.15, 0.1, 0.06, 0.04, 0.025, 0.015]
+    return [
+        _isotope_row(
+            target_isotope_id=f"ti-br-{index}",
+            target_ion_id="ion-br",
+            target_compound_id="tc-br",
+            compound_formula="C20H38O2",
+            ion_formula="C20H39O2+",
+            mz=311.2945 + 1.00335 * index,
+            relative_abundance=abundance,
+            sample_peak_id=f"b{index}",
+            sample_peak_intensity=1.0e5 * abundance,
+            match_mz_error=error_ppm,
+        )
+        for index, abundance in enumerate(abundances)
+    ]
+
+
+class TestStageAFitsOnIons:
+    """Stage A fits a sample's offset and width only on lines of enough ions.
+
+    One ion's lines share its own mass error. Counted as lines, a bright ion
+    with ten of them would calibrate the run on itself: its error the offset,
+    its lines' agreement the width, and every other row of both stages judged
+    there.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_bright_ion_s_lines_alone_do_not_calibrate_the_run(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.engine import (
+            STAGE_A_FIT_MIN_IONS,
+            score_ions_by_fit,
+        )
+        from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
+
+        rows = _bright_ion_rows()
+        peaks = _peaks_df(
+            [
+                (row["sample_peak_id"], row["mz"], row["sample_peak_intensity"])
+                for row in rows
+            ]
+            + [("p-rest", 400.5678, 500.0)]
+        )
+        recorder = _Recorder()
+        patches = _patches(recorder, peaks, rows)
+        patches.pop("fit")  # Stage A's own fit is what is under test
+        mocks = _start(patches)
+
+        await _run(PeakAssignmentConfig())
+
+        # Scored at the class width and no offset, as a library that matched
+        # too few lines is - not at its own error and the floor.
+        frame = pd.DataFrame(rows)
+        on_itself = score_ions_by_fit(frame, fallback_sigma_ppm=0.3)
+        stood_in = score_ions_by_fit(
+            frame, fallback_sigma_ppm=0.3, min_anchor_ions=STAGE_A_FIT_MIN_IONS
+        )
+        expected = float(stood_in["match_score"].iloc[0])
+        assert expected < float(on_itself["match_score"].iloc[0]) - 0.05
+        m0 = next(row for row in recorder.rows if row["sample_peak_id"] == "b0")
+        assert m0["fit_score"] == pytest.approx(expected, abs=1e-4)
+        # The untargeted stage is scored there too, and the run says why.
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        assert scoring.mu_ppm == 0.0
+        assert scoring.sigma_ppm == pytest.approx(math.hypot(0.3, PRED_SIGMA_PPM))
+        recorded = recorder.recorded_configs()[-1]["pattern_scoring"]
+        assert recorded["sigma_source"] == "instrument_class"
+        assert recorded["mu_source"] == "none"
+        assert (recorded["fitted_anchors"], recorded["fitted_anchor_ions"]) == (10, 1)
+
+    @staticmethod
+    async def _run_on_ions(ions: int):
+        """Run Stage A's own fit over the same ten lines shared out among
+        ``ions`` ions, and return what the untargeted stage was scored at and
+        what the run recorded."""
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        rows = _bright_ion_rows()
+        for index, row in enumerate(rows):
+            row["target_ion_id"] = f"ion-{index % ions}"
+            row["target_compound_id"] = f"tc-{index % ions}"
+            row["relative_abundance"] = 1.0
+        peaks = _peaks_df(
+            [
+                (row["sample_peak_id"], row["mz"], row["sample_peak_intensity"])
+                for row in rows
+            ]
+            + [("p-rest", 400.5678, 500.0)]
+        )
+        recorder = _Recorder()
+        patches = _patches(recorder, peaks, rows)
+        patches.pop("fit")
+        mocks = _start(patches)
+
+        await _run(PeakAssignmentConfig())
+
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        return scoring, recorder.recorded_configs()[-1]["pattern_scoring"]
+
+    @pytest.mark.asyncio
+    async def test_lines_of_eight_ions_fit_the_sample(self):
+        # Ten lines of eight ions measure the axis: the offset is theirs and the
+        # run says it fitted it.
+        scoring, recorded = await self._run_on_ions(8)
+
+        assert scoring.mu_ppm == pytest.approx(0.6)
+        assert recorded["sigma_source"] == "fitted"
+        assert recorded["mu_source"] == "fitted"
+        assert (recorded["fitted_anchors"], recorded["fitted_anchor_ions"]) == (10, 8)
+
+    @pytest.mark.asyncio
+    async def test_lines_of_seven_ions_do_not(self):
+        # The same ten lines, more than a fit asks for, from seven ions: one
+        # short of the eight the seeded chain asks for too, so the sample is
+        # scored at the stand-ins.
+        from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
+
+        scoring, recorded = await self._run_on_ions(7)
+
+        assert scoring.mu_ppm == 0.0
+        assert scoring.sigma_ppm == pytest.approx(math.hypot(0.3, PRED_SIGMA_PPM))
+        assert recorded["sigma_source"] == "instrument_class"
+        assert recorded["mu_source"] == "none"
+        assert (recorded["fitted_anchors"], recorded["fitted_anchor_ions"]) == (10, 7)
 
 
 class TestEligibilityGate:
