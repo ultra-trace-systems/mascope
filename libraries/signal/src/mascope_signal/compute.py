@@ -271,7 +271,7 @@ def scans_per_peak(peak_data: xr.Dataset, timestamps: np.ndarray) -> np.ndarray:
 
 
 def stored_scans_per_peak(
-    peak_data: xr.Dataset, polarity_scans: np.ndarray
+    peak_data: xr.Dataset, polarity_scans: np.ndarray, file_scans: np.ndarray
 ) -> np.ndarray:
     """How many scans each peak's stored sum is over, one per peak.
 
@@ -279,12 +279,19 @@ def stored_scans_per_peak(
     the store's own axis holds for the peak. For a per-stream store that is
     its stream's scans, which the store counts for itself: a file-wide read
     of the polarity's scans can be one short of the axis - the file's first
-    scan is left out where its TIC is an outlier among the file's scans and
-    not among its own stream's, as a composite method's reagent scan is -
-    and counted by that read, the stream's ions would average a quarter
-    high. A pooled store's axis holds every scan of the file with no
-    polarity on it, so its count is the polarity's scans as the caller read
-    them, the same read the store was summed over.
+    scan is left out where its TIC is an outlier among the file's scans of
+    its MS order and polarity and not among its own stream's, as a composite
+    method's reagent scan is - and counted by that read, the stream's ions
+    would average a quarter high.
+
+    A pooled store's axis holds every scan of the file with no polarity on
+    it, so its count is the polarity's scans as the caller read them: the
+    read the store was summed over, for as long as the file reads back the
+    store's axis. A file whose reader selects a scan the store was not
+    allocated with - a first scan the outlier rule keeps that it once left
+    out - would divide sums over n scans by n + 1 and read low with nothing
+    to show for it, so such a store is refused as stale, as reading its
+    timeseries refuses it.
 
     :param peak_data: A peak store, or a selection of its peaks; with
         ``scan_stream`` along ``time`` for a per-stream store
@@ -292,11 +299,19 @@ def stored_scans_per_peak(
     :param polarity_scans: The polarity's scans as read file-wide, the count
         of a pooled store
     :type polarity_scans: np.ndarray
+    :param file_scans: Every scan of the file as read file-wide, of no one
+        polarity (:func:`get_scan_timestamps`): what a pooled store's axis
+        was allocated from, and is checked against
+    :type file_scans: np.ndarray
+    :raises StalePeakStoreError: If a pooled store with peaks has an axis the
+        file no longer reads back (:func:`check_stored_scan_axis`)
     :return: One count per peak, never below one
     :rtype: np.ndarray
     """
     streams = peak_store_streams(peak_data)
     if not streams:
+        if peak_data.mz.size:
+            check_stored_scan_axis(file_scans, peak_data.time.values)
         return np.full(peak_data.mz.size, max(len(polarity_scans), 1), dtype=int)
     scan_streams = np.asarray(peak_data.scan_stream.values, dtype=int)
     return _counts_per_peak(peak_data, scan_streams, len(streams))
@@ -2223,17 +2238,20 @@ class StalePeakStoreError(ValueError):
     A store is allocated against the scans of the acquisition and keeps that
     axis for life, while the scans a reader selects are decided anew on every
     read - a file whose first scan reads as a TIC outlier loses it, and that
-    rule has not always existed. A store written before it therefore describes
-    one more scan than the file now yields.
+    rule has changed: it has not always existed, and it once compared the
+    first scan with every other scan of the file, fragmentation scans and the
+    other polarity's included, where it now compares it with the scans of its
+    own MS order and polarity. A store written under an earlier rule can
+    therefore describe one scan more, or one fewer, than the file now yields.
 
     Re-running peak detection is the only thing that repairs such a store, and
     it repairs it completely. Nothing downstream can: the store's per-peak
-    sums were measured over the scans it was allocated with, so they already
-    carry the intensity of the scan the reader now discards. Spreading a
-    recomputed timeseries over the scans that remain would move that intensity
-    onto them - the artifact the exclusion exists to drop would be smeared
-    across the good scans instead of sitting in its own, where it can still be
-    seen and skipped.
+    sums were measured over the scans it was allocated with, so they carry
+    the intensity of a scan the reader now discards, or lack that of one it
+    now reads. Spreading a recomputed timeseries over the scans that remain
+    would move a discarded scan's intensity onto them - the artifact the
+    exclusion exists to drop would be smeared across the good scans instead
+    of sitting in its own, where it can still be seen and skipped.
 
     A store that holds a peak list per scan stream is read back stream by
     stream, each under the key it was built with, and a key is a name the

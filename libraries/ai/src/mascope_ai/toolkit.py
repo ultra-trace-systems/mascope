@@ -36,6 +36,7 @@ import pandas as pd
 
 from mascope_sdk import MascopeClient, _loaders
 from mascope_sdk.exceptions import ValidationError
+from mascope_sdk.resources.samples import _EMPTY_RANGE_UNEXPLAINED
 
 from .errors import (
     LISTED,
@@ -262,6 +263,32 @@ class _RowCap:
                 left=[item for k, item in self.items.items() if k not in self.done],
                 hint=self.hint,
             )
+
+
+#: The server's warning on a time-ranged peak read that left peaks out,
+#: their count first (``_aggregate_time_range`` in the backend's
+#: ``samples_peaks``).
+_EXCLUDED = re.compile(
+    r"(\d+) peak\(s\) were excluded because their timeseries have not been "
+    r"computed yet"
+)
+
+
+def _excluded(warnings: Iterable[str]) -> int | None:
+    """How many peaks a time-ranged read's *warnings* say it left out.
+
+    0 when they say none was; None when they say some may have been
+    without a count - the SDK's own warning on an empty read from a server
+    that does not list its warnings.
+    """
+    total, uncounted = 0, False
+    for text in warnings:
+        found = _EXCLUDED.search(str(text))
+        if found:
+            total += int(found.group(1))
+        elif str(text) == _EMPTY_RANGE_UNEXPLAINED:
+            uncounted = True
+    return None if uncounted and not total else total
 
 
 def _check_cap(max_rows: Any, name: str = "max_rows") -> int:
@@ -859,6 +886,7 @@ class Toolkit:
             "workspace_id",
             None,
         )
+        modes = self._modes_of(samples)
         return {
             "description": row.get("sample_batch_description"),
             "type": row.get("sample_batch_type"),
@@ -872,9 +900,10 @@ class Toolkit:
             "last_measured": times.max() if times.notna().any() else None,
             "sample_polarities": counts("polarity"),
             "instruments": counts("instrument"),
-            "n_ionization_modes": int(samples["ionization_mode_id"].nunique())
+            "n_ionization_modes": len(modes)
             if "ionization_mode_id" in samples
             else None,
+            "ionization_modes": modes,
             "n_samples_matched": matched,
             "n_collections": len(collection_refs),
             "collections": [c.to_dict() for c in collection_refs[:LISTED]],
@@ -886,6 +915,8 @@ class Toolkit:
         calibration = record.get("mz_calibration") or {}
         match = record.get("match") or {}
         attributes = record.get("sample_item_attributes") or {}
+        mode_id = record.get("ionization_mode_id")
+        mode = self._ionization_modes([mode_id]).get(mode_id, {}) if mode_id else {}
         return {
             "batch_id": record.get("sample_batch_id"),
             "type": record.get("sample_item_type"),
@@ -893,6 +924,9 @@ class Toolkit:
             "polarity": record.get("polarity"),
             "instrument": record.get("instrument"),
             "instrument_type": record.get("instrument_type"),
+            "ionization_mode": mode.get("name"),
+            "ionization_mode_id": mode_id,
+            "ionization_mechanisms": mode.get("mechanisms"),
             "duration_s": record.get("length"),
             "t_range_s": [record.get("t0"), record.get("t1")],
             "mz_range": record.get("range"),
@@ -909,6 +943,53 @@ class Toolkit:
             },
             "n_attributes": len(attributes),
             "attributes": dict(list(attributes.items())[:LISTED]),
+        }
+
+    def _modes_of(self, samples: pd.DataFrame) -> list[dict[str, Any]]:
+        """The ionization modes of *samples*, most samples first: each with
+        its mechanisms and how many of the samples it has."""
+        if "ionization_mode_id" not in samples:
+            return []
+        counts = samples["ionization_mode_id"].value_counts(dropna=True)
+        modes = self._ionization_modes(list(counts.index))
+        return [
+            {
+                "id": mode_id,
+                "name": modes.get(mode_id, {}).get("name"),
+                "mechanisms": modes.get(mode_id, {}).get("mechanisms"),
+                "n_samples": int(n),
+            }
+            for mode_id, n in counts.items()
+        ]
+
+    def _ionization_modes(self, mode_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """The modes *mode_ids* name, by ID: their name and the names of
+        their mechanisms, sorted. A mode the server does not list is left
+        out.
+
+        The adopted modes are listed first and the system ones only for an
+        ID they lack: a sample processed under a mode the server since
+        stopped adopting still names it.
+        """
+        found: dict[str, dict[str, Any]] = {}
+        with self._errors("list the ionization modes"):
+            for include_system in (False, True):
+                if all(mode_id in found for mode_id in mode_ids):
+                    break
+                rows = self.client.ionization.modes(include_system=include_system)
+                for row in [] if rows is None else rows.to_dict("records"):
+                    if row["ionization_mode_id"] in mode_ids:
+                        found[row["ionization_mode_id"]] = row
+            names = self._mechanism_names() if found else {}
+        return {
+            mode_id: {
+                "name": row.get("ionization_mode_name"),
+                "mechanisms": sorted(
+                    names.get(mechanism, mechanism)
+                    for mechanism in row.get("ionization_mechanism_ids") or []
+                ),
+            }
+            for mode_id, row in found.items()
         }
 
     def _describe_collection(self, ref: Ref) -> dict[str, Any]:
@@ -1310,6 +1391,13 @@ class Toolkit:
     ) -> Frame:
         """Load a sample's averaged peaks for each time range (stage).
 
+        A stage is a time-ranged read, and the server leaves out of it every
+        peak whose time series it has not computed yet - typically the peaks
+        no target matched. Such a Frame is not complete: each stage short of
+        peaks is in its ``failures``, with how many it left out
+        (``excluded_peaks``). ``load_peaks`` reads the sample's whole peak
+        list, those peaks included.
+
         :param stages: ``(t_min, t_max)`` or ``(t_min, t_max, name)`` each.
         :raises RowCapExceeded: With the rows reached and the stages left.
         """
@@ -1361,6 +1449,16 @@ class Toolkit:
                 hint=hint,
             )
         cap = _RowCap(max_rows, "stage", items, lambda args: args[0], hint)
+        # The stages' warnings come back merged, each once; the count each
+        # stage left out is read as it arrives
+        excluded: dict[int, int | None] = {}
+
+        def watch(args: tuple[Any, ...], frame: pd.DataFrame) -> None:
+            left_out = _excluded(frame.attrs.get("warnings", ()))
+            if left_out != 0:
+                excluded[args[0]] = left_out
+            cap(args, frame)
+
         with self._errors("read the stage peaks of", sample):
             try:
                 df = _loaders.load_peaks_by_stage(
@@ -1371,7 +1469,7 @@ class Toolkit:
                     areas=areas,
                     heights=heights,
                     max_workers=self.max_workers,
-                    on_result=cap,
+                    on_result=watch,
                 )
             except ValueError as e:  # the SDK's "Sample ... not found."
                 raise NotFound(
@@ -1379,6 +1477,27 @@ class Toolkit:
                     "sample",
                     "It may have been deleted, or never been visible to this user.",
                 ) from e
+        if df is not None and excluded:
+            # Rows are missing as surely as from a read that failed: the
+            # stage is not the whole answer, whatever the reads say
+            df.attrs["failures"] = list(df.attrs.get("failures", [])) + [
+                {
+                    "sample_item_id": sample.id,
+                    **items[stage],
+                    "excluded_peaks": left_out,
+                    "error_type": "TimeseriesNotComputed",
+                    "error": (
+                        f"{left_out} peak(s) left out: the server has not "
+                        "computed their time series."
+                        if left_out is not None
+                        else "No peak came back, and this server does not say "
+                        "whether their time series were missing."
+                    )
+                    + " load_peaks reads the whole peak list.",
+                }
+                for stage, left_out in sorted(excluded.items())
+            ]
+            df.attrs["complete"] = False
         return df, [sample]
 
     # --- the oracle ----------------------------------------------------------

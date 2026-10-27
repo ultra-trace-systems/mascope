@@ -13,7 +13,10 @@ import pytest
 from mascope_backend.api.new.auth.access_token import cache as token_cache
 from mascope_backend.api.new.auth.access_token import util as token_util
 from mascope_backend.api.new.auth.access_token import validation as validation_mod
-from mascope_backend.api.new.auth.exceptions import InvalidTokenException
+from mascope_backend.api.new.auth.exceptions import (
+    InvalidTokenException,
+    TokenValidationUnavailableException,
+)
 from mascope_backend.api.new.auth.strategies import database as strategy_mod
 from mascope_backend.api.new.users.user_manager import util as user_mgr_mod
 
@@ -137,6 +140,31 @@ class TestRefuses:
         with pytest.raises(InvalidTokenException) as excinfo:
             await validation_mod.validate_service_access_token(TOKEN, SERVICE)
         assert f"not authorized for {SERVICE}" in str(excinfo.value.detail)
+
+
+class TestAFailureToCheck:
+    @pytest.mark.asyncio
+    async def test_is_told_apart_from_a_bad_token(self, monkeypatch):
+        # A pool timeout says nothing about the token. It is still refused as
+        # invalid, but as one that could not be checked, which the file
+        # converter's socket events answer differently.
+        def _no_connection():
+            raise TimeoutError("QueuePool limit reached")
+
+        monkeypatch.setattr(validation_mod, "async_session", _no_connection)
+
+        with pytest.raises(TokenValidationUnavailableException) as excinfo:
+            await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+        assert isinstance(excinfo.value, InvalidTokenException)
+        assert isinstance(excinfo.value.__cause__, TimeoutError)
+
+    @pytest.mark.asyncio
+    async def test_a_bad_token_is_not_one(self, monkeypatch):
+        _install(monkeypatch, row=None)
+
+        with pytest.raises(InvalidTokenException) as excinfo:
+            await validation_mod.validate_service_access_token(TOKEN, SERVICE)
+        assert not isinstance(excinfo.value, TokenValidationUnavailableException)
 
 
 class TestTheSharedContextCacheIsNotAGrant:

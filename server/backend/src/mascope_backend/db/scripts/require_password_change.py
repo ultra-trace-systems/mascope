@@ -171,49 +171,18 @@ async def notify_open_sessions(user_ids: list[int]) -> None:
     Without the eviction a socket subscribed before the sweep keeps hearing
     record-sync events until it reconnects; without the notification an open
     tab learns it is held at the password screen only when its next request is
-    refused. A Redis that cannot be reached is reported, not raised: the
-    requirement already stands, and those sockets are no worse off.
+    refused.
 
     :param user_ids: The accounts the sweep armed.
     """
-    if not user_ids:
-        return
     # Imported here, not at the top: importing the socket package builds the
     # Socket.IO server from the Redis configuration, and the CLI imports this
     # script on the host to list it, where that configuration may be absent.
-    from mascope_backend.socket.eviction import evict_ended_sessions
-    from mascope_backend.socket.records.service import (
-        emit_record_reload,
-        emit_record_updated,
+    from mascope_backend.socket.password_change import (
+        notify_password_change_from_script,
     )
-    from mascope_backend.socket.storage import redis_storage_client
 
-    try:
-        await redis_storage_client.connect()
-    except Exception:
-        runtime.logger.exception(
-            "Could not reach Redis: open sockets keep their rooms until they "
-            "reconnect, and open tabs are not notified"
-        )
-        return
-    try:
-        evicted = 0
-        for user_id in user_ids:
-            evicted += await evict_ended_sessions(user_id)
-            # The auth store re-fetches the current user on this event and
-            # ignores the payload, so a minimal record is enough.
-            await emit_record_updated(
-                record_type="user_me",
-                record_id=str(user_id),
-                record={"id": user_id, "must_change_password": True},
-                room=f"user-{user_id}",
-            )
-        # Open user-management tables would otherwise show stale flags.
-        await emit_record_reload(record_type="user")
-    finally:
-        await redis_storage_client.disconnect()
-    runtime.logger.info(f"Open sockets evicted from their rooms: {evicted}")
-    runtime.logger.info(f"Accounts notified on their own room: {len(user_ids)}")
+    await notify_password_change_from_script(user_ids, required=True)
 
 
 def main() -> None:

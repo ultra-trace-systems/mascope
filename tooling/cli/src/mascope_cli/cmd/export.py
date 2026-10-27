@@ -18,10 +18,13 @@ backend's code but not the database's port. `--in-container` asks for the
 container from a checkout.
 """
 
+import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
+import threading
 import uuid
 import zipfile
 from pathlib import Path
@@ -134,6 +137,14 @@ def _build_in_container(dataset_id: str, output: Path) -> dict:
     # two runs of one dataset share no path, and an interrupted run's builder
     # can be found and stopped.
     run = f"export-{uuid.uuid4().hex}"
+    with _ended_as_interrupted():
+        return _build_run_in_container(container, python, dataset_id, output, run)
+
+
+def _build_run_in_container(
+    container: str, python: str, dataset_id: str, output: Path, run: str
+) -> dict:
+    """Build the package as ``run`` in ``container`` and copy it out."""
     inside = None
     try:
         status, outcome = _stream(
@@ -176,6 +187,66 @@ def _build_in_container(dataset_id: str, output: Path) -> dict:
         )
         raise typer.Exit(1)
     return {**package, "archive": str(target)}
+
+
+@contextlib.contextmanager
+def _ended_as_interrupted():
+    """
+    End the block on SIGHUP and SIGTERM as on Ctrl-C, then by the signal.
+
+    Python's default action for either ends the process at once, running no
+    ``except`` or ``finally`` block: an SSH session that drops, or a
+    ``timeout`` or service manager that stops the command, would leave the
+    builder in the container running. In the block they raise
+    KeyboardInterrupt, so the build is stopped and its directory removed as
+    on Ctrl-C. Exactly that class: ``subprocess.Popen`` waits for its child
+    on the way out of any other exception, and ``docker exec`` may outlive
+    the signal. Once the block has unwound, the handlers before it are put
+    back and the signal is sent again, so the process ends as it would have:
+    by the signal, which is what a service manager or ``timeout`` expects.
+    Only the first such signal acts: one more while the clean-up runs would
+    interrupt the stop itself, and the first's re-send ends the process all
+    the same.
+
+    A signal that is ignored, as ``nohup`` ignores SIGHUP, stays ignored.
+    Signal handlers can only be set in the main thread; elsewhere the block
+    runs as it is.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    ended = []
+
+    def end(signum, frame):  # noqa: ARG001
+        if ended:
+            # The clean-up the first one started runs to its end: a dropped
+            # SSH session sends SIGHUP twice, from the shell and the kernel.
+            return
+        ended.append(signum)
+        raise KeyboardInterrupt
+
+    previous = {}
+    for name in ("SIGHUP", "SIGTERM"):
+        signum = getattr(signal, name, None)  # Windows has no SIGHUP.
+        if signum is not None and signal.getsignal(signum) is not signal.SIG_IGN:
+            previous[signum] = signal.signal(signum, end)
+    try:
+        yield
+    except KeyboardInterrupt:
+        _restore(previous)
+        if ended:
+            os.kill(os.getpid(), ended[0])
+        raise
+    finally:
+        _restore(previous)
+
+
+def _restore(handlers: dict) -> None:
+    """Put back the signal handlers ``handlers`` holds."""
+    for signum, handler in handlers.items():
+        # None: a handler set outside Python, which cannot be put back.
+        signal.signal(signum, signal.SIG_DFL if handler is None else handler)
 
 
 def _stop_builder(container: str, run: str) -> None:

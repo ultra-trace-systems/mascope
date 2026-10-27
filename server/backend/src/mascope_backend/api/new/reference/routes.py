@@ -21,7 +21,9 @@ async def get_reference_sources_route(user=Depends(guest_user)):
     in, how many compounds it holds, when it was loaded, and ``admitted``,
     whether the deployment's ``[backend] reference_licenses`` lets Stage A of
     peak assignment match it. A shipped list carries the label its file gives
-    it; any other source is labelled by its name. Sorted by label.
+    it; any other source is labelled by its name. ``references`` are the
+    publications the source comes from, as recorded when it was loaded: each a
+    ``citation`` with its ``doi`` or ``isbn``, and a ``note``. Sorted by label.
 
     Reference data belongs to the deployment, not to a workspace, so any
     signed-in user reads it. Open to an API token with its service name, because

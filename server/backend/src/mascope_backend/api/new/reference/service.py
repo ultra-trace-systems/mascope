@@ -19,7 +19,10 @@ from mascope_reference import by_mass_window as _by_mass_window
 from mascope_reference import catalogue
 from mascope_reference import known_listings as _known_listings
 from mascope_reference import source_compounds as _source_compounds
+from mascope_reference.adapters.peaklist import list_citations
 from mascope_reference.dedup import collapse_by_inchikey
+from mascope_reference.peaklist import REFERENCE_KEYS
+from mascope_reference.query import SourceRow
 from mascope_reference.record import ReferenceRecord
 from mascope_tools.composition.known_window import KnownWindow
 
@@ -120,11 +123,48 @@ def shipped_labels() -> dict[str, str]:
     }
 
 
+@cache
+def shipped_citations() -> dict[str, tuple[str | None, tuple[dict, ...]]]:
+    """What every list Mascope ships cites, by the source name it loads as.
+
+    Read once per process, as :func:`shipped_labels` is.
+
+    :return: Each shipped list's id mapped to its data version and its
+        citations, as a load of it records them.
+    """
+    return {
+        peak_list.id: (peak_list.data_version, list_citations(peak_list))
+        for peak_list in catalogue()
+    }
+
+
+def _references(row: SourceRow) -> list[dict]:
+    """The publications a source comes from, each with every reference key.
+
+    What the source row recorded at load. A row loaded before rows recorded
+    citations holds NULL; a shipped list's is then read from the installed
+    file, but only while the version loaded is the file's, so an older load is
+    never cited from a newer file.
+
+    :param row: The source's row.
+    :return: Each reference with ``citation``, ``doi``, ``isbn`` and ``note``,
+        None where it gives none; empty for a source that cites nothing.
+    """
+    citations = row.citations
+    if citations is None:
+        version, shipped = shipped_citations().get(row.name, (None, ()))
+        citations = shipped if row.version == version else ()
+    return [
+        {key: reference.get(key) for key in REFERENCE_KEYS} for reference in citations
+    ]
+
+
 async def list_sources() -> dict:
     """The active reference sources, one row each, sorted by label.
 
     A shipped list is labelled as its file labels it, any other source by its
-    name. ``admitted`` says whether the deployment's licence gate
+    name. ``references`` are the publications the source comes from, as its
+    row recorded them at load (:func:`_references`). ``admitted`` says whether the deployment's licence gate
     (:func:`reference_license_gate`) lets Stage A match the source: true for
     every source when no gate is configured, else whether the source's licence
     is one the gate names.
@@ -140,6 +180,7 @@ async def list_sources() -> dict:
             "name": row.name,
             "version": row.version,
             "label": labels.get(row.name, row.name),
+            "references": _references(row),
             "license": row.license,
             "polarity": row.polarity,
             "allow_radicals": bool(row.allow_radicals),

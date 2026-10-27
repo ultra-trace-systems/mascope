@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# Scheduled Mascope security assessment, origin vantage.
+# Scheduled Mascope security assessment, from the origin vantage and, when
+# configured, the CDN vantage beside it.
 #
-# Runs the pen-test suite ON the staging target and brings the report back
-# here. It runs from this host rather than on the target because a report
+# Origin: runs the pen-test suite ON the staging target and brings the report
+# back here. It runs from this host rather than on the target because a report
 # stored on the system under test is a report a successful attacker can edit,
 # and because the target is rebuilt from scratch as a matter of routine.
 #
@@ -17,6 +18,13 @@
 #   * the archive is never extracted to disk. Only the JSON is read, to
 #     stdout, and parsed by a JSON parser - never a shell;
 #   * nothing derived from the report is rendered, evaluated, or forwarded.
+#
+# CDN (when CDN_TARGET is set): runs the suite HERE, from a local copy, against
+# the deployment's public URL, so its requests cross the edge as an internet
+# client's do. The edge's WAF lets it through on the operator header, a secret
+# that is sent only to the edge, over TLS, and never to the target host. The
+# two reports are kept under one timestamp with a comparison that says, per
+# control, where the vantages disagree and which layer answered.
 #
 # Exit code is the suite's, so the heartbeat below reflects the assessment
 # rather than the plumbing - with two deliberate overrides: an unusable
@@ -35,10 +43,18 @@
 #   RELEASE_API          release endpoint used by the lag check
 #   RELEASE_TIMEOUT      lookup timeout; a failed lookup is never fatal
 #   MASCOPE_PENTEST_*    target credentials, passed through to the suite
+#   CDN_TARGET           public URL through the CDN; unset = origin run only
+#   CDN_SUITE_DIR        local copy of security/pentest/ (with its .venv)
+#   VANTAGE_GAP          seconds between the two runs (default 300), so the
+#                        CDN run does not start inside the login windows the
+#                        origin run spent for the same account
+#   MASCOPE_PENTEST_HEADER_NAME / _VALUE
+#                        the header the edge's skip rule matches (CDN run only)
 #
-# Each run leaves three files in RECORDS: <ts>-origin.log (the suite's output),
-# <ts>-origin.tar.gz (the report), and <ts>-origin.summary (this script's own
-# verdict, so an archived run still states what it concluded).
+# Each vantage leaves three files in RECORDS: <ts>-<vantage>.log (the suite's
+# output), <ts>-<vantage>.tar.gz (the report), and <ts>-<vantage>.summary
+# (this script's own verdict, so an archived run still states what it
+# concluded). With both vantages, <ts>-vantage.{md,json} holds the comparison.
 set -uo pipefail
 
 CONFIG="${PENTEST_RUNNER_ENV:-/opt/pentest-runner/config.env}"
@@ -53,14 +69,15 @@ MAX_BYTES="${MAX_BYTES:-20000000}"      # 20 MB; a real report is ~10 KB
 HC_URL="${HC_URL:-}"                     # healthchecks.io check, optional
 RELEASE_API="${RELEASE_API:-https://api.github.com/repos/ultra-trace-systems/mascope/releases/latest}"
 RELEASE_TIMEOUT="${RELEASE_TIMEOUT:-10}"   # lookup only; never fatal
+CDN_TARGET="${CDN_TARGET:-}"
+CDN_SUITE_DIR="${CDN_SUITE_DIR:-/opt/pentest-runner/suite/pentest}"
+VANTAGE_GAP="${VANTAGE_GAP:-300}"
 
 SSH_OPTS=(-i "$SSH_KEY" -o IdentitiesOnly=yes -o ForwardAgent=no
           -o BatchMode=yes -o StrictHostKeyChecking=accept-new
           -o ConnectTimeout=20)
 
 ts="$(date -u +%Y-%m-%dT%H%M%SZ)"
-archive="${RECORDS}/${ts}-origin.tar.gz"
-log="${RECORDS}/${ts}-origin.log"
 
 ping_hc() {  # $1 = path suffix ("/start", "/fail", "")
     [ -n "$HC_URL" ] || return 0
@@ -69,28 +86,84 @@ ping_hc() {  # $1 = path suffix ("/start", "/fail", "")
 
 ping_hc "/start"
 
-# The suite reads the deployed version from the target itself, so the report is
-# attributable without this job having to know which release is running.
-remote_cmd="cd ${SUITE_DIR} && \
+# Runs the suite on the target and pulls its report back. $1 = log, $2 = archive.
+run_origin() {
+    # The suite reads the deployed version from the target itself, so the
+    # report is attributable without this job having to know which release is
+    # running. The operator header is deliberately not passed: the origin run
+    # does not cross the edge, and the target host has no business holding the
+    # edge's bypass.
+    #
+    # The previous run's report is cleared first: report/ persists, and a run
+    # that aborts before writing one (a WAF-refused 403, a usage error, a
+    # crash) would otherwise archive the last good report under today's date.
+    local remote_cmd="cd ${SUITE_DIR} && \
+  rm -f report/pentest-report.json report/pentest-report.md && \
   MASCOPE_PENTEST_TARGET='${MASCOPE_PENTEST_TARGET}' \
   MASCOPE_PENTEST_EMAIL='${MASCOPE_PENTEST_EMAIL}' \
   MASCOPE_PENTEST_PASSWORD='${MASCOPE_PENTEST_PASSWORD}' \
   MASCOPE_PENTEST_LOWPRIV_EMAIL='${MASCOPE_PENTEST_LOWPRIV_EMAIL:-}' \
   MASCOPE_PENTEST_LOWPRIV_PASSWORD='${MASCOPE_PENTEST_LOWPRIV_PASSWORD:-}' \
   MASCOPE_PENTEST_VERIFY_TLS=false \
+  MASCOPE_PENTEST_VANTAGE=origin \
   ./.venv/bin/python -m pytest -q"
 
-ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" "$remote_cmd" > "$log" 2>&1
-suite_rc=$?
+    ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" "$remote_cmd" > "$1" 2>&1
+    local rc=$?
 
-# head -c bounds the stream before it lands: an unbounded "report" from a
-# compromised target must not be able to starve the backup volume.
-ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" \
-    "cd ${SUITE_DIR} && tar -cz report" 2>/dev/null | head -c "$MAX_BYTES" > "$archive"
+    # head -c bounds the stream before it lands: an unbounded "report" from a
+    # compromised target must not be able to starve the backup volume.
+    ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" \
+        "cd ${SUITE_DIR} && tar -cz report" 2>/dev/null | head -c "$MAX_BYTES" > "$2"
+    return "$rc"
+}
 
-summary="$(tar -xzOf "$archive" report/pentest-report.json 2>/dev/null \
-  | head -c 4000000 \
-  | python3 -c '
+# Runs the suite here, through the edge. $1 = log, $2 = archive.
+run_cdn() {
+    # Prefix assignments, not arguments: they reach the suite's environment
+    # without appearing in any process's command line, where the passwords and
+    # the header value would be readable by every account on this host. TLS is
+    # verified: the edge serves a real certificate, and this is the one run
+    # that sends the bypass, so it must not send it to an impostor.
+    (
+        cd "$CDN_SUITE_DIR" || exit 2
+        # As at the origin: an aborted run must leave no report to archive.
+        rm -f report/pentest-report.json report/pentest-report.md
+        MASCOPE_PENTEST_TARGET="$CDN_TARGET" \
+        MASCOPE_PENTEST_EMAIL="${MASCOPE_PENTEST_EMAIL}" \
+        MASCOPE_PENTEST_PASSWORD="${MASCOPE_PENTEST_PASSWORD}" \
+        MASCOPE_PENTEST_LOWPRIV_EMAIL="${MASCOPE_PENTEST_LOWPRIV_EMAIL:-}" \
+        MASCOPE_PENTEST_LOWPRIV_PASSWORD="${MASCOPE_PENTEST_LOWPRIV_PASSWORD:-}" \
+        MASCOPE_PENTEST_HEADER_NAME="${MASCOPE_PENTEST_HEADER_NAME:-}" \
+        MASCOPE_PENTEST_HEADER_VALUE="${MASCOPE_PENTEST_HEADER_VALUE:-}" \
+        MASCOPE_PENTEST_VERIFY_TLS=true \
+        MASCOPE_PENTEST_VANTAGE=cdn \
+        exec ./.venv/bin/python -m pytest -q
+    ) > "$1" 2>&1
+    local rc=$?
+    # The local copy is ours, but the report quotes what the deployment
+    # answered: bounded the same way as the origin's.
+    tar -cz -C "$CDN_SUITE_DIR" report 2>/dev/null | head -c "$MAX_BYTES" > "$2"
+    return "$rc"
+}
+
+# The report JSON out of an archive, to stdout, bounded. Never extracted to disk.
+report_json() {
+    tar -xzOf "$1" report/pentest-report.json 2>/dev/null | head -c 4000000
+}
+
+current="" looked_up=""
+
+# Runs one vantage and leaves its verdict in $summary and $suite_rc.
+assess() {  # $1 = origin | cdn
+    local vantage="$1"
+    local archive="${RECORDS}/${ts}-${vantage}.tar.gz"
+    local log="${RECORDS}/${ts}-${vantage}.log"
+
+    "run_${vantage}" "$log" "$archive"
+    suite_rc=$?
+
+    summary="$(report_json "$archive" | python3 -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -103,95 +176,131 @@ print("build=%s findings=%s accepted=%s stale=%s verified=%s not_assessed=%s" % 
     s.get("stale_baseline_entries", 0), s.get("controls_verified", "?"),
     s.get("not_assessed", "?")))
 ' 2>/dev/null)"
-summary="${summary:-report unreadable}"
+    summary="${summary:-report unreadable}"
 
-# A run that produced no readable report is a failed run even if pytest exited
-# 0: the report is the deliverable, and a silent empty archive would otherwise
-# ping success and leave a zero-byte file as the evidence.
-if [ ! -s "$archive" ] || [ "$summary" = "report unreadable" ]; then
-    [ "$suite_rc" -eq 0 ] && suite_rc=1
-fi
+    # A run that produced no readable report is a failed run even if pytest
+    # exited 0: the report is the deliverable, and a silent empty archive would
+    # otherwise ping success and leave a zero-byte file as the evidence.
+    if [ ! -s "$archive" ] || [ "$summary" = "report unreadable" ]; then
+        [ "$suite_rc" -eq 0 ] && suite_rc=1
+    fi
 
-# Is the report about the build anyone cares about? A green assessment of an
-# artifact that is deployed nowhere is honest and useless at the same time,
-# which is worse than a red one because it looks like coverage.
-#
-# The comparison happens HERE and never on the target. The suite executes on the
-# box under test, so a release lookup performed there would be the deployment
-# whose currency is in question answering the question about itself.
-#
-# A lookup that fails must never redden an assessment - an unreachable third
-# party is not a security finding - so an undeterminable answer is recorded as
-# "unknown" and leaves the exit code alone.
-if [ "$summary" != "report unreadable" ]; then
-    assessed="$(printf '%s' "$summary" | sed -n 's/.*build=\([^ ]*\).*/\1/p')"
-    current="$(curl -fsS -m "$RELEASE_TIMEOUT" --retry 2 \
-        -H 'Accept: application/vnd.github+json' "$RELEASE_API" 2>/dev/null \
-      | python3 -c 'import json,sys
+    # Is the report about the build anyone cares about? A green assessment of
+    # an artifact that is deployed nowhere is honest and useless at the same
+    # time, which is worse than a red one because it looks like coverage.
+    #
+    # The comparison happens HERE and never on the target. The suite executes
+    # on the box under test, so a release lookup performed there would be the
+    # deployment whose currency is in question answering the question about
+    # itself.
+    #
+    # A lookup that fails must never redden an assessment - an unreachable
+    # third party is not a security finding - so an undeterminable answer is
+    # recorded as "unknown" and leaves the exit code alone. Looked up once, so
+    # both vantages are measured against the same release.
+    if [ "$summary" != "report unreadable" ]; then
+        local assessed
+        assessed="$(printf '%s' "$summary" | sed -n 's/.*build=\([^ ]*\).*/\1/p')"
+        if [ -z "$looked_up" ]; then
+            current="$(curl -fsS -m "$RELEASE_TIMEOUT" --retry 2 \
+                -H 'Accept: application/vnd.github+json' "$RELEASE_API" 2>/dev/null \
+              | python3 -c 'import json,sys
 try:
     print(json.load(sys.stdin).get("tag_name") or "")
 except Exception:
     print("")' 2>/dev/null)"
+            looked_up=1
+        fi
 
-    # Keep this in step with RELEASE_TAG_PATTERN in mascope_runtime: a box
-    # piloting a pre-release runs a real release tag, and leaving it out here
-    # would silently disarm the staleness check for the deployments most likely
-    # to be forgotten - a candidate is short-lived by intention, not by
-    # mechanism.
-    release_tag='^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.?[0-9]+)?$'
+        # Keep this in step with RELEASE_TAG_PATTERN in mascope_runtime: a box
+        # piloting a pre-release runs a real release tag, and leaving it out
+        # here would silently disarm the staleness check for the deployments
+        # most likely to be forgotten - a candidate is short-lived by
+        # intention, not by mechanism.
+        local release_tag='^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.?[0-9]+)?$'
 
-    # `sort -V` reads a pre-release suffix as a longer version and orders
-    # v2.0.0-rc.1 ABOVE v2.0.0, which inverts precedence. It does understand
-    # `~` as sorting before everything, so map the suffix onto that: the rc
-    # then ranks below its own release and rc.10 above rc.9.
-    _precedence() { printf '%s' "${1#v}" | sed -E 's/-(alpha|beta|rc)/~\1/'; }
+        local lag=unknown
+        if [[ "$assessed" =~ $release_tag ]] && [[ "$current" =~ $release_tag ]]; then
+            if [ "$assessed" = "$current" ]; then
+                lag=current
+            elif [ "$(printf '%s\n%s\n' "$(_precedence "$assessed")" \
+                      "$(_precedence "$current")" \
+                      | sort -V | tail -1)" = "$(_precedence "$current")" ]; then
+                lag=behind
+            else
+                # Ahead is legitimate: `releases/latest` excludes pre-releases,
+                # so a box piloting a candidate outranks the newest release the
+                # API will name. Recorded, not failed.
+                lag=ahead
+            fi
+        fi
 
-    lag=unknown
-    if [[ "$assessed" =~ $release_tag ]] && [[ "$current" =~ $release_tag ]]; then
-        if [ "$assessed" = "$current" ]; then
-            lag=current
-        elif [ "$(printf '%s\n%s\n' "$(_precedence "$assessed")" \
-                  "$(_precedence "$current")" \
-                  | sort -V | tail -1)" = "$(_precedence "$current")" ]; then
-            lag=behind
+        if [ "$lag" = "current" ]; then
+            summary="${summary} lag=current"
         else
-            # Ahead is legitimate: `releases/latest` excludes pre-releases, so
-            # a box piloting a candidate outranks the newest release the API
-            # will name. Recorded, not failed.
-            lag=ahead
+            summary="${summary} lag=${lag}${current:+ current=${current}}"
+        fi
+
+        # Same class as an unreadable report: the run itself succeeded and the
+        # evidence is not about the artifact anyone wanted assessed. Distinct
+        # exit code so a stale target is never read as a security finding.
+        if [ "$lag" = "behind" ] && [ "$suite_rc" -eq 0 ]; then
+            suite_rc=90
         fi
     fi
 
-    if [ "$lag" = "current" ]; then
-        summary="${summary} lag=current"
-    else
-        summary="${summary} lag=${lag}${current:+ current=${current}}"
-    fi
+    # The summary carries the runner's own verdict - the counts and whether
+    # the target was current - and until this existed only in the heartbeat
+    # ping, i.e. in a third party's UI. Keep a copy beside the archive so an
+    # archived run still states what it concluded, and so the evidence is
+    # readable without leaving this host.
+    printf '%s\n' "$summary" > "${RECORDS}/${ts}-${vantage}.summary"
+}
 
-    # Same class as an unreadable report: the run itself succeeded and the
-    # evidence is not about the artifact anyone wanted assessed. Distinct exit
-    # code so a stale target is never read as a security finding.
-    if [ "$lag" = "behind" ] && [ "$suite_rc" -eq 0 ]; then
-        suite_rc=90
-    fi
+# `sort -V` reads a pre-release suffix as a longer version and orders
+# v2.0.0-rc.1 ABOVE v2.0.0, which inverts precedence. It does understand
+# `~` as sorting before everything, so map the suffix onto that: the rc
+# then ranks below its own release and rc.10 above rc.9.
+_precedence() { printf '%s' "${1#v}" | sed -E 's/-(alpha|beta|rc)/~\1/'; }
+
+assess origin
+origin_rc=$suite_rc origin_summary=$summary
+final_rc=$origin_rc final_summary=$origin_summary
+
+if [ -n "$CDN_TARGET" ]; then
+    sleep "$VANTAGE_GAP"
+    assess cdn
+    cdn_rc=$suite_rc cdn_summary=$summary
+
+    # The comparison reads both reports through file descriptors, so neither
+    # is extracted to disk, and runs the local suite copy's script isolated
+    # (-I) from anything in the working directory. It writes only bounded,
+    # sanitised control ids, outcomes and evidence, and nothing at all when
+    # either report is unreadable.
+    vantages="$(python3 -I "${CDN_SUITE_DIR}/vantage_diff.py" \
+        <(report_json "${RECORDS}/${ts}-origin.tar.gz") \
+        <(report_json "${RECORDS}/${ts}-cdn.tar.gz") \
+        --json "${RECORDS}/${ts}-vantage.json" \
+        --md "${RECORDS}/${ts}-vantage.md" 2>/dev/null)"
+    vantages="${vantages:-comparison unavailable}"
+    final_summary="origin: ${origin_summary} | cdn: ${cdn_summary} | vantages: ${vantages}"
+
+    # Either vantage failing fails the run; the origin's code wins when both
+    # do, as the one that has always been read. A disagreement is not a
+    # failure: the vantages legitimately differ, and the comparison records it.
+    [ "$final_rc" -eq 0 ] && final_rc=$cdn_rc
 fi
 
-# The summary carries the runner's own verdict - the counts and, now, whether
-# the target was current - and until this existed only in the heartbeat ping,
-# i.e. in a third party's UI. Keep a copy beside the archive so an archived run
-# still states what it concluded, and so the evidence is readable without
-# leaving this host. Matches the '*-origin.*' prune glob, so retention is
-# unchanged.
-printf '%s\n' "$summary" > "${RECORDS}/${ts}-origin.summary"
+find "$RECORDS" -maxdepth 1 \
+    \( -name '*-origin.*' -o -name '*-cdn.*' -o -name '*-vantage.*' \) \
+    -mtime +400 -delete 2>/dev/null
 
-find "$RECORDS" -maxdepth 1 -name '*-origin.*' -mtime +400 -delete 2>/dev/null
-
-if [ "$suite_rc" -eq 0 ]; then
-    ping_hc "" "$summary"
+if [ "$final_rc" -eq 0 ]; then
+    ping_hc "" "$final_summary"
 else
     # Only counts and the exit code leave this host. Finding detail stays here:
     # it describes weaknesses in our own deployment and the heartbeat service is
     # a third party.
-    ping_hc "/fail" "suite exit ${suite_rc} | ${summary}"
+    ping_hc "/fail" "suite exit ${final_rc} | ${final_summary}"
 fi
-exit "$suite_rc"
+exit "$final_rc"

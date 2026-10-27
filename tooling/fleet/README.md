@@ -24,6 +24,10 @@ to a fleet server's 443 is answered. This matters to the frontend, which trusts
 `CF-Connecting-IP` relayed through the Docker gateway (the `cloudflare-realip`
 block in `server/frontend/nginx.conf`): a tailnet peer can send that header and
 choose its own rate-limit bucket. The Tailscale ACL, not ufw, decides who can.
+On a server with authenticated origin pulls on (`docs/maintaining.md`, "The
+edge"), 443 answers a tailnet peer 403, as it does anyone without Cloudflare's
+client certificate. The host's own listener, 8443, which asks for none, is
+published on `127.0.0.1` only, so no peer reaches it; `reboot.yml` probes it.
 
 ## One-time setup (WSL on the admin workstation)
 

@@ -21,6 +21,9 @@ just executes where the chemistry dependencies live. The source row records how
 the compounds may be matched - a database at the mirror window, a list
 unbounded - and ``--elements``, ``--max-carbon``, ``--max-mass``,
 ``--allow-radicals`` and ``--polarity`` override it, as they do for the CLI.
+It records the publications the source comes from too - a list file's own
+references - and ``--citation`` with ``--doi`` or ``--isbn`` names one in their
+place.
 
 An MS/MS spectral library loads the same way, its spectra rather than
 compounds, with no window to override:
@@ -46,6 +49,7 @@ from mascope_reference import (
     is_spectrum_source,
 )
 from mascope_reference.ingest import EmptyIngest, SourceKindConflict
+from mascope_reference.peaklist import citation_text, given_citations
 from mascope_reference.scope import UNBOUNDED_TOKEN, scope_of
 
 
@@ -121,10 +125,25 @@ def main() -> None:
             "for a database or a CSV; a list file's own header decides for it."
         ),
     )
+    parser.add_argument(
+        "--citation",
+        help=(
+            "The publication this source comes from, as a reader would cite it; "
+            "give its --doi or --isbn too. Recorded in place of what a list "
+            "file's header cites."
+        ),
+    )
+    parser.add_argument("--doi", help="The DOI of the --citation publication.")
+    parser.add_argument("--isbn", help="The ISBN of the --citation publication.")
     args = parser.parse_args()
 
+    try:
+        citations = given_citations(args.citation, args.doi, args.isbn)
+    except ValueError as error:
+        raise SystemExit(str(error))
+
     if is_spectrum_source(args.source):
-        _sync_spectra(args)
+        _sync_spectra(args, citations)
         return
 
     try:
@@ -167,6 +186,7 @@ def main() -> None:
             prune=args.prune,
             progress=_report_progress,
             scope=scope,
+            citations=citations,
         )
     except SourceKindConflict as error:
         raise SystemExit(str(error))
@@ -179,9 +199,11 @@ def main() -> None:
         f"{result.skipped:,} skipped)."
     )
     runtime.logger.info(f"Matched as: {result.scope.describe()}.")
+    for reference in result.citations:
+        runtime.logger.info(f"Cites: {citation_text(reference)}")
 
 
-def _sync_spectra(args: argparse.Namespace) -> None:
+def _sync_spectra(args: argparse.Namespace, citations: list[dict] | None) -> None:
     """Load a spectral library's dump, as ``main`` does a compound source's."""
     window_flags = {
         "--elements": args.elements,
@@ -221,6 +243,7 @@ def _sync_spectra(args: argparse.Namespace) -> None:
             activate=not args.stage,
             prune=args.prune,
             progress=_report_progress,
+            citations=citations or (),
         )
     except (EmptyIngest, SourceKindConflict) as error:
         raise SystemExit(str(error))

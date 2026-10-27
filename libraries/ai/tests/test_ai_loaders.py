@@ -231,6 +231,75 @@ class TestOtherLoaders:
         ranged = [c[2] for c in api.requests_to(r"samples/s21/peaks")]
         assert sorted((p["t_min"], p["t_max"]) for p in ranged) == [(0, 5), (5, 10)]
 
+    def test_stages_say_they_are_complete_when_no_peak_was_left_out(self, kit):
+        frame = kit.load_peaks_by_stage("s21", [(0, 5), (5, 10)])
+
+        assert frame.complete is True and frame.failures == ()
+
+    def test_a_stage_short_of_peaks_is_not_complete(self, kit, api):
+        api.leave_out(551, {"t_min": 5})
+        api.leave_out(7, {"t_min": 10})
+
+        frame = kit.load_peaks_by_stage("s21", [(0, 5), (5, 10, "wash"), (10, 15)])
+
+        assert frame.complete is False
+        assert frame.n_rows == 3 * ROWS
+        assert [note.where for note in frame.failures] == [
+            {
+                "sample_item_id": "s21",
+                "stage": 1,
+                "stage_name": "wash",
+                "t_min": 5,
+                "t_max": 10,
+                "excluded_peaks": 551,
+            },
+            {
+                "sample_item_id": "s21",
+                "stage": 2,
+                "stage_name": None,
+                "t_min": 10,
+                "t_max": 15,
+                "excluded_peaks": 7,
+            },
+        ]
+        assert {note.error_type for note in frame.failures} == {"TimeseriesNotComputed"}
+        assert frame.failures[0].error.startswith("551 peak(s) left out")
+        assert "load_peaks" in frame.failures[0].error
+        # The server's word stays where it was, beside the notes
+        assert len(frame.warnings) == 2
+        assert "INCOMPLETE" in str(frame)
+
+    def test_a_stage_short_of_peaks_is_noted_beside_a_stage_that_failed(self, kit, api):
+        api.fail("GET", "samples/s21/peaks", 500, {"t_min": 0})
+        api.leave_out(4, {"t_min": 5})
+
+        frame = kit.load_peaks_by_stage("s21", [(0, 5), (5, 10)])
+
+        assert frame.complete is False and frame.n_rows == ROWS
+        assert [(note.where["stage"], note.error_type) for note in frame.failures] == [
+            (0, frame.failures[0].error_type),
+            (1, "TimeseriesNotComputed"),
+        ]
+        assert frame.failures[0].error_type != "TimeseriesNotComputed"
+
+    def test_a_stage_short_of_peaks_stays_incomplete_when_reloaded(self, kit, api):
+        api.leave_out(3)
+        frame = kit.load_peaks_by_stage("s21", [(0, 5)])
+
+        again = kit.session.frame(frame.id)
+        assert again.complete is False and len(again.failures) == 1
+        assert again.failures[0].where["excluded_peaks"] == 3
+
+    def test_an_empty_stage_an_older_server_explains_not_is_incomplete(self, kit, api):
+        api.leave_out(None, {"t_min": 5})
+
+        frame = kit.load_peaks_by_stage("s21", [(0, 5), (5, 10)])
+
+        assert frame.complete is False and frame.n_rows == ROWS
+        (note,) = frame.failures
+        assert note.where["stage"] == 1 and note.where["excluded_peaks"] is None
+        assert note.error.startswith("No peak came back")
+
     def test_stages_cap(self, kit, monkeypatch):
         monkeypatch.setattr(toolkit_module, "ROWS_PER_SAMPLE_ESTIMATE", 1)
         kit.max_workers = 1

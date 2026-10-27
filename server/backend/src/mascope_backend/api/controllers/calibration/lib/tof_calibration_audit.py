@@ -392,6 +392,7 @@ def isotopes_of(
                     "relative_abundance": float(isotope.relative_abundance),
                     "resolution": isotope.resolution,
                     "target_isotope_formula": isotope.target_isotope_formula,
+                    "target_ion_formula": ion_formula[isotope.target_ion_id],
                     "ion_label": _label(
                         ion_formula[isotope.target_ion_id], float(isotope.mz)
                     ),

@@ -553,12 +553,18 @@ def _ensure_secrets() -> None:
     a secret". The critical long-standing secrets are left alone: a missing
     postgres_password or jwt_secret_key is an error to surface, not to replace
     with a fresh value that would break against the existing database or end
-    every session. Existing files are never touched, so this can never rotate a
-    key out from under a running deployment.
+    every session. ``PLACEHOLDER_SECRETS``, which the operator supplies, are
+    created empty, which their features read as "not set up". Existing files
+    are never touched, so this can never rotate a key out from under a running
+    deployment. A new auto-provisioned secret is mode 0600, as `mascope init`
+    writes them (see `create_secret`); a placeholder holds nothing secret and
+    is left at the umask.
     """
-    import secrets as _secrets
-
-    from mascope_cli.cmd.init import AUTO_PROVISIONED_SECRETS
+    from mascope_cli.cmd.init import (
+        AUTO_PROVISIONED_SECRETS,
+        PLACEHOLDER_SECRETS,
+        create_secret,
+    )
 
     secrets_dir = Path(runtime.path(".runtime", "secrets"))
     secrets_dir.mkdir(parents=True, exist_ok=True)
@@ -566,8 +572,14 @@ def _ensure_secrets() -> None:
         target = secrets_dir / name
         if target.exists():
             continue
-        target.write_text(_secrets.token_urlsafe(48) + "\n", encoding="utf-8")
+        create_secret(target)
         runtime.logger.warning(f"Created missing secret: {target}")
+    for name in PLACEHOLDER_SECRETS:
+        target = secrets_dir / name
+        if target.exists():
+            continue
+        target.touch()
+        runtime.logger.info(f"Created an empty placeholder for {target}")
 
 
 # --- Commands ---

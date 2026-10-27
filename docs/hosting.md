@@ -57,7 +57,17 @@ and the checkout.
    head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/jwt_secret_key.txt
    head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/server_owner_secret_key.txt
    head -c 32 /dev/urandom | xxd -p -c 32 > .runtime/secrets/mfa_encryption_key.txt
+   chmod 600 .runtime/secrets/*.txt
    ```
+
+   Compose mounts each secret file into the containers as it is on the host,
+   mode included, so keep them readable by their owner alone: at the usual
+   umask they come out 0644, and every user on the server and every uid in the
+   backend container could read the database password. The backend reads them
+   as the uid its image runs as, so create them as the user with that uid:
+   1000 for the published image (the first user on Ubuntu), or the
+   `MASCOPE_UID` the image was built with. `mascope init` and `mascope prod up`
+   write the secrets they generate 0600 already.
 
    `mascope prod up` generates a missing *newly introduced* secret on its own
    (today that is `mfa_encryption_key.txt`) - the CLI does that, so an existing

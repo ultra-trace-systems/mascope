@@ -14,7 +14,9 @@ here as well.
 """
 
 import importlib
+import os
 import shutil
+import stat
 import subprocess
 
 import pytest
@@ -133,6 +135,20 @@ def test_every_up_shape_creates_a_missing_secret(compose_env, secrets_dir, args)
     assert len(key.read_text(encoding="utf-8").strip()) >= 32
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no owner-only file mode")
+def test_up_creates_a_secret_only_its_owner_can_read(
+    compose_env, secrets_dir, open_umask
+):
+    # Compose mounts the file into the containers with its host mode, so one
+    # written at the umask (0644 here) is readable by every uid in them.
+    compose_env(0)
+
+    prod_main._run_compose(["up", "--detach"])
+
+    mode = stat.S_IMODE((secrets_dir / AUTO_SECRET).stat().st_mode)
+    assert mode == 0o600, f"{AUTO_SECRET} is mode {oct(mode)}"
+
+
 @pytest.mark.parametrize("args", [["build"], ["down"], ["ps"], ["pull"]])
 def test_only_an_up_provisions_secrets(compose_env, secrets_dir, args):
     # Provisioning is scoped to the command that would otherwise fail on a
@@ -145,6 +161,45 @@ def test_only_an_up_provisions_secrets(compose_env, secrets_dir, args):
     prod_main._run_compose(args)
 
     assert not (secrets_dir / AUTO_SECRET).exists(), f"'{args[0]}' wrote a secret"
+
+
+# The operator-supplied file compose needs present to start. Named literally,
+# like AUTO_SECRET, so an emptied PLACEHOLDER_SECRETS cannot pass vacuously.
+PLACEHOLDER_SECRET = "origin_pull_ca.pem"
+
+
+@pytest.mark.parametrize("args", UP_SHAPES, ids=lambda a: " ".join(a))
+def test_every_up_shape_creates_the_placeholder_empty(compose_env, secrets_dir, args):
+    # A deployment from before origin pulls has no CA file, and compose would
+    # refuse to recreate the frontend without it. Empty, never invented: the
+    # CA is the operator's, and an empty one reads as "origin pulls not set up".
+    compose_env(0)
+
+    prod_main._run_compose(args)
+
+    ca = secrets_dir / PLACEHOLDER_SECRET
+    assert ca.is_file(), f"'{' '.join(args)}' did not create {PLACEHOLDER_SECRET}"
+    assert ca.read_bytes() == b""
+
+
+def test_up_never_overwrites_the_operator_supplied_ca(compose_env, secrets_dir):
+    compose_env(0)
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+    ca = secrets_dir / PLACEHOLDER_SECRET
+    ca.write_bytes(b"-----BEGIN CERTIFICATE-----\n")
+
+    prod_main._run_compose(["up", "--detach"])
+
+    assert ca.read_bytes() == b"-----BEGIN CERTIFICATE-----\n"
+
+
+@pytest.mark.parametrize("args", [["build"], ["down"], ["ps"], ["pull"]])
+def test_only_an_up_creates_the_placeholder(compose_env, secrets_dir, args):
+    compose_env(0)
+
+    prod_main._run_compose(args)
+
+    assert not (secrets_dir / PLACEHOLDER_SECRET).exists(), f"'{args[0]}' wrote it"
 
 
 def test_up_never_invents_a_long_standing_secret(compose_env, secrets_dir):

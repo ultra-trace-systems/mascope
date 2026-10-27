@@ -57,6 +57,20 @@ def cli_runner():
     return CliRunner()
 
 
+@pytest.fixture
+def open_umask():
+    """
+    The common 022 umask for one test, put back after it.
+
+    A file created at this umask without a mode of its own comes out 0644,
+    readable by everyone, so a test of a file's mode cannot pass only because
+    the runner happened to have a tighter umask.
+    """
+    previous = os.umask(0o022)
+    yield
+    os.umask(previous)
+
+
 @pytest.fixture(autouse=True)
 def _reset_cli_state(monkeypatch):
     """

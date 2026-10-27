@@ -232,6 +232,84 @@ def check_raw_coverage(
     return problems
 
 
+def check_ms2_kept(
+    prior_ms2_files: list[str] | None,
+    raw_entries: list[dict],
+    ms2_filenames: "set[str] | list[str]",
+) -> tuple[list[str], list[str]]:
+    """
+    Check that a refresh keeps the MS2 goldens the prior manifest recorded.
+
+    The export writes an ``ms2`` block only when it reads spectra, and a
+    refresh replaces the whole ``expected`` block. So a rebuild whose MS2 file
+    lost its scan census (no fragmentation polarity, so no spectrum read) would
+    write a manifest without MS2 goldens, while the file stays covered through
+    its MS1 peaks; ``mascope demo verify`` and the reproducibility test then
+    skip the MS2 comparison without a word. This refuses that, file by file,
+    keyed as :func:`check_raw_coverage` keys them.
+
+    A file the prior MS2 goldens covered that is no longer in the bundle's raw
+    set is not a loss but a deliberate change of the raw set: it is returned
+    apart, for the caller to log.
+
+    :param prior_ms2_files: The distinct filenames of the prior ``ms2`` golden,
+                            ``[]`` when the prior manifest records an ``ms2``
+                            block whose file cannot be read, or ``None`` when
+                            it records none.
+    :param raw_entries: The manifest ``raw`` block of this run.
+    :param ms2_filenames: The distinct filenames this run exported spectra of.
+    :return: ``(problems, dropped)``: human-readable problem descriptions
+             (empty means the MS2 goldens are kept), and the prior MS2 files
+             that left the raw set.
+    """
+    if prior_ms2_files is None:
+        return [], []
+    in_raw = {_acquisition_key(entry["name"]) for entry in raw_entries}
+    now = {_acquisition_key(name) for name in ms2_filenames}
+    lost = [
+        n
+        for n in prior_ms2_files
+        if _acquisition_key(n) in in_raw and _acquisition_key(n) not in now
+    ]
+    dropped = [n for n in prior_ms2_files if _acquisition_key(n) not in in_raw]
+
+    problems = []
+    if lost:
+        problems.append(
+            f"{len(lost)} raw file(s) the prior MS2 goldens covered produced no "
+            f"MS2 spectra in this run: {_sample(lost)}"
+        )
+    elif not prior_ms2_files and not now:
+        problems.append(
+            "the prior manifest records MS2 goldens (its ms2 file could not be "
+            "read) and this run exported no MS2 spectra"
+        )
+    return problems, dropped
+
+
+def _prior_ms2_files(out_dir: Path, prior_expected: dict | None) -> list[str] | None:
+    """
+    The distinct filenames of the prior manifest's ``ms2`` golden.
+
+    :param out_dir: Bundle output directory, which holds the prior goldens.
+    :param prior_expected: The prior manifest's ``expected`` block, if any.
+    :return: ``None`` when it records no ``ms2`` block, ``[]`` when the block's
+             file is missing or unreadable, else the filenames, sorted.
+    """
+    import pandas as pd
+
+    if not prior_expected or not prior_expected.get("ms2"):
+        return None
+    try:
+        frame = pd.read_parquet(out_dir / prior_expected["ms2"], columns=["filename"])
+    except Exception as exc:  # noqa: BLE001 - any unreadable file is "unknown"
+        runtime.logger.warning(
+            f"Cannot read the prior MS2 golden {prior_expected['ms2']}: {exc}"
+        )
+        return []
+    return sorted(set(frame["filename"]))
+
+
 def _deidentify_name(
     name: str, aliases: dict[str, str] | None = None
 ) -> tuple[str, dict[str, str]]:
@@ -578,7 +656,9 @@ def export_snapshot(out_dir: Path) -> dict:
     }
 
 
-def export_goldens(out_dir: Path, raw_entries: list[dict]) -> dict | None:
+def export_goldens(
+    out_dir: Path, raw_entries: list[dict], prior_expected: dict | None = None
+) -> dict | None:
     """
     Export golden peak outputs for the reproducibility test.
 
@@ -608,10 +688,16 @@ def export_goldens(out_dir: Path, raw_entries: list[dict]) -> dict | None:
     :param out_dir: Bundle output directory.
     :param raw_entries: The manifest ``raw`` block - the set of files the
                         goldens must cover.
+    :param prior_expected: The prior manifest's ``expected`` block on a
+                           refresh. When it records MS2 goldens, this run must
+                           export spectra for every file they covered that is
+                           still in ``raw_entries`` (:func:`check_ms2_kept`).
     :return: The manifest ``expected`` block, or ``None`` if no peaks have been
              matched yet (logged as a warning so ``--update`` still records the
              snapshot rather than aborting).
-    :raises RuntimeError: If the demo database does not cover ``raw_entries``.
+    :raises RuntimeError: If the demo database does not cover ``raw_entries``,
+                          or if this run would drop MS2 goldens of a file
+                          still in the raw set.
     """
     import pandas as pd
 
@@ -655,6 +741,29 @@ def export_goldens(out_dir: Path, raw_entries: list[dict]) -> dict | None:
         )
         return None
 
+    # A refresh replaces the whole `expected` block, so MS2 goldens this run
+    # did not read would vanish from the manifest with nothing to say so.
+    # Checked before anything is written, so the prior goldens stay in place.
+    ms2_problems, ms2_dropped = check_ms2_kept(
+        _prior_ms2_files(out_dir, prior_expected),
+        raw_entries,
+        {row["filename"] for row in ms2_rows},
+    )
+    if ms2_problems:
+        raise RuntimeError(
+            "Refusing to write expected/ goldens: this run would drop MS2 "
+            "goldens the bundle had.\n"
+            + "\n".join(f"  - {p}" for p in ms2_problems)
+            + "\nCheck that the MS2 file's scan census was recorded on the "
+            "rebuild (its fragmentation scans are read by polarity), then "
+            "re-run --update."
+        )
+    if ms2_dropped:
+        runtime.logger.warning(
+            f"Dropping the MS2 goldens of {len(ms2_dropped)} file(s) no longer "
+            f"in the raw set: {_sample(ms2_dropped)}"
+        )
+
     dest_dir = out_dir / "expected"
     dest_dir.mkdir(parents=True, exist_ok=True)
     peaks_path = dest_dir / "peaks.parquet"
@@ -682,6 +791,11 @@ def export_goldens(out_dir: Path, raw_entries: list[dict]) -> dict | None:
         )
         expected["ms2"] = "expected/ms2.parquet"
         expected["ms2_sha256"] = bundles.sha256_file(ms2_path)
+    elif ms2_dropped:
+        runtime.logger.warning(
+            "The bundle had MS2 goldens and is written without them: none of "
+            "its files with MS2 spectra is in the raw set any more."
+        )
 
     # Per-ION scores: this is the level the consolidated v2 match score operates at
     # (the per-isotopologue peaks.parquet above is unchanged by it).
@@ -738,8 +852,10 @@ def build(
     :raises FileNotFoundError: If ``raw_dir`` is given but missing, or if it is
         omitted and the bundle has no raw set to reuse.
     :raises RuntimeError: If ``update`` is set and the demo database does not
-        cover the bundle's raw set (see :func:`check_raw_coverage`); neither the
-        goldens nor the snapshot are written in that case.
+        cover the bundle's raw set (see :func:`check_raw_coverage`), or if it
+        would drop MS2 goldens the prior manifest had for a file still in the
+        raw set (see :func:`check_ms2_kept`); neither the goldens nor the
+        snapshot are written in that case.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     alias_map = {**INSTRUMENT_ALIASES, **(aliases or {})}
@@ -812,7 +928,7 @@ def build(
         # snapshot in place, rather than a fresh one the unwritten manifest
         # does not point at.
         # Keep any prior goldens (copied above) if this run matched nothing.
-        expected = export_goldens(out_dir, raw_entries)
+        expected = export_goldens(out_dir, raw_entries, prior.get("expected"))
         manifest["snapshot"] = export_snapshot(out_dir)
         if expected is not None:
             manifest["expected"] = expected

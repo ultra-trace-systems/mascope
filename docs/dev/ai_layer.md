@@ -582,7 +582,7 @@ answered wrongly, failed, or **not answerable**: a solver raises
   why, and the session ends with the run's report. `uv run python
   libraries/ai/tests/ai_golden.py run --url ...` prints the same report
   without pytest; `list` prints the table below.
-- **Reference values.** The answers are those of demo bundle 1.4.1, the
+- **Reference values.** The answers are those of demo bundle 1.4.2, the
   registry's default, which CI's stack loads. The numbers come from the
   bundle's goldens (`expected/peaks.parquet`, `expected/ions.parquet`).
   Where a question can be checked against them, a hermetic test holds the
@@ -600,15 +600,21 @@ answered wrongly, failed, or **not answerable**: a solver raises
   acquisitions, its samples' distinct names. A solver that names one sample
   looks for it within its batch and takes the one recorded first. The
   analysis questions group by sample name.
-- **What the surface cannot answer** (2026-10-26): M8. `describe` names no
-  ionization mode or mechanism of a batch or a sample, so the
-  interpretation solvers take a sample's mechanisms from its stored matches
+- **What the surface could not answer** (2026-10-26): M8. `describe` named
+  no ionization mode or mechanism of a batch or a sample, so the
+  interpretation solvers took a sample's mechanisms from its stored matches
   ([#2635](https://github.com/ultra-trace-systems/mascope/issues/2635)).
-  Building A5 also found that a stage load leaves out the peaks whose time
-  series was never computed, while its Frame still says it is complete. The
+  Now `describe` of a sample names its mode and the mode's mechanisms, and
+  of a batch the modes of its samples, each with its mechanisms; M8 is
+  answered, and I1 and I2 take their mechanisms from it. Building A5 also
+  found that a stage load leaves out the peaks whose time series was never
+  computed. Its Frame says so: it is incomplete, with a
+  `TimeseriesNotComputed` failure per stage that counts the peaks left out
+  ([#2636](https://github.com/ultra-trace-systems/mascope/issues/2636)). The
   surface cannot compute an unmatched peak's series
-  ([#2636](https://github.com/ultra-trace-systems/mascope/issues/2636)), so
-  A5 asks for its target's series before the stage.
+  ([#2704](https://github.com/ultra-trace-systems/mascope/issues/2704)), so
+  A5 asks for its target's series before the stage and accepts the failures
+  of the other peaks.
 - **The model in the loop** is a separate, manual check: a coding agent
   given the toolkit and `ai_golden.py prompts`. Its transcript is kept
   under [`libraries/ai/tests/golden_transcripts/`](../../libraries/ai/tests/golden_transcripts/README.md),
@@ -628,14 +634,14 @@ answered wrongly, failed, or **not answerable**: a solver raises
 | M5 | metadata | Over what time span was the 2025 uronium batch measured? | 2025-08-11 11:23:12 to 13:00:32 UTC | `describe`, `resolve` |
 | M6 | metadata | Which batches have 'Uronium' in their name? | the 2025-08-11 uronium and the 2026-10-15 Uronium RI acquisitions | `find` |
 | M7 | metadata | How many compounds does the Uronium monitor collection have? | 50 | `describe`, `resolve` |
-| M8 | metadata | Which ionization mode and mechanisms do the 2025 bromide batch's samples use? | Bromide m/z 82-750: [M+Br]- and [M-H]- | `describe`, `find`, `resolve` |
+| M8 | metadata | Which ionization mode and mechanisms do the 2025 bromide batch's samples use? | Bromide m/z 82-750: [M+Br]- and [M-H]- | `describe`, `resolve` |
 | A1 | analysis | When did C10H16O2's protonated ion (C10H17O2+) peak in the 2025 uronium batch's time series, and how high? | at the 14:34:03 sample, height 1.176e6 | `derive`, `load_timeseries`, `resolve` |
 | A2 | analysis | In the 2025 bromide batch, what is formic acid's signal (CH2BrO2-) normalised to the reagent ion Br3- (its [81Br]Br2- line): its mean, and its maximum and where? | mean 0.0959 over 80 samples, maximum 0.1074 at 15:21:13 | `derive`, `load_peaks`, `resolve` |
 | A3 | analysis | How far above its background did C10H17O2+ rise in the 2025 uronium batch, the background being the mean of the batch's first five samples? | 1.130e6 above a background of 4.59e4, at 14:34:03 | `derive`, `load_peaks`, `resolve` |
 | A4 | analysis | Where is the apex of the 14:34:03 uronium sample's spectrum between m/z 169.10 and 169.15, how intense is it, and how many points has the window? | m/z 169.1222 at 1.166e6, near the fitted peak; 102 points in the window | `find`, `load_spectrum`, `resolve` |
 | A5 | analysis | Read as one stage over its whole acquisition, how high is C10H17O2+ in the 14:34:03 uronium sample? | 1.176e6, the averaged peak list's height | `describe`, `find`, `load_peaks_by_stage`, `load_timeseries`, `resolve` |
-| I1 | interpretation | What is the peak at m/z 124.9244 in the bromide sample measured at 14:34:57? | formic acid, CH2O2 as CH2BrO2- [M+Br]-, probable; the 13C-labelled suggestion unscored | `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |
-| I2 | interpretation | What is the peak at m/z 169.1223 in the uronium sample measured at 14:34:03? | C10H16O2 as C10H17O2+ [M+H]+, probable; three other candidates unmatched; the numeric-mass suggestion unscored | `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |
+| I1 | interpretation | What is the peak at m/z 124.9244 in the bromide sample measured at 14:34:57? | formic acid, CH2O2 as CH2BrO2- [M+Br]-, probable; the 13C-labelled suggestion unscored | `describe`, `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |
+| I2 | interpretation | What is the peak at m/z 169.1223 in the uronium sample measured at 14:34:03? | C10H16O2 as C10H17O2+ [M+H]+, probable; three other candidates unmatched; the numeric-mass suggestion unscored | `describe`, `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |
 
 <!-- golden questions: end -->
 
@@ -880,6 +886,8 @@ carries its user's rights, no more.
 | `describe` batch | `GET /api/sample/batches/{id}` | batch guest | **opened** |
 | `describe` batch: its collections | `GET /api/target/associations/target_collections_in_sample_batch` | batch or collection guest | **opened** |
 | `describe` sample | `GET /api/samples/{id}` | sample guest | yes |
+| `describe` batch and sample: the modes | `GET /api/ionization/modes` | global guest | yes |
+| `describe` batch and sample: the modes' mechanisms | `GET /api/ionization_mechanisms` | global guest | yes |
 | `describe` collection | `GET /api/target/collections/{id}` | collection guest | **opened** |
 | `load_peaks`, `load_peaks_by_stage` | `GET /api/samples/{id}/peaks` | sample guest | yes |
 | `load_timeseries` | `POST /api/samples/{id}/peaks/timeseries` | sample guest | yes |

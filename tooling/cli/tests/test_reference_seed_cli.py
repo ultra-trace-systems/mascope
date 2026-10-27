@@ -32,7 +32,8 @@ CREATE TABLE reference_source (
     known_window JSON,
     allow_radicals BOOLEAN,
     polarity TEXT,
-    kind TEXT
+    kind TEXT,
+    citations JSON
 )
 """
 

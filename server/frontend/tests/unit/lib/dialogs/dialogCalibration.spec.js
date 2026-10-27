@@ -320,6 +320,97 @@ describe('DialogCalibration', () => {
     expect(headers(wrapper)[0]).toBe('Isotope m/z')
   })
 
+  it('lists every line a TOF fit chose from, the ones it left out included', () => {
+    // The fit kept two lines and left the third out; its own rows are the
+    // two it kept and its summary
+    const points = [
+      {
+        ion: 'NO3-',
+        target_mz: 61.98837,
+        observed_mz: 61.98394,
+        residual_ppm: 0.4,
+        snr: 310.2,
+        retained: true
+      },
+      {
+        ion: 'HN2O6-',
+        target_mz: 124.9887,
+        observed_mz: 124.97953,
+        residual_ppm: -0.3,
+        snr: 64.0,
+        retained: true
+      },
+      {
+        ion: 'H2N3O9-',
+        target_mz: 187.98402,
+        observed_mz: 187.97716,
+        residual_ppm: 38.6,
+        snr: 21.4,
+        retained: false
+      }
+    ]
+    mocks.fit = fitted({ n_points: 2, points, span: [61.98837, 124.9887] }, [
+      point({ mz: 61.98837, sample_peak_mz: 61.98394, calibrant_to_tic: 0.0712 }),
+      point({ mz: 124.9887, sample_peak_mz: 124.97953, calibrant_to_tic: 0.0034 }),
+      SUMMARY
+    ])
+
+    const wrapper = mountDialog()
+    const rows = wrapper.findComponent({ name: 'DataTable' }).props('value')
+    const column = (header) =>
+      wrapper
+        .findAllComponents({ name: 'Column' })
+        .find((found) => found.props('header') === header)
+        .findAll('span > span')
+        .map((cell) => cell.text())
+
+    expect(headers(wrapper)).toEqual([
+      'Ion',
+      'Isotope m/z',
+      'Observed m/z',
+      'Pre-calibration error [ppm]',
+      'Calibrated m/z',
+      'Post-calibration error [ppm]',
+      'Error Δ [ppm]',
+      'S/N',
+      'Fraction of TIC',
+      'In fit'
+    ])
+    expect(rows.map((row) => row.type)).toEqual(['point', 'point', 'point', 'summary'])
+    expect(column('Ion')).toEqual(['NO3-', 'HN2O6-', 'H2N3O9-', '-'])
+    // An ion's formula stays on one line
+    expect(wrapper.findAll('.ion-cell').map((cell) => cell.text())).toEqual([
+      'NO3-',
+      'HN2O6-',
+      'H2N3O9-'
+    ])
+    expect(column('Post-calibration error [ppm]')).toEqual(['0.40', '-0.30', '38.60', '0.60'])
+    expect(column('S/N')).toEqual(['310', '64', '21', '-'])
+    expect(column('In fit')).toEqual(['yes', 'yes', 'left out', '-'])
+    // A kept line's share of the TIC is the fit's own row's, and a line left
+    // out has none
+    expect(column('Fraction of TIC')).toEqual(['7.12%', '0.34%', '-', '1.00%'])
+    // The line left out reads as such, every cell of it
+    expect(wrapper.findAll('.left-out-cell').map((cell) => cell.text())).toContain('H2N3O9-')
+    expect(wrapper.findAll('.left-out-cell')).toHaveLength(9)
+    expect(wrapper.find('.summary-cell').exists()).toBe(true)
+    expect(wrapper.findComponent({ name: 'DataTable' }).text()).not.toContain('NaN')
+  })
+
+  it('shows a fit that lists no points by the rows it sent, as before', () => {
+    // An Orbitrap fit, or a TOF fit from a server older than the points
+    mocks.fit = fitted({ n_points: 2 }, [point(), point({ mz: 80.0 }), SUMMARY])
+
+    const wrapper = mountDialog()
+    const rows = wrapper.findComponent({ name: 'DataTable' }).props('value')
+
+    expect(headers(wrapper)).not.toContain('Ion')
+    expect(headers(wrapper)).not.toContain('In fit')
+    expect(rows.map((row) => row.type)).toEqual(['stat', 'stat', 'summary'])
+    expect(wrapper.findAll('.summary-cell').length).toBeGreaterThan(0)
+    expect(wrapper.find('.left-out-cell').exists()).toBe(false)
+  })
+
   it('waits on a fit under way, and on none that warned before it had calibrants', () => {
     mocks.fit = fitted(null, null)
     mocks.fit.current = null

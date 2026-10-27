@@ -16,6 +16,10 @@ export const num = {
     maximumFractionDigits: 2,
     signDisplay: 'exceptZero'
   }),
+  // 310, the whole number: a signal-to-noise ratio
+  signalToNoise: new Intl.NumberFormat('en-US', {
+    maximumFractionDigits: 0
+  }),
   peakIntensity: new Intl.NumberFormat('en-US', {
     notation: 'scientific',
     minimumSignificantDigits: 4,

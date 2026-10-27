@@ -57,7 +57,12 @@ def _peaks(mz_and_height: list[tuple[float, float]]) -> xr.DataArray:
     return xr.DataArray(
         np.repeat(heights[:, np.newaxis], 3, axis=1),
         dims=("mz", "time"),
-        coords={"mz": mzs, "tof": ("mz", np.zeros(mzs.size)), "time": np.arange(3.0)},
+        coords={
+            "mz": mzs,
+            "tof": ("mz", np.zeros(mzs.size)),
+            "signal_to_noise": ("mz", np.full(mzs.size, 100.0)),
+            "time": np.arange(3.0),
+        },
     )
 
 

@@ -1062,6 +1062,7 @@ async def _answered(segments, correction=2.0):
     handler = SimpleNamespace(
         fit=AsyncMock(),
         segments=segments,
+        fitted_on=None,
         to_dict=lambda: {
             "fit": _fit(file=1 + correction * 1e-6),
             "stats": [point, summary],

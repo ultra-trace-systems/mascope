@@ -29,9 +29,16 @@
  * (`@/lib/calibrationSegments`); the badge of an applied fit names the ranges
  * that were not fitted on calibrants of their own and take a neighbouring
  * range's calibration.
+ *
+ * A TOF fit's record also says what it was fitted on (`@/lib/calibrationPoints`):
+ * every calibrant line it chose from in `quality.points`, the m/z span of the
+ * lines it kept in `quality.span`, and the calibration collection's version,
+ * the model and the node's version. The badge names the span; a record from
+ * before these keys, and an Orbitrap one, says what it always did.
  */
 
 import { carriedSegmentsText } from '@/lib/calibrationSegments'
+import { calibrationSpanText } from '@/lib/calibrationPoints'
 
 const ppm = (value) => (value === null || value === undefined ? null : `${value.toFixed(2)} ppm`)
 
@@ -107,9 +114,10 @@ export function calibrationStatus(mzCalibration) {
   }
 
   const quality = mzCalibration.quality
+  const span = calibrationSpanText(mzCalibration)
   const detail = quality
     ? [
-        `${quality.n_points} point${quality.n_points === 1 ? '' : 's'}`,
+        `${quality.n_points} point${quality.n_points === 1 ? '' : 's'}${span ? ` over ${span}` : ''}`,
         quality.pre_fit_mz_error_ppm != null
           ? `${ppm(quality.pre_fit_mz_error_ppm)} → ${
               ppm(quality.post_fit_mz_error_ppm) ?? '?'

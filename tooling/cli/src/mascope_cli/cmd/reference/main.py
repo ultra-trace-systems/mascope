@@ -11,7 +11,9 @@ Each source row also records how its compounds may be matched - its window, its
 radical allowance and its polarity (``mascope_reference.scope``). A database
 mirror loads at the mirror window and a list loads unbounded; ``sync``'s
 ``--elements``, ``--max-carbon``, ``--max-mass``, ``--allow-radicals`` and
-``--polarity`` override either.
+``--polarity`` override either. It records the publications the source comes
+from as well: a list file's own references, or the one ``sync``'s
+``--citation`` with ``--doi`` or ``--isbn`` names.
 
 ``sync`` loads the MS/MS spectral libraries (``massbank``, ``mona``, ``gnps``)
 the same way, as versioned loads of spectra rather than compounds. They have
@@ -45,7 +47,11 @@ from mascope_reference.ingest import (
     SourceKindConflict,
     deactivate,
 )
-from mascope_reference.peaklist import admitted_species
+from mascope_reference.peaklist import (
+    admitted_species,
+    citation_text,
+    given_citations,
+)
 from mascope_reference.schema import (
     COMPOUND_KIND,
     SPECTRUM_KIND,
@@ -249,6 +255,26 @@ def sync(
             ),
         ),
     ] = None,
+    citation: Annotated[
+        Optional[str],
+        typer.Option(
+            "--citation",
+            help=(
+                "The publication this source comes from, as a reader would cite "
+                "it; give its --doi or --isbn too. Recorded on the source row in "
+                "place of what a list file's header cites. Default: a list "
+                "file's references; nothing for a database or a CSV."
+            ),
+        ),
+    ] = None,
+    doi: Annotated[
+        Optional[str],
+        typer.Option("--doi", help="The DOI of the --citation publication."),
+    ] = None,
+    isbn: Annotated[
+        Optional[str],
+        typer.Option("--isbn", help="The ISBN of the --citation publication."),
+    ] = None,
     yes: Annotated[
         bool,
         typer.Option(
@@ -264,6 +290,13 @@ def sync(
     window, radical and polarity flags are a compound source's and are refused
     for it.
     """
+    try:
+        citations = given_citations(citation, doi, isbn)
+    except ValueError as error:
+        # Refused before the prompt: a citation that cannot be followed would
+        # otherwise be found out only once the load is serving.
+        runtime.logger.error(str(error))
+        raise typer.Exit(1) from None
     if is_spectrum_source(source):
         flags = {
             "--elements": elements,
@@ -290,6 +323,7 @@ def sync(
             batch_size=batch_size,
             prune=prune,
             stage=stage,
+            citations=citations,
         )
         return
 
@@ -334,6 +368,7 @@ def sync(
             prune=prune,
             progress=_progress,
             scope=scope,
+            citations=citations,
         )
     except (EmptyIngest, SourceKindConflict) as error:
         # The mirror is untouched - report why rather than leaving the operator to
@@ -349,6 +384,8 @@ def sync(
         f"{result.skipped:,} skipped)."
     )
     runtime.logger.info(f"Matched as: {result.scope.describe()}.")
+    for reference in result.citations:
+        runtime.logger.info(f"Cites: {citation_text(reference)}")
     if stage:
         runtime.logger.info(
             f"Load staged (inactive). Expose it with: mascope reference activate "
@@ -391,6 +428,7 @@ def _sync_spectra(
     batch_size: int,
     prune: bool,
     stage: bool,
+    citations: list[dict] | None,
 ) -> None:
     """Load a spectral library's dump, as `sync` does a compound source's."""
     adapter = get_spectrum_adapter(source)
@@ -414,6 +452,7 @@ def _sync_spectra(
             activate=not stage,
             prune=prune,
             progress=_progress,
+            citations=citations or (),
         )
     except (EmptyIngest, SourceKindConflict) as error:
         runtime.logger.error(str(error))
@@ -654,8 +693,8 @@ def seed(
     for outcome in outcomes:
         if not outcome.loaded:
             refreshed = (
-                "; its window, radical allowance and polarity were brought up to "
-                "date with the list"
+                "; its row was brought up to date with what the list says of its "
+                "window, radical allowance, polarity and citations"
                 if outcome.refreshed
                 else ""
             )

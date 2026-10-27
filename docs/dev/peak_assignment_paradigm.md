@@ -3,8 +3,8 @@
 # Peak-Centric Assignment: Design & Implementation Plan
 
 - **Status:** built
-- **As of:** 2026-10-22
-- **Tracked in:** closed; the phase 4 leftovers are MAS-61 and MAS-229, the "fold targeted in" of phase 5 is MAS-162 and MAS-80
+- **As of:** 2026-10-27
+- **Tracked in:** closed; the phase 4 leftovers are MAS-61 and MAS-229, the "fold targeted in" of phase 5 is MAS-80 (its path is §5.4, decided under MAS-162)
 - **What:** The shift from target-anchored matching to assigning every peak, and how the engine is operated.
 
 ## Purpose
@@ -309,6 +309,78 @@ peak fields onto `PeakAssignment` exactly as `MatchIsotope` already does -
 avoiding a heavy peak-table import.
 
 ---
+
+### 5.4 Convergence: the fold, not a scorer flip
+
+*Decided 2026-10-27 (decision D2 of
+[`ux_review_2026_10.md`](ux_review_2026_10.md) §4.4, MAS-162): the targeted
+workflow converges on the peak-centric path by the fold of §5.1 - a target
+match becomes a Stage A ledger row - and not by re-scoring the legacy pipeline
+in place.*
+
+A target ion is scored twice today. The legacy matcher aggregates its
+per-isotopologue `abundance_term * mz_term` into the ion's `match_score` and
+cuts `match_category` off it at the 0.7/0.8 bands of
+[params.py](../../libraries/match/src/mascope_match/params.py); the engine's
+Stage A runs the same `compute_match_isotopes` and `apply_match_params` gating
+and then scores the ion with `ion_score_v2`, the fit score
+([fit_score.md](../../libraries/tools/docs/fit_score.md)), at the sample's
+fitted mass width. The legacy path can already be scored with the fit -
+`MASCOPE_MATCH_SCORE_VERSION=2`
+([match_score_v2.py](../../server/backend/src/mascope_backend/api/controllers/match/lib/match_score_v2.py)),
+with the lower bands `params.py` keeps for it - so flipping it is cheap to
+switch on, and was considered as the convergence. It is not, for four reasons,
+each of them work the fold deletes:
+
+- **Stored scores stay on the v1 scale.** `match_ion`, `match_compound`,
+  `match_collection` and `match_sample` persist `match_score`; nothing
+  re-aggregates them but a rematch of every batch, so a flipped deployment
+  mixes the two scales until it has done one.
+- **Per-ion thresholds outrank the version.** `TargetIon.filter_params`
+  carries the probable/possible thresholds a user set per instrument against
+  v1 numbers, and `set_ions_match_category`
+  ([match_aggregate.py](../../server/backend/src/mascope_backend/api/controllers/match/lib/match_aggregate.py))
+  lets them win over the version-aware defaults - v1 cutoffs over v2 scores,
+  silently.
+- **The frontend's bands do not know the version.** `MatchParams` defaults
+  to 0.7/0.8 whatever the switch says; the match-parameter drawer seeds from
+  those defaults and `uiCategory` in
+  [params.js](../../server/frontend/src/stores/data/modules/match/params.js)
+  recomputes the category client-side from them.
+- **A tier is not a re-banded category.** The tier reads evidence, `fit x
+  plausibility` (`tier_for_evidence`), after the mass gate, the cross-channel
+  pass and the rival rule, and records `tier_reasons`; none of that exists in
+  the legacy aggregator. Giving the Match tab a tier means running Stage A and
+  the tiering pass over its targets, which is the fold.
+
+The path:
+
+1. **Once peak assignment is on by default** (MAS-80, after the stage 3 gate,
+   MAS-60) the targeted surfaces read the ledger: a target match is the
+   ledger row with `target_compound_id IS NOT NULL`, showing `fit_score` and
+   the tier. `match_category` survives as a mapping - assigned 2, candidate 1,
+   otherwise 0 - wherever the SDK and the batch spreadsheet still need it. A
+   level for the classic Match compounds sheet and claims on match ions wait
+   for this step (MAS-361, MAS-362), as they were decided to.
+2. **The aggregation stops being written.** `match_isotope` stays, as the
+   Stage A frame it already is; the ion, compound, collection and sample
+   aggregates and the Match tab go in the release after step 1, once the
+   match-parameter drawer and *Rate Match* have a home in the assignment
+   layout ([peak_assignment_frontend.md](peak_assignment_frontend.md),
+   "Retirement path"). Which release that is is set when MAS-80 has one.
+3. **Deployments with the flag off keep v1 unchanged.** The switch stays as
+   the A/B instrument and nothing else; its default is not flipped, and the
+   user docs keep describing v1 until step 2 removes it.
+4. **The legacy path is frozen meanwhile**: correctness fixes only, no medium
+   work on the targeted view. This presumes MAS-83 is answered *frozen* or
+   *retired*, not *maintained*; that call is still the owner's.
+
+What the fold changes for a targeted user, accepted here: a curated target
+whose envelope fits can sit at *candidate* when an untargeted rival lies
+inside the mass width (step 2.5f of the
+[assignment quality plan](assignment_quality_plan.md)), where the matcher
+called it *probable*. The rival is named in the reasons, and a verification
+verdict overrides the tier.
 
 ## 6. Scope summary
 

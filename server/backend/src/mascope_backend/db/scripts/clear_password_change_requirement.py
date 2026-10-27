@@ -10,6 +10,12 @@ Accounts whose password an administrator reset keep that administrator-issued
 password, so clearing the requirement leaves it in place. Reset those accounts
 again instead of clearing them here.
 
+Open sessions hear of it as they do of the requirement itself: each released
+account's tab is told on its own ``user-{id}`` room that it no longer owes a
+password change, and leaves the password screen; open user-management tables
+are told to reload. When Redis cannot be reached, nothing is sent and a held
+tab leaves the password screen when it is reloaded.
+
 Set MASCOPE_CLEAR_PASSWORD_CHANGE_EMAILS to a comma-separated list of addresses
 to release only those accounts; every account is released when it is unset.
 
@@ -82,11 +88,37 @@ async def run_clear() -> None:
     )
 
     result = await clear_password_change_requirement(emails)
+    data = result["data"]
+    await notify_open_sessions(data["user_ids"])
 
     runtime.logger.info("=" * 80)
     runtime.logger.info("PASSWORD CHANGE REQUIREMENT WITHDRAWN")
-    runtime.logger.info(f"Accounts released: {result['data']['cleared_count']}")
+    runtime.logger.info(f"Accounts released: {data['cleared_count']}")
+    runtime.logger.info(
+        "Open sessions leave the password screen at once, unless Redis could "
+        "not be reached (reported above); then they leave it when reloaded."
+    )
     runtime.logger.info("=" * 80)
+
+
+async def notify_open_sessions(user_ids: list[int]) -> None:
+    """
+    Tell the open tabs of the accounts just released, as arming them did.
+
+    Without it a tab held at the password screen stays there until it is
+    reloaded, and its sockets stay out of the signed-in room the arming
+    evicted them from.
+
+    :param user_ids: The accounts released.
+    """
+    # Imported here, not at the top: importing the socket package builds the
+    # Socket.IO server from the Redis configuration, and the CLI imports this
+    # script on the host to list it, where that configuration may be absent.
+    from mascope_backend.socket.password_change import (
+        notify_password_change_from_script,
+    )
+
+    await notify_password_change_from_script(user_ids, required=False)
 
 
 def main() -> None:

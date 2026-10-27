@@ -77,3 +77,32 @@ def read_or_xfail(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except NotImplementedError as exc:
         pytest.xfail(str(exc))
+
+
+class ScriptedThermoFilter:
+    """A Thermo ``IScanFilter`` scripted by its text alone.
+
+    It answers ``ToString()`` with the text and the filter's scan ranges, which
+    the Thermo backend writes itself (``backend._thermo_filter_text``), with the
+    ranges the text states. Further attributes (``Polarity``, ``MSOrder``) are
+    set on it by the test that needs them.
+    """
+
+    def __init__(self, text: str, **attributes):
+        from types import SimpleNamespace
+
+        from mascope_thermo.scan_filter import parse_scan_filter
+
+        self._text = text
+        self._ranges = [
+            SimpleNamespace(Low=low, High=high)
+            for low, high in parse_scan_filter(text).scan_ranges
+        ]
+        self.MassRangeCount = len(self._ranges)
+        self.__dict__.update(attributes)
+
+    def ToString(self):  # noqa: N802
+        return self._text
+
+    def GetMassRange(self, index):  # noqa: N802
+        return self._ranges[index]

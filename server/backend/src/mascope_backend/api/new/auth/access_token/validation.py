@@ -12,6 +12,7 @@ from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.exceptions import (
     AgentCredentialRefusedException,
     InvalidTokenException,
+    TokenValidationUnavailableException,
 )
 from mascope_backend.api.new.auth.pairing.config import pairing_settings
 from mascope_backend.api.new.auth.reported import (
@@ -338,4 +339,5 @@ async def validate_service_access_token(access_token: str, service_name: str):
         raise
     except Exception as e:
         runtime.logger.error(f"Service token validation failed: {str(e)}")
-        raise InvalidTokenException("Token validation failed") from e
+        # Not a verdict on the token: the next attempt may well pass
+        raise TokenValidationUnavailableException() from e

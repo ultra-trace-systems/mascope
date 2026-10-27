@@ -16,10 +16,15 @@ import warnings
 import numpy as np
 import pytest
 import xarray
-from scipy.stats import spearmanr
+from scipy.stats import median_abs_deviation, spearmanr
 
 from mascope_backend.api.models.calibration.config import calibration_config
-from mascope_signal.peak import OrbiZarrPeakDetector, TofPeakDetector
+from mascope_signal.peak import (
+    SNR_CORE_WIDTHS,
+    SNR_WINDOW_DMZ,
+    OrbiZarrPeakDetector,
+    TofPeakDetector,
+)
 
 
 RESOLUTION = 5000.0
@@ -161,6 +166,116 @@ def test_an_empty_baseline_falls_back_to_its_spread():
 
     assert np.isfinite(snr)
     assert snr > 3
+
+
+def _ions(mz_axis, ion_mzs):
+    """Single ions, each a blip one high and a peak's width wide, cut off
+    where it falls to nothing, as a TOF counts them."""
+    signal = np.zeros_like(mz_axis)
+    for mz in ion_mzs:
+        sigma = _width(mz) / (2 * np.sqrt(2 * np.log(2)))
+        x = (mz_axis - mz) / sigma
+        signal += np.where(np.abs(x) <= 3, np.exp(-0.5 * x**2), 0.0)
+    return signal
+
+
+def _counted_spectrum(seed, peak_mzs, peak_ions, ions_per_unit=4.0):
+    """A summed spectrum that counts single ions, as an ambient TOF's does:
+    stray ions (:func:`_ions`) scattered over the axis at a few per unit of
+    mass, and each peak that many ions at its m/z. Most of the axis stays
+    exactly zero, so the baseline's MAD is zero."""
+    rng = np.random.default_rng(seed)
+    mz_axis = np.arange(99.0, 99.0 + len(peak_mzs) + 1, STEP)
+    stray = rng.uniform(
+        mz_axis[0], mz_axis[-1], rng.poisson(ions_per_unit * len(peak_mzs))
+    )
+    ion_mzs = np.concatenate([stray, np.repeat(peak_mzs, peak_ions)])
+    return mz_axis, _ions(mz_axis, ion_mzs)
+
+
+def test_a_peak_of_a_few_ions_over_an_empty_baseline_is_not_strong():
+    """Over a counted baseline (:func:`_counted_spectrum`) the noise is the
+    height one ion leaves, so a peak scores about the ions it holds. The
+    standard deviation of a mostly empty baseline shrinks with how rarely an
+    ion arrives: three ions scored about fifteen, past the TOF calibration's
+    gate of ten and the assignment's full mass precision, as strong as a
+    peak of hundreds. An ambient TOF file fits a peak of a few ions at most
+    unit masses."""
+    peak_mzs = np.array([100.0, 101.0, 102.0, 103.0])
+    peak_ions = np.array([3, 3, 4, 300])
+    mz_axis, signal = _counted_spectrum(7, peak_mzs, peak_ions)
+    assert median_abs_deviation(signal, scale="normal") == 0
+
+    snr = _snr(mz_axis, signal, peak_mzs, peak_ions.astype(float))
+
+    noise_peaks, real = snr[:3], snr[3]
+    assert np.all(noise_peaks < 6)
+    assert np.all(noise_peaks > 1)
+    assert real >= calibration_config.TOF_SNR_THRESHOLD * 10
+
+
+def test_one_ions_height_is_measured_over_the_whole_spectrum():
+    """A peak whose own window holds no stray ion still reads its ions: the
+    height of one is measured wherever the baseline is empty, not only
+    around the peak. Its baseline is all zeros, which had no ratio."""
+    mz_axis = np.arange(99.0, 103.0, STEP)
+    stray = [101.2, 101.4, 101.7, 102.3, 102.6]
+    signal = _ions(mz_axis, stray + [100.0] * 3 + [102.0] * 200)
+
+    snr = _snr(mz_axis, signal, [100.0, 102.0], [3.0, 200.0])
+
+    assert snr == pytest.approx([3.0, 200.0], rel=0.1)
+
+
+def test_a_peaks_own_ions_are_not_one_ion():
+    """The ions of a fitted peak are one run above zero, as a single ion
+    is; a run in a peak's core is left out of one ion's height, so a
+    spectrum of more peaks than stray ions does not read a peak as one."""
+    peak_mzs = np.arange(100.0, 106.0)
+    mz_axis = np.arange(99.0, 107.0, STEP)
+    stray = [100.4, 102.6, 104.3]
+    signal = _ions(mz_axis, stray + list(np.repeat(peak_mzs, 40)))
+
+    snr = _snr(mz_axis, signal, peak_mzs, np.full(peak_mzs.size, 40.0))
+
+    assert snr == pytest.approx(np.full(peak_mzs.size, 40.0), rel=0.1)
+
+
+def test_an_unfitted_cluster_over_an_empty_baseline_is_its_spread():
+    """Where the MAD is zero the noise is one ion's height or the standard
+    deviation, whichever is larger. A mostly empty window that holds a small
+    cluster too weak to be fitted spreads wider than one ion, and the peak
+    beside it divides by that spread, as it did before the floor."""
+    mz_axis = np.arange(99.0, 102.0, STEP)
+    stray = [99.2, 99.4, 99.7, 101.2, 101.4, 101.7]
+    signal = _ions(mz_axis, stray + [100.0] * 200 + [100.5] * 40)
+    window = np.abs(mz_axis - 100.0) <= max(SNR_WINDOW_DMZ, 10 * _width(100.0))
+    core = np.abs(mz_axis - 100.0) <= SNR_CORE_WIDTHS * _width(100.0)
+    baseline = signal[window & ~core]
+    assert median_abs_deviation(baseline, scale="normal") == 0
+    spread = np.std(baseline)
+    assert spread > 2  # one ion is 1 high
+
+    (snr,) = _snr(mz_axis, signal, [100.0], [200.0])
+
+    assert snr == pytest.approx(200.0 / spread, rel=1e-6)
+
+
+def test_a_counted_baseline_is_not_one_ion():
+    """Where the baseline is dense its MAD is its noise, and its stretches
+    above zero are not single ions: one ion's height is read only where the
+    baseline is mostly empty."""
+    rng = np.random.default_rng(8)
+    mz_axis = np.arange(99.0, 105.0, STEP)
+    stray = [99.3, 99.6, 100.4, 100.7]
+    signal = _ions(mz_axis, stray + [100.0] * 3 + [103.0] * 300)
+    dense = mz_axis > 101.6
+    signal[dense] += rng.poisson(3.0, dense.sum())
+
+    weak, strong = _snr(mz_axis, signal, [100.0, 103.0], [3.0, 300.0])
+
+    assert weak == pytest.approx(3.0, rel=0.1)
+    assert strong == pytest.approx(300.0 / np.sqrt(3.0), rel=0.25)
 
 
 def test_the_baseline_reaches_past_a_crowded_unit_mass():

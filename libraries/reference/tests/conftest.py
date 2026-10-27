@@ -41,6 +41,7 @@ Table(
     Column("allow_radicals", Boolean),
     Column("polarity", String),
     Column("kind", String),
+    Column("citations", JSON),
 )
 
 Table(

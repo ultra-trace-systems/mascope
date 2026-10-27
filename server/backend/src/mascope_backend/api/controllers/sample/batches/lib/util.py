@@ -278,8 +278,11 @@ def _sync_load_peak_data(
     peak_id = peak_data["peak_id"].values
     polarity_coord = peak_data["polarity"].values
     # Per peak: a stored sum is over the scans the store's axis holds for
-    # the peak - a stream's peak over its own stream's scans
-    scans = m_compute.stored_scans_per_peak(peak_data, timestamps)
+    # the peak - a stream's peak over its own stream's scans. A pooled store
+    # whose axis the file no longer reads back is refused as stale.
+    scans = m_compute.stored_scans_per_peak(
+        peak_data, timestamps, m_compute.get_scan_timestamps(filename)
+    )
     peak_data = peak_data[intensity_variable]
     mz_mask = polarity_coord == polarity
     mz = peak_data["mz"].values[mz_mask]

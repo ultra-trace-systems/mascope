@@ -298,7 +298,9 @@ def test_a_samples_signal_is_the_stitched_one_where_the_store_stitches(composite
 
     listed = m_io.load_peak_data(SAMPLE_FILENAME).compute()
     scans = m_compute.stored_scans_per_peak(
-        listed, m_compute.get_scan_timestamps(SAMPLE_FILENAME, polarity="-")
+        listed,
+        m_compute.get_scan_timestamps(SAMPLE_FILENAME, polarity="-"),
+        m_compute.get_scan_timestamps(SAMPLE_FILENAME),
     )
     low = listed.stream.values == 1
     assert float((listed.sum_peak_heights.values / scans)[low].sum()) == pytest.approx(
@@ -421,6 +423,7 @@ def test_a_store_carrying_part_of_a_per_stream_store_is_refused_as_the_listing_r
         m_compute.stored_scans_per_peak(
             m_io.load_peak_data(SAMPLE_FILENAME, composite=False),
             m_compute.get_scan_timestamps(SAMPLE_FILENAME, polarity="-"),
+            m_compute.get_scan_timestamps(SAMPLE_FILENAME),
         )
     assert str(signal.value) == str(listing.value)
 

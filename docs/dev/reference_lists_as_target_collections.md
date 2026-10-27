@@ -3,7 +3,7 @@
 # Reference lists as target collections: design
 
 - **Status:** design
-- **As of:** 2026-10-23
+- **As of:** 2026-10-27
 - **Tracked in:** [Reference lists as target collections](https://linear.app/ultra-trace/project/reference-lists-as-target-collections-63b440eeab90) (Linear; decisions MAS-447 to MAS-452; phases 0 to 3 filed 2026-10-23 as MAS-453 to MAS-467)
 - **What:** Curated reference lists usable as target collections, pinned to a version and materialized as ordinary compounds, with target management moved onto the batch.
 
@@ -12,6 +12,11 @@ this note is built on, each with its reason; section 9 holds the calls the
 plan owner still has to make, each with a leaning, filed as the Decision
 issues MAS-447 to MAS-452. Code anchors were read on `develop` on the same
 date and are named where a claim rests on them.
+
+Re-read on 2026-10-27 against the retirement path of the targeted workflow
+(`peak_assignment_paradigm.md` section 5.4, decided under MAS-162): phases 0
+and 1 stand, decision 9 and phase 2 changed, and phase 3's third step became
+the fold's own collection step. Section 4.6 has the reading.
 
 ## Picking this up
 
@@ -25,9 +30,9 @@ The feature, as a person meets it:
 - **Lists are visible in the app.** A page lists what is loaded: each list's
   name, version, licence, polarity, how many species, and whether it is in
   use as targets. Today the only way to learn a list exists is the CLI.
-- **Attaching targets is one step.** From the batch's own collections pane a
-  person ticks the collections to use, saves, and matching runs. Today that
-  is a right-click, a dialog, a save, and a click on a status icon.
+- **Attaching targets is one step.** A person ticks the collections to use,
+  saves, and the results follow. Today the save flags the batch and the
+  results wait for a click on a status icon.
 - **Discovery promotes to monitoring.** A compound peak assignment found and a
   list named is added to a collection from the row it was found on.
 
@@ -37,16 +42,16 @@ built from, and its membership is **materialized** as ordinary target
 compounds, ions and isotopes through the create path every collection uses,
 so the matcher, the match tables, calibration and the SDK see nothing new.
 Membership is read-only; a newer list version is an **explicit update** that
-flags the attached batches for a rematch as any collection edit does. Target
-management moves to the batch: the collections pane attaches, and saving an
-attachment runs the refresh. A read-only **Reference lists** page is where
-a list is seen and turned into targets.
+flags the attached batches for a rematch as any collection edit does. Saving
+an attachment refreshes the batch's results on whichever path the deployment
+runs. A read-only **Reference lists** page is where a list is seen and turned
+into targets.
 
 | Phase | Content | State |
 |---|---|---|
 | 0 | The reference sources API and the Reference lists page, read-only | open |
 | 1 | List-backed collections: schema, materialization, update, SDK | open |
-| 2 | Target management on the batch: attach from the pane, save runs matching, promote from a row | open |
+| 2 | A collection change re-folds the batch; reference lists grouped in the attach dialog; promote from a row | open |
 | 3 | Convergence: environments suggest list collections, seeded profile collections share the mechanism, results read off assignments | open; waits on other plans |
 
 Related designs: `public_database_integration.md` (the reference tables, and
@@ -199,9 +204,12 @@ appears only as the **listed as** name on an assignment row
 - **CSV import and export of a collection** (GitHub #747, #748): a file
   format for moving a collection between instances. A list file is already
   such a format; section 6 says how the two relate.
-- **The Match tab's future** (MAS-83, MAS-162): maintained, frozen or
-  retired once assignment is the default. Section 4.6 says why this design
-  does not wait on it.
+- **The retirement path of the targeted workflow** (MAS-162, decided
+  2026-10-27; MAS-83 is the remaining call on the legacy path's upkeep):
+  the fold of `peak_assignment_paradigm.md` section 5.4. A target match
+  becomes a Stage A ledger row, the `match_*` aggregates stop being
+  written, the Targets mode and the Match tab retire, and the targeted view
+  is frozen meanwhile. Section 4.6 says what that does to this design.
 - **Isomers in the dialog** (MAS-419), **the type constraint** (#1491) and
   **the global admin requirement** (#1909) each touch a rule this design
   leans on; section 10 names each.
@@ -220,7 +228,7 @@ appears only as the **listed as** name on an assignment row
 | 6 | **Compounds stay shared.** Materialization reuses an existing compound where the identity rule says it is the same (InChIKey, else CAS, else name and formula, the MAS-419 rule), and creates the rest. | "Compounds are shared reference data" is the product's stance, and a list compound picked into a person's own collection is a feature. A second compound table for list compounds would be the two-model problem again, one level down. |
 | 7 | **Fork is the existing import.** A person who wants to edit a list's membership creates a collection and imports from the list-backed one. No copy route. | The dialog's *Import existing* with a collection as source already does this. |
 | 8 | **The licence gate applies.** A source outside `reference_licenses` is not offered as targets and is not materialized. | A deployment that declined to match a source in Stage A has not accepted its terms for the targeted path either. |
-| 9 | **Saving an attachment runs matching.** The Targets save calls `/api/match/compute/batch/{id}` after the attach; membership edits keep the flag only. | Attaching is the common act and is always followed by the refresh; a membership edit is often one of several. |
+| 9 | **A collection change re-folds the batch.** Attaching or detaching a collection, and updating a list-backed one, re-runs Stage A over the batch's samples with the feature on; with it off the same change runs `/api/match/compute/batch/{id}`, as a refresh does today. Membership edits keep the flag only. | Attaching is the common act and is always followed by the refresh. Under the fold (section 4.6) the refresh is a re-fold, not the legacy compute, and nothing re-folds a batch when its target library changes today: an attach sets the batch to `rematch` and only *Rebuild batch ledger* reads the new library. A membership edit is often one of several. |
 | 10 | **Nothing changes in Stage A.** A list-backed collection attached to a batch and the same list active in the mirror produce one reading per peak: the target row wins and the mirror copy is dropped, which is today's precedence. | Section 2.2. The seam phase 3 of `public_database_integration.md` owns stays its own. |
 | 11 | **The seed does not create collections.** The Reference lists page, the SDK and the API do. | Materializing the HOM list writes tens of thousands of isotope rows a small site may never match against. Loading a list is an operator's choice already ("nothing loads them unasked"); using one as targets is a second choice. |
 
@@ -314,55 +322,109 @@ against. The page says the source is inactive.
 
 ### 4.5 What matching does with it
 
-Nothing new. The collection's isotopes are fetched through the junctions,
-matched, scored and aggregated as any collection's are; the collection tag,
-the ion table, the Match tab and the Batch chart draw them. The per-ion match
-parameters (`filter_params`) are editable in the Match tab's drawer as for
-any ion.
+Nothing new, on either path. The legacy matcher fetches the collection's
+isotopes through the junctions, matches, scores and aggregates them as any
+collection's; the collection tag, the ion table, the Match tab and the Batch
+chart draw them. Stage A reads the same rows through the same junctions
+(`_fetch_known_target_isotopes` in
+[service.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py))
+and gates them with the same per-ion parameters, so a list-backed collection
+is ledger rows with a `target_compound_id` exactly as a hand-built one is,
+which is what makes it a collection under the fold (section 4.6). The per-ion
+match parameters (`filter_params`) are editable in the Match tab's drawer as
+for any ion, until the drawer moves to the inspector
+([peak_assignment_frontend.md](peak_assignment_frontend.md), "Retirement
+path").
 
-### 4.6 Reading results, with and without the Match tab
+### 4.6 Reading results under the fold
 
-MAS-83 asks whether the Match tab is maintained, frozen or retired once
-assignment is the default. This design does not wait on the answer:
+The targeted workflow retires by the fold
+([`peak_assignment_paradigm.md`](peak_assignment_paradigm.md) section 5.4,
+decided 2026-10-27 under MAS-162): once peak assignment is on by default
+(MAS-80) a target match is the ledger row with `target_compound_id` set, the
+`match_*` aggregates stop being written in the release after, and until then
+the targeted view - the Targets mode of the lower-left browser
+(`MatchCollectionTable.vue`, `MatchIonTable.vue`) and the Match tab - is
+frozen: correctness fixes and quick wins, no medium work. This design was
+written before that decision and said it did not wait on it. Read against
+it:
 
-- The collection is the unit of "what to monitor" under every answer.
-  Attaching, the collection score and the alarm colour are collection-level
-  facts the pane carries, not the tab.
-- Under *retired*, `peak_assignment_paradigm.md` section 5.1 makes targeted
-  analysis a view over assignments where `target_compound_id` is set. A
-  list-backed collection's compounds carry ids like any others, so the view
-  groups them by collection as it would a hand-built one.
-- Nothing in phases 0 to 2 adds to the Match tab itself.
+- **The collection stays the unit of "what to monitor".** Attaching, the
+  collection score and the alarm colour are collection-level facts. A
+  list-backed collection's compounds carry target ids like any others, so
+  the view over ledger rows groups them by collection as it would a
+  hand-built one. Phases 0 and 1 stand as written.
+- **Phase 2 moved off the Targets mode.** Its *Attach collections* action
+  was a header action of `MatchCollectionTable.vue`, which is the
+  Targets-mode browser, and its save called the legacy compute route; both
+  are what the path retires. The attach UI stays where it is today (the
+  batch's context menu and the Targets tab of `DialogBatchOp`), and phase 2
+  is the backend hook decision 9 now names: a collection change re-folds
+  the batch (section 5.2). *Add to collection* from an assignment row
+  (section 5.4) is on the assignment side and stands.
+- **Phase 3's third step is the fold's collection step, not a conditional.**
+  The collection-level reading - a score per collection and sample, the
+  alarm colour, the Batch chart's series - read off ledger rows grouped
+  through `target_compound_in_target_collection`. It waits on MAS-80, not
+  on MAS-83, and has to say what a collection score is under tiers: today
+  it is `match_collection.match_score`, a roll-up of the v1 ion scores;
+  under the fold it is a roll-up of evidence or of tier counts, and the
+  Assignments-mode Batch chart plots a consensus tier per batch peak with
+  no collection series yet
+  ([data.js](../../server/frontend/src/lib/charts/ChartBatchAssignments/data.js)).
+  That is the one question of this design the fold opens and nothing
+  answers; it is written into the step's brief (MAS-460).
+- **The measurement moves with the reader.** Phase 1's cost is the isotope
+  rows per mechanism; under the fold their reader is the ingest fold and
+  *Rebuild batch ledger*, so the measurement times a rebuild of the demo
+  batch with the HOM collection attached, beside `compute/batch` for the
+  deployments still with the feature off.
 
 ---
 
 ## 5. Target management on the batch
 
-### 5.1 The Targets panel
+### 5.1 Attaching, where it is today
 
-The collections pane (`MatchCollectionTable.vue`) gains a second header
-action beside create: **Attach collections**. It opens `PaneSelectTargets`
-in `targets` mode, in a dialog of its own (not `DialogBatchOp`'s Info and
-Targets tabs), pre-ticked with the batch's current collections. The list
-groups **Reference lists** above the person's collections, each list-backed
-row with a list glyph, its version and *update available* where it applies.
-The type filter and search stay. The footer is *Cancel* and *Save and
-refresh matches*.
+Attaching stays where it is: *Edit batch targets* on the batch's context
+menu, which opens `PaneSelectTargets` on the Targets tab of `DialogBatchOp`,
+and *Edit batches* on the collection's. A second header action on the
+collections pane was planned here and is withdrawn: the pane is the
+Targets-mode browser, which the retirement path freezes and then retires
+(section 4.6). What phase 2 adds to `PaneSelectTargets` is the grouping:
+**Reference lists** above the person's collections, each list-backed row
+with a list glyph, its version and *update available* where it applies; the
+type filter and search stay. The dialog's save is what re-folds (section
+5.2).
 
-The row of a list-backed collection in the pane shows the same glyph. Its
-context menu ([collectionContextMenu.js](../../server/frontend/src/lib/panes/PaneBrowserMatch/stores/collectionContextMenu.js))
-offers *Update to version X* when one is available and *Edit* opens the
-dialog with the Compounds tab read-only (section 5.5).
+The row of a list-backed collection in the pane shows the same glyph, and
+its context menu ([collectionContextMenu.js](../../server/frontend/src/lib/panes/PaneBrowserMatch/stores/collectionContextMenu.js))
+offers *Update to version X* when one is available; *Edit* opens the dialog
+with the Compounds tab read-only (section 5.5). Both are the size of a quick
+win, which is what the frozen view takes.
 
-### 5.2 Attaching runs matching
+### 5.2 A collection change re-folds the batch
 
-*Save and refresh matches* sends the batch's new collection list
-(`PATCH /api/sample/batches/{id}`, as `DialogBatchOp` does) and then
-`POST /api/match/compute/batch/{id}`. The batch row shows its spinner and
-the toast reports completion, as a refresh does today. Detaching alone also
-calls compute, which removes the detached collection's matches on its way
-(the controller's step for collections no longer attached). A membership
-edit in the collection dialog keeps today's flag-only behaviour.
+Today a change to a batch's collections sets the batch to `rematch`
+(`update_sample_batch` in
+[sample_batches_controller.py](../../server/backend/src/mascope_backend/api/controllers/sample/batches/sample_batches_controller.py),
+step 5) and matching runs when the person clicks the status icon or
+*Process -> Refresh matches*. On the assignment side nothing reacts to the
+flag: the ingest fold read the target library when each sample was folded,
+and the only thing that reads a changed library afterwards is *Rebuild batch
+ledger* (`rebuild_batch_ledger` in
+[batch_peaks_controller.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_controller.py)).
+Decision 9 closes that gap. When the batch's collections change through
+`PATCH /api/sample/batches/{id}`, and when a list-backed collection is
+updated to a newer version (section 4.3), the controller re-folds the
+batch's samples with the feature on - the rebuild's path, or a narrower
+re-fold of Stage A alone if the phase 1 measurement says a rebuild is too
+costly for an attach - as a background task with the batch's spinner and
+the completion toast; a detached collection's rows leave the ledger on that
+fold. With the feature off the same change runs
+`POST /api/match/compute/batch/{id}`, which also removes a detached
+collection's matches on its way: today's behaviour, minus the click. A
+membership edit in the collection dialog keeps today's flag-only behaviour.
 
 ### 5.3 The Reference lists page
 
@@ -383,6 +445,10 @@ species carries. Two actions:
 A source outside the licence gate is shown with its licence and no action.
 A person who is not an admin sees the page and the collections, and attaches
 them from the Targets panel.
+
+Built (MAS-454) as a dialog behind a **Reference lists** button in the Data
+section of Settings, `lib/dialogs/DialogReferenceLists/`, instead of a sidebar
+tab of its own: the owner's call on that issue.
 
 ### 5.4 Promote from an assignment row
 
@@ -532,9 +598,11 @@ version adds, removes (per P1) and moves the pin and sets the batches to
 `rematch`; a source outside `reference_licenses` is refused; a non-admin is
 refused. `tests/migrations/` parity. **A measurement, before the PR is
 opened:** the time and the row counts for materializing the HOM list and the
-contaminants list against the demo's mechanism set, and the time of
-`compute/batch` for the demo batch with the HOM collection attached,
-recorded in the PR. Frontend unit:
+contaminants list against the demo's mechanism set, the time of a *Rebuild
+batch ledger* of the demo batch with the HOM collection attached (the
+fold's reader of the rows, section 4.6) and the time of `compute/batch` on
+the same batch for the deployments still with the feature off, recorded in
+the PR. Frontend unit:
 `tests/unit/lib/dialogTargetCollectionOp.spec.js` (read-only tab, grouped
 import source), the pane spec (actions by role and licence). SDK:
 `tests/test_writes.py`. e2e: `tests/e2e/target-collection.spec.js` creates
@@ -543,19 +611,25 @@ the collection from the page through the `api` fixture, attaches it to the
 
 **Size.** M-L.
 
-### Phase 2 - target management on the batch
+### Phase 2 - a collection change re-folds the batch, and promote from a row
 
-**Content.** *Attach collections* in the pane and its dialog; *Save and
-refresh matches*; *Add to collection* on assignment and batch-peak rows with
-the identity prefilled.
+**Content.** The backend hook of decision 9: a change to a batch's
+collections, and an update of a list-backed collection, re-fold the batch
+with the feature on and run `compute/batch` with it off; the grouped list
+and the glyph in `PaneSelectTargets`; *Add to collection* on assignment and
+batch-peak rows with the identity prefilled. No new action on the
+collections pane and no new dialog (section 4.6).
 
 **Where.**
-`server/frontend/src/lib/panes/PaneBrowserMatch/MatchCollectionTable.vue`,
-`lib/dialogs/DialogBatchOp/PaneSelectTargets.vue` (the grouped list and the
-glyph; the pane is reused, not forked), a new
-`lib/dialogs/DialogAttachTargets.vue` (or a mode of `DialogBatchOp` if the
-rebuild of MAS-156 has landed and made that cheap), `lib/dialogs/index.js`,
-`stores/data/modules/batch.js` (the attach-then-compute call),
+`server/backend/src/mascope_backend/api/controllers/sample/batches/sample_batches_controller.py`
+(the step that sets `rematch`),
+`api/new/peak_assignments/batch_peaks_controller.py` (`rebuild_batch_ledger`,
+the re-fold it reuses or narrows),
+`api/controllers/target/collections/target_collections_controller.py` (the
+update path of section 4.3);
+`server/frontend/src/lib/dialogs/DialogBatchOp/PaneSelectTargets.vue` (the
+grouped list and the glyph; reused, not forked),
+`stores/data/modules/batch.js`,
 `lib/panes/PaneBrowserMatch/PaneBrowserAssignment.vue`,
 `PaneBrowserBatchPeaks.vue`, `lib/dialogs/PopoverTargetCompoundAdd.vue`
 (`name` and `inchikey` props), `lib/referenceListings.js` (the identity a
@@ -563,10 +637,15 @@ row offers); `docs/user/guides/target-collections.md` ("Attach or detach an
 existing collection" and "Run matching" become one section),
 `docs/user/_help/matching.md`; a `changelog.d` fragment.
 
-**Verify.** Frontend unit: the pane's action, the dialog's grouping and
-footer, the popover's prefill from a listed row and from an unlisted one.
-e2e on the demo stack: attach from the pane, see the spinner and the
-completion toast and the collection tag without clicking the status icon;
+**Verify.** Backend, on the LAN agent host: attaching a collection to a
+batch that has samples, feature on, re-folds it and the collection's
+compounds appear as ledger rows with their `target_compound_id` without a
+rebuild; detaching removes them on the next fold; the same attach with the
+feature off runs the legacy compute and the `match_*` rows appear, as
+today. Frontend unit: the dialog's grouping, the popover's prefill from a
+listed row and from an unlisted one. e2e on the demo stack: attach a
+collection from the batch's context menu and see the spinner, the
+completion toast and the collection's tag without clicking the status icon;
 promote a listed assignment row into a scratch collection and find the
 compound in it with its InChIKey.
 
@@ -585,9 +664,13 @@ there:
   and global as a list-backed one is; the two should share whatever marks
   a collection as owned by the system rather than a person, and the
   read-only treatment in the dialog.
-- **Results read off assignments** (under MAS-83's *retired*). The
-  collection view over `peak_assignment` rows where `target_compound_id` is
-  set, grouped by collection, carries list-backed collections unchanged.
+- **Results read off assignments** (the fold's collection step; after
+  MAS-80). The collection view over `peak_assignment` rows where
+  `target_compound_id` is set, grouped by collection: a score per collection
+  and sample, the alarm colour and the Batch chart's series, with
+  list-backed collections carried unchanged. Its brief defines the
+  collection score under tiers (section 4.6) and says what of
+  `target_ion.filter_params` survives and where.
 
 ---
 
@@ -638,10 +721,11 @@ Each is a call, not a task; the phase named waits on it.
   is too large, the fallback is to generate ions only for the mechanisms of
   the batches the collection is attached to, which is a change to
   `create_target_ions` with its own brief.
-- **Matching time.** The matcher's cost scales with the attached isotopes.
-  The same measurement records `compute/batch` on the demo batch with the
-  HOM collection attached. The fetch already filters by the sample's
-  polarity and mechanisms.
+- **Matching time.** Both readers' cost scales with the attached isotopes:
+  the legacy matcher's, and Stage A's on the ingest fold and *Rebuild batch
+  ledger*. The same measurement records a rebuild and `compute/batch` on
+  the demo batch with the HOM collection attached. The fetch already
+  filters by the sample's polarity and mechanisms.
 - **Compound collisions.** Under decision 6 a list compound that matches a
   person's compound by the identity rule is the same row. Editing it edits
   both collections' member. The compound dialog can say which collections a
@@ -664,8 +748,10 @@ Each is a call, not a task; the phase named waits on it.
 - **Prune.** `reference sync --prune` deletes the old version's rows.
   The pin is text, so the collection still names its version; *Update*
   then diffs against the live collection rather than the pruned source.
-- **The Match tab decision.** Section 4.6. Phases 0 to 2 add nothing to the
-  tab; a retirement moves the collection view, not the collection.
+- **The retirement path.** Section 4.6. Phases 0 to 2 add nothing to the
+  Targets mode or the Match tab; the fold moves the collection view, not
+  the collection, and the collection score under tiers is the one question
+  it leaves this design.
 
 ---
 
@@ -685,9 +771,9 @@ Each is a call, not a task; the phase named waits on it.
   `reference_data_authoring.md` became: gains a section saying a loaded
   list can be used as a target collection from the Reference lists page,
   and what the pin means for a re-sync.
-- **`peak_assignment_paradigm.md`**: section 5.1's "targeted analysis
-  becomes a filtered view" is where phase 3's third step lands; a
-  list-backed collection is a collection there.
+- **`peak_assignment_paradigm.md`**: section 5.4's fold is where phase 3's
+  third step lands, in the shape section 5.1 gives it, targeted analysis as
+  a filtered view; a list-backed collection is a collection there.
 - **`sample_filters_and_metadata.md`**: its section 4.6 selects lists for
   Stage A by environment; this design adds the suggestion step (phase 3,
   P4) and nothing to its schema. Its phase 3 columns on `reference_source`
@@ -695,9 +781,9 @@ Each is a call, not a task; the phase named waits on it.
 - **`chemistry_profiles.md`**: section 4.4's `reference_tags` seam is now
   MAS-342's; unchanged by this note.
 - **`ux_review_2026_10.md`**: M2 (one dialog grammar) rebuilds the dialog
-  this design adds a read-only mode to; D2 (the retirement path) is
-  section 4.6 here. The attach dialog of phase 2 should be built in the
-  grammar M2 settles, or after it.
+  this design adds a read-only mode to; D2 (the retirement path, answered
+  2026-10-27) is read in section 4.6 here, and phase 2 no longer adds a
+  dialog of its own.
 - **MAS-312** (seeded calibrant and diagnostic collections): the second
   user of a system-owned global collection; phase 3's second step aligns
   the two.

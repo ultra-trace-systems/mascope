@@ -76,8 +76,10 @@ from mascope_thermo.backend import MS2_SCAN_RECORD_SOURCES, backend_name
 #: What the store's layout is called, in its attributes and in the props.
 LAYOUT = "mascope.ms2_store"
 #: The layout's version. A store of another one is not read; the backfill
-#: writes it again.
-VERSION = 1
+#: writes it again. Version 2 holds the scans the reader selects since its
+#: first-scan rule compares the first scan within its MS order and polarity:
+#: an index of version 1 can lack an ordinary first MS1 scan.
+VERSION = 2
 #: The store's name in the sample directory: ``ms2.zarr``.
 STORE_NAME = "ms2"
 #: The tolerance [Da] near-duplicate parent peaks are merged at: the MS2

@@ -8,6 +8,227 @@ Changes merged since the newest release below are described in
 [`changelog.d/`](changelog.d/), one file per pull request, until the next
 release gathers them here.
 
+## [1.15.0] - 2026.10.28
+
+### Added
+
+- **The security report says whether the assessed build lags the release.**
+  Set `MASCOPE_PENTEST_CURRENT_RELEASE` on a hand-run of `security/pentest/`
+  and the report records `lag`: `current`, `behind`, `ahead`, or `unknown`
+  with the reason when no release is supplied or either side is not a release
+  tag. The suite never looks the release up itself and the verdict never
+  changes the exit code; the scheduled runner keeps that decision. The
+  runner's lag check now has a test harness that CI runs.
+
+- **A TOF calibration says what it was fitted on.** Its record lists every
+  calibrant line the fit chose from, with the ion, the exact and observed
+  m/z, the residual, the peak's signal-to-noise ratio and whether the fit
+  kept it, beside the m/z span of the lines kept, the version of the
+  calibration collection (a hash of its isotopes), the model and the
+  calibration node's version. The calibration dialog lists the lines, the
+  ones the fit left out included, and the calibration badge names the span.
+  Records written before keep what they had and apply as before.
+
+- **The origin can refuse anything that did not come through our own Cloudflare zone.**
+  With `MASCOPE_ORIGIN_PULL=on`, the frontend's port 443 answers only a
+  connection that presents a client certificate signed by the CA in the new
+  `origin_pull_ca` secret (`.runtime/secrets/origin_pull_ca.pem`), which is the
+  zone's Authenticated Origin Pulls certificate. Off by default, so nothing
+  changes until a site turns it on. The CLI creates the CA file empty when it
+  is missing, so compose still starts. A new listener on port 8443, published
+  on the host's `127.0.0.1` only, never asks for the certificate: the reboot
+  playbook's probe and the security suite's origin vantage use it.
+  `docs/maintaining.md`, "The edge", has the order to turn it on in, and the
+  Cloudflare console checklist for managed rules, the sign-in rate limit and
+  the sign-in challenge.
+
+- **The security suite can run through the CDN as well as at the origin.**
+  `MASCOPE_PENTEST_HEADER_NAME` and `MASCOPE_PENTEST_HEADER_VALUE` add an
+  operator header to every request the suite makes, for a WAF skip rule keyed
+  on it; the value never appears in the report or the console output. Each
+  report records its vantage (`MASCOPE_PENTEST_VANTAGE`). With `CDN_TARGET`
+  set, `tooling/monitoring/run-assessment.sh` runs the CDN vantage from the
+  monitoring box after the origin run and keeps both reports under one
+  timestamp, with a comparison that names, per control, where the two
+  disagree and which layer answered. `TLS-02`, the HTTPS redirect the edge
+  issues and the origin never sees, becomes assessable from the CDN vantage.
+
+- **`mascope_ai`'s `describe` names the ionization mode and its
+  mechanisms.** A sample's description names its mode and the mode's
+  mechanisms, and a batch's lists the modes of its samples, each with its
+  mechanisms and how many samples it has. An agent can pass those
+  mechanisms to `query_by_mz` instead of guessing them.
+
+- **The SDK reads the server's reference lists.** `mascope.reference.sources()`
+  lists the reference sources the server has loaded, one row each, with
+  `references` citing the publication each shipped list comes from (its DOI
+  or ISBN), and `admitted` saying whether the licence gate lets peak
+  assignment match it. `mascope.reference.compounds(name, version=None)`
+  returns every compound of a source's active version, or of the one named,
+  paging through the API. Any role reads both.
+
+- **Settings shows the reference lists a deployment has loaded.**
+  A Reference lists button under Settings, Data, opens a read-only list of
+  every loaded list: its label, version, licence, polarity, radical
+  allowance, window, species count, load date and the publications it comes
+  from, with their DOI or ISBN. Opening a row pages through its species with
+  name, formula, mass and DOI. A list the licence gate leaves out is marked
+  as not matched. Any signed-in user can open it.
+
+- **A reference source keeps the publications it comes from.** A load now
+  records them on its source row (`reference_source.citations`, a new
+  column): a list file's header `references`, or, for a CSV or a database,
+  the one `mascope reference sync` and the backend's `reference_sync` script
+  are given with the new `--citation` flag and `--doi` or `--isbn`.
+  `GET /api/reference/sources` returns them as each source's `references`.
+  Before, a list loaded from an operator's own file lost its publication at
+  load, and a shipped list could be cited only from the installed file,
+  whichever version was loaded. Rows loaded before this release record none:
+  `mascope reference seed` (or `reference_seed` on a server) records a shipped
+  list's citations on its active row without reloading it, and until then the
+  route cites a shipped list from the installed file while the version loaded
+  is the file's. Re-sync any other list to record what it cites.
+
+### Changed
+
+- **The demo dataset is now bundle v1.4.2**
+  ([10.5281/zenodo.23697850](https://doi.org/10.5281/zenodo.23697850)),
+  the raw files and reference data of 1.4.1 rebuilt with the reader that
+  keeps an ordinary first scan of a file with MS2 scans. Only the four MS2
+  acquisitions changed: their first MS1 scan is now in their MS1 peaks,
+  whose heights moved by a median of 0.1 to 0.8%, with one found peak more
+  in all (43,070) and one ion more (17,453). Their MS2 spectra and the 161
+  MS1 acquisitions hold the values 1.4.1 gave them. 1.4.1 stays registered
+  so a pinned run still resolves.
+
+### Fixed
+
+- **An ordinary first scan of a raw Orbitrap file with MS2 scans, or one
+  that switches polarity, is no longer left out as a TIC outlier.** The
+  reader drops a file's first scan when its TIC is five times the median of
+  the others, a guard against a Thermo quirk. Read without a scan stream, the
+  others were every other scan of the file. MS2 scans carry 100 to 10,000
+  times less ion current than MS1 scans, and in most MS2 files they
+  outnumber them, so the first MS1 scan read as an outlier and was missing
+  from the file's spectrum, its TIC and its peak timeseries. The same
+  happened where one polarity's scans are much weaker than the other's. The
+  first scan is now compared with the other scans of its own MS order and
+  polarity, as a stream's first scan already was with its stream's. Only
+  a selection that holds the first scan logs its exclusion, so
+  `backfill_ms2_store` no longer prints the line six times for nearly every
+  file it writes. A single-polarity file without MS2 scans reads as before.
+
+  The peaks stored for a file whose first scan comes back were summed
+  without it, so they no longer match the scans the file reads. Every read
+  that divides those sums by the file's scans refuses such a store as
+  stale, so nothing averages low unnoticed: listing the file's peaks or
+  aligning a batch that holds it is refused, with a message asking for its
+  peak detection. Matching and the sample's spectrum read the store
+  otherwise and queue nothing, and a sample already matched is not read
+  again, so nothing else repairs these files. Re-processing does: a
+  re-processed file that has outgrown its pooled store has its peaks
+  detected again before it is calibrated and matched. After the upgrade,
+  list the files with
+  `mascope prod db script run report_stale_peak_stores` and re-process
+  them (*Re-process* in Raw files, 25 at a time); a file with samples a
+  person made is refused by a re-processing, and *Detect peaks* rebuilds it
+  instead (`docs/maintaining.md`, "Peak stores a file has outgrown").
+
+  Operators: cached averaged profiles move to a new generation
+  (`...-g6.zarr`), since one averaged before can lack that first scan. Every
+  raw Orbitrap sample is averaged anew on its first view, single-polarity
+  files to the profile they had. Reclaim the space the old caches take with
+  `python -m mascope_backend.db.admin.filestore delete-stale-sum-signal`.
+  The MS2 store moves to version 2, since an older store's index can lack
+  the first scan too. Run `backfill_ms2_store` again (`docs/maintaining.md`,
+  "The MS2 store"); until then those files' MS2 routes read the raw file.
+
+- **A TOF peak of a few ions over an empty baseline no longer reads as a
+  strong peak.** Where a TOF spectrum is mostly empty, as an ambient-mode
+  one often is, the noise a peak's `signal_to_noise` divides by was the
+  standard deviation of a baseline of zeros and stray ions, which shrinks
+  the rarer the ions are: since 1.13.0 a peak of three ions scored ten or
+  more, and a peak in a window with no stray ion had no value at all.
+  The noise there is now the height one ion leaves, measured over the
+  spectrum's empty stretches, so such a peak scores about the ions it
+  holds. TOF m/z calibration, which keeps a calibrant candidate at a
+  signal-to-noise of 10 or more, no longer takes these peaks for
+  calibrants. The peak list itself does not change: these peaks are still
+  detected and listed. The peak-assignment engine now weighs them as weak
+  ones, with a wider mass window, so a few more of them reach candidate.
+  Spectra with a baseline of their own keep their values. A file's stored
+  peaks keep the old values until its peaks are detected again.
+
+- **The Thermo RawFileReader backend names targeted MS2 streams as OpenTFRaw
+  does.** The two backends could write an MS2 scan range's upper bound with
+  a different fourth decimal (`181.6370` against `181.6369`), so a stream
+  key from one did not select under the other. The Thermo backend now
+  writes each bound from the same single-precision value OpenTFRaw reads.
+  OpenTFRaw, the default reader, keys every stream as before, so no stored
+  key changes.
+
+- **Withdrawing a forced password change reaches open tabs at once.** The
+  `clear_password_change_requirement` script now tells each released account's
+  open tab, which leaves the password screen without a reload, and refreshes
+  open user-management tables, as requiring the change already did.
+
+- **`mascope_ai`'s `load_peaks_by_stage` no longer says a stage short of
+  peaks is complete.** A stage is a time-ranged read, and the server leaves
+  out of it every peak whose time series it has not computed yet, typically
+  the peaks no target matched. The Frame said `complete=True` all the same,
+  with the shortfall only in its `warnings`. It is now incomplete, and each
+  such stage is in its `failures` as `TimeseriesNotComputed`, with how many
+  peaks it left out (`excluded_peaks`).
+
+- **The file converter notices when the backend rejects its events.** When
+  a file's access token has expired or been revoked, the backend drops the
+  converter's progress and result events for that file. The converter now
+  reads the backend's answer, logs a warning once per file naming the event
+  and the reason, and stops sending that file's events with the rejected
+  token. A token the backend could not check for a moment, for example
+  while its database is busy, is no longer reported as invalid: that one
+  event is lost, and the file's later events are still sent.
+
+- **`mascope export package` stops its container build when it is ended
+  by SIGHUP or SIGTERM, as on Ctrl-C.** A dropped SSH session, or a
+  `timeout` or service manager stopping the command, left the build in the
+  prod backend container running, and its archive in the env's temp
+  directory until the backend restarted. The command now stops the build
+  and removes its directory first, then ends by the signal it was sent. A
+  SIGHUP ignored with `nohup` stays ignored.
+
+- **`mascope demo snapshot --update` no longer drops a bundle's MS2
+  goldens without a word.** When the prior manifest has MS2 goldens and
+  the rebuilt database yields no MS2 spectra for a file they covered, the
+  refresh now refuses, as it does for a file with no goldens at all, and
+  leaves the prior goldens and snapshot in place. A file taken out of the
+  raw set on purpose still drops its MS2 goldens, with a warning.
+
+### Security
+
+- **The target isotope list checks the batch or collection it filters by.**
+  `GET /api/target/isotopes` answered its `target_collection_id` and
+  `sample_batch_id` filters for a collection or batch of any workspace, as the
+  ion and compound lists did before. Either filter now needs the guest role on
+  its workspace, and a global collection stays readable by anyone signed in.
+  Its `show_target_collection` flag lists only the collections the caller can
+  read: the global ones and those of their workspaces. The list without a
+  filter, the shared isotope library, is unchanged.
+
+- **The secrets `mascope init` and `mascope prod up` generate are readable by
+  their owner alone.** `postgres_password.txt`, `jwt_secret_key.txt`,
+  `server_owner_secret_key.txt` and `mfa_encryption_key.txt` under
+  `.runtime/secrets/` are now created mode 0600. Before, they took the umask
+  and usually came out 0644. Compose mounts a secret file into the containers
+  as it is on the host, mode included, so every user on the server and every
+  uid in the backend container could read the app's database password.
+  Existing files are left as they are. To close them on a deployment, run
+  `chmod 600 "$MASCOPE_PATH"/.runtime/secrets/*.txt` as the user that owns
+  them. That user has to be the uid the backend image runs as: 1000 for the
+  published image, or the `MASCOPE_UID` the image was built with. The
+  filestore already needs the same. Otherwise the backend can no longer read
+  its secrets.
+
 ## [1.14.0] - 2026.10.27
 
 ### Added

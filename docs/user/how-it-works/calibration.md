@@ -108,6 +108,19 @@ Applying a fit clears the file's matches and marks its batches for rematching.
 Editing the calibration collection a mode already uses only marks its batches: the files stay on their old calibration until someone re-calibrates them.
 A TOF file that has never been fitted carries the axis the acquisition software wrote, stamped `unfitted` in its calibration record.
 
+#### What a TOF record says
+
+Beside its parameters and the counts and mean errors of its quality block, a TOF fit's calibration record says what the fit was made on:
+
+- **Points**: every calibrant line the fit chose from, the ones it left out included. Each has its ion, its exact and observed m/z, its residual under the fit in ppm, the signal-to-noise ratio of its peak, and whether the fit kept it. The residual is the fit's m/z at the peak's time-of-flight index against the exact m/z, as the TOF calibration audit reads it. A line the matching turned down never reached the fit and is not listed.
+- **Span**: the exact m/z of the lowest and the highest line kept. Peaks outside it are on an extrapolated axis.
+- **Collection**: the calibration collection, and a hash of the isotopes it offered under the mode's ionization mechanisms: their formulas, exact m/z and abundances. Editing the collection's compounds changes the hash, so files fitted on different versions of one collection can be told apart. The hash is the same on every server.
+- **Model**: the model fitted, the square-root model above, which Tofwerk numbers mode 0. The record keeps that number and the model's equation in Tofwerk's names, `i = p1*sqrt(m) + p2`: `i` is the time-of-flight index, and `p1` and `p2` are $p_0$ and $p_1$ above.
+- **Node version**: the version of the calibration step that made the fit.
+
+The calibration dialog lists the points of the fit it previews, a line the fit left out in muted text, and the badge of a calibrated TOF sample names the span.
+A record written before these were kept has the counts and mean errors only, and reads and applies as it always did.
+
 ### Orbitrap One-Point Scaling Calibration
 
 The Orbitrap pipeline applies a localized, linear adjustment based on a single-point scaling approach, requiring a minimum of 1 calibration point.

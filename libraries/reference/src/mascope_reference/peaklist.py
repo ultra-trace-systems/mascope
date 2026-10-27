@@ -87,7 +87,9 @@ _LIST_KEYS = frozenset(
 _SPECIES_KEYS = frozenset(
     {"formula", "name", "reference", "evidence", "conditions", "radical", "note"}
 )
-_REFERENCE_KEYS = frozenset({"citation", "doi", "isbn", "note"})
+#: The keys a list-level reference may carry, in the order a reader is given
+#: them.
+REFERENCE_KEYS = ("citation", "doi", "isbn", "note")
 
 # A list's id becomes its source name: lower-case words joined by hyphens, so it
 # is safe as a file name and reads the same in `mascope reference status`.
@@ -287,7 +289,7 @@ def _isbn_ok(value: str) -> bool:
 def _reference_problems(reference: dict, where: str) -> list[str]:
     """What keeps one list-level reference from citing its source."""
     problems = []
-    unknown = sorted(set(reference) - _REFERENCE_KEYS)
+    unknown = sorted(set(reference) - set(REFERENCE_KEYS))
     if unknown:
         problems.append(f"{where}: unknown key(s) {', '.join(unknown)}")
     if _text(reference.get("citation")) is None:
@@ -301,6 +303,74 @@ def _reference_problems(reference: dict, where: str) -> list[str]:
     if isbn is not None and not _isbn_ok(isbn):
         problems.append(f"{where}: '{isbn}' is not a valid ISBN")
     return problems
+
+
+def recorded_reference(reference: dict) -> dict | None:
+    """One list-level reference as a source row records it.
+
+    Keeps the keys a reference may carry (:data:`REFERENCE_KEYS`) whose value is
+    text, and only those: a list loaded from outside the shipped ones has met no
+    check, so it is cited by what it does say rather than refused.
+
+    :param reference: A reference as a list's header gives it.
+    :return: The reference, or None when it names no citation, DOI or ISBN.
+    """
+    kept = {key: _text(reference.get(key)) for key in REFERENCE_KEYS}
+    kept = {key: value for key, value in kept.items() if value is not None}
+    if not kept.keys() & {"citation", "doi", "isbn"}:
+        return None
+    return kept
+
+
+def cited_reference(
+    citation: str | None, *, doi: str | None = None, isbn: str | None = None
+) -> dict:
+    """A reference given when a source is loaded, checked as a shipped list's is.
+
+    :param citation: The publication, as a reader would cite it.
+    :param doi: Its DOI.
+    :param isbn: Its ISBN, for a book.
+    :raises ValueError: Naming what keeps it from citing the source: no
+        citation, neither a DOI nor an ISBN, or one that is not valid.
+    :return: The reference, as :func:`recorded_reference` records it.
+    """
+    given = {"citation": citation, "doi": doi, "isbn": isbn}
+    reference = {key: value for key, value in given.items() if value is not None}
+    problems = _reference_problems(reference, "the reference")
+    if problems:
+        raise ValueError("; ".join(problems))
+    return recorded_reference(reference)
+
+
+def given_citations(
+    citation: str | None, doi: str | None, isbn: str | None
+) -> list[dict] | None:
+    """The publication a sync's ``--citation``, ``--doi`` and ``--isbn`` name.
+
+    :param citation: The ``--citation`` flag, or None.
+    :param doi: The ``--doi`` flag, or None.
+    :param isbn: The ``--isbn`` flag, or None.
+    :raises ValueError: As :func:`cited_reference`, for a publication the flags
+        name that does not cite its source.
+    :return: The one reference, or None when no flag is given, so the load
+        records what its dump cites.
+    """
+    if citation is None and doi is None and isbn is None:
+        return None
+    return [cited_reference(citation, doi=doi, isbn=isbn)]
+
+
+def citation_text(reference: dict) -> str:
+    """One recorded reference for a person: its citation and what finds it.
+
+    A list loaded from outside the shipped ones may give only one of the two
+    (:func:`recorded_reference`), and then that one is the text.
+    """
+    citation = reference.get("citation")
+    found_by = reference.get("doi") or reference.get("isbn")
+    if citation and found_by:
+        return f"{citation} ({found_by})"
+    return citation or found_by or ""
 
 
 def list_problems(

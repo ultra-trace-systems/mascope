@@ -301,6 +301,66 @@ def test_a_scope_the_caller_names_is_written_over_the_adapters(sync_engine, tmp_
         assert _source_scope(conn, "v1") == widened
 
 
+# --- What a load cites ------------------------------------------------------------
+
+
+def _citations(conn, version: str):
+    return conn.execute(
+        select(reference_source.c.citations).where(
+            reference_source.c.version == version
+        )
+    ).scalar_one()
+
+
+def test_a_list_file_records_the_publications_it_comes_from(sync_engine, tmp_path):
+    data = {
+        "schema_version": 2,
+        "id": "my-list",
+        "data_version": "v1",
+        "references": [
+            {"citation": "A paper.", "doi": "10.1234/t.1"},
+            {"citation": "A book.", "isbn": "978-3-95806-596-3", "note": "Ch. 2"},
+        ],
+        "species": [{"formula": "C10H16O7"}],
+    }
+    path = _write(tmp_path, "my-list.json", json.dumps(data))
+    result = ingest(sync_engine, PeakListAdapter(), path, version="v1")
+    expected = [
+        {"citation": "A paper.", "doi": "10.1234/t.1"},
+        {"citation": "A book.", "isbn": "978-3-95806-596-3", "note": "Ch. 2"},
+    ]
+    assert list(result.citations) == expected
+    with sync_engine.connect() as conn:
+        assert _citations(conn, "v1") == expected
+
+
+def test_a_dump_that_names_no_publication_records_none(sync_engine, tmp_path):
+    csv = _write(tmp_path, "list.csv", "name,formula,reference\nD4,C8H24O4Si4,10.1/x\n")
+    ingest(sync_engine, CustomAdapter(), csv, version="v1", source_name="my-list")
+    sdf = _write(tmp_path, "pubchem.sdf", SDF_TWO)
+    ingest(sync_engine, PubChemAdapter(), sdf, version="v2")
+    with sync_engine.connect() as conn:
+        # A row's own DOI is the row's, not the list's: an empty list, which
+        # says the load cites nothing, where NULL would say nobody recorded it.
+        assert _citations(conn, "v1") == []
+        assert _citations(conn, "v2") == []
+
+
+def test_the_publications_the_caller_names_are_recorded(sync_engine, tmp_path):
+    path = _write(tmp_path, "list.csv", "name,formula\nD4,C8H24O4Si4\n")
+    cited = [{"citation": "A paper.", "doi": "10.1234/t.1"}]
+    ingest(
+        sync_engine,
+        CustomAdapter(),
+        path,
+        version="v1",
+        source_name="my-list",
+        citations=cited,
+    )
+    with sync_engine.connect() as conn:
+        assert _citations(conn, "v1") == cited
+
+
 # --- Deactivation ------------------------------------------------------------------
 
 

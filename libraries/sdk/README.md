@@ -880,6 +880,17 @@ The compound list is shared by every workspace, so `add`, `update` and `remove` 
 
 `modes()` gives the chemistries samples are acquired under, one row per mode: `ionization_mode_id`, `ionization_mode_name`, `ionization_mode_polarity`, `ionization_mode_token` (the file-name token that routes a file to it), `instrument` (the one instrument it routes files for, or empty for every instrument), `ionization_mechanism_ids`, `system_key` (set on a mode Mascope ships), `calibration_collection_id` and `diagnostic_collection_id`. A sample names its mode by `ionization_mode_id` alone; join on it for the name. `include_system=True` adds the modes Mascope ships that the server has not adopted, which no sample is processed under.
 
+#### `mascope.reference`
+
+| Method | Description | Returns |
+| ------ | ----------- | ------- |
+| `sources()` | The reference lists the server has loaded, one row per active source | `pd.DataFrame` |
+| `compounds(source_name, version=None)` | The compounds one version of a source holds | `pd.DataFrame` |
+
+Reference lists belong to the deployment, not to a workspace, so any role reads them. `sources()` columns: `name`, `version`, `label` (a shipped list's own label, any other source's name), `references` (the publications the list comes from, each a dict with `citation`, `doi`, `isbn` and `note`; as recorded when it was loaded; empty for a source that cites none), `license`, `polarity` (empty for a list of either), `allow_radicals`, `known_window`, `record_count`, `ingested_at` (UTC) and `admitted`: whether the server's licence gate lets peak assignment match the list. Sorted by label; empty when the server has loaded none.
+
+`compounds()` takes a source's `name`, not its label, and reads its active version unless `version` names another. It pages through the API internally, so the whole version comes back, ordered by mass: `name`, `formula`, `monoisotopic_mass`, `inchikey`, `source_native_id` (the list's own id), `reference` (the DOI the list cites) and `tags`. `df.attrs["version"]` names the version read. An unknown source or version raises `NotFoundError`, as does a server that predates the two routes.
+
 #### `mascope.cheminfo`
 
 | Method                                | Description                               | Returns      |
@@ -1066,6 +1077,7 @@ mascope_sdk/
 │   ├── ionization.py    # IonizationResource
 │   ├── matching.py      # MatchingResource (compound matching)
 │   ├── peak_assignments.py  # PeakAssignmentsResource (read persisted assignment runs)
+│   ├── reference.py     # ReferenceResource (the server's reference lists)
 │   ├── sample_files.py  # SampleFilesResource (a file's scan table)
 │   ├── samples.py       # SamplesResource (peaks, spectra, timeseries)
 │   └── workspaces.py    # WorkspacesResource

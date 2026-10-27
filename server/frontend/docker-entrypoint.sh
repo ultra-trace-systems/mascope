@@ -64,6 +64,10 @@ else
       exit 1
       ;;
   esac
+
+  # Authenticated origin pulls, off unless MASCOPE_ORIGIN_PULL=on (see the
+  # script, and the origin-pull blocks in nginx.conf).
+  sh /origin-pull.sh
 fi
 
 exec nginx -g 'daemon off;'

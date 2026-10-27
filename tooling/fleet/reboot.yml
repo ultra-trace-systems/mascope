@@ -151,14 +151,20 @@
           See "Version pinning" in the fleet overview before continuing.
 
     # Probe the origin, never the public URL: from a fleet server Cloudflare's
-    # WAF IP gate answers 403 whether the app is healthy or not.
+    # WAF IP gate answers 403 whether the app is healthy or not. And probe the
+    # host's loopback listener, :8443, not :443: with origin pulls on, :443
+    # answers 403 to anything without the CDN's client certificate. A server
+    # whose release predates that listener refuses the connection (000), and
+    # only then is :443 asked instead.
     - name: Probe the origin API, bypassing Cloudflare
       ansible.builtin.shell:
         cmd: >-
-          curl -sk -o /dev/null -w '%{http_code}' -X POST
+          probe() { curl -sk -o /dev/null -w '%{http_code}' -X POST
           -H 'Content-Type: application/json' -d '{}'
-          --resolve {{ app_host }}:443:127.0.0.1
-          https://{{ app_host }}/api/auth/login
+          --resolve "{{ app_host }}:$1:127.0.0.1"
+          "https://{{ app_host }}:$1/api/auth/login"; };
+          code=$(probe 8443); [ "$code" = 000 ] && code=$(probe 443);
+          echo "$code"
       register: api_probe
       changed_when: false
       failed_when: false
@@ -173,7 +179,8 @@
           The origin API on {{ inventory_hostname }} returned
           '{{ api_probe.stdout | trim }}' instead of 422. A 502 means nginx is
           holding a stale backend container IP - restart mascope_prod_frontend
-          and probe again.
+          and probe again. A 403 means the probe reached :443 with origin pulls
+          on: the loopback listener, :8443, is not published.
 
     - name: Verify with doctor
       ansible.builtin.shell:

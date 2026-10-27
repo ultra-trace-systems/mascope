@@ -30,6 +30,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Package a dataset for a repository such as Zenodo | `mascope export package <dataset id>` |
 | What the method bindings would route, and where a file name disagrees | `mascope prod db script run report_method_binding_disagreements` |
 | Write the MS2 stores of files converted before them (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
+| List the files whose peak store lacks a scan they read, to re-process them | `mascope prod db script run report_stale_peak_stores` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` (fill rate and projection on each line) |
@@ -1216,6 +1217,10 @@ server:
 mascope prod db script run clear_password_change_requirement
 ```
 
+Anyone held at the password screen leaves it at once, as they were moved to it.
+If the script cannot reach Redis it says so, and they leave the screen when they
+reload the page.
+
 Set `MASCOPE_CLEAR_PASSWORD_CHANGE_EMAILS` to a comma-separated list to release
 only some accounts. Note that the pre-script database dump is a whole-database
 restore, not a per-account undo - use the script, not the dump.
@@ -1342,6 +1347,140 @@ The reset changes no password and reveals nothing; it only stops the second
 step being demanded, so the account's holder can sign in and set up a new
 authenticator. Open sessions are not ended - restart the backend if you need
 them closed.
+
+## The edge (Cloudflare) and authenticated origin pulls
+
+A fleet server is reached through Cloudflare. Its firewall admits port 443 from
+Cloudflare's address ranges only (the fleet `firewall` role, or
+[`tooling/ufw-allow-cf.sh`](../tooling/ufw-allow-cf.sh) on a single host), and
+the frontend restores each visitor's address from `CF-Connecting-IP`. Until a
+site's CDN IP allowlist comes off, the allowlist is what keeps the internet away
+from its sign-in page. Before it comes off, the edge has to carry the rest: the
+console settings below, and the origin refusing anything that did not come
+through our own zone.
+
+**Do it on the staging deployment first**, leave it a week, and check GlitchTip
+for new issues before the next site. Then repeat it per site, recording each
+step as done for that site.
+
+### The host's own listener, :8443
+
+The frontend also listens on port 8443, published on the host's `127.0.0.1`
+only. It is the same server as :443, except that it never asks for a client
+certificate. Neither the internet nor a tailnet peer can reach it. It is how
+the host itself reaches the origin once origin pulls are on:
+
+- the reboot playbook's API probe asks it first, and asks :443 only when it is
+  not there, as on a release from before it;
+- the security suite's origin vantage points at it
+  ([monitoring runbook](../tooling/monitoring/README.md), section 10);
+- an operator's check from the host:
+
+```sh
+curl -sk -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{}' \
+  --resolve <app host>:8443:127.0.0.1 https://<app host>:8443/api/auth/login   # 422
+```
+
+### Console checklist
+
+Settings in the Cloudflare dashboard for the site's zone, one checkbox each. The
+application's own limits, which the edge must not undercut for one client, are
+10 sign-in attempts per 60 s per address and 15 per 300 s per account
+(`api/lib/rate_limit.py`).
+
+- [ ] **Managed rules.** The Cloudflare managed ruleset deployed on the zone,
+  with its default actions.
+- [ ] **Rate limit on sign-in and tokens.** One rule: `POST` to
+  `/api/auth/login` or `/api/auth/access_token/regenerate`, counted per IP,
+  **20 requests** in a period of **60 s or less**, action Block. Any threshold
+  above 10 with a period up to 60 s lets the application's own 429 answer one
+  client first. Leave `/api/auth/pairing/` and `/api/auth/mfa/` out: their own
+  limits allow more (30 polls per 60 s, 60 verifies per 300 s).
+- [ ] **Challenge on the sign-in POST only.** A Managed Challenge on `POST` to
+  `/api/auth/login`. Leave everything else challenge-free: SDK and agent calls
+  with a bearer token, `/api/sample/files/upload` and its `tus` route,
+  `/api/auth/pairing/`, and `/socket.io/`. A challenge cannot be solved by a
+  script, so any of those would stop. The web app signs in with `fetch`, and
+  Cloudflare cannot show a challenge to a `fetch` request: check sign-in from a
+  fresh private window on staging before going on. If it fails with a 403
+  carrying `cf-mitigated: challenge`, take the rule off again.
+- [ ] **Skip rule for the security suite.** The rule from GitHub #1889, so the
+  suite's own runs pass the managed rules, the rate limit and the challenge.
+  Until it is built, the suite runs from its origin vantage only.
+- [ ] **Authenticated origin pulls**, with this zone's own certificate (below),
+  turned on **before** the switch at the origin.
+
+### Turning origin pulls on
+
+The origin then answers only a connection that presents a certificate signed by
+our own CA. Cloudflare presents it for our zone alone. Cloudflare's shared
+origin-pull certificate is not used: every Cloudflare customer's zone presents
+that one, so it says only that a request came through Cloudflare, not through
+our zone.
+
+1. Make the CA and the zone's origin-pull certificate, on a machine you trust,
+   not on the server:
+
+   ```sh
+   openssl req -x509 -newkey rsa:4096 -nodes -days 3650 -subj "/CN=Mascope origin pull CA" \
+     -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign \
+     -keyout origin-pull-ca.key -out origin-pull-ca.pem
+   openssl req -newkey rsa:2048 -nodes -subj "/CN=origin pull" \
+     -keyout origin-pull.key -out origin-pull.csr
+   openssl x509 -req -in origin-pull.csr -CA origin-pull-ca.pem -CAkey origin-pull-ca.key \
+     -CAcreateserial -days 825 -out origin-pull.pem
+   ```
+
+   The CA must sign the certificate directly: the origin checks one level only.
+   Keep `origin-pull-ca.key` offline. Put the certificate's expiry date in the
+   calendar.
+2. Upload `origin-pull.pem` and `origin-pull.key` to the zone as its
+   Authenticated Origin Pulls certificate (zone-level, custom certificate), and
+   turn Authenticated Origin Pulls on. Nothing changes yet: the origin does not
+   ask for the certificate. The other order would cut the site off.
+3. On the server, put the CA certificate, never a key, where the frontend reads
+   it, and turn the switch on in `/etc/environment`:
+
+   ```sh
+   cp origin-pull-ca.pem "$(mascope path)/.runtime/secrets/origin_pull_ca.pem"
+   echo MASCOPE_ORIGIN_PULL=on | sudo tee -a /etc/environment
+   export MASCOPE_ORIGIN_PULL=on
+   mascope prod up --detach
+   docker logs mascope_prod_frontend 2>&1 | grep MASCOPE_ORIGIN_PULL
+   ```
+
+   The last command prints `MASCOPE_ORIGIN_PULL=on -> :443 accepts only the
+   CDN's origin-pull certificate`. The CLI creates the CA file empty on every
+   server, so compose starts without it; with the switch on and the file still
+   empty, the frontend refuses to start and says why.
+
+   A reinstall turns origin pulls off without a word. Re-running
+   `tooling/ubuntu.sh` as `reinstall` (what it does with no argument) or
+   `uninstall` deletes every `MASCOPE` line from `/etc/environment` and writes
+   back only `MASCOPE_PATH`. The next boot or update then brings the frontend
+   up with origin pulls off, and `:443` answers anyone again. The origin
+   vantage probes `:8443`, so it cannot see this. After a reinstall, add the
+   line again and re-run step 4's `:443` check (403).
+4. Check it. Through the public URL the site works as before. From the host,
+   `:443` answers 403 and `:8443` answers 422:
+
+   ```sh
+   curl -sk -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{}' \
+     --resolve <app host>:443:127.0.0.1 https://<app host>/api/auth/login   # 403
+   ```
+
+   Then an SDK call with a token, and an upload from a paired agent, through
+   the public URL.
+
+**Rotating.** Before `origin-pull.pem` expires, sign a new one with the same CA
+and upload it to the zone; the origin needs no change. To replace the CA itself,
+put the old and the new CA certificates in `origin_pull_ca.pem`, one after the
+other, bring the stack up again, upload the new certificate, then remove the
+old CA.
+
+**Turning it off.** Remove `MASCOPE_ORIGIN_PULL` from `/etc/environment`,
+unset it, and bring the stack up again; then turn Authenticated Origin Pulls off
+in the zone, if at all.
 
 ## Monitoring
 
@@ -1823,6 +1962,46 @@ MS2_STORE_MODE=run mascope prod db script run backfill_ms2_store  # write; again
   routes read the raw file meanwhile, as before.
 - It changes no database row, only files in the filestore, so the pre-script
   database dump restores nothing it does: `--skip-backup` loses nothing.
+- A store of another version than the release reads is not read, and the
+  backfill counts its file as one to write. A release that changes the
+  version says so in its changelog: run the backfill again after it. Until
+  then those files' MS2 routes read the raw file, as before.
+
+### Peak stores a file has outgrown
+
+A raw Orbitrap file's pooled peak store keeps the scans it was built on,
+while the reader selects a file's scans anew on every read. Until the reader
+compared a file's first scan with the scans of its own MS order and polarity,
+it left an ordinary first MS1 scan out as a TIC outlier in most files with
+MS2 scans, and in polarity-switching files whose other polarity is much
+weaker. Their stores lack that scan, and once a release with the corrected
+rule runs, every read that divides their sums by the file's scans refuses
+them as stale. Peak listings and batch alignments fail on such a file, and
+neither matching nor opening its spectrum repairs it. List them after
+updating:
+
+```sh
+mascope prod db script run report_stale_peak_stores
+```
+
+- Only the files the old rule could misjudge are opened: raw Orbitrap files
+  whose scan-stream census holds MS2 scans or both polarities, and those
+  with no census. Each one's store is compared with the scans its file reads
+  now, from the raw file's scan index alone. Nothing is written, so no dump
+  is taken before it.
+- It counts per instrument and lists each file that has outgrown its store:
+  its `sample_file_id`, its name, and the scans stored against the scans it
+  reads.
+- **Re-process the files listed** (*Re-process* in Raw files, or
+  `POST /api/sample/files/reprocess`), 25 at a time as under
+  [Re-processing a site's older files under the cut](#re-processing-a-sites-older-files-under-the-cut).
+  A re-processing detects the peaks of a file that has outgrown its store,
+  then calibrates and matches its samples on them and writes its MS2 store
+  again.
+- A file marked as holding samples a person made is refused by a
+  re-processing. *Detect peaks* on that file rebuilds its store and matches
+  its samples again, keeping the calibration it had.
+- Run the report again afterwards: it should list nothing.
 
 ### Auditing a TOF instrument's mass calibration
 

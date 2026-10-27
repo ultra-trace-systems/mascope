@@ -16,6 +16,9 @@ builds a small workspace whose names are chosen to test matching::
         Batch "Calibration"          Cal_1
     Collections: "Organic acids" (Workspace A; Blank (A), Spring 2026),
                  "Calibrants" (global; Calibration)
+    Ionization modes: "Bromide" (every sample but these three), none
+                      (Blank 1), "Retired" (a system mode; Sample 3), and
+                      one no listing has (Spring 2026 repeat's Sample 1)
 
 Every sample answers the match route with the recorded tree of CH2O2,
 HNO3 and C6H12O6 (the formulas asked for of those three), refuses a
@@ -74,6 +77,28 @@ ISOTOPE_REFUSED = (
     "composition (e.g. 'C6H12O6'), or use a caret isotope such as "
     "'^N' when the compound really is a labelled reagent."
 )
+#: The ionization modes: adopted ones, and those listed only with
+#: ``include_system`` (a mode the server stopped adopting).
+MODES = [
+    {
+        "ionization_mode_id": "im-x",
+        "ionization_mode_name": "Bromide",
+        "ionization_mode_polarity": "-",
+        # [M+Br]- and [M+Br2]- in the recorded mechanisms, and one there is not
+        "ionization_mechanism_ids": ["4Qcgr7rPeNL", "MVtf9Vz9M8F", "gone"],
+        "system": False,
+    },
+    {
+        "ionization_mode_id": "im-old",
+        "ionization_mode_name": "Retired",
+        "ionization_mode_polarity": "+",
+        "ionization_mechanism_ids": ["c7ytTMLixvs"],  # [M+H]+
+        "system": True,
+    },
+]
+#: Each sample's ionization mode where it is not the recorded one (im-x):
+#: no mode, one listed only with the system modes, and one no listing has.
+SAMPLE_MODES = {"s11": None, "s23": "im-old", "s31": "im-unlisted"}
 COLLECTIONS = {
     "c1": ("ws1", "Organic acids", ["b1", "b2"]),
     "c2": (None, "Calibrants", ["b4"]),
@@ -93,12 +118,17 @@ class FakeAPI:
     :ivar peak_copies: How many copies of the recorded peak list each
         sample answers with (each copy's peaks with IDs of their own), to
         make loads as large as a test needs.
+    :ivar left_out: ``(params, count)``: a peak read whose query has the
+        *params* given warns that *count* peaks were left out, or with
+        *count* None answers as a server up to 1.10.1 does when it left out
+        every peak, set through :meth:`leave_out`.
     """
 
     def __init__(self):
         self.calls: list[tuple[str, str, dict[str, Any], Any]] = []
         self.failures: list[tuple[str, re.Pattern, dict[str, Any], int]] = []
         self.peak_copies = 1
+        self.left_out: list[tuple[dict[str, Any], int | None]] = []
 
     def fail(
         self,
@@ -110,6 +140,15 @@ class FakeAPI:
         """Answer requests whose path fully matches regex *path*, and whose
         query has the *params* given, with *status*."""
         self.failures.append((method, re.compile(path), dict(params or {}), status))
+
+    def leave_out(
+        self, count: int | None, params: dict[str, Any] | None = None
+    ) -> None:
+        """Have peak reads whose query has the *params* given warn, as the
+        server does of a time-ranged read, that *count* peaks without a
+        computed time series were left out of them; *count* None, answer
+        with no peak and no warnings list at all, as an older server does."""
+        self.left_out.append((dict(params or {}), count))
 
     def requests_to(self, path: str, method: str = "GET") -> list[tuple]:
         return [
@@ -196,11 +235,35 @@ class FakeAPI:
                 return 403, {"error": "Forbidden"}
             return 200, _envelope(self._sample(parts[1]))
         if re.fullmatch(r"samples/\w+/peaks", path):
-            return 200, self._peaks(parts[1])
+            peaks = self._peaks(parts[1])
+            for left_params, count in self.left_out:
+                if not left_params.items() <= params.items():
+                    continue
+                if count is None:
+                    peaks.pop("warnings", None)
+                    peaks["data"] = {key: [] for key in peaks["data"]}
+                else:
+                    peaks["warnings"] = [
+                        *peaks["warnings"],
+                        f"{count} peak(s) were excluded because their timeseries "
+                        "have not been computed yet. A peak's timeseries is "
+                        "computed when it is first requested (POST /api/samples/"
+                        "{sample_item_id}/peaks/timeseries); repeat this request "
+                        "afterwards to include them.",
+                    ]
+            return 200, peaks
         if re.fullmatch(r"samples/\w+/spectrum", path):
             return 200, RECORDED["spectrum"]
         if path == "ionization_mechanisms":
             return 200, RECORDED["ionization_mechanisms"]
+        if path == "ionization/modes":
+            system = params.get("include_system") == "true"
+            rows = [
+                {k: v for k, v in mode.items() if k != "system"}
+                for mode in MODES
+                if system or not mode["system"]
+            ]
+            return 200, _envelope(rows, results=len(rows))
         if path == "provenance":
             return 200, RECORDED["provenance"]
         if path == "target/collections":
@@ -230,6 +293,8 @@ class FakeAPI:
             "sample_item_name": name,
             "sample_batch_id": batch,
         }
+        if sample_id in SAMPLE_MODES:
+            record["ionization_mode_id"] = SAMPLE_MODES[sample_id]
         if sample_id in UNMATCHED:
             record["match"] = {**record["match"], "match_sample_id": None}
         return record

@@ -1,9 +1,19 @@
+import threading
+
 import socketio
 
 from mascope_backend.file_converter.socket.events import SocketEventHandler
 from mascope_backend.file_converter.socket.session import FileContextManager
 from mascope_backend.runtime import runtime
 from mascope_backend.service_token import FILE_CONVERTER_SERVICE_TOKEN
+from mascope_runtime.logging import SENTRY_FINGERPRINT
+
+
+# The acknowledgement codes that are a verdict on the token itself: any later
+# event carrying it would be dropped as well. The others (the token could not
+# be checked just now, the backend's role configuration is broken) say
+# nothing about the next event, so it is still sent.
+TOKEN_REJECTIONS = frozenset({"SOCKET_UNAUTHENTICATED", "SOCKET_FORBIDDEN"})
 
 
 class FileConverterSocketClient:
@@ -24,6 +34,18 @@ class FileConverterSocketClient:
             websocket_extra_options={"suppress_origin": True},
         )
         self.context_manager = FileContextManager()
+        # The access token the backend last rejected for each file (by its
+        # normalized name): an event for that file carrying that token would
+        # only be dropped again, so it is not sent. A later context or peak
+        # request brings a fresh token, which is sent as usual. Only a
+        # rejection of the token itself (TOKEN_REJECTIONS) is kept here.
+        # Written from the Socket.IO thread that runs acknowledgement
+        # callbacks, read from the processing threads that emit.
+        self._rejected_tokens: dict[str | None, str | None] = {}
+        # The (file, token, code) rejections already logged, so each is
+        # logged once however many events it drops
+        self._reported_rejections: set[tuple[str | None, str | None, str]] = set()
+        self._rejected_lock = threading.Lock()
         self.event_handler = SocketEventHandler(
             self,
             peak_recompute_queue=peak_recompute_queue,
@@ -101,6 +123,78 @@ class FileConverterSocketClient:
                             "user_id": file_context.user_id,
                         }
                     )
-            self.sio.emit(event, data, namespace="/file-converter")
+            file_key = self._file_key(data)
+            access_token = data.get("access_token")
+            if access_token and self._is_rejected(file_key, access_token):
+                runtime.logger.debug(
+                    f"Not emitting {event} for {data.get('filename')}: "
+                    "the backend rejected its access token"
+                )
+                return
+            self.sio.emit(
+                event,
+                data,
+                namespace="/file-converter",
+                callback=self._acknowledgement_handler(event, file_key, access_token),
+            )
         except Exception:
             runtime.logger.exception(f"Failed to emit {event}")
+
+    def _file_key(self, data: dict) -> str | None:
+        """The name rejections are kept under: the file's normalized name, so
+        a polarity's events and its file's share one (None for no file)."""
+        filename = data.get("filename")
+        if not isinstance(filename, str):
+            return None
+        return self.context_manager._normalize_filename(filename)
+
+    def _is_rejected(self, file_key: str | None, access_token: str) -> bool:
+        with self._rejected_lock:
+            return self._rejected_tokens.get(file_key) == access_token
+
+    def _acknowledgement_handler(
+        self, event: str, file_key: str | None, access_token: str | None
+    ):
+        """The callback that reads the backend's acknowledgement of ``event``.
+
+        The backend acknowledges an event it rejects for auth with
+        ``{"error": <code>}`` and drops it (``file_converter_socket_auth``); an
+        accepted event's acknowledgement is its handler's return, today
+        nothing. A rejection is logged once per file, token and code. A
+        rejection of the token itself (``TOKEN_REJECTIONS``) also remembers
+        the token, so ``emit`` stops sending that file's events with it;
+        any other code drops that one event only, since the next may pass.
+        Events already sent before the first acknowledgement came back are
+        dropped by the backend too, and logged no further. An event sent
+        with no token is never held back: ``emit`` compares only a token it
+        is about to send.
+        """
+
+        def on_acknowledgement(*args):
+            payload = args[0] if args else None
+            if not isinstance(payload, dict) or "error" not in payload:
+                return
+            code = str(payload["error"])
+            holds_back = code in TOKEN_REJECTIONS
+            with self._rejected_lock:
+                if holds_back:
+                    self._rejected_tokens[file_key] = access_token
+                reported = (file_key, access_token, code)
+                if reported in self._reported_rejections:
+                    return
+                self._reported_rejections.add(reported)
+            consequence = (
+                "not sending further events for it with this access token"
+                if holds_back
+                else "that event is lost; later events are still sent"
+            )
+            # One issue for every such rejection: the file name in the
+            # message would otherwise split it into one per file
+            runtime.logger.bind(
+                **{SENTRY_FINGERPRINT: ["file-converter-event-rejected", code]}
+            ).warning(
+                f"The backend rejected file converter event {event} for "
+                f"{file_key}: {code}; {consequence}"
+            )
+
+        return on_acknowledgement
