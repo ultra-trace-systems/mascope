@@ -271,7 +271,7 @@ def scans_per_peak(peak_data: xr.Dataset, timestamps: np.ndarray) -> np.ndarray:
 
 
 def stored_scans_per_peak(
-    peak_data: xr.Dataset, polarity_scans: np.ndarray
+    peak_data: xr.Dataset, polarity_scans: np.ndarray, file_scans: np.ndarray
 ) -> np.ndarray:
     """How many scans each peak's stored sum is over, one per peak.
 
@@ -281,11 +281,17 @@ def stored_scans_per_peak(
     of the polarity's scans can be one short of the axis - the file's first
     scan is left out where its TIC is an outlier among the file's scans of
     its MS order and polarity and not among its own stream's, as a composite
-    method's reagent scan is -
-    and counted by that read, the stream's ions would average a quarter
-    high. A pooled store's axis holds every scan of the file with no
-    polarity on it, so its count is the polarity's scans as the caller read
-    them, the same read the store was summed over.
+    method's reagent scan is - and counted by that read, the stream's ions
+    would average a quarter high.
+
+    A pooled store's axis holds every scan of the file with no polarity on
+    it, so its count is the polarity's scans as the caller read them: the
+    read the store was summed over, for as long as the file reads back the
+    store's axis. A file whose reader selects a scan the store was not
+    allocated with - a first scan the outlier rule keeps that it once left
+    out - would divide sums over n scans by n + 1 and read low with nothing
+    to show for it, so such a store is refused as stale, as reading its
+    timeseries refuses it.
 
     :param peak_data: A peak store, or a selection of its peaks; with
         ``scan_stream`` along ``time`` for a per-stream store
@@ -293,11 +299,19 @@ def stored_scans_per_peak(
     :param polarity_scans: The polarity's scans as read file-wide, the count
         of a pooled store
     :type polarity_scans: np.ndarray
+    :param file_scans: Every scan of the file as read file-wide, of no one
+        polarity (:func:`get_scan_timestamps`): what a pooled store's axis
+        was allocated from, and is checked against
+    :type file_scans: np.ndarray
+    :raises StalePeakStoreError: If a pooled store with peaks has an axis the
+        file no longer reads back (:func:`check_stored_scan_axis`)
     :return: One count per peak, never below one
     :rtype: np.ndarray
     """
     streams = peak_store_streams(peak_data)
     if not streams:
+        if peak_data.mz.size:
+            check_stored_scan_axis(file_scans, peak_data.time.values)
         return np.full(peak_data.mz.size, max(len(polarity_scans), 1), dtype=int)
     scan_streams = np.asarray(peak_data.scan_stream.values, dtype=int)
     return _counts_per_peak(peak_data, scan_streams, len(streams))

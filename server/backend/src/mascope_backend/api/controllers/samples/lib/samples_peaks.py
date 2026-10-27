@@ -101,15 +101,21 @@ def _stored_sum_divisor(
     peak - a stream's peak over its own stream's scans, a pooled store's over
     its polarity's. A whole file can hold peaks of both polarities, so each
     peak is counted against its own polarity's scans.
+
+    :raises StalePeakStoreError: For a pooled store whose axis the file no
+        longer reads back (``stored_scans_per_peak``)
     """
     if not average:
         return 1
     divisor = np.ones(data.mz.size, dtype=int)
     polarities = data.polarity.values
+    file_scans = m_compute.get_scan_timestamps(filename)
     for polarity in np.unique(polarities):
         at = np.flatnonzero(polarities == polarity)
         timestamps = m_compute.get_scan_timestamps(filename, polarity=str(polarity))
-        divisor[at] = m_compute.stored_scans_per_peak(data.isel(mz=at), timestamps)
+        divisor[at] = m_compute.stored_scans_per_peak(
+            data.isel(mz=at), timestamps, file_scans
+        )
     return divisor
 
 

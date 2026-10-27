@@ -11,12 +11,22 @@
   polarity, as a stream's first scan already was with its stream's. Only
   a selection that holds the first scan logs its exclusion, so
   `backfill_ms2_store` no longer prints the line six times for nearly every
-  file it writes.
+  file it writes. A single-polarity file without MS2 scans reads as before.
 
-  The peak stores of the files whose first scan comes back no longer match
-  the scans their file reads: opening such a sample or matching it queues
-  its peak detection, and re-processing the files does the same at once. A
-  single-polarity file without MS2 scans reads as before. The MS2 store
-  moves to version 2, since an older store's index can lack that first scan:
-  until `backfill_ms2_store` runs again (`docs/maintaining.md`, "The MS2
-  store"), those files' MS2 routes read the raw file.
+  The peaks stored for a file whose first scan comes back were summed
+  without it, so they no longer match the scans the file reads. Every read
+  that divides those sums by the file's scans refuses such a store as
+  stale, so nothing averages low unnoticed. Opening the sample's spectrum
+  or matching it queues its peak detection; listing its peaks or aligning a
+  batch that holds it asks for that detection by name. Re-processing the
+  MS2 and polarity-switching files after the upgrade (*Re-process* in Raw
+  files) rebuilds them up front.
+
+  Operators: cached averaged profiles move to a new generation
+  (`...-g6.zarr`), since one averaged before can lack that first scan. Every
+  raw Orbitrap sample is averaged anew on its first view, single-polarity
+  files to the profile they had. Reclaim the space the old caches take with
+  `python -m mascope_backend.db.admin.filestore delete-stale-sum-signal`.
+  The MS2 store moves to version 2, since an older store's index can lack
+  the first scan too. Run `backfill_ms2_store` again (`docs/maintaining.md`,
+  "The MS2 store"); until then those files' MS2 routes read the raw file.

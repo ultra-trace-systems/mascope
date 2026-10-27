@@ -45,8 +45,12 @@ ENV_BACKEND = "MASCOPE_THERMO_BACKEND"
 
 # The generation of the OpenTFRaw backend's average_profile, which
 # averaged_profile_signature names: bump it whenever average_profile returns a
-# different profile from the same samples, or a cached profile computed the old
-# way keeps being served as the new one. Generation 5 adds every scan to the
+# different profile from the same samples, or a selection averages different
+# scans, or a cached profile computed the old way keeps being served as the
+# new one. Generation 6 averages the first scan the outlier rule kept once it
+# compared that scan within its own MS order and polarity: a profile of
+# generation 5 can lack an ordinary first scan of a file with MS2 scans or of
+# one that switches polarity. Generation 5 adds every scan to the
 # sum at its own first and last samples, which earlier ones left out wherever
 # the grid point there lay outside the scan's own range, and finds the clusters
 # its baseline zeros go around on the frequency grid; generation 4 found them
@@ -57,7 +61,7 @@ ENV_BACKEND = "MASCOPE_THERMO_BACKEND"
 # fitting the axis to the centroid labels. From generation 2 each grid point
 # sits at the mean of the real frequencies in its cell; generation 1 placed it
 # at the cell's centre.
-AVERAGED_PROFILE_GENERATION = 5
+AVERAGED_PROFILE_GENERATION = 6
 
 Polarity = Literal["+", "-"]
 MsType = Literal["Ms", "Ms2"]

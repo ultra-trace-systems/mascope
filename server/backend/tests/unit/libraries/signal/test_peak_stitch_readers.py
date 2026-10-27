@@ -143,6 +143,42 @@ def first_scan_left_out(monkeypatch):
     monkeypatch.setattr(m_compute, "get_scan_timestamps", _short)
 
 
+@pytest.fixture
+def first_scan_now_kept(monkeypatch):
+    """Every read of the file one scan longer than the store's axis, at its
+    start: a first scan the TIC rule left out when the store was built, by
+    comparing it with weaker scans of another MS order or polarity, and that
+    the reader now keeps."""
+    read = m_compute.get_scan_timestamps
+
+    def _longer(base_filename, *args, **kwargs):
+        timestamps = read(base_filename, *args, **kwargs)
+        if kwargs.get("stream") is not None or not timestamps.size:
+            return timestamps
+        return np.concatenate(([timestamps[0] - 1.0], timestamps))
+
+    monkeypatch.setattr(m_compute, "get_scan_timestamps", _longer)
+
+
+@pytest.fixture
+def without_survey_scans(acquire, monkeypatch):
+    """An acquisition of fragmentation scans alone, as the converter stores
+    it: a store with no peaks over every scan of the file, the only axis it
+    has, and a file that reads back no MS1 scans."""
+    acquisition = acquire(COMPOSITE, MICROSCANS)
+    m_peak.write_empty_peak_timeseries(SAMPLE_FILENAME, scan_type=None)
+    read = m_compute.get_scan_timestamps
+
+    def _no_survey_scans(base_filename, *args, **kwargs):
+        timestamps = read(base_filename, *args, **kwargs)
+        if kwargs.get("scan_type", "Ms") == "Ms":
+            return timestamps[:0]
+        return timestamps
+
+    monkeypatch.setattr(m_compute, "get_scan_timestamps", _no_survey_scans)
+    return acquisition
+
+
 def test_scans_per_peak_counts_each_peaks_own_stream_among_the_scans_given(composite):
     whole = m_io.load_peak_data(SAMPLE_FILENAME, composite=False).compute()
     timestamps = m_compute.get_scan_timestamps(SAMPLE_FILENAME, polarity="-")
@@ -174,10 +210,17 @@ def test_a_stored_sum_is_counted_on_the_stores_own_axis(composite):
     stored sums were taken over the axis, so that is what counts them."""
     whole = m_io.load_peak_data(SAMPLE_FILENAME, composite=False).compute()
     timestamps = m_compute.get_scan_timestamps(SAMPLE_FILENAME, polarity="-")
+    file_scans = m_compute.get_scan_timestamps(SAMPLE_FILENAME)
 
     expected = [SCANS_OF_STREAM[int(s)] for s in whole.stream.values]
-    assert m_compute.stored_scans_per_peak(whole, timestamps).tolist() == expected
-    assert m_compute.stored_scans_per_peak(whole, timestamps[1:]).tolist() == expected
+    assert (
+        m_compute.stored_scans_per_peak(whole, timestamps, file_scans).tolist()
+        == expected
+    )
+    assert (
+        m_compute.stored_scans_per_peak(whole, timestamps[1:], file_scans).tolist()
+        == expected
+    )
 
 
 def test_a_pooled_store_is_counted_by_the_polaritys_scans_as_read(pooled):
@@ -194,10 +237,16 @@ def test_a_pooled_store_is_counted_by_the_polaritys_scans_as_read(pooled):
     assert (
         m_compute.scans_per_peak(store, timestamps[:4]).tolist() == [4] * store.mz.size
     )
+    file_scans = m_compute.get_scan_timestamps(SAMPLE_FILENAME)
     assert (
-        m_compute.stored_scans_per_peak(store, timestamps).tolist()
+        m_compute.stored_scans_per_peak(store, timestamps, file_scans).tolist()
         == [SCANS] * store.mz.size
     )
+    # A file that reads a scan the store's axis does not hold: refused, not
+    # counted, since its sums are over one scan fewer than the count
+    earlier = np.concatenate(([file_scans[0] - 1.0], file_scans))
+    with pytest.raises(m_compute.StalePeakStoreError, match="scan counts differ"):
+        m_compute.stored_scans_per_peak(store, timestamps, earlier)
     assert (
         m_compute.scans_per_peak(store, timestamps[:0]).tolist() == [1] * store.mz.size
     )
@@ -281,6 +330,64 @@ def test_a_pooled_store_lists_and_aligns_as_it_always_did(pooled):
         for mz_value, per_scan in PER_SCAN.items():
             pooled_average = per_scan * SCANS_OF_STREAM[STREAM_OF[mz_value]] / SCANS
             assert heights[mz_value] == pytest.approx(pooled_average), mz_value
+
+
+def test_a_pooled_store_the_file_has_outgrown_is_refused_not_averaged_low(
+    pooled, first_scan_now_kept
+):
+    """Its sums are over the scans it was allocated with; divided by the
+    polarity's scans as the file reads them now, one more, every peak would
+    list and align low by one part in fifteen with nothing to say so. Both
+    readers refuse the store as stale instead, as a fill of it does, and
+    that is what queues its rebuild where a stale store is met."""
+    timestamps = m_compute.get_scan_timestamps(SAMPLE_FILENAME, polarity="-")
+    assert timestamps.size == SCANS + 1
+
+    with pytest.raises(m_compute.StalePeakStoreError, match="scan counts differ"):
+        extract_peaks(
+            SAMPLE_FILENAME, "-", float(timestamps.min()), float(timestamps.max())
+        )
+    with pytest.raises(m_compute.StalePeakStoreError, match="scan counts differ"):
+        _sync_load_peak_data(SAMPLE_FILENAME, "-", "sum_peak_heights")
+
+
+def test_a_per_stream_store_is_counted_on_its_axis_whatever_the_file_reads(
+    composite, first_scan_now_kept
+):
+    """A per-stream store counts its sums on its own axis, so a read of the
+    file one scan longer moves nothing: each ion still lists at its height
+    per scan, and nothing is refused."""
+    timestamps = m_compute.get_scan_timestamps(SAMPLE_FILENAME, polarity="-")
+    listed = extract_peaks(
+        SAMPLE_FILENAME, "-", float(timestamps.min()), float(timestamps.max())
+    )
+
+    heights = _by_mz(listed.mz_values, listed.heights)
+    for mz_value, per_scan in PER_SCAN.items():
+        assert heights[mz_value] == pytest.approx(per_scan), mz_value
+
+
+def test_a_store_without_peaks_is_not_held_to_the_files_ms1_scans(
+    without_survey_scans,
+):
+    """A store with no peaks holds no sums to divide, so its axis is not
+    checked against the file's read. For a file of fragmentation scans alone
+    that axis is every scan and the read is none: held to it, the store would
+    be refused as stale, and with it the alignment of any batch that holds
+    the file."""
+    store = m_io.load_peak_data(SAMPLE_FILENAME).compute()
+    file_scans = m_compute.get_scan_timestamps(SAMPLE_FILENAME)
+    assert store.mz.size == 0
+    assert store.time.size == SCANS
+    assert file_scans.size == 0
+
+    timestamps = m_compute.get_scan_timestamps(SAMPLE_FILENAME, polarity="-")
+    assert m_compute.stored_scans_per_peak(store, timestamps, file_scans).size == 0
+
+    mz, intensity, peak_id = _sync_load_peak_data(
+        SAMPLE_FILENAME, "-", "sum_peak_heights"
+    )
+    assert mz.size == intensity.size == peak_id.size == 0
 
 
 def test_an_asked_mz_is_resolved_on_the_listing(composite):
