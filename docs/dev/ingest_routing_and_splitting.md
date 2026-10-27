@@ -826,9 +826,13 @@ be matched, is the same question from the store's side (4.3).
   MS1 scans and outnumber them: 13 of the corpus's 20 MS2 files lost their
   first MS1 scan, each within 0.97 to 1.03 times the next MS1 scans (two at
   1.9 and 2.7 times). The rule was changed for that, and the stores of the
-  files whose selection changed go stale once: the matching and spectrum
-  views queue their peak detection on first read, and re-processing them
-  does the same at once.
+  files whose selection changed go stale once. Every read that divides a
+  pooled store's sums by the file's scans checks the store's axis first
+  (`stored_scans_per_peak`), so such a store is refused rather than
+  averaged low: the matching and spectrum views queue its peak detection,
+  and re-processing the files does it at once. Cached averaged profiles
+  moved to generation 6 with it, since one averaged before can lack the
+  first scan.
 
   **That the rule stays a rule about the file's first scan is a choice the
   files in reach support and do not prove.** The other reading - leave out
