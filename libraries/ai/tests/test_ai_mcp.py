@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 from loguru import logger
 
-from mascope_ai import Frame, Ref, Session, mcp
+from mascope_ai import Frame, Ref, Session, Toolkit, mcp
 from mascope_ai.mcp import (
     INSTRUCTIONS,
     MAX_RESULT_BYTES,
@@ -20,6 +20,7 @@ from mascope_ai.mcp import (
     PROTOCOL_VERSIONS,
     TEXT_CHARS,
     TOOLS,
+    Own,
     Server,
     fit,
     inert,
@@ -252,6 +253,15 @@ class TestResults:
     def test_fit_gives_up_with_an_error_rather_than_a_long_result(self):
         result = {f"key {i}": "y" for i in range(2000)}
         assert fit(result, 1000)["error"] == "too_large"
+
+    def test_the_server_s_own_strings_are_left_whole(self):
+        line = Own("x\n" * 300)
+        result = {"open": line, **{f"key {i}": "y" * 150 for i in range(20)}}
+        out = fit(result, 3000)
+        assert out["open"] == line
+        assert len(out["key 0"]) < 150
+        # A mapping of Mascope's cannot pass a value off as one by its key
+        assert inert({"open": "x\n" * 300})["open"] == inert("x\n" * 300)
 
     def test_a_result_too_large_to_fit_is_an_error(self, server, monkeypatch):
         monkeypatch.setattr(
@@ -829,6 +839,30 @@ class TestAnswerAndSession:
         scope: dict = {}
         exec(out["open"], scope)
         assert scope["session"].frame(loaded["frame"]).n_rows == 36
+
+    def test_its_paths_and_python_are_whole_however_long(
+        self, kit, tmp_path, monkeypatch
+    ):
+        session = Session("long", root=tmp_path / ("deep" * 50))
+        deep = Toolkit(kit.client, session=session)
+        server = Server(session, make_toolkit=lambda session: deep)
+        python = "/opt/" + "python" * 40
+        monkeypatch.setattr(sys, "executable", python)
+        loaded = ok(server, "load_peaks", batches=["Spring 2026"])
+        assert len(loaded["rows_in_python"]) > TEXT_CHARS
+        rows = eval(loaded["rows_in_python"], {"Session": Session})
+        assert len(rows) == 36
+        matched = ok(server, "match_compounds", sample="s21", formulas=["CH2O2"])
+        tree = eval(matched["tree"]["rows_in_python"], {"Session": Session})
+        assert len(tree) == matched["tree"]["rows"]
+        answered = ok(server, "answer", text="Sample 1 is highest.")
+        assert answered["manifest"] == str(session.manifest.path)
+        out = ok(server, "session")
+        assert out["directory"] == str(session.path)
+        assert out["python"] == python
+        scope: dict = {}
+        exec(out["open"], scope)
+        assert scope["session"].path == session.path
 
     def test_session_needs_no_connection(self, kit):
         def make(session):
