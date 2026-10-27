@@ -323,3 +323,147 @@ def sdk_errors(
             f"Could not {operation} {target or 'it'}: {e}. The SDK already "
             "retried; try again later, or ask whoever runs the server."
         ) from e
+
+
+class GlobalNamespace(ToolkitError):
+    """A plan that would write what every workspace shares: a global
+    collection, or a target compound's record.
+
+    The server's ACL may allow it - a global admin's role does - but the
+    toolkit does not plan it unless the user asked for it in so many words
+    (``allow_global=True``), and such a plan is gated hard.
+
+    :ivar target: The shared object, if there is one yet.
+    """
+
+    code = "global_namespace"
+
+    def __init__(self, message: str, target: Ref | None = None):
+        self.target = target
+        super().__init__(
+            f"{message} It is shared by every workspace, so the toolkit "
+            "plans no write to it by default. Only if the user asked for "
+            "exactly this, plan again with allow_global=True."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"target": self.target.to_dict() if self.target else None}
+
+
+class ApprovalRefused(ToolkitError):
+    """An ``apply`` without the person's approval of that very plan: no
+    confirm token, or one minted for another plan or another version of it.
+
+    A confirm token comes from the transport when a person approves the plan
+    (a permission prompt, an approval card), never from the model.
+
+    :ivar plan_id: The plan.
+    """
+
+    code = "approval_refused"
+
+    def __init__(self, plan_id: str, reason: str):
+        self.plan_id = plan_id
+        super().__init__(
+            f"Plan {plan_id} was not applied: {reason} Show the person the "
+            "plan and let them approve it; their approval gives the token."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"plan_id": self.plan_id}
+
+
+class PlanExpired(ToolkitError):
+    """A plan past its ``expires_at``: what it recorded may be out of date.
+
+    :ivar plan_id: The plan.
+    :ivar expires_at: When it expired, as ISO text.
+    """
+
+    code = "plan_expired"
+
+    def __init__(self, plan_id: str, expires_at: str):
+        self.plan_id = plan_id
+        self.expires_at = expires_at
+        super().__init__(
+            f"Plan {plan_id} expired at {expires_at} and was not applied. "
+            "Plan it again from the current state."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"plan_id": self.plan_id, "expires_at": self.expires_at}
+
+
+class PlanConsumed(ToolkitError):
+    """A plan already applied, being applied, or stopped: its approval was
+    used once and a plan is never applied twice.
+
+    :ivar plan_id: The plan.
+    :ivar state: ``applying``, ``applied``, ``failed`` or ``drifted``.
+    """
+
+    code = "plan_consumed"
+
+    def __init__(self, plan_id: str, state: str):
+        self.plan_id = plan_id
+        self.state = state
+        said = {
+            "applying": "is being applied under another approval",
+            "applied": "was already applied",
+            "failed": "failed part-way and is not applied again",
+            "drifted": "was stopped because its objects changed",
+        }.get(state, f"is {state}")
+        super().__init__(
+            f"Plan {plan_id} {said}; this call wrote nothing. A plan is "
+            "applied once: plan again for another change."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"plan_id": self.plan_id, "state": self.state}
+
+
+class PlanDrifted(ToolkitError):
+    """A plan whose objects changed since it was made: a ``before`` it
+    recorded no longer holds, so nothing was written.
+
+    :ivar plan_id: The plan.
+    :ivar diff: Each change that no longer holds: the object, the field,
+        the value the plan recorded and the value now.
+    """
+
+    code = "plan_drifted"
+
+    def __init__(self, plan_id: str, diff: Sequence[dict[str, Any]]):
+        self.plan_id = plan_id
+        self.diff = list(diff)
+        super().__init__(
+            f"Plan {plan_id} was not applied: {len(self.diff)} of its "
+            "objects changed since it was made (diff). Nothing was written; "
+            "plan again from the current state."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"plan_id": self.plan_id, "diff": _listed(self.diff)}
+
+
+class PartiallyApplied(ToolkitError):
+    """A plan whose writes stopped part-way: the receipt says which changes
+    were applied. It is not applied again; plan again from the new state.
+
+    :ivar receipt: The plan's :class:`~mascope_ai.plans.Receipt`.
+    """
+
+    code = "partially_applied"
+
+    def __init__(self, receipt: Any):
+        self.receipt = receipt
+        failure = receipt.failure or {}
+        super().__init__(
+            f"Plan {receipt.plan_id} stopped part-way: "
+            f"{len(receipt.applied)} change(s) were applied before a write "
+            f"failed ({failure.get('message', 'unknown error')}). It is not "
+            "applied again; plan again from the new state."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"receipt": self.receipt.to_dict()}

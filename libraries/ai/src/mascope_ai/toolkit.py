@@ -29,7 +29,8 @@ Every call is written to the session's provenance manifest
 import functools
 import inspect
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
+from datetime import timedelta
 from typing import Any
 
 import pandas as pd
@@ -38,6 +39,7 @@ from mascope_sdk import MascopeClient, _loaders
 from mascope_sdk.exceptions import ValidationError
 from mascope_sdk.resources.samples import _EMPTY_RANGE_UNEXPLAINED
 
+from . import writes
 from .errors import (
     LISTED,
     AccessDenied,
@@ -68,6 +70,7 @@ from .oracle import (
     formula_key,
     tree_rows,
 )
+from .plans import PLAN_TTL, Approver, Move, Plan, Receipt
 from .refs import KINDS, Ref
 from .session import Session
 
@@ -325,8 +328,10 @@ def _param(value: Any) -> Any:
         return value.to_dict()
     if isinstance(value, Frame):
         return {"$frame": value.id}
-    if isinstance(value, Candidate):
+    if isinstance(value, (Candidate, Move)):
         return value.to_dict()
+    if isinstance(value, Plan):
+        return {"$plan": value.id}
     if isinstance(value, re.Pattern):
         return {"$regex": value.pattern}
     if isinstance(value, pd.DataFrame):
@@ -372,6 +377,23 @@ def _result(record: dict[str, Any], result: Any) -> None:
             "mascope": ["candidate formula, mechanism, m/z and ppm error"],
             "client": {},
         }
+    elif isinstance(result, Plan):
+        record["refs"] = ref_list(result.affected)
+        record["plan"] = {
+            "id": result.id,
+            "kind": result.kind,
+            "digest": result.digest,
+            "gate": result.gate,
+            "n_changes": len(result.changes),
+        }
+        if result.preview is not None:
+            record["values"] = {
+                "mascope": sorted(result.preview),
+                "client": {},
+            }
+    elif isinstance(result, Receipt):
+        record["refs"] = ref_list(result.results)
+        record["receipt"] = result.to_dict()
     elif isinstance(result, Found):
         record["refs"] = ref_list(result)
     elif isinstance(result, Ref):
@@ -381,11 +403,12 @@ def _result(record: dict[str, Any], result: Any) -> None:
         record["values"] = {"mascope": sorted(result), "client": {}}
 
 
-def _recorded(op: str):
+def _recorded(op: str, withheld: tuple[str, ...] = ()):
     """Write each call of the method into the session's manifest.
 
     Only the outermost call is written: a loader's own ``resolve`` is part
-    of the load, not a call of its own.
+    of the load, not a call of its own. The parameters named in *withheld*
+    are recorded only as given or not: a confirm token never reaches a file.
     """
 
     def wrap(method):
@@ -401,7 +424,11 @@ def _recorded(op: str):
                 "type": "call",
                 "op": op,
                 "params": {
-                    name: _param(value)
+                    name: (
+                        ("<withheld>" if value else None)
+                        if name in withheld
+                        else _param(value)
+                    )
                     for name, value in list(bound.arguments.items())[1:]
                 },
             }
@@ -443,6 +470,8 @@ class Toolkit:
         workspace: str | None = None,
         service_name: str = "ai-agent",
         max_workers: int = 8,
+        approver: Approver | None = None,
+        plan_ttl: timedelta = PLAN_TTL,
     ):
         """Open the toolkit over a client.
 
@@ -455,6 +484,10 @@ class Toolkit:
             AI agent's token is generated for ``ai-agent`` and refused under
             any other name.
         :param max_workers: Concurrent reads of a load, at most 8.
+        :param approver: The transport's :class:`~mascope_ai.plans.Approver`,
+            which mints the confirm tokens :meth:`apply` takes when a person
+            approves a plan; a new one, of this toolkit alone, when None.
+        :param plan_ttl: How long a plan stays appliable.
         """
         self.client = client or MascopeClient(
             workspace=workspace, service_name=service_name
@@ -462,6 +495,8 @@ class Toolkit:
         self.session = session if session is not None else Session()
         self.session.reloader = self._rerun
         self.max_workers = max_workers
+        self.approver = approver if approver is not None else Approver()
+        self.plan_ttl = plan_ttl
         self._recording = False
         self._opened = False
 
@@ -1849,6 +1884,187 @@ class Toolkit:
         )
         self.session.save(frame, rows)
         return frame
+
+    # --- writes: plan, then apply ---------------------------------------------
+
+    @_recorded("plan_organize")
+    def plan_organize(self, moves: Sequence[Move]) -> Plan:
+        """Plan moves of datasets into workspaces and samples into batches.
+
+        Writes nothing: the plan says what would change, and :meth:`apply`
+        makes it once a person approved it. Mascope has no route that moves
+        a batch into another dataset, so a batch's move is refused here.
+
+        :param moves: ``Move(item, to)`` each: a dataset and the workspace it
+            goes into, or a sample and its new batch; Refs, or names or IDs
+            with ``kind``. ``(item, to)`` tuples are taken too.
+        :return: The plan, kept in the session.
+        :raises AccessDenied: When the user's role in a workspace the moves
+            touch is not enough: the apply would be refused.
+        :raises InvalidRequest: On a batch, a locked sample or batch, or an
+            object already where it would go.
+        """
+        return writes.plan_organize(self, moves)
+
+    @_recorded("plan_collection")
+    def plan_collection(
+        self,
+        name: str,
+        compounds: Sequence[Any] = (),
+        *,
+        workspace: "Ref | str | None" = None,
+        base: "Ref | str | None" = None,
+        batches: Sequence["Ref | str"] = (),
+        description: str | None = None,
+        collection_type: str | None = None,
+        is_global: bool = False,
+        allow_global: bool = False,
+    ) -> Plan:
+        """Plan a new target collection.
+
+        :param name: Its name, not yet taken in its workspace.
+        :param compounds: Formulas, Candidates, or dicts of
+            ``target_compound_formula`` and ``target_compound_name``.
+        :param workspace: Its workspace; the client's when None.
+        :param base: A collection whose compounds it starts with (the same
+            compounds, by ID: nothing new in the shared compound list).
+        :param batches: Batches of the client's workspace to associate it
+            with.
+        :param description: Its description.
+        :param collection_type: ``TARGETS``, ``DIAGNOSTICS`` or
+            ``CALIBRANTS``; the server's default when None.
+        :param is_global: Make it global, in every workspace. Refused
+            unless *allow_global*.
+        :param allow_global: The user asked, in so many words, for a write
+            that every workspace shares: a global collection, or compounds
+            that give a CAS number or a structure, which Mascope fills into
+            the shared record of a compound that exists. Such a plan is
+            gated hard.
+        :return: The plan, kept in the session.
+        :raises GlobalNamespace: For a shared write without *allow_global*.
+        """
+        return writes.plan_collection(
+            self,
+            name,
+            compounds,
+            workspace=workspace,
+            base=base,
+            batches=batches,
+            description=description,
+            collection_type=collection_type,
+            is_global=is_global,
+            allow_global=allow_global,
+        )
+
+    @_recorded("plan_associate")
+    def plan_associate(
+        self,
+        collection: "Ref | str",
+        batches: Sequence["Ref | str"] = (),
+        *,
+        detach: Sequence["Ref | str"] = (),
+        allow_global: bool = False,
+    ) -> Plan:
+        """Plan associating a target collection with batches, or detaching
+        it from some: the batches-only update, which needs only the guest
+        role on the collection and the editor role on the batches changed.
+
+        :param collection: The collection.
+        :param batches: Batches to associate it with.
+        :param detach: Batches to detach it from.
+        :param allow_global: Plan it even for a global collection: only when
+            the user asked for exactly that. Gated hard.
+        :return: The plan, kept in the session.
+        :raises GlobalNamespace: For a global collection without
+            *allow_global*.
+        """
+        return writes.plan_associate(
+            self, collection, batches, detach=detach, allow_global=allow_global
+        )
+
+    @_recorded("plan_match")
+    def plan_match(
+        self,
+        scope: "Ref | str",
+        targets: str | None = None,
+        params: dict[str, Any] | None = None,
+        save: bool = False,
+        *,
+        kind: str | None = None,
+        rebuild: bool = False,
+    ) -> Plan:
+        """Plan Mascope's matching of a batch or a sample against its
+        batch's collections.
+
+        With ``save=False`` the matching runs now, as a preview that saves
+        nothing, and the plan carries its counts (``preview``); it has
+        nothing to apply and needs no approval. With ``save=True`` the plan
+        saves a fresh run's matches over the stored ones, which cannot be
+        undone: it is gated hard, and its ``estimated_cost`` says how many
+        samples the server matches.
+
+        :param scope: The batch or sample: a Ref, or a name or ID with
+            *kind* (a batch when None).
+        :param targets: One target ion's ID to match alone; every target of
+            the collections when None.
+        :param params: Match parameters; the instrument's defaults when None.
+        :param save: Plan a save instead of running a preview.
+        :param kind: ``batch`` or ``sample``, for a *scope* given as a string.
+        :param rebuild: Remove every saved level of a batch's matches before
+            saving (the destructive rebuild); needs ``save=True``.
+        :return: The plan, kept in the session.
+        """
+        return writes.plan_match(
+            self, scope, targets, params, save, kind=kind, rebuild=rebuild
+        )
+
+    def plan(self, plan_id: str) -> Plan:
+        """A plan of this session, by ID, for a transport to show.
+
+        :raises NotFound: When the session has none by that ID.
+        """
+        try:
+            plan = self.session.plans.load(plan_id)
+        except ValueError:
+            plan = None
+        if plan is None:
+            raise NotFound(plan_id, "plan", "A plan lives in the session that made it.")
+        return plan
+
+    @_recorded("apply", withheld=("confirm_token",))
+    def apply(
+        self,
+        plan_id: "str | Plan",
+        confirm_token: str | None = None,
+        *,
+        wait: float = 60.0,
+    ) -> Receipt:
+        """Make a plan's writes: the one call of the toolkit that writes.
+
+        *confirm_token* is the transport's, minted by its
+        :class:`~mascope_ai.plans.Approver` when a person approved this
+        plan; the model never has one to give. The plan is claimed for that
+        approval before anything is read or written, so of two overlapping
+        applies one writes; another apply with the same token returns the
+        first one's receipt (``repeated``) without writing again, and one
+        with another token is refused. Every ``before`` the plan recorded is
+        read again first: if one changed, nothing is written and the error
+        carries the diff. A write that fails stops the rest; the receipt in
+        the error says which changes were applied, and the plan is not
+        applied again.
+
+        :param plan_id: The plan, or its ID.
+        :param confirm_token: The approval of this plan.
+        :param wait: How long, in seconds, to wait for the outcome of an
+            apply of the same approval that is still running.
+        :return: The receipt: what was written, and as which service.
+        :raises ApprovalRefused: Without a token of this plan as it stands.
+        :raises PlanExpired: Past the plan's ``expires_at``.
+        :raises PlanConsumed: When the plan was claimed by another approval.
+        :raises PlanDrifted: When an object changed since the plan was made.
+        :raises PartiallyApplied: When a write failed part-way.
+        """
+        return writes.apply(self, plan_id, confirm_token, wait)
 
     # --- answers -------------------------------------------------------------
 
