@@ -154,6 +154,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     find_envelope_claims,
 )
 from mascope_backend.api.new.reference import service as reference_service
+from mascope_backend.api.new.reference.licenses import reference_license_gate
 from mascope_backend.db import (
     AssignmentVerification,
     BatchPeakOccurrence,
@@ -1766,28 +1767,6 @@ def _build_reference_isotopes_df(
                 }
             )
     return pd.DataFrame(rows)
-
-
-def reference_license_gate() -> list[str] | None:
-    """The reference licences Stage A is allowed to match against, or None.
-
-    The reference mirror carries a per-record licence from ingest through to
-    results precisely so a deployment can decline to match against sources
-    whose terms it has not accepted (HMDB's adapter, for instance, asks that
-    commercial terms be verified first). Nothing wired that to a setting until
-    now: the call site passed nothing, so every active source was matched.
-
-    ``None`` - the default, and what an env toml that says nothing yields -
-    keeps exactly that behaviour. Gating is opt-in because narrowing it shrinks
-    what Stage A can find with no trace in the UI: an operator must choose it,
-    not inherit it.
-
-    Read per call rather than captured at import so a restart is enough to pick
-    up a change, and so tests can set it.
-
-    :return: The allowlist (sorted, non-empty) or None for no gating.
-    """
-    return getattr(runtime.config, "reference_licenses", None)
 
 
 # The expanded reference frame is identical for every run over the same

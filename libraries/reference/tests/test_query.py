@@ -21,10 +21,13 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 from mascope_reference.adapters.pubchem import PubChemAdapter  # noqa: E402
 from mascope_reference.ingest import ingest  # noqa: E402
 from mascope_reference.query import (  # noqa: E402
+    SOURCE_PAGE_CAP,
     STRUCTURE_PAGE_CAP,
+    active_sources,
     annotate_formulas,
     by_formula,
     by_mass_window,
+    source_compounds,
     structures_by_formula,
     xref_cas_number,
 )
@@ -438,3 +441,125 @@ def test_xref_cas_number_reads_comptox_then_custom_keys():
     assert xref_cas_number({"casrn": "", "cas": "50997"}) == "50997"
     assert xref_cas_number({"dtxsid": "DTXSID1"}) is None
     assert xref_cas_number(None) is None
+
+
+def _seed_sources(sync_engine) -> None:
+    """An active and a replaced version of one list, and another active list."""
+    with sync_engine.begin() as conn:
+        old = conn.execute(
+            reference_source.insert()
+            .values(name="hom", version="1", license="CC-BY-4.0", is_active=False)
+            .returning(reference_source.c.reference_source_id)
+        ).scalar_one()
+        new = conn.execute(
+            reference_source.insert()
+            .values(
+                name="hom",
+                version="2",
+                license="CC-BY-4.0",
+                record_count=3,
+                is_active=True,
+                known_window={"c_max": 20},
+                allow_radicals=True,
+                polarity="negative",
+            )
+            .returning(reference_source.c.reference_source_id)
+        ).scalar_one()
+        _source(conn, "amines", license="CC0")
+        _compound(conn, old, "old-1", formula="C10H16O3", monoisotopic_mass=184.1)
+        for native_id, formula, mass in (
+            ("b", "C10H16O4", 200.1),
+            ("a", "C10H16O3", 184.1),
+            ("c", "C10H16O5", 216.1),
+        ):
+            _compound(
+                conn,
+                new,
+                native_id,
+                formula=formula,
+                monoisotopic_mass=mass,
+                xrefs={"reference": "10.1000/x", "tags": ["hom"]},
+            )
+
+
+async def _read(db_path, fn, *args, **kwargs):
+    maker, engine = _sessionmaker(db_path)
+    try:
+        async with maker() as session:
+            return await fn(session, *args, **kwargs)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_active_sources_are_the_active_versions_by_name(sync_engine, db_path):
+    _seed_sources(sync_engine)
+    rows = await _read(db_path, active_sources)
+    assert [(row.name, row.version) for row in rows] == [("amines", "v1"), ("hom", "2")]
+    hom = rows[1]
+    assert hom.license == "CC-BY-4.0"
+    assert hom.record_count == 3
+    assert hom.known_window == {"c_max": 20}
+    assert hom.allow_radicals is True
+    assert hom.polarity == "negative"
+
+
+@pytest.mark.asyncio
+async def test_source_compounds_read_the_active_version_by_mass(sync_engine, db_path):
+    _seed_sources(sync_engine)
+    page = await _read(db_path, source_compounds, "hom")
+    assert page.version == "2"
+    assert page.total == 3
+    assert [r.source_native_id for r in page.records] == ["a", "b", "c"]
+    assert page.records[0].xrefs == {"reference": "10.1000/x", "tags": ["hom"]}
+    assert page.records[0].source == "hom"
+
+
+@pytest.mark.asyncio
+async def test_source_compounds_read_a_named_version_even_inactive(
+    sync_engine, db_path
+):
+    _seed_sources(sync_engine)
+    page = await _read(db_path, source_compounds, "hom", version="1")
+    assert page.version == "1"
+    assert page.total == 1
+    assert [r.source_native_id for r in page.records] == ["old-1"]
+
+
+@pytest.mark.asyncio
+async def test_source_compounds_page_through_every_row_once(sync_engine, db_path):
+    _seed_sources(sync_engine)
+    first = await _read(db_path, source_compounds, "hom", limit=2)
+    second = await _read(db_path, source_compounds, "hom", limit=2, offset=2)
+    assert [r.source_native_id for r in first.records] == ["a", "b"]
+    assert [r.source_native_id for r in second.records] == ["c"]
+    assert first.total == second.total == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name, version", [("nothing", None), ("hom", "9"), ("nothing", "1")]
+)
+async def test_source_compounds_of_no_such_version_are_none(
+    sync_engine, db_path, name, version
+):
+    _seed_sources(sync_engine)
+    assert await _read(db_path, source_compounds, name, version=version) is None
+
+
+@pytest.mark.asyncio
+async def test_source_compounds_of_a_source_with_no_active_version_are_none(
+    sync_engine, db_path
+):
+    with sync_engine.begin() as conn:
+        _source(conn, "retired", active=False)
+    assert await _read(db_path, source_compounds, "retired") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit, offset", [(0, 0), (SOURCE_PAGE_CAP + 1, 0), (1, -1)])
+async def test_source_compounds_refuse_a_page_out_of_range(
+    sync_engine, db_path, limit, offset
+):
+    with pytest.raises(ValueError):
+        await _read(db_path, source_compounds, "hom", limit=limit, offset=offset)

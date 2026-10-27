@@ -31,11 +31,15 @@ from mascope_reference.peaklist import (
     read_peak_list,
 )
 from mascope_reference.query import (
+    SourcePage,
+    SourceRow,
     StructureCandidate,
     StructurePage,
+    active_sources,
     annotate_formulas,
     by_formula,
     by_mass_window,
+    source_compounds,
     structures_by_formula,
     xref_cas_number,
 )
@@ -60,6 +64,10 @@ __all__ = [
     "by_mass_window",
     "annotate_formulas",
     "structures_by_formula",
+    "active_sources",
+    "source_compounds",
+    "SourceRow",
+    "SourcePage",
     "StructureCandidate",
     "StructurePage",
     "xref_cas_number",

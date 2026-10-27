@@ -239,6 +239,15 @@ back, and `mascope reference seed` loads a shipped list again. On a server, run
 `python -m mascope_backend.db.scripts.reference_deactivate <name>` inside the
 backend container.
 
+**See what is loaded.** `mascope reference status` lists the sources on your
+own machine. On a server, any signed-in user can ask the API:
+`GET /api/reference/sources` returns each active source with its label,
+version, licence, polarity, compound count and load date, and `admitted`, which
+says whether the deployment's licence gate lets peak assignment match it.
+`GET /api/reference/sources/<name>/compounds` pages through what one source
+holds (`page`, `limit` up to 1000, and `version` for a load other than the
+active one). A page in the app that shows the same follows.
+
 **License / attribution.** Set a per-record `license` column if the list carries
 one; it is carried through to every annotation, so results stay attributable.
 Put the paper's DOI in a `reference` column and it travels with each compound.

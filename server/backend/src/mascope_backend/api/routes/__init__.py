@@ -21,6 +21,7 @@ from mascope_backend.api.new.peak_assignments.routes import (
     peak_assignments_router,
 )
 from mascope_backend.api.new.provenance.routes import provenance_router
+from mascope_backend.api.new.reference.routes import reference_router
 from mascope_backend.api.new.roles.routes import roles_router
 from mascope_backend.api.new.temp.routes import temp_router
 from mascope_backend.api.new.users.admin.routes import admin_router
@@ -146,5 +147,6 @@ routers = [
     visualization_router,
     temp_router,
     cheminfo_router,
+    reference_router,
     file_router,
 ]

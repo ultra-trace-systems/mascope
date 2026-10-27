@@ -174,6 +174,10 @@ OTHER_TOKEN_ROUTES = {
     # The SDK's compounds.find_structures(): the reference rows that could
     # give a compound its structure, a read of shared reference data.
     ("GET", "/api/target/compounds/structures"),
+    # The SDK's reference.sources() and .compounds(): which reference sources
+    # the deployment loaded and what one holds, a read of shared reference data.
+    ("GET", "/api/reference/sources"),
+    ("GET", "/api/reference/sources/{name}/compounds"),
     # The SDK's ionization.modes(), and one mode by its ID: the modes a
     # sample's ionization_mode_id names, so a script can find one by its name.
     ("GET", "/api/ionization/modes"),
