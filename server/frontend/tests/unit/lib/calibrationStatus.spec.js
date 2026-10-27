@@ -52,6 +52,42 @@ describe('calibrationStatus', () => {
     expect(status.tooltip).toContain('0.42 ppm')
   })
 
+  it('names the span a TOF fit covers', () => {
+    const status = calibrationStatus({
+      status: 'ok',
+      verified: true,
+      mode: 0,
+      par: [10850.0, -18500.0],
+      quality: {
+        n_points: 5,
+        pre_fit_mz_error_ppm: 82.1,
+        post_fit_mz_error_ppm: 2.3,
+        points: [],
+        span: [41.0386, 228.1747],
+        collection: { id: 'tc-1', isotopes_sha256: 'ab' },
+        model: { mode: 0, equation: 'i = p1*sqrt(m) + p2' },
+        node_version: 1
+      }
+    })
+
+    expect(status.state).toBe('ok')
+    expect(status.tooltip).toBe(
+      'm/z calibrated: 5 points over m/z 41–228, 82.10 ppm → 2.30 ppm mean |m/z error|'
+    )
+  })
+
+  it('reads a TOF record from before the span as it always did', () => {
+    const status = calibrationStatus({
+      status: 'ok',
+      verified: true,
+      mode: 0,
+      par: [10850.0, -18500.0],
+      quality: { n_points: 5, pre_fit_mz_error_ppm: 82.1, post_fit_mz_error_ppm: 2.3 }
+    })
+
+    expect(status.tooltip).toBe('m/z calibrated: 5 points, 82.10 ppm → 2.30 ppm mean |m/z error|')
+  })
+
   it('reports an applied fit without quality as plainly calibrated', () => {
     const status = calibrationStatus({ mode: 'one-point', verified: true })
 
