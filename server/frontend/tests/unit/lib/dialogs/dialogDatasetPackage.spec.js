@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount, flushPromises, enableAutoUnmount } from '@vue/test-utils'
 import PrimeVue from 'primevue/config'
+import RealDialog from 'primevue/dialog'
 
 // "Prepare for publication" reads what the dataset's package would hold each
 // time it opens, flags what the dataset lacks for a deposit, opens the dataset
@@ -87,6 +88,20 @@ const STUBS = {
   DialogDatasetOp: DialogDatasetOpStub
 }
 
+const SPRING_ROW = { ...ROW, dataset_id: 'ds-2', dataset_name: 'Spring run' }
+const springPreview = () =>
+  preview({
+    dataset: { ...RECORD, dataset_id: 'ds-2', dataset_name: 'Spring run' },
+    batches: [{ sample_batch_id: 'b3', sample_batch_name: 'Spring batch', samples: 5 }]
+  })
+
+// The second dataset's preview, from its own route.
+const serve2 = (answer) =>
+  api.http.get.mockImplementationOnce(async (url) => {
+    expect(url).toBe('/workspaces/ws-1/datasets/ds-2/export/package/preview')
+    return { data: { data: answer } }
+  })
+
 const serve = (...answers) => {
   for (const answer of answers) {
     api.http.get.mockImplementationOnce(async (url) => {
@@ -124,6 +139,9 @@ beforeEach(() => {
 afterEach(() => {
   document.body.innerHTML = ''
 })
+// Registered last, so it runs first: a real Dialog unbinds its document
+// listener on unmount, and one left bound would hear the next test's Escape.
+enableAutoUnmount(afterEach)
 
 describe('DialogDatasetPackage', () => {
   it('shows the record as it stands and what the package will hold', async () => {
@@ -255,6 +273,54 @@ describe('DialogDatasetPackage', () => {
     expect(wrapper.find('h2').text()).toBe("Prepare 'Spring run' for publication")
   })
 
+  it('keeps the dataset it moved to when the last one answers late', async () => {
+    let first
+    api.http.get.mockImplementationOnce(() => new Promise((resolve) => (first = resolve)))
+    const wrapper = await mountDialog()
+    serve2(springPreview())
+
+    await wrapper.setProps({ dataset: SPRING_ROW })
+    await flushPromises()
+    first({ data: { data: preview() } })
+    await flushPromises()
+
+    expect(wrapper.find('h2').text()).toBe("Prepare 'Spring run' for publication")
+    expect(wrapper.text()).toContain('Spring batch: 5 samples')
+    expect(wrapper.text()).not.toContain('First batch')
+  })
+
+  it('keeps the dataset it moved to when the last one fails late', async () => {
+    let fail
+    api.http.get.mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)))
+    const wrapper = await mountDialog()
+    serve2(springPreview())
+
+    await wrapper.setProps({ dataset: SPRING_ROW })
+    await flushPromises()
+    fail(new Error('boom'))
+    await flushPromises()
+
+    expect(wrapper.find('.load-error').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Spring batch: 5 samples')
+  })
+
+  it('starts one build however often Build package is clicked', async () => {
+    serve(preview())
+    let built
+    api.http.post.mockImplementationOnce(() => new Promise((resolve) => (built = resolve)))
+    const wrapper = await mountDialog()
+
+    await button(wrapper, 'Build package').trigger('click')
+    expect(button(wrapper, 'Build package').attributes('disabled')).toBeDefined()
+    await button(wrapper, 'Build package').trigger('click')
+    await flushPromises()
+    expect(api.http.post).toHaveBeenCalledTimes(1)
+
+    built({})
+    await flushPromises()
+    expect(closed(wrapper)).toBe(true)
+  })
+
   it('reads the package again each time it opens', async () => {
     serve(preview(), preview())
     const wrapper = await mountDialog()
@@ -266,5 +332,52 @@ describe('DialogDatasetPackage', () => {
     await flushPromises()
 
     expect(api.http.get).toHaveBeenCalledTimes(2)
+  })
+})
+
+// PrimeVue's own Dialog, transitions and all: every open Dialog closes on an
+// Escape anywhere in the document, not only the one on top.
+describe('DialogDatasetPackage under the dataset dialog', () => {
+  const DialogDatasetOpOpen = {
+    name: 'DialogDatasetOp',
+    components: { RealDialog },
+    props: ['action', 'dataset'],
+    emits: ['update:action'],
+    template: `<RealDialog :visible="!!action" header="Edit dataset" modal
+      @update:visible="$emit('update:action', null)" />`
+  }
+
+  const escape = async () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape' }))
+    await flushPromises()
+  }
+
+  it('leaves Escape to the dataset dialog while it is open, then closes', async () => {
+    serve(preview({ gaps: GAPS }), preview())
+    const wrapper = mount(DialogDatasetPackage, {
+      props: { dataset: ROW },
+      attachTo: document.body,
+      global: {
+        plugins: [PrimeVue],
+        stubs: { ...STUBS, Dialog: false, transition: false, DialogDatasetOp: DialogDatasetOpOpen }
+      }
+    })
+    await flushPromises()
+    // The dialog's content is teleported to the body, out of the wrapper's DOM.
+    const edit = [...document.body.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Edit dataset'
+    )
+    edit.click()
+    await flushPromises()
+    expect(datasetOp(wrapper).props('action')).toBe('edit')
+
+    await escape()
+    expect(datasetOp(wrapper).props('action')).toBeNull()
+    expect(closed(wrapper)).toBe(false)
+    // Closing the dataset dialog reads the package again, as a save does.
+    expect(api.http.get).toHaveBeenCalledTimes(2)
+
+    await escape()
+    expect(closed(wrapper)).toBe(true)
   })
 })
