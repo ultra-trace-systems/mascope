@@ -766,17 +766,119 @@ them, touching raw Orbitrap files only.
   parity is asserted by `test_xic_matches_thermo`.
 - **Axis fingerprint** (`axis_fingerprint/__init__.py`): the m/z offset a
   file's mass calibration left in each frequency band of the Orbitrap axis,
-  read from the spacing of the stored profile points. It reads per-scan
-  profiles, never an average, and only a few of them: at most eight scans per
-  acquisition mode, one at a time through `scan_profile`. `profile_per_scan`
-  and `average_profile` would read every scan selected. It is defined on
-  OpenTFRaw's stored points, so under the Thermo backend the document is
-  `unavailable`. The file converter computes it as it converts a raw file
-  (`processor.py:RawProcessor.axis_fingerprint`) and stores it in the file's
-  `.props` as `axis_fingerprint`. The deployment's `[backend]
-  axis_fingerprint` setting decides that: `"ingest"` (the default) computes
-  it, `"off"` stores `{}`. A failure is stored as the `error` document and
-  never fails the file.
+  read from the spacing of the stored profile points. It alters no m/z; 7.1
+  says what it measures and where it is kept.
+
+### 7.1 The axis fingerprint
+
+On some Orbitrap models (every Q Exactive Plus measured; no Exploris) the data
+system divides the frequency axis into frequency bands about 16.28 kHz wide,
+and each mass calibration stores one m/z offset per band on top of a smooth
+trend: from a fraction of a ppm after a good calibration to tens of ppm
+after a bad one. The lock mass rescales a scan as a whole, so it cannot
+remove a step between bands, and the instrument flags none of them. The axis fingerprint reads the
+offsets back from a file's stored profile, without any chemistry, and Mascope
+serves it to clients that correct the axis themselves (peaky). **Mascope
+alters no m/z with it, anywhere**: the m/z it serves is still the stored axis
+times one calibration factor, the file's or its scan stream's (the one-point
+scaling of `docs/user/how-it-works/calibration.md`).
+
+**What is measured.** The m/z law of the Orbitrap is
+`m/z = B/f^2 + C/f^4` (Makarov 2000; the space-charge term `C/f^4`, JASMS
+2010; section 10), with B and C read from each scan's trailer
+(`Conversion Parameter B:`, `Conversion Parameter C:`). A raw file stores a
+scan's profile as chunks, runs of points on the FFT's frequency bins, and one
+m/z correction per chunk, added to the m/z after conversion (section 5.1).
+Where that correction is a share `r` of the m/z (in ppm), converting the corrected
+profile m/z back to frequency with the scan's own B and C, without the
+correction, puts the points of the chunk off the FFT bins: their regular
+step differs from the nominal bin width (a power of two in kHz) by one
+relative amount, the spacing deviation
+
+    s = ((1 + r * 1e-6) ** -1.5 - 1) * 1e6   [ppm],  about -1.5 r
+
+(`reference.s_from_fudge_ratio`). So a chunk's step gives back the offset the
+calibration stored for it, `r` about `-(2/3) s`. Per acquisition mode - the
+polarity, FT resolution and scan range of a file's FTMS MS1 full scans - the
+algorithm reads the profile of at most eight scans, one at a time through
+`scan_profile` (never `profile_per_scan` or `average_profile`, which would
+read every scan selected), measures each chunk's `s`, groups chunks of one
+level into runs and takes the frequencies where the level changes as
+brackets on the band edges. It then fits a grid of band edges to those
+brackets: a period near 16.28 kHz (the search starts from 16.2846 kHz, one Q
+Exactive at resolution 280k, and also tries a period that scales with the FFT
+bin) and a phase, kept only when it hits a larger share of the brackets than
+95 % of random placements of them do. Band `k` then holds the frequencies
+`[phase + k * period, phase + (k + 1) * period)` kHz, and its row in the mode's `segments` table holds its `s_ppm` (the modal
+level of its chunks), the m/z range it covers and how many chunks, scans and
+what share of its chunks agree on that level. Inside the document the
+algorithm's own names stay: a band is a `segment`, its index `k`.
+
+**The mode's flags** say how far to trust the table:
+
+| Flag | Meaning |
+|---|---|
+| `grid_unmeasured` | No grid beat the random placements (or too few brackets to try): the table is read on the seed grid (`grid.source` is `seed`), and its band edges are a guess. |
+| `grid_weak` | The grid is measured but on little: fewer than 10 brackets hit, or the band indices of the hit brackets differ by less than 20 (`k_max - k_min < 20`, so hits on bands 0 to 19 are still weak), or there is no hit range at all. Advisory; it can occur on a file's dominant mode. |
+| `not_stepwise` | Across the measured (not interpolated) bands, the median of `level_share`, the share of a band's chunks that sit at its level, is under one half: `s` does not hold one value per band, so this is not the step structure. |
+| `no_segment_table`, `centroid_only`, `no_profile_chunks` | No band table at all (`segments` is null): no band reached three chunks, the mode stores no profile, or no chunk was usable. |
+
+Beside the bands, the document holds the census of every scan (its B, C,
+microscans, the lock-mass trailer fields and the lock it was corrected with,
+read off the centroid flagged Reference, `backend.md`) and, per mode, the
+lock's shares and its effective m/z and band deviation. The schema is
+`axis_fingerprint/axis_fingerprint.schema.json`, `mascope.axis_fingerprint`
+version 1. The algorithm, `axis_fingerprint/reference.py`, is the normative
+implementation that came with the request for the fingerprint, vendored
+verbatim; the request's 39 reference documents pin its tie-breaks and its
+seeded random test, so it is not edited here.
+
+**The reader gate.** The fingerprint is defined on OpenTFRaw's stored points.
+Up to 1.4.0 the reader added the per-chunk correction to the frequency before
+converting; from 1.4.1 it adds it to the m/z after conversion, as its
+[changelog](https://github.com/Sigilweaver/OpenTFRaw/blob/main/CHANGELOG.md)
+says: the per-chunk value "is an additive m/z correction applied after
+conversion". On 1.4.0 every chunk sits on the exact FFT grid and every `s` is
+0 by construction, a document that would look valid and say nothing. So
+`compute_axis_fingerprint` reads nothing and returns `unavailable` under an
+OpenTFRaw older than 1.4.1 (`reference.opentfraw_version_ok`) and under the
+Thermo backend. The Thermo library pads each chunk with zero-intensity
+points, which the reference documents were built on; on the stored points
+alone `reference.PARAMS_OPENTFRAW` lowers three chunk-size thresholds of
+`reference.PARAMS`, and nothing here is tuned for the padded profile. The
+pinned reader is 3.1.0.
+
+**Where it is kept.** The file converter computes it as it converts a raw
+file (`processor.py:RawProcessor.axis_fingerprint`), about a second a file,
+and stores the document in the file's `.props` as `axis_fingerprint`. The
+deployment's `[backend] axis_fingerprint` setting decides that: `"ingest"`
+(the default) computes it, `"off"` stores `{}`. A failure is stored as the
+`error` document and logged as a warning; it never fails the file. A TofDaq
+file has none. Files converted before it existed, or while the setting was
+`"off"`, get theirs from the `backfill_axis_fingerprint` maintenance script,
+which reopens the raw data kept beside each file and refuses to start under
+a reader that cannot compute one.
+
+**Where it is served.** `GET /api/sample/files/{id}/axis_fingerprint` serves
+the stored document whatever its status, and `missing` for a file that has
+none: nothing computes one on request. `GET /api/samples/{id}/axis_fingerprint`
+adds an `item` block: the scans the sample's peak list is built from, the mode
+they belong to with its lock recomputed over them (`describe_scans`), and the
+calibration factors Mascope multiplies into the m/z it serves of the sample's
+stream and of the file, so a client can relate the axis the fingerprint
+describes to the m/z Mascope serves. The SDK reads both with
+`get_axis_fingerprint`.
+
+**The direct route, a future simplification.** The fingerprint infers each
+chunk's correction from the spacing of its points. The correction itself is
+in the file, and OpenTFRaw 3.1.0, the pinned reader, returns it per chunk:
+`RawFile.profile_chunks(scan)` gives each chunk's `fudge` with the scan's
+coefficients, and `r` is that over the law's m/z
+(`reference.s_from_fudge_ratio` turns it into `s`). Reading it would replace
+the spacing measurement, and its thresholds on chunk sizes, with the value
+the file stores. It is not done yet: the 39 reference documents pin the
+spacing route, and a direct one needs its own comparison against them
+before it can stand in.
 
 ---
 
@@ -821,7 +923,11 @@ a tolerance.
 | Sum signal (app) | `mascope_signal/compute.py:get_sum_signal`, `thermo.py:compute_sum_signal` |
 | Sum signal cache name | `averaged_profile_signature`, `mascope_signal/compute.py:sum_signal_suffix` |
 | Instrument fit | `mascope_signal/instrument_func/fit.py` |
-| Axis fingerprint (the frequency bands of a file's m/z axis) | `axis_fingerprint/__init__.py:compute_axis_fingerprint`, the algorithm in `axis_fingerprint/reference.py` |
+| Axis fingerprint (the frequency bands of a file's m/z axis) | `axis_fingerprint/__init__.py:compute_axis_fingerprint`, the algorithm in `axis_fingerprint/reference.py`, the schema `axis_fingerprint/axis_fingerprint.schema.json` |
+| Axis fingerprint over one sample's scans | `axis_fingerprint/__init__.py:describe_scans` |
+| Axis fingerprint at conversion, and the setting | `processor.py:RawProcessor.axis_fingerprint`, `[backend] axis_fingerprint` in `mascope_runtime/config.py` |
+| Axis fingerprint routes | `server/backend/src/mascope_backend/api/new/axis_fingerprint/` (`routes.py`, `service.py`) |
+| Axis fingerprint backfill | `server/backend/src/mascope_backend/db/scripts/backfill_axis_fingerprint.py` |
 | Cross-backend parity tests | `tests/test_backend_parity.py`, `signal/tests/test_instrument_fit_parity.py` |
 
 ---
@@ -859,6 +965,17 @@ Orbitrap physics. Key references:
 - **Makarov, A.; et al.** "First 20 Years of Orbitrap Mass Spectrometry as the
   Mainstream Analytical Technique." *Mass Spectrom. Rev.* **2025**.
   doi:10.1002/mas.70024. Recent comprehensive review.
+
+- **OpenTFRaw format documentation**, "Frequency-to-M/z Conversion"
+  ([`docs/docs/format/10-frequency-to-mz.md`](https://github.com/Sigilweaver/OpenTFRaw/blob/main/docs/docs/format/10-frequency-to-mz.md)):
+  how a raw file stores an Orbitrap scan's conversion coefficients, and the
+  law `M/z = A + B/f^2 + C/f^4` with its inverse, which the axis fingerprint
+  uses to put profile points back on frequency (7.1).
+- **OpenTFRaw changelog**, 1.4.1
+  ([`CHANGELOG.md`](https://github.com/Sigilweaver/OpenTFRaw/blob/main/CHANGELOG.md)):
+  the per-chunk value stored with a profile "is an additive m/z correction
+  applied after conversion", the basis of the fingerprint's reader gate
+  (7.1); 3.1.0 adds `profile_chunks()`, which returns that value per chunk.
 
 (DOIs are provided for verification; confirm exact page numbers against the
 publisher before citing externally.)
