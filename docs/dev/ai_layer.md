@@ -722,6 +722,31 @@ Every write maps to a verified endpoint + ACL (appendix); the plan builder
 surfaces the required role in the plan itself so a doomed apply fails at
 planning time, not approval time.
 
+**As built (MAS-138).** `mascope_ai.plans` and `mascope_ai.writes`; the
+library's README has the usage. What the sketch above did not know:
+
+- **No batch moves.** No route moves a batch into another dataset (the
+  appendix lists update, copy and delete only), so `plan_organize` moves
+  datasets into workspaces and samples into batches, and refuses a batch.
+- **A moved sample is a new sample.** The server's sample move creates
+  each item anew in the destination batch and deletes the old one, so the
+  receipt names the batch, not the samples, and the plan says so.
+- **The token** is an HMAC of the plan's ID, its digest (of everything the
+  plan says and does) and a nonce, under a key the transport's `Approver`
+  keeps in memory. A plan gated hard is approved only with
+  `irreversible=True`. The CAS is an exclusive create of a claim file in
+  the session directory, so it holds across processes sharing the session.
+  A model with a shell on the same machine holds the user's SDK token
+  anyway: the gate binds approvals to plans on the tool surface, and the
+  coding agent's own shell prompt is what guards the shell.
+- **The compound namespace.** No builder calls the compound routes. A new
+  collection's compounds are created through the collection route, which
+  fills a missing CAS number or structure into an existing shared compound
+  record; `plan_collection` therefore refuses compounds that give either
+  unless `allow_global=True`.
+- **The MCP transport's `apply` tool** waits for the MCP server (MAS-130)
+  and is its own issue, MAS-544.
+
 ---
 
 ## 6. Security

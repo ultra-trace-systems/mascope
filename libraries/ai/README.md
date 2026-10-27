@@ -53,6 +53,8 @@ global collections).
 | `match_compounds(sample, formulas, params=None, suggested=, mechanisms=)` | `MatchResult`: one verdict per candidate, the tree as a `Frame` |
 | `derive(df, inputs, code=)` | `Frame` of a table computed from Frames, their sources kept |
 | `answer(text, code=, inferred=, frames=)` | the manifest record of an answer |
+| `plan_organize(moves)`, `plan_collection(name, compounds, ...)`, `plan_associate(collection, batches, detach=)`, `plan_match(scope, targets=, params=, save=)` | `Plan`: a write, described; nothing is written |
+| `apply(plan_id, confirm_token)` | `Receipt`: the one call that writes |
 
 **Names.** A string matches a name as a case-insensitive literal substring
 (`"Sample (A)"` means those characters, not a regex); pass a compiled
@@ -136,6 +138,69 @@ computed in Python is kept with `kit.derive(df, [frames])`, and its
 still names every object behind it. Its columns that no input has are
 recorded as computed by its code; `computed=[...]` names more, such as a mean
 that kept its input column's name.
+
+## Writes: plan, then apply
+
+A write tool never writes. It returns a `Plan`: each change before and
+after, what it touches, whether it can be undone, the role it needs, what it
+costs the server, and when it expires (in ten minutes). `apply` is the one
+call that writes, and only with a confirm token for that plan, which a
+person's approval gives.
+
+```python
+from mascope_ai import Approver, Move, Toolkit
+
+approver = Approver()  # the transport's: never the model's
+kit = Toolkit(approver=approver)
+
+plan = kit.plan_organize([Move("Sample 1", "Spring 2026", kind="sample")])
+print(plan.render())  # what the person approving reads
+token = approver.approve(plan)  # once they approved it
+receipt = kit.apply(plan.id, token)
+```
+
+- **The builders.** `plan_organize` moves datasets into workspaces and
+  samples into batches (Mascope has no route that moves a batch).
+  `plan_collection` creates a target collection, from formulas or a `base`
+  collection's compounds. `plan_associate` sets the batches a collection is
+  associated with, as the cheap batches-only update. `plan_match` runs
+  Mascope's matching: with `save=False` as a preview that writes nothing and
+  needs no approval (its counts are on `plan.preview`), with `save=True` as a
+  save over the stored matches (`rebuild=True`: a batch's destructive
+  rebuild).
+- **Refused at planning.** A builder refuses what the server would: a role
+  too low in a workspace the change touches (`AccessDenied`), a locked
+  sample or destination batch, an object already where it would go.
+- **What every workspace shares** is not planned unless the user asked for
+  it in so many words: a global collection, an association of one, and
+  compounds that give a CAS number or a structure, which Mascope fills into
+  the shared record of a compound that exists. Pass `allow_global=True`
+  only then; the refusal is `GlobalNamespace`.
+- **The gate.** `plan.gate` is `none` (a preview), `confirm` (a change that
+  can be undone) or `hard` (one that cannot, or one every workspace sees).
+  `Approver.approve` refuses a `hard` plan without `irreversible=True`: the
+  transport passes it once the person was shown so.
+- **The token** names one plan as it stands: an approval of another plan, or
+  of this one edited since, is refused (`ApprovalRefused`), as is a string
+  the approver did not mint. The approver's key lives in its memory only.
+- **Once.** `apply` claims the plan before it reads or writes, so two
+  overlapping calls write once. The same token again returns the first
+  receipt (`receipt.repeated`); another approval is refused
+  (`PlanConsumed`). Past `expires_at`: `PlanExpired`.
+- **Drift.** Every `before` is read again first. If one changed, nothing is
+  written and `PlanDrifted.diff` says what is different; plan again.
+- **Part-way.** A write that fails stops the rest: `PartiallyApplied`
+  carries the receipt, whose `applied` lists the changes made. The plan is
+  not applied again.
+- **The receipt** names what the writes made or changed, the server's answer
+  to each (a background task's `process_id`), and the service every write
+  was sent as, which the server's access log records beside each request.
+  A moved sample is made anew under another ID: its receipt names the
+  batch.
+
+Plans are kept in the session (`plans/`), the claim and the outcome beside
+each, and every plan and receipt is in the manifest; a confirm token never
+is.
 
 ## Sessions
 
