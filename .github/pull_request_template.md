@@ -31,6 +31,10 @@ not apply.
 
 1.
 
+## Docs
+
+<!-- The page you updated (`docs/user/...`, `docs/maintaining.md`, a library README), or 'none needed because ...', or the follow-up issue filed for it. A change a user or an operator meets with no docs line is a review finding. -->
+
 ## Not verified
 
 <!-- What you did not or could not check. "Nothing" is an answer. -->

@@ -191,6 +191,16 @@ Feature) carries the kind. Milestones are not used.
   instead ("a customer Orbitrap instrument", "a production server", "the LAN
   agent host") or use neutral placeholders ("server A", "instrument X"). The
   same applies to issue comments, code comments, and committed test data.
+- **Docs are part of done.** A change in behaviour that a user or an operator
+  meets updates its page in the same PR: `docs/user/how-it-works/` for what the
+  app does, `docs/maintaining.md` for running and operating it, or the library's
+  README. A design note in `docs/dev` does not count: it records the plan, not
+  what shipped. A how-it-works page carries the literature references the
+  method rests on, mirrored from the design note and the code comments, so a
+  reader can check the method without reading either. The PR's `## Docs`
+  section names the page it updated, or says why none is needed, or links the
+  follow-up issue filed for it; a user- or operator-facing change with no
+  Docs line is a review finding.
 - **Lint Python before committing** - CI's "Lint and format" job runs
   `ruff check .` and `ruff format --check .` and fails the PR on any violation.
   Run `uv run ruff check --fix . && uv run ruff format .` before you commit.
