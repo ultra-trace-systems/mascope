@@ -305,7 +305,11 @@ Each run:
   held: not applied again, and the run exits 2 every time until you act, so
   the timer does not undo your rollback. `mascope prod update --confirm`
   retries it once at the next window; `--snooze <days>` keeps it held but
-  quiet for those days. A newer release is tried as usual.
+  quiet for those days. A newer release is tried as usual. Deploying the
+  failed release by hand (`mascope prod update --version <tag>`) lifts the
+  hold too. If you fixed it in place instead (a config fix, then
+  `mascope prod up`) and it now runs healthily, `--confirm` acknowledges
+  that: the next run finds the stack up to date and only clears the record.
 
 An applied update also moves the deployment checkout to the release it
 deployed, so a reboot redeploys that same release and `mascope prod doctor`
