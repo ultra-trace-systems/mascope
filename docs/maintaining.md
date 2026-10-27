@@ -30,6 +30,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Package a dataset for a repository such as Zenodo | `mascope export package <dataset id>` |
 | What the method bindings would route, and where a file name disagrees | `mascope prod db script run report_method_binding_disagreements` |
 | Write the MS2 stores of files converted before them (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
+| List the files whose peak store lacks a scan they read, to re-process them | `mascope prod db script run report_stale_peak_stores` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` (fill rate and projection on each line) |
@@ -1965,6 +1966,42 @@ MS2_STORE_MODE=run mascope prod db script run backfill_ms2_store  # write; again
   backfill counts its file as one to write. A release that changes the
   version says so in its changelog: run the backfill again after it. Until
   then those files' MS2 routes read the raw file, as before.
+
+### Peak stores a file has outgrown
+
+A raw Orbitrap file's pooled peak store keeps the scans it was built on,
+while the reader selects a file's scans anew on every read. Until the reader
+compared a file's first scan with the scans of its own MS order and polarity,
+it left an ordinary first MS1 scan out as a TIC outlier in most files with
+MS2 scans, and in polarity-switching files whose other polarity is much
+weaker. Their stores lack that scan, and once a release with the corrected
+rule runs, every read that divides their sums by the file's scans refuses
+them as stale. Peak listings and batch alignments fail on such a file, and
+neither matching nor opening its spectrum repairs it. List them after
+updating:
+
+```sh
+mascope prod db script run report_stale_peak_stores
+```
+
+- Only the files the old rule could misjudge are opened: raw Orbitrap files
+  whose scan-stream census holds MS2 scans or both polarities, and those
+  with no census. Each one's store is compared with the scans its file reads
+  now, from the raw file's scan index alone. Nothing is written, so no dump
+  is taken before it.
+- It counts per instrument and lists each file that has outgrown its store:
+  its `sample_file_id`, its name, and the scans stored against the scans it
+  reads.
+- **Re-process the files listed** (*Re-process* in Raw files, or
+  `POST /api/sample/files/reprocess`), 25 at a time as under
+  [Re-processing a site's older files under the cut](#re-processing-a-sites-older-files-under-the-cut).
+  A re-processing detects the peaks of a file that has outgrown its store,
+  then calibrates and matches its samples on them and writes its MS2 store
+  again.
+- A file marked as holding samples a person made is refused by a
+  re-processing. *Detect peaks* on that file rebuilds its store and matches
+  its samples again, keeping the calibration it had.
+- Run the report again afterwards: it should list nothing.
 
 ### Auditing a TOF instrument's mass calibration
 

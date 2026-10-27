@@ -16,11 +16,18 @@
   The peaks stored for a file whose first scan comes back were summed
   without it, so they no longer match the scans the file reads. Every read
   that divides those sums by the file's scans refuses such a store as
-  stale, so nothing averages low unnoticed. Opening the sample's spectrum
-  or matching it queues its peak detection; listing its peaks or aligning a
-  batch that holds it asks for that detection by name. Re-processing the
-  MS2 and polarity-switching files after the upgrade (*Re-process* in Raw
-  files) rebuilds them up front.
+  stale, so nothing averages low unnoticed: listing the file's peaks or
+  aligning a batch that holds it is refused, with a message asking for its
+  peak detection. Matching and the sample's spectrum read the store
+  otherwise and queue nothing, and a sample already matched is not read
+  again, so nothing else repairs these files. Re-processing does: a
+  re-processed file that has outgrown its pooled store has its peaks
+  detected again before it is calibrated and matched. After the upgrade,
+  list the files with
+  `mascope prod db script run report_stale_peak_stores` and re-process
+  them (*Re-process* in Raw files, 25 at a time); a file with samples a
+  person made is refused by a re-processing, and *Detect peaks* rebuilds it
+  instead (`docs/maintaining.md`, "Peak stores a file has outgrown").
 
   Operators: cached averaged profiles move to a new generation
   (`...-g6.zarr`), since one averaged before can lack that first scan. Every

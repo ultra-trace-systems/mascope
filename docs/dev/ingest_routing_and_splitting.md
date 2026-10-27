@@ -818,21 +818,27 @@ be matched, is the same question from the store's side (4.3).
   with every other scan of the file, because changing what the default
   selection returns makes the stores of the files it changes stale
   (`check_stored_scan_axis`). That rule dropped an ordinary first scan
-  wherever most of the other scans measured something weaker. In the
-  corpus's polarity-switching file, the first scan equals the median of its
-  own experiment and is sixty times the file's median only because the
-  other polarity's scans are that much weaker. In most MS2 files the
-  fragmentation scans carry 100 to 10,000 times less ion current than the
-  MS1 scans and outnumber them: 13 of the corpus's 20 MS2 files lost their
-  first MS1 scan, each within 0.97 to 1.03 times the next MS1 scans (two at
-  1.9 and 2.7 times). The rule was changed for that, and the stores of the
-  files whose selection changed go stale once. Every read that divides a
-  pooled store's sums by the file's scans checks the store's axis first
-  (`stored_scans_per_peak`), so such a store is refused rather than
-  averaged low: the matching and spectrum views queue its peak detection,
-  and re-processing the files does it at once. Cached averaged profiles
-  moved to generation 6 with it, since one averaged before can lack the
-  first scan.
+  wherever most of the other scans measured something weaker. In the corpus's
+  polarity-switching file, the first scan equals the median of its own
+  experiment and is sixty times the file's median only because the other
+  polarity's scans are that much weaker. In most MS2 files the fragmentation
+  scans carry 100 to 10,000 times less ion current than the MS1 scans and
+  outnumber them: 13 of the corpus's 20 MS2 files lost their first MS1 scan,
+  each within 0.97 to 1.03 times the next MS1 scans (two at 1.9 and 2.7
+  times). The rule was changed for that, and the stores of the files whose
+  selection changed go stale once. Every read that divides a pooled store's
+  sums by the file's scans checks the store's axis first
+  (`stored_scans_per_peak`), so such a store is refused rather than averaged
+  low: the peak listing and the batch alignment refuse it and ask for its peak
+  detection by name. Matching and the sample's spectrum do not divide the
+  stored sums that way, so they neither refuse it nor queue its rebuild, and a
+  sample already matched is not read again; a re-processing therefore checks a
+  pooled store the same way and detects the peaks of a file that has outgrown
+  it before calibrating and matching it (`process.peaks.outgrown`);
+  `report_stale_peak_stores` lists those files for an operator to re-process
+  (`docs/maintaining.md`, "Peak stores a file has outgrown"). Cached averaged
+  profiles moved to generation 6 with it, since one averaged before can lack
+  the first scan.
 
   **That the rule stays a rule about the file's first scan is a choice the
   files in reach support and do not prove.** The other reading - leave out

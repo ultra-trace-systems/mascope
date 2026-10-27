@@ -8,6 +8,10 @@ peak detection the deployment's ``[backend] composite_scan_streams`` as set
 at that moment, for the files where that can give another store than the
 one they have, and leaves every other file's store alone.
 
+It also detects them where the file has outgrown its pooled store: reads a
+scan the store lacks. ``report_stale_peak_stores`` lists those files, by
+the same check.
+
 On a scripted acquisition, as the detection's own tests are
 (``test_peak_streams``): no committed file holds more than one stream.
 """
@@ -24,6 +28,7 @@ import mascope_file.io as m_io
 import mascope_signal.compute as m_compute
 import mascope_signal.peak as m_peak
 from mascope_backend.api.controllers.sample.files.process import peaks
+from mascope_backend.db.scripts import report_stale_peak_stores as report
 
 
 NEG = "FTMS - p NSI Full ms [40.0000-600.0000]"
@@ -296,6 +301,77 @@ def test_a_store_labelled_in_part_is_detected_again(
 
     setting(False)
     assert asyncio.run(peaks.redetection_decision(FILE)) is False
+
+
+# -- a file that has outgrown its store -----------------------------------------
+
+
+@pytest.mark.parametrize("now", [False, True], ids=["setting-off", "setting-on"])
+def test_a_pooled_file_that_has_outgrown_its_store_is_detected_again_whole(
+    acquire, instrument_functions, sample_file_path, setting, redetect, now
+):
+    """A store one scan short of what the file reads now, built while the
+    reader left its first scan out, as the TIC rule did where the first scan
+    was compared with the weaker scans of another MS order or polarity. Left
+    as it stands, the re-processing would calibrate and match the file on
+    peaks summed without that scan, and nothing would queue their detection.
+    Detected again whole, as it was decided, and with nothing recorded."""
+    acquire(AS_ONE_EXPERIMENT[1:])
+    _converted(instrument_functions, per_stream=False)
+    acquire(AS_ONE_EXPERIMENT)
+    assert _store().time.size == len(AS_ONE_EXPERIMENT) - 1
+    with pytest.raises(m_compute.StalePeakStoreError):
+        asyncio.run(m_compute.check_peak_store(SAMPLE_FILENAME))
+
+    setting(now)
+    assert redetect() is False
+
+    store = _store()
+    assert store.time.size == len(AS_ONE_EXPERIMENT)
+    assert m_compute.peak_store_streams(store) == []
+    assert not peaks.outgrown(SAMPLE_FILENAME, store)
+    asyncio.run(m_compute.check_peak_store(SAMPLE_FILENAME))
+    assert _props(sample_file_path) == {"mz_calibration": None}
+
+
+def test_a_store_with_no_peaks_is_never_outgrown(acquire, setting):
+    """It holds no sums to divide. An acquisition of fragmentation scans alone
+    has such a store, over every scan, and reads no MS1 scan at all."""
+    acquire(AS_ONE_EXPERIMENT[1:])
+    m_peak.write_empty_peak_timeseries(SAMPLE_FILENAME, scan_type=None)
+    acquire(AS_ONE_EXPERIMENT)
+    store = _store()
+    assert store.mz.size == 0
+    assert store.time.size == len(AS_ONE_EXPERIMENT) - 1
+
+    assert not peaks.outgrown(SAMPLE_FILENAME, store)
+    setting(False)
+    assert asyncio.run(peaks.redetection_decision(FILE)) is None
+
+
+def test_the_report_lists_what_a_re_processing_rebuilds(
+    acquire, instrument_functions, setting, redetect
+):
+    """``report_stale_peak_stores`` asks each candidate what a
+    re-processing asks: a file it calls outgrown is one re-processing it
+    repairs."""
+    acquire(AS_ONE_EXPERIMENT[1:])
+    assert report.check(SAMPLE_FILENAME) == (report.NO_STORE, 0, 0)
+    _converted(instrument_functions, per_stream=False)
+    acquire(AS_ONE_EXPERIMENT)
+    assert report.check(SAMPLE_FILENAME) == (
+        report.OUTGROWN,
+        len(AS_ONE_EXPERIMENT) - 1,
+        len(AS_ONE_EXPERIMENT),
+    )
+
+    setting(False)
+    assert redetect() is False
+    assert report.check(SAMPLE_FILENAME) == (report.CURRENT, 0, 0)
+
+    acquire(TWO_EXPERIMENTS, MICROSCANS)
+    _converted(instrument_functions, per_stream=True)
+    assert report.check(SAMPLE_FILENAME) == (report.PER_STREAM, 0, 0)
 
 
 # -- the files whose store stands -----------------------------------------------
