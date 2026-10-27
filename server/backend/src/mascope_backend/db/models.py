@@ -1889,6 +1889,14 @@ class IonizationMode(Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=text("true")
     )
+    #: The isotopic purity of the setup's labelled reagent, the heaviest
+    #: isotope's fraction (``custom_elements.label_purity``): what a run reads a
+    #: labelled ion's envelope at. The library's own default (0.98, ``^N``'s
+    #: ``default_purity``; the models do not import the composition package),
+    #: so a setup that never set it searches as every run did before.
+    label_purity: Mapped[float] = mapped_column(
+        Float, default=0.98, server_default=text("0.98")
+    )
     #: The version this one replaced, NULL on a first version.
     supersedes_id: Mapped[Optional[str]] = mapped_column(
         String(16),

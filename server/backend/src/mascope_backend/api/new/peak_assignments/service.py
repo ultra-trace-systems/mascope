@@ -50,6 +50,7 @@ from mascope_backend.api.new.ionization.modes.util import (
 )
 from mascope_backend.api.new.ionization.modes.versions import (
     move_to_current_versions,
+    sample_label_purity,
     sample_setup,
     setup_stamp,
 )
@@ -190,6 +191,7 @@ from mascope_tools.composition.calibration import (
     InsufficientCalibrationData,
     recalibrate,
 )
+from mascope_tools.composition.custom_elements import label_purity, labelled_purity
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
 from mascope_tools.composition.known_window import KnownWindow
@@ -2490,7 +2492,14 @@ def _claim_reagent_lines(
         peaks_df,
         reagent_library_for(resolved_profile.profile.name),
         claim_ppm=resolved_profile.mz_precision_ppm,
-        purity=resolved_profile.profile.label_purity,
+        # A labelled chemistry's reagent is read at the purity in effect: the
+        # sample's setup's, around a run. The profile's own figure is the
+        # library default a setup starts from; a site's bottle may differ.
+        purity=(
+            label_purity("^N")
+            if resolved_profile.profile.label_purity is not None
+            else None
+        ),
         resolution=resolution,
     )
 
@@ -2968,6 +2977,36 @@ async def _run_sample_assignment(
     parent_id: str | None = None,
     run_id: str | None = None,
 ) -> dict:
+    """:func:`_assign_sample` under the sample's current ionization setup.
+
+    A sample bound under a version an edit has replaced moves onto the current
+    one first, and the engine reads labelled ions at the purity that version
+    carries (``custom_elements.labelled_purity``): every prediction of a
+    labelled envelope the run makes, in Stage A's reference lines, the reagent
+    pre-pass, the untargeted search and the tiering, reads it.
+    """
+    await move_to_current_versions(sample_item_ids=[sample_item_id])
+    with labelled_purity(await sample_label_purity(sample_item_id)):
+        return await _assign_sample(
+            sample_item_id,
+            config,
+            independent_transaction,
+            user_id,
+            process_id,
+            parent_id,
+            run_id,
+        )
+
+
+async def _assign_sample(
+    sample_item_id: str,
+    config: PeakAssignmentConfig | None = None,
+    independent_transaction: bool = False,
+    user_id: int | None = None,
+    process_id: str | None = None,
+    parent_id: str | None = None,
+    run_id: str | None = None,
+) -> dict:
     """
     Run the two-stage peak assignment engine over a sample.
 
@@ -2988,9 +3027,6 @@ async def _run_sample_assignment(
         batch loop) leave it unset and get a run of their own.
     :return: A dictionary with run summary and status message
     """
-    # A run searches under the current version of the sample's ionization
-    # mode and records it; a sample bound under an earlier one moves first.
-    await move_to_current_versions(sample_item_ids=[sample_item_id])
     sample = await fetch_sample(sample_item_id)
     ionization_setup = await sample_setup(sample_item_id)
     config = config or PeakAssignmentConfig()

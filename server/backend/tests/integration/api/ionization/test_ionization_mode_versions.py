@@ -25,6 +25,7 @@ from mascope_backend.api.new.ionization.modes.versions import (
     lineage,
     move_to_current_versions,
     root_ids,
+    sample_label_purity,
 )
 from mascope_backend.api.new.peak_assignments import service as assignments
 from mascope_backend.db import (
@@ -241,6 +242,7 @@ _VERSIONED_EDITS = {
     },
     "calibration collection": lambda w: {"calibration_collection_id": w["cal_b"]},
     "diagnostic collection": lambda w: {"diagnostic_collection_id": w["diag_b"]},
+    "label purity": lambda w: {"label_purity": 0.95},
 }
 
 
@@ -684,3 +686,72 @@ async def test_a_file_is_bound_and_reprocessed_under_current_versions(
     ] == [new_id]
     with pytest.raises(ValueError, match="No ionization mode has the id"):
         await process.current_ionization_modes([gen_id()])
+
+
+# --- the labelled reagent's purity ----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_mode_carries_its_labelled_reagents_purity(
+    admin_client, async_session_factory, world
+):
+    created = []
+    for body in (
+        {},
+        {"label_purity": 0.99},
+    ):
+        resp = await admin_client.post(
+            "/api/ionization/modes",
+            json={
+                "ionization_mode_name": f"Purity {gen_id(6)}",
+                "ionization_mode_polarity": "+",
+                "ionization_mechanism_ids": [world["mech_a"]],
+                **body,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        created.append(resp.json()["data"]["ionization_mode_id"])
+    try:
+        assert [
+            (await _row(async_session_factory, mode_id)).label_purity
+            for mode_id in created
+        ] == [0.98, 0.99]
+    finally:
+        for mode_id in created:
+            await admin_client.delete(f"/api/ionization/modes/{mode_id}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("purity", [0, 1.5, -0.1])
+async def test_a_purity_is_a_fraction(admin_client, world, mode, purity):
+    resp = await admin_client.patch(
+        f"/api/ionization/modes/{mode['mode_id']}",
+        json=_body(world, mode, label_purity=purity),
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_an_edit_that_sends_no_purity_keeps_the_one_it_has(
+    admin_client, async_session_factory, world, mode
+):
+    new_id = await _mint(admin_client, world, mode, label_purity=0.95)
+    resp = await admin_client.patch(
+        f"/api/ionization/modes/{new_id}",
+        json=_body(world, mode, label_purity=None),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["ionization_mode_id"] == new_id
+    assert (await _row(async_session_factory, new_id)).label_purity == 0.95
+
+
+@pytest.mark.asyncio
+async def test_a_sample_reads_the_purity_of_the_version_it_is_bound_under(
+    admin_client, world, mode
+):
+    new_id = await _mint(admin_client, world, mode, label_purity=0.95)
+    assert await sample_label_purity(mode["item_id"]) == 0.98
+    await move_to_current_versions(sample_item_ids=[mode["item_id"]])
+    assert await sample_label_purity(mode["item_id"]) == 0.95
+    assert await sample_label_purity(gen_id()) is None
+    assert new_id

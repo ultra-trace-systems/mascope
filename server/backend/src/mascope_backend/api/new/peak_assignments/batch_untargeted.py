@@ -42,6 +42,7 @@ from sqlalchemy import select
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.cheminfo.utils import to_custom_element_format
+from mascope_backend.api.new.ionization.modes.versions import sample_label_purity
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
@@ -102,6 +103,7 @@ from mascope_backend.socket.notifications import (
     send_progress_user_notification,
 )
 from mascope_file.name import get_instrument_type
+from mascope_tools.composition.custom_elements import labelled_purity
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.reagents import secondary_channels
 
@@ -449,6 +451,16 @@ async def _unassigned_anchors_and_members(
 
 
 async def _search_sample(
+    sample_item_id: str, target_peak_ids: set[str], config: PeakAssignmentConfig
+) -> tuple[list[dict], int]:
+    """:func:`_search_sample_peaks` at the labelled-reagent purity the sample's
+    ionization setup carries, as a run of it reads (``custom_elements.labelled_purity``).
+    """
+    with labelled_purity(await sample_label_purity(sample_item_id)):
+        return await _search_sample_peaks(sample_item_id, target_peak_ids, config)
+
+
+async def _search_sample_peaks(
     sample_item_id: str, target_peak_ids: set[str], config: PeakAssignmentConfig
 ) -> tuple[list[dict], int]:
     """Stage B over one sample's representative peaks, in the context of its

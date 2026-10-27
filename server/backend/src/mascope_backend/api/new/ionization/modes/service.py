@@ -398,6 +398,10 @@ async def update_ionization_mode(
                     f"polarity '{new_polarity}'"
                 )
 
+        # A purity left out, or sent as null, is the one the mode has.
+        if update_data.get("label_purity") is None:
+            update_data.pop("label_purity", None)
+
         # Calibration and diagnostic collections may be changed to another
         # collection, but not cleared (un-set to null). Dropping the key when the
         # incoming value is None preserves the currently-defined collection.
