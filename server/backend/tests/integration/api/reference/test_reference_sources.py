@@ -16,6 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
 
 from mascope_backend.api.new.auth.config import auth_settings
+from mascope_backend.api.new.reference import service
 from mascope_backend.app.fast import fast
 from mascope_backend.db import ReferenceCompound, ReferenceSource, User
 from mascope_backend.db.id import gen_id
@@ -163,6 +164,25 @@ async def test_the_active_sources_are_listed_by_label(outsider_client, sources):
     assert (custom["polarity"], custom["allow_radicals"]) == ("negative", True)
     # ... and cites no publication: the database keeps none for it.
     assert custom["references"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_list_cited_by_isbn_gives_its_isbn_and_note(
+    outsider_client, sources, monkeypatch
+):
+    """A thesis is cited by ISBN with a note on where it is open; no DOI."""
+    thesis = next(p for p in catalogue() if p.id == "monoterpene-hom-kang2021")
+    monkeypatch.setitem(
+        service.shipped_references(),
+        _SHIPPED.id,
+        service.shipped_references()[thesis.id],
+    )
+    _, shipped = await _sources(outsider_client)
+    [reference] = shipped["references"]
+    assert reference["doi"] is None
+    assert reference["isbn"] == "978-3-95806-596-3"
+    assert reference["citation"] == thesis.references[0]["citation"]
+    assert reference["note"] == thesis.references[0]["note"]
 
 
 @pytest.mark.asyncio
