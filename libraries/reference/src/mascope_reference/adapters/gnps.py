@@ -102,7 +102,10 @@ class GnpsAdapter:
 
     name = "gnps"
     kind = SPECTRUM_KIND
-    license = GNPS_OWN_LICENSE
+    # What a load's source row, `sources` and `status` show. Every spectrum
+    # carries its own tag, and a load can hold imported libraries' spectra
+    # whose terms are unknown, so the row claims none.
+    license = IMPORTED_LICENSE
 
     def parse(self, path: Path) -> Iterator[SpectrumRecord | SkippedSpectrum]:
         for record in read_mgf_records(path):
