@@ -635,6 +635,7 @@ async def test_the_ro_crate_root_is_the_datasets_record(package, dataset):
         f"{_DEPLOYMENT}:dataset:{ids.dataset}"
     )
     terms = [entities[ref] for ref in _refs(root["measurementTechnique"])]
+    assert len(terms) == len({term["@id"] for term in terms})
     assert {term["termCode"] for term in terms} == {
         entry["cv_terms"][key]["accession"]
         for entry in package.manifest["raw"]

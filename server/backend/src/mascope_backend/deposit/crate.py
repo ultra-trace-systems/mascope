@@ -19,7 +19,12 @@ written before it, so it says nothing the manifest does not:
 
 A related identifier's DataCite relation becomes the schema.org property
 closest to it (:data:`RELATION_PROPERTIES`), ``citation`` where none is
-closer; the entity's description keeps the relation as written.
+closer; the entity's description keeps the relation as written. Its ``@id``
+is the work's IRI, a DOI's at doi.org. An IRI the crate has an entity by
+already is that entity: Mascope's repository is the software, an author's
+ORCID record the author, and a work given under two relations one work that
+names both. RO-Crate cites by absolute URI alone, so a work cited without an
+IRI is one the dataset ``mentions``.
 
 The crate is written after ``manifest.json``, so it carries the manifest's
 checksum, and before ``SHA256SUMS``, which checks the crate too. It gives
@@ -94,6 +99,15 @@ _PSI_MS = "http://purl.obolibrary.org/obo/ms.owl"
 #: character outside ASCII, which RO-Crate 1.2 keeps unencoded.
 _ID_SAFE = re.compile(r"[A-Za-z0-9\-._~!$&'()*+,;=@/]|[^\x00-\x7f]")
 
+#: What a DOI keeps as it is in its doi.org IRI: what a URI path allows, and
+#: every character outside ASCII. A ``#``, ``?`` or ``%`` is encoded: in a DOI
+#: it is a character of the name, not a fragment, a query or an escape.
+_DOI_SAFE = re.compile(r"[A-Za-z0-9\-._~!$&'()*+,;=:@/]|[^\x00-\x7f]")
+
+#: What a URL keeps as it is: all but what no IRI can hold. Its ``#``, ``?``
+#: and ``%`` mean what they mean in the URL as it was typed.
+_URL_SAFE = re.compile(r'[^\x00-\x20<>"{}|\\^`\x7f]')
+
 
 def render_crate(
     manifest: dict, written: list[tuple[str, str, int]], sums_size: int
@@ -160,13 +174,9 @@ def render_crate(
             funders.append(funder)
     root["funding"] = grants
     root["funder"] = funders
-    for n, entry in enumerate(dataset.get("related_identifiers") or [], start=1):
-        relation = entry["relation"]
-        prop = RELATION_PROPERTIES.get(relation.lower(), "citation")
-        root.setdefault(prop, []).append(graph.add(_related(entry, n)))
-
     root["hasPart"] = _data_entities(manifest, written, sums_size, graph)
-    root["mentions"] = graph.add(_action(manifest, written, graph))
+    root["mentions"] = [graph.add(_action(manifest, written, graph))]
+    _add_related(root, dataset.get("related_identifiers") or [], graph)
 
     descriptor = {
         "@id": METADATA_FILE,
@@ -255,24 +265,66 @@ def _person(author: dict, n: int, graph: _Graph) -> dict:
     }
 
 
+def _add_related(root: dict, entries: list[dict], graph: _Graph) -> None:
+    """
+    The related identifiers, each under the property closest to its
+    relation. Added last, so that a work whose IRI is an entity of the crate
+    already, Mascope's repository say, refers to that entity rather than
+    replacing it.
+    """
+    works: dict[str, tuple[dict, list[str], str | None]] = {}
+    for n, entry in enumerate(entries, start=1):
+        work = _related(entry, n)
+        prop = RELATION_PROPERTIES.get(entry["relation"].lower(), "citation")
+        if prop == "citation" and work["@id"].startswith("#"):
+            prop = "mentions"
+        if work["@id"] in works:
+            work, relations, kind = works[work["@id"]]
+            relations.append(entry["relation"])
+            work["description"] = _relation_text(relations, kind)
+        else:
+            works[work["@id"]] = (
+                work,
+                [entry["relation"]],
+                entry.get("identifier_type"),
+            )
+        reference = graph.add(work)
+        if reference not in root.setdefault(prop, []):
+            root[prop].append(reference)
+
+
 def _related(entry: dict, n: int) -> dict:
-    """A related identifier as a work, its ``@id`` a URL where it is one."""
+    """A related identifier as a work, its ``@id`` its IRI where it has one."""
     identifier = entry["identifier"].strip()
     kind = entry.get("identifier_type")
-    if re.match(r"https?://", identifier):
-        entity_id = identifier
-    elif (kind or "").upper() == "DOI" or re.match(r"(doi:)?10\.\d+/", identifier):
-        entity_id = "https://doi.org/" + identifier.removeprefix("doi:")
-    else:
-        entity_id = f"#related-{n}"
-    description = f"Related to the dataset as {entry['relation']} (DataCite)"
     return {
-        "@id": entity_id,
+        "@id": _related_iri(identifier, kind) or f"#related-{n}",
         "@type": "CreativeWork",
         "name": identifier,
         "identifier": identifier,
-        "description": description + (f"; a {kind}." if kind else "."),
+        "description": _relation_text([entry["relation"]], kind),
     }
+
+
+def _relation_text(relations: list[str], kind: str | None) -> str:
+    """A related work's description: how it relates to the dataset."""
+    return f"Related to the dataset as {' and '.join(relations)} (DataCite)" + (
+        f"; a {kind}." if kind else "."
+    )
+
+
+def _related_iri(identifier: str, kind: str | None) -> str | None:
+    """
+    A related identifier's IRI: a URL as typed, a DOI at doi.org (with or
+    without its ``doi:`` prefix, in any case), what an IRI cannot hold
+    percent-encoded. :return: None for any other identifier.
+    """
+    if re.match(r"https?://", identifier, re.IGNORECASE):
+        return _encode(identifier, _URL_SAFE)
+    doi = re.sub(r"^doi:\s*", "", identifier, flags=re.IGNORECASE)
+    if (kind or "").upper() == "DOI" or re.match(r"10\.\d+/", doi):
+        return "https://doi.org/" + _encode(doi, _DOI_SAFE)
+    return None
 
 
 def _span(acquired: dict) -> str | None:
@@ -488,8 +540,13 @@ def _action(manifest: dict, written: list[tuple[str, str, int]], graph: _Graph) 
 def _path_id(path: str) -> str:
     """A path in the package as a relative ``@id``: what a URI cannot hold,
     a space among it, percent-encoded."""
+    return _encode(path, _ID_SAFE)
+
+
+def _encode(text: str, safe: re.Pattern) -> str:
+    """``text`` with each character ``safe`` does not match percent-encoded."""
     return "".join(
-        char if _ID_SAFE.fullmatch(char) else quote(char, safe="") for char in path
+        char if safe.fullmatch(char) else quote(char, safe="") for char in text
     )
 
 

@@ -625,6 +625,34 @@ def test_authors_are_their_orcid_and_share_an_organization_with_funders():
         ),
         ({"identifier": "a", "relation": "IsVersionOf"}, "isBasedOn", "#related-1"),
         ({"identifier": "ark:/1/a", "relation": "IsPartOf"}, "isPartOf", "#related-1"),
+        # The prefix in any case, and what an IRI cannot hold encoded: in a
+        # DOI, ``#`` and ``?`` are characters of its name too.
+        (
+            {"identifier": "DOI: 10.1/a", "relation": "Cites"},
+            "citation",
+            "https://doi.org/10.1/a",
+        ),
+        (
+            {
+                "identifier": "10.1002/(SICI)1097-4636(199706)35:4<456::AID-JBM6>3.0.CO;2-#",
+                "relation": "References",
+                "identifier_type": "DOI",
+            },
+            "citation",
+            "https://doi.org/10.1002/(SICI)1097-4636(199706)35:4%3C456::AID-JBM6%3E"
+            "3.0.CO;2-%23",
+        ),
+        (
+            {"identifier": "10.1/a b?c%d", "relation": "Cites"},
+            "citation",
+            "https://doi.org/10.1/a%20b%3Fc%25d",
+        ),
+        # A URL keeps its fragment, its query and its escapes, as typed.
+        (
+            {"identifier": "HTTPS://e.org/a b<c>?q=%41#f", "relation": "Cites"},
+            "citation",
+            "HTTPS://e.org/a%20b%3Cc%3E?q=%41#f",
+        ),
     ],
 )
 def test_a_related_identifier_takes_the_closest_schema_org_property(
@@ -633,8 +661,106 @@ def test_a_related_identifier_takes_the_closest_schema_org_property(
     crate = _crate(_manifest(related_identifiers=[entry]))
     assert crate["./"][prop] == {"@id": entity_id}
     work = crate[entity_id]
-    assert work["identifier"] == entry["identifier"]
+    assert work["identifier"] == entry["identifier"].strip()
     assert f"as {entry['relation']} (DataCite)" in work["description"]
+
+
+def test_a_related_identifier_the_crate_has_an_entity_by_is_that_entity():
+    """Citing Mascope's repository cites the software, which keeps its
+    version; one paper under two relations is one work naming both, which
+    each property refers to once."""
+    mascope = "https://github.com/ultra-trace-systems/mascope"
+    crate = _crate(
+        _manifest(
+            related_identifiers=[
+                {"identifier": mascope, "relation": "References"},
+                {"identifier": "10.1/a", "relation": "IsSupplementTo"},
+                {"identifier": "doi:10.1/a", "relation": "Cites"},
+                {"identifier": "DOI:10.1/a", "relation": "IsDerivedFrom"},
+            ]
+        )
+    )
+    root = crate["./"]
+    software = crate[mascope]
+    assert (software["@type"], software["version"]) == ("SoftwareApplication", "v1.0.0")
+    assert crate["#package"]["instrument"][0] == {"@id": mascope}
+    assert root["citation"] == [{"@id": mascope}, {"@id": "https://doi.org/10.1/a"}]
+    assert root["isBasedOn"] == {"@id": "https://doi.org/10.1/a"}
+    assert crate["https://doi.org/10.1/a"]["description"] == (
+        "Related to the dataset as IsSupplementTo and Cites and IsDerivedFrom "
+        "(DataCite)."
+    )
+    assert [e["@id"] for e in crate.values() if e["@type"] == "CreativeWork"] == [
+        "ro-crate-metadata.json",
+        "#license",
+        "https://spdx.org/licenses/Apache-2.0",
+        "https://doi.org/10.1/a",
+    ]
+
+
+def test_a_work_cited_without_an_iri_is_one_the_dataset_mentions():
+    """RO-Crate cites by absolute URI alone: a work cited by an identifier
+    that is neither a URL nor a DOI is mentioned instead."""
+    crate = _crate(
+        _manifest(
+            related_identifiers=[
+                {"identifier": "PMID 1", "relation": "Cites"},
+                {"identifier": "isbn 2", "relation": "IsVersionOf"},
+            ]
+        )
+    )
+    root = crate["./"]
+    assert "citation" not in root
+    assert root["mentions"] == [{"@id": "#package"}, {"@id": "#related-1"}]
+    assert root["isBasedOn"] == {"@id": "#related-2"}
+    assert crate["#related-1"]["identifier"] == "PMID 1"
+
+
+def test_each_file_has_the_media_type_of_its_extension():
+    written = [
+        ("raw/a.raw", "a" * 64, 4),
+        ("raw/b.h5", "b" * 64, 4),
+        ("raw/a.raw.mascope.json", "c" * 64, 4),
+        ("batches/b.xlsx", "d" * 64, 4),
+        ("README.md", "e" * 64, 4),
+        ("DATA_LICENSE", "f" * 64, 4),
+    ]
+    crate = _crate(_manifest(), written=written)
+    assert {path: crate[path]["encodingFormat"] for path, _, _ in written} == {
+        "raw/a.raw": "application/octet-stream",
+        "raw/b.h5": "application/x-hdf5",
+        "raw/a.raw.mascope.json": "application/json",
+        "batches/b.xlsx": (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        "README.md": "text/markdown",
+        "DATA_LICENSE": "text/plain",
+    }
+    assert crate["SHA256SUMS"]["encodingFormat"] == "text/plain"
+
+
+def test_a_term_two_files_share_is_one_measurement_technique():
+    manifest = _manifest()
+    manifest["raw"].append(_raw_entry("file-b"))
+    crate = _crate(manifest)
+    assert crate["./"]["measurementTechnique"] == [
+        {"@id": "http://purl.obolibrary.org/obo/MS_1000071"},
+        {"@id": "http://purl.obolibrary.org/obo/MS_1000484"},
+    ]
+
+
+def test_two_grants_from_one_funder_name_it_once():
+    crate = _crate(
+        _manifest(
+            funding=[{"funder": "Fund", "award": "1"}, {"funder": "Fund", "award": "2"}]
+        )
+    )
+    root = crate["./"]
+    assert [crate[ref["@id"]]["name"] for ref in root["funding"]] == [
+        "Fund, 1",
+        "Fund, 2",
+    ]
+    assert root["funder"] == {"@id": "#organization-1"}
 
 
 def test_a_path_is_an_id_with_only_what_a_uri_cannot_hold_encoded():
