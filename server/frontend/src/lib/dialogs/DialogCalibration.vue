@@ -17,6 +17,7 @@ import { useMzFit } from '@/lib/mzFit'
 import { PaneSettingsCalibration } from '@/lib/panes'
 import { canCalibrateInstruments } from '@/lib/permissions'
 import { segmentListItems, splitQualityIssues } from '@/lib/calibrationSegments'
+import { calibrationPointRows } from '@/lib/calibrationPoints'
 import { calibrationSettingsText } from '@/lib/calibrationSettings'
 
 const mzFit = useMzFit()
@@ -261,47 +262,68 @@ async function save() {
   })
 }
 
-const calibration = computed(() => ({
-  key: 0,
-  rows: mzFit.stats ?? [],
-  columns: [
-    // A stitched sample's calibrants say which scan range each was found in
-    ...((mzFit.stats ?? []).some((row) => row.segment_label)
-      ? [{ field: 'segment_label', label: 'Scan range [m/z]' }]
-      : []),
-    { field: 'mz', label: 'Isotope m/z' },
-    { field: 'sample_peak_mz', label: 'Observed m/z' },
-    {
-      field: 'match_mz_error',
-      label: 'Pre-calibration error [ppm]',
-      subheading: null
-    },
-    { field: 'calibration_mz', label: 'Calibrated m/z' },
-    {
-      field: 'calibration_mz_error',
-      label: 'Post-calibration error [ppm]',
-      subheading: null
-    },
-    { field: 'mz_error_diff', label: 'Error Δ [ppm]', subheading: null },
-    {
-      field: 'calibrant_to_tic',
-      label: 'Fraction of TIC',
-      subheading: null
-    }
-  ]
-}))
+// A TOF fit lists every calibrant line it chose from, the ones it left out
+// included, and its table shows them all (`calibrationPointRows`): each with
+// its ion and its peak's S/N, and whether the fit kept it. Any other fit's
+// table shows the lines it kept, the rows it sent, the last its summary.
+const calibration = computed(() => {
+  const points = calibrationPointRows(mzFit.current, mzFit.stats)
+  const stats = mzFit.stats ?? []
+  return {
+    key: 0,
+    rows:
+      points ??
+      stats.map((row, index) => ({
+        ...row,
+        type: index === stats.length - 1 ? 'summary' : 'stat'
+      })),
+    columns: calibrationColumns(points !== null)
+  }
+})
+
+const calibrationColumns = (listsPoints) => [
+  ...(listsPoints ? [{ field: 'ion', label: 'Ion' }] : []),
+  // A stitched sample's calibrants say which scan range each was found in
+  ...((mzFit.stats ?? []).some((row) => row.segment_label)
+    ? [{ field: 'segment_label', label: 'Scan range [m/z]' }]
+    : []),
+  { field: 'mz', label: 'Isotope m/z' },
+  { field: 'sample_peak_mz', label: 'Observed m/z' },
+  {
+    field: 'match_mz_error',
+    label: 'Pre-calibration error [ppm]',
+    subheading: null
+  },
+  { field: 'calibration_mz', label: 'Calibrated m/z' },
+  {
+    field: 'calibration_mz_error',
+    label: 'Post-calibration error [ppm]',
+    subheading: null
+  },
+  { field: 'mz_error_diff', label: 'Error Δ [ppm]', subheading: null },
+  ...(listsPoints ? [{ field: 'snr', label: 'S/N' }] : []),
+  {
+    field: 'calibrant_to_tic',
+    label: 'Fraction of TIC',
+    subheading: null
+  },
+  ...(listsPoints ? [{ field: 'retained', label: 'In fit' }] : [])
+]
 
 const columnFormatters = computed(() => ({
   // Without the unit the header carries, and on one line (`.range-cell`):
   // wrapped, a label made each row three lines tall
   segment_label: { format: (label) => label.replace(/^m\/z /, '') },
+  ion: { format: (ion) => ion },
   mz: num.mz,
   sample_peak_mz: num.mz,
   calibration_mz: num.mz,
   match_mz_error: num.mzError,
   calibration_mz_error: num.mzError,
   mz_error_diff: num.mzError,
-  calibrant_to_tic: num.ticFraction
+  snr: num.signalToNoise,
+  calibrant_to_tic: num.ticFraction,
+  retained: { format: (retained) => (retained ? 'yes' : 'left out') }
 }))
 
 const formatter = new Intl.NumberFormat('en-US', {
@@ -399,12 +421,7 @@ const formatter = new Intl.NumberFormat('en-US', {
             <DataTable
               v-if="calibration.rows.length > 0"
               :key="calibration.key"
-              :value="
-                calibration.rows.map((row, index) => ({
-                  ...row,
-                  type: index == calibration.rows.length - 1 ? 'summary' : 'stat'
-                }))
-              "
+              :value="calibration.rows"
               sortField="mz"
               class="calibration-table"
               scrollable
@@ -420,7 +437,9 @@ const formatter = new Intl.NumberFormat('en-US', {
                   <span
                     :class="[
                       data.type == 'summary' ? 'summary-cell' : '',
-                      col.field === 'segment_label' ? 'range-cell' : ''
+                      data.retained === false ? 'left-out-cell' : '',
+                      col.field === 'segment_label' ? 'range-cell' : '',
+                      col.field === 'ion' ? 'ion-cell' : ''
                     ]"
                     v-if="data[col.field] !== null && data[col.field] !== undefined"
                     >{{
@@ -544,8 +563,14 @@ const formatter = new Intl.NumberFormat('en-US', {
   font-weight: bold;
 }
 
-.calibration-table :deep(.range-cell) {
+.calibration-table :deep(.range-cell),
+.calibration-table :deep(.ion-cell) {
   white-space: nowrap;
+}
+
+/* A line the fit left out: listed, and read as not part of the fit */
+.calibration-table :deep(.left-out-cell) {
+  color: var(--p-text-muted-color);
 }
 
 .settings-heading {
