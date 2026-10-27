@@ -9,6 +9,11 @@ Prior to executing instrument-specific regressions, a unified data-cleaning and 
 Detected peaks are extracted from the sample file and filtered based on their signal-to-noise ratio. 
 
 Reference compounds are pulled from a calibration target collection, generating a list of exact theoretical isotopic masses based on the designated ionization mechanisms and instrument.
+The chemistries Mascope ships bring their own when they have a reagent: the reagent ion and its clusters, such as `[Br]-`, `[Br2]-` and `[Br3]-` for bromide, `[NO3]-` with one and two nitric acids for nitrate, or the fluoranthene ion of an Orbitrap's EASY-IC source for the ambient ones.
+They are in every collection list, named after their chemistry (*Bromide, negative calibrants*), each beside a *reagent ions* collection that is matched in every file of the chemistry to follow the source.
+Each compound in them is named for the ion it stands for.
+A cluster series gives a TOF fit the three points it needs and an Orbitrap the one it needs, but a file whose scan range starts above the clusters holds none of them; give its ionization mode a calibration collection of your own then, as you would any mode.
+Mascope brings a shipped collection up to date with each release until you edit it, and leaves an edited one as you left it.
 Peaks are only retained if their observed mass coordinates lie within a parts-per-million refinement window relative to any target isotopic mass.
 
 On Orbitrap data, a local-dominance guard additionally rejects any candidate that lies close to a much stronger peak.
