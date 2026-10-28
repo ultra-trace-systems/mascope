@@ -41,7 +41,7 @@ async def authenticate_socket_connection(
     token: str,
     minimum_role: str,
     service_name: Optional[str] = None,
-) -> None:
+) -> Optional[int]:
     """
     Authenticate Socket.IO connection with Redis session storage.
 
@@ -64,6 +64,9 @@ async def authenticate_socket_connection(
     :type minimum_role: str
     :param service_name: Name of the service requesting authentication (if applicable)
     :type service_name: Optional[str]
+    :return: The ``exp`` of a web socket's token, which its connection's
+        session renewal signs it out at; None for a service
+    :rtype: Optional[int]
     :raises SocketUnauthenticatedError: If authentication fails
     :raises SocketForbiddenError: If user's role is insufficient
     :raises SocketAuthConfigError: If role configuration is invalid
@@ -101,6 +104,7 @@ async def authenticate_socket_connection(
         )
         if not service_name:
             await admit_signed_in(sid, user, issued_at, expires_at)
+        return expires_at
     except InvalidTokenException as e:
         if not service_name:
             await _hold_quietly(sid)

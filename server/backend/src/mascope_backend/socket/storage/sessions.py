@@ -316,7 +316,15 @@ async def forget_user_socket(user_id: int, sid: str) -> None:
 _renewal_tasks: dict[str, asyncio.Task] = {}
 
 
-async def _renew_session(sid: str) -> None:
+def _first_delay(expires_at: Optional[float]) -> float:
+    """The renewal's first sleep: an interval, or less if the token expires sooner."""
+    delay = storage_config.session_renewal_interval
+    if expires_at is None:
+        return delay
+    return min(delay, expires_at - time.time())
+
+
+async def _renew_session(sid: str, expires_at: Optional[float] = None) -> None:
     """
     Keep a web socket's records alive until cancelled.
 
@@ -324,9 +332,10 @@ async def _renew_session(sid: str) -> None:
     session, index entry and room record. A session whose token has expired is
     signed out instead, and the tick before it is brought forward to the
     expiry, so the socket goes when its token does, not up to an interval
-    later.
+    later. ``expires_at``, the expiry of a token the socket authenticated
+    with at connect, brings the first tick forward the same way.
     """
-    delay = storage_config.session_renewal_interval
+    delay = _first_delay(expires_at)
     while True:
         await asyncio.sleep(delay)
         delay = storage_config.session_renewal_interval
@@ -355,20 +364,25 @@ async def _renew_session(sid: str) -> None:
             delay = min(delay, remaining)
 
 
-def start_session_renewal(sid: str) -> None:
+def start_session_renewal(sid: str, expires_at: Optional[float] = None) -> None:
     """
     Keep a web socket's session and records alive for the life of its connection.
 
     Call from the default namespace's connect handler for every connection,
     authenticated there or not: a socket may be authenticated later, at
     sign-in, by a request another worker serves. Idempotent per sid: a
-    lingering task is cancelled first.
+    lingering task is cancelled first, so the connect handler calls it again
+    with the expiry of the token it authenticated the socket with.
 
     :param sid: Socket.IO session ID
     :type sid: str
+    :param expires_at: The ``exp`` of the socket's token, if known: the first
+        tick is brought forward to it, so a socket that connects in its
+        token's last interval is still signed out when the token expires
+    :type expires_at: Optional[float]
     """
     _cancel_renewal_task(sid)
-    _renewal_tasks[sid] = asyncio.create_task(_renew_session(sid))
+    _renewal_tasks[sid] = asyncio.create_task(_renew_session(sid, expires_at))
 
 
 def _cancel_renewal_task(sid: str) -> asyncio.Task | None:
