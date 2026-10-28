@@ -183,6 +183,10 @@ stops receiving updates about workspaces and their data straight away, before
 its next request: the connection stays open only to hear that the session is
 over.
 
+A session that reaches the end of its seven days signs its tabs' live
+connections out at that moment, as signing out does, even in a tab nobody has
+touched since.
+
 None of this touches **access tokens** (below), which are separate credentials
 with their own revocation - except a password change, which also revokes the
 account's tokens.

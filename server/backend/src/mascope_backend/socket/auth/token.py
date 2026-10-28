@@ -38,7 +38,8 @@ async def get_jwt_from_cookies(cookies: str) -> str:
 
 async def validate_jwt_token(jwt_token: str):
     """
-    Validate JWT token and return associated user and the token's issue time.
+    Validate JWT token and return associated user and the token's issue and
+    expiry times.
 
     Verifies the provided JWT token using the configured authentication strategy
     and retrieves the associated user from the database. A token whose session
@@ -46,9 +47,9 @@ async def validate_jwt_token(jwt_token: str):
 
     :param jwt_token: JWT token string from client cookie
     :type jwt_token: str
-    :return: ``(user, iat)``; ``iat`` is ``None`` for a token minted before
-        tokens carried one
-    :rtype: tuple[User, Optional[int]]
+    :return: ``(user, iat, exp)``; ``iat`` is ``None`` for a token minted
+        before tokens carried one, ``exp`` for a token without an expiry
+    :rtype: tuple[User, Optional[int], Optional[int]]
     """
     try:
         # Step 1. Basic token format validation

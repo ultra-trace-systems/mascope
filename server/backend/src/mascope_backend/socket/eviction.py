@@ -37,9 +37,20 @@ socket of the account whose session recorded that token's ``iat``. The issue
 time is the session's only mark, to the second, so a sign-in of the same
 account in another browser within the same second goes too; that errs towards
 signing out, and its tab signs in again.
+
+A web session's token also expires, after ``JWT_EXPIRATION_SECONDS``, and from
+then on the tab is signed out over HTTP. Its socket's session keeps the
+token's ``exp`` beside its ``iat``: :func:`socket_hold_reason` holds a session
+past it, and the renewal that keeps a connected socket's records alive
+(:mod:`mascope_backend.socket.storage.sessions`) wakes at the expiry and signs
+the socket out with :func:`sign_out_expired_socket`, as a logout would. Without
+that, a tab left open past the token's lifetime kept its rooms, and a logout
+in a tab that had signed in again since, with a token of another ``iat``,
+could not reach it.
 """
 
 import os
+import time
 from typing import Optional
 
 from mascope_backend.runtime import runtime
@@ -58,13 +69,17 @@ from mascope_backend.socket.storage import (
 )
 
 
-def socket_hold_reason(user, issued_at: Optional[int]) -> Optional[str]:
+def socket_hold_reason(
+    user, issued_at: Optional[int], expires_at: Optional[int]
+) -> Optional[str]:
     """
     Why a socket of this account may hear nothing but its own room.
 
     :param user: The account the socket is signed in as, or ``None`` when the
         account no longer exists.
     :param issued_at: The ``iat`` the socket's session recorded.
+    :param expires_at: The ``exp`` the socket's session recorded; ``None`` for
+        a session saved before sessions kept it, which nothing expires.
     :return: The reason, worded to follow "user <id>", or ``None`` when the
         socket may join the rooms its access allows.
     """
@@ -78,6 +93,8 @@ def socket_hold_reason(user, issued_at: Optional[int]) -> Optional[str]:
         return "owes a password change"
     if not user.is_active or session_revoked(user, issued_at):
         return "has had its session ended"
+    if expires_at is not None and expires_at <= time.time():
+        return "has had its session expire"
     return None
 
 
@@ -136,14 +153,19 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
                 await forget_user_socket(user_id, sid)
             if (
                 session is not None
-                and socket_hold_reason(user, session.get("issued_at")) is None
+                and socket_hold_reason(
+                    user, session.get("issued_at"), session.get("expires_at")
+                )
+                is None
             ):
                 kept |= rooms
                 # A socket that may read hears the room-less broadcasts again:
                 # the held tab of an account that has just changed its
                 # password left the room, or never entered it, at sign-in.
                 if SIGNED_IN_ROOM not in rooms:
-                    await admit_signed_in(sid, user, session.get("issued_at"))
+                    await admit_signed_in(
+                        sid, user, session.get("issued_at"), session.get("expires_at")
+                    )
                 continue
             for room in rooms - {own_room}:
                 await sio.leave_room(sid, room)
@@ -268,6 +290,39 @@ async def sign_out_session(
                 f"[Worker {os.getpid()}]"
             )
     return signed_out
+
+
+async def sign_out_expired_socket(sid: str, user_id: int) -> bool:
+    """
+    Sign out a socket whose session token has expired.
+
+    Called by the renewal of the worker holding the connection when the
+    session's ``exp`` passes. The socket goes as a logout signs it out: the tab
+    is no longer signed in over HTTP either. Its session is read again first,
+    so a socket that signed in again meanwhile, with a newer token, stays.
+    Never raises: the renewal that calls it must carry on.
+
+    :param sid: The socket, on the default namespace.
+    :param user_id: The account its expired session was signed in as.
+    :return: Whether the socket was signed out.
+    """
+    try:
+        session = await peek_session_user(sid)
+        if (
+            session is None
+            or session.get("user_id") != user_id
+            or (expires_at := session.get("expires_at")) is None
+            or expires_at > time.time()
+        ):
+            return False
+        await _sign_out(sid, user_id)
+        return True
+    except Exception:
+        runtime.logger.exception(
+            f"Failed to sign socket {sid} of user {user_id} out at its session's "
+            f"expiry [Worker {os.getpid()}]"
+        )
+        return False
 
 
 async def _sign_out(sid: str, user_id: int) -> None:

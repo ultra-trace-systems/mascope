@@ -15,6 +15,7 @@ case here is paired with a case that must join, so a harness that cannot produce
 a join at all fails instead of reporting a gate it never exercised.
 """
 
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -68,6 +69,7 @@ async def _subscribe(
     sessions_revoked_at: datetime | None = None,
     password_changed_at: datetime | None = None,
     issued_at: int | None = ISSUED_AT,
+    expires_at: int | None = None,
 ):
     """
     Drive ``subscribe`` for a user in the given credential state.
@@ -78,6 +80,8 @@ async def _subscribe(
     :param sessions_revoked_at: The account's revocation stamp.
     :param password_changed_at: The account's last password write.
     :param issued_at: The ``iat`` the socket session recorded.
+    :param expires_at: The ``exp`` the socket session recorded; a day from now
+        unless given.
     :return: The patched ``sio`` mock, for asserting on ``enter_room``.
     """
     user = SimpleNamespace(
@@ -88,7 +92,14 @@ async def _subscribe(
         sessions_revoked_at=sessions_revoked_at,
         password_changed_at=password_changed_at,
     )
-    session = {"user_id": USER_ID, "role_id": _ROLE_ID, "issued_at": issued_at}
+    if expires_at is None:
+        expires_at = int(time.time()) + 86400
+    session = {
+        "user_id": USER_ID,
+        "role_id": _ROLE_ID,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+    }
     sio = MagicMock()
     sio.enter_room = AsyncMock()
     room_tracker = MagicMock()
@@ -193,3 +204,26 @@ async def test_a_revoked_session_still_joins_its_own_channel():
 async def test_a_disabled_account_is_refused_a_resource_room():
     sio = await _subscribe(RESOURCE_ROOM, must_change_password=False, is_active=False)
     sio.enter_room.assert_not_awaited()
+
+
+# ============= The token's expiry =============
+
+
+@pytest.mark.asyncio
+async def test_a_session_whose_token_has_expired_is_refused_a_resource_room():
+    """
+    The tab is signed out over HTTP once its token expires; its socket's
+    session used to subscribe on regardless.
+    """
+    sio = await _subscribe(
+        RESOURCE_ROOM, must_change_password=False, expires_at=int(time.time()) - 1
+    )
+    sio.enter_room.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_expired_session_still_joins_its_own_channel():
+    sio = await _subscribe(
+        OWN_ROOM, must_change_password=False, expires_at=int(time.time()) - 1
+    )
+    sio.enter_room.assert_awaited_once_with("test-sid", OWN_ROOM)
