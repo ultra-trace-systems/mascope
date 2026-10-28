@@ -3069,9 +3069,10 @@ Needed before any rung can be provisional or park.
 - **Defaults:** the seeded
   system-owned modes. The modes have shipped: eleven chemistries, drawn from
   what the fleet actually runs, each with a `system_key` that reads the same
-  on every server. They arrive inert - no token, no target collections, left
-  out of the ionization listing until a deployment adopts one - and a
-  deployment owns only the collections it points them at.
+  on every server. They arrive with no token, left out of the ionization
+  listing until a deployment adopts one, and since MAS-312 with collections
+  of their own where the chemistry has a reagent (phase 8); a deployment
+  owns only the collections it points them at.
   `mascope_backend.ionization_catalogue` holds the catalogue and
   `db.admin.ionization.ensure_system_modes` creates it at each start: first
   the ionization mechanisms Mascope ships, the modes' own and every channel
@@ -3104,7 +3105,10 @@ unchanged.
   workspace; and the four chemistries with no reagent in the library
   (protonation, deprotonation, the two ammonium ones) get none. An edit is
   told from the seed's own collection by a digest of its content against
-  the ones releases seeded (`ionization_catalogue.SEEDED_BEFORE`).* Each
+  the ones releases seeded (`ionization_catalogue.SEEDED_BEFORE`). A
+  mode's current version is pointed at them in place while no sample is
+  bound under it, and otherwise takes them as its next version (4.3), so
+  samples processed before keep the version their results came from.* Each
   seeded chemistry gets a system-owned
   calibrant collection and a diagnostic collection, seeded at start beside
   its mechanisms from the reagent-ion library

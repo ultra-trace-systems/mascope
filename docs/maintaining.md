@@ -1673,8 +1673,11 @@ chemistries have no reagent there and get none. The collections are global,
 named after their chemistry (*Bromide, negative calibrants*, *Bromide,
 negative reagent ions*) under fixed ids (`sysBromideCal`, `sysBromideDia`),
 and a start points each shipped mode at its own only where the mode points at
-no collection. So a deployment that points a shipped mode at a collection of
-its own keeps it, and a deployment may also edit a shipped collection: each
+no collection, so a deployment that points a shipped mode at a collection of
+its own keeps it. A shipped mode that files were already processed under takes
+them as its next version, as an edit of the mode would: those files keep the
+version their results came from until they are processed again, and their
+batches are not flagged. A deployment may also edit a shipped collection: each
 start compares a shipped collection with what releases of Mascope seeded it
 with, brings one that still holds that up to date, marking the batches it
 serves for a rematch as an edit would, and leaves an edited one as it is. The
