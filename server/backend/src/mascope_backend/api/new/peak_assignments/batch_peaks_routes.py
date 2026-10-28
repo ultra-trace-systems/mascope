@@ -258,6 +258,12 @@ async def get_batch_peak_ledger_route(
 @api_route(token_access=True)
 async def get_batch_peak_lists_route(
     sample_batch_id: str,
+    sample_item_id: list[str] | None = Query(
+        None,
+        description="Read only these samples of the batch (repeat the "
+        "parameter for each); every sample when omitted. An id that is no "
+        "sample of the batch is named among the failures.",
+    ),
     matches: bool = Query(
         False,
         description="Add the match columns: one row per match of a peak, a "
@@ -280,12 +286,15 @@ async def get_batch_peak_lists_route(
     The batch form of ``GET /api/samples/{sample_item_id}/peaks``: each sample
     read as that route reads it with no time or m/z range - its own polarity,
     the whole acquisition - and the rows stacked, in the order the sample
-    listing gives the samples. The columns: ``sample_item_id``,
-    ``sample_item_name``, ``datetime_utc`` (the sample's start), ``peak_id``,
-    ``mz``, ``sparsity``, ``signal_to_noise`` (null where the file has no
-    estimate), ``segment`` (the scan stream of a stitched sample's peak, null
-    otherwise), ``area``, ``height`` and ``is_satellite``; with ``matches``,
-    the per-match columns the per-sample read nests under ``match``.
+    listing gives the samples. With ``sample_item_id``, only the samples it
+    names are read, so a client after a few samples opens only their stores.
+
+    The columns: ``sample_item_id``, ``sample_item_name``, ``datetime_utc``
+    (the sample's start), ``peak_id``, ``mz``, ``sparsity``,
+    ``signal_to_noise`` (null where the file has no estimate), ``segment``
+    (the scan stream of a stitched sample's peak, null otherwise), ``area``,
+    ``height`` and ``is_satellite``; with ``matches``, the per-match columns
+    the per-sample read nests under ``match``.
 
     The file's key-value metadata ``mascope`` is a JSON object: ``samples``
     (each sample read and its row count), ``failures`` (each sample whose read
@@ -296,6 +305,7 @@ async def get_batch_peak_lists_route(
     Not behind the peak-assignment flag: it reads the samples' own peak lists.
 
     :param sample_batch_id: The unique identifier of the sample batch.
+    :param sample_item_id: Only these samples of the batch.
     :param matches: Add the match columns.
     :param satellites: Keep the satellite peaks.
     :param average: Average rather than sum.
@@ -304,7 +314,11 @@ async def get_batch_peak_lists_route(
     """
     await check_batch_access(sample_batch_id, user, "guest")
     content = await build_batch_peak_table(
-        sample_batch_id, matches=matches, satellites=satellites, average=average
+        sample_batch_id,
+        sample_item_ids=sample_item_id,
+        matches=matches,
+        satellites=satellites,
+        average=average,
     )
     return Response(content=content, media_type=PARQUET_MEDIA_TYPE)
 
