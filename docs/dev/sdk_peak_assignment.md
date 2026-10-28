@@ -3,7 +3,7 @@
 # Making the SDK peak-assignment aware (read-first)
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-10-28
 - **Tracked in:** MAS-71 in [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) for the import contract; the SDK write wrappers (section 8.4 steps 5 and 6) are MAS-330 and MAS-345, the demo bundle MAS-331 and the reference identities in frames MAS-332, in [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) milestone 3 (filed 2026-10-22)
 - **What:** The SDK's peak-assignment surface; section 8 is the run-import contract.
 
@@ -813,8 +813,13 @@ in-app path does not:
 > with the reason). `POST /batch/{id}/assign` was removed in the batch-primary epic
 > (PR #2049, 1.8.0) - a batch is assigned by folding at ingest and the untargeted search
 > runs once per batch peak ([peak_assignment_batch_primary.md](peak_assignment_batch_primary.md))
-> - so the batch half of this section has been cut. None of the SDK wrappers below exist
-> yet (steps 5 and 6 of §8.4).
+> - so the batch half of this section has been cut. *Status (2026-10-28).* Step 5 has
+> shipped: `assign`, `wait_for_run`, `verify`, `list_verifications` and `fit_aggregate`,
+> the send-once knob on `http_post` and `http_request`, and the error body on
+> `MascopeAPIError` with `ConflictError` for 409. The route's 409 and 422 now carry the
+> codes this section asked for, `assignment_in_flight` and `sample_ineligible`. A poll
+> that times out raises `AssignmentTimeoutError` carrying the run id. `import_run`
+> (step 6) does not exist yet.
 
 v1 deferred these behind one question - "should the SDK trigger heavy async
 runs?" (the v1 decision log, removed). **Decided: yes.** The ground shifted after the question was
@@ -1112,7 +1117,7 @@ Each step is its own PR, and each leaves the system shippable:
    column list.
 5. **SDK triggering + verification + fit** - `assign` / `verify` /
    `list_verifications` / `fit_aggregate`, the polling helper, hermetic unit
-   tests.
+   tests. **Shipped**, the polling helper as `wait_for_run`.
 6. **SDK `import_run`** + a round-trip tutorial notebook: read peaks, compute
    externally, publish, see the run in the app - and then **compare the two
    engines on the same sample**, which needs no further backend work: both runs
@@ -1157,9 +1162,8 @@ can be answered once real imported ledgers exist, not prerequisites.
   between. Step 4 keeps the run selector, the engine badge and the
   calibration badge. It needs no peak-inspector work: §8.5.5 cleans the blob at
   import instead, so what the inspector renders is Mascope's own or nothing.
-- **Step 5 proceeds.** The retry-safety and error-body plumbing (§8.3) can be
-  built first; the verify half of it is the only item in this revision that
-  silently corrupts stored data, so it should not wait.
+- **Step 5 has shipped**, the retry-safety and error-body plumbing (§8.3)
+  with it.
 - **Step 6 proceeds.** §8.5.2 is settled at the floor, so `import_run` resolves
   mechanisms by exact-string match and sends null otherwise. Its other
   prerequisites are stated rather than open: the numeric chunk cap and the body
