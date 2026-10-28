@@ -115,14 +115,17 @@ def system_mode_adopted():
     mechanisms behind a refusal naming a mode nobody can see.
 
     A mode is adopted once it carries anything of the deployment's: either
-    target collection, or a sample bound to it. Anything less and the mode is
-    still exactly as it was seeded.
+    target collection, a sample bound to it, or an edit. Anything less and the
+    mode is still exactly as it was seeded. A version that supersedes another
+    is the deployment's edit, and the samples of the mode it replaced are
+    bound under the earlier version, not under it.
 
     :return: A SQL predicate over ``IonizationMode``.
     """
     return or_(
         IonizationMode.calibration_collection_id.is_not(None),
         IonizationMode.diagnostic_collection_id.is_not(None),
+        IonizationMode.supersedes_id.is_not(None),
         exists().where(
             SampleItem.ionization_mode_id == IonizationMode.ionization_mode_id
         ),

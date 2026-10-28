@@ -479,6 +479,11 @@ async def update_ionization_mode(
                         continue
                     case "diagnostic_collection_id" | "calibration_collection_id":
                         continue
+                    case "label_purity":
+                        # The reagent's purity renames nothing either, and is
+                        # set on exactly the modes that route files, as the
+                        # instrument scope below is.
+                        continue
                     case "ionization_mechanism_ids" | "ionization_mode_polarity":
                         # Mechanisms and polarity can be updated (triggers rematch)
                         continue

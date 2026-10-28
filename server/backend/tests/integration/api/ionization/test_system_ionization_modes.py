@@ -11,8 +11,8 @@ matches nothing, so refusing those too would leave the row permanently unusable.
 
 A deployment that has not adopted one should not be offered it either, so the
 listing leaves those out - but only those. Adoption is anything of the
-deployment's on the mode: either target collection, or a sample bound to it
-(``system_mode_adopted``). An adopted mode has to be listed like any other,
+deployment's on the mode: either target collection, a sample bound to it, or
+an edit of it (``system_mode_adopted``). An adopted mode has to be listed like any other,
 because a sample bound to one carries an id the browser must resolve, and it
 is the same predicate that decides whether the mode may be released when a
 mechanism it holds is deleted.
