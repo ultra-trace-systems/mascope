@@ -149,9 +149,9 @@ SDK_WRITES = {
 
 #: Every other route that answers a token, by the client that needs it.
 OTHER_TOKEN_ROUTES = {
-    # The SDK, beyond the toolkit: MS2, centroids, several spectra, the
-    # single-compound match, files, their scans, source data and axis
-    # fingerprints, and the version probe.
+    # The SDK, beyond the toolkit: MS2 (a batch's groups too), centroids,
+    # several spectra, the single-compound match, files, their scans, source
+    # data and axis fingerprints, and the version probe.
     ("GET", "/api/samples/centroids"),
     ("GET", "/api/samples/spectra"),
     ("GET", "/api/samples/{sample_item_id}/axis_fingerprint"),
@@ -160,6 +160,7 @@ OTHER_TOKEN_ROUTES = {
     ("GET", "/api/samples/{sample_item_id}/ms2/scans"),
     ("GET", "/api/samples/{sample_item_id}/ms2/summary"),
     ("GET", "/api/samples/{sample_item_id}/ms2/timeseries"),
+    ("GET", "/api/sample/batches/{sample_batch_id}/ms2/groups"),
     ("POST", "/api/match/aggregate/sample/{sample_item_id}/compound"),
     ("GET", "/api/sample/files"),
     ("GET", "/api/sample/files/{sample_file_id}/axis_fingerprint"),

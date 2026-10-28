@@ -29,6 +29,7 @@ from mascope_backend.api.new.auth.access_rules import locked_access
 from mascope_backend.api.new.auth.dependencies import (
     current_active_user,
 )
+from mascope_backend.api.new.ms2.routes import ms2_batch_router
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access_bulk,
     check_dataset_access,
@@ -43,6 +44,7 @@ from mascope_backend.db.id import gen_id
 
 sample_batches_router = APIRouter(prefix="/api/sample/batches", tags=["Sample Batches"])
 sample_batches_router.include_router(sample_batches_export_router)
+sample_batches_router.include_router(ms2_batch_router)
 
 
 @sample_batches_router.get("")

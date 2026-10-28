@@ -106,6 +106,7 @@ from mascope_backend.api.new.ionization.modes.util import (
     resolve_ionization_modes_by_declaration,
     resolve_ionization_modes_by_tokens,
 )
+from mascope_backend.api.new.ms2.inventory import write_ms2_inventory
 from mascope_backend.api.new.peak_assignments.service import (
     auto_assign_sample_peaks,
 )
@@ -2215,17 +2216,31 @@ async def _rewrite_ms2_store(sample_file: SampleFile) -> None:
     be written does not stop the re-processing: the file keeps the store it
     had, which a rewrite replaces only whole, and is logged.
 
+    The group inventory then lists the groups of the store the file has now
+    (:func:`mascope_backend.api.new.ms2.inventory.write_ms2_inventory`), none
+    where it has none; a file whose store could not be written keeps the
+    groups it listed. Neither stops the re-processing.
+
     :param sample_file: The file being re-processed.
     """
     # Read on the loop: an attached ORM instance's attributes are not read in
     # the worker thread.
     filename = sample_file.filename
+    sample_file_id = sample_file.sample_file_id
     try:
         await asyncio.to_thread(refresh_ms2_store, filename)
     except Exception:  # noqa: BLE001 - one file's store, never its re-processing
         runtime.logger.opt(exception=True).warning(
             f"Could not write the MS2 store of {filename} again for its "
             "re-processing; it keeps the store it had"
+        )
+        return
+    try:
+        await write_ms2_inventory(sample_file_id, filename)
+    except Exception:  # noqa: BLE001 - one file's inventory, never its re-processing
+        runtime.logger.opt(exception=True).warning(
+            f"Could not list the MS2 groups of {filename} again for its "
+            "re-processing; the MS2 store backfill lists them"
         )
 
 

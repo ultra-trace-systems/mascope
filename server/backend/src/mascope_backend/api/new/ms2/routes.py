@@ -2,7 +2,10 @@ from fastapi import APIRouter, Depends
 
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.new.auth.dependencies import current_active_user
-from mascope_backend.api.new.workspaces.dependencies import require_sample_role
+from mascope_backend.api.new.workspaces.dependencies import (
+    require_batch_role,
+    require_sample_role,
+)
 from mascope_backend.db import User
 
 from .schema import (
@@ -13,6 +16,7 @@ from .schema import (
     GetMs2TimeseriesQueryParams,
 )
 from .service import (
+    get_batch_ms2_groups,
     get_ms1_averaged_centroids,
     get_ms2_averaged_centroids,
     get_ms2_scans,
@@ -22,6 +26,8 @@ from .service import (
 
 
 ms2_router = APIRouter(tags=["MS2 Analysis"])
+#: The batch-level MS2 routes, under ``/api/sample/batches``.
+ms2_batch_router = APIRouter(tags=["MS2 Analysis"])
 
 
 @ms2_router.get("/{sample_item_id}/ms2/summary")
@@ -35,10 +41,14 @@ async def get_ms2_summary_route(
     """Retrieve MS2 summary (parent peaks, HCD map, isolation widths).
 
     Each group reports its ``isolation_width`` and ``isolation_widths``,
-    every width its scans used with their scan counts. Like every MS2 read,
-    answered from the file's MS2 store when it has one, and the response says
-    so in ``source`` (``"store"`` or ``"raw"``), with the
-    ``parent_peak_tolerance`` its groups were made at.
+    every width its scans used with their scan counts. ``source`` says where
+    the groups were read: ``"inventory"`` (the file's listed groups, for a
+    sample that holds each of them whole), ``"store"`` (its MS2 store) or
+    ``"raw"`` (its raw file); ``parent_peak_tolerance`` is what its groups
+    were made at. ``data.reason`` says why no group is listed: ``"none"``
+    for a raw Orbitrap file whose sample holds none, ``"unsupported"`` for
+    any other file, such as a TOF sample, whose MS2 scans are not read; it
+    is null when groups are listed.
 
     :param sample_item_id: The unique identifier of the sample.
     :param query_params: Query parameters for MS2 summary including parent peak tolerance.
@@ -156,3 +166,30 @@ async def get_ms2_scans_route(
         sample_item_id=sample_item_id,
         **query_params.model_dump(),
     )
+
+
+@ms2_batch_router.get("/{sample_batch_id}/ms2/groups")
+@api_route(token_access=True)
+async def get_batch_ms2_groups_route(
+    sample_batch_id: str,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("guest")),
+):
+    """Retrieve the MS2 groups of every sample of a batch, in one query.
+
+    One record per (sample, group), read from the group inventory: the
+    sample's id, the group's file, polarity and ``precursor_key``
+    (``137.0960@hcd25.00``, the key ``ms2/scans?group=`` takes), parent peak
+    m/z, activation with its kind and NCE, HCD energies, isolation widths,
+    scan count, time span, scan range and located precursor, and ``whole``,
+    false where the sample's window cuts the group. An MS1-only batch
+    answers an empty list.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :type user: User
+    :param membership: Workspace membership with guest role on the batch.
+    :type membership: WorkspaceMember
+    :return: The batch's MS2 groups.
+    """
+    return await get_batch_ms2_groups(sample_batch_id=sample_batch_id)

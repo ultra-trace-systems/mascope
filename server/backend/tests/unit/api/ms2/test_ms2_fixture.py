@@ -311,6 +311,7 @@ def stored(request, tmp_path_factory):
     filestore = tmp_path_factory.mktemp(f"filestore_{request.param}")
     with converted(request.param, filestore) as conversion:
         sample = SimpleNamespace(
+            sample_file_id="sf-ms2-fixture",
             filename=conversion.props.filename,
             sample_item_name="MS2 fixture",
             t0=None,

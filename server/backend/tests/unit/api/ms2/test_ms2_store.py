@@ -61,6 +61,8 @@ def _sample(stored, t0=None, t1=None, polarity="+"):
     """A sample of the stored file: by default the whole file, as one
     acquisition item of its one polarity reads it."""
     return SimpleNamespace(
+        # A file the group inventory lists nothing of: the store answers
+        sample_file_id="sf-ms2-store",
         filename=stored.filename,
         sample_item_name="MS2 fixture",
         t0=t0,
