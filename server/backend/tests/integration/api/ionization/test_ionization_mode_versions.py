@@ -991,3 +991,127 @@ async def test_a_sample_reads_the_purity_of_the_version_it_is_bound_under(
     assert await sample_label_purity(mode["item_id"]) == 0.95
     assert await sample_label_purity(gen_id()) is None
     assert new_id
+
+
+@pytest.mark.asyncio
+async def test_a_mode_that_has_routed_files_takes_a_new_purity(
+    admin_client, async_session_factory, world, mode
+):
+    """A mode with a daily acquisition batch has routed files, and those are
+    the modes a reagent's purity is set on. The purity renames nothing, so
+    the acquisition-batch guard lets it through as it does a collection,
+    while it still holds the name the batch is called after."""
+    batch_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            SampleBatch(
+                sample_batch_id=batch_id,
+                dataset_id=world["dataset"],
+                sample_batch_name=f"2026-01-01 {mode['name']} acquisition",
+                sample_batch_type="ACQUISITION",
+                sample_batch_utc_created=_NOW,
+            )
+        )
+        await session.commit()
+    try:
+        purer = await admin_client.patch(
+            f"/api/ionization/modes/{mode['mode_id']}",
+            json=_body(world, mode, label_purity=0.99),
+        )
+        assert purer.status_code == 200, purer.text
+        renamed = await admin_client.patch(
+            f"/api/ionization/modes/{purer.json()['data']['ionization_mode_id']}",
+            json=_body(world, mode, ionization_mode_name=f"{mode['name']} renamed"),
+        )
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(SampleBatch).where(SampleBatch.sample_batch_id == batch_id)
+            )
+            await session.commit()
+
+    assert purer.json()["data"]["label_purity"] == 0.99
+    assert renamed.status_code == 400
+    assert "acquisition batches" in renamed.text
+
+
+@pytest.mark.asyncio
+async def test_a_shipped_mode_its_samples_adopted_stays_listed_after_an_edit(
+    admin_client, async_session_factory, world
+):
+    """A shipped mode with no collections is adopted by the samples bound to
+    it, and listed for them. A purity edit leaves them on version 1, so its
+    version 2 holds no sample. It is the deployment's edit, adopted as much,
+    and it stays listed: the samples on version 1 resolve through it."""
+    ids = {"mode": gen_id(), "batch": gen_id(), "item": gen_id()}
+    name = f"Shipped {ids['mode']}"
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMode(
+                ionization_mode_id=ids["mode"],
+                ionization_mode_name=name,
+                ionization_mode_polarity="+",
+                ionization_mechanism_ids=[world["mech_a"]],
+                system_key=f"versions-shipped-{ids['mode']}",
+            )
+        )
+        session.add(
+            SampleBatch(
+                sample_batch_id=ids["batch"],
+                dataset_id=world["dataset"],
+                sample_batch_name=f"Shipped batch {ids['batch']}",
+                sample_batch_utc_created=_NOW,
+            )
+        )
+        session.add(
+            SampleItem(
+                sample_item_id=ids["item"],
+                sample_batch_id=ids["batch"],
+                sample_file_id=world["file"],
+                sample_item_name="Shipped item",
+                sample_item_type="ANALYSIS",
+                sample_item_attributes={},
+                polarity="+",
+                tic=1000.0,
+                t0=0.0,
+                t1=60.0,
+                ionization_mode_id=ids["mode"],
+                sample_item_utc_created=_NOW,
+            )
+        )
+        await session.commit()
+
+    async def listed() -> dict:
+        resp = await admin_client.get("/api/ionization/modes")
+        return {row["ionization_mode_id"]: row for row in resp.json()["data"]}
+
+    try:
+        before = await listed()
+        resp = await admin_client.patch(
+            f"/api/ionization/modes/{ids['mode']}",
+            json={
+                "ionization_mode_name": name,
+                "ionization_mode_polarity": "+",
+                "ionization_mechanism_ids": [world["mech_a"]],
+                "label_purity": 0.99,
+            },
+        )
+        after = await listed()
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(SampleBatch).where(SampleBatch.sample_batch_id == ids["batch"])
+            )
+            versions = await lineage(session, ids["mode"])
+            await session.execute(
+                delete(IonizationMode).where(
+                    IonizationMode.ionization_mode_id.in_(versions)
+                )
+            )
+            await session.commit()
+
+    assert ids["mode"] in before
+    assert resp.status_code == 200, resp.text
+    new_id = resp.json()["data"]["ionization_mode_id"]
+    assert new_id != ids["mode"]
+    assert after[new_id]["superseded_ids"] == [ids["mode"]]
