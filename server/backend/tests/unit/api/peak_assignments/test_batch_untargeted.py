@@ -5,10 +5,14 @@ searches, how an isotopologue row finds its owner's anchor, and what the
 outcome says. See ``batch_untargeted.py``.
 """
 
+import math
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pandas as pd
+import pytest
 
+from mascope_backend.api.new.peak_assignments import batch_untargeted
 from mascope_backend.api.new.peak_assignments.batch_peaks import role_code
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     choose_representatives,
@@ -29,6 +33,8 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     resolve_profile,
     with_secondary_channels,
 )
+from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
+from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
 
 REAGENT_ROLE_CODE = role_code(ROLE_REAGENT)
@@ -568,3 +574,67 @@ def test_the_search_reads_the_partner_gate_over_its_own_rows():
     assert tropylium["assigned_formula"] == "C7H8"
     assert tropylium["ionization_mechanism_id"] == "im-hydride"
     assert tropylium["provenance"]["partner_gate"]["through"] == "[M-H]+"
+
+
+class _Searched(Exception):
+    """Raised by the fake finder once it has seen what the search hands it."""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filename, instrument", [("orbi-sample.raw", "orbi"), ("tof-sample.h5", "tof")]
+)
+async def test_a_batch_search_is_scored_at_its_samples_own_instrument(
+    filename, instrument
+):
+    # No Stage A runs on this path, so nothing measured the sample's width: it
+    # is scored at its own instrument class's, through the library's
+    # derivation, as a run of the sample with a thin library is.
+    sample = SimpleNamespace(
+        sample_item_id="si-1",
+        sample_item_name="Sample One",
+        filename=filename,
+        polarity="-",
+    )
+    peaks = pd.DataFrame([{"sample_peak_id": "p1", "mz": 160.8413, "intensity": 1.0e6}])
+    mechanism = SimpleNamespace(
+        ionization_mechanism="[M-H]-", ionization_mechanism_id="im-h"
+    )
+    seen = {}
+
+    def finder(*args, **kwargs):
+        seen["scoring"] = kwargs["scoring"]
+        raise _Searched
+
+    with (
+        patch.object(batch_untargeted, "fetch_sample", AsyncMock(return_value=sample)),
+        patch.object(batch_untargeted, "load_sample_peaks", return_value=peaks),
+        patch.object(
+            batch_untargeted,
+            "fetch_sample_mechanisms",
+            AsyncMock(return_value=(["im-h"], [mechanism])),
+        ),
+        patch.object(
+            batch_untargeted, "fetch_mechanisms_by_notation", AsyncMock(return_value=[])
+        ),
+        patch.object(
+            batch_untargeted,
+            "default_match_params",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    mz_tolerance=15.0, isotope_abundance_threshold=1e-4
+                )
+            ),
+        ),
+        patch.object(batch_untargeted, "_resolution_of", AsyncMock(return_value=None)),
+        patch.object(batch_untargeted, "assign_compositions", finder),
+        pytest.raises(_Searched),
+    ):
+        await batch_untargeted._search_sample_peaks(
+            "si-1", {"p1"}, PeakAssignmentConfig()
+        )
+
+    assert seen["scoring"].sigma_ppm == pytest.approx(
+        math.hypot(INSTRUMENT_FALLBACK_SIGMA_PPM[instrument], PRED_SIGMA_PPM)
+    )
+    assert seen["scoring"].mz_tolerance_ppm == 15.0

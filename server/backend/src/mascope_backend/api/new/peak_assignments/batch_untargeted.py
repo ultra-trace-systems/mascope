@@ -551,14 +551,15 @@ async def _search_sample_peaks(
     # while only the representatives are enumerated.
     match_params = await default_match_params(sample_item_id)
     # No Stage A ran on this path, so nothing has fitted this sample's mass
-    # width; the match tolerance stands in for it (see `pattern_scoring_for`).
-    # A batch search therefore judges a candidate a little more loosely than a
-    # run of the same sample would, which is the honest state of it: the width
-    # is a measurement, and this path has not made it.
+    # width; the instrument class's width stands in for it (see
+    # `pattern_scoring_for`). A batch search therefore judges a candidate at
+    # the class's typical accuracy rather than this sample's own, which is the
+    # honest state of it: the width is a measurement, and this path has not
+    # made it.
     scoring = pattern_scoring_for(
         match_params,
         SampleMassAccuracy(),
-        resolved_profile.fallback_sigma_ppm,
+        get_instrument_type(sample.filename),
         await _resolution_of(sample),
     )
     search_columns = [

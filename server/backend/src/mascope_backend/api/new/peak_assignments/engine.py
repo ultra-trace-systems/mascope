@@ -13,7 +13,7 @@ persistence.
 
 import math
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -70,15 +70,17 @@ from mascope_tools.composition.heuristic_filter import (
 )
 from mascope_tools.composition.mass_accuracy import (
     MASS_ACCURACY_MIN_ANCHORS,
+    ReagentOffset,
+    SampleMassAccuracy,
     fit_sample_mass_accuracy,
     mass_accuracy_anchors,
-    scoring_sigma_ppm,
 )
 from mascope_tools.composition.models import (
     CompositionSearchConfig,
     HeuristicFilterConfig,
     PatternScoring,
 )
+from mascope_tools.composition.scoring import pattern_scoring_for_sample
 from mascope_tools.composition.utils import (
     calculate_mass,
     parse_composition,
@@ -228,147 +230,6 @@ def untargeted_targets(
     return targets, scope
 
 
-#: Where the offset a sample is scored at came from, as its run records it:
-#: the target library's matched lines, the lines the reagent pre-pass claimed,
-#: or nothing, which is scored as no offset.
-MU_SOURCE_FITTED = "fitted"
-MU_SOURCE_REAGENT = "reagent"
-MU_SOURCE_NONE = "none"
-
-#: Claimed reagent lines below which their median is not read as an offset.
-#: Below three it is not a median: one line is its own error and two are their
-#: mean, so a single line off the axis sets the answer. The lines most likely
-#: to be off it are a source's brightest, which an Orbitrap moves: on the gate's
-#: labelled-nitrate set the core ion and its first rung sit at +1.26 and -0.05
-#: ppm, while their five isotopologue lines sit at -0.7 to -1.9 and the run's
-#: own commits at -1.1.
-REAGENT_OFFSET_MIN_LINES = 3
-
-
-@dataclass(frozen=True)
-class ReagentOffset:
-    """Where the lines the reagent pre-pass claimed put a sample's mass axis.
-
-    The median mass error of every line the pass claimed, isotopologues
-    included. It is not the correction the pass claims its own rungs against,
-    which is the median of two or three anchors, the source's brightest ions:
-    on the gate's labelled-nitrate set those put the axis at +0.60 ppm, the
-    seven lines together at -1.26, and the run's own commits at -1.10.
-
-    A stand-in, like the instrument class's width, and never pooled with the
-    target library's lines: it is taken only where those were too few to fit
-    an offset (:attr:`SampleMassAccuracy.scoring_mu_ppm`). The lines are the
-    source's own, at the low end of the mass range and far brighter than an
-    analyte, and they need not sit where an analyte's lines do: on the gate's
-    uronium set they sit at -0.9 ppm while the library's lines and the run's
-    commits sit within 0.15 ppm of zero. Pooled, they would pull a sample that
-    can measure its own offset away from it.
-
-    :param mu_ppm: The lines' median mass error, or None below
-        :data:`REAGENT_OFFSET_MIN_LINES` lines.
-    :param lines: How many lines the pass claimed.
-    :param beyond_width: Whether the offset is beyond the width a sample is
-        scored at when its library fits none. Only then is a sample scored at
-        it: an offset inside that width is one the score already allows for, so
-        a sample whose lines put the axis where it should be is scored as if
-        they had said nothing.
-    """
-
-    mu_ppm: float | None
-    lines: int
-    beyond_width: bool = False
-
-
-def reagent_line_offset(
-    errors_ppm: Iterable[float | None],
-    fallback_sigma_ppm: float,
-) -> ReagentOffset:
-    """What the reagent pre-pass's claimed lines say about a sample's offset.
-
-    :param errors_ppm: The mass error of every line the pass claimed, in ppm.
-        Non-finite values are ignored.
-    :param fallback_sigma_ppm: The instrument class's width. The offset is
-        taken only beyond the width a sample is scored at when its target
-        library fits none, which is this one widened
-        (:func:`mass_accuracy.scoring_sigma_ppm`): the offset and the width
-        need the same number of library lines, so a sample that reaches this
-        offset is always scored at the class's width.
-    :return: The lines' offset, and whether it is beyond the width.
-    """
-    errors = [
-        float(error)
-        for error in errors_ppm
-        if error is not None and np.isfinite(float(error))
-    ]
-    if len(errors) < REAGENT_OFFSET_MIN_LINES:
-        return ReagentOffset(mu_ppm=None, lines=len(errors))
-    mu = float(np.median(errors))
-    return ReagentOffset(
-        mu_ppm=mu,
-        lines=len(errors),
-        beyond_width=abs(mu) > scoring_sigma_ppm(None, float(fallback_sigma_ppm)),
-    )
-
-
-@dataclass(frozen=True)
-class SampleMassAccuracy:
-    """What Stage A measured of a sample's own mass error, and from how much.
-
-    Either number is None when it was not measured: ``sigma_ppm`` below
-    :data:`mass_accuracy.MASS_ACCURACY_MIN_ANCHORS` matched lines of the target
-    library and ``mu_ppm`` below :data:`mass_accuracy.MASS_OFFSET_MIN_ANCHORS`,
-    and both where the lines came from fewer distinct ions than the caller asked
-    for (:func:`sample_mass_accuracy`). Neither is a small measurement - it is
-    no measurement, and ``anchors`` and ``anchor_ions`` say how close it came,
-    so a run that fell back records why.
-
-    ``anchors`` counts the target library's matched lines and nothing else. A
-    loaded reference mirror's lines are in the same Stage A frame and are never
-    among them (:func:`target_library_rows`), so the count is the same whether
-    or not a mirror is loaded. ``anchor_ions`` counts the target ions those
-    lines belong to.
-
-    The offset is reported separately from the width because each has its own
-    stand-in: the width falls back to the instrument class's, and the offset to
-    what the reagent pre-pass's lines said (``reagent``) where they show one
-    beyond that width, else to none. Scoring a sample a ppm to one side as
-    centred is not a smaller correction than scoring it at its offset; it is the
-    opposite claim, so :attr:`mu_source` records which one a run made.
-    """
-
-    mu_ppm: float | None = None
-    sigma_ppm: float | None = None
-    anchors: int = 0
-    #: What the reagent pre-pass's lines said, recorded whether or not the
-    #: sample is scored at it; None where the run had no pre-pass to ask.
-    reagent: ReagentOffset | None = None
-    #: The distinct target ions the ``anchors`` lines belong to.
-    anchor_ions: int = 0
-
-    @property
-    def scoring_mu_ppm(self) -> float | None:
-        """The offset both stages score this sample at.
-
-        The target library's where it fitted one, else the reagent lines' where
-        they are beyond the width (:attr:`ReagentOffset.beyond_width`), else
-        None, which a scorer reads as no correction.
-        """
-        if self.mu_ppm is not None:
-            return self.mu_ppm
-        if self.reagent is not None and self.reagent.beyond_width:
-            return self.reagent.mu_ppm
-        return None
-
-    @property
-    def mu_source(self) -> str:
-        """Which measurement :attr:`scoring_mu_ppm` is, as a run records it."""
-        if self.mu_ppm is not None:
-            return MU_SOURCE_FITTED
-        if self.reagent is not None and self.reagent.beyond_width:
-            return MU_SOURCE_REAGENT
-        return MU_SOURCE_NONE
-
-
 def reference_mirror_mask(match_isotope_df: pd.DataFrame) -> pd.Series:
     """Which rows of a Stage A match frame the reference mirror contributed.
 
@@ -482,8 +343,9 @@ def sample_mass_accuracy(
 
     :param match_isotope_df: The gated, fit-scored Stage A match frame.
     :param reagent: What the reagent pre-pass's lines said
-        (:func:`reagent_line_offset`), carried beside the fit and never into
-        it: the offset falls back to it only where the fit measured none.
+        (:func:`mass_accuracy.reagent_line_offset`), carried beside the fit
+        and never into it: the offset falls back to it only where the fit
+        measured none.
     :param min_anchor_ions: The distinct ions the anchors must come from for
         either number to be measured; fewer, and the frame measured neither,
         however many lines they matched. One ion's lines share that ion's own
@@ -519,7 +381,7 @@ def sample_mass_accuracy(
 def pattern_scoring_for(
     match_params,
     mass_accuracy: SampleMassAccuracy,
-    instrument_accuracy_ppm: float,
+    instrument_type: str | None,
     resolution: Callable[[float], float] | None = None,
 ) -> PatternScoring:
     """How the untargeted stage scores this sample's isotope envelopes.
@@ -527,17 +389,17 @@ def pattern_scoring_for(
     Everything the composition finder needs to judge a candidate as a
     measurement of THIS sample rather than of a generic Orbitrap: the width its
     mass errors actually have, the offset they sit at, the window a line may be
-    matched in, and how deep an envelope may be predicted.
+    matched in, and how deep an envelope may be predicted. The derivation is
+    the library's (:func:`scoring.pattern_scoring_for_sample`), so an outside
+    engine reading the sample through the SDK computes the same object from
+    the same numbers; this names what the engine hands it.
 
     The width comes from Stage A: the fitted spread of the target library's own
     matched isotopologues, which is the instrument's measured accuracy on this
     sample. A reference mirror's lines are not part of that fit
     (:func:`target_library_rows`), because on a TOF they measure the match
-    window. The width is widened by ``PRED_SIGMA_PPM`` exactly as Stage A's own
-    fit widens it, so a Stage B row and a Stage A row are judged at one width. Both
-    go through :func:`mass_accuracy.scoring_sigma_ppm`, the library's one
-    statement of what a fit score judges a mass error against, so an outside
-    engine scoring the same sample judges it at the same width.
+    window. It is widened by ``PRED_SIGMA_PPM`` exactly as Stage A's own fit
+    widens it, so a Stage B row and a Stage A row are judged at one width.
 
     Where Stage A matched too few known ions to fit anything, the instrument
     class's own accuracy stands in (``profiles.resolve_fallback_sigma_ppm``).
@@ -547,28 +409,22 @@ def pattern_scoring_for(
     accurate to 0.3 ppm every candidate the search enumerated is then equally
     good and the election falls to the envelope alone. The offset has a
     stand-in of its own there, the reagent pre-pass's lines
-    (:attr:`SampleMassAccuracy.scoring_mu_ppm`).
+    (:attr:`SampleMassAccuracy.scoring_mu_ppm`), and no offset where nothing
+    measured one - the same rule `ion_score_v2` applies to Stage A, so both
+    stages of one sample are corrected by the same amount or by neither.
 
     :param match_params: The sample's resolved match parameters.
     :param mass_accuracy: What Stage A measured of this sample's mass error.
-    :param instrument_accuracy_ppm: The class width to use when it measured none.
+    :param instrument_type: The sample's instrument class (``"orbi"``,
+        ``"tof"``), whose width stands in where Stage A measured none.
     :param resolution: The file's resolving power as a function of m/z, or None
         where the run could not read one. With it, the predicted lines one peak
         of the file cannot separate are scored as one line, the sum of their
         shares: on a TOF the 13C peak also holds the 15N, 2H and 17O lines.
     :return: The scoring parameters for this sample's search.
     """
-    return PatternScoring(
-        sigma_ppm=scoring_sigma_ppm(
-            mass_accuracy.sigma_ppm, float(instrument_accuracy_ppm)
-        ),
-        # The offset Stage A scored its own ions at, and no offset where nothing
-        # measured one - the same rule `ion_score_v2` applies to Stage A, so both
-        # stages of one sample are corrected by the same amount or by neither.
-        mu_ppm=float(mass_accuracy.scoring_mu_ppm or 0.0),
-        mz_tolerance_ppm=float(match_params.mz_tolerance),
-        abundance_floor=float(match_params.isotope_abundance_threshold),
-        resolution=resolution,
+    return pattern_scoring_for_sample(
+        mass_accuracy, instrument_type, match_params, resolution
     )
 
 
@@ -1035,10 +891,10 @@ def score_ions_by_fit(
         seed's lines were out of the fit, and G1 rose from 8.0 to 15.3%. None
         keeps the generic width, for a caller with no instrument class to name.
     :param reagent_offset: What the reagent pre-pass's lines said about the
-        offset (:func:`reagent_line_offset`). A sample whose target library
-        matched too few lines to fit an offset is scored at it where it is
-        beyond the width (:attr:`ReagentOffset.beyond_width`), which is the
-        offset the untargeted stage is scored at too
+        offset (:func:`mass_accuracy.reagent_line_offset`). A sample whose
+        target library matched too few lines to fit an offset is scored at it
+        where it is beyond the width (:attr:`ReagentOffset.beyond_width`),
+        which is the offset the untargeted stage is scored at too
         (:attr:`SampleMassAccuracy.scoring_mu_ppm`).
         Measured on the gate's labelled-nitrate set, whose curated lines are
         too few once its workaround entries are gone, the lines put the axis

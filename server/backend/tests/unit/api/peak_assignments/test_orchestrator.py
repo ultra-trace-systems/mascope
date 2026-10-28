@@ -1514,6 +1514,34 @@ class TestResolvedProfile:
         }
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "filename, instrument", [("orbi-sample.raw", "orbi"), ("tof-sample.h5", "tof")]
+    )
+    async def test_the_search_stands_in_its_own_instrument_s_width(
+        self, filename, instrument
+    ):
+        # A library too thin to fit a width: the untargeted stage is scored at
+        # the class width of the sample's own instrument, which the run reads
+        # off the sample (here its name) and hands the library's derivation.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
+        from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 300.1234, 500.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, []))
+        mocks["fetch_sample"].return_value.filename = filename
+
+        await _run(PeakAssignmentConfig())
+
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        assert scoring.sigma_ppm == pytest.approx(
+            math.hypot(INSTRUMENT_FALLBACK_SIGMA_PPM[instrument], PRED_SIGMA_PPM)
+        )
+
+    @pytest.mark.asyncio
     async def test_the_search_matches_envelopes_at_the_files_resolving_power(self):
         # A TOF peak at the 13C position holds the 15N, 2H and 17O lines too;
         # the finder can merge them only if the run hands it the file's
