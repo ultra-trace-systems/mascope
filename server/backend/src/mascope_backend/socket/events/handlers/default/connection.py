@@ -70,9 +70,13 @@ async def connect(sid: str, environ: dict) -> bool:
         jwt_token = await get_jwt_from_cookies(cookies)
 
         # --- Authenticate socket connection and associate session with user ---
-        await authenticate_socket_connection(
+        expires_at = await authenticate_socket_connection(
             sid=sid, token=jwt_token, minimum_role="guest"
         )
+        # Restarted with the token's expiry: a socket that connects in its
+        # token's last interval (a reload, a reconnect after a network drop)
+        # is signed out at the expiry, not at the first tick an interval on.
+        start_session_renewal(sid, expires_at=expires_at)
         runtime.logger.debug(
             f"Socket server: user's socket client {sid} connected [Worker {worker_pid}]"
         )

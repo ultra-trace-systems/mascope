@@ -80,13 +80,13 @@ RESOURCE_ROOM = "some-sample-batch-id"
 OTHER_ROOM = "another-sample-batch-id"
 
 
-def _token(user: User, issued: datetime) -> str:
-    """A session token for ``user`` issued at ``issued``."""
+def _token(user: User, issued: datetime, expires: datetime | None = None) -> str:
+    """A session token for ``user`` issued at ``issued``, by default for a day."""
     return jwt.encode(
         {
             "sub": str(user.id),
             "aud": auth_settings.JWT_AUDIENCE,
-            "exp": datetime.now(timezone.utc) + timedelta(days=1),
+            "exp": expires or datetime.now(timezone.utc) + timedelta(days=1),
             "iat": issued,
         },
         auth_settings.JWT_SECRET_KEY,
@@ -1494,6 +1494,31 @@ async def test_the_renewal_wakes_at_the_expiry(person, sio, monkeypatch):
     await asyncio.sleep(1.5)
 
     # Without the early wake it would still be signed in until the tick at 2 s.
+    await _assert_signed_out(sio, "sid-a", person)
+
+
+@pytest.mark.asyncio
+async def test_a_socket_connected_in_its_token_s_last_interval_goes_at_the_expiry(
+    person, sio, monkeypatch
+):
+    """
+    A reload or a reconnect in the token's last interval: the first tick is
+    brought forward to the expiry too, not only the ones after it.
+    """
+    monkeypatch.setattr(storage_config, "session_renewal_interval", 5.0)
+    # Whole seconds, as a token carries them; two of them leave room to connect.
+    expires = int(time.time()) + 2
+    cookie = (
+        f"{auth_settings.COOKIE_NAME}="
+        f"{_token(person, datetime.now(timezone.utc), datetime.fromtimestamp(expires, timezone.utc))}"
+    )
+    assert await connect("sid-a", {"HTTP_COOKIE": cookie})
+    await subscribe("sid-a", RESOURCE_ROOM)
+    await subscribe("sid-a", f"user-{person.id}")
+
+    await asyncio.sleep(expires - time.time() + 0.5)
+
+    # Without it the socket would stay signed in until the first tick at 5 s.
     await _assert_signed_out(sio, "sid-a", person)
 
 
