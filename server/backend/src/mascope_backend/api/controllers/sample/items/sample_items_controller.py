@@ -53,6 +53,9 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     SampleItemUpdate,
     StreamItemCreate,
 )
+from mascope_backend.api.new.ionization.modes.versions import (
+    refuse_superseded_binding,
+)
 from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.db import (
     AcquisitionStream,
@@ -327,6 +330,20 @@ async def create_sample_items(
         if missing_ids := list(sample_file_ids - found_ids):
             raise NotFoundException(f"Sample files not found: {missing_ids}")
 
+        # --- An item made through a route binds under a current version ---
+        # The mode its caller names. The models the pipeline and the copy
+        # build (StreamItemCreate) are left out: the pipeline's rungs read
+        # the active rows only, and a copy keeps its source's version, which
+        # what is copied with it was computed under.
+        await refuse_superseded_binding(
+            session,
+            (
+                si.ionization_mode_id
+                for si in sample_items
+                if not isinstance(si, StreamItemCreate)
+            ),
+        )
+
         # --- The scan stream each item reads ---
         # Only the models the pipeline and the copy below build can name one
         # (StreamItemCreate), and what they name stands, None included. An
@@ -582,6 +599,12 @@ async def update_sample_item(
             for key, value in update_data.items()
             if getattr(existing_sample_item, key) != value
         }
+        if "ionization_mode_id" in changed_fields:
+            # As on create. An item that names the version it is on binds
+            # nothing anew, and is not in changed_fields.
+            await refuse_superseded_binding(
+                session, [changed_fields["ionization_mode_id"]]
+            )
         if changed_fields:
             # Update only the changed fields
             for key, value in changed_fields.items():

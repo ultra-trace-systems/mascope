@@ -20,6 +20,7 @@ from sqlalchemy import delete, select, text
 from mascope_backend.api.controllers.calibration import calibration_controller
 from mascope_backend.api.controllers.match import match_controller
 from mascope_backend.api.controllers.sample.files.process import service as process
+from mascope_backend.api.controllers.sample.items import sample_items_controller
 from mascope_backend.api.new.ionization.modes import service as modes_service
 from mascope_backend.api.new.ionization.modes.versions import (
     current_versions,
@@ -173,7 +174,7 @@ async def mode(async_session_factory, world):
                 sample_batch_id=ctx["batch_id"],
                 sample_file_id=world["file"],
                 sample_item_name="Versioned item",
-                sample_item_type="ANALYSIS",
+                sample_item_type="SAMPLE",
                 sample_item_attributes={},
                 polarity="+",
                 tic=1000.0,
@@ -767,6 +768,114 @@ async def test_a_collection_an_edit_replaced_moves_into_a_workspace_once_free(
     moved = await owner_client.patch(url, json=narrow)
     assert moved.status_code == 200, moved.text
     assert moved.json()["data"]["workspace_id"] == world["workspace"]
+
+    # Nor can a sample be bound to version 3 again by hand: a sample in any
+    # workspace would then read the collection of this one.
+    rebound = await owner_client.patch(
+        f"/api/sample/items/{mode['item_id']}",
+        json={"sample_item": _item_body(world, mode, ionization_mode_id=third)},
+    )
+    assert rebound.status_code == 400
+    assert f"Version 3 of ionization mode '{mode['name']}'" in rebound.text
+    assert await _item_mode(async_session_factory, mode["item_id"]) != third
+
+
+# --- binding a sample ---------------------------------------------------------
+
+
+def _item_body(world, mode, **changes) -> dict:
+    """The mode fixture's item as a client sends one, with nothing to compute."""
+    return {
+        "sample_batch_id": mode["batch_id"],
+        "sample_file_id": world["file"],
+        "sample_item_name": "Versioned item",
+        "sample_item_type": "SAMPLE",
+        "sample_item_attributes": {},
+        "polarity": "+",
+        "ionization_mode_id": mode["mode_id"],
+        "tic": 1000.0,
+        "t0": 0.0,
+        "t1": 60.0,
+    } | changes
+
+
+async def _batch_items(async_session_factory, batch_id) -> dict[str, str]:
+    async with async_session_factory() as session:
+        rows = await session.execute(
+            select(SampleItem.sample_item_id, SampleItem.ionization_mode_id).where(
+                SampleItem.sample_batch_id == batch_id
+            )
+        )
+        return dict(rows.all())
+
+
+@pytest.mark.asyncio
+async def test_a_sample_is_bound_by_hand_under_the_current_version_only(
+    owner_client, admin_client, async_session_factory, world, mode
+):
+    """A replaced version keeps the samples bound under it and takes no new
+    one, by create or by edit. An item that keeps the version it is on still
+    saves."""
+    new_id = await _mint(
+        admin_client, world, mode, **_VERSIONED_EDITS["mechanisms"](world)
+    )
+    old = mode["mode_id"]
+
+    refused = await owner_client.post(
+        "/api/sample/items", json=_item_body(world, mode, ionization_mode_id=old)
+    )
+    assert refused.status_code == 400
+    assert f"Version 1 of ionization mode '{mode['name']}'" in refused.text
+    assert "Bind the sample to the current version" in refused.text
+    assert await _batch_items(async_session_factory, mode["batch_id"]) == {
+        mode["item_id"]: old
+    }
+
+    created = await owner_client.post(
+        "/api/sample/items", json=_item_body(world, mode, ionization_mode_id=new_id)
+    )
+    assert created.status_code == 201, created.text
+    (created_item,) = created.json()["data"]
+    created_id = created_item["sample_item_id"]
+
+    moved_back = await owner_client.patch(
+        f"/api/sample/items/{created_id}",
+        json={"sample_item": _item_body(world, mode, ionization_mode_id=old)},
+    )
+    assert moved_back.status_code == 400
+    assert f"Version 1 of ionization mode '{mode['name']}'" in moved_back.text
+    assert await _item_mode(async_session_factory, created_id) == new_id
+
+    renamed = await owner_client.patch(
+        f"/api/sample/items/{mode['item_id']}",
+        json={
+            "sample_item": _item_body(
+                world, mode, sample_item_name="Versioned item, renamed"
+            )
+        },
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["data"]["sample_item_name"] == "Versioned item, renamed"
+    assert await _item_mode(async_session_factory, mode["item_id"]) == old
+
+
+@pytest.mark.asyncio
+async def test_a_copy_keeps_the_version_its_source_is_on(
+    admin_client, async_session_factory, world, mode
+):
+    """A copy carries what its source computed under its version, so it is
+    bound under that version, replaced or not."""
+    await _mint(admin_client, world, mode, **_VERSIONED_EDITS["mechanisms"](world))
+
+    await sample_items_controller.copy_sample_items.__wrapped__(
+        sample_item_ids=[mode["item_id"]],
+        sample_batch_id=mode["batch_id"],
+        process_id=gen_id(8),
+    )
+
+    items = await _batch_items(async_session_factory, mode["batch_id"])
+    assert len(items) == 2
+    assert set(items.values()) == {mode["mode_id"]}
 
 
 # --- what reads the modes -----------------------------------------------------
