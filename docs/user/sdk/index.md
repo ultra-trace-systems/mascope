@@ -28,6 +28,7 @@ the build its numbers came from. Saving the frame as CSV or Excel drops it;
 the SDK readme shows how to keep it.
 
 `load_peaks` reads each batch in one request, however many samples it holds.
+With `samples=`, it asks the server for the chosen samples alone.
 It reads no matches unless you pass `matches=True`. A server older than that
 read is read one sample at a time, with matches, as before. Pass
 `save_path="batch.parquet"` to keep the load as a file. `pd.read_parquet`

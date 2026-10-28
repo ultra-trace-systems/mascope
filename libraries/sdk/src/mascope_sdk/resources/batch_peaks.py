@@ -14,6 +14,7 @@ curated from the Mascope app.
 import io
 import json
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import pandas as pd
@@ -197,6 +198,7 @@ class BatchPeaksResource(BaseResource):
         self,
         sample_batch_id: str,
         *,
+        samples: "Sequence[str] | None" = None,
         matches: bool = False,
         satellites: bool = False,
         average: bool = True,
@@ -216,6 +218,13 @@ class BatchPeaksResource(BaseResource):
 
         :param sample_batch_id: The ID of the sample batch.
         :type sample_batch_id: str
+        :param samples: Read only these samples of the batch, by
+                        ``sample_item_id``: the server opens only their peak
+                        lists. An ID that is no sample of the batch is named
+                        in ``attrs["failures"]`` with status 404. Every
+                        sample when omitted. Each ID goes in the request's
+                        URL, so ask for at most a hundred or so at a time.
+        :type samples: Sequence[str], optional
         :param matches: Add the match columns, one row per match of a peak; a
                         peak no target matched keeps one row with them null.
                         Defaults to False.
@@ -252,12 +261,16 @@ class BatchPeaksResource(BaseResource):
         :rtype: pd.DataFrame
         :raises NotFoundError: From a server older than this read.
         :raises PermissionDeniedError: Without the guest role on the batch.
+        :raises ValueError: If ``samples`` is empty: the server reads every
+            sample of a batch when it is given none.
 
         Example::
 
             peaks = mascope.batch_peaks.peak_lists("batch-123")
             peaks.groupby("sample_item_id")["height"].sum()
         """
+        if samples is not None and not samples:
+            raise ValueError("samples is empty: pass None to read every sample")
         # Here, not at the top: a program that bundles the SDK but never
         # reads a table (the File Agent) leaves pyarrow out of its bundle
         import pyarrow as pa
@@ -269,6 +282,7 @@ class BatchPeaksResource(BaseResource):
                 "matches": str(matches).lower(),
                 "satellites": str(satellites).lower(),
                 "average": str(average).lower(),
+                **({} if samples is None else {"sample_item_id": list(samples)}),
             },
             stream=True,
         )

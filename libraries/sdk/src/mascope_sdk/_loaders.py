@@ -358,9 +358,10 @@ def load_peaks(
     DataFrame enriched with batch and sample metadata.
 
     Each batch is read in one request (``batch_peaks.peak_lists``) from a
-    server that offers it; from an older one, whose answer to that is 404,
-    each sample is read on its own, concurrently. A progress bar is displayed
-    during loading.
+    server that offers it; with ``samples``, the request names the samples
+    chosen (a hundred per request), so the server reads no others. From an
+    older server, whose answer to that is 404, each sample is read on its
+    own, concurrently. A progress bar is displayed during loading.
 
     :param client: The MascopeClient instance.
     :type client: MascopeClient
@@ -475,6 +476,8 @@ def load_peaks(
         result = _load_batch_peak_lists(
             client,
             sample_tasks,
+            # With no sample filter, every sample of each batch is asked for
+            whole_batches=samples is None,
             matches=bool(matches),
             areas=areas,
             heights=heights,
@@ -499,11 +502,17 @@ def load_peaks(
 #: batch in one request, and each sample has to be read on its own.
 _NO_BATCH_READ = object()
 
+#: Samples named in one batch read when a load asks for part of a batch.
+#: Each ID goes in the request's URL; a hundred keep it well inside the 8 KB
+#: a proxy commonly allows a request line.
+_SAMPLES_PER_READ = 100
+
 
 def _load_batch_peak_lists(
     client: MascopeClient,
     sample_tasks: list[tuple[Any, str]],
     *,
+    whole_batches: bool,
     matches: bool,
     areas: bool,
     heights: bool,
@@ -514,14 +523,19 @@ def _load_batch_peak_lists(
 
     Each batch's peak lists come in one read
     (:meth:`~mascope_sdk.resources.batch_peaks.BatchPeaksResource.peak_lists`),
-    and are cut to the samples asked for and laid out as
-    :func:`load_sample_peaks` lays out its per-sample reads: the same rows,
-    the same columns in the same order, the same ``attrs``.
+    and are laid out as :func:`load_sample_peaks` lays out its per-sample
+    reads: the same rows, the same columns in the same order, the same
+    ``attrs``. Where only some samples of a batch are asked for, the read
+    names them, so the server opens no other sample's peaks: a hundred per
+    request (:data:`_SAMPLES_PER_READ`).
 
-    A sample the server could not read is a failure of that sample; a batch
-    whose read failed is a failure of each of its samples asked for. Either
-    is named in ``attrs["failures"]`` as the per-sample read's would be.
+    A sample the server could not read is a failure of that sample; a read
+    that failed is a failure of each of its samples asked for; so is a sample
+    asked for that the read neither answered nor named. Each is named in
+    ``attrs["failures"]`` as the per-sample read's would be.
 
+    :param whole_batches: Every sample of each batch is asked for, so each
+        batch is read whole, in one request.
     :return: What :func:`load_sample_peaks` would, or :data:`_NO_BATCH_READ`
         when the server answers 404 to every batch: it is older than the
         read, and is not asked again.
@@ -534,16 +548,32 @@ def _load_batch_peak_lists(
             return _NO_BATCH_READ
         by_batch.setdefault(sample_row["sample_batch_id"], []).append(task)
 
-    def _fetch_batch(batch_id: str, tasks: list[tuple[Any, str]]) -> pd.DataFrame:
-        return client.batch_peaks.peak_lists(batch_id, matches=matches, average=average)
+    # Per read: its index, its batch, the samples it answers for, and
+    # whether it names them
+    reads: list[tuple[int, str, list[tuple[Any, str]], bool]] = []
+    for batch_id, tasks in by_batch.items():
+        step = len(tasks) if whole_batches else _SAMPLES_PER_READ
+        for begin in range(0, len(tasks), step):
+            reads.append(
+                (len(reads), batch_id, tasks[begin : begin + step], not whole_batches)
+            )
 
-    batch_tasks = list(by_batch.items())
+    def _fetch(
+        index: int, batch_id: str, tasks: list[tuple[Any, str]], named: bool
+    ) -> pd.DataFrame:
+        return client.batch_peaks.peak_lists(
+            batch_id,
+            samples=[row["sample_item_id"] for row, _ in tasks] if named else None,
+            matches=matches,
+            average=average,
+        )
+
     frames, failed = run_concurrent(
-        _fetch_batch,
-        batch_tasks,
-        max_workers=min(max_workers, len(batch_tasks)),
+        _fetch,
+        reads,
+        max_workers=min(max_workers, len(reads)),
         desc="Loading peaks",
-        unit="batch",
+        unit="read",
     )
     if not frames and all(isinstance(f.error, NotFoundError) for f in failed):
         client._server_has_batch_peak_lists = False
@@ -556,7 +586,7 @@ def _load_batch_peak_lists(
 
     failures: list[dict[str, Any]] = []
     for failure in failed:
-        for sample_row, batch_name in failure.args[1]:
+        for sample_row, batch_name in failure.args[2]:
             failures.append(
                 failure_record(
                     failure,
@@ -566,27 +596,40 @@ def _load_batch_peak_lists(
                 )
             )
 
-    read = {f.args[0] for f in failed}
+    def _sample_failure(
+        sample_row: Any, batch_name: str, error: Exception
+    ) -> dict[str, Any]:
+        return failure_record(
+            TaskFailure((sample_row, batch_name), error),
+            sample_batch_name=batch_name,
+            sample_item_id=sample_row["sample_item_id"],
+            sample_item_name=sample_row["sample_item_name"],
+        )
+
+    unread = {f.args[0] for f in failed}
     tables: list[pd.DataFrame] = []
     segments: dict[str, list[dict] | None] = {}
-    for (batch_id, tasks), frame in zip(
-        [bt for bt in batch_tasks if bt[0] not in read], frames
+    for (_, batch_id, tasks, _named), frame in zip(
+        [r for r in reads if r[0] not in unread], frames
     ):
         rows = {row["sample_item_id"]: (row, name) for row, name in tasks}
         url = f"{client.url}/api/batch-peaks/batch/{batch_id}/peaks"
+        answered = {s.get("sample_item_id") for s in frame.attrs.get("samples", ())}
         for said in frame.attrs.get("failures", ()):
-            if said.get("sample_item_id") not in rows:
+            sample_id = said.get("sample_item_id")
+            if sample_id not in rows:
                 continue
-            sample_row, batch_name = rows[said["sample_item_id"]]
+            answered.add(sample_id)
             error = status_error(said.get("status_code"), said.get("error", ""), url)
-            failures.append(
-                failure_record(
-                    TaskFailure((sample_row, batch_name), error),
-                    sample_batch_name=batch_name,
-                    sample_item_id=sample_row["sample_item_id"],
-                    sample_item_name=sample_row["sample_item_name"],
+            failures.append(_sample_failure(*rows[sample_id], error))
+        for sample_id, (sample_row, batch_name) in rows.items():
+            if sample_id not in answered:
+                # Gone between the listing and the read: as the per-sample
+                # read of it would have answered
+                error = status_error(
+                    404, f"Sample '{sample_id}' was not in its batch's read", url
                 )
-            )
+                failures.append(_sample_failure(sample_row, batch_name, error))
         for sample_id, sample_segments in frame.attrs.get("segments", {}).items():
             if sample_id in rows:
                 segments[sample_id] = sample_segments
@@ -654,6 +697,9 @@ def _as_sample_reads(
     frame.insert(2, "sample_item_name", column(lambda row, _: row["sample_item_name"]))
     if all("datetime_utc" in row.index for row, _ in rows.values()):
         frame.insert(3, "datetime_utc", column(lambda row, _: row["datetime_utc"]))
+    # The read's own attrs name every sample it read, asked for or not, and
+    # pandas carries them through all of the above: the load sets its own
+    frame.attrs = {}
     return frame
 
 

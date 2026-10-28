@@ -132,6 +132,12 @@ class FakeServer:
         #: that started at the same moment differently from the listing.
         self.reverse = False
         self.paths: list[str] = []
+        #: Per batch read, the samples whose peaks the server opened, and
+        #: the samples the request named (None for none).
+        self.opened: list[list[str]] = []
+        self.named: list[list[str] | None] = []
+        #: Samples gone from the server after the listing: no read names them.
+        self.vanished: set[str] = set()
 
     def http_get(self, url, path, access_token, params=None, **kwargs):
         self.paths.append(path)
@@ -179,11 +185,18 @@ class FakeServer:
 
     def _batch_read(self, batch_id: str, params: dict) -> _Response:
         matches = params.get("matches") == "true"
+        asked = params.get("sample_item_id")
         rows, read, failures, segments = [], [], [], {}
+        opened: list[str] = []
+        self.opened.append(opened)
+        self.named.append(asked)
         listed = list(SAMPLES.items())
         for sample_id, (batch, peaks) in reversed(listed) if self.reverse else listed:
-            if batch != batch_id:
+            if batch != batch_id or sample_id in self.vanished:
                 continue
+            if asked is not None and sample_id not in asked:
+                continue
+            opened.append(sample_id)
             name = f"Sample {sample_id}"
             if sample_id in self.unreadable:
                 status, error = self.unreadable[sample_id]
@@ -293,9 +306,9 @@ def _load(client, **options) -> pd.DataFrame | None:
     return _loaders.load_peaks(client, "ds-1", confirm_above=None, **options)
 
 
-def _fan_out(serve, **options) -> pd.DataFrame:
+def _fan_out(serve, sample_ids=("s1", "s2", "s3"), **options) -> pd.DataFrame:
     """The same load from a server that reads sample by sample."""
-    client, _ = serve(batch_reads=False)
+    client, _ = serve(batch_reads=False, sample_ids=sample_ids)
     return _load(client, **options)
 
 
@@ -371,6 +384,17 @@ class TestOneRequestPerBatch:
             _na_as_none(bulk.drop(columns=["is_satellite"])), _na_as_none(fan_out)
         )
 
+    def test_the_frame_says_what_the_per_sample_reads_say(self, serve):
+        # One batch: what the batch read says of every sample it read,
+        # asked for or not, is not the load's to pass on
+        client, _ = serve(sample_ids=("s1",))
+
+        bulk = _load(client, matches=False)
+        fan_out = _fan_out(serve, sample_ids=("s1",), matches=False)
+
+        assert "samples" not in bulk.attrs
+        assert bulk.attrs == fan_out.attrs
+
     def test_a_sample_filter_keeps_only_those_samples(self, serve):
         client, server = serve(sample_ids=("s2",))
 
@@ -379,6 +403,62 @@ class TestOneRequestPerBatch:
         assert server.paths == ["batch-peaks/batch/b1/peaks"]
         assert peaks["sample_item_id"].unique().tolist() == ["s2"]
         assert peaks.attrs["segments"] == {"s2": None}
+
+
+class TestASampleFilter:
+    def test_only_the_samples_chosen_are_read(self, serve):
+        client, server = serve(sample_ids=("s2",))
+
+        peaks = _load(client, samples="s2")
+
+        assert server.paths == ["batch-peaks/batch/b1/peaks"]
+        # The batch's other sample was never opened
+        assert server.opened == [["s2"]]
+        assert peaks["sample_item_id"].unique().tolist() == ["s2"]
+        assert peaks.attrs["complete"] is True
+
+    def test_without_one_each_batch_is_read_whole(self, serve):
+        client, server = serve()
+
+        _load(client)
+
+        assert sorted(server.opened) == [["s1", "s2"], ["s3"]]
+        # A whole batch is asked for by its id alone, however many samples
+        assert server.named == [None, None]
+
+    def test_a_large_choice_is_read_in_parts_and_stacked_in_order(
+        self, serve, monkeypatch
+    ):
+        monkeypatch.setattr(_loaders, "_SAMPLES_PER_READ", 1)
+        client, server = serve()
+
+        bulk = _load(client, samples="Sample", matches=False)
+        fan_out = _fan_out(serve, samples="Sample", matches=False)
+
+        assert server.paths.count("batch-peaks/batch/b1/peaks") == 2
+        assert sorted(server.opened) == [["s1"], ["s2"], ["s3"]]
+        pd.testing.assert_frame_equal(
+            _na_as_none(bulk.drop(columns=["is_satellite"])), _na_as_none(fan_out)
+        )
+
+    def test_a_part_that_failed_fails_its_samples_alone(self, serve, monkeypatch):
+        monkeypatch.setattr(_loaders, "_SAMPLES_PER_READ", 1)
+        client, server = serve(sample_ids=("s1", "s2"))
+        real = server._batch_read
+
+        def s2_down(batch_id, params):
+            if params.get("sample_item_id") == ["s2"]:
+                raise ServerError("Gateway timeout", status_code=504, url=batch_id)
+            return real(batch_id, params)
+
+        server._batch_read = s2_down
+
+        peaks = _load(client, samples="Sample")
+
+        assert peaks["sample_item_id"].unique().tolist() == ["s1"]
+        assert [
+            (f["sample_item_id"], f["error_type"]) for f in peaks.attrs["failures"]
+        ] == [("s2", "ServerError")]
 
 
 class TestAnOlderServer:
@@ -454,6 +534,20 @@ class TestFailures:
         assert peaks.attrs["complete"] is True
         assert peaks.attrs["failures"] == []
 
+    def test_a_sample_the_read_left_out_unnamed_is_a_failure(self, serve):
+        # Gone between the listing and the read: the per-sample read of it
+        # would have answered 404
+        client, server = serve()
+        server.vanished.add("s2")
+
+        peaks = _load(client)
+
+        assert set(peaks["sample_item_id"]) == {"s1", "s3"}
+        assert peaks.attrs["complete"] is False
+        assert [
+            (f["sample_item_id"], f["error_type"]) for f in peaks.attrs["failures"]
+        ] == [("s2", "NotFoundError")]
+
     def test_a_batch_whose_read_failed_fails_each_of_its_samples(self, serve):
         client, server = serve()
         server.down.add("b1")
@@ -519,8 +613,25 @@ class TestThePeakListsRead:
 
         monkeypatch.setattr("mascope_sdk.resources._base.http_get", spy)
         client.batch_peaks.peak_lists("b1", satellites=True, average=False)
+        client.batch_peaks.peak_lists("b1", samples=("s2",))
 
-        assert asked == [{"matches": "false", "satellites": "true", "average": "false"}]
+        assert asked == [
+            {"matches": "false", "satellites": "true", "average": "false"},
+            {
+                "matches": "false",
+                "satellites": "false",
+                "average": "true",
+                "sample_item_id": ["s2"],
+            },
+        ]
+        assert server.opened[-1] == ["s2"]
+
+    def test_an_empty_sample_list_is_refused_not_read_as_every_sample(self, serve):
+        client, server = serve()
+
+        with pytest.raises(ValueError, match="samples is empty"):
+            client.batch_peaks.peak_lists("b1", samples=[])
+        assert server.paths == []
 
 
 class TestScoreMatches:

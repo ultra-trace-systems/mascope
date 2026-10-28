@@ -262,7 +262,9 @@ peaks = pd.read_parquet("uronium.parquet")  # later, anywhere: attrs included
 ```
 
 Each batch comes in one request: the server sends all of its samples' peak
-lists as one table (`batch_peaks.peak_lists`). A server older than that read
+lists as one table (`batch_peaks.peak_lists`). With `samples=`, the request
+names the samples chosen, up to a hundred per request, and the server reads
+no others. A server older than that read
 answers 404, and `load_peaks` then reads each sample on its own, eight at a
 time, as it always did. The frame is the same either way, with two
 differences:
@@ -1177,9 +1179,9 @@ The compound list is shared by every workspace, so `add`, `update` and `remove` 
 | `verdicts(batch_id)`                             | The batch-level verdicts on its species                        | `pd.DataFrame│None` |
 | `runs(batch_id)`                                 | The batch runs that rewrote its ledger, newest first           | `pd.DataFrame│None` |
 | `import_run(batch_id, rows, engine=, engine_version=)` | Land an external engine's batch-level result as a run    | `dict│None`         |
-| `peak_lists(batch_id, matches=False, satellites=False, average=True)` | Every peak of every sample of the batch, in one read | `pd.DataFrame` |
+| `peak_lists(batch_id, samples=None, matches=False, satellites=False, average=True)` | Every peak of every sample of the batch, or of the samples named, in one read | `pd.DataFrame` |
 
-`peak_lists` is the batch's peak lists, not its ledger: every sample read as `samples.get_peaks` reads it with no range, sent by the server as one Parquet table. It needs no ledger and is what `load_peaks` reads. Its columns are `sample_item_id`, `sample_item_name`, `datetime_utc`, `peak_id`, `mz`, `sparsity`, `signal_to_noise`, `segment`, `area`, `height` and `is_satellite`. With `matches=True` it adds the match columns as the server keeps them, `ionization_mechanism_id` among them, with no ion or compound score. `satellites=True` keeps the satellite peaks, sidelobes of a stronger peak that `get_peaks` leaves out, with `is_satellite` True. `df.attrs["failures"]` names each sample the server could not read (`status_code`, `error`). `df.attrs["complete"]` is then False, and the rest of the batch is answered without it.
+`peak_lists` is the batch's peak lists, not its ledger: every sample read as `samples.get_peaks` reads it with no range, sent by the server as one Parquet table. It needs no ledger and is what `load_peaks` reads. Its columns are `sample_item_id`, `sample_item_name`, `datetime_utc`, `peak_id`, `mz`, `sparsity`, `signal_to_noise`, `segment`, `area`, `height` and `is_satellite`. With `matches=True` it adds the match columns as the server keeps them, `ionization_mechanism_id` among them, with no ion or compound score. `satellites=True` keeps the satellite peaks, sidelobes of a stronger peak that `get_peaks` leaves out, with `is_satellite` True. `samples=` takes a list of `sample_item_id`s and reads only those; an ID that is no sample of the batch is a failure with status 404. Each ID goes in the request's URL, so name at most a hundred or so per call. `df.attrs["failures"]` names each sample the server could not read (`status_code`, `error`). `df.attrs["complete"]` is then False, and the rest of the batch is answered without it.
 
 `series` is the slim counterpart of `members`: one row per (sample, batch peak) with the member's `sample_item_id`, `sample_peak_id`, `intensity` and `tier` beside its batch peak's `batch_peak_id`, `batch_mz`, `consensus_formula`, `consensus_ion_formula` and `consensus_tier`. `min_n_present=2` leaves out the batch peaks only one sample saw. `df.attrs["run_id"]` names the run the rows are from: `run_id` when given, else the batch's current run. While a rebuild or search is running, the previous run is still the current one but the live ledger is being rewritten, so the rows may be half of each; `series` logs a warning then, and a read after the run finishes is the reliable one. See [`load_batch_ledger`](#load_batch_ledger-the-batch-ledger).
 
@@ -1222,7 +1224,7 @@ from mascope_sdk import MascopeClient
 
 mascope = MascopeClient(workspace="My Workspace")
 
-peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium")
+peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium", matches=True)
 
 # Filter to matched peaks and summarise by compound
 matched = peaks[peaks["target_compound_formula"].notna()]
