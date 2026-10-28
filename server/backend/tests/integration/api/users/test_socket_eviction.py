@@ -50,6 +50,7 @@ from mascope_backend.socket.events.handlers.tof_agent.connection import (
     disconnect as tof_agent_disconnect,
 )
 from mascope_backend.socket.eviction import (
+    SIGNED_OUT_EVENT,
     evict_ended_sessions,
     sign_out_expired_socket,
 )
@@ -58,6 +59,7 @@ from mascope_backend.socket.storage import (
     SocketSessionError,
     get_session_user,
     get_user_socket_sids,
+    has_session,
     redis_storage_client,
     room_tracker,
     save_user_session,
@@ -153,6 +155,7 @@ def sio():
     server = MagicMock()
     server.enter_room = AsyncMock()
     server.leave_room = AsyncMock()
+    server.emit = AsyncMock()
     with (
         patch(
             "mascope_backend.socket.events.handlers.default.subscription.sio", server
@@ -183,6 +186,15 @@ async def _open_socket(sid: str, user: User, issued: datetime) -> None:
     assert await get_session_user(sid), "the socket did not authenticate"
     await subscribe(sid, RESOURCE_ROOM)
     await subscribe(sid, f"user-{user.id}")
+
+
+def _told_signed_out(sio) -> list[str]:
+    """The sockets told, on their own connection, that they were signed out."""
+    return [
+        kwargs["room"]
+        for args, kwargs in sio.emit.await_args_list
+        if args[0] == SIGNED_OUT_EVENT
+    ]
 
 
 def _left(sio, sid: str) -> set[str]:
@@ -603,6 +615,7 @@ async def test_signing_out_signs_the_tab_socket_out(person, sio):
     # Notification routing no longer counts the user as listening anywhere.
     assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
     assert not await room_tracker.is_in_room(person.id, f"user-{person.id}")
+    assert _told_signed_out(sio) == ["sid-a"]
 
 
 async def _assert_signed_out(sio, sid: str, user: User) -> None:
@@ -612,6 +625,8 @@ async def _assert_signed_out(sio, sid: str, user: User) -> None:
     with pytest.raises(SocketSessionError):
         await get_session_user(sid)
     assert sid not in await get_user_socket_sids(user.id)
+    # And told so on its own connection.
+    assert sid in _told_signed_out(sio)
 
 
 @pytest.mark.asyncio
@@ -645,6 +660,37 @@ async def test_signing_out_signs_the_browser_s_other_tabs_out(person, sio):
     assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
     assert not await room_tracker.is_in_room(person.id, OTHER_ROOM)
     assert not await room_tracker.is_in_room(person.id, f"user-{person.id}")
+    # The other tab is told, or it would never know: once the browser signs
+    # in again elsewhere, its requests stop failing and its socket stays mute.
+    assert sorted(_told_signed_out(sio)) == ["sid-a", "sid-b"]
+
+
+@pytest.mark.asyncio
+async def test_a_socket_is_told_once_it_is_signed_out(person, sio):
+    """
+    The tab told acts on it at once, opening a new connection and reading the
+    profile: by then nothing of the old session may be left to find.
+    """
+    await _open_socket("sid-a", person, THIS_BROWSER)
+    await _open_socket("sid-b", person, THIS_BROWSER)
+    seen = {}
+
+    async def emit(event, data, room, namespace):
+        seen[room] = (
+            await has_session(room),
+            await room_tracker.socket_rooms(room),
+            _left(sio, room),
+        )
+
+    sio.emit.side_effect = emit
+
+    await _logout(person, "sid-a")
+
+    every_room = {RESOURCE_ROOM, SIGNED_IN_ROOM, f"user-{person.id}"}
+    assert seen == {
+        "sid-a": (False, set(), every_room),
+        "sid-b": (False, set(), every_room),
+    }
 
 
 @pytest.mark.asyncio
@@ -670,6 +716,7 @@ async def test_signing_out_keeps_the_account_s_other_browser(person, sio):
     await _logout(person, "sid-a")
 
     assert _left(sio, "sid-b") == set()
+    assert _told_signed_out(sio) == ["sid-a"]
     assert (await get_session_user("sid-b"))["user_id"] == person.id
     assert await get_user_socket_sids(person.id) == {"sid-b"}
     assert await room_tracker.socket_rooms("sid-b") == {
@@ -694,6 +741,7 @@ async def test_signing_out_leaves_another_accounts_socket_alone(
     await _logout(person, "sid-b")
 
     sio.leave_room.assert_not_awaited()
+    assert _told_signed_out(sio) == []
     assert (await get_session_user("sid-b"))["user_id"] == other_person.id
     assert await room_tracker.socket_rooms("sid-b") == {
         RESOURCE_ROOM,

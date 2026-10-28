@@ -47,6 +47,15 @@ the socket out with :func:`sign_out_expired_socket`, as a logout would. Without
 that, a tab left open past the token's lifetime kept its rooms, and a logout
 in a tab that had signed in again since, with a token of another ``iat``,
 could not reach it.
+
+Each socket signed out, by a logout or at its token's expiry, hears
+:data:`SIGNED_OUT_EVENT` on its own connection. A tab that signed out knows
+already, but the browser's other tabs do not: once any tab signs in again the
+cookie works for them all, so they would never meet the 401 that shows the
+sign-in screen, and would show data with a socket that hears nothing. On the
+event the SPA opens a new connection and reads the profile again, which shows
+the sign-in screen, or signs the socket in again when the browser holds a
+session once more.
 """
 
 import os
@@ -67,6 +76,10 @@ from mascope_backend.socket.storage import (
     room_tracker,
     socket_is_held,
 )
+
+
+#: The event a socket hears when its session has been signed out.
+SIGNED_OUT_EVENT = "signed_out"
 
 
 def socket_hold_reason(
@@ -327,7 +340,8 @@ async def sign_out_expired_socket(sid: str, user_id: int) -> bool:
 
 async def _sign_out(sid: str, user_id: int) -> None:
     """
-    Clear a socket's session and take it out of every room it is on record in.
+    Clear a socket's session, take it out of every room it is on record in,
+    and tell it so.
 
     :param sid: The socket, on the default namespace, signed in as ``user_id``.
     :param user_id: The account it is signed in as.
@@ -341,6 +355,9 @@ async def _sign_out(sid: str, user_id: int) -> None:
     for room in rooms:
         await sio.leave_room(sid, room)
     await room_tracker.forget_socket(sid)
+    # Last, so a tab acting on it finds the socket already signed out. The
+    # socket's own sid is a room every connection is in, rooms left or not.
+    await sio.emit(SIGNED_OUT_EVENT, {}, room=sid, namespace="/")
 
     runtime.logger.info(
         f"Signed socket {sid} of user {user_id} out of {len(rooms)} room(s) "
