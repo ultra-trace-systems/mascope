@@ -146,15 +146,20 @@ the role it needs in the web app:
 | Target collections: create, update, associate with batches, delete | `mascope.collections.create`, `.update`, `.associate`, `.delete` | `POST /api/target/collections`, `PATCH` and `DELETE /api/target/collections/{id}` | editor in the collection's workspace (a global collection: global admin); to only associate batches, guest on the collection and editor on the batches |
 | Target compounds: add, update, remove | `mascope.compounds.add`, `.update`, `.remove` | `POST` and `PATCH /api/target/compounds`, `DELETE /api/target/compounds/{id}` | the global editor role; the compound list is shared by every workspace. Deleting a collection with `delete_orphan_compounds=true` also removes the compounds no other collection uses, with the collection's role alone |
 | Matches: save a sample's or a batch's, or rebuild a batch's | `mascope.matching.save_sample`, `.save_batch`, `.resave_batch` | `POST /api/match/aggregate/sample/{id}/save`, `POST /api/match/aggregate/batch/{id}/save`, `POST /api/match/aggregate/batch/{id}/resave` | editor on the sample or batch |
+| Peak assignments: run the engine on a sample, record a verdict on an assignment | `mascope.peak_assignments.assign`, `.verify` | `POST /api/peak-assignments/sample/{id}/assign`, `POST /api/peak-assignments/sample/{id}/verify` | editor on the sample, on a server with peak assignment switched on (`peak_assignment = true` under `[meta]`); with it off, both are refused with a 403 |
 
 A write your role does not allow is refused with a 403, which says only
 that it was refused. The SDK raises it as `PermissionDeniedError`, naming
 what the call acted on (`object_type`, `object_id`) and the role this table
 gives for it (`required_role`). Running a sample's or a batch's matching
-without saving it (`mascope.matching.aggregate_sample`, `.aggregate_batch`)
-changes nothing and needs the guest role. The
+without saving it (`mascope.matching.aggregate_sample`, `.aggregate_batch`),
+or scoring a composition against a sample
+(`mascope.peak_assignments.fit_aggregate`), changes nothing and needs the
+guest role. The
 [SDK readme](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/sdk/README.md#changing-data)
-shows the write methods at work.
+shows the write methods at work, and its
+[Running and verifying](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/sdk/README.md#running-and-verifying)
+section the peak-assignment ones, with what each answers when it refuses.
 
 Besides these, a token can:
 
@@ -162,8 +167,8 @@ Besides these, a token can:
   (`POST /api/sample/files/delete`, admin in the instrument's workspace);
 - add an instrument function (`POST /api/instrument_configs`, the global
   editor role);
-- run and review peak assignments and the batch peak ledger, publish an
-  external engine's assignment run
+- curate a sample's peak assignments and review the batch peak ledger,
+  publish an external engine's assignment run
   ([Publishing an assignment run](publishing-assignments.md)), and refit an
   instrument's peak-assignment confidence calibration (a superuser).
 

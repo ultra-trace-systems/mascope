@@ -484,8 +484,9 @@ and files each assignment into a confidence tier (`assigned` | `candidate` |
 **evidence** — its `fit_score` weighted by the chemical plausibility of the
 assigned formula — under the run's `tier_bands`. `fit_score` is served
 alongside it, unchanged, as the pure fit measurement. Runs are launched from
-the Mascope app and persisted; the SDK reads the results (it does not trigger
-runs).
+the Mascope app, on ingest, or from the SDK
+([Running and verifying](#running-and-verifying)), and persisted; the SDK reads
+the results.
 
 The top tier used to be called `identified`. The API still accepts that
 spelling wherever a tier is sent and normalises it to `assigned`, so scripts
@@ -585,6 +586,99 @@ Compare tiers only against each run's own `tier_bands`: the same word means
 different confidence under different thresholds. An imported run's `p_correct`
 is always empty — that column is Mascope's own calibrated judgement and an
 import may not write it.
+
+### Running and verifying
+
+Three calls change or score a sample's assignments. The two that write need
+the editor role on the sample, and a server with peak assignment switched on
+(`peak_assignment = true` under `[meta]`); otherwise they raise
+`PermissionDeniedError`.
+
+```python
+from mascope_sdk import AssignmentInFlightError, SampleIneligibleError
+
+# Run the engine on a sample, wait for it, and read what it assigned
+assignments = mascope.peak_assignments.assign(sample_id)
+assignments = mascope.peak_assignments.assign(
+    sample_id, config={"run_untargeted": False, "assigned_threshold": 0.8}
+)
+
+# Or launch it and come back for it
+run_id = mascope.peak_assignments.assign(sample_id, wait=False)
+assignments = mascope.peak_assignments.wait_for_run(sample_id, run_id)
+
+try:
+    mascope.peak_assignments.assign(sample_id)
+except AssignmentInFlightError as e:
+    # One run per sample at a time: follow the one already going. Its id is
+    # None while the other launch is still creating it; list_runs shows it.
+    if e.peak_assignment_run_id is not None:
+        mascope.peak_assignments.wait_for_run(sample_id, e.peak_assignment_run_id)
+except SampleIneligibleError as e:
+    print(e.reason)  # "blank sample (no peaks)", "m/z calibration not verified"
+
+# Record a verdict on one assignment
+row = assignments.iloc[0]
+mascope.peak_assignments.verify(
+    sample_id, row["peak_assignment_id"], "confirmed", evidence_level="msms"
+)
+verdicts = mascope.peak_assignments.list_verifications(sample_id)
+current = verdicts[verdicts["superseded_utc"].isna()]
+
+# Score any composition against the sample: its isotope table
+fit = mascope.peak_assignments.fit_aggregate(
+    sample_id, row["assigned_formula"], row["ionization_mechanism_id"]
+)
+```
+
+- **`assign`** asks the server to run the engine on one sample. The server
+  decides before it answers: it creates the run and returns its id, or
+  refuses. A sample with a run already going raises `AssignmentInFlightError`,
+  naming that run in `peak_assignment_run_id`. The name is `None` while
+  another launch is still creating its run, and `wait_for_run` refuses a
+  `None` id with a `ValueError`: look at `list_runs` instead. A sample that
+  cannot be assigned, a blank or one whose m/z calibration is not verified,
+  raises `SampleIneligibleError` with its `reason`. Neither ever waits.
+- With `wait=True`, the default, `assign` looks at the run every
+  `poll_interval` seconds (5) and returns its ledger as `get(sample_id,
+  run_id=...)` does. A run that failed raises `AssignmentRunError` with the
+  run's `error`; so does a cancelled one, which wrote no rows. If the run is
+  still going after `timeout` seconds (1800; `None` waits as long as it
+  takes), `AssignmentTimeoutError` hands back its `peak_assignment_run_id`.
+  The run carries on, and `wait_for_run` waits again.
+- `config` takes the run's settings, any of them: `run_untargeted`, `profile`,
+  `context`, `mz_precision_ppm`, `formula_ranges`, `max_untargeted_peaks`,
+  `peak_intensity_threshold`, `max_alternatives`, `assigned_threshold` and
+  `candidate_threshold`. One left out takes the server's default. A run
+  records the settings it ran with under `config` in `list_runs`.
+- **`verify`** records a verdict: `confirmed`, `rejected` or `unsure`.
+  `confirmed` needs an `evidence_level`: `reference_standard`, `msms`,
+  `orthogonal`, `pattern` or `visual`. The server keeps every verdict and
+  snapshots the assignment's `fit_score`, `evidence` and `p_correct` beside
+  it. A later verdict on the same peak, formula and adduct replaces the
+  earlier one as the current answer and stamps its `superseded_utc`.
+- `confirmed` and `rejected` verdicts are the labels the instrument's
+  confidence calibration is refitted on. A verdict on an imported run's
+  assignment is recorded the same way but kept out of that refit, because
+  its scores are the external engine's.
+- **`list_verifications`** lists every verdict on the sample, newest first:
+  `assignment_verification_id`, `peak_assignment_id`, `peak_assignment_run_id`,
+  `sample_peak_id`, `assigned_formula`, `ionization_mechanism_id`, `verdict`,
+  `evidence_level`, `note`, `fit_score`, `evidence`, `p_correct`,
+  `verified_by`, `verified_utc` and `superseded_utc`.
+- **`fit_aggregate`** scores a neutral formula and an ionization mechanism
+  against the sample, as targeted matching scores a compound, and saves
+  nothing. It is how an untargeted assignment, which has no target ion, is
+  checked line by line: `match_ions` holds the ion and its `match_score`,
+  `match_isotopes` one record per isotope line with the peak it matched.
+
+`assign` and `verify` are sent once. Every other request is sent again when
+the server does not answer, but these two would be carried out twice: a
+second verdict counts twice in the calibration refit, and a second launch is
+refused as already in flight. If the answer is lost on the way back, the call
+raises `MascopeConnectionError`, `MascopeTimeoutError` or a `ServerError`
+(502 to 504) that says the server may have done it: look at `list_runs` or
+`list_verifications` before sending it again.
 
 For cross-sample analysis use the [`load_assignments`](#load_assignments-peak-assignments-across-batches)
 loader; for a guided walk-through see tutorial notebook `10_peak_assignment.ipynb`.
@@ -853,8 +947,13 @@ The compound list is shared by every workspace, so `add`, `update` and `remove` 
 | `list_runs(sample_id)`              | List a sample's assignment runs, newest first                     | `pd.DataFrame│None` |
 | `get(sample_id, run_id=, tier=, role=, source=)` | Full run ledger, one row per peak; run metadata on `df.attrs["run"]` | `pd.DataFrame│None` |
 | `detail(sample_id, peak_assignment_id)` | One assignment in full (`alternatives`, `provenance`)          | `dict│None`         |
+| `assign(sample_id, config=, wait=, poll_interval=, timeout=)` | Run the engine on a sample; with `wait=True` its ledger, else its run id | `pd.DataFrame│str│None` |
+| `wait_for_run(sample_id, run_id, poll_interval=, timeout=)` | Wait for a run to end and return its ledger | `pd.DataFrame│None` |
+| `verify(sample_id, peak_assignment_id, verdict, evidence_level=, note=)` | Record a verdict on one assignment | `dict` |
+| `list_verifications(sample_id)` | Every verdict on a sample, newest first | `pd.DataFrame│None` |
+| `fit_aggregate(sample_id, formula, ionization_mechanism_id)` | Score a composition against a sample: its isotope table | `dict` |
 
-`get` reads the latest completed run unless `run_id` is given, and pages through the API internally — the whole run comes back as one DataFrame. See [Peak Assignments](#peak-assignments).
+`get` reads the latest completed run unless `run_id` is given, and pages through the API internally — the whole run comes back as one DataFrame. See [Peak Assignments](#peak-assignments) and [Running and verifying](#running-and-verifying).
 
 #### `mascope.batch_peaks`
 
@@ -1050,12 +1149,20 @@ except NotFoundError:
   - `ConfigurationError` — Missing/invalid configuration
   - `MascopeConnectionError` — Network/connection issues
     - `MascopeTimeoutError` — Request timeout
-  - `MascopeAPIError` — API errors (includes `status_code`, `message`, `url`)
+  - `MascopeAPIError` — API errors (includes `status_code`, `message`, `url`, and the server's answer: `body`, its `detail`, and the `code` that names the condition where the server gives one)
     - `AuthenticationError` — 401/403 responses
       - `PermissionDeniedError` — 403: the token is valid, its user lacks the role; a write names its `object_type`, `object_id` and `required_role`
     - `NotFoundError` — 404 responses
     - `ValidationError` — 422 responses
+      - `SampleIneligibleError` — `peak_assignments.assign` on a sample that cannot be assigned; names the `reason`
+    - `ConflictError` — 409: refused over the state the server is in
+      - `AssignmentInFlightError` — `peak_assignments.assign` on a sample with a run going; names its `peak_assignment_run_id`
     - `ServerError` — 5xx responses
+  - `AssignmentRunError` — a run `assign` or `wait_for_run` waited for failed (its `error`) or was cancelled
+  - `AssignmentTimeoutError` — the wait ended before the run did; carries its `peak_assignment_run_id`
+
+Branch on `code` rather than on the wording of `message`: the message is
+written for a person, and two conditions can share a status code.
 
 ### Project Structure
 

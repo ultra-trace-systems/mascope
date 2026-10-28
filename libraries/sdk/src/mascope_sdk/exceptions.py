@@ -1,5 +1,7 @@
 """Custom exceptions for the Mascope SDK."""
 
+from typing import Any
+
 
 class MascopeError(Exception):
     """Base exception for all Mascope SDK errors."""
@@ -44,12 +46,22 @@ class ConfigurationError(MascopeError):
 class MascopeAPIError(MascopeError):
     """Base exception for API-related errors.
 
+    The server answers an error with ``{"error": <for a person>, "detail":
+    {...}}``. ``message`` is the first; ``detail`` is the second, which is
+    where the server puts what a program reacts to: an ``error_id`` to quote
+    when reporting the error, a stable ``code`` where a client is expected to
+    tell one condition from another that shares its status, and the ids the
+    condition is about. Branch on ``code``, not on the wording of ``message``.
+
     :ivar status_code: HTTP status code from the API response.
     :vartype status_code: int | None
     :ivar message: Error message from the API or a default message.
     :vartype message: str
     :ivar url: The URL that was being accessed when the error occurred.
     :vartype url: str | None
+    :ivar body: The response body as parsed JSON, or None when it was not
+        JSON.
+    :vartype body: Any
     """
 
     def __init__(
@@ -57,11 +69,26 @@ class MascopeAPIError(MascopeError):
         message: str,
         status_code: int | None = None,
         url: str | None = None,
+        *,
+        body: Any = None,
     ):
         self.status_code = status_code
         self.message = message
         self.url = url
+        self.body = body
         super().__init__(self._format_message())
+
+    @property
+    def detail(self) -> dict[str, Any]:
+        """The body's ``detail`` object; empty when it sent none."""
+        detail = self.body.get("detail") if isinstance(self.body, dict) else None
+        return detail if isinstance(detail, dict) else {}
+
+    @property
+    def code(self) -> str | None:
+        """The stable code of the condition, where the server names one."""
+        code = self.detail.get("code")
+        return code if isinstance(code, str) else None
 
     def _format_message(self) -> str:
         parts = [self.message]
@@ -108,6 +135,7 @@ class PermissionDeniedError(AuthenticationError):
         status_code: int | None = 403,
         url: str | None = None,
         *,
+        body: Any = None,
         operation: str | None = None,
         object_type: str | None = None,
         object_id: str | None = None,
@@ -117,7 +145,7 @@ class PermissionDeniedError(AuthenticationError):
         self.object_type = object_type
         self.object_id = object_id
         self.required_role = required_role
-        super().__init__(message, status_code=status_code, url=url)
+        super().__init__(message, status_code=status_code, url=url, body=body)
 
     def _format_message(self) -> str:
         if self.operation is None:
@@ -149,10 +177,150 @@ class ValidationError(MascopeAPIError):
     pass
 
 
+class ConflictError(MascopeAPIError):
+    """Raised when the server refuses a request over the state it is in (409).
+
+    Sending it again unchanged gets the same answer until that state changes:
+    the server's ``detail`` says what holds it (see :attr:`detail`).
+    """
+
+    pass
+
+
 class ServerError(MascopeAPIError):
     """Raised when the server encounters an error (5xx responses)."""
 
     pass
+
+
+class AssignmentInFlightError(ConflictError):
+    """Raised when a sample already has a peak assignment run in flight.
+
+    The server admits one run per sample at a time and names the one it is
+    running, so the caller can follow that run instead
+    (``peak_assignments.wait_for_run``) rather than start another.
+
+    :ivar sample_id: The sample.
+    :vartype sample_id: str | None
+    :ivar peak_assignment_run_id: The run in flight. None when the server
+        could not name it: another request was creating it at that moment.
+    :vartype peak_assignment_run_id: str | None
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = 409,
+        url: str | None = None,
+        *,
+        body: Any = None,
+    ):
+        super().__init__(message, status_code=status_code, url=url, body=body)
+        self.sample_id = self.detail.get("sample_item_id")
+        self.peak_assignment_run_id = self.detail.get("peak_assignment_run_id")
+
+
+class SampleIneligibleError(ValidationError):
+    """Raised when a sample cannot usefully be assigned peaks (422).
+
+    A blank sample has no peaks, and a sample whose m/z calibration is not
+    verified would give mass errors, and so tiers, that mean nothing. No run
+    is created. A subclass of :class:`ValidationError`, the type of every
+    other 422, and told apart from a request the server could not read by
+    the code ``sample_ineligible``.
+
+    :ivar sample_id: The sample.
+    :vartype sample_id: str | None
+    :ivar reason: Why it cannot be assigned, as the server says it.
+    :vartype reason: str | None
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = 422,
+        url: str | None = None,
+        *,
+        body: Any = None,
+    ):
+        super().__init__(message, status_code=status_code, url=url, body=body)
+        self.sample_id = self.detail.get("sample_item_id")
+        self.reason = self.detail.get("reason")
+
+
+class AssignmentRunError(MascopeError):
+    """Raised when a peak assignment run ended without a ledger.
+
+    A run that failed carries the server's reason in :attr:`error`. A
+    cancelled run wrote no rows at all, so it is an error too, rather than an
+    empty result that would read as a sample with nothing in it.
+
+    :ivar sample_id: The sample.
+    :vartype sample_id: str
+    :ivar peak_assignment_run_id: The run.
+    :vartype peak_assignment_run_id: str
+    :ivar status: ``failed`` or ``cancelled``; None when the run is no longer
+        listed at all.
+    :vartype status: str | None
+    :ivar error: The run's own failure reason, if it recorded one.
+    :vartype error: str | None
+    """
+
+    def __init__(
+        self,
+        sample_id: str,
+        peak_assignment_run_id: str,
+        status: str | None,
+        error: str | None = None,
+    ):
+        self.sample_id = sample_id
+        self.peak_assignment_run_id = peak_assignment_run_id
+        self.status = status
+        self.error = error
+        if status is None:
+            text = "is no longer listed for the sample"
+        else:
+            text = f"ended {status}"
+        message = f"Peak assignment run '{peak_assignment_run_id}' {text}"
+        super().__init__(f"{message}: {error}" if error else f"{message}.")
+
+
+class AssignmentTimeoutError(MascopeError):
+    """Raised when a peak assignment run is still going when the wait ends.
+
+    The run is not lost and not stopped: it carries on on the server. Its id
+    is here, so the caller can wait again
+    (``peak_assignments.wait_for_run``) or read it later.
+
+    :ivar sample_id: The sample.
+    :vartype sample_id: str
+    :ivar peak_assignment_run_id: The run.
+    :vartype peak_assignment_run_id: str
+    :ivar status: The status it was last seen in; None if no poll was
+        answered.
+    :vartype status: str | None
+    :ivar timeout: How long the wait was, in seconds.
+    :vartype timeout: float
+    """
+
+    def __init__(
+        self,
+        sample_id: str,
+        peak_assignment_run_id: str,
+        status: str | None,
+        timeout: float,
+    ):
+        self.sample_id = sample_id
+        self.peak_assignment_run_id = peak_assignment_run_id
+        self.status = status
+        self.timeout = timeout
+        seen = f"still {status}" if status else "not seen in a listing"
+        super().__init__(
+            f"Peak assignment run '{peak_assignment_run_id}' of sample "
+            f"'{sample_id}' is {seen} after {timeout:g} s. It carries on on "
+            "the server: wait_for_run(sample_id, peak_assignment_run_id) "
+            "waits again."
+        )
 
 
 class TusNotSupportedError(MascopeAPIError):
@@ -180,6 +348,7 @@ class MascopeConnectionError(MascopeError):
     """
 
     def __init__(self, message: str, url: str | None = None):
+        self.message = message
         self.url = url
         super().__init__(f"{message}" + (f" (URL: {url})" if url else ""))
 

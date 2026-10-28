@@ -247,6 +247,7 @@ class BaseResource:
         needs: Needs,
         data: Any = None,
         params: dict[str, Any] | None = None,
+        max_attempts: int | None = None,
     ) -> Any:
         """Send a write and return what the route answers with.
 
@@ -254,6 +255,10 @@ class BaseResource:
         comes through as :class:`~mascope_sdk.exceptions.PermissionDeniedError`
         naming what *needs* says. A write can change what a listing shows, so
         the client's metadata cache is cleared after one succeeds.
+
+        A write is sent again on a transient failure, as a read is, unless
+        *max_attempts* says otherwise: 1 for a write the server would carry
+        out a second time, so that a lost answer raises instead.
 
         :param method: ``"POST"``, ``"PATCH"`` or ``"DELETE"``.
         :type method: str
@@ -265,6 +270,9 @@ class BaseResource:
         :type data: Any, optional
         :param params: Query parameters, if any.
         :type params: dict[str, Any], optional
+        :param max_attempts: How many times to send it on a transient
+            failure; the HTTP layer's default when None.
+        :type max_attempts: int, optional
         :return: The route's ``data``. A route that answers without one (a
             delete, a save, or a copy or move that runs in the background)
             returns its whole answer instead, ``{"message": ...}`` and what
@@ -283,12 +291,14 @@ class BaseResource:
                 timeout=self._client._timeout,
                 verify_ssl=self._client._verify_ssl,
                 service_name=self._client._service_name,
+                max_attempts=max_attempts,
             )
         except PermissionDeniedError as e:
             raise PermissionDeniedError(
                 e.message,
                 status_code=e.status_code,
                 url=e.url,
+                body=e.body,
                 operation=needs.operation,
                 object_type=needs.object_type,
                 object_id=needs.object_id,

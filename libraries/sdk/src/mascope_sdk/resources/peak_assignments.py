@@ -2,26 +2,123 @@
 
 Reads persisted peak-centric assignment results: every observed peak of a
 sample with its committed formula, adduct, evidence, and confidence tier, as
-produced by a server-side assignment run (launched from the Mascope app).
+produced by a server-side assignment run. Launches such a run on a sample,
+records a verdict on one of its assignments, and scores an arbitrary
+composition against a sample (see ``docs/dev/sdk_peak_assignment.md``).
 
-This is the read surface only. Launching assignment runs and recording
-verification verdicts stay app-side for now (see
-``docs/dev/sdk_peak_assignment.md``).
+The two writes, :meth:`PeakAssignmentsResource.assign` and
+:meth:`PeakAssignmentsResource.verify`, are sent once and never again on a
+lost answer: a verdict sent twice is two labels in the confidence
+calibration, and a launch sent twice is refused as already in flight.
 """
 
-from typing import Any
+import time
+from collections.abc import Mapping
+from typing import Any, TypedDict
 
 import pandas as pd
 from loguru import logger
 
 from .._http import http_get
-from ._base import BaseResource, _coerce_datetime_columns, _coerce_utc_columns
+from ..exceptions import (
+    AssignmentInFlightError,
+    AssignmentRunError,
+    AssignmentTimeoutError,
+    ConflictError,
+    MascopeAPIError,
+    MascopeConnectionError,
+    SampleIneligibleError,
+    ServerError,
+    ValidationError,
+)
+from ._base import (
+    BaseResource,
+    Needs,
+    _coerce_datetime_columns,
+    _coerce_utc_columns,
+)
 
 
 #: Rows requested per page when reading a run. The list endpoint caps a page
 #: at 5000 rows (its own default is 1000); the SDK asks for the cap to
 #: minimise round trips and pages until it has ``total`` rows.
 PAGE_LIMIT = 5000
+
+#: The run statuses nothing moves on from. ``completed`` has a ledger;
+#: ``failed`` and ``cancelled`` have none.
+TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+
+#: The code the server gives a 422 for a sample it will not assign, which
+#: tells it apart from a request body it could not read (also 422).
+SAMPLE_INELIGIBLE_CODE = "sample_ineligible"
+
+#: The role the two writes need, and the switch they need on the server.
+_EDITOR = "editor on the sample, on a server with peak assignment enabled"
+
+#: Default seconds between two looks at a launched run.
+DEFAULT_POLL_INTERVAL = 5.0
+
+#: Default seconds to wait for a launched run before handing back its id.
+DEFAULT_WAIT_TIMEOUT = 1800.0
+
+
+class AssignmentConfig(TypedDict, total=False):
+    """The settings of one run, as the server's ``PeakAssignmentConfig``.
+
+    Every key is optional: one left out takes the server's default, which
+    for ``mz_precision_ppm``, ``formula_ranges`` and ``max_untargeted_peaks``
+    means what the resolved ``profile`` gives. The server checks the values
+    and answers a bad one with a 422; a key it does not know, it ignores.
+    """
+
+    #: Search the peaks the curated library left unassigned (Stage B).
+    run_untargeted: bool
+    #: Reagent chemistry preset: ``auto`` (read off the sample's mechanisms),
+    #: ``none``, or a preset name.
+    profile: str
+    #: Sampled-matrix preset: ``auto`` (the profile's), ``none``, or a name.
+    context: str
+    #: m/z tolerance of the untargeted search, in ppm.
+    mz_precision_ppm: float
+    #: Element ranges of the untargeted search, e.g. ``"C0-80 H0-160 O0-50"``.
+    formula_ranges: str
+    #: How many of the most intense unassigned peaks the search takes.
+    max_untargeted_peaks: int
+    #: The least intensity a peak needs to enter the untargeted search.
+    peak_intensity_threshold: float
+    #: How many runner-up candidates are kept per peak.
+    max_alternatives: int
+    #: Evidence at or above which a row is tiered ``assigned``. The server
+    #: also reads the old name ``identified_threshold``.
+    assigned_threshold: float
+    #: Evidence at or above which a row is tiered ``candidate``.
+    candidate_threshold: float
+
+
+def _answer_lost(error: Exception, what: str) -> Exception:
+    """The error of a write whose answer did not arrive, saying so.
+
+    The server may have carried the write out: the request can reach it and
+    the answer be lost on the way back, or a proxy give up on a request the
+    server goes on to finish. Such a write is not sent again, so the caller
+    is told what to look at before sending it themselves.
+
+    :param error: What the HTTP layer raised.
+    :param what: Where the write would show if it was carried out.
+    :return: The same kind of error, its message extended; *error* itself
+        when it is not a lost answer.
+    """
+    hint = f"The server may have carried it out: {what} before sending it again."
+    if isinstance(error, MascopeConnectionError):
+        return type(error)(f"{error.message} {hint}", url=error.url)
+    if isinstance(error, ServerError) and error.status_code in (502, 503, 504):
+        return type(error)(
+            f"{error.message} {hint}",
+            status_code=error.status_code,
+            url=error.url,
+            body=error.body,
+        )
+    return error
 
 
 class PeakAssignmentsResource(BaseResource):
@@ -30,8 +127,10 @@ class PeakAssignmentsResource(BaseResource):
     A peak assignment run assigns a composition to *every* observed peak of a
     sample - database-known targets first (Stage A), then untargeted search
     (Stage B) - arbitrates a single owner per peak, and files each assignment
-    into a confidence tier. Runs are launched from the Mascope app; this
-    resource reads the persisted results.
+    into a confidence tier. A run is launched from the Mascope app, on
+    ingest, or with :meth:`assign`; this resource reads the persisted
+    results, and records a person's verdict on one of them with
+    :meth:`verify`.
 
     A person can also overrule the engine on a single row from the app's peak
     inspector - promoting a close alternative, or committing a re-search hit.
@@ -53,6 +152,9 @@ class PeakAssignmentsResource(BaseResource):
 
         # Only the confidently assigned peaks
         assigned = mascope.peak_assignments.get("sample-123", tier="assigned")
+
+        # Run the engine on the sample and read what it assigned
+        assignments = mascope.peak_assignments.assign("sample-123")
     """
 
     def _get_envelope(
@@ -455,3 +557,376 @@ class PeakAssignmentsResource(BaseResource):
         if not data:
             return None
         return data[0]
+
+    def assign(
+        self,
+        sample_id: str,
+        *,
+        config: AssignmentConfig | Mapping[str, Any] | None = None,
+        wait: bool = True,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        timeout: float | None = DEFAULT_WAIT_TIMEOUT,
+    ) -> pd.DataFrame | str | None:
+        """Run the peak assignment engine on a sample.
+
+        The server decides before it answers: it creates the run and returns
+        its id, or refuses with the reason, so a refusal is an error here and
+        never a wait that runs out. The run itself goes on in the background.
+        With ``wait=True`` this method looks at the run every
+        *poll_interval* seconds until it ends and returns its ledger, as
+        :meth:`get` with its ``run_id`` does.
+
+        The request is sent once. If its answer is lost - a timeout, a
+        dropped connection, a proxy's 502 to 504 - the run may have started
+        all the same, and sending it again would only be refused as already
+        in flight, so the error says to look at :meth:`list_runs` first.
+
+        :param sample_id: The ID of the sample.
+        :type sample_id: str
+        :param config: The run's settings; the server's defaults for any left
+            out (see :class:`AssignmentConfig` for the keys).
+        :type config: AssignmentConfig, optional
+        :param wait: Wait for the run to end and return its ledger. With
+            False, return the run's id as soon as it is launched.
+        :type wait: bool, optional
+        :param poll_interval: Seconds between two looks at the run.
+        :type poll_interval: float, optional
+        :param timeout: Seconds to wait before giving up on the wait (not on
+            the run); None waits as long as the run takes.
+        :type timeout: float, optional
+        :return: With ``wait=True``, the ledger of the finished run, one row
+            per peak, its run on ``df.attrs["run"]`` (None if it assigned no
+            peak). With ``wait=False``, the run's ``peak_assignment_run_id``.
+        :rtype: pd.DataFrame | str | None
+        :raises AssignmentInFlightError: If the sample already has a run in
+            flight; it names that run.
+        :raises SampleIneligibleError: If the sample cannot be assigned (a
+            blank, or an unverified m/z calibration); it names the reason.
+        :raises AssignmentRunError: If the run failed, with its error, or was
+            cancelled.
+        :raises AssignmentTimeoutError: If the run is still going after
+            *timeout* seconds; it carries the run's id.
+        :raises PermissionDeniedError: Without the editor role on the sample,
+            or when the server has peak assignment switched off (403).
+        :raises ValidationError: If a ``config`` value is refused.
+        :raises MascopeConnectionError: If the answer to the launch was lost.
+
+        Example::
+
+            from mascope_sdk import AssignmentInFlightError
+
+            try:
+                assignments = mascope.peak_assignments.assign(
+                    "sample-123", config={"run_untargeted": False}
+                )
+            except AssignmentInFlightError as e:
+                # None while the other launch is still creating its run
+                if e.peak_assignment_run_id is not None:
+                    assignments = mascope.peak_assignments.wait_for_run(
+                        "sample-123", e.peak_assignment_run_id
+                    )
+        """
+        body: dict[str, Any] = {}
+        if config is not None:
+            body["config"] = dict(config)
+        try:
+            data = self._write(
+                "POST",
+                f"peak-assignments/sample/{sample_id}/assign",
+                Needs("run peak assignment on", "sample", sample_id, _EDITOR),
+                data=body,
+                max_attempts=1,
+            )
+        except ConflictError as e:
+            raise AssignmentInFlightError(
+                e.message, status_code=e.status_code, url=e.url, body=e.body
+            ) from e
+        except ValidationError as e:
+            if not _is_ineligible(e):
+                raise
+            raise SampleIneligibleError(
+                e.message, status_code=e.status_code, url=e.url, body=e.body
+            ) from e
+        except (MascopeConnectionError, ServerError) as e:
+            raise _answer_lost(
+                e, f"list_runs('{sample_id}') shows the run if it started"
+            ) from e
+
+        run_id = data[0]["peak_assignment_run_id"]
+        logger.info("Launched peak assignment run '{}' on '{}'", run_id, sample_id)
+        if not wait:
+            return run_id
+        return self.wait_for_run(
+            sample_id, run_id, poll_interval=poll_interval, timeout=timeout
+        )
+
+    def wait_for_run(
+        self,
+        sample_id: str,
+        run_id: str,
+        *,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        timeout: float | None = DEFAULT_WAIT_TIMEOUT,
+    ) -> pd.DataFrame | None:
+        """Wait for a run to end, and return its ledger.
+
+        For a run :meth:`assign` launched with ``wait=False``, one whose wait
+        timed out, or one another launch has in flight. Looks at the sample's
+        runs every *poll_interval* seconds. A look the server does not answer
+        is skipped rather than raised, so the wait ends only when the run
+        does, or with the run's id when *timeout* passes.
+
+        :param sample_id: The ID of the sample.
+        :type sample_id: str
+        :param run_id: The run's ``peak_assignment_run_id``.
+        :type run_id: str
+        :raises ValueError: If *run_id* is None, as an
+            :class:`AssignmentInFlightError` carries when the server could
+            not name the run yet.
+        :param poll_interval: Seconds between two looks at the run.
+        :type poll_interval: float, optional
+        :param timeout: Seconds to wait; None waits as long as the run takes.
+        :type timeout: float, optional
+        :return: The run's ledger, as :meth:`get` with ``run_id`` returns it
+            (None if it assigned no peak).
+        :rtype: pd.DataFrame | None
+        :raises AssignmentRunError: If the run failed, with its error, was
+            cancelled, or is no longer listed.
+        :raises AssignmentTimeoutError: If the run is still going after
+            *timeout* seconds.
+        """
+        if run_id is None:
+            # Waiting on None would read as a run that vanished.
+            raise ValueError(
+                "No run to wait for: the server could not name the run in "
+                "flight yet, as another launch was creating it. "
+                f"list_runs('{sample_id}') shows it once it exists."
+            )
+        deadline = None if timeout is None else time.monotonic() + timeout
+        status: str | None = None
+        while True:
+            try:
+                runs = self.list_runs(sample_id)
+            except (MascopeConnectionError, ServerError) as e:
+                # INFO: the HTTP layer has already retried; the run goes on
+                logger.info("Run '{}' not looked at this time: {}", run_id, e)
+            else:
+                match = (
+                    None
+                    if runs is None
+                    else runs[runs["peak_assignment_run_id"] == run_id]
+                )
+                if match is None or match.empty:
+                    raise AssignmentRunError(sample_id, run_id, None)
+                run = match.iloc[0]
+                status = run["status"]
+                if status == "completed":
+                    return self.get(sample_id, run_id=run_id)
+                if status in TERMINAL_STATUSES:
+                    error = run.get("error")
+                    raise AssignmentRunError(
+                        sample_id,
+                        run_id,
+                        status,
+                        error if isinstance(error, str) and error else None,
+                    )
+            if deadline is None:
+                pause = poll_interval
+            else:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise AssignmentTimeoutError(sample_id, run_id, status, timeout)
+                pause = min(poll_interval, left)
+            time.sleep(pause)
+
+    def verify(
+        self,
+        sample_id: str,
+        peak_assignment_id: str,
+        verdict: str,
+        *,
+        evidence_level: str | None = None,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        """Record a person's verdict on one assignment.
+
+        Verdicts are appended, never edited: a new verdict on the same peak,
+        formula and adduct replaces the one before it as the current answer
+        (stamping its ``superseded_utc``), and both are kept. The server
+        snapshots the assignment's ``fit_score``, ``evidence`` and
+        ``p_correct`` beside the verdict, which makes ``confirmed`` and
+        ``rejected`` labels the instrument's confidence calibration is
+        refitted on - except on an imported run, whose verdicts are recorded
+        but kept out of that refit, since its scores are an external
+        engine's.
+
+        Sent once: a verdict sent twice would count twice in that refit. If
+        the answer is lost, look at :meth:`list_verifications` before sending
+        it again.
+
+        :param sample_id: The ID of the sample.
+        :type sample_id: str
+        :param peak_assignment_id: The assignment (``peak_assignment_id`` of
+            :meth:`get`).
+        :type peak_assignment_id: str
+        :param verdict: ``confirmed`` | ``rejected`` | ``unsure``.
+        :type verdict: str
+        :param evidence_level: What the verdict rests on:
+            ``reference_standard`` (an authentic standard) | ``msms`` (MS/MS
+            or diagnostic fragments) | ``orthogonal`` (retention time and
+            the like) | ``pattern`` (isotope and adduct corroboration) |
+            ``visual`` (a look alone). Required to confirm.
+        :type evidence_level: str, optional
+        :param note: A free-text note.
+        :type note: str, optional
+        :return: The verification as recorded, with the scores it snapshot.
+        :rtype: dict[str, Any]
+        :raises ValueError: If ``confirmed`` comes without an
+            ``evidence_level``; nothing is sent.
+        :raises NotFoundError: If the sample has no such assignment.
+        :raises ValidationError: If the verdict or the evidence level is not
+            one the server accepts.
+        :raises PermissionDeniedError: Without the editor role on the sample,
+            or when the server has peak assignment switched off (403).
+        :raises MascopeConnectionError: If the answer was lost.
+
+        Example::
+
+            row = mascope.peak_assignments.get("sample-123").iloc[0]
+            mascope.peak_assignments.verify(
+                "sample-123",
+                row["peak_assignment_id"],
+                "confirmed",
+                evidence_level="reference_standard",
+            )
+        """
+        if verdict == "confirmed" and evidence_level is None:
+            # The server refuses it too; said here, it costs no request.
+            raise ValueError(
+                "A 'confirmed' verdict needs an evidence_level: one of "
+                "reference_standard, msms, orthogonal, pattern or visual."
+            )
+        body: dict[str, Any] = {
+            "peak_assignment_id": peak_assignment_id,
+            "verdict": verdict,
+        }
+        if evidence_level is not None:
+            body["evidence_level"] = evidence_level
+        if note is not None:
+            body["note"] = note
+        try:
+            data = self._write(
+                "POST",
+                f"peak-assignments/sample/{sample_id}/verify",
+                Needs("verify an assignment of", "sample", sample_id, _EDITOR),
+                data=body,
+                max_attempts=1,
+            )
+        except (MascopeConnectionError, ServerError) as e:
+            raise _answer_lost(
+                e,
+                f"list_verifications('{sample_id}') shows the verdict if it "
+                "was recorded",
+            ) from e
+        return data[0]
+
+    def list_verifications(self, sample_id: str) -> pd.DataFrame | None:
+        """List the verdicts recorded on a sample's assignments, newest first.
+
+        Every verdict ever recorded, those a later one replaced included: the
+        current verdict on a peak, formula and adduct is the one whose
+        ``superseded_utc`` is null.
+
+        :param sample_id: The ID of the sample.
+        :type sample_id: str
+        :return: A DataFrame with one row per verdict, containing:
+
+                 - ``assignment_verification_id``
+                 - ``sample_item_id``, ``sample_peak_id``
+                 - ``peak_assignment_id``, ``peak_assignment_run_id``: the
+                   assignment judged; null once its run has been pruned
+                 - ``assigned_formula``, ``ionization_mechanism_id``: what
+                   was judged on the peak
+                 - ``verdict``, ``evidence_level``, ``note``
+                 - ``fit_score``, ``evidence``, ``p_correct``: the
+                   assignment's scores when it was judged
+                 - ``verified_by``: the user's id
+                 - ``verified_utc``, ``superseded_utc`` (UTC)
+
+                 Returns None if the sample has no verdicts.
+        :rtype: pd.DataFrame | None
+        :raises NotFoundError: If the sample is not found.
+
+        Example::
+
+            verdicts = mascope.peak_assignments.list_verifications("sample-123")
+            current = verdicts[verdicts["superseded_utc"].isna()]
+        """
+        data = self._get(f"peak-assignments/sample/{sample_id}/verifications")
+        if not data:
+            return None
+        return _coerce_utc_columns(pd.DataFrame(data))
+
+    def fit_aggregate(
+        self, sample_id: str, formula: str, ionization_mechanism_id: str
+    ) -> dict[str, Any]:
+        """Score a composition against a sample: its isotope table.
+
+        Any neutral formula and ionization mechanism, whether a run assigned
+        it or not, scored as the targeted matching scores a compound
+        (:meth:`~mascope_sdk.resources.matching.MatchingResource.match_compound`).
+        What it is for: checking an untargeted assignment, which has no
+        target ion of its own, line by line. Nothing is saved.
+
+        :param sample_id: The ID of the sample.
+        :type sample_id: str
+        :param formula: The neutral formula, e.g. ``"C6H12O6"`` (an
+            ``assigned_formula`` of :meth:`get`).
+        :type formula: str
+        :param ionization_mechanism_id: The mechanism that makes its ion (an
+            ``ionization_mechanism_id`` of :meth:`get`, or of
+            ``mascope.ionization.list()``).
+        :type ionization_mechanism_id: str
+        :return: ``match_ions`` (the ion: its formula, mechanism and
+            ``match`` with the ``match_score``), ``match_isotopes`` (one
+            record per isotope line in m/z order: its formula, ``mz``,
+            ``relative_abundance`` and the peak it matched under ``match``,
+            with ``match_mz_error`` and ``match_abundance_error``) and
+            ``matches`` (how many of each). Both lists are empty when no line
+            matched.
+        :rtype: dict[str, Any]
+        :raises NotFoundError: If the sample or the mechanism is not found.
+        :raises PermissionDeniedError: Without the guest role on the sample.
+
+        Example::
+
+            row = mascope.peak_assignments.get(
+                "sample-123", source="untargeted"
+            ).iloc[0]
+            fit = mascope.peak_assignments.fit_aggregate(
+                "sample-123",
+                row["assigned_formula"],
+                row["ionization_mechanism_id"],
+            )
+            pd.json_normalize(fit["match_isotopes"])
+        """
+        return self._write(
+            "POST",
+            f"peak-assignments/sample/{sample_id}/fit/aggregate",
+            Needs("score a composition on", "sample", sample_id, "guest on the sample"),
+            data={
+                "assigned_formula": formula,
+                "ionization_mechanism_id": ionization_mechanism_id,
+            },
+        )
+
+
+def _is_ineligible(error: MascopeAPIError) -> bool:
+    """Whether a 422 is the server refusing the sample, not the request.
+
+    By the code; a server from before the code says it by naming a
+    ``reason``, which a request it could not read never carries.
+    """
+    if error.code is not None:
+        return error.code == SAMPLE_INELIGIBLE_CODE
+    return "reason" in error.detail

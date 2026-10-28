@@ -16,6 +16,7 @@ from requests.exceptions import RequestException, Timeout
 
 from .exceptions import (
     AuthenticationError,
+    ConflictError,
     MascopeAPIError,
     MascopeConnectionError,
     MascopeTimeoutError,
@@ -77,13 +78,27 @@ def _extract_error_message(response: requests.Response) -> str:
         return response.text[:200] if response.text else "Unknown error"
 
 
+def _error_body(response: requests.Response) -> Any:
+    """The parsed JSON body of an error response, or None if it is not JSON."""
+    try:
+        return response.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
 def _raise_for_status(response: requests.Response, url: str) -> None:
-    """Raise appropriate exception based on HTTP status code."""
+    """Raise appropriate exception based on HTTP status code.
+
+    Every exception keeps the parsed body (``body``, and its ``detail`` and
+    ``code``), which is where the server puts what a client reacts to: the
+    message alone is written for a person.
+    """
     if response.ok:
         return
 
     status_code = response.status_code
     message = _extract_error_message(response)
+    body = _error_body(response)
 
     if status_code == 403:
         # The token was accepted; its user lacks the role. Checking the token
@@ -92,24 +107,38 @@ def _raise_for_status(response: requests.Response, url: str) -> None:
             message=message,
             status_code=status_code,
             url=url,
+            body=body,
         )
     elif status_code == 401:
         raise AuthenticationError(
             message=f"{message}. Please check your API token.",
             status_code=status_code,
             url=url,
+            body=body,
         )
     elif status_code == 404:
         raise NotFoundError(
             message=message,
             status_code=status_code,
             url=url,
+            body=body,
         )
     elif status_code == 422:
         raise ValidationError(
             message=message,
             status_code=status_code,
             url=url,
+            body=body,
+        )
+    elif status_code == 409:
+        # Transient for the TUS chunk loop, which resumes from the offset the
+        # server reports, and final for a write the server refuses over the
+        # state it is in: either way the caller reads why from the detail.
+        raise ConflictError(
+            message=message,
+            status_code=status_code,
+            url=url,
+            body=body,
         )
     elif (
         status_code is not None
@@ -125,18 +154,21 @@ def _raise_for_status(response: requests.Response, url: str) -> None:
             message=message,
             status_code=status_code,
             url=url,
+            body=body,
         )
     elif status_code is not None and status_code >= 500:
         raise ServerError(
             message=message,
             status_code=status_code,
             url=url,
+            body=body,
         )
     else:
         raise MascopeAPIError(
             message=message,
             status_code=status_code,
             url=url,
+            body=body,
         )
 
 
@@ -297,8 +329,16 @@ def http_post(
     timeout: int | tuple[int, int] = 30,
     service_name: str = "mascope_sdk",
     verify_ssl: bool = False,
+    max_attempts: int | None = None,
 ) -> requests.Response:
     """Send a POST request to the specified API endpoint.
+
+    A POST is sent again on a timeout, a lost connection or a 502 to 504, as
+    a read is. That is safe only for a POST the server can take twice: a read
+    sent as a POST, or a write that sending again cannot repeat. A write the
+    server would carry out twice - a verdict appended, a run launched - is
+    sent with ``max_attempts=1``, so a lost answer raises instead of doing it
+    again.
 
     :param url: The base URL of the server.
     :type url: str
@@ -314,11 +354,16 @@ def http_post(
     :type service_name: str, optional
     :param verify_ssl: Whether to verify SSL certificates.
     :type verify_ssl: bool, optional
+    :param max_attempts: How many times to send it on a transient failure;
+        :data:`RETRY_MAX_ATTEMPTS` when None. 1 for a write that must not be
+        carried out twice.
+    :type max_attempts: int, optional
     :return: The response object.
     :rtype: requests.Response
     :raises AuthenticationError: If authentication fails (401/403).
     :raises NotFoundError: If resource is not found (404).
     :raises ValidationError: If request validation fails (422).
+    :raises ConflictError: If the server refuses it over its state (409).
     :raises ServerError: If server error occurs (5xx).
     :raises MascopeAPIError: For other HTTP errors.
     :raises MascopeConnectionError: If unable to connect.
@@ -340,7 +385,7 @@ def http_post(
             verify=verify_ssl,
             timeout=timeout,
         ),
-        RETRY_MAX_ATTEMPTS,
+        max_attempts or RETRY_MAX_ATTEMPTS,
     )
 
 
@@ -354,11 +399,12 @@ def http_request(
     timeout: int | tuple[int, int] = 30,
     service_name: str = "mascope_sdk",
     verify_ssl: bool = False,
+    max_attempts: int | None = None,
 ) -> requests.Response:
     """Send a request of any method, for the writes that are not a POST.
 
     A PATCH or a DELETE takes the same headers, the same status mapping and
-    the same retries as :func:`http_post`.
+    the same retries as :func:`http_post`, and the same ``max_attempts``.
 
     :param method: The HTTP method, such as ``"PATCH"`` or ``"DELETE"``.
     :type method: str
@@ -378,6 +424,9 @@ def http_request(
     :type service_name: str, optional
     :param verify_ssl: Whether to verify SSL certificates.
     :type verify_ssl: bool, optional
+    :param max_attempts: How many times to send it on a transient failure;
+        :data:`RETRY_MAX_ATTEMPTS` when None.
+    :type max_attempts: int, optional
     :return: The response object.
     :rtype: requests.Response
     :raises PermissionDeniedError: If the token's user lacks the role (403).
@@ -405,7 +454,7 @@ def http_request(
             verify=verify_ssl,
             timeout=timeout,
         ),
-        RETRY_MAX_ATTEMPTS,
+        max_attempts or RETRY_MAX_ATTEMPTS,
     )
 
 

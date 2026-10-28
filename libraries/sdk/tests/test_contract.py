@@ -1514,6 +1514,154 @@ class TestWriteContract:
         assert "global editor role" in refused.value.required_role
 
 
+@pytest.fixture(scope="module")
+def launched_run(scratch, scratch_matched):
+    """A run the SDK launched on a sample of the scratch copy, read back.
+
+    ``(sample ID, run ID, the refusal of a second launch sent at once, the
+    finished run's ledger)``. Launching needs the server's peak assignment
+    switch (``MASCOPE_PEAK_ASSIGNMENT=1``, or ``peak_assignment = true``
+    under ``[meta]``): a stack without it refuses with a 403, and the tests
+    using this skip. Only Stage A runs, which is what keeps the run short.
+    """
+    from types import SimpleNamespace
+
+    peak_assignments = scratch.client.peak_assignments
+    _skip_unless_attr(peak_assignments, "assign")
+    from mascope_sdk import (
+        AssignmentInFlightError,
+        PermissionDeniedError,
+        SampleIneligibleError,
+    )
+
+    batch_id, _ = scratch_matched
+    samples = scratch.client.samples._list_by_id(batch_id)
+    reasons = []
+    for sample_id in samples["sample_item_id"]:
+        try:
+            run_id = peak_assignments.assign(
+                sample_id, config={"run_untargeted": False}, wait=False
+            )
+        except PermissionDeniedError as e:
+            pytest.skip(f"peak assignment is switched off on the stack: {e.message}")
+        except SampleIneligibleError as e:
+            reasons.append(e.reason)
+            continue
+        break
+    else:
+        pytest.skip(f"no sample of the demo batch can be assigned: {reasons}")
+
+    # At once, while the first is still pending: the server names it.
+    try:
+        second = peak_assignments.assign(sample_id, wait=False)
+    except AssignmentInFlightError as e:
+        refusal = e
+    else:
+        refusal = None  # the first ended before the second arrived
+        peak_assignments.wait_for_run(sample_id, second, poll_interval=1)
+
+    ledger = peak_assignments.wait_for_run(
+        sample_id, run_id, poll_interval=1, timeout=600
+    )
+    return SimpleNamespace(
+        sample_id=sample_id, run_id=run_id, refusal=refusal, ledger=ledger
+    )
+
+
+@requires_stack
+class TestPeakAssignmentWriteContract:
+    """The peak-assignment writes on the live stack, on the scratch copy.
+
+    Scoring a composition needs nothing switched on; launching a run and
+    recording a verdict skip on a stack whose peak assignment is off (see
+    ``launched_run``).
+    """
+
+    def test_fit_aggregate_scores_a_matched_compound(self, mascope, matched_peaks):
+        _skip_unless_attr(mascope.peak_assignments, "fit_aggregate")
+        sample_id, matched = matched_peaks
+        peak = matched.loc[matched["height"].idxmax()]
+        # get_peaks resolves mechanism ids to names, so map the name back.
+        mechanisms = mascope.ionization.list()
+        name_to_id = dict(
+            zip(
+                mechanisms["ionization_mechanism"],
+                mechanisms["ionization_mechanism_id"],
+            )
+        )
+
+        fit = mascope.peak_assignments.fit_aggregate(
+            sample_id,
+            peak["target_compound_formula"],
+            name_to_id[peak["ionization_mechanism"]],
+        )
+
+        assert set(fit) == {"matches", "match_ions", "match_isotopes"}
+        assert fit["match_isotopes"], "a matched compound's lines match again"
+        (ion,) = fit["match_ions"]
+        assert {"target_ion_formula", "ionization_mechanism", "match"} <= set(ion)
+        line = fit["match_isotopes"][0]
+        assert {"target_isotope_formula", "mz", "relative_abundance"} <= set(line)
+        assert {"sample_peak_mz", "match_mz_error", "match_score"} <= set(line["match"])
+
+    def test_assign_launches_a_run_and_reads_it_back(self, launched_run):
+        ledger = launched_run.ledger
+
+        assert ledger is not None and not ledger.empty
+        assert set(ledger["peak_assignment_run_id"]) == {launched_run.run_id}
+        run = ledger.attrs["run"]
+        assert run["status"] == "completed"
+        assert run["engine"] == "mascope"
+        assert run["config"]["run_untargeted"] is False
+
+    def test_a_second_launch_names_the_run_in_flight(self, launched_run):
+        if launched_run.refusal is None:
+            pytest.skip("the first run ended before the second launch arrived")
+
+        assert launched_run.refusal.status_code == 409
+        assert launched_run.refusal.code == "assignment_in_flight"
+        assert launched_run.refusal.peak_assignment_run_id == launched_run.run_id
+
+    def test_verify_records_a_verdict_listed_back(self, scratch, launched_run):
+        import pandas as pd
+
+        peak_assignments = scratch.client.peak_assignments
+        sample_id = launched_run.sample_id
+        assigned = launched_run.ledger[launched_run.ledger["assigned_formula"].notna()]
+        if assigned.empty:
+            pytest.skip("the run assigned no formula to verify")
+        row = assigned.iloc[0]
+
+        first = peak_assignments.verify(
+            sample_id,
+            row["peak_assignment_id"],
+            "confirmed",
+            evidence_level="visual",
+            note="contract test",
+        )
+        second = peak_assignments.verify(sample_id, row["peak_assignment_id"], "unsure")
+
+        assert first["verdict"] == "confirmed"
+        assert first["evidence_level"] == "visual"
+        assert first["peak_assignment_id"] == row["peak_assignment_id"]
+        assert first["assigned_formula"] == row["assigned_formula"]
+        verdicts = peak_assignments.list_verifications(sample_id)
+        by_id = verdicts.set_index("assignment_verification_id")
+        # Both kept; the later one is current and stamped the earlier.
+        assert pd.isna(
+            by_id.loc[second["assignment_verification_id"], "superseded_utc"]
+        )
+        assert pd.notna(
+            by_id.loc[first["assignment_verification_id"], "superseded_utc"]
+        )
+        assert {
+            "peak_assignment_run_id",
+            "sample_peak_id",
+            "fit_score",
+            "verified_utc",
+        } <= set(verdicts.columns)
+
+
 def _signed_in(email: str, password: str):
     """A session signed in as *email*, for what a token may not do."""
     import requests
