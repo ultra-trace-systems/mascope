@@ -321,6 +321,54 @@ async def test_a_stitched_sample_names_each_peaks_segment(stores):
 
 
 @pytest.mark.asyncio
+async def test_a_per_stream_store_not_stitched_names_no_segment(stores):
+    # A store that labels each peak's stream, of a polarity the composite
+    # does not stitch: the per-sample read sends no segment, nor does the table
+    labelled = store("file_a").assign(stream=("mz", np.array([0, 1, 0, 1, 1])))
+
+    with patch.object(
+        samples_peaks,
+        "load_peak_data",
+        side_effect=lambda f, drop_bad_peaks=True, composite=True: labelled.isel(
+            mz=[0, 4]
+        ),
+    ):
+        rows, meta = await table(SAMPLES[:1])
+        expected = await per_sample_read(SAMPLES[0])
+
+    assert [row["segment"] for row in rows] == [None, None]
+    assert expected["segment"] is None
+    assert meta["segments"] == {"si_1": None}
+
+
+@pytest.mark.asyncio
+async def test_only_the_samples_asked_for_are_read(stores):
+    with patch.object(
+        samples_peaks, "load_peak_data", side_effect=load_peak_data
+    ) as opened:
+        rows, meta = await table(sample_item_ids=["si_3", "si_1"])
+
+    # The listing's order, not the order asked in; si_2's store never opened
+    assert [s["sample_item_id"] for s in meta["samples"]] == ["si_1", "si_3"]
+    assert {row["sample_item_id"] for row in rows} == {"si_1", "si_3"}
+    assert sorted(call.args[0] for call in opened.call_args_list) == [
+        "file_a",
+        "file_b",
+    ]
+    assert meta["failures"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_id_that_is_no_sample_of_the_batch_is_a_failure(stores):
+    rows, meta = await table(sample_item_ids=["si_1", "si_other"])
+
+    assert {row["sample_item_id"] for row in rows} == {"si_1"}
+    assert [(f["sample_item_id"], f["status_code"]) for f in meta["failures"]] == [
+        ("si_other", 404)
+    ]
+
+
+@pytest.mark.asyncio
 async def test_an_empty_batch_is_an_empty_table_with_the_columns(stores):
     rows, meta = await table([])
 
@@ -338,6 +386,7 @@ async def test_the_route_serves_the_table_as_parquet(stores):
     ):
         response = await batch_peaks_routes.get_batch_peak_lists_route(
             sample_batch_id="sb_1",
+            sample_item_id=None,
             matches=False,
             satellites=False,
             average=True,
@@ -361,10 +410,17 @@ async def test_the_route_reads_the_table_as_asked():
     ):
         await batch_peaks_routes.get_batch_peak_lists_route(
             sample_batch_id="sb_1",
+            sample_item_id=["si_2"],
             matches=True,
             satellites=True,
             average=False,
             user=USER,
         )
 
-    build.assert_awaited_once_with("sb_1", matches=True, satellites=True, average=False)
+    build.assert_awaited_once_with(
+        "sb_1",
+        sample_item_ids=["si_2"],
+        matches=True,
+        satellites=True,
+        average=False,
+    )

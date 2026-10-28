@@ -183,6 +183,7 @@ def _one_row_per_match(
 async def build_batch_peak_table(
     sample_batch_id: str,
     *,
+    sample_item_ids: list[str] | None = None,
     matches: bool = False,
     satellites: bool = False,
     average: bool = True,
@@ -190,6 +191,10 @@ async def build_batch_peak_table(
     """Every peak of every sample of a batch, as one Parquet file.
 
     :param sample_batch_id: The batch.
+    :param sample_item_ids: Read only these samples of the batch, in the
+        listing's order; every sample when None. An id that is no sample of
+        the batch is named among the failures, as a per-sample read of it
+        would have answered 404.
     :param matches: Add the match columns, one row per match of a peak.
     :param satellites: Keep the peaks detection flagged satellites, which
         the per-sample read leaves out; ``is_satellite`` says which they are.
@@ -198,6 +203,14 @@ async def build_batch_peak_table(
     :return: The file's bytes.
     """
     samples = await _batch_samples(sample_batch_id)
+    missing: list[str] = []
+    if sample_item_ids is not None:
+        # Only the stores asked for are opened: a client after a few samples
+        # of a large batch does not pay for the rest
+        asked = dict.fromkeys(sample_item_ids)
+        samples = [s for s in samples if s.sample_item_id in asked]
+        listed = {s.sample_item_id for s in samples}
+        missing = [i for i in asked if i not in listed]
     gate = asyncio.Semaphore(_CONCURRENT_READS)
 
     async def read(sample: Sample):
@@ -217,7 +230,15 @@ async def build_batch_peak_table(
 
     tables: list[pa.Table] = []
     read_samples: list[dict] = []
-    failures: list[dict] = []
+    failures: list[dict] = [
+        {
+            "sample_item_id": sample_item_id,
+            "sample_item_name": None,
+            "status_code": 404,
+            "error": f"Sample '{sample_item_id}' is no sample of this batch",
+        }
+        for sample_item_id in missing
+    ]
     segments: dict[str, list[dict] | None] = {}
     for sample, answer in zip(samples, answers):
         where = {
