@@ -90,9 +90,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
     FRAGMENTS_KEY,
     LIST_PRIOR_WEIGHT,
     MASS_CALIBRATION_KEY,
-    MU_SOURCE_FITTED,
-    MU_SOURCE_NONE,
-    MU_SOURCE_REAGENT,
     PARTNER_GATE_KEY,
     PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
@@ -100,8 +97,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
     SOURCE_DATABASE,
     STAGE_A_FIT_MIN_IONS,
     TIERING_KEY,
-    ReagentOffset,
-    SampleMassAccuracy,
     apply_partner_gates,
     build_unassigned_assignments,
     calibration_meta,
@@ -111,7 +106,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
     list_readings,
     pattern_scoring_for,
     pattern_scoring_snapshot,
-    reagent_line_offset,
     record_displaced_list_readings,
     record_mirror_same_ion_readings,
     sample_mass_accuracy,
@@ -200,6 +194,14 @@ from mascope_tools.composition.custom_elements import (
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
 from mascope_tools.composition.known_window import KnownWindow
+from mascope_tools.composition.mass_accuracy import (
+    MU_SOURCE_FITTED,
+    MU_SOURCE_NONE,
+    MU_SOURCE_REAGENT,
+    ReagentOffset,
+    SampleMassAccuracy,
+    reagent_line_offset,
+)
 from mascope_tools.composition.mechanism_notation import (
     MechanismNotationError,
     mechanism_spellings,
@@ -3234,10 +3236,7 @@ async def _assign_sample(
         # that branch ran: a run of Stage A alone still has committed rows whose
         # peaks a neighbour's envelope may already predict.
         scoring = pattern_scoring_for(
-            match_params,
-            mass_accuracy,
-            resolved_profile.fallback_sigma_ppm,
-            resolution,
+            match_params, mass_accuracy, instrument_type, resolution
         )
         if config.run_untargeted:
             eligible_df = peaks_df[

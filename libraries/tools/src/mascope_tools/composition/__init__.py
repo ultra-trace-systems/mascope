@@ -4,6 +4,8 @@ from .mass_accuracy import (
     MASS_ACCURACY_MIN_ANCHORS,
     MASS_OFFSET_MIN_ANCHORS,
     PRED_SIGMA_PPM,
+    ReagentOffset,
+    SampleMassAccuracy,
     fit_mass_accuracy,
     fit_sample_mass_accuracy,
     mass_accuracy_anchors,
@@ -17,6 +19,7 @@ from .mechanism_notation import (
 )
 from .models import CompositionSearchConfig, HeuristicFilterConfig, PatternScoring
 from .profiles import resolve_fallback_sigma_ppm, resolve_match_tolerance_ppm
+from .scoring import pattern_scoring_for_sample
 
 
 # `formula_plausibility` is exported because it is not an internal detail of the
@@ -53,6 +56,12 @@ from .profiles import resolve_fallback_sigma_ppm, resolve_match_tolerance_ppm
 # implementation of the fit would make every difference between the two
 # engines partly a difference in how each measured the ruler.
 #
+# `pattern_scoring_for_sample` goes one step further and fills the whole
+# object in, from what Stage A measured (`SampleMassAccuracy`, with the reagent
+# lines' `ReagentOffset` beside it), the instrument class and the match
+# parameters, in the order Mascope's engine applies them; the engine calls it,
+# so an outside engine that calls it scores the sample where Mascope did.
+#
 # The mechanism notation readers are exported for the same kind of caller: a
 # mechanism is the one string an engine publishing into Mascope and Mascope
 # itself must spell alike. Mascope stores and shows the standard adduct notation
@@ -71,10 +80,13 @@ __all__ = [
     "MASS_OFFSET_MIN_ANCHORS",
     "mechanism_key",
     "parse_mechanism",
+    "pattern_scoring_for_sample",
     "PatternScoring",
     "PRED_SIGMA_PPM",
+    "ReagentOffset",
     "resolve_fallback_sigma_ppm",
     "resolve_match_tolerance_ppm",
+    "SampleMassAccuracy",
     "scoring_sigma_ppm",
     "standard_notation",
 ]
