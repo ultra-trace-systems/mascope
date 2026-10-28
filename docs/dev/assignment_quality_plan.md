@@ -100,6 +100,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.8 - an identification level in Mascope's own vocabulary | - |  | planned 2026-10-14 (decision 30 taken); after 3.7 |
 | 5.9 - the width a run scored at, served on the run and sample records | - |  | planned 2026-10-22, from the readiness check (the digest's one unbinned ask); MAS-410 |
 | 5.10 - the instrument's side-lobe flag: Exception centroids out of the averaged profile, the averaged centroids and peak detection | - |  | planned 2026-10-23, from the centroid-flag census after MAS-6; measured beside 5.4; MAS-443 |
+| 5.12 - the per-sample scoring derivation as one library function, and a bulk candidate scorer | #2767 | | built: `pattern_scoring_for_sample` and `score_candidates` in `mascope_tools`, the engine and the finder call them; no score moves beyond rounding; MAS-569 |
 
 ## Purpose
 
@@ -1263,6 +1264,50 @@ under its milestone 5.
 - **Size.** L. Beside 5.4: the measurement reads what both take, and the
   two land apart by footprint (MAS-443).
 
+### 5.12 The per-sample scoring derivation as one library function, and a bulk candidate scorer
+
+- **What.** The `PatternScoring` a sample is judged at is derived in
+  `mascope_tools.composition.scoring.pattern_scoring_for_sample(mass_accuracy,
+  instrument_type, match_params, resolution)`: the width Stage A fitted or
+  the instrument class's, both widened by `PRED_SIGMA_PPM`; the offset Stage
+  A fitted, else the reagent lines' where they are beyond that width, else
+  none; the match window and the envelope floor of the match parameters;
+  the file's resolving power. `SampleMassAccuracy` and `ReagentOffset`, with
+  the stand-in offset rule, moved into `mass_accuracy`.
+  `engine.pattern_scoring_for` calls it, and the run and the batch search
+  hand it the sample's instrument class instead of a resolved width.
+  Candidates are scored on arrays: `heuristic_filter.score_patterns_v2` is
+  `score_pattern_v2` over many envelopes laid end to end;
+  `score_ion_envelopes` predicts each distinct envelope once, matches every
+  line with one `searchsorted` and scores them together, and the finder's
+  `match_isotopic_pattern` runs it; `scoring.score_candidates` is the public
+  form for any candidate list over any peak list. Stage A's
+  `score_ions_by_fit`, and through it the seeded re-score, scores every ion
+  of its frame with `ion_scores_v2`, the many-ion form of `ion_score_v2`.
+  The one-at-a-time rule stays as `score_ion_envelope`, the statement the
+  bulk path is tested against.
+- **Why.** The reference re-derived the scoring object from the SDK peak
+  frame in the same order, and two copies of one rule drift: the resolution
+  term, the stand-in offset and the TOF handling each landed on one side
+  first. And both engines scored candidates one at a time, about a
+  millisecond each over some 10^5 candidates of a file's first pass.
+- **As built.** No score moves beyond the rounding of a sum. On the demo
+  dataset's candidate pools of `tooling/score_eval` (90,490 candidates, 161
+  files) the bulk scores equal develop's finder one candidate at a time
+  within 3e-16, with the same top-1 (0.7795) and AUC (0.8842), in a third of
+  the time. The engine on seven demo samples, develop against this step,
+  records the same scoring snapshot and the same 8,546 ledger rows, fit
+  scores within 2e-16. A tie
+  at an ion's top abundance, where `ion_score_v2`'s sort picks the anchor
+  with an unstable quicksort, is settled by that same sort. The reference is
+  told of the two functions at its next boundary review (5.1).
+- **Where.** `libraries/tools/src/mascope_tools/composition/` (`scoring.py`,
+  `mass_accuracy.py`, `heuristic_filter.py`); the backend's `engine.py`,
+  `service.py`, `batch_untargeted.py`, `seeded_scoring.py` and
+  `match_score_v2.py`.
+- **Size.** M (MAS-569). Lands before or with 5.9, which serves the object
+  this computes.
+
 ### Riders written into planned steps
 
 - **3.4e.** An artifact confirms no line and refutes none: a window only
@@ -1324,6 +1369,8 @@ under its milestone 5.
   already keys reagent lines on the ion; the envelope claim keys on the row.
 - The electron-attachment mechanism: shipped since 3.3e.
 - Peak areas in the peaks endpoint and the batch time series: served.
+- The per-sample scoring derivation in the library, and candidates scored
+  in bulk: 5.12.
 
 ### Not taken
 

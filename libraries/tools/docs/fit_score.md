@@ -42,7 +42,9 @@ unconditionally, not via the legacy `MASCOPE_MATCH_SCORE_VERSION` switch:
 - **Stage A** (`engine.score_ions_by_fit`): the per-ion fit score (`ion_score_v2` →
   `score_pattern_v2`) over each ion's full isotopologue envelope with the sample's fitted
   mass accuracy, replacing the targeted matcher's per-isotopologue
-  `abundance_term · mz_term`. Run after `apply_match_params`, so tolerance / intensity-floor
+  `abundance_term · mz_term`. Every ion of the frame is scored in one pass
+  (`ion_scores_v2` → `score_patterns_v2`, the many-envelope form, equal to the per-ion
+  call to the rounding of a sum). Run after `apply_match_params`, so tolerance / intensity-floor
   gating carries into the fit. It scores with **real per-peak SNR** because it computes the
   isotopologue rows itself; the paths that *read* them back from the database have no SNR
   and score in the no-SNR mode of §3.3a (see §6).
