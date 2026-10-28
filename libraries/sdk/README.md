@@ -680,6 +680,54 @@ raises `MascopeConnectionError`, `MascopeTimeoutError` or a `ServerError`
 (502 to 504) that says the server may have done it: look at `list_runs` or
 `list_verifications` before sending it again.
 
+### Verdicts of a batch or dataset
+
+The verification verdicts recorded in the app are the labelled record of what
+an assignment got right. `verifications_for_batch` and
+`verifications_for_dataset` read them for every sample of a batch or dataset
+in one request, one row per judged peak, as each sample's assignment ledger
+shows them:
+
+```python
+verdicts = mascope.peak_assignments.verifications_for_batch(batch_id)
+confirmed = mascope.peak_assignments.verifications_for_dataset(
+    dataset_id, verdict="confirmed", evidence_level="msms"
+)
+
+# Join to a run's ledger on the peak
+ledger = mascope.peak_assignments.get(sample_id)
+judged = ledger.merge(
+    verdicts[verdicts["sample_item_id"] == sample_id],
+    on="sample_peak_id",
+    suffixes=("", "_verdict"),
+)
+```
+
+A row is either the sample's own verdict or a batch-level verdict
+(`batch_peaks.verdicts`) that reaches it: the sample's peak folded into the
+judged batch peak and claims the formula and mechanism judged, and the sample
+has no current verdict of its own on that claim. The second kind has
+`borrowed` true. The sample's own verdict wins before the filters apply.
+Filters: `verdict`, `evidence_level`, `since` (recorded at or after; a time
+without a zone is UTC) and `include_superseded` (also the sample's own
+verdicts a later one replaced; batch-level verdicts are listed live only).
+
+| Column | Meaning |
+| --- | --- |
+| `sample_item_id`, `sample_item_name`, `sample_batch_id`, `filename`, `datetime`, `datetime_utc` | The sample |
+| `sample_peak_id`, `sample_peak_mz` | The judged peak |
+| `assigned_formula`, `ionization_mechanism_id` | The claim judged |
+| `verdict` | `confirmed`, `rejected` or `unsure` |
+| `evidence_level` | `reference_standard`, `msms`, `orthogonal`, `pattern` or `visual` |
+| `fit_score`, `evidence`, `p_correct` | The score snapshot taken when the sample's own verdict was recorded; null on a borrowed one |
+| `note`, `context`, `verified_by`, `verified_utc`, `superseded_utc` | The record |
+| `borrowed` | A batch-level verdict reaching the sample |
+| `assignment_verification_id`, `peak_assignment_id`, `peak_assignment_run_id` | On the sample's own verdict |
+| `batch_peak_verification_id`, `batch_peak_id`, `stale` | On a borrowed one; `stale` when the batch peak's consensus has since left the claim judged |
+
+The batch data spreadsheet carries the same table as its *Verifications*
+sheet.
+
 For cross-sample analysis use the [`load_assignments`](#load_assignments-peak-assignments-across-batches)
 loader; for a guided walk-through see tutorial notebook `10_peak_assignment.ipynb`.
 
@@ -952,6 +1000,8 @@ The compound list is shared by every workspace, so `add`, `update` and `remove` 
 | `verify(sample_id, peak_assignment_id, verdict, evidence_level=, note=)` | Record a verdict on one assignment | `dict` |
 | `list_verifications(sample_id)` | Every verdict on a sample, newest first | `pd.DataFrame│None` |
 | `fit_aggregate(sample_id, formula, ionization_mechanism_id)` | Score a composition against a sample: its isotope table | `dict` |
+| `verifications_for_batch(batch_id, verdict=, evidence_level=, since=, include_superseded=)` | The current verdicts over every sample of a batch, one row per judged peak | `pd.DataFrame│None` |
+| `verifications_for_dataset(dataset_id, verdict=, evidence_level=, since=, include_superseded=)` | The same over every sample of a dataset, in one read | `pd.DataFrame│None` |
 
 `get` reads the latest completed run unless `run_id` is given, and pages through the API internally — the whole run comes back as one DataFrame. See [Peak Assignments](#peak-assignments) and [Running and verifying](#running-and-verifying).
 

@@ -1568,6 +1568,122 @@ def launched_run(scratch, scratch_matched):
     )
 
 
+@pytest.fixture(scope="module")
+def judged_copy(scratch, scratch_matched):
+    """The scratch copy of a demo batch, assigned and judged.
+
+    Stage A runs on its first six samples, each launch taking seconds. The
+    first batch peak that three of them assign the consensus formula is
+    judged: the first sample's peak confirmed and then rejected (the
+    first verdict superseded), the second's rejected, and the batch peak
+    confirmed at the batch level, which the third borrows. Launching and
+    judging need the server's peak assignment switch: a stack without it
+    answers 403 and the tests using this skip. Recorded over the session,
+    since the SDK has no verdict writes of its own here; removed with the
+    scratch workspace.
+    """
+    from types import SimpleNamespace
+
+    _skip_unless_attr(scratch.client.peak_assignments, "verifications_for_batch")
+    batch_id, _ = scratch_matched
+    session = scratch.session
+    samples = list(scratch.client.samples._list_by_id(batch_id)["sample_item_id"])[:6]
+    for sample_id in samples:
+        response = session.post(
+            f"{BASE_URL}/api/peak-assignments/sample/{sample_id}/assign",
+            json={"config": {"run_untargeted": False}},
+            timeout=60,
+        )
+        if response.status_code == 403:
+            pytest.skip("peak assignment is switched off on the stack")
+        if response.status_code == 422:
+            continue  # a sample the engine cannot read
+        response.raise_for_status()
+    ledgers = {}
+    for sample_id in samples:
+        ledger = _eventually(
+            scratch.client,
+            lambda sample_id=sample_id: _settled_ledger(scratch, sample_id),
+            timeout=600,
+        )
+        if isinstance(ledger, dict) or ledger is None:
+            continue
+        ledgers[sample_id] = ledger
+
+    members = scratch.client.batch_peaks.members(batch_id)
+    if members is None:
+        pytest.skip("the runs folded no batch peak")
+    agree = members[
+        members["consensus_formula"].notna()
+        & (members["assigned_formula"] == members["consensus_formula"])
+        & members["sample_item_id"].isin(list(ledgers))
+    ]
+    shared = agree.groupby("batch_peak_id")["sample_item_id"].nunique()
+    shared = shared[shared >= 3]
+    if shared.empty:
+        pytest.skip("no batch peak is assigned the same in three samples")
+    batch_peak_id = shared.index[0]
+    peak_members = agree[agree["batch_peak_id"] == batch_peak_id].sort_values(
+        "sample_item_id"
+    )
+    first, second, third = peak_members.head(3).itertuples(index=False)
+
+    def verify(member, verdict, evidence_level=None):
+        ledger = ledgers[member.sample_item_id]
+        row = ledger[ledger["sample_peak_id"] == member.sample_peak_id].iloc[0]
+        return _api(
+            session,
+            "POST",
+            f"peak-assignments/sample/{member.sample_item_id}/verify",
+            json={
+                "peak_assignment_id": row["peak_assignment_id"],
+                "verdict": verdict,
+                "evidence_level": evidence_level,
+            },
+        )[0]
+
+    replaced = verify(first, "confirmed", "visual")
+    current = verify(first, "rejected")
+    verify(second, "rejected")
+    batch_verdict = _api(
+        session,
+        "POST",
+        f"batch-peaks/batch/{batch_id}/verify",
+        json={
+            "batch_peak_id": batch_peak_id,
+            "verdict": "confirmed",
+            "evidence_level": "pattern",
+            "expected_formula": first.consensus_formula,
+        },
+    )[0]
+    return SimpleNamespace(
+        batch_id=batch_id,
+        batch_peak_id=batch_peak_id,
+        first=first,
+        second=second,
+        third=third,
+        replaced=replaced,
+        current=current,
+        batch_verdict=batch_verdict,
+    )
+
+
+def _settled_ledger(scratch, sample_id):
+    """A sample's ledger once its newest run has ended; ``{"failed": ...}``
+    when that run did not complete, so the wait ends either way."""
+    runs = scratch.client.peak_assignments.list_runs(sample_id)
+    if runs is None:
+        return {"failed": "no run"}
+    newest = runs.iloc[0]
+    if newest["status"] in ("pending", "running"):
+        return None
+    if newest["status"] != "completed":
+        return {"failed": newest["status"]}
+    return scratch.client.peak_assignments.get(
+        sample_id, run_id=newest["peak_assignment_run_id"]
+    )
+
+
 @requires_stack
 class TestPeakAssignmentWriteContract:
     """The peak-assignment writes on the live stack, on the scratch copy.
@@ -1660,6 +1776,82 @@ class TestPeakAssignmentWriteContract:
             "fit_score",
             "verified_utc",
         } <= set(verdicts.columns)
+
+
+@requires_stack
+class TestScopeVerificationsContract:
+    """The verdicts of a batch or dataset in one read, on the scratch copy."""
+
+    def test_a_batch_reads_one_current_verdict_per_judged_peak(
+        self, scratch, judged_copy
+    ):
+        frame = scratch.client.peak_assignments.verifications_for_batch(
+            judged_copy.batch_id
+        )
+        # One current row per judged peak.
+        assert not frame.duplicated(["sample_item_id", "sample_peak_id"]).any()
+        rows = frame.set_index(["sample_item_id", "sample_peak_id"])
+
+        def row_of(member):
+            return rows.loc[(member.sample_item_id, member.sample_peak_id)]
+
+        first = row_of(judged_copy.first)
+        assert first["verdict"] == "rejected" and not first["borrowed"]
+        assert (
+            first["assignment_verification_id"]
+            == judged_copy.current["assignment_verification_id"]
+        )
+        second = row_of(judged_copy.second)
+        assert second["verdict"] == "rejected" and not second["borrowed"]
+        third = row_of(judged_copy.third)
+        assert third["verdict"] == "confirmed" and third["borrowed"]
+        assert third["batch_peak_id"] == judged_copy.batch_peak_id
+        assert third["evidence_level"] == "pattern"
+        assert {
+            "filename",
+            "datetime_utc",
+            "sample_peak_mz",
+            "evidence_level",
+            "fit_score",
+            "evidence",
+            "p_correct",
+            "borrowed",
+        } <= set(frame.columns)
+        assert frame["superseded_utc"].isna().all()
+
+    def test_the_superseded_verdict_only_on_request(self, scratch, judged_copy):
+        read = scratch.client.peak_assignments.verifications_for_batch
+        frame = read(judged_copy.batch_id, include_superseded=True)
+
+        replaced = frame[
+            frame["assignment_verification_id"]
+            == judged_copy.replaced["assignment_verification_id"]
+        ]
+        assert len(replaced) == 1
+        assert replaced["superseded_utc"].notna().all()
+        assert replaced["evidence_level"].tolist() == ["visual"]
+
+    def test_the_dataset_read_is_the_batch_read(self, scratch, judged_copy):
+        peak_assignments = scratch.client.peak_assignments
+        batch = peak_assignments.verifications_for_batch(judged_copy.batch_id)
+        dataset = peak_assignments.verifications_for_dataset(scratch.dataset_id)
+
+        # The scratch dataset's other batches carry no verdict.
+        assert dataset.reset_index(drop=True).equals(batch.reset_index(drop=True))
+
+    def test_filters_are_applied_on_the_server(self, scratch, judged_copy):
+        read = scratch.client.peak_assignments.verifications_for_batch
+        confirmed = read(judged_copy.batch_id, verdict="confirmed")
+
+        # The two judged samples keep their own rejections: the batch-level
+        # confirmation reaches only the third.
+        assert set(confirmed["sample_item_id"]) >= {judged_copy.third.sample_item_id}
+        assert (
+            not confirmed["sample_item_id"]
+            .isin([judged_copy.first.sample_item_id, judged_copy.second.sample_item_id])
+            .any()
+        )
+        assert confirmed["borrowed"].all()
 
 
 def _signed_in(email: str, password: str):
