@@ -107,15 +107,31 @@ def test_each_spectrum_is_measured_against_its_own_peaks():
 
 
 def test_the_order_of_the_list_does_not_matter():
-    floor = _floor()
-    mz = np.append(floor, ION)
-    heights = np.append(np.full(floor.size, FLOOR_HEIGHT), 10 * FLOOR_HEIGHT)
-    shuffle = np.random.default_rng(7).permutation(mz.size)
-
-    assert np.array_equal(
-        below_local_floor(mz[shuffle], heights[shuffle]),
-        below_local_floor(mz, heights)[shuffle],
+    """A floor of uneven heights with an ion standing out of it, and low peaks
+    of a sparse stretch out of the floor's reach, handed over shuffled and in
+    falling m/z: each peak is still measured against its own window. The
+    floor is twice as wide as a window, so a window taken from the wrong
+    peaks cuts it anywhere; falling m/z is the order a list left unsorted
+    gets those windows from without fail."""
+    rng = np.random.default_rng(7)
+    floor = _floor(half_width_ppm=2 * LOCAL_FLOOR_WINDOW_PPM)
+    # One every 1000 ppm or so, beyond any window of the floor's peaks
+    sparse = np.arange(70.0, 80.0, 0.07)
+    mz = np.concatenate([floor, [ION], sparse])
+    heights = np.concatenate(
+        [
+            rng.uniform(0.5, 1.5, floor.size) * FLOOR_HEIGHT,
+            [10 * FLOOR_HEIGHT],
+            np.full(sparse.size, FLOOR_HEIGHT / 100),
+        ]
     )
+    expected = np.concatenate(
+        [np.ones(floor.size, bool), [False], np.zeros(sparse.size, bool)]
+    )
+    for order in (rng.permutation(mz.size), np.argsort(-mz)):
+        assert np.array_equal(
+            below_local_floor(mz[order], heights[order]), expected[order]
+        )
 
 
 def test_an_empty_list_has_nothing_under_a_floor():
@@ -132,6 +148,14 @@ POS = "FTMS + p NSI Full ms [40.0000-600.0000]"
 STANDING = ION * (1 + 451.5e-6)
 LONE = 188.0
 POSITIVE = ION * (1 + 1e-6)
+OTHER_STREAM = ION * (1 + 1e-6)
+
+
+def _store():
+    """The whole peak store, weak and satellite peaks included."""
+    return m_io.load_peak_data(
+        SAMPLE_FILENAME, drop_bad_peaks=False, composite=False
+    ).compute()
 
 
 @pytest.fixture
@@ -147,9 +171,23 @@ def floored(acquire, instrument_functions):
     negative[LONE] = FLOOR_HEIGHT
     acquire([(NEG, 1, negative), (POS, 1, {POSITIVE: FLOOR_HEIGHT})])
     m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
-    return m_io.load_peak_data(
-        SAMPLE_FILENAME, drop_bad_peaks=False, composite=False
-    ).compute()
+    return _store()
+
+
+@pytest.fixture
+def streamed(acquire, instrument_functions):
+    """The store of a file detected per stream, whose method runs two
+    negative experiments under one filter, told apart by their microscans.
+    The first holds the reagent ion at 62 in its floor; the second, one peak
+    of the floor's height inside the floor's stretch."""
+    floor = {float(mz): FLOOR_HEIGHT for mz in _floor()}
+    floor[ION] = 1e6
+    acquire(
+        [(NEG, 1, floor), (NEG, 2, {OTHER_STREAM: FLOOR_HEIGHT})],
+        microscans={1: 1, 2: 10},
+    )
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+    return _store()
 
 
 def _row(store, polarity, mz):
@@ -173,3 +211,20 @@ def test_the_detector_flags_the_floor_weak_and_keeps_what_stands_out(floored):
 
 def test_the_detector_measures_each_polarity_against_its_own_peaks(floored):
     assert not floored.is_weak.values.astype(bool)[_row(floored, "+", POSITIVE)]
+
+
+def test_the_detector_measures_each_stream_against_its_own_peaks(streamed):
+    """Detected per stream, a peak is measured against its stream's peaks,
+    not its polarity's: one stream's floor is none of a peak of another
+    stream at the same m/z."""
+    weak = streamed.is_weak.values.astype(bool)
+    stream = streamed.stream.values
+    other = _row(streamed, "-", OTHER_STREAM)
+    floor = np.setdiff1d(
+        np.flatnonzero(stream != stream[other]), [_row(streamed, "-", ION)]
+    )
+
+    assert np.unique(stream).size == 2
+    assert not weak[other]
+    assert floor.size == _floor().size
+    assert weak[floor].all()
