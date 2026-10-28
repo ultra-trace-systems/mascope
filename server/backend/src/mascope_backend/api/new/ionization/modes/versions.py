@@ -17,7 +17,8 @@ Two kinds of reference meet a new version differently:
   a rematch, a recalibration, an assignment run or a re-bound file reads the
   setup as it stands, so it first moves its items onto the current version
   (:func:`advance_to_current_versions`), and what it then computes is
-  recorded under that version.
+  recorded under that version. A sample bound by hand is bound under a
+  current version (:func:`refuse_superseded_binding`).
 - **What routes new work follows the setup.** A method binding names the mode
   a file of its method is bound to, so the edit repoints the bindings at the
   new version (:func:`repoint_routing`), and the rungs that choose a mode for
@@ -55,7 +56,7 @@ _OWN_COLUMNS = frozenset(
 
 
 class SupersededVersionError(ValueError):
-    """An edit or delete named a version a later one has replaced."""
+    """An edit, a delete or a binding named a version a later one has replaced."""
 
 
 async def _links(session: AsyncSession) -> dict[str, tuple[str | None, bool]]:
@@ -155,6 +156,50 @@ def held_by_earlier_versions(modes: Iterable[IonizationMode]) -> str:
         f" Samples bound under {named}, replaced by a later version, still hold "
         "it: re-process those samples to move them onto the current version first."
     )
+
+
+async def refuse_superseded_binding(
+    session: AsyncSession, mode_ids: Iterable[str | None]
+) -> None:
+    """Refuse to bind a sample by hand under a version a later one replaced.
+
+    Such a version is kept for the samples already bound under it, and takes
+    no new one: what it names is let go of once those samples move on
+    (:func:`still_held`), so a mechanism or a collection it names may since
+    have been deleted or moved into a workspace, and a sample bound to it
+    again would read that workspace's collection from another one. For the
+    routes that take a mode id from their caller. The pipeline binds through
+    rungs that read the active rows only, and a copy keeps the version its
+    source's results were computed under.
+
+    :param mode_ids: The versions the samples are to be bound under; None is
+        left out.
+    :raises SupersededVersionError: When one of them has been replaced.
+    """
+    wanted = {mode_id for mode_id in mode_ids if mode_id is not None}
+    if not wanted:
+        return
+    replaced = (
+        (
+            await session.execute(
+                select(IonizationMode)
+                .where(
+                    IonizationMode.ionization_mode_id.in_(wanted),
+                    IonizationMode.is_active.is_(False),
+                )
+                .order_by(IonizationMode.ionization_mode_name, IonizationMode.version)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if replaced is not None:
+        raise SupersededVersionError(
+            f"Version {replaced.version} of ionization mode "
+            f"'{replaced.ionization_mode_name}' has been replaced by a later "
+            "version, and is kept for the samples already bound under it. "
+            "Bind the sample to the current version."
+        )
 
 
 async def repoint_routing(session: AsyncSession, old_id: str, new_id: str) -> None:

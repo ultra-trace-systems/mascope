@@ -12,6 +12,8 @@
   mode across its versions. `GET /api/ionization/modes` lists the current
   versions, each with the ids of its earlier ones in `superseded_ids`; an
   earlier version is still read by its id, and cannot be edited or deleted
-  on its own. A mechanism or a target collection an edit took off a mode can
-  be deleted once no sample is left on a version that uses it; until then,
+  on its own, and a sample cannot be bound to it by hand: creating or editing
+  one names the current version. A mechanism or a target collection an edit
+  took off a mode can be deleted, and such a collection moved into a
+  workspace, once no sample is left on a version that uses it; until then,
   the refusal names that version.

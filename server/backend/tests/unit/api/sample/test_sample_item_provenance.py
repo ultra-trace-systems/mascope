@@ -266,7 +266,12 @@ async def _updated(stored, **changes):
     context = AsyncMock()
     context.__aenter__ = AsyncMock(return_value=session)
     context.__aexit__ = AsyncMock(return_value=False)
-    with patch(f"{_ITEMS}.async_session", return_value=context):
+    # Whether the mode is a current version is the integration tests' to
+    # check: the mock session answers every query with a mock.
+    with (
+        patch(f"{_ITEMS}.async_session", return_value=context),
+        patch(f"{_ITEMS}.refuse_superseded_binding", new_callable=AsyncMock),
+    ):
         await update_sample_item(
             sample_item_id=stored.sample_item_id,
             sample_item=SampleItemUpdate(**(payload | changes)),
@@ -373,6 +378,7 @@ async def _inserted(items) -> dict:
             f"{_ITEMS}.update_sample_batches_modified_timestamp",
             new_callable=AsyncMock,
         ),
+        patch(f"{_ITEMS}.refuse_superseded_binding", new_callable=AsyncMock),
     ):
         affected.return_value = MagicMock(
             affected_sample_batch_ids=["sb-001"], affected_samples=created

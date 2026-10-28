@@ -305,6 +305,9 @@ async def _created(
             new_callable=AsyncMock,
         ),
         patch(f"{_ITEMS}.read_item_streams", rows_read),
+        # The mode versions are the integration tests' to check: the fake
+        # session answers no query but the stream rows.
+        patch(f"{_ITEMS}.refuse_superseded_binding", new_callable=AsyncMock),
         patch.object(
             sample_items_controller.m_compute,
             "get_sample_tic_per_scan",
