@@ -33,7 +33,7 @@ with many useful plugins, for example to visualize data frames interactively.
 
 2. Open VS Code and install the required extensions. Click the **Extensions**
    icon in the left sidebar (or press `Ctrl+Shift+X` / `Cmd+Shift+X`), then
-   search for and install:
+   search for each of these and press its **Install** button:
 
     - **Python** (by Microsoft)
     - **Jupyter** (by Microsoft)
@@ -41,12 +41,6 @@ with many useful plugins, for example to visualize data frames interactively.
     Optionally (but recommended) also install:
 
     - **Data Wrangler** (by Microsoft) for exploring DataFrames visually
-
-![Install the Python extension](images/vscode-extension-python.png)
-
-![Install the Jupyter extension](images/vscode-extension-jupyter.png)
-
-![Install the Data Wrangler extension](images/vscode-extension-datawrangler.png)
 
 ## Create a project folder
 
@@ -68,8 +62,6 @@ this in your file explorer or from the terminal:
     ```
 
 Then open this folder in VS Code: **File → Open Folder...** and select it.
-
-![Empty project folder in VS Code](images/vscode-empty-project.png)
 
 ## Install Python and the Mascope SDK
 
@@ -117,18 +109,15 @@ This does three things automatically:
    extra also brings the plotting and analysis libraries (plotly, matplotlib,
    numpy, scipy) used by the tutorial notebooks
 
-![uv init and install](images/uv-init-install.png)
-
 ### Select the interpreter in VS Code
 
 VS Code needs to know which Python to use. Press `Ctrl+Shift+P` (or
 `Cmd+Shift+P` on macOS) to open the Command Palette, type
 **"Python: Select Interpreter"**, and choose the one inside your `.venv`
-folder.
-
-![Open the interpreter picker](images/vscode-select-interpreter.png)
-
-![Select the .venv interpreter](images/vscode-select-mascope-analysis.png)
+folder. It is the entry that shows your project folder's name in brackets and
+a path into `.venv`, such as
+`Python 3.14.3 (mascope-analysis) .\.venv\Scripts\python.exe`, and VS Code
+marks it **Recommended**.
 
 !!! tip
     Once selected, VS Code remembers this setting for the project. You won't
@@ -142,13 +131,11 @@ URL** and an **API token**.
 ### Generate an API token
 
 1. Log in to your Mascope instance in the browser.
-2. Open the **Home menu** (top-left corner).
-3. Go to the **Settings** tab.
-4. Generate a new API token for Jupyter Notebooks and copy it.
-
-![Open the Home menu](images/mascope-home-menu.png)
-
-![Generate an API token in Mascope](images/mascope-api-token.png)
+2. Open the **Home menu**: the house icon in the top-left corner.
+3. Go to its **Settings** tab (the gear icon).
+4. Under **API Access Tokens**, choose **Jupyter Notebooks** in the list and
+   press **Regenerate**.
+5. Copy the token that appears. It is shown only this once.
 
 !!! warning "Keep your token private"
     Treat it like a password. Do not share it or commit it to version control.
@@ -205,8 +192,6 @@ MASCOPE_ACCESS_TOKEN=your-api-token-here
 The SDK reads this file automatically when you create a client - no need to
 paste credentials into your code.
 
-![The .env credentials file](images/vscode-env-file.png)
-
 ## Run your first notebook
 
 The SDK ships with tutorial notebooks that demonstrate common workflows. Let's
@@ -221,8 +206,9 @@ python -c "import mascope_sdk; mascope_sdk.copy_examples()"
 ```
 
 This creates a `mascope_examples/` folder with several `.ipynb` notebook files.
-
-![Copying the example notebooks](images/vscode-copy-example-notebooks.png)
+The command lists each notebook as it copies it
+(`copied: mascope_examples\01_getting_started.ipynb`, and so on) and ends by
+saying how many it copied and where.
 
 !!! warning "Make sure the project's virtual environment is active"
     Before running the python command, check that the prompt starts with
@@ -235,22 +221,20 @@ This creates a `mascope_examples/` folder with several `.ipynb` notebook files.
 In the VS Code Explorer, navigate to `mascope_examples/` and open
 `01_getting_started.ipynb`.
 
-![The getting started notebook](images/vscode-notebook-open.png)
-
 ### Select the notebook kernel
 
 When you open a notebook for the first time, VS Code may ask you to select a
 kernel (the Python environment that runs the code). Click **"Select Kernel"**
-in the top-right corner and choose the `.venv` interpreter you set up earlier.
-
-![Select the notebook kernel](images/vscode-select-kernel.png)
+in the top-right corner and choose the `.venv` interpreter you set up earlier:
+it is listed under your project folder's name, such as
+`mascope-analysis (Python 3.14.3)`. If it is not offered, choose
+**Select Another Kernel...**, then **Python Environments...**, and pick it
+there.
 
 ### Run the cells
 
 Click the **play button** (▶) next to the first cell, or place your cursor in
 the cell and press `Shift+Enter` to run it.
-
-![Run the first cell](images/vscode-run-cell.png)
 
 !!! note
     When you run a notebook cell for the first time, VS Code may prompt you to
@@ -258,13 +242,14 @@ the cell and press `Shift+Enter` to run it.
     Jupyter notebooks. If the prompt appears, **click "Install"** (the
     `[examples]` extra already includes `ipykernel`, so usually it does not).
 
-![Install ipykernel and pip](images/vscode-install-ipykernel.png)
-
-When running the first cell initializing the Mascope client, you should see
-output showing it has successfully loaded the available workspaces. If you
-don't, check the [troubleshooting section](#troubleshooting).
-
-![Running a notebook cell](images/vscode-notebook-output.png)
+The first code cell connects to Mascope. Before you run it, replace
+`"My Workspace"` with the name of one of your workspaces (part of the name is
+enough); if you belong to only one workspace, you can leave out
+`workspace=...` altogether. When it runs, it logs that it is fetching your
+workspaces, how many it found and which one it selected, and then shows the
+client, as `MascopeClient(url='https://your-instance.mascope.app',
+workspace='...')`. If you see an error instead, check the
+[troubleshooting section](#troubleshooting).
 
 Work through the cells from top to bottom. Each cell builds on the previous
 one.
