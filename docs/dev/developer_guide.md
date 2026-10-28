@@ -1942,6 +1942,17 @@ with one leftover `$` on each side, which then shows up verbatim on the page.
 Escape percent signs inside math (`$95\%$`); a bare `%` starts a TeX comment
 and silently swallows the rest of the expression.
 
+Do not put screenshots in the user docs. A screenshot shows the app as it
+looked the day it was taken, and nothing flags it when the UI moves on: the
+text beside it gets updated with the change, the picture does not. It also
+shows one theme, so it clashes with the page in the other, and capturing
+every one twice doubles the upkeep. Say where a control is in words instead,
+naming it in bold as the app labels it (open the home menu, choose
+**Settings**, and press **Reference lists** under **Data**), and say what each
+part of a view shows, as the guides do. Draw a diagram as a `mermaid` fence:
+it is written as text, so a diff shows what changed, and it follows the
+page's theme.
+
 ### Frontend Tech
 
 The Mascope frontend is build with the following technologies:

@@ -201,6 +201,11 @@ Feature) carries the kind. Milestones are not used.
   section names the page it updated, or says why none is needed, or links the
   follow-up issue filed for it; a user- or operator-facing change with no
   Docs line is a review finding.
+- **No screenshots in the user docs.** A screenshot goes stale with nothing
+  to flag it when the UI changes, and it shows only one of the docs' light
+  and dark themes. Say where a control is in words, naming it in bold as the
+  app labels it, and draw a diagram as a `mermaid` fence. "User docs in dev"
+  in `docs/dev/developer_guide.md` has the rest of the rules for writing them.
 - **Lint Python before committing** - CI's "Lint and format" job runs
   `ruff check .` and `ruff format --check .` and fails the PR on any violation.
   Run `uv run ruff check --fix . && uv run ruff format .` before you commit.
