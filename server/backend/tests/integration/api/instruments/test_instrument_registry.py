@@ -1,7 +1,8 @@
 """Integration tests: the instrument rows, made where an instrument is named.
 
 A registered file is evidence of its instrument: it fills the class, the
-vendor and the model its reader reported, and moves ``last_seen_utc``. Any
+vendor, the model its reader reported and that model's PSI-MS term, and moves
+``last_seen_utc``. Any
 other writer only names the instrument, so it makes the row if there is none
 and touches nothing on one that exists. Both answer the row's id, which the
 writer stores beside its free-text ``instrument``.
@@ -67,6 +68,7 @@ async def test_a_registered_file_fills_the_row(async_session_factory, name):
     assert row.instrument_type == "orbi"
     assert row.vendor == "Thermo Fisher Scientific"
     assert row.model == "Orbitrap Exploris 120"
+    assert row.cv_term == "MS:1003095"
     assert row.last_seen_utc is not None
 
 
@@ -91,6 +93,7 @@ async def test_a_later_file_keeps_the_id_and_what_it_does_not_report(
     row = await _row(async_session_factory, name)
     assert again == first
     assert row.model == "Q Exactive"
+    assert row.cv_term == "MS:1001911"
     # The class is the instrument's: a second file does not overwrite it,
     # nor the vendor that follows from it.
     assert row.instrument_type == "orbi"
@@ -105,6 +108,55 @@ async def test_a_newly_reported_model_replaces_the_old_one(async_session_factory
         await record_instrument_seen(session, name, instrument_type="orbi", model="B")
         await session.commit()
     assert (await _row(async_session_factory, name)).model == "B"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("instrument_type", "model"),
+    [
+        # A family name names no model, so no nearby term either
+        ("orbi", "Orbitrap Exploris"),
+        # The ontology has no Tofwerk models
+        ("tof", None),
+    ],
+)
+async def test_a_model_without_a_term_leaves_the_term_empty(
+    async_session_factory, name, instrument_type, model
+):
+    async with async_session_factory() as session:
+        await record_instrument_seen(
+            session, name, instrument_type=instrument_type, model=model
+        )
+        await session.commit()
+    assert (await _row(async_session_factory, name)).cv_term is None
+
+
+@pytest.mark.asyncio
+async def test_the_term_follows_a_newly_reported_model(async_session_factory, name):
+    """The term is the model's: a model without one clears the old term
+    rather than leave it naming the model before."""
+    async with async_session_factory() as session:
+        await record_instrument_seen(
+            session, name, instrument_type="orbi", model="Q Exactive"
+        )
+        await session.commit()
+    assert (await _row(async_session_factory, name)).cv_term == "MS:1001911"
+
+    async with async_session_factory() as session:
+        await record_instrument_seen(
+            session, name, instrument_type="orbi", model="Orbitrap Exploris 480"
+        )
+        await session.commit()
+    assert (await _row(async_session_factory, name)).cv_term == "MS:1003028"
+
+    async with async_session_factory() as session:
+        await record_instrument_seen(
+            session, name, instrument_type="orbi", model="Orbitrap Exploris"
+        )
+        await session.commit()
+    row = await _row(async_session_factory, name)
+    assert row.model == "Orbitrap Exploris"
+    assert row.cv_term is None
 
 
 @pytest.mark.asyncio
@@ -174,6 +226,7 @@ async def test_registering_a_file_links_it_and_records_the_model(
     row = await _row(async_session_factory, name)
     assert created["data"]["instrument_id"] == row.instrument_id
     assert row.model == "Orbitrap Exploris 240"
+    assert row.cv_term == "MS:1003094"
     assert row.instrument_type == "orbi"
     assert "instrument_model" not in created["data"]
 

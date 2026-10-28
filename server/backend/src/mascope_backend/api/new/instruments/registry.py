@@ -9,7 +9,8 @@ Two ways in, by what the writer knows:
 
 - :func:`record_instrument_seen` when a file of the instrument is registered.
   The file is the evidence: it fills what the reader reported (the class, the
-  model) and moves ``last_seen_utc``.
+  model, and the model's PSI-MS term from ``mascope_backend.vocabulary``) and
+  moves ``last_seen_utc``.
 - :func:`instrument_id_for` everywhere else - a dataset, a mode's scope, a
   paired device, a notification, a method binding, an instrument function.
   Those name an instrument without being evidence of it, so they only make
@@ -21,10 +22,11 @@ link to it are written together or not at all.
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mascope_backend import vocabulary
 from mascope_backend.db import Instrument
 from mascope_backend.db.id import gen_id
 
@@ -79,7 +81,12 @@ async def record_instrument_seen(
     What the row does not know yet the file fills: the class, and the vendor
     that follows from it. A model the file reports replaces the one the row
     holds, and a file that reports none leaves it, so a file converted before
-    the model was read cannot erase it. ``last_seen_utc`` moves to now.
+    the model was read cannot erase it. ``cv_term`` follows the model it
+    stands beside: the accession ``vocabulary.instrument_model_term`` gives
+    it, NULL for a model the vocabulary has no term for (a family name, a
+    TOF), never a nearby one. The row holds the accession alone; its name
+    and every other term stay in the vocabulary. ``last_seen_utc`` moves to
+    now.
 
     :param session: The caller's session; the row is written in its
         transaction and locked until it ends, which on registration is short.
@@ -91,12 +98,15 @@ async def record_instrument_seen(
     if not _named(name):
         return None
     now = datetime.now(timezone.utc)
+    model = model or None
+    term = vocabulary.instrument_model_term(model)
     statement = insert(Instrument).values(
         instrument_id=gen_id(16),
         name=name,
         instrument_type=instrument_type,
         vendor=VENDOR_BY_TYPE.get(instrument_type or ""),
-        model=model or None,
+        model=model,
+        cv_term=term.accession if term else None,
         created_utc=now,
         last_seen_utc=now,
     )
@@ -109,6 +119,10 @@ async def record_instrument_seen(
             ),
             "vendor": func.coalesce(Instrument.vendor, excluded.vendor),
             "model": func.coalesce(excluded.model, Instrument.model),
+            "cv_term": case(
+                (excluded.model.is_not(None), excluded.cv_term),
+                else_=Instrument.cv_term,
+            ),
             "last_seen_utc": func.greatest(
                 Instrument.last_seen_utc, excluded.last_seen_utc
             ),

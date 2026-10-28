@@ -39,7 +39,7 @@ from mascope_backend.api.new.match.records.collection.service import (
     get_match_collection_records,
 )
 from mascope_backend.api.new.temp.storage import download_name, user_temp_path
-from mascope_backend.db import IonizationMode, async_session
+from mascope_backend.db import Instrument, IonizationMode, SampleFile, async_session
 from mascope_backend.provenance import build_provenance, flatten_provenance
 from mascope_backend.runtime import runtime
 from mascope_file.name import get_sample_file_type
@@ -150,7 +150,16 @@ async def build_batch_sheets(sample_batch_id: str) -> BatchSheets:
     ionization_modes = await _ionization_mode_names(
         {sample.get("ionization_mode_id") for sample in data["samples"]}
     )
-    instrument_models = await asyncio.to_thread(_instrument_models, data["samples"])
+    instrument_models = await instrument_models_of(
+        {
+            sample["sample_file_id"]: (
+                sample["filename"],
+                sample.get("instrument_type"),
+            )
+            for sample in data["samples"]
+            if sample.get("sample_file_id")
+        }
+    )
 
     # --- Prepare lookup dictionaries ---
     samples_lookup = {sample["sample_item_id"]: sample for sample in data["samples"]}
@@ -365,31 +374,52 @@ async def _ionization_mode_names(mode_ids: set[str | None]) -> dict[str, str]:
         return dict(rows.all())
 
 
-def _instrument_models(samples: list[dict]) -> dict[str, str | None]:
+async def instrument_models_of(
+    files: dict[str, tuple[str, str | None]],
+) -> dict[str, str | None]:
     """
-    The instrument model each sample's raw file names, by sample file id.
+    The instrument model of each sample file, by sample file id.
 
-    The model is not recorded in the database, only in the raw file, so it is
-    read from there: an Orbitrap file's header, which opens in about a
-    millisecond. A TOF file names no model the vocabulary has a term for, and
-    is not opened. Blocking; run it in a thread.
+    The model is the one the file's ``Instrument`` row records, which ingest
+    fills from the reader, so a file whose raw file is no longer kept still
+    has one. A row that has none yet - its instrument has registered no file
+    since the table was made - leaves an Orbitrap file to its raw file's
+    header, which opens in about a millisecond. A TOF file names no model the
+    vocabulary has a term for, and is not opened.
 
-    :param samples: Sample dicts from ``get_batch_data``.
-    :return: The model by sample file id, None where there is no raw file to
-        read or it could not be read. An export is not refused for one file.
+    :param files: The sample files, by id: their name and their instrument
+        class (``"orbi"`` or ``"tof"``).
+    :return: The model by sample file id, None where neither the row nor a
+        raw file names one. An export is not refused for one file.
     :rtype: dict[str, str | None]
     """
-    files = {
-        sample["sample_file_id"]: sample["filename"]
-        for sample in samples
-        if sample.get("instrument_type") == "orbi" and sample.get("sample_file_id")
+    if not files:
+        return {}
+    async with async_session() as session:
+        rows = await session.execute(
+            select(SampleFile.sample_file_id, Instrument.model)
+            .join(Instrument, Instrument.instrument_id == SampleFile.instrument_id)
+            .where(SampleFile.sample_file_id.in_(files))
+        )
+        recorded = {file_id: model for file_id, model in rows.all() if model}
+    unread = {
+        file_id: filename
+        for file_id, (filename, instrument_type) in files.items()
+        if file_id not in recorded and instrument_type == "orbi"
     }
-    return {file_id: _instrument_model(filename) for file_id, filename in files.items()}
+    read = await asyncio.to_thread(
+        lambda: {
+            file_id: _instrument_model(filename) for file_id, filename in unread.items()
+        }
+    )
+    return {file_id: recorded.get(file_id) or read.get(file_id) for file_id in files}
 
 
 def _instrument_model(filename: str) -> str | None:
     """
     The instrument model one Orbitrap sample file's raw file names.
+
+    Blocking; run it in a thread.
 
     :param filename: The sample file's name.
     :return: The model, such as "Orbitrap Exploris 120"; None when the raw
@@ -419,7 +449,8 @@ def _vocabulary_columns(
     of it ("Orbitrap XL" reads "LTQ Orbitrap XL"). A value the vocabulary
     cannot map, such as a family name, leaves both cells empty.
 
-    :param model: The instrument model the raw file names, None if unknown.
+    :param model: The instrument model of the sample's instrument, None if
+        unknown.
     :param instrument_type: ``"orbi"`` or ``"tof"``.
     :param polarity: The sample's polarity, ``"+"`` or ``"-"``.
     :return: The columns, in their order.

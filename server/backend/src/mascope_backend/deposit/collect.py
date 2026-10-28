@@ -152,9 +152,12 @@ async def collect_package(dataset_id: str) -> Package:
         provenance["generated_utc"], "%Y-%m-%dT%H:%M:%SZ"
     ).replace(tzinfo=timezone.utc)
 
-    models = await asyncio.to_thread(
-        lambda: {
-            sample_file.sample_file_id: export._instrument_model(sample_file.filename)
+    models = await export.instrument_models_of(
+        {
+            sample_file.sample_file_id: (
+                sample_file.filename,
+                sample_file.instrument_type,
+            )
             for sample_file in records.files
         }
     )
