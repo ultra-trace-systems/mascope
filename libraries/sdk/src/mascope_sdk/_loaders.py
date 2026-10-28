@@ -1,6 +1,7 @@
 """High-level data loading functions for the Mascope SDK."""
 
 import copy
+import os
 import re
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -9,9 +10,10 @@ import pandas as pd
 from loguru import logger
 
 from ._concurrent import TaskFailure, failure_record, mark_complete, run_concurrent
+from ._http import status_error
 from ._resolve import _name_mask
 from .client import MascopeClient
-from .exceptions import ConfirmationRequiredError
+from .exceptions import ConfirmationRequiredError, NotFoundError
 
 
 def _note_warnings(warned: list[str], peaks: pd.DataFrame | None) -> None:
@@ -342,7 +344,7 @@ def load_peaks(
     *,
     samples: "str | re.Pattern | None" = None,
     exact: bool = False,
-    matches: bool = True,
+    matches: bool | None = None,
     areas: bool = True,
     heights: bool = True,
     average: bool = True,
@@ -355,8 +357,10 @@ def load_peaks(
     by name, iterating all samples, and concatenating peak data into a single
     DataFrame enriched with batch and sample metadata.
 
-    Requests are made concurrently for better performance. A progress bar is
-    displayed during loading.
+    Each batch is read in one request (``batch_peaks.peak_lists``) from a
+    server that offers it; from an older one, whose answer to that is 404,
+    each sample is read on its own, concurrently. A progress bar is displayed
+    during loading.
 
     :param client: The MascopeClient instance.
     :type client: MascopeClient
@@ -376,8 +380,11 @@ def load_peaks(
                   instead of as a substring. Use this to select a single named
                   batch. Not valid with a compiled pattern. Defaults to False.
     :type exact: bool
-    :param matches: Include matched compounds/ions/isotopes. Defaults to True.
-    :type matches: bool
+    :param matches: Include matched compounds/ions/isotopes. By default they
+                    are left out when each batch is read in one request, and
+                    included when an older server has each sample read on
+                    its own, as they always were.
+    :type matches: bool | None
     :param areas: Include peak areas. Defaults to True.
     :type areas: bool
     :param heights: Include peak heights. Defaults to True.
@@ -400,7 +407,9 @@ def load_peaks(
              - ``datetime_utc``: Measurement start timestamp (UTC)
 
              Plus all columns from
-               :meth:`~mascope_sdk.resources.samples.SamplesResource.get_peaks`.
+               :meth:`~mascope_sdk.resources.samples.SamplesResource.get_peaks`,
+             and ``is_satellite`` (False throughout: satellite peaks are left
+             out) where each batch was read in one request.
 
              When a peak matches multiple isotopes it is expanded into
              one row per match.  Use ``target_ion_id`` /
@@ -462,15 +471,204 @@ def load_peaks(
     if confirm_above is not None and len(sample_tasks) > confirm_above:
         _confirm_sample_count(len(sample_tasks), confirm_above)
 
+    if getattr(client, "_server_has_batch_peak_lists", True):
+        result = _load_batch_peak_lists(
+            client,
+            sample_tasks,
+            matches=bool(matches),
+            areas=areas,
+            heights=heights,
+            average=average,
+            max_workers=max_workers,
+        )
+        if result is not _NO_BATCH_READ:
+            return result
+
     return load_sample_peaks(
         client,
         sample_tasks,
-        matches=matches,
+        matches=True if matches is None else matches,
         areas=areas,
         heights=heights,
         average=average,
         max_workers=max_workers,
     )
+
+
+#: What :func:`_load_batch_peak_lists` answers when the server cannot read a
+#: batch in one request, and each sample has to be read on its own.
+_NO_BATCH_READ = object()
+
+
+def _load_batch_peak_lists(
+    client: MascopeClient,
+    sample_tasks: list[tuple[Any, str]],
+    *,
+    matches: bool,
+    areas: bool,
+    heights: bool,
+    average: bool,
+    max_workers: int,
+) -> Any:
+    """Load the samples' peaks one batch per request, as :func:`load_peaks`.
+
+    Each batch's peak lists come in one read
+    (:meth:`~mascope_sdk.resources.batch_peaks.BatchPeaksResource.peak_lists`),
+    and are cut to the samples asked for and laid out as
+    :func:`load_sample_peaks` lays out its per-sample reads: the same rows,
+    the same columns in the same order, the same ``attrs``.
+
+    A sample the server could not read is a failure of that sample; a batch
+    whose read failed is a failure of each of its samples asked for. Either
+    is named in ``attrs["failures"]`` as the per-sample read's would be.
+
+    :return: What :func:`load_sample_peaks` would, or :data:`_NO_BATCH_READ`
+        when the server answers 404 to every batch: it is older than the
+        read, and is not asked again.
+    """
+    by_batch: dict[str, list[tuple[Any, str]]] = {}
+    for task in sample_tasks:
+        sample_row = task[0]
+        if "sample_batch_id" not in sample_row.index:
+            # A listing that does not say which batch: read sample by sample
+            return _NO_BATCH_READ
+        by_batch.setdefault(sample_row["sample_batch_id"], []).append(task)
+
+    def _fetch_batch(batch_id: str, tasks: list[tuple[Any, str]]) -> pd.DataFrame:
+        return client.batch_peaks.peak_lists(batch_id, matches=matches, average=average)
+
+    batch_tasks = list(by_batch.items())
+    frames, failed = run_concurrent(
+        _fetch_batch,
+        batch_tasks,
+        max_workers=min(max_workers, len(batch_tasks)),
+        desc="Loading peaks",
+        unit="batch",
+    )
+    if not frames and all(isinstance(f.error, NotFoundError) for f in failed):
+        client._server_has_batch_peak_lists = False
+        # INFO: the load goes on, a request per sample, as it always did
+        logger.info(
+            "The server reads no batch's peak lists in one request; "
+            "reading each sample on its own"
+        )
+        return _NO_BATCH_READ
+
+    failures: list[dict[str, Any]] = []
+    for failure in failed:
+        for sample_row, batch_name in failure.args[1]:
+            failures.append(
+                failure_record(
+                    failure,
+                    sample_batch_name=batch_name,
+                    sample_item_id=sample_row["sample_item_id"],
+                    sample_item_name=sample_row["sample_item_name"],
+                )
+            )
+
+    read = {f.args[0] for f in failed}
+    tables: list[pd.DataFrame] = []
+    segments: dict[str, list[dict] | None] = {}
+    for (batch_id, tasks), frame in zip(
+        [bt for bt in batch_tasks if bt[0] not in read], frames
+    ):
+        rows = {row["sample_item_id"]: (row, name) for row, name in tasks}
+        url = f"{client.url}/api/batch-peaks/batch/{batch_id}/peaks"
+        for said in frame.attrs.get("failures", ()):
+            if said.get("sample_item_id") not in rows:
+                continue
+            sample_row, batch_name = rows[said["sample_item_id"]]
+            error = status_error(said.get("status_code"), said.get("error", ""), url)
+            failures.append(
+                failure_record(
+                    TaskFailure((sample_row, batch_name), error),
+                    sample_batch_name=batch_name,
+                    sample_item_id=sample_row["sample_item_id"],
+                    sample_item_name=sample_row["sample_item_name"],
+                )
+            )
+        for sample_id, sample_segments in frame.attrs.get("segments", {}).items():
+            if sample_id in rows:
+                segments[sample_id] = sample_segments
+        tables.append(_as_sample_reads(client, frame, rows, matches=matches))
+
+    kept = [table for table in tables if not table.empty]
+    result = pd.concat(kept, ignore_index=True) if kept else None
+    if result is not None:
+        # As the per-sample reads are stacked: a column none of them filled
+        # is not there (_stack)
+        result = result.dropna(axis=1, how="all")
+        if not areas:
+            result = result.drop(columns=["area"], errors="ignore")
+        if not heights:
+            result = result.drop(columns=["height"], errors="ignore")
+    result = mark_complete(result, failures)
+    if result is None:
+        logger.info("No peaks found")
+        return None
+
+    result.attrs["segments"] = segments
+    result.attrs["warnings"] = []
+    logger.info("Loaded {} peaks total", len(result))
+    return result
+
+
+def _as_sample_reads(
+    client: MascopeClient,
+    frame: pd.DataFrame,
+    rows: dict[str, tuple[Any, str]],
+    *,
+    matches: bool,
+) -> pd.DataFrame:
+    """A batch's peak lists laid out as :func:`load_sample_peaks` lays out
+    its reads of the same samples.
+
+    Only the samples asked for are kept, in the order they were asked for:
+    the listing's, which a server need not keep for samples that started at
+    the same moment. Their names and times come from the listing too, as the
+    per-sample reads take them, rather than from the table.
+
+    :param frame: The batch's peak lists.
+    :param rows: Per sample asked for in order, its listing row and its
+        batch's name.
+    :param matches: The table carries the match columns.
+    """
+    from .resources.samples import score_matches
+
+    frame = frame[frame["sample_item_id"].isin(rows)]
+    frame = frame.drop(columns=["sample_item_name", "datetime_utc"])
+    # Stable: a sample's own rows keep the order the server listed them in
+    position = {sample_id: index for index, sample_id in enumerate(rows)}
+    frame = frame.iloc[
+        frame["sample_item_id"].map(position).argsort(kind="stable")
+    ].reset_index(drop=True)
+    if matches:
+        frame = score_matches(frame, client)
+
+    def column(of: Callable[[Any, str], Any]) -> pd.Series:
+        return frame["sample_item_id"].map(
+            {sample_id: of(*task) for sample_id, task in rows.items()}
+        )
+
+    frame.insert(0, "sample_batch_name", column(lambda row, name: name))
+    frame.insert(2, "sample_item_name", column(lambda row, _: row["sample_item_name"]))
+    if all("datetime_utc" in row.index for row, _ in rows.values()):
+        frame.insert(3, "datetime_utc", column(lambda row, _: row["datetime_utc"]))
+    return frame
+
+
+def save_snapshot(frame: pd.DataFrame, path: "str | os.PathLike[str]") -> None:
+    """Write a loaded frame to a Parquet file that reads back as it was.
+
+    ``attrs`` - the provenance, the failures, the segments - go into the
+    file's metadata, where ``pd.read_parquet`` finds them again: a snapshot
+    a script can work from offline, with no server and no credentials.
+
+    :param frame: What a loader returned.
+    :param path: Where to write it; an existing file is replaced.
+    """
+    frame.to_parquet(path, index=False)
+    logger.info("Saved {} rows to {}", len(frame), os.fspath(path))
 
 
 def load_sample_peaks(

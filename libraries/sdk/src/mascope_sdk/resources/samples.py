@@ -2,7 +2,7 @@
 
 import re
 from collections.abc import Iterable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 from loguru import logger
@@ -18,6 +18,10 @@ from ._base import (
     _log_api_message,
 )
 from .ms2 import Ms2Resource
+
+
+if TYPE_CHECKING:
+    from ..client import MascopeClient
 
 
 #: What this version of the SDK can do about a warning on a time-ranged read
@@ -60,6 +64,77 @@ def _read_level(data: dict[str, Any]) -> dict[str, Any]:
         taken[key] = data.pop(key)
         logger.debug(f"Peak listing: {key!r} is not per peak, kept in attrs")
     return taken
+
+
+def score_matches(df: pd.DataFrame, client: "MascopeClient") -> pd.DataFrame:
+    """Score a peak read's matches by ion and compound, and name mechanisms.
+
+    The frame has one row per match, its fields in columns, as
+    :meth:`SamplesResource.get_peaks` lays them out. Adds
+    ``match_score_ion`` (an ion's isotope scores weighted by their relative
+    abundance, summed) and ``match_score_compound`` (the best of a compound's
+    ion scores), both per sample, and replaces ``ionization_mechanism_id``
+    with the mechanism's name, ``ionization_mechanism``.
+
+    :param df: The rows, with ``sample_item_id`` and the match columns.
+    :param client: The client, to list the ionization mechanisms.
+    :return: The scored frame, a new one.
+    """
+    # Ion-level match score: weighted sum of isotope scores
+    # by relative abundance.
+    has_match = df["match_score_isotope"].notna()
+    if has_match.any():
+        matched_rows = df.loc[has_match]
+        weighted = (
+            matched_rows["match_score_isotope"] * matched_rows["relative_abundance"]
+        )
+        ion_scores = (
+            weighted.groupby(
+                [matched_rows["sample_item_id"], matched_rows["target_ion_id"]],
+                sort=False,
+            )
+            .sum()
+            .rename("match_score_ion")
+        )
+        df = df.merge(
+            ion_scores,
+            left_on=["sample_item_id", "target_ion_id"],
+            right_index=True,
+            how="left",
+        )
+
+        # Compound-level match score: max of ion scores.
+        compound_scores = (
+            df.loc[has_match]
+            .drop_duplicates(subset=["sample_item_id", "target_ion_id"])
+            .groupby(["sample_item_id", "target_compound_id"], sort=False)[
+                "match_score_ion"
+            ]
+            .max()
+            .rename("match_score_compound")
+        )
+        df = df.merge(
+            compound_scores,
+            left_on=["sample_item_id", "target_compound_id"],
+            right_index=True,
+            how="left",
+        )
+    else:
+        df["match_score_ion"] = None
+        df["match_score_compound"] = None
+
+    # Resolve ionization_mechanism_id to human-readable name
+    mechanisms = client.ionization.list()
+    if mechanisms is not None and not mechanisms.empty:
+        id_to_name = dict(
+            zip(
+                mechanisms["ionization_mechanism_id"],
+                mechanisms["ionization_mechanism"],
+            )
+        )
+        df["ionization_mechanism"] = df["ionization_mechanism_id"].map(id_to_name)
+        df = df.drop(columns=["ionization_mechanism_id"])
+    return df
 
 
 class SamplesResource(BaseResource):
@@ -540,55 +615,7 @@ class SamplesResource(BaseResource):
                 )
             df = df.drop(columns=["match"])
 
-            # Ion-level match score: weighted sum of isotope scores
-            # by relative abundance.
-            has_match = df["match_score_isotope"].notna()
-            if has_match.any():
-                matched_rows = df.loc[has_match]
-                weighted = (
-                    matched_rows["match_score_isotope"]
-                    * matched_rows["relative_abundance"]
-                )
-                ion_scores = (
-                    weighted.groupby(matched_rows["target_ion_id"], sort=False)
-                    .sum()
-                    .rename("match_score_ion")
-                )
-                df = df.merge(
-                    ion_scores, left_on="target_ion_id", right_index=True, how="left"
-                )
-
-                # Compound-level match score: max of ion scores.
-                compound_scores = (
-                    df.loc[has_match]
-                    .drop_duplicates(subset=["target_ion_id"])
-                    .groupby("target_compound_id", sort=False)["match_score_ion"]
-                    .max()
-                    .rename("match_score_compound")
-                )
-                df = df.merge(
-                    compound_scores,
-                    left_on="target_compound_id",
-                    right_index=True,
-                    how="left",
-                )
-            else:
-                df["match_score_ion"] = None
-                df["match_score_compound"] = None
-
-            # Resolve ionization_mechanism_id to human-readable name
-            mechanisms = self._client.ionization.list()
-            if mechanisms is not None and not mechanisms.empty:
-                id_to_name = dict(
-                    zip(
-                        mechanisms["ionization_mechanism_id"],
-                        mechanisms["ionization_mechanism"],
-                    )
-                )
-                df["ionization_mechanism"] = df["ionization_mechanism_id"].map(
-                    id_to_name
-                )
-                df = df.drop(columns=["ionization_mechanism_id"])
+            df = score_matches(df, self._client)
 
         # Set last: the merges above build new frames. A time-ranged read is
         # short by every peak the server left out, and its rows cannot show

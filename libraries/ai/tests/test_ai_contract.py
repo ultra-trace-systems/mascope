@@ -140,7 +140,8 @@ class TestLoaders:
         assert peaks.provenance and "produced_with" in peaks.provenance
 
     def test_they_are_the_sdks_rows(self, kit, dataset, peaks):
-        direct = kit.client.load_peaks(dataset.id, confirm_above=None)
+        # The toolkit reads with matches, one row per match: so does this
+        direct = kit.client.load_peaks(dataset.id, confirm_above=None, matches=True)
 
         assert peaks.n_rows == len(direct)
         assert sorted(peaks.df["peak_id"].unique()) == sorted(

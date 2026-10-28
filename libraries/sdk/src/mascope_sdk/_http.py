@@ -95,36 +95,54 @@ def _raise_for_status(response: requests.Response, url: str) -> None:
     """
     if response.ok:
         return
+    raise status_error(
+        response.status_code,
+        _extract_error_message(response),
+        url,
+        body=_error_body(response),
+    )
 
-    status_code = response.status_code
-    message = _extract_error_message(response)
-    body = _error_body(response)
 
+def status_error(
+    status_code: int | None, message: str, url: str, body: Any = None
+) -> MascopeAPIError:
+    """The exception an error answer of this status is raised as.
+
+    Also what a read that reports a failure inside a successful answer - one
+    sample of a batch's peak lists - turns that failure into, so it reads as
+    the failed request of that sample would have.
+
+    :param status_code: The answer's HTTP status.
+    :param message: What the server said.
+    :param url: The URL asked.
+    :param body: The answer's parsed JSON body, kept on the exception.
+    :return: The exception, not raised.
+    """
     if status_code == 403:
         # The token was accepted; its user lacks the role. Checking the token
         # would not help, so the hint 401 gets is left out here.
-        raise PermissionDeniedError(
+        return PermissionDeniedError(
             message=message,
             status_code=status_code,
             url=url,
             body=body,
         )
     elif status_code == 401:
-        raise AuthenticationError(
+        return AuthenticationError(
             message=f"{message}. Please check your API token.",
             status_code=status_code,
             url=url,
             body=body,
         )
     elif status_code == 404:
-        raise NotFoundError(
+        return NotFoundError(
             message=message,
             status_code=status_code,
             url=url,
             body=body,
         )
     elif status_code == 422:
-        raise ValidationError(
+        return ValidationError(
             message=message,
             status_code=status_code,
             url=url,
@@ -134,7 +152,7 @@ def _raise_for_status(response: requests.Response, url: str) -> None:
         # Transient for the TUS chunk loop, which resumes from the offset the
         # server reports, and final for a write the server refuses over the
         # state it is in: either way the caller reads why from the detail.
-        raise ConflictError(
+        return ConflictError(
             message=message,
             status_code=status_code,
             url=url,
@@ -150,21 +168,21 @@ def _raise_for_status(response: requests.Response, url: str) -> None:
         # that does not identify an instrument (400). Repeating it byte for byte
         # cannot change the answer, so raise a terminal error and let the caller
         # report the server's reason once instead of retrying into a timeout.
-        raise ValidationError(
+        return ValidationError(
             message=message,
             status_code=status_code,
             url=url,
             body=body,
         )
     elif status_code is not None and status_code >= 500:
-        raise ServerError(
+        return ServerError(
             message=message,
             status_code=status_code,
             url=url,
             body=body,
         )
     else:
-        raise MascopeAPIError(
+        return MascopeAPIError(
             message=message,
             status_code=status_code,
             url=url,
