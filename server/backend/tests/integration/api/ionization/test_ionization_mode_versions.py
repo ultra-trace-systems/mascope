@@ -525,6 +525,56 @@ async def test_two_edits_of_one_version_at_once_make_one_successor(
 
 
 @pytest.mark.asyncio
+async def test_a_sample_binds_to_the_mode_while_an_edit_holds_it(
+    admin_client, async_session_factory, world, mode, monkeypatch
+):
+    """The edit's lock leaves the foreign-key checks alone. A file ingested
+    during an edit binds its sample to the mode without waiting for the edit.
+    Under FOR UPDATE it waited, and an ingest holding a binding the edit
+    repoints deadlocked with it."""
+    real_lineage = modes_service.lineage
+    bound = {}
+
+    async def lineage_after_a_binding(session, mode_id):
+        # The edit's read of the versions, after it has locked the row: a
+        # sample is bound to the mode here, in a transaction of its own that
+        # gives up after two seconds of waiting.
+        if "outcome" not in bound:
+            try:
+                async with async_session_factory() as other:
+                    await other.execute(text("SET LOCAL lock_timeout = '2s'"))
+                    other.add(
+                        SampleItem(
+                            sample_item_id=gen_id(),
+                            sample_batch_id=mode["batch_id"],
+                            sample_file_id=world["file"],
+                            sample_item_name="Bound during an edit",
+                            sample_item_type="ANALYSIS",
+                            sample_item_attributes={},
+                            polarity="+",
+                            tic=1000.0,
+                            t0=0.0,
+                            t1=60.0,
+                            ionization_mode_id=mode["mode_id"],
+                            sample_item_utc_created=_NOW,
+                        )
+                    )
+                    await other.commit()
+                bound["outcome"] = "bound"
+            except Exception as exc:  # noqa: BLE001 - the outcome is the assertion
+                bound["outcome"] = repr(exc)
+        return await real_lineage(session, mode_id)
+
+    monkeypatch.setattr(modes_service, "lineage", lineage_after_a_binding)
+    second = await _mint(
+        admin_client, world, mode, **_VERSIONED_EDITS["mechanisms"](world)
+    )
+
+    assert bound["outcome"] == "bound"
+    assert (await _row(async_session_factory, second)).is_active
+
+
+@pytest.mark.asyncio
 async def test_an_edit_made_during_a_delete_waits_for_it(
     admin_client, async_session_factory, world, mode, monkeypatch
 ):

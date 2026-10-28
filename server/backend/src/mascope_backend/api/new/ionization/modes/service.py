@@ -293,11 +293,15 @@ async def update_ionization_mode(
     async with async_session() as session:
         # Get the existing ionization mode, locked: two edits of one version
         # would otherwise both read it active and each mint a successor. The
-        # second waits here, then reads the row the first left inactive.
+        # second waits here, then reads the row the first left inactive. The
+        # lock is FOR NO KEY UPDATE, which the foreign-key checks of rows that
+        # bind to the mode do not wait for: under FOR UPDATE an ingest that
+        # binds a file to it would wait for the edit, and deadlock with the
+        # edit's repointing of the binding it holds.
         stmt = (
             select(IonizationMode)
             .where(IonizationMode.ionization_mode_id == ionization_mode_id)
-            .with_for_update()
+            .with_for_update(key_share=True)
         )
         result = await session.execute(stmt)
         ionization_mode = result.scalar_one_or_none()
