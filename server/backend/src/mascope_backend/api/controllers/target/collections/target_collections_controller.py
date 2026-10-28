@@ -30,6 +30,10 @@ from mascope_backend.api.models.target.collections.target_collection_pydantic_mo
     TargetCollectionSortColumn,
     TargetCollectionUpdate,
 )
+from mascope_backend.api.new.ionization.modes.versions import (
+    held_by_earlier_versions,
+    still_held,
+)
 from mascope_backend.db import (
     IonizationMode,
     TargetCollection,
@@ -726,24 +730,37 @@ async def delete_target_collection(
         assoc.target_compound_id for assoc in target_collection.target_compound
     }
 
-    # Query ionization modes that reference this collection (deletion not allowed)
+    # Query ionization modes that reference this collection (deletion not
+    # allowed): current versions, and earlier ones samples are bound under. An
+    # earlier version no sample holds is history; the delete clears its
+    # reference (the foreign key sets it null).
     async with async_session() as session:
         affected_modes_result = await session.execute(
             select(IonizationMode).where(
                 or_(
                     IonizationMode.calibration_collection_id == target_collection_id,
                     IonizationMode.diagnostic_collection_id == target_collection_id,
-                )
+                ),
+                still_held(),
             )
         )
         affected_ionization_modes = list(affected_modes_result.scalars())
 
     # -- Block deletion if collection is used by any ionization mode --
     if affected_ionization_modes:
-        mode_names = [mode.ionization_mode_name for mode in affected_ionization_modes]
+        mode_names = [
+            mode.ionization_mode_name
+            for mode in affected_ionization_modes
+            if mode.is_active
+        ]
+        associated = (
+            f" because it is associated with ionization modes: {', '.join(mode_names)}."
+            if mode_names
+            else "."
+        )
         raise ValueError(
-            f"Cannot delete '{target_collection.target_collection_name}' because "
-            f"it is associated with ionization modes: {', '.join(mode_names)}."
+            f"Cannot delete '{target_collection.target_collection_name}'"
+            f"{associated}{held_by_earlier_versions(affected_ionization_modes)}"
         )
 
     # -- Identify orphan compounds if their deletion is requested --

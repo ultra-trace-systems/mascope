@@ -31,7 +31,7 @@ the partition key is the setup's first version (:func:`root_ids`).
 
 from collections.abc import Iterable
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mascope_backend.db import IonizationMode, MethodBinding, SampleItem, async_session
@@ -116,6 +116,44 @@ def make_version(current: IonizationMode, changes: dict) -> IonizationMode:
         is_active=True,
         supersedes_id=current.ionization_mode_id,
         **copied,
+    )
+
+
+def still_held():
+    """Whether a mode row still stands for something, as a SQL predicate.
+
+    The current version does, and so does an earlier one samples are bound
+    under: they are read through it until a re-process moves them on. An
+    earlier version no sample holds is history alone. A run or a curve may
+    name it, but nothing is bound to it or computed from it again, so it
+    keeps neither a mechanism nor a collection from being deleted.
+
+    :return: A SQL predicate over ``IonizationMode``.
+    """
+    return or_(
+        IonizationMode.is_active.is_(True),
+        exists().where(
+            SampleItem.ionization_mode_id == IonizationMode.ionization_mode_id
+        ),
+    )
+
+
+def held_by_earlier_versions(modes: Iterable[IonizationMode]) -> str:
+    """What a refusal adds about the earlier versions among ``modes``.
+
+    Such a version holds what is being deleted only for the samples bound
+    under it, and re-processing them is what lets it go. Empty when every
+    one of ``modes`` is current.
+    """
+    earlier = [mode for mode in modes if not mode.is_active]
+    if not earlier:
+        return ""
+    named = ", ".join(
+        f"version {mode.version} of '{mode.ionization_mode_name}'" for mode in earlier
+    )
+    return (
+        f" Samples bound under {named}, replaced by a later version, still hold "
+        "it: re-process those samples to move them onto the current version first."
     )
 
 
