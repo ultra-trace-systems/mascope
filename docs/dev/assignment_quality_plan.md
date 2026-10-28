@@ -4,7 +4,7 @@
 
 - **Status:** building
 - **As of:** 2026-10-23
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443 and MAS-570)
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 and MAS-570)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -100,6 +100,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.8 - an identification level in Mascope's own vocabulary | - |  | planned 2026-10-14 (decision 30 taken); after 3.7 |
 | 5.9 - the width a run scored at, served on the run and sample records | #2784 | | built: `sigma_ppm`, `sigma_source`, `mu_ppm`, `mu_source` on the run record and in `list_runs` (an import discloses them in `scoring_width`); `line_width` on the sample record; no run or gate number moves; MAS-410 |
 | 5.10 - the instrument's side-lobe flag: Exception-majority peaks into the satellite flag | #2779 |  | built: a peak most of whose per-scan centroids the instrument flagged is a satellite, unless on an isotopologue line; the averaged profile kept as measured (MAS-577); MAS-443 |
+| 5.11 - a batch's peak lists in one read, and the SDK snapshot of it | #2764 |  | built: one Parquet read per batch, `load_peaks` takes it and keeps the per-sample reads for older servers, `save_path`; MAS-568 |
 | 5.12 - the per-sample scoring derivation as one library function, and a bulk candidate scorer | #2767 | | built: `pattern_scoring_for_sample` and `score_candidates` in `mascope_tools`, the engine and the finder call them; no score moves beyond rounding; MAS-569 |
 | 5.13 - the current verdicts of a batch or dataset in one read, through the API, the SDK and the export | - |  | built: one row per judged peak, a batch-level verdict marked `borrowed` where it reaches a sample, a sheet of the batch export; MAS-570 |
 
@@ -945,7 +946,7 @@ under its milestone 5.
 | rider | folds into a planned step; written into that step's issue and named in its status row | 3.4e (three), 3.4f (one), 3.6 (two), 3.3d (one), 4.2 (five) |
 | new step | its own step under milestone 5 | 5.1 to 5.7 below |
 | not ours | the reference's strategy, exploration or narrative, by the charter's boundary | its evidence scale and claims as a vocabulary, its merge vote, trace-first and the rolling centre, its scorecard and A/B scripts as scripts, its report and workbook, its MCP tools |
-| ask of Mascope | a server, library or contract gap the reference worked around | the batch import's missing verdict (5.6), the TOF signal-to-noise column (5.5), the Orbitrap axis (5.7 and the axis-fingerprint project), the censored minor lines (5.3), a per-line centre in the library's score (3.5b), the mechanism catalogue read as a configuration (5.6's docs line), the verdicts of a batch or dataset in one read (5.13) |
+| ask of Mascope | a server, library or contract gap the reference worked around | the batch import's missing verdict (5.6), the TOF signal-to-noise column (5.5), the Orbitrap axis (5.7 and the axis-fingerprint project), the censored minor lines (5.3), a per-line centre in the library's score (3.5b), the mechanism catalogue read as a configuration (5.6's docs line), a batch's peak lists in one read (5.11), the verdicts of a batch or dataset in one read (5.13) |
 
 ### 5.1 The reference pinned at a release, and a boundary review per peaky release
 
@@ -1294,6 +1295,36 @@ with the averaged profile kept as measured.
 - **Size.** L. Beside 5.4 (MAS-69), which reads the same lobes by their
   width-scaled signatures and can take the instrument's flag as one of them.
 
+### 5.11 A batch's peak lists in one read, and the SDK snapshot of it
+
+- **What.** `GET /api/batch-peaks/batch/{sample_batch_id}/peaks` answers
+  every peak of every sample of a batch as one Parquet table, each sample
+  read as `GET /api/samples/{sample_item_id}/peaks` reads it with no range:
+  `sample_item_id`, `sample_item_name`, `datetime_utc`, `peak_id`, `mz`,
+  `sparsity`, `signal_to_noise`, `segment`, `area`, `height`,
+  `is_satellite`. `matches` adds the match columns (one row per match,
+  off by default), `satellites` keeps the satellite peaks the per-sample
+  read leaves out, flagged. The file's metadata names the samples whose
+  read failed; the batch is answered without them. The SDK's `load_peaks`
+  reads each batch this way, lays the table out as its per-sample reads
+  were, and reads sample by sample from a server that answers the route
+  404; `matches` defaults to off there and on for the older server, as it
+  always was. `load_peaks(..., save_path=...)` writes the frame, `attrs`
+  included, as a Parquet file.
+- **Why.** The reference builds its batch time series through
+  `load_peaks`, which was one JSON request per sample with the match
+  expansion on, and keeps the table only when asked for a parquet. Every
+  batch consumer repeats that read and caches it its own way.
+- **Where.** `api/controllers/samples/batch_peak_table.py`,
+  `batch_peaks_routes.py`, `samples_peaks.py` (the satellite option);
+  `mascope_sdk/_loaders.py`, `resources/batch_peaks.py` (`peak_lists`),
+  `libraries/sdk/README.md`.
+- **Verify.** On the demo stack, `load_peaks` over either demo batch
+  returns the same frame through the batch read as through the per-sample
+  reads, in 1 request instead of 80 and 81; the snapshot reads back equal.
+  No gate number moves.
+- **Size.** M. Independent (MAS-568).
+
 ### 5.12 The per-sample scoring derivation as one library function, and a bulk candidate scorer
 
 - **What.** The `PatternScoring` a sample is judged at is derived in
@@ -1433,6 +1464,8 @@ with the averaged profile kept as measured.
   already keys reagent lines on the ion; the envelope claim keys on the row.
 - The electron-attachment mechanism: shipped since 3.3e.
 - Peak areas in the peaks endpoint and the batch time series: served.
+- A batch's peak lists in one read rather than one request per sample, and
+  a snapshot of them to re-read offline (mascope#2757): 5.11.
 - The per-sample scoring derivation in the library, and candidates scored
   in bulk: 5.12.
 - The verdicts of a batch or dataset in one read, for a truth corpus and
