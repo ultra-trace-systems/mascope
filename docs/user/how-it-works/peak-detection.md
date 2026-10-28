@@ -108,7 +108,7 @@ Averaging lowered the noise and left the floor, so each of its maxima reads an $
 An Orbitrap peak is therefore also measured against the peaks of its own spectrum (its polarity, or its scan stream) within $\pm 3000\text{ ppm}$ of its m/z.
 Where that window holds at least $300$ other peaks, one every $20\text{ ppm}$ on average, the stretch is a floor rather than a list of resolved ions, and a peak lower than $5$ times the median height of the window's peaks is flagged as weak.
 The window is wide so that the comb of side lobes a few hundred ppm either side of a reagent ion, dense over too short a stretch to fill it, is left to the satellite flag below.
-A real ion in the floor stands out of it and is kept.
+An ion standing five times out of the floor is kept; a real ion weaker than that is flagged weak with the floor.
 Where the window holds fewer peaks, the stretch says nothing of a floor, and its peaks are judged by their $\text{SNR}$ alone.
 
 ### Satellite Peak Identification
