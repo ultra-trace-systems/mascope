@@ -191,7 +191,11 @@ from mascope_tools.composition.calibration import (
     InsufficientCalibrationData,
     recalibrate,
 )
-from mascope_tools.composition.custom_elements import label_purity, labelled_purity
+from mascope_tools.composition.custom_elements import (
+    CUSTOM_ELEMENTS,
+    label_purity,
+    labelled_purity,
+)
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
 from mascope_tools.composition.known_window import KnownWindow
@@ -1819,7 +1823,8 @@ def _build_reference_isotopes_df(
 # times. The key's reference part comes from known_state_fingerprint, so a
 # re-synced or (de)activated source invalidates naturally; the licence gate is
 # in the key too, because narrowing it must not be served the wider frame a run
-# from before the change left behind. A handful of entries covers a
+# from before the change left behind, and so is the labelled reagent's purity
+# a run's setup reads its labelled lines at. A handful of entries covers a
 # deployment's realistic (instrument, polarity, threshold) combinations.
 _REFERENCE_ISOTOPE_CACHE_MAX = 8
 _reference_isotope_cache: OrderedDict[tuple, pd.DataFrame] = OrderedDict()
@@ -1876,6 +1881,9 @@ async def _fetch_reference_known_isotopes(
         isotope_abundance_threshold,
         known_window,
         polarity,
+        # The lines of a labelled ion are built at the purity in effect, the
+        # run's setup's: a run under another setup builds its own.
+        tuple(label_purity(symbol) for symbol in sorted(CUSTOM_ELEMENTS)),
     )
 
     async with _reference_isotope_cache_lock:

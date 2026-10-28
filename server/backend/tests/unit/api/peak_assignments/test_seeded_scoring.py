@@ -26,12 +26,14 @@ from mascope_backend.api.new.peak_assignments.engine import (
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     SEEDED_FIT_MIN_IONS,
+    build_seeded_isotopes_df,
     score_seeds,
 )
 from mascope_match.params import (
     ORBI_DEFAULT_ISOTOPE_ABUNDANCE_THRESHOLD,
     OrbiMatchParams,
 )
+from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
 from mascope_tools.composition.mass_accuracy import fit_sample_mass_accuracy
 from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
@@ -115,11 +117,23 @@ class _Frames(list):
     found_abundance = FOUND_ABUNDANCE
     others_centre_ppm = 0.0
     others_spread_ppm = SPREAD_PPM
+    #: The labelled reagent's purity the sample's setup carries: None, as for
+    #: a sample bound under no mode, leaves the library's default.
+    setup_purity = None
 
 
 @pytest.fixture
 def stubbed(monkeypatch, reagent):
     frames = _Frames()
+    frames.purities = []
+
+    async def setup_purity(sample_item_id):
+        return frames.setup_purity
+
+    def build(*args):
+        # Where the seeded ions' lines are built, off the event loop.
+        frames.purities.append(label_purity("^N"))
+        return build_seeded_isotopes_df(*args)
 
     async def mechanisms(mechanism_ids):
         return {
@@ -144,11 +158,13 @@ def stubbed(monkeypatch, reagent):
 
     monkeypatch.setattr(seeded_scoring, "fetch_mechanisms_by_id", mechanisms)
     monkeypatch.setattr(seeded_scoring, "compute_match_isotopes", match)
+    monkeypatch.setattr(seeded_scoring, "sample_label_purity", setup_purity)
+    monkeypatch.setattr(seeded_scoring, "build_seeded_isotopes_df", build)
     monkeypatch.setattr(seeded_scoring, "get_instrument_type", lambda name: "orbi")
     return frames
 
 
-SAMPLE = SimpleNamespace(filename="sample.raw", polarity="+")
+SAMPLE = SimpleNamespace(sample_item_id="si-1", filename="sample.raw", polarity="+")
 
 
 async def _fit(seeds, **kwargs):
@@ -350,3 +366,16 @@ async def test_a_run_centres_its_re_score_where_stage_a_was_scored():
         is None
     )
     assert service._run_scoring_centre(SampleMassAccuracy()) is None
+
+
+async def test_the_seeds_are_read_at_the_purity_of_the_samples_setup(stubbed):
+    """A run reads its sample's labelled ions at the purity the sample's setup
+    carries, and the readers outside a run - the batch search's propagation,
+    the inspector's evidence and alternatives - score through here, so they
+    read them alike."""
+    await _fit({TARGET})
+    stubbed.setup_purity = 0.9
+    await _fit({TARGET})
+
+    assert stubbed.purities == [CUSTOM_ELEMENTS["^N"].default_purity, 0.9]
+    assert label_purity("^N") == CUSTOM_ELEMENTS["^N"].default_purity
