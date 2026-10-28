@@ -229,6 +229,8 @@ single batch by its full name, or a compiled `re.Pattern` for a regex.
 ```python
 import re
 
+import pandas as pd
+
 # All peaks from every batch whose name contains "Uronium"
 peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium")
 
@@ -246,9 +248,52 @@ peaks = mascope.load_peaks(dataset="My Dataset", samples="blank")
 # All peaks from every batch (skip confirmation prompt)
 peaks = mascope.load_peaks(dataset="My Dataset", confirm_above=None)
 
-# Without match data, areas only
-peaks = mascope.load_peaks(dataset="My Dataset", matches=False, heights=False)
+# With match data, areas only
+peaks = mascope.load_peaks(dataset="My Dataset", matches=True, heights=False)
+
+# Keep a snapshot of one batch to work on offline, without the server
+peaks = mascope.load_peaks(
+    dataset="My Dataset",
+    batches="Uronium 2026-01",
+    exact=True,
+    save_path="uronium.parquet",
+)
+peaks = pd.read_parquet("uronium.parquet")  # later, anywhere: attrs included
 ```
+
+Each batch comes in one request: the server sends all of its samples' peak
+lists as one table (`batch_peaks.peak_lists`). A server older than that read
+answers 404, and `load_peaks` then reads each sample on its own, eight at a
+time, as it always did. The frame is the same either way, with two
+differences:
+
+- **Match columns.** `matches` left out reads no matches where each batch
+  comes in one request, and reads them from an older server, as before.
+  Pass `matches=True` or `matches=False` to get the same columns from
+  either.
+- **`is_satellite`.** The one-request read adds this column. It is False
+  throughout, because satellite peaks are left out, as `get_peaks` leaves
+  them out.
+
+The columns, one row per peak (per match with `matches=True`):
+
+- `sample_batch_name`, `sample_item_id`, `sample_item_name`, `datetime_utc`
+  (the sample's start, UTC).
+- `peak_id`, `mz`, `area`, `height` (averaged over the sample's scans;
+  summed with `average=False`), `sparsity`.
+- `signal_to_noise`, `NaN` where the file stores no estimate.
+- `segment`, only for a stitched sample.
+- `is_satellite`, as above.
+- With matches, the match columns of `get_peaks`: `target_isotope_id`,
+  `target_ion_id`, `target_compound_id` and their formulas and names,
+  `match_score_isotope`, `match_score_ion`, `match_score_compound`,
+  `relative_abundance`, `ionization_mechanism`, `target_collection_ids`,
+  `target_collection_names`.
+
+`save_path` writes the frame as a Parquet file, `attrs` included, and
+`pd.read_parquet` reads back the same frame: the rows, the provenance and
+the failures (see [Provenance](#provenance)). Nothing is written when the
+load finds nothing.
 
 ---
 
@@ -465,7 +510,7 @@ with open("peaks.provenance.json", "w", encoding="utf-8") as f:
     json.dump(peaks.attrs["provenance"], f, indent=2)
 ```
 
-Parquet keeps `attrs` inside the file - `peaks.to_parquet("peaks.parquet")`, and `pd.read_parquet` brings them back - as long as pandas is 2.1 or newer and `pyarrow` is installed, neither of which the SDK itself requires. A `load_batch_ledger` frame is the exception: its `attrs` also hold the species table, a DataFrame that Parquet cannot keep there, so `to_parquet` raises. Save the species table as a file of its own first:
+Parquet keeps `attrs` inside the file - `peaks.to_parquet("peaks.parquet")`, and `pd.read_parquet` brings them back. The SDK requires pandas 2.1 or newer and `pyarrow`, which this needs; `load_peaks(..., save_path=...)` does it for you. A `load_batch_ledger` frame is the exception: its `attrs` also hold the species table, a DataFrame that Parquet cannot keep there, so `to_parquet` raises. Save the species table as a file of its own first:
 
 ```python
 ledger = mascope.load_batch_ledger(dataset="My Dataset")
@@ -1132,6 +1177,9 @@ The compound list is shared by every workspace, so `add`, `update` and `remove` 
 | `verdicts(batch_id)`                             | The batch-level verdicts on its species                        | `pd.DataFrame│None` |
 | `runs(batch_id)`                                 | The batch runs that rewrote its ledger, newest first           | `pd.DataFrame│None` |
 | `import_run(batch_id, rows, engine=, engine_version=)` | Land an external engine's batch-level result as a run    | `dict│None`         |
+| `peak_lists(batch_id, matches=False, satellites=False, average=True)` | Every peak of every sample of the batch, in one read | `pd.DataFrame` |
+
+`peak_lists` is the batch's peak lists, not its ledger: every sample read as `samples.get_peaks` reads it with no range, sent by the server as one Parquet table. It needs no ledger and is what `load_peaks` reads. Its columns are `sample_item_id`, `sample_item_name`, `datetime_utc`, `peak_id`, `mz`, `sparsity`, `signal_to_noise`, `segment`, `area`, `height` and `is_satellite`. With `matches=True` it adds the match columns as the server keeps them, `ionization_mechanism_id` among them, with no ion or compound score. `satellites=True` keeps the satellite peaks, sidelobes of a stronger peak that `get_peaks` leaves out, with `is_satellite` True. `df.attrs["failures"]` names each sample the server could not read (`status_code`, `error`). `df.attrs["complete"]` is then False, and the rest of the batch is answered without it.
 
 `series` is the slim counterpart of `members`: one row per (sample, batch peak) with the member's `sample_item_id`, `sample_peak_id`, `intensity` and `tier` beside its batch peak's `batch_peak_id`, `batch_mz`, `consensus_formula`, `consensus_ion_formula` and `consensus_tier`. `min_n_present=2` leaves out the batch peaks only one sample saw. `df.attrs["run_id"]` names the run the rows are from: `run_id` when given, else the batch's current run. While a rebuild or search is running, the previous run is still the current one but the live ledger is being rewritten, so the rows may be half of each; `series` logs a warning then, and a read after the run finishes is the reliable one. See [`load_batch_ledger`](#load_batch_ledger-the-batch-ledger).
 
