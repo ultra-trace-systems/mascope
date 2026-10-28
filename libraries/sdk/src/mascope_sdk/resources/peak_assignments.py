@@ -5,6 +5,8 @@ sample with its committed formula, adduct, evidence, and confidence tier, as
 produced by a server-side assignment run. Launches such a run on a sample,
 records a verdict on one of its assignments, and scores an arbitrary
 composition against a sample (see ``docs/dev/sdk_peak_assignment.md``).
+Reads the verification verdicts of one sample, or of a whole batch or
+dataset in one request.
 
 The two writes, :meth:`PeakAssignmentsResource.assign` and
 :meth:`PeakAssignmentsResource.verify`, are sent once and never again on a
@@ -14,6 +16,7 @@ calibration, and a launch sent twice is refused as already in flight.
 
 import time
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any, TypedDict
 
 import pandas as pd
@@ -919,6 +922,142 @@ class PeakAssignmentsResource(BaseResource):
                 "ionization_mechanism_id": ionization_mechanism_id,
             },
         )
+
+    def verifications_for_batch(
+        self,
+        sample_batch_id: str,
+        *,
+        verdict: str | None = None,
+        evidence_level: str | None = None,
+        since: datetime | str | None = None,
+        include_superseded: bool = False,
+    ) -> pd.DataFrame | None:
+        """The current verification verdicts over every sample of a batch,
+        one row per judged peak, as each sample's assignment ledger shows them.
+
+        A row is either the sample's own verdict, or a batch-level verdict
+        (:meth:`~mascope_sdk.resources.batch_peaks.BatchPeaksResource.verdicts`)
+        that reaches the sample: the sample's peak folded into the judged batch
+        peak and claims the formula and mechanism judged, and the sample has no
+        current verdict of its own on that claim. The second kind is marked
+        ``borrowed``. This is the labelled record of the batch: join it to
+        :meth:`get` on ``sample_item_id`` and ``sample_peak_id``.
+
+        :param sample_batch_id: The ID of the sample batch.
+        :type sample_batch_id: str
+        :param verdict: Keep only ``confirmed``, ``rejected`` or ``unsure``.
+        :type verdict: str, optional
+        :param evidence_level: Keep only verdicts recorded on this basis:
+                               ``reference_standard``, ``msms``,
+                               ``orthogonal``, ``pattern`` or ``visual``.
+        :type evidence_level: str, optional
+        :param since: Keep only verdicts recorded at or after this moment; a
+                      time without a zone is read as UTC.
+        :type since: datetime | str, optional
+        :param include_superseded: Also list the sample's own verdicts that a
+                                   later one replaced (``superseded_utc``
+                                   set). Batch-level verdicts are listed live
+                                   only.
+        :type include_superseded: bool, optional
+        :return: A DataFrame with one row per verdict, by sample acquisition
+                 time, then m/z, newest verdict first:
+
+                 - ``sample_item_id``, ``sample_item_name``,
+                   ``sample_batch_id``, ``filename``, ``datetime``,
+                   ``datetime_utc``: the sample
+                 - ``sample_peak_id``, ``sample_peak_mz``: the judged peak
+                 - ``assigned_formula``, ``ionization_mechanism_id``: the claim
+                   judged
+                 - ``verdict``, ``evidence_level``, ``note``, ``context``,
+                   ``verified_by``, ``verified_utc``, ``superseded_utc``
+                 - ``fit_score``, ``evidence``, ``p_correct``: the score
+                   snapshot taken when the sample's own verdict was recorded;
+                   null on a borrowed one
+                 - ``borrowed``: a batch-level verdict reaching the sample
+                 - ``assignment_verification_id``, ``peak_assignment_id``,
+                   ``peak_assignment_run_id``: on the sample's own verdict
+                 - ``batch_peak_verification_id``, ``batch_peak_id``,
+                   ``stale``: on a borrowed one; ``stale`` when the batch
+                   peak's consensus has since left the claim judged
+
+                 Returns None when nothing in the batch was judged.
+        :rtype: pd.DataFrame | None
+        :raises AuthenticationError: If authentication fails.
+        :raises NotFoundError: If the batch is not found.
+        :raises ValidationError: If a filter value is not one the API accepts.
+        :raises MascopeAPIError: If the API request fails.
+
+        Example::
+
+            verdicts = mascope.peak_assignments.verifications_for_batch(batch_id)
+            confirmed = verdicts[verdicts["verdict"] == "confirmed"]
+            own = verdicts[~verdicts["borrowed"]]
+        """
+        return self._verifications(
+            f"peak-assignments/batch/{sample_batch_id}/verifications",
+            verdict=verdict,
+            evidence_level=evidence_level,
+            since=since,
+            include_superseded=include_superseded,
+        )
+
+    def verifications_for_dataset(
+        self,
+        dataset_id: str,
+        *,
+        verdict: str | None = None,
+        evidence_level: str | None = None,
+        since: datetime | str | None = None,
+        include_superseded: bool = False,
+    ) -> pd.DataFrame | None:
+        """The current verification verdicts over every sample of a dataset,
+        in one read: :meth:`verifications_for_batch` over each of its batches,
+        with the same filters and columns.
+
+        :param dataset_id: The ID of the dataset.
+        :type dataset_id: str
+        :return: A DataFrame with one row per verdict, as
+                 :meth:`verifications_for_batch` returns. Returns None when
+                 nothing in the dataset was judged.
+        :rtype: pd.DataFrame | None
+        :raises AuthenticationError: If authentication fails.
+        :raises NotFoundError: If the dataset is not found.
+        :raises ValidationError: If a filter value is not one the API accepts.
+        :raises MascopeAPIError: If the API request fails.
+        """
+        return self._verifications(
+            f"peak-assignments/dataset/{dataset_id}/verifications",
+            verdict=verdict,
+            evidence_level=evidence_level,
+            since=since,
+            include_superseded=include_superseded,
+        )
+
+    def _verifications(
+        self,
+        path: str,
+        *,
+        verdict: str | None,
+        evidence_level: str | None,
+        since: datetime | str | None,
+        include_superseded: bool,
+    ) -> pd.DataFrame | None:
+        """One read of the verdicts over a batch or dataset, as a frame."""
+        params: dict[str, Any] = {}
+        if include_superseded:
+            params["include_superseded"] = "true"
+        if verdict is not None:
+            params["verdict"] = verdict
+        if evidence_level is not None:
+            params["evidence_level"] = evidence_level
+        if since is not None:
+            params["since"] = (
+                since.isoformat() if isinstance(since, datetime) else since
+            )
+        data = self._get(path, params=params)
+        if not data:
+            return None
+        return _coerce_utc_columns(_coerce_datetime_columns(pd.DataFrame(data)))
 
 
 def _is_ineligible(error: MascopeAPIError) -> bool:
