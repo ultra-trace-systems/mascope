@@ -33,5 +33,6 @@ Full author list and machine-readable metadata are in
 [`CITATION.cff`](https://github.com/ultra-trace-systems/mascope/blob/master/CITATION.cff)
 (GitHub's "Cite this repository" button).
 
-<!-- TODO: short annotated screenshot/GIF of the UI; one-paragraph "what is
-Mascope" aimed at scientists; link to a public demo instance once available. -->
+<!-- TODO: a short tour of the UI in words (no screenshots: see "User docs in
+dev" in docs/dev/developer_guide.md); one-paragraph "what is Mascope" aimed at
+scientists; link to a public demo instance once available. -->
