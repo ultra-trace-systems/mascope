@@ -19,7 +19,7 @@ from .mechanism_notation import (
 )
 from .models import CompositionSearchConfig, HeuristicFilterConfig, PatternScoring
 from .profiles import resolve_fallback_sigma_ppm, resolve_match_tolerance_ppm
-from .scoring import pattern_scoring_for_sample
+from .scoring import pattern_scoring_for_sample, score_candidates
 
 
 # `formula_plausibility` is exported because it is not an internal detail of the
@@ -61,6 +61,8 @@ from .scoring import pattern_scoring_for_sample
 # lines' `ReagentOffset` beside it), the instrument class and the match
 # parameters, in the order Mascope's engine applies them; the engine calls it,
 # so an outside engine that calls it scores the sample where Mascope did.
+# `score_candidates` is the finder's ranking measurement for a whole candidate
+# list at once, which is what such an engine runs over a file's first pass.
 #
 # The mechanism notation readers are exported for the same kind of caller: a
 # mechanism is the one string an engine publishing into Mascope and Mascope
@@ -87,6 +89,7 @@ __all__ = [
     "resolve_fallback_sigma_ppm",
     "resolve_match_tolerance_ppm",
     "SampleMassAccuracy",
+    "score_candidates",
     "scoring_sigma_ppm",
     "standard_notation",
 ]
