@@ -32,6 +32,8 @@ SAMPLE = SimpleNamespace(
 async def _summary(get_ms2_summary):
     with (
         patch(f"{_MS2}.fetch_sample", AsyncMock(return_value=SAMPLE)),
+        # A raw Orbitrap file, as far as the summary asks, with no store
+        patch(f"{_MS2}._reads_raw_ms2", lambda filename: True),
         patch(f"{_MS2}.m_compute.get_ms2_summary", get_ms2_summary),
     ):
         return await ms2_service.get_ms2_summary("si-1")
@@ -50,7 +52,7 @@ async def test_a_summary_without_one_width_is_answered():
 
     response = await _summary(AsyncMock(return_value=summary))
 
-    assert response["data"] == summary
+    assert response["data"] == {**summary, "reason": None}
 
 
 @pytest.mark.asyncio
@@ -66,3 +68,12 @@ async def test_no_scan_storing_a_width_is_refused_in_one_sentence():
     assert excinfo.value.user_message == (
         "Failed to get ms2 summary. No MS2 scan stores an isolation width."
     )
+
+
+def test_a_file_of_no_class_the_reader_tells_is_not_read_raw():
+    """A file none of whose data, props or name says what made it: its
+    summary is the one of a file whose MS2 scans are not read."""
+    with patch(
+        f"{_MS2}.get_sample_file_type", side_effect=ValueError("no instrument type")
+    ):
+        assert ms2_service._reads_raw_ms2("unknown_2026.01.01-12h00m00s") is False

@@ -11,6 +11,10 @@ answered from them, and every response gives the tolerance its groups were
 made at in ``parent_peak_tolerance``. The MS1 centroids are read from the raw
 file's MS1 scans, as before.
 
+The summary's groups are read from the group inventory where it can answer
+for the sample (``source: "inventory"``, :mod:`.inventory`), which is also
+what lists the groups of every sample of a batch in one query.
+
 Compute functions (in mascope_signal) use asyncio.to_thread internally, so the
 event loop is not blocked; however, each request still awaits the result
 synchronously—long-running operations may exceed client-side timeouts.
@@ -32,8 +36,13 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     NotFoundException,
 )
+from mascope_backend.api.new.ms2.inventory import (
+    batch_ms2_groups,
+    sample_ms2_inventory,
+)
+from mascope_file.name import get_sample_file_type
 from mascope_signal.ms2_store import Ms2Store, group_key, parse_group_key
-from mascope_thermo.thermo import NoScansFoundError
+from mascope_thermo.thermo import NoScansFoundError, ms2_summary
 
 
 DEFAULT_TIMEOUT = 120  # seconds
@@ -42,6 +51,26 @@ DEFAULT_TIMEOUT = 120  # seconds
 SOURCE_STORE = "store"
 #: What ``source`` says of a response read from the raw file.
 SOURCE_RAW = "raw"
+#: What ``source`` says of a summary whose groups are the group inventory's.
+SOURCE_INVENTORY = "inventory"
+
+#: Why a summary lists no group: a raw Orbitrap file whose sample holds none,
+#: and a file whose MS2 scans are not read, which is any other (a TOF one).
+REASON_NONE = "none"
+REASON_UNSUPPORTED = "unsupported"
+
+#: A group's fields in the summary, as ``mascope_thermo.thermo.ms2_group_summary``
+#: makes them.
+_SUMMARY_GROUP_FIELDS = (
+    "parent_peak_mz",
+    "activation",
+    "hcd_energy",
+    "isolation_width",
+    "isolation_widths",
+    "scan_count",
+    "t_min",
+    "t_max",
+)
 
 
 async def _open_store(filename: str) -> Ms2Store | None:
@@ -60,6 +89,50 @@ def ms2_group_key(parent_peak_mz: float, activation: str) -> str:
     return f"{parent_peak_mz}@{activation}" if activation else f"{parent_peak_mz}"
 
 
+def _inventory_record(group: dict) -> dict:
+    """A group of the inventory as the summary gives a group."""
+    return {name: group[name] for name in _SUMMARY_GROUP_FIELDS}
+
+
+async def _summary_from_inventory(sample, store: Ms2Store) -> dict | None:
+    """The sample's summary with its groups read from the group inventory.
+
+    Its groups are the inventory's, which are what the samples listing
+    counts and the batch's groups list, and the rest of the summary - the
+    scan counts and the one width every MS2 scan shares - is read from the
+    store's scan index. None when the inventory cannot answer, and the store
+    is read instead: a sample with no polarity, one whose window cuts a
+    group, one that holds no group, and a file whose inventory does not list
+    every group its store holds, or lists one it does not.
+    """
+    if sample.polarity not in ("+", "-"):
+        return None
+    groups, listed = await sample_ms2_inventory(sample)
+    stored = {(group["polarity"], group["key"]) for group in store.attrs["groups"]}
+    if not groups or listed != stored or not all(g["whole"] for g in groups):
+        return None
+    counts = await asyncio.to_thread(
+        store.scan_counts, sample.t0, sample.t1, sample.polarity
+    )
+    return ms2_summary(
+        [_inventory_record(group) for group in groups],
+        counts[2],
+        counts[0],
+        counts[1],
+        store.parent_peak_tolerance,
+    )
+
+
+def _reads_raw_ms2(filename: str) -> bool:
+    """Whether a file's MS2 scans can be read from its raw file: a raw
+    Orbitrap file, kept beside its sample."""
+    try:
+        return get_sample_file_type(filename) == "orbi_raw"
+    except ValueError:
+        # Of no instrument class this can tell: not a raw Orbitrap file
+        return False
+
+
 @api_controller()
 async def get_ms2_summary(
     sample_item_id: str,
@@ -76,6 +149,15 @@ async def get_ms2_summary(
     ``isolation_width`` is ``None`` when the scans do not share one, as a
     targeted method's events may not.
 
+    The groups are the group inventory's (``source: "inventory"``) for a
+    sample whose window holds each of its groups whole, which is a sample of
+    the whole acquisition; else the store's, else the raw file's.
+    ``reason`` says why a summary lists no group: ``"none"`` for a raw
+    Orbitrap file whose sample holds none, ``"unsupported"`` for a file whose
+    MS2 scans Mascope does not read, which is any but a raw Orbitrap file (a
+    TOF sample), and which answers with no scan counted; None when it lists
+    some.
+
     :param sample_item_id: Unique identifier for the sample.
     :param parent_peak_tolerance: Tolerance in Da for merging duplicate parent peaks.
     :param timeout: Maximum seconds to wait for the computation.
@@ -87,11 +169,21 @@ async def get_ms2_summary(
     async def read() -> tuple[dict, str, float]:
         store = await _open_store(sample.filename)
         if store is not None:
+            summary = await _summary_from_inventory(sample, store)
+            if summary is not None:
+                return summary, SOURCE_INVENTORY, store.parent_peak_tolerance
             summary = await asyncio.to_thread(
                 store.summary, sample.t0, sample.t1, sample.polarity
             )
             if summary is not None:
                 return summary, SOURCE_STORE, store.parent_peak_tolerance
+        if not await asyncio.to_thread(_reads_raw_ms2, sample.filename):
+            # Nothing to read: the inventory holds no group of such a file,
+            # and its scans are not counted
+            unsupported = ms2_summary([], [], 0, 0, parent_peak_tolerance)
+            unsupported["ms1_scan_count"] = None
+            unsupported["reason"] = REASON_UNSUPPORTED
+            return unsupported, SOURCE_INVENTORY, parent_peak_tolerance
         summary = await m_compute.get_ms2_summary(
             sample.filename,
             t_min=sample.t0,
@@ -110,6 +202,8 @@ async def get_ms2_summary(
             504,
         )
 
+    if "reason" not in summary:
+        summary = {**summary, "reason": None if summary["groups"] else REASON_NONE}
     return {
         "message": f"MS2 summary for sample '{sample.sample_item_name}'.",
         "source": source,
@@ -511,4 +605,29 @@ async def get_ms2_scans(
             "activation": described["activation"],
             "scans": served,
         },
+    }
+
+
+@api_controller()
+async def get_batch_ms2_groups(sample_batch_id: str) -> dict:
+    """Retrieve the MS2 groups of every sample of a batch.
+
+    Read from the group inventory in one query, whatever the batch's size:
+    one record per (sample, group), with the sample's id
+    (:func:`.inventory.group_record`), ordered by the samples' acquisition
+    time and within a sample as its summary orders its groups. A group the
+    sample's window cuts has ``whole`` false: its counts and span are its
+    file's. Empty for a batch none of whose samples holds a group - an MS1
+    batch, a TOF one, or one whose files' stores the backfill has not
+    listed yet.
+
+    :param sample_batch_id: The batch.
+    :return: The groups, and how many.
+    """
+    groups = await batch_ms2_groups(sample_batch_id)
+    samples = len({group["sample_item_id"] for group in groups})
+    return {
+        "message": f"{len(groups)} MS2 groups of {samples} samples of the batch.",
+        "results": len(groups),
+        "data": groups,
     }

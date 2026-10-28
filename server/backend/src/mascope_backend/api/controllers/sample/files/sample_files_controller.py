@@ -54,6 +54,7 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileUpdate,
 )
 from mascope_backend.api.new.instruments import get_instruments
+from mascope_backend.api.new.ms2.inventory import write_ms2_inventory
 from mascope_backend.api.new.notifications.service import (
     resolve_processing_notifications,
 )
@@ -564,6 +565,22 @@ def _refuses_the_row(refused: DBAPIError) -> bool:
     return isinstance(sqlstate, str) and sqlstate[:2] in ("22", "23")
 
 
+async def _list_ms2_groups(sample_file_id: str, filename: str) -> None:
+    """List a registered file's MS2 groups in the group inventory.
+
+    Never fails the registration: a file whose groups could not be listed
+    keeps its MS2 store, which its routes read, and the MS2 store backfill
+    lists them.
+    """
+    try:
+        await write_ms2_inventory(sample_file_id, filename)
+    except Exception:  # noqa: BLE001 - one file's inventory, never its record
+        runtime.logger.opt(exception=True).warning(
+            f"Could not list the MS2 groups of {filename} in the group "
+            "inventory; the MS2 store backfill lists them"
+        )
+
+
 @api_controller()
 async def create_sample_file(
     sample_file_create: SampleFileCreate,
@@ -707,6 +724,10 @@ async def create_sample_file(
 
         # Step 4: Refresh instance
         await session.refresh(new_sample_file)
+
+        # The converter wrote the file's MS2 store before asking for the
+        # record, which its groups need.
+        await _list_ms2_groups(new_sample_file.sample_file_id, new_sample_file.filename)
 
         # Step 5. Emit creation event and handle instrument changes
         await emit_record_created(

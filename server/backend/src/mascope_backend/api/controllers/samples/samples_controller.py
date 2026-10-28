@@ -27,6 +27,7 @@ from mascope_backend.api.models.samples.sample_pydantic_model import SampleSortC
 from mascope_backend.api.models.target.collections.config import (
     target_collection_config,
 )
+from mascope_backend.api.new.ms2.inventory import ms2_group_count, sample_ms2_groups
 from mascope_backend.db import (
     MatchCollection,
     MatchSample,
@@ -115,7 +116,10 @@ async def get_samples(
     :type sort: str
     :param order: Sorting order ("asc" or "desc"), defaults to "asc"
     :type order: str
-    :return: Dictionary with status, message, results count, and sample data with nested match information
+    :return: Dictionary with status, message, results count, and sample data
+        with nested match information, and each sample's ``ms2_group_count``:
+        how many MS2 groups the group inventory lists for it, 0 for a sample
+        with none
     :rtype: dict
     """
     async with async_session() as session:
@@ -145,6 +149,7 @@ async def get_samples(
                 Sample,
                 MatchSample,
                 alarming_subq.c.alarming,
+                ms2_group_count(Sample),
             )
             .outerjoin(MatchSample, Sample.sample_item_id == MatchSample.sample_item_id)
             .outerjoin(
@@ -216,6 +221,7 @@ async def get_samples(
                 }
 
             sample_data["match"] = match_data
+            sample_data["ms2_group_count"] = row.ms2_group_count
             data.append(sample_data)
 
         return {
@@ -235,7 +241,10 @@ async def get_sample(
 
     :param sample_item_id: Unique identifier for the sample.
     :type sample_item_id: str
-    :return: A dictionary containing detailed sample information, match data (if available), and match collection types (if available).
+    :return: A dictionary containing detailed sample information, match data (if available), and match collection types (if available),
+        and ``ms2_groups``: the MS2 groups the group inventory lists for the
+        sample, as the batch's groups route gives them
+        (:func:`mascope_backend.api.new.ms2.inventory.group_record`).
     :rtype: dict
     :raises NotFoundException: If the sample with the specified item ID is not found.
     """
@@ -306,6 +315,7 @@ async def get_sample(
         }
 
     sample_data["match"] = match_data
+    sample_data["ms2_groups"] = await sample_ms2_groups(row.Sample)
 
     return {
         "status": "success",

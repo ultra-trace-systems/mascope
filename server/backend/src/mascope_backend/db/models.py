@@ -1239,6 +1239,71 @@ class AcquisitionStream(Base):
     )
 
 
+class Ms2Group(Base):
+    """One MS2 group of a sample file: the group inventory.
+
+    A file's MS2 scans are grouped by polarity, parent peak and activation in
+    its MS2 store (``mascope_signal.ms2_store``), and this table holds one row
+    per group, so that which samples of a batch have MS2, of which
+    precursors, at what energies, is one query rather than a read of every
+    file (``docs/dev/ms2_analysis.md``, section 2.3).
+
+    **Written when the store is**, from the store and over all of each
+    group's scans (``Ms2Store.inventory``): when the file is registered after
+    its conversion, and when re-processing writes its store again or removes
+    it; the MS2 store backfill fills it for a file whose store was written
+    before. A file's rows are replaced whole each time, and go with the file.
+
+    **A sample's groups** are its file's in its polarity whose span meets
+    its window (``api/new/ms2/inventory.py``): a row is the file's, and a
+    sample reads the groups whose scans fall in its window, as it reads the
+    store.
+
+    The columns are the group's record in the MS2 summary, with what its
+    scans' filters give alike and the precursor once it is located.
+    """
+
+    __tablename__ = "ms2_group"
+
+    # CASCADE: a group is a description of part of its file. The key leads
+    # with the file, so it is also the index that finds a file's groups, a
+    # sample's (by its polarity), and that the cascade walks.
+    sample_file_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_file.sample_file_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    polarity: Mapped[str] = mapped_column(String(1), primary_key=True)
+    # The group key's one string form (``ms2_store.group_key``): the parent
+    # peak m/z with four decimals, "@", the activation; "137.0960@hcd25.00".
+    precursor_key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    # The parent peak m/z the scans were grouped at, which the key spells.
+    parent_peak_mz: Mapped[float] = mapped_column(Float)
+    # As the scans' filters give it, "" when they name none.
+    activation: Mapped[str] = mapped_column(String(256))
+    # Parsed from the activation: "hcd", "cid@hcd" for a chained one; the
+    # NCE, NULL where the activation has no one energy.
+    activation_kind: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    nce: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # The HCD energies [V] the trailer gives, averaged over the scans, one
+    # per step within a scan: the summary's "hcd_energy".
+    hcd_energy: Mapped[list] = mapped_column(JSON)
+    # Every isolation width the scans used, narrowest first, each with its
+    # scan count: [{"isolation_width": 1.0, "scan_count": 12}].
+    isolation_widths: Mapped[list] = mapped_column(JSON)
+    scan_count: Mapped[int] = mapped_column(Integer)
+    # The first and last scan's time [s] from the start of the acquisition.
+    t_min: Mapped[float] = mapped_column(Float)
+    t_max: Mapped[float] = mapped_column(Float)
+    # The outer bounds of the scans' scan ranges [m/z].
+    low_mass: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    high_mass: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # The precursor's m/z located among the MS1 peaks near the key
+    # (``docs/dev/ms2_analysis.md``, section 2.5). NULL until the step that
+    # locates it writes it.
+    located_precursor_mz: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+
 class SampleItem(Base):
     """
     Represents a processed sample derived from a sample file.
@@ -3356,6 +3421,7 @@ __all__ = [
     "SampleBatch",
     "SampleFile",
     "AcquisitionStream",
+    "Ms2Group",
     "SampleItem",
     "TargetCollection",
     "TargetCollectionInSampleBatch",
