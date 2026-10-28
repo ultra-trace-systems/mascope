@@ -87,6 +87,12 @@ peak_assignments_router = APIRouter(
     prefix="/api/peak-assignments", tags=["Peak Assignments"]
 )
 
+#: The codes in the ``detail`` of the sample assign route's refusals. A client
+#: branches on these, not on the prose: the 422 shares its status with a body
+#: the route could not read, which carries no code.
+ASSIGNMENT_IN_FLIGHT_CODE = "assignment_in_flight"
+SAMPLE_INELIGIBLE_CODE = "sample_ineligible"
+
 
 async def reject_oversized_import(request: Request) -> None:
     """Refuse an import body above the byte cap, naming the limit.
@@ -593,8 +599,10 @@ async def assign_sample_peaks_route(
       that run instead of minting a second one.
     - **409** when another run for this sample is still in flight, naming it, so
       a client can follow the run that is actually producing the ledger. (A race
-      with another worker's creation can leave the id absent.)
+      with another worker's creation can leave the id absent.) Code
+      ``assignment_in_flight``.
     - **422** when the sample cannot usefully be assigned, carrying the reason.
+      Code ``sample_ineligible``, which a body the route could not read lacks.
     - **403** when peak assignment is not enabled for this environment.
 
     :param sample_item_id: The unique identifier of the sample.
@@ -610,7 +618,11 @@ async def assign_sample_peaks_route(
         raise ApiException(
             f"Peak assignment is not possible for sample "
             f"'{sample.sample_item_name}': {reason}.",
-            {"sample_item_id": sample_item_id, "reason": reason},
+            {
+                "code": SAMPLE_INELIGIBLE_CODE,
+                "sample_item_id": sample_item_id,
+                "reason": reason,
+            },
             422,
         )
 
@@ -626,6 +638,7 @@ async def assign_sample_peaks_route(
                 f"Peak assignment is already running for sample "
                 f"'{sample.sample_item_name}'.",
                 {
+                    "code": ASSIGNMENT_IN_FLIGHT_CODE,
                     "sample_item_id": sample_item_id,
                     "peak_assignment_run_id": blocking_run_id,
                 },
