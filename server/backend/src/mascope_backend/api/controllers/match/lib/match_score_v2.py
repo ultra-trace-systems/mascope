@@ -35,7 +35,11 @@ import os
 import numpy as np
 import pandas as pd
 
-from mascope_tools.composition.heuristic_filter import calibrate_score, score_pattern_v2
+from mascope_tools.composition.heuristic_filter import (
+    calibrate_score,
+    score_pattern_v2,
+    score_patterns_v2,
+)
 from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
 
 
@@ -146,3 +150,95 @@ def ion_score_v2(
     sig = float(np.hypot(sigma_ppm, PRED_SIGMA_PPM)) if sigma_ppm is not None else None
     raw = score_pattern_v2(me, oi, snr, pr, sigma_ppm=sig)
     return float(calibrate_score(raw, calibration)) if calibrate else float(raw)
+
+
+def ion_scores_v2(
+    frame: pd.DataFrame,
+    by: str,
+    *,
+    sigma_ppm: float | None = None,
+    mu: float | None = 0.0,
+) -> pd.Series:
+    """:func:`ion_score_v2` for every ion of a frame, scored together.
+
+    The same fit, ion by ion, as grouping the frame on ``by`` and applying
+    :func:`ion_score_v2` to each group, equal to it to floating-point rounding:
+    each ion's rows are put most abundant first and a missing abundance last,
+    as that function sorts them, read the same way, and laid end to end for
+    ``heuristic_filter.score_patterns_v2``, which scores every envelope in one
+    pass instead of one call per ion.
+
+    The first row is the anchor every other line is read against, so it is
+    the one place the order reaches the score. Where an ion's top abundance is
+    tied, ``sort_values`` breaks the tie with numpy's quicksort, which is not
+    stable, and the tie is settled here by that same sort over that ion's rows
+    alone; the other rows' order changes the sums' rounding and nothing else.
+
+    :param frame: Isotopologue rows as :func:`ion_score_v2` takes them, any
+        number of ions.
+    :param by: The column naming each row's ion. A missing value is an ion of
+        its own, as ``groupby(dropna=False)`` makes it.
+    :param sigma_ppm: As :func:`ion_score_v2`.
+    :param mu: As :func:`ion_score_v2`.
+    :return: Each row's ion's fit, on the frame's index.
+    """
+    if frame.empty:
+        return pd.Series(dtype=float, index=frame.index)
+    mu = 0.0 if mu is None else float(mu)
+    codes, _ = pd.factorize(frame[by], use_na_sentinel=False)
+    abundance = pd.to_numeric(frame["relative_abundance"], errors="coerce").to_numpy(
+        float
+    )
+    missing = np.isnan(abundance)
+    # Each ion's rows together, most abundant first and a missing abundance
+    # last, in the frame's order within a tie.
+    order = np.lexsort(
+        (np.arange(len(frame)), np.where(missing, 0.0, -abundance), missing, codes)
+    )
+    lengths = np.bincount(codes, minlength=codes.max() + 1)
+    offsets = np.concatenate([[0], np.cumsum(lengths)])
+    starts = offsets[:-1]
+
+    pr = abundance[order]
+    with np.errstate(invalid="ignore"):
+        peak = np.fmax.reduceat(pr, starts)
+    # An ion with no positive abundance scores 0, as alone. One whose only
+    # values are infinite passes here and scores 0 all the same: divided by
+    # its infinite top, every abundance is 0.
+    scored = peak > 0
+    tied = np.add.reduceat(pr == np.repeat(peak, lengths), starts) > 1
+    for ion in np.flatnonzero(tied):
+        lines = slice(offsets[ion], offsets[ion + 1])
+        rows = np.sort(order[lines])
+        values = abundance[rows]
+        known = ~np.isnan(values)
+        # ``nargsort`` descending: the reversed rows sorted ascending, reversed.
+        reversed_rows = rows[known][::-1]
+        anchor = reversed_rows[values[known][::-1].argsort(kind="quicksort")][-1]
+        rest = order[lines][order[lines] != anchor]
+        order[lines] = np.concatenate([[anchor], rest])
+    pr = abundance[order]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pr = np.nan_to_num(pr) / np.repeat(peak, lengths)
+
+    oi = (
+        pd.to_numeric(frame["sample_peak_intensity"], errors="coerce")
+        .fillna(0.0)
+        .to_numpy(float)[order]
+    )
+    me = (
+        pd.to_numeric(frame["match_mz_error"], errors="coerce").to_numpy(float)[order]
+        - mu
+    )
+    if "is_satellite" in frame.columns:
+        satellite = frame["is_satellite"].fillna(False).astype(bool).to_numpy()[order]
+        oi = np.where(satellite, 0.0, oi)
+    snr = (
+        pd.to_numeric(frame["signal_to_noise"], errors="coerce").to_numpy(float)[order]
+        if "signal_to_noise" in frame
+        else None
+    )
+    sig = float(np.hypot(sigma_ppm, PRED_SIGMA_PPM)) if sigma_ppm is not None else None
+    scores = score_patterns_v2(me, oi, snr, pr, offsets, sigma_ppm=sig)
+    scores = np.where(scored, scores, 0.0)
+    return pd.Series(scores[codes], index=frame.index, dtype=float)

@@ -21,10 +21,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from mascope_backend.api.controllers.match.lib.match_score_v2 import (
-    ion_score_v2,
-    sample_noise_floor,
-)
+from mascope_backend.api.controllers.match.lib.match_score_v2 import ion_scores_v2
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     fit_isotope_names,
 )
@@ -410,7 +407,7 @@ def pattern_scoring_for(
     good and the election falls to the envelope alone. The offset has a
     stand-in of its own there, the reagent pre-pass's lines
     (:attr:`SampleMassAccuracy.scoring_mu_ppm`), and no offset where nothing
-    measured one - the same rule `ion_score_v2` applies to Stage A, so both
+    measured one - the same rule `ion_scores_v2` applies to Stage A, so both
     stages of one sample are corrected by the same amount or by neither.
 
     :param match_params: The sample's resolved match parameters.
@@ -928,15 +925,11 @@ def score_ions_by_fit(
     )
     sigma = accuracy.sigma_ppm if accuracy.sigma_ppm is not None else fallback_sigma_ppm
     mu = accuracy.scoring_mu_ppm
-    noise = sample_noise_floor(df)
-    fit_by_ion = df.groupby("target_ion_id", sort=False, dropna=False).apply(
-        lambda g: ion_score_v2(g, sigma_ppm=sigma, mu=mu, noise=noise),
-        include_groups=False,
-    )
+    # Every ion at once, the fit `ion_score_v2` gives each one alone.
     # Return the GATED frame (not a fresh copy of the input): the zeroed intensities
     # are the record of which pairings this scoring counted as absent, and the
     # ownership guard downstream reads exactly that.
-    df["match_score"] = df["target_ion_id"].map(fit_by_ion).astype(float)
+    df["match_score"] = ion_scores_v2(df, "target_ion_id", sigma_ppm=sigma, mu=mu)
     return df
 
 
