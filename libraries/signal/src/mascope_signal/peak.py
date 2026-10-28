@@ -71,6 +71,20 @@ SNR_CORE_WIDTHS = 3.0
 #: wide enough to reach past the peaks of its unit mass into the gaps between
 #: unit masses, where the baseline is.
 SNR_WINDOW_DMZ = DMZ
+#: The half-width, in ppm of a peak's m/z, of the window an Orbitrap peak is
+#: measured against when its spectrum is dense there (:func:`below_local_floor`).
+#: Wide enough that the comb a few hundred ppm either side of a reagent ion,
+#: dense over too short a stretch, does not fill it: those are the satellite
+#: flag's.
+LOCAL_FLOOR_WINDOW_PPM = 3000.0
+#: How many other peaks of its spectrum that window must hold for the stretch
+#: to count as dense: one every 20 ppm on average over 6000 ppm. A list of
+#: resolved ions does not come near it; the floor of maxima around a dominant
+#: ion in a spectrum averaged over many microscans holds one every few ppm.
+LOCAL_FLOOR_MIN_NEIGHBOURS = 300
+#: How many times the median height of the window's peaks a peak of a dense
+#: stretch has to stand to be kept
+LOCAL_FLOOR_FACTOR = 5.0
 
 PEAK_ID_LENGTH = 20
 
@@ -91,6 +105,61 @@ PER_STREAM_PROP = "peaks_per_stream"
 #: that rescaling the axis cannot bring two rows back onto one double
 #: (:func:`_strictly_increasing`).
 MZ_ROW_SEPARATION = 2.0**-40
+
+
+def below_local_floor(
+    mz: np.ndarray,
+    heights: np.ndarray,
+    spectrum: np.ndarray | None = None,
+) -> np.ndarray:
+    """Which peaks of an Orbitrap peak list sit under the floor around them.
+
+    The instrument writes a signal-to-noise with every centroid, and the weak
+    flag goes by it. Its noise is one figure for a wide stretch of m/z, and
+    it does not follow a floor that rises locally. Around a reagent ion of
+    millions of counts, a spectrum averaged over many microscans holds a
+    floor of maxima, a centroid every few ppm over several Da, each read far
+    above the threshold: the averaging lowered the noise and left the floor.
+
+    A peak is measured against the peaks around it instead: those of its own
+    spectrum within :data:`LOCAL_FLOOR_WINDOW_PPM` of its m/z, itself
+    included. Where the window holds at least
+    :data:`LOCAL_FLOOR_MIN_NEIGHBOURS` other peaks, the stretch is a floor
+    rather than a list of resolved ions, and a peak under
+    :data:`LOCAL_FLOOR_FACTOR` times the median height of the window's peaks
+    is one of its maxima. A real ion in the floor stands out of it and stays.
+    Where the window holds fewer peaks, the stretch says nothing of a floor
+    and its peaks are left to the signal-to-noise.
+
+    :param mz: The peaks' m/z
+    :type mz: np.ndarray
+    :param heights: Their heights, in any unit the list shares
+    :type heights: np.ndarray
+    :param spectrum: The spectrum each peak is of: its polarity, or its stream
+        where the file is detected per stream; None for a list of one. A peak
+        is measured against its own spectrum's peaks only: another
+        spectrum's floor is no floor of its.
+    :type spectrum: np.ndarray | None
+    :return: True for each peak under the floor of a dense stretch
+    :rtype: np.ndarray
+    """
+    mz = np.asarray(mz, dtype=np.float64)
+    heights = np.asarray(heights, dtype=np.float64)
+    if spectrum is None:
+        spectrum = np.zeros(mz.size, dtype=np.int8)
+    spectrum = np.asarray(spectrum)
+    below = np.zeros(mz.size, dtype=bool)
+    half_width = LOCAL_FLOOR_WINDOW_PPM * 1e-6
+    for label in np.unique(spectrum):
+        members = np.flatnonzero(spectrum == label)
+        order = members[np.argsort(mz[members], kind="stable")]
+        sorted_mz, sorted_heights = mz[order], heights[order]
+        lower = np.searchsorted(sorted_mz, sorted_mz * (1 - half_width))
+        upper = np.searchsorted(sorted_mz, sorted_mz * (1 + half_width))
+        for i in np.flatnonzero(upper - lower - 1 >= LOCAL_FLOOR_MIN_NEIGHBOURS):
+            floor = np.median(sorted_heights[lower[i] : upper[i]])
+            below[order[i]] = sorted_heights[i] < LOCAL_FLOOR_FACTOR * floor
+    return below
 
 
 class PeakDetectionError(Exception):
@@ -604,14 +673,18 @@ class OrbiPeakDetector(BasePeakDetector):
         ).assign_coords(mz=("mz", peak_mzs))
 
     def _flag_weak_peaks(self):
-        """Flag weak peaks based on signal-to-noise ratio."""
-        low_snr = (
-            self.peak_timeseries.signal_to_noise.values < SIGNAL_TO_NOISE_THRESHOLD
+        """Flag the peaks that do not stand out of the noise: under the
+        instrument's signal-to-noise threshold, or under the floor of a dense
+        stretch of their own spectrum (:func:`below_local_floor`)."""
+        store = self.peak_timeseries
+        low_snr = store.signal_to_noise.values < SIGNAL_TO_NOISE_THRESHOLD
+        # One spectrum per stream for a file detected per stream, else one
+        # per polarity
+        spectrum = store.stream.values if self._streams else store.polarity.values
+        is_weak = low_snr | below_local_floor(
+            store.mz.values, store.sum_peak_heights.values, spectrum
         )
-        is_weak = low_snr
-        self._peak_timeseries = self.peak_timeseries.assign(
-            {"is_weak": (("mz"), is_weak)}
-        )
+        self._peak_timeseries = store.assign({"is_weak": (("mz"), is_weak)})
 
     def _flag_satellite_peaks(self):
         peaks_df = pd.DataFrame(
