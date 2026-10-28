@@ -42,6 +42,7 @@ from mascope_backend.api.controllers.sample.batches.export import service
 from mascope_backend.api.lib import api_features
 from mascope_backend.db import (
     Dataset,
+    Instrument,
     InstrumentFunction,
     IonizationMechanism,
     IonizationMode,
@@ -725,6 +726,43 @@ async def test_a_file_the_filestore_no_longer_keeps_is_described_not_packed(
     assert package.summary["raw_files_included"] == 2
     assert "## Not included" in package.readme
     assert f"`{dataset.names.gone}`" in package.readme
+
+
+@pytest.mark.asyncio
+async def test_a_file_the_filestore_no_longer_keeps_has_its_instruments_model(
+    dataset, out, async_session_factory
+):
+    """The model is the one the instrument's row records, so a raw file that
+    is gone still gets its model and its term, which no header could give."""
+    instrument_id = gen_id(16)
+    async with async_session_factory() as session:
+        session.add(
+            Instrument(
+                instrument_id=instrument_id,
+                name=f"deposit-{instrument_id}",
+                instrument_type="orbi",
+                model="Orbitrap Exploris 240",
+            )
+        )
+        await session.flush()
+        gone = await session.get(SampleFile, dataset.ids.gone_file)
+        gone.instrument_id = instrument_id
+        await session.commit()
+
+    summary = await build_package(dataset.ids.dataset, str(out))
+    with zipfile.ZipFile(summary["archive"]) as archive:
+        manifest = json.loads(archive.read(f"{summary['package']}/manifest.json"))
+    entry = next(
+        entry
+        for entry in manifest["raw"]
+        if entry["sample_file_id"] == dataset.ids.gone_file
+    )
+    assert entry["included"] is False
+    assert entry["instrument_model"] == "Orbitrap Exploris 240"
+    assert entry["cv_terms"]["instrument_model"] == {
+        "accession": "MS:1003094",
+        "name": "Orbitrap Exploris 240",
+    }
 
 
 @pytest.mark.asyncio

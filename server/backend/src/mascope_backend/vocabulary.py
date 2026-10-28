@@ -9,8 +9,9 @@ Mascope's own words: an instrument's name is what its site calls it, its
 class is ``"orbi"`` or ``"tof"``, a polarity is ``"+"`` or ``"-"``.
 
 This module is the one place the terms are written down. The batch export
-and the mzML export's ``instrumentConfiguration`` read them from here; an
-``Instrument`` row is meant to take its term from here as well. Nothing
+and the mzML export's ``instrumentConfiguration`` read them from here, and
+an ``Instrument`` row's ``cv_term`` is its model's accession from here (the
+row holds no other term, and no name). Nothing
 here touches the database or a file: it maps values already recorded to
 terms, and a value it cannot map gives None, never a nearby term.
 
