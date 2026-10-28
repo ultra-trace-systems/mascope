@@ -155,19 +155,61 @@ export const useAuth = defineStore('app.auth', () => {
     mfaPending.value = false
   }
 
+  // Set while this tab signs out: the server tells its socket so as well, and
+  // the tab is already doing what that event asks for.
+  let signingOut = false
+
   const logout = async () => {
-    await api.http.post(
-      `/auth/logout`,
-      {},
-      {
-        type: 'user_sign_out',
-        use: 'auth'
-      }
-    )
-    // A new connection, whose handshake carries no session cookie: the old
-    // socket would otherwise stay signed in on the realtime channel.
-    await api.socket.renew()
-    await identify()
+    signingOut = true
+    try {
+      await api.http.post(
+        `/auth/logout`,
+        {},
+        {
+          type: 'user_sign_out',
+          use: 'auth'
+        }
+      )
+      // A new connection, whose handshake carries no session cookie: the old
+      // socket would otherwise stay signed in on the realtime channel.
+      await api.socket.renew()
+      await identify()
+    } finally {
+      signingOut = false
+    }
+  }
+
+  // The handling of a sign-out another tab made, if one is in flight.
+  let signedOutElsewhere = null
+
+  /**
+   * React to the server signing this tab's socket out.
+   *
+   * Another tab of the browser signed out, which ended this tab's session
+   * too. Nothing else tells this tab: once any tab signs in again the cookie
+   * works for all of them, so its requests never fail and its socket would
+   * stay without a session, hearing no live updates. So it does what a
+   * sign-out does here: a new connection, then the profile. That shows the
+   * sign-in screen, or, when the browser has signed in again meanwhile, finds
+   * the account with the new connection signed in from the cookie, which
+   * asks for its rooms again.
+   *
+   * @returns {Promise<void>}
+   */
+  const onSignedOut = () => {
+    if (signingOut) return Promise.resolve()
+    if (!signedOutElsewhere) {
+      signedOutElsewhere = (async () => {
+        await api.socket.renew()
+        await identify()
+        if (user.value) api.socket.resubscribe()
+      })()
+        .catch(() => {})
+        .finally(() => {
+          signedOutElsewhere = null
+        })
+    }
+    return signedOutElsewhere
   }
 
   // --- First owner management ---
@@ -245,6 +287,9 @@ export const useAuth = defineStore('app.auth', () => {
 
   // Listen for profile updates via socket and refresh user data
   api.socket.on('user_me_updated', identify)
+  // The server signed this tab's socket out, with the session another tab
+  // ended.
+  api.socket.on('signed_out', onSignedOut)
 
   return {
     user,
