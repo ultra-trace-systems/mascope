@@ -3266,7 +3266,9 @@ for), an assignment run, a re-bound or re-processed file. Method bindings follow
 edit; routing, listing, token and system-key uniqueness and seeding see current versions
 only; the listing gives each its earlier ids (`superseded_ids`). An edit flags the
 batches of samples under any of the mode's versions, and locks the row it edits, so two
-edits at once cannot both mint a successor. The batch ledger and
+edits at once cannot both mint a successor. An earlier version holds a mechanism or a
+collection against deletion only while samples are bound under it
+(`versions.still_held`). The batch ledger and
 batch alignment group samples by setup, keyed by its first version. A run records
 `config.ionization_setup` (`{ionization_mode_id, version}`; server state, not a
 `PeakAssignmentConfig` field), and a confidence curve records the setups its labels were

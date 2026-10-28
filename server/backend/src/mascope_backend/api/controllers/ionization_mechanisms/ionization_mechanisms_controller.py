@@ -27,6 +27,10 @@ from mascope_backend.api.models.ionization_mechanisms.ionization_mechanism_pydan
     IonizationMechanismSortColumn,
 )
 from mascope_backend.api.new.ionization.modes.util import system_mode_adopted
+from mascope_backend.api.new.ionization.modes.versions import (
+    held_by_earlier_versions,
+    still_held,
+)
 from mascope_backend.db import (
     IonizationMechanism,
     IonizationMode,
@@ -197,15 +201,16 @@ async def get_ionization_mechanism(ionization_mechanism_id: str) -> dict:
             )
 
         # -- Retrieve ionization modes using the specified ionization mechanism -- #
+        # The current versions, and an earlier one that samples are bound
+        # under: it holds the mechanism for them, and keeps it from being
+        # deleted. An earlier one no sample holds is history, and does not.
         affected_ion_modes = []
-        result = await session.execute(select(IonizationMode))
+        result = await session.execute(select(IonizationMode).where(still_held()))
         all_ion_modes = result.scalars().all()
         for ion_mode in all_ion_modes:
             if ionization_mechanism_id in ion_mode.ionization_mechanism_ids:
                 affected_ion_modes.append(ion_mode)
 
-        # Every version: an earlier one still holds the mechanism for the
-        # samples bound under it, and keeps it from being deleted.
         affected_ion_mode_info = [
             {
                 "ion_mode_id": ion_mode.ionization_mode_id,
@@ -476,19 +481,30 @@ async def delete_ionization_mechanism(ionization_mechanism_id: str) -> dict:
         # Read in this session rather than through get_ionization_mechanism,
         # which opens its own: the modes just released are deleted here and
         # not yet committed, so another session would still count them and
-        # refuse a deletion nothing is blocking.
+        # refuse a deletion nothing is blocking. An earlier version no sample
+        # holds keeps the id in its list as history and blocks nothing.
         blocking = [
             mode
-            for mode in (await session.execute(select(IonizationMode))).scalars().all()
+            for mode in (
+                await session.execute(select(IonizationMode).where(still_held()))
+            )
+            .scalars()
+            .all()
             if ionization_mechanism_id in mode.ionization_mechanism_ids
             and mode.ionization_mode_id not in released
         ]
 
         # -- Prevent deletion if referenced in any ionization modes -- #
         if blocking:
+            current = [mode for mode in blocking if mode.is_active]
+            used_in = (
+                f" as it is used in {len(current)} ionization modes."
+                if current
+                else "."
+            )
             raise ApiException(
-                f"Ionization mechanism '{ionization_mechanism.ionization_mechanism}' cannot be deleted as it is used in"
-                f" {len(blocking)} ionization modes.",
+                f"Ionization mechanism '{ionization_mechanism.ionization_mechanism}' "
+                f"cannot be deleted{used_in}{held_by_earlier_versions(blocking)}",
                 {
                     "ionization_modes": [
                         {

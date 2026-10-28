@@ -558,8 +558,9 @@ async def test_a_superseded_seeded_version_is_not_released_with_a_mechanism(
 ):
     """An edit of a seeded mode's collections leaves its first version, as
     seeded and unadopted, behind its adopted successor. It is that mode's
-    history, not a mode nobody took up: deleting a mechanism they hold is
-    refused naming both versions, and the first is not released."""
+    history, not a mode nobody took up, so it is not released. No sample
+    holds it, so it does not block either: the mechanism both versions name
+    is shown, and its delete refused, for the current one alone."""
     mechanism_id = gen_id(11)
     first, second = gen_id(), gen_id()
     key = f"{_SYSTEM_KEY}-versions-{first}"
@@ -598,6 +599,8 @@ async def test_a_superseded_seeded_version_is_not_released_with_a_mechanism(
     try:
         listed = await admin_client.get(f"/api/ionization_mechanisms/{mechanism_id}")
         resp = await admin_client.delete(f"/api/ionization_mechanisms/{mechanism_id}")
+        async with async_session_factory() as session:
+            kept = await session.get(IonizationMode, first)
     finally:
         async with async_session_factory() as session:
             await session.execute(
@@ -615,11 +618,11 @@ async def test_a_superseded_seeded_version_is_not_released_with_a_mechanism(
     assert resp.status_code == 400
     blocking = resp.json()["detail"]["ionization_modes"]
     assert {(m["ion_mode_id"], m["version"], m["is_active"]) for m in blocking} == {
-        (first, 1, False),
         (second, 2, True),
     }
+    assert kept is not None
     assert listed.status_code == 200, listed.text
     assert {
         (m["ion_mode_id"], m["version"], m["is_active"])
         for m in listed.json()["data"]["ionization_modes"]
-    } == {(first, 1, False), (second, 2, True)}
+    } == {(second, 2, True)}

@@ -570,6 +570,96 @@ async def test_an_edit_made_during_a_delete_waits_for_it(
         ).first() is None
 
 
+# --- what a superseded version holds ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_mechanism_an_edit_removed_is_held_only_by_samples_left_on_it(
+    admin_client, async_session_factory, world, mode
+):
+    """Version 2 takes a mechanism up and version 3 drops it again. While the
+    sample sits on version 2 it holds the mechanism, and the refusal names that
+    version and what clears it. Once the sample moves on, version 2 is history
+    and the mechanism can go."""
+    retired = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMechanism(
+                ionization_mechanism_id=retired,
+                ionization_mechanism_polarity="+",
+                ionization_mechanism=f"[M+K]+ (versions {retired})",
+            )
+        )
+        await session.commit()
+    second = await _mint(admin_client, world, mode, ionization_mechanism_ids=[retired])
+    await move_to_current_versions(sample_batch_ids=[mode["batch_id"]])
+    await _mint(
+        admin_client,
+        world,
+        {**mode, "mode_id": second},
+        ionization_mechanism_ids=[world["mech_a"]],
+    )
+
+    url = f"/api/ionization_mechanisms/{retired}"
+    shown = (await admin_client.get(url)).json()["data"]
+    refused = await admin_client.delete(url)
+    assert refused.status_code == 400
+    assert f"version 2 of '{mode['name']}'" in refused.text
+    assert "re-process those samples" in refused.text
+    assert "as it is used in" not in refused.text
+    assert [
+        (m["ion_mode_id"], m["is_active"])
+        for m in refused.json()["detail"]["ionization_modes"]
+    ] == [(second, False)]
+    assert [m["ion_mode_id"] for m in shown["ionization_modes"]] == [second]
+
+    await move_to_current_versions(sample_batch_ids=[mode["batch_id"]])
+    shown = (await admin_client.get(url)).json()["data"]
+    removed = await admin_client.delete(url)
+    assert shown["ionization_modes"] == []
+    assert removed.status_code == 200, removed.text
+
+
+@pytest.mark.asyncio
+async def test_a_collection_an_edit_replaced_is_held_only_by_samples_left_on_it(
+    admin_client, async_session_factory, world, mode
+):
+    """The same for a calibration collection: version 2 sets it, version 3
+    replaces it. Once no sample is on version 2 the collection can be deleted,
+    and version 2's reference to it is cleared."""
+    old_cal = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            TargetCollection(
+                target_collection_id=old_cal,
+                target_collection_name=f"old_cal (versions {old_cal})",
+                target_collection_type="CALIBRANTS",
+                workspace_id=None,
+            )
+        )
+        await session.commit()
+    second = await _mint(admin_client, world, mode, calibration_collection_id=old_cal)
+    await move_to_current_versions(sample_batch_ids=[mode["batch_id"]])
+    await _mint(
+        admin_client,
+        world,
+        {**mode, "mode_id": second},
+        calibration_collection_id=world["cal_a"],
+    )
+
+    url = f"/api/target/collections/{old_cal}"
+    refused = await admin_client.delete(url)
+    assert refused.status_code == 400
+    assert f"version 2 of '{mode['name']}'" in refused.text
+    assert "re-process those samples" in refused.text
+    assert "associated with ionization modes" not in refused.text
+
+    await move_to_current_versions(sample_batch_ids=[mode["batch_id"]])
+    removed = await admin_client.delete(url)
+    assert removed.status_code == 200, removed.text
+    assert (await _row(async_session_factory, second)).calibration_collection_id is None
+
+
 # --- what reads the modes -----------------------------------------------------
 
 
