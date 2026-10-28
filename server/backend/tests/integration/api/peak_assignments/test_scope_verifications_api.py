@@ -30,6 +30,7 @@ from mascope_backend.db import (
     AssignmentVerification,
     BatchPeak,
     Dataset,
+    IonizationMechanism,
     PeakAssignment,
     PeakAssignmentRun,
     SampleBatch,
@@ -46,8 +47,9 @@ GLUCOSE = "C6H12O6"
 DISSENT = "C7H16O5"
 
 
-async def _seed_sample(session, batch_id, name, peaks, acquired, now):
-    """One sample with a completed run; ``peaks`` is (peak id, mz, formula)."""
+async def _seed_sample(session, batch_id, name, peaks, acquired, now, mechanism=None):
+    """One sample with a completed run; ``peaks`` is (peak id, mz, formula),
+    each assigned under ``mechanism``."""
     sample_file_id, sample_item_id, run_id = gen_id(), gen_id(), gen_id()
     session.add(
         SampleFile(
@@ -96,6 +98,7 @@ async def _seed_sample(session, batch_id, name, peaks, acquired, now):
                 role="M0",
                 assigned_formula=formula,
                 ion_formula=None,
+                ionization_mechanism_id=mechanism,
                 source="database",
                 fit_score=0.9,
                 mz_error_ppm=1.0,
@@ -469,3 +472,149 @@ async def test_the_export_sheet_is_the_batch_read(guest_client, scope, tmp_path)
     ]
     for stored, read in zip(sheet["verified_utc"], expected, strict=True):
         assert abs(stored - read) < pd.Timedelta(milliseconds=1)
+
+
+async def test_a_borrowed_verdict_on_a_claim_the_batch_peak_left_is_stale(
+    guest_client, scope, async_session_factory
+):
+    """A later fold moved the batch peak's consensus off the judged formula; S3
+    still claims it, so it still borrows the verdict, and the row says stale."""
+    async with async_session_factory() as session:
+        await session.execute(
+            update(BatchPeak)
+            .where(BatchPeak.batch_peak_id == scope["anchor"])
+            .values(consensus_formula=DISSENT)
+        )
+        await session.commit()
+
+    rows = await _read(guest_client, _batch(scope))
+
+    assert _names(scope, rows)[-1] == ("S3", "confirmed", True)
+    assert rows[-1]["stale"] is True
+
+
+MECH_H = "scope-vf-h"
+MECH_NA = "scope-vf-na"
+
+
+@pytest_asyncio.fixture
+async def mechanism_scope(
+    async_session_factory, pa_test_data, editor_client, assignment_enabled
+):
+    """One batch whose peak ``p1`` claims C6H12O6 in four samples: M1, M2 and M4
+    under one mechanism, M3 under another. The batch peak's consensus, under
+    the first, is confirmed at the batch level; M2 is rejected on its own; M4
+    has a verdict of its own on the formula under the other mechanism, as a
+    verdict on an earlier claim of its peak reads."""
+    now = datetime.now(timezone.utc)
+    dataset_id, batch_id = gen_id(), gen_id()
+    async with async_session_factory() as session:
+        for mechanism_id in (MECH_H, MECH_NA):
+            if await session.get(IonizationMechanism, mechanism_id) is None:
+                session.add(
+                    IonizationMechanism(
+                        ionization_mechanism_id=mechanism_id,
+                        ionization_mechanism_polarity="+",
+                        ionization_mechanism=f"{mechanism_id} (scope verdicts test)",
+                    )
+                )
+        session.add(
+            Dataset(
+                dataset_id=dataset_id,
+                workspace_id=pa_test_data["workspace_id"],
+                dataset_name=f"Scope verdicts mechanisms {dataset_id}",
+                dataset_utc_created=now,
+            )
+        )
+        session.add(
+            SampleBatch(
+                sample_batch_id=batch_id,
+                dataset_id=dataset_id,
+                sample_batch_name=f"Scope verdicts mechanisms {batch_id}",
+                sample_batch_utc_created=now,
+            )
+        )
+        samples = {}
+        for index, (name, mechanism) in enumerate(
+            [("M1", MECH_H), ("M2", MECH_H), ("M3", MECH_NA), ("M4", MECH_H)]
+        ):
+            samples[name] = await _seed_sample(
+                session,
+                batch_id,
+                name,
+                [("p1", 181.0707 + index * 1e-5, GLUCOSE)],
+                datetime(2026, 7, 4, 13, index, 0),
+                now,
+                mechanism=mechanism,
+            )
+        await session.commit()
+    for sample_item_id, _ in samples.values():
+        await fold_sample_into_batch_peaks(sample_item_id)
+    async with async_session_factory() as session:
+        anchor = (
+            await session.execute(
+                select(BatchPeak).where(BatchPeak.sample_batch_id == batch_id)
+            )
+        ).scalar_one()
+    assert (anchor.consensus_formula, anchor.ionization_mechanism_id) == (
+        GLUCOSE,
+        MECH_H,
+    )
+
+    for name, verdict in (("M2", "rejected"), ("M4", "unsure")):
+        sample_item_id, assignment_ids = samples[name]
+        response = await editor_client.post(
+            f"/api/peak-assignments/sample/{sample_item_id}/verify",
+            json={"peak_assignment_id": assignment_ids["p1"], "verdict": verdict},
+        )
+        assert response.status_code == 201, response.text
+    async with async_session_factory() as session:
+        await session.execute(
+            update(AssignmentVerification)
+            .where(AssignmentVerification.sample_item_id == samples["M4"][0])
+            .values(ionization_mechanism_id=MECH_NA)
+        )
+        await session.commit()
+    response = await editor_client.post(
+        f"/api/batch-peaks/batch/{batch_id}/verify",
+        json={
+            "batch_peak_id": anchor.batch_peak_id,
+            "verdict": "confirmed",
+            "evidence_level": "pattern",
+            "expected_formula": GLUCOSE,
+        },
+    )
+    assert response.status_code == 201, response.text
+    yield {
+        "batch_id": batch_id,
+        "ids": {name: sample_item_id for name, (sample_item_id, _) in samples.items()},
+    }
+    async with async_session_factory() as session:
+        await session.execute(delete(Dataset).where(Dataset.dataset_id == dataset_id))
+        await session.commit()
+
+
+async def test_a_claim_is_its_formula_and_its_mechanism(guest_client, mechanism_scope):
+    """M3 claims the judged formula under another mechanism and borrows nothing;
+    M2's own verdict on the judged claim wins; M4's own verdict, under the other
+    mechanism, does not cover the judged claim, so M4 borrows it beside its own."""
+    rows = await _read(
+        guest_client,
+        f"/api/peak-assignments/batch/{mechanism_scope['batch_id']}/verifications",
+    )
+
+    by_id = {sid: name for name, sid in mechanism_scope["ids"].items()}
+    assert sorted(
+        (
+            by_id[row["sample_item_id"]],
+            row["ionization_mechanism_id"],
+            row["verdict"],
+            row["borrowed"],
+        )
+        for row in rows
+    ) == [
+        ("M1", MECH_H, "confirmed", True),
+        ("M2", MECH_H, "rejected", False),
+        ("M4", MECH_H, "confirmed", True),
+        ("M4", MECH_NA, "unsure", False),
+    ]
