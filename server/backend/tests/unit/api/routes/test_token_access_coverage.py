@@ -225,6 +225,8 @@ OTHER_TOKEN_ROUTES = {
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/curate"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/export"),
     ("GET", "/api/batch-peaks/batch/{sample_batch_id}/members"),
+    # A batch's peak lists in one read: load_peaks and batch_peaks.peak_lists
+    ("GET", "/api/batch-peaks/batch/{sample_batch_id}/peaks"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/release-curation"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/retract"),
     ("GET", "/api/batch-peaks/batch/{sample_batch_id}/runs"),
