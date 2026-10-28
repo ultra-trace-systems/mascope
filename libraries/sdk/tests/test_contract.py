@@ -819,6 +819,8 @@ class TestLoaderContract:
             batches=batch["sample_batch_name"],
             exact=True,
             confirm_above=None,
+            # Asked for: a batch read in one request leaves them out unasked
+            matches=True,
         )
 
         assert peaks is not None and not peaks.empty
@@ -834,6 +836,73 @@ class TestLoaderContract:
         assert (peaks["sample_batch_name"] == batch["sample_batch_name"]).all()
         batch_samples = mascope.samples.list(batch["sample_batch_id"])
         assert set(peaks["sample_item_id"]) <= set(batch_samples["sample_item_id"])
+
+    def test_load_peaks_reads_a_batch_in_one_request_as_its_samples_read(
+        self, mascope, monkeypatch
+    ):
+        from pandas.testing import assert_frame_equal
+
+        from mascope_sdk.resources import _base
+
+        _skip_unless_attr(mascope.batch_peaks, "peak_lists")
+        dataset, batches = _first_dataset_and_batches(mascope)
+        batch = batches.iloc[0]
+        real_get = _base.http_get
+        paths: list[str] = []
+
+        def counted(*args, **kwargs):
+            paths.append(kwargs.get("path", args[1] if len(args) > 1 else ""))
+            return real_get(*args, **kwargs)
+
+        def load():
+            paths.clear()
+            return mascope.load_peaks(
+                dataset=dataset["dataset_id"],
+                batches=batch["sample_batch_name"],
+                exact=True,
+                confirm_above=None,
+                matches=False,
+            )
+
+        monkeypatch.setattr(_base, "http_get", counted)
+        bulk = load()
+        bulk_reads = [p for p in paths if p.endswith("/peaks")]
+        # The same load as a server older than the batch read answers it
+        monkeypatch.setattr(mascope, "_server_has_batch_peak_lists", False)
+        fan_out = load()
+        sample_reads = [p for p in paths if p.endswith("/peaks")]
+
+        assert bulk_reads == [f"batch-peaks/batch/{batch['sample_batch_id']}/peaks"]
+        assert len(sample_reads) == fan_out["sample_item_id"].nunique() > 1
+        assert bulk.attrs["complete"] and fan_out.attrs["complete"]
+        key = ["sample_item_id", "peak_id"]
+        columns = [*key, "mz", "height", "area", "sample_item_name", "datetime_utc"]
+        assert_frame_equal(
+            bulk[columns].sort_values(key, ignore_index=True),
+            fan_out[columns].sort_values(key, ignore_index=True),
+        )
+        assert not bulk["is_satellite"].any()
+
+    def test_load_peaks_saves_a_snapshot_that_reads_back_equal(self, mascope, tmp_path):
+        import pandas as pd
+        from pandas.testing import assert_frame_equal
+
+        _skip_unless_param(mascope.load_peaks, "save_path")
+        dataset, batches = _first_dataset_and_batches(mascope)
+        path = tmp_path / "batch.parquet"
+
+        peaks = mascope.load_peaks(
+            dataset=dataset["dataset_id"],
+            batches=batches.iloc[0]["sample_batch_name"],
+            exact=True,
+            confirm_above=None,
+            save_path=path,
+        )
+
+        again = pd.read_parquet(path)
+        assert_frame_equal(again, peaks)
+        assert again.attrs["provenance"] == peaks.attrs["provenance"]
+        assert again.attrs["segments"] == peaks.attrs["segments"]
 
     def test_load_peak_timeseries_for_a_matched_compound(self, mascope, matched_peaks):
         _skip_unless_param(mascope.load_peak_timeseries, "exact")
@@ -1103,6 +1172,7 @@ class TestSeriesContract:
             batches=batch["sample_batch_name"],
             exact=True,
             confirm_above=None,
+            matches=True,
         )
         heights = peaks.dropna(subset=["target_ion_id"]).groupby(key)["height"].sum()
         intensity = series.set_index(key)["intensity"]

@@ -11,6 +11,8 @@ batch without a per-sample run in sight. Read-only; the ledger is built and
 curated from the Mascope app.
 """
 
+import io
+import json
 import time
 from typing import Any
 
@@ -37,6 +39,9 @@ SERIES_COLUMNS = [
     "intensity",
     "tier",
 ]
+
+#: The key of a peak-lists table's metadata that holds what the reads said.
+PEAK_LISTS_METADATA_KEY = b"mascope"
 
 #: Per batch peak, the consensus field each anchor column of the series is.
 _SERIES_ANCHOR = {
@@ -187,6 +192,118 @@ class BatchPeaksResource(BaseResource):
             "Read {} ledger member(s) of batch '{}'", len(rows), sample_batch_id
         )
         return pd.DataFrame(rows)
+
+    def peak_lists(
+        self,
+        sample_batch_id: str,
+        *,
+        matches: bool = False,
+        satellites: bool = False,
+        average: bool = True,
+    ) -> pd.DataFrame:
+        """Every peak of every sample of a batch, in one read.
+
+        The batch form of :meth:`~mascope_sdk.resources.samples.SamplesResource.get_peaks`:
+        each sample read as ``get_peaks`` reads it with no time or m/z range,
+        and the rows stacked in the order :meth:`samples.list` gives the
+        samples. The server sends the table as Parquet, so a batch of
+        hundreds of samples is one request rather than one per sample.
+        :meth:`~mascope_sdk.MascopeClient.load_peaks` reads batches this way
+        from a server that offers it.
+
+        This is the read and nothing else: it does not need the batch to have
+        a ledger, and it is not stamped with the server's provenance.
+
+        :param sample_batch_id: The ID of the sample batch.
+        :type sample_batch_id: str
+        :param matches: Add the match columns, one row per match of a peak; a
+                        peak no target matched keeps one row with them null.
+                        Defaults to False.
+        :type matches: bool
+        :param satellites: Keep the peaks detection flagged satellites -
+                           sidelobes of a stronger peak - which ``get_peaks``
+                           leaves out. Defaults to False.
+        :type satellites: bool
+        :param average: Average each peak's area and height over its scans;
+                        False for the sums. Defaults to True.
+        :type average: bool
+        :return: One row per peak (per match with ``matches``):
+                 ``sample_item_id``, ``sample_item_name``, ``datetime_utc``
+                 (the sample's start), ``peak_id``, ``mz``, ``sparsity``,
+                 ``signal_to_noise`` (``NaN`` where the file has no
+                 estimate), ``segment`` (the scan stream of a stitched
+                 sample's peak, ``NaN`` otherwise), ``area``, ``height`` and
+                 ``is_satellite``. With ``matches``, also
+                 ``match_score_isotope``, ``relative_abundance``,
+                 ``target_isotope_id``, ``target_isotope_formula``,
+                 ``target_ion_id``, ``target_ion_formula``,
+                 ``target_compound_id``, ``target_compound_name``,
+                 ``target_compound_formula``, ``ionization_mechanism_id``,
+                 ``target_collection_ids`` and ``target_collection_names``.
+
+                 ``attrs["samples"]`` lists each sample read and its row
+                 count. ``attrs["failures"]`` lists each sample whose read
+                 failed - ``sample_item_id``, ``sample_item_name``,
+                 ``status_code``, ``error`` - and ``attrs["complete"]`` is
+                 False when there is one: the rest of the batch is answered
+                 without it. ``attrs["segments"]`` maps each sample read to
+                 the segments of its stitched spectrum, None for one that is
+                 not stitched.
+        :rtype: pd.DataFrame
+        :raises NotFoundError: From a server older than this read.
+        :raises PermissionDeniedError: Without the guest role on the batch.
+
+        Example::
+
+            peaks = mascope.batch_peaks.peak_lists("batch-123")
+            peaks.groupby("sample_item_id")["height"].sum()
+        """
+        # Here, not at the top: a program that bundles the SDK but never
+        # reads a table (the File Agent) leaves pyarrow out of its bundle
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        response = self._get(
+            f"batch-peaks/batch/{sample_batch_id}/peaks",
+            params={
+                "matches": str(matches).lower(),
+                "satellites": str(satellites).lower(),
+                "average": str(average).lower(),
+            },
+            stream=True,
+        )
+        table = pq.read_table(io.BytesIO(response.content))
+        said = json.loads(
+            (table.schema.metadata or {}).get(PEAK_LISTS_METADATA_KEY, b"{}")
+        )
+        frame = table.to_pandas()
+        for name in table.column_names:
+            if pa.types.is_list(table.schema.field(name).type):
+                # As get_peaks lists them, not as numpy arrays
+                frame[name] = frame[name].map(
+                    lambda v: v.tolist() if v is not None else None
+                )
+        failures = list(said.get("failures") or [])
+        frame.attrs["samples"] = list(said.get("samples") or [])
+        frame.attrs["failures"] = failures
+        frame.attrs["complete"] = not failures
+        frame.attrs["segments"] = dict(said.get("segments") or {})
+        logger.info(
+            "Read {} peak(s) of {} sample(s) of batch '{}'",
+            len(frame),
+            len(frame.attrs["samples"]),
+            sample_batch_id,
+        )
+        if failures:
+            logger.warning(
+                "{} sample(s) of batch '{}' could not be read: {}",
+                len(failures),
+                sample_batch_id,
+                "; ".join(
+                    f"{f.get('sample_item_name')}: {f.get('error')}" for f in failures
+                ),
+            )
+        return frame
 
     def series(
         self,

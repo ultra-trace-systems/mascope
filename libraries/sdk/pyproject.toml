@@ -20,11 +20,15 @@ requires-python = ">=3.10"
 dependencies = [
     "requests>=2.34.2,<3",
     "loguru>=0.7.3",
-    "pandas>=2.0.0",
+    # 2.1 keeps a frame's attrs in a Parquet file (load_peaks(save_path=...))
+    "pandas>=2.1.0",
     "tqdm>=4.70.0",
     "python-dotenv>=1.0.0",
     # The acquisition record's schema (mascope_sdk.acquisition).
     "pydantic>=2.6,<3",
+    # A batch's peak lists come as one Parquet table (load_peaks), and a load
+    # is saved as one (load_peaks(save_path=...)).
+    "pyarrow>=14.0.0",
 ]
 
 [project.optional-dependencies]

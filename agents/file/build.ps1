@@ -239,6 +239,10 @@ uv run pyinstaller @(
     '--collect-all', 'mascope_runtime'            # bundle runtime lib
     '--collect-all', 'mascope_sdk'                # bundle mascope api wrapper
     '--collect-all', 'tzlocal'                    # name this machine's IANA zone
+    # The SDK requires pyarrow for its Parquet reads, which the agent never
+    # makes; pandas imports it only if it can, so leaving it out keeps the
+    # exe tens of MB lighter and as it was before the SDK required it
+    '--exclude-module', 'pyarrow'
 )
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed' }
 
