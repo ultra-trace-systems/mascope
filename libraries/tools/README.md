@@ -15,4 +15,6 @@
   - [`composition/finder.py`](src/mascope_tools/composition/finder.py): Algorithms for finding chemical compositions.
   - [`composition/heuristic_filter.py`](src/mascope_tools/composition/heuristic_filter.py): Heuristic filters for composition candidates.
   - [`composition/models.py`](src/mascope_tools/composition/models.py): Data models for composition analysis.
+  - [`composition/mass_accuracy.py`](src/mascope_tools/composition/mass_accuracy.py): A sample's fitted mass accuracy and the width a fit is judged at.
+  - [`composition/scoring.py`](src/mascope_tools/composition/scoring.py): What a sample is scored at (`pattern_scoring_for_sample`), and candidates scored against a peak list in bulk (`score_candidates`).
   - [`composition/utils.py`](src/mascope_tools/composition/utils.py): Utility functions for composition workflows.
