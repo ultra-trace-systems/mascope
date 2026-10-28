@@ -16,7 +16,14 @@ scans without opening them, and the raw data is kept beside the converted
 sample, so this writes the store of each file whose census holds a
 fragmentation stream and whose props record no store this build reads. It
 writes what the converter would (``write_ms2_store``): nothing is
-re-converted and no database row changes.
+re-converted.
+
+**It fills the group inventory too.** ``ms2_group`` lists each file's MS2
+groups, read from its store and written whenever the store is
+(``api/new/ms2/inventory.py``). A store this writes is listed after it, and a
+file whose store was written before the inventory existed - or whose listing
+failed - is listed from its store alone, with no raw file opened: such a file
+is one whose store records other groups than the inventory lists.
 
 **A file with no census is left alone.** Whether it holds fragmentation
 scans is not known without opening it, and ``backfill_scan_stream_census``
@@ -27,8 +34,8 @@ Two modes:
 
 - ``count`` (the default) reads only the props and reports, per instrument,
   how many files hold a fragmentation stream and no store, how many have a
-  store, and how many hold no census. It opens no raw file and writes
-  nothing.
+  store, and of those how many the inventory does not list, and how many
+  hold no census. It opens no raw file and writes nothing.
 - ``run`` writes the stores. A file is read **one at a time**, with a pause
   of ``MS2_STORE_PAUSE`` seconds after each, so a production server keeps
   serving and ingesting while it runs. Each store is written as the file is
@@ -36,7 +43,8 @@ Two modes:
   never read again. ``MS2_STORE_LIMIT`` caps how many files one run reads,
   and a file whose store could not be written is remembered in its props
   and passed over on the next run; ``MS2_STORE_RETRY=1`` tries those again
-  once the cause is dealt with. Run it until it reports nothing left to do.
+  once the cause is dealt with. A file only to be listed is read the same
+  way, from its store. Run it until it reports nothing left to do.
 
 Usage:
     mascope dev db script run backfill_ms2_store
@@ -64,6 +72,7 @@ from sqlalchemy import text
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name
+from mascope_backend.api.new.ms2.inventory import write_ms2_inventory
 from mascope_backend.db import async_session, configure_database_engine
 from mascope_backend.method_keys import usable_streams
 from mascope_backend.runtime import runtime
@@ -107,9 +116,17 @@ _TRACEBACK_LIMIT = 3
 
 #: Every Orbitrap file, newest first: a bounded run reaches the files a
 #: client is most likely to ask about. A run carried through to the end
-#: reaches the same state whichever way it goes.
+#: reaches the same state whichever way it goes. With each, how many groups
+#: the inventory lists of it.
 _CANDIDATES_SQL = """
-    SELECT sf.filename AS filename, sf.instrument AS instrument
+    SELECT
+        sf.sample_file_id AS sample_file_id,
+        sf.filename AS filename,
+        sf.instrument AS instrument,
+        (
+            SELECT count(*) FROM ms2_group g
+            WHERE g.sample_file_id = sf.sample_file_id
+        ) AS listed
     FROM sample_file sf
     WHERE sf.instrument_type = :instrument_type
     ORDER BY sf.datetime_utc DESC, sf.filename DESC
@@ -120,12 +137,15 @@ NO_PROPS = "no_props"
 NO_CENSUS = "no_census"
 NO_FRAGMENTATION = "no_fragmentation"
 HAS_STORE = "has_store"
+UNLISTED = "unlisted"
 TRIED = "tried"
 NO_RAW = "no_raw"
 PENDING = "pending"
 
 #: The classes of a file that holds a fragmentation stream and no store.
 WITHOUT_STORE = (PENDING, TRIED, NO_RAW)
+#: The classes a run reads: from its raw file, or from its store alone.
+TO_READ = (PENDING, UNLISTED)
 
 
 class BadSetting(ValueError):
@@ -135,7 +155,8 @@ class BadSetting(ValueError):
 async def _candidates() -> list[dict]:
     """Every Orbitrap file, newest first.
 
-    :return: One dict per file: filename and instrument.
+    :return: One dict per file: sample_file_id, filename, instrument, and
+        ``listed``, how many groups the inventory lists of it.
     :rtype: list[dict]
     """
     async with async_session() as session:
@@ -178,6 +199,7 @@ def classify(
     props: dict | None,
     has_raw: Callable[[str], bool],
     retry: bool = False,
+    listed: int | None = None,
 ) -> str:
     """What the backfill makes of one file.
 
@@ -186,9 +208,12 @@ def classify(
     :param has_raw: Whether the raw file is still there: :func:`_has_raw`, or
         a stand-in. Asked only of a file that would otherwise be read.
     :param retry: Read a file a previous run could not write a store for.
+    :param listed: How many groups the inventory lists of the file; None
+        for not known, which leaves the inventory out of it.
     :return: One of :data:`NO_PROPS`, :data:`NO_CENSUS` (left alone),
         :data:`NO_FRAGMENTATION` (needs no store), :data:`HAS_STORE`,
-        :data:`TRIED`, :data:`NO_RAW` or :data:`PENDING` (to read).
+        :data:`UNLISTED` (to list from its store), :data:`TRIED`,
+        :data:`NO_RAW` or :data:`PENDING` (to read).
     """
     if props is None:
         return NO_PROPS
@@ -200,7 +225,10 @@ def classify(
     if not ms2_store.holds_fragmentation(streams):
         return NO_FRAGMENTATION
     if has_current_store(filename, props):
-        return HAS_STORE
+        groups = (props.get("ms2_store") or {}).get("groups") or []
+        # The inventory is written from the store whole, so a count that
+        # differs is a store it does not list
+        return UNLISTED if listed is not None and listed != len(groups) else HAS_STORE
     if props.get(ATTEMPT_FIELD) and not retry:
         return TRIED
     if not has_raw(filename):
@@ -236,8 +264,9 @@ async def survey(
     :param limit: Stop once this many files are found; None surveys them all.
     :param retry: Include files a previous run could not write a store for.
     :return: The candidates to read, newest first, each with ``tried`` set
-        when a previous run recorded an attempt on it; and per instrument,
-        how many candidates were found of each class (:func:`classify`).
+        when a previous run recorded an attempt on it and ``listed_only``
+        when it is only to be listed from its store; and per instrument, how
+        many candidates were found of each class (:func:`classify`).
     :rtype: tuple[list[dict], dict[str, Counter]]
     """
     gate = asyncio.Semaphore(_PROPS_CONCURRENCY)
@@ -246,7 +275,9 @@ async def survey(
         async with gate:
             filename = candidate["filename"]
             props = await asyncio.to_thread(read_props, filename)
-            found = await asyncio.to_thread(classify, filename, props, has_raw, retry)
+            found = await asyncio.to_thread(
+                classify, filename, props, has_raw, retry, candidate.get("listed")
+            )
             return candidate, found, bool(props and props.get(ATTEMPT_FIELD))
 
     pending: list[dict] = []
@@ -255,8 +286,10 @@ async def survey(
         batch = candidates[start : start + _SURVEY_BATCH]
         for candidate, found, tried in await asyncio.gather(*map(one, batch)):
             counts[candidate["instrument"] or "(none)"][found] += 1
-            if found == PENDING:
-                pending.append({**candidate, "tried": tried})
+            if found in TO_READ:
+                pending.append(
+                    {**candidate, "tried": tried, "listed_only": found == UNLISTED}
+                )
         if limit is not None and len(pending) >= limit:
             return pending[:limit], counts
     return pending, counts
@@ -305,52 +338,77 @@ def describe_groups(descriptor: dict) -> str:
     return f"{len(groups)} groups ({polarities}): {named}"
 
 
+async def list_groups(candidate: dict) -> int:
+    """List one file's groups in the inventory, from its store."""
+    return await write_ms2_inventory(candidate["sample_file_id"], candidate["filename"])
+
+
 async def fill(
     pending: list[dict],
     write: Callable[[str, bool], dict],
     record: Callable[[str, Exception], None],
     pause: float,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    listing: Callable[[dict], Awaitable[int]] | None = None,
 ) -> Counter:
     """Write each pending file's store, one at a time, pausing after each.
 
     A file whose store cannot be written is recorded and the run carries on:
     one sample deleted while the run walks the filestore should not end a
-    long job with a traceback and no summary.
+    long job with a traceback and no summary. A store written, and the store
+    of a file only to be listed, is then listed in the inventory by
+    ``listing``; one that cannot be is counted and left for the next run,
+    which finds it unlisted.
 
     :param pending: From :func:`survey`.
     :param write: :func:`write_store`, or a stand-in.
     :param record: :func:`write_attempt`, or a stand-in.
     :param pause: Seconds to sleep after each file.
     :param sleep: ``asyncio.sleep``, or a stand-in.
-    :return: How many were ``written`` and how many ``failed``.
+    :param listing: :func:`list_groups`, or a stand-in; None lists nothing.
+    :return: How many were ``written`` and how many ``failed``, how many
+        were ``listed`` and how many ``unlisted``.
     """
     counts: Counter = Counter()
     traced = 0
     for done, candidate in enumerate(pending, start=1):
         filename = candidate["filename"]
-        try:
-            descriptor = await asyncio.to_thread(write, filename, candidate["tried"])
-        except Exception as error:  # noqa: BLE001 - one file, never the run
-            counts["failed"] += 1
-            if traced < _TRACEBACK_LIMIT:
-                traced += 1
-                runtime.logger.opt(exception=error).info(
-                    f"  [{done}/{len(pending)}] {filename}: no store written"
-                )
-            else:
-                runtime.logger.info(
-                    f"  [{done}/{len(pending)}] {filename}: no store written: {error}"
-                )
+        step = f"  [{done}/{len(pending)}] {filename}"
+        # A file only to be listed has its store already
+        stored = candidate.get("listed_only", False)
+        if not stored:
             try:
-                await asyncio.to_thread(record, filename, error)
-            except Exception as exc:  # noqa: BLE001
-                runtime.logger.info(f"  Cannot record the attempt on {filename}: {exc}")
-        else:
-            counts["written"] += 1
-            runtime.logger.info(
-                f"  [{done}/{len(pending)}] {filename}: {describe_groups(descriptor)}"
-            )
+                descriptor = await asyncio.to_thread(
+                    write, filename, candidate["tried"]
+                )
+            except Exception as error:  # noqa: BLE001 - one file, never the run
+                counts["failed"] += 1
+                if traced < _TRACEBACK_LIMIT:
+                    traced += 1
+                    runtime.logger.opt(exception=error).info(
+                        f"{step}: no store written"
+                    )
+                else:
+                    runtime.logger.info(f"{step}: no store written: {error}")
+                try:
+                    await asyncio.to_thread(record, filename, error)
+                except Exception as exc:  # noqa: BLE001
+                    runtime.logger.info(
+                        f"  Cannot record the attempt on {filename}: {exc}"
+                    )
+            else:
+                stored = True
+                counts["written"] += 1
+                runtime.logger.info(f"{step}: {describe_groups(descriptor)}")
+        if stored and listing is not None:
+            try:
+                listed = await listing(candidate)
+            except Exception as error:  # noqa: BLE001 - one file, never the run
+                counts["unlisted"] += 1
+                runtime.logger.info(f"{step}: its groups not listed: {error}")
+            else:
+                counts["listed"] += 1
+                runtime.logger.info(f"{step}: {listed} groups listed")
         if pause > 0 and done < len(pending):
             await sleep(pause)
     return counts
@@ -372,7 +430,8 @@ def _counts_line(found: Counter) -> str:
         f"{without} with a fragmentation stream and no store "
         f"({found[PENDING]} to read, {found[TRIED]} tried before, "
         f"{found[NO_RAW]} raw file not kept), "
-        f"{found[HAS_STORE]} with a store, "
+        f"{found[HAS_STORE] + found[UNLISTED]} with a store "
+        f"({found[UNLISTED]} whose groups the inventory does not list), "
         f"{found[NO_CENSUS]} with no census (left alone), "
         f"{found[NO_FRAGMENTATION]} with no fragmentation stream, "
         f"{found[NO_PROPS]} with no props"
@@ -447,7 +506,8 @@ async def backfill(
     retry: bool = False,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> tuple[dict[str, Counter], Counter]:
-    """Count, or write, the MS2 stores the Orbitrap files lack.
+    """Count, or write, the MS2 stores the Orbitrap files lack, and list
+    their groups.
 
     :param mode: ``count`` or ``run``.
     :param limit: The most files a run reads; None for no cap. A count
@@ -456,7 +516,8 @@ async def backfill(
     :param retry: Read the files a previous run could not write a store for.
     :param sleep: ``asyncio.sleep``, or a stand-in.
     :return: The survey's counts per instrument, and what the run wrote
-        (``written``, ``failed``; empty for a count).
+        (``written``, ``failed``, ``listed``, ``unlisted``; empty for a
+        count).
     """
     candidates = await _candidates()
     runtime.logger.info(f"Orbitrap files: {len(candidates)}")
@@ -489,18 +550,22 @@ async def backfill(
         runtime.logger.info("Nothing left to do.")
         return counts, Counter()
 
+    to_list = sum(1 for candidate in pending if candidate["listed_only"])
     runtime.logger.info(
-        f"Writing {len(pending)} stores, one file at a time, "
-        f"resting {pause:g} s after each"
+        f"Writing {len(pending) - to_list} stores and listing {to_list} more, "
+        f"one file at a time, resting {pause:g} s after each"
     )
-    written = await fill(pending, write_store, write_attempt, pause, sleep)
+    written = await fill(
+        pending, write_store, write_attempt, pause, sleep, listing=list_groups
+    )
 
     runtime.logger.info("=" * 80)
     runtime.logger.info("BACKFILL MS2 STORE COMPLETE")
     runtime.logger.info(
-        f"Written: {written['written']}, could not be written: {written['failed']}"
+        f"Written: {written['written']}, could not be written: {written['failed']}; "
+        f"listed: {written['listed']}, could not be listed: {written['unlisted']}"
     )
-    found_pending = sum(found[PENDING] for found in counts.values())
+    found_pending = sum(found[c] for found in counts.values() for c in TO_READ)
     if surveyed < len(candidates) or found_pending > len(pending):
         runtime.logger.info(
             "The run stopped at MS2_STORE_LIMIT, so run this again until it "
@@ -511,6 +576,11 @@ async def backfill(
         runtime.logger.warning(
             f"MS2 store backfill: {written['failed']} files had no store "
             "written; their MS2 routes go on reading the raw file."
+        )
+    if written["unlisted"]:
+        runtime.logger.warning(
+            f"MS2 store backfill: {written['unlisted']} files had their groups "
+            "not listed; run this again to list them."
         )
     return counts, written
 

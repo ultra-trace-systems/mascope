@@ -5,7 +5,9 @@ A file of the hermetic MS2 fixture (``tests/ms2_fixture.py``) converted, its
 store then taken away as if it had been converted before the store existed,
 and a second file beside it whose census was never recorded. Both are
 sample-file rows of the integration database, as the script finds them, under
-an instrument of their own so the counts are theirs alone.
+an instrument of their own so the counts are theirs alone. A run lists the
+groups of each store it writes in the group inventory, and lists those of a
+store written before the inventory existed from the store alone.
 """
 
 import os
@@ -19,10 +21,10 @@ import pytest
 import pytest_asyncio
 import zarr
 from ms2_fixture import converted
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 import mascope_file.io as m_io
-from mascope_backend.db import SampleFile
+from mascope_backend.db import Ms2Group, SampleFile
 from mascope_backend.db.id import gen_id
 from mascope_backend.db.scripts import backfill_ms2_store as script
 from mascope_signal import ms2_store
@@ -94,7 +96,11 @@ async def history(converted_before_the_store, async_session_factory):
     async with async_session_factory() as session:
         session.add_all(rows)
         await session.commit()
-    yield {**files, "instrument": instrument}
+    yield {
+        **files,
+        "instrument": instrument,
+        "sample_file_id": rows[0].sample_file_id,
+    }
     async with async_session_factory() as session:
         await session.execute(
             delete(SampleFile).where(
@@ -102,6 +108,23 @@ async def history(converted_before_the_store, async_session_factory):
             )
         )
         await session.commit()
+
+
+async def _listed(async_session_factory, sample_file_id: str) -> list[tuple]:
+    async with async_session_factory() as session:
+        rows = await session.execute(
+            select(Ms2Group.polarity, Ms2Group.precursor_key, Ms2Group.scan_count)
+            .where(Ms2Group.sample_file_id == sample_file_id)
+            .order_by(Ms2Group.precursor_key)
+        )
+    return [tuple(row) for row in rows]
+
+
+def _recorded_groups(recorded: dict) -> list[tuple]:
+    return sorted(
+        (group["polarity"], group["key"], group["scan_count"])
+        for group in recorded["groups"]
+    )
 
 
 def _held(filename: str) -> list[str]:
@@ -122,7 +145,9 @@ async def test_a_count_reports_both_and_writes_nothing(history):
 
 
 @pytest.mark.asyncio
-async def test_a_run_writes_the_store_and_a_second_writes_nothing(history):
+async def test_a_run_writes_the_store_and_a_second_writes_nothing(
+    history, async_session_factory
+):
     fragmented = history["fragmented"]
     no_census = history["no_census"]
     untouched = _held(no_census)
@@ -132,7 +157,11 @@ async def test_a_run_writes_the_store_and_a_second_writes_nothing(history):
     assert counts[history["instrument"]] == Counter(
         {script.PENDING: 1, script.NO_CENSUS: 1}
     )
-    assert written == Counter({"written": 1})
+    assert written == Counter({"written": 1, "listed": 1})
+    # Its groups listed, as the store records them
+    assert await _listed(
+        async_session_factory, history["sample_file_id"]
+    ) == _recorded_groups(history["recorded"])
     # What the converter wrote, array for array, and recorded the same.
     assert m_io.read_props(fragmented)["ms2_store"] == history["recorded"]
     assert ms2_store.Ms2Store.open(fragmented) is not None
@@ -154,6 +183,38 @@ async def test_a_run_writes_the_store_and_a_second_writes_nothing(history):
 
 
 @pytest.mark.asyncio
+async def test_a_store_written_before_the_inventory_is_listed_from_the_store(
+    history, async_session_factory
+):
+    """No raw file is opened for it, and a second run finds nothing to do."""
+    fragmented = history["fragmented"]
+    ms2_store.write_ms2_store(fragmented)
+
+    counts, written = await script.backfill("count")
+    assert counts[history["instrument"]] == Counter(
+        {script.UNLISTED: 1, script.NO_CENSUS: 1}
+    )
+    assert written == Counter()
+    assert await _listed(async_session_factory, history["sample_file_id"]) == []
+
+    with patch.object(
+        ms2_store, "write_ms2_store", side_effect=AssertionError("raw file read")
+    ):
+        counts, written = await script.backfill("run", pause=0, sleep=_no_sleep)
+
+    assert written == Counter({"listed": 1})
+    assert await _listed(
+        async_session_factory, history["sample_file_id"]
+    ) == _recorded_groups(history["recorded"])
+
+    counts, written = await script.backfill("run", pause=0, sleep=_no_sleep)
+    assert counts[history["instrument"]] == Counter(
+        {script.HAS_STORE: 1, script.NO_CENSUS: 1}
+    )
+    assert written == Counter()
+
+
+@pytest.mark.asyncio
 async def test_a_file_whose_store_cannot_be_written_is_passed_over_next_time(
     history,
 ):
@@ -166,7 +227,7 @@ async def test_a_file_whose_store_cannot_be_written_is_passed_over_next_time(
     assert written == Counter()
 
     _, written = await script.backfill("run", pause=0, retry=True, sleep=_no_sleep)
-    assert written == Counter({"written": 1})
+    assert written == Counter({"written": 1, "listed": 1})
     assert m_io.read_props(history["fragmented"])[script.ATTEMPT_FIELD] is None
 
 

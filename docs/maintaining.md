@@ -29,7 +29,7 @@ Everything below assumes an Ubuntu host provisioned with
 | What a raw file measured (its scan streams) | `mascope file scans <file.raw>` |
 | Package a dataset for a repository such as Zenodo | `mascope export package <dataset id>` |
 | What the method bindings would route, and where a file name disagrees | `mascope prod db script run report_method_binding_disagreements` |
-| Write the MS2 stores of files converted before them (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
+| Write the MS2 stores of files converted before them, and list their groups (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
 | List the files whose peak store lacks a scan they read, to re-process them | `mascope prod db script run report_stale_peak_stores` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
@@ -1959,6 +1959,14 @@ MS2_STORE_MODE=run mascope prod db script run backfill_ms2_store  # write; again
 - The count reads only each file's `.props` and writes nothing. Per
   instrument it says how many files hold fragmentation scans and no store,
   how many already have one, and how many hold **no scan-stream census**.
+- It also fills the **group inventory**, the `ms2_group` table that lists
+  each file's MS2 groups. The samples listing counts them
+  (`ms2_group_count`), and a batch's groups are one request
+  (`GET /api/sample/batches/{id}/ms2/groups`). A store it writes is listed
+  at once. A file whose store was written before the release that adds the
+  inventory is counted as one "whose groups the inventory does not list",
+  and a run lists it from its store alone, opening no raw file. Until then
+  such a file's samples count 0 groups.
 - A file with no census is left alone: nothing says whether it holds
   fragmentation scans without opening it. Run `backfill_scan_stream_census`
   (under [Method bindings](#method-bindings)) first, then this again.
@@ -1970,8 +1978,9 @@ MS2_STORE_MODE=run mascope prod db script run backfill_ms2_store  # write; again
 - A file whose store could not be written is remembered and passed over;
   `MS2_STORE_RETRY=1` tries those again once the cause is dealt with. Its MS2
   routes read the raw file meanwhile, as before.
-- It changes no database row, only files in the filestore, so the pre-script
-  database dump restores nothing it does: `--skip-backup` loses nothing.
+- Besides the stores in the filestore it writes only the group inventory's
+  rows, which a run writes again from the stores, so `--skip-backup` loses
+  nothing.
 - A store of another version than the release reads is not read, and the
   backfill counts its file as one to write. A release that changes the
   version says so in its changelog: run the backfill again after it. Until

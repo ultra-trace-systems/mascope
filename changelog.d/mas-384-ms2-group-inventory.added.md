@@ -9,4 +9,5 @@
   table (`source: "inventory"`) where its window holds each whole, and says
   why it lists none in `reason`: `none` for a raw Orbitrap file, and
   `unsupported` for any other, such as a TOF sample, whose summary used to
-  fail with a server error.
+  fail with a server error. `backfill_ms2_store` lists the groups of stores
+  written before this release, from the store alone: run it after updating.
