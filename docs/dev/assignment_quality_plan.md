@@ -4,7 +4,7 @@
 
 - **Status:** building
 - **As of:** 2026-10-23
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410 and MAS-443)
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443 and MAS-570)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -101,6 +101,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.9 - the width a run scored at, served on the run and sample records | - |  | planned 2026-10-22, from the readiness check (the digest's one unbinned ask); MAS-410 |
 | 5.10 - the instrument's side-lobe flag: Exception-majority peaks into the satellite flag | #2779 |  | built: a peak most of whose per-scan centroids the instrument flagged is a satellite, unless on an isotopologue line; the averaged profile kept as measured (MAS-577); MAS-443 |
 | 5.12 - the per-sample scoring derivation as one library function, and a bulk candidate scorer | #2767 | | built: `pattern_scoring_for_sample` and `score_candidates` in `mascope_tools`, the engine and the finder call them; no score moves beyond rounding; MAS-569 |
+| 5.13 - the current verdicts of a batch or dataset in one read, through the API, the SDK and the export | - |  | built: one row per judged peak, a batch-level verdict marked `borrowed` where it reaches a sample, a sheet of the batch export; MAS-570 |
 
 ## Purpose
 
@@ -944,7 +945,7 @@ under its milestone 5.
 | rider | folds into a planned step; written into that step's issue and named in its status row | 3.4e (three), 3.4f (one), 3.6 (two), 3.3d (one), 4.2 (five) |
 | new step | its own step under milestone 5 | 5.1 to 5.7 below |
 | not ours | the reference's strategy, exploration or narrative, by the charter's boundary | its evidence scale and claims as a vocabulary, its merge vote, trace-first and the rolling centre, its scorecard and A/B scripts as scripts, its report and workbook, its MCP tools |
-| ask of Mascope | a server, library or contract gap the reference worked around | the batch import's missing verdict (5.6), the TOF signal-to-noise column (5.5), the Orbitrap axis (5.7 and the axis-fingerprint project), the censored minor lines (5.3), a per-line centre in the library's score (3.5b), the mechanism catalogue read as a configuration (5.6's docs line) |
+| ask of Mascope | a server, library or contract gap the reference worked around | the batch import's missing verdict (5.6), the TOF signal-to-noise column (5.5), the Orbitrap axis (5.7 and the axis-fingerprint project), the censored minor lines (5.3), a per-line centre in the library's score (3.5b), the mechanism catalogue read as a configuration (5.6's docs line), the verdicts of a batch or dataset in one read (5.13) |
 
 ### 5.1 The reference pinned at a release, and a boundary review per peaky release
 
@@ -1319,6 +1320,40 @@ with the averaged profile kept as measured.
 - **Size.** M (MAS-569). Lands before or with 5.9, which serves the object
   this computes.
 
+### 5.13 The current verdicts of a batch or dataset in one read
+
+- **What.** `GET /api/peak-assignments/batch/{sample_batch_id}/verifications`
+  and `GET /api/peak-assignments/dataset/{dataset_id}/verifications` answer
+  the current verdicts over every sample of the batch or dataset, one row
+  per judged peak, as each sample's assignment ledger shows them: the
+  sample's own verdict, or a batch-level verdict that reaches it, marked
+  `borrowed`. A batch-level verdict reaches a sample when the sample's peak
+  folded into the judged batch peak and claims the formula and mechanism
+  judged, and the sample has no current verdict of its own on that claim;
+  that precedence is settled before the filters (`verdict`,
+  `evidence_level`, `since`, `include_superseded`) apply. Each row carries
+  the sample's filename and acquisition time, the peak's m/z, the evidence
+  level and the score snapshot. The SDK reads them as
+  `peak_assignments.verifications_for_batch` and
+  `verifications_for_dataset`, and the batch export writes the same table
+  as its Verifications sheet, under the API's field names.
+- **Why.** The reference's refactoring plan proposes a vetted truth corpus
+  to judge engines by, and Mascope's verdicts are the one truth source
+  Mascope produces. They left the app one sample at a time, so the labelled
+  record could not be exported into a corpus, audited across a dataset, or
+  joined by `tooling/assignment_compare` against a human rather than the
+  other engine.
+- **Where.** `api/new/peak_assignments/service.py`
+  (`get_scope_verifications`), `routes.py`, `schemas.py`;
+  `api/controllers/sample/batches/export/service.py`;
+  `mascope_sdk/resources/peak_assignments.py`, `libraries/sdk/README.md`.
+- **Verify.** Two verdicts on two samples of a batch, one superseded, read
+  as one current row each through the batch and the dataset read, the
+  superseded one only on request; a batch-level verdict reaches the member
+  samples with none of their own, as `borrowed`, and a per-sample verdict
+  wins; the export sheet is the read. No gate number moves.
+- **Size.** S to M. Independent (MAS-570).
+
 ### Riders written into planned steps
 
 - **3.4e.** An artifact confirms no line and refutes none: a window only
@@ -1382,6 +1417,8 @@ with the averaged profile kept as measured.
 - Peak areas in the peaks endpoint and the batch time series: served.
 - The per-sample scoring derivation in the library, and candidates scored
   in bulk: 5.12.
+- The verdicts of a batch or dataset in one read, for a truth corpus and
+  for comparing an engine against the human record (mascope#2759): 5.13.
 
 ### Not taken
 

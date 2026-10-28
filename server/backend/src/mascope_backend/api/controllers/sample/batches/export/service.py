@@ -13,6 +13,7 @@ it found there, where it found it.
 """
 
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import IO, Any
@@ -38,6 +39,8 @@ from mascope_backend.api.lib.api_features import (
 from mascope_backend.api.new.match.records.collection.service import (
     get_match_collection_records,
 )
+from mascope_backend.api.new.peak_assignments.schemas import ScopeVerificationRecord
+from mascope_backend.api.new.peak_assignments.service import get_scope_verifications
 from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.db import Instrument, IonizationMode, SampleFile, async_session
 from mascope_backend.provenance import build_provenance, flatten_provenance
@@ -61,6 +64,7 @@ class BatchSheets:
     compounds: pd.DataFrame
     ions: pd.DataFrame
     provenance: pd.DataFrame
+    verifications: pd.DataFrame
 
 
 @api_controller_background_task(
@@ -315,6 +319,10 @@ async def build_batch_sheets(sample_batch_id: str) -> BatchSheets:
     )
     provenance_df = pd.DataFrame(flatten_provenance(provenance))
 
+    verifications_df = _verifications_sheet(
+        await get_scope_verifications(sample_batch_id=sample_batch_id)
+    )
+
     return BatchSheets(
         sample_batch_name=sample_batch_name,
         batch_info=batch_info_df,
@@ -322,6 +330,7 @@ async def build_batch_sheets(sample_batch_id: str) -> BatchSheets:
         compounds=compounds_df,
         ions=ions_df,
         provenance=provenance_df,
+        verifications=verifications_df,
     )
 
 
@@ -345,6 +354,10 @@ def write_batch_workbook(target: str | IO[bytes], sheets: BatchSheets) -> None:
             sheets.compounds.to_excel(writer, sheet_name="Match compounds", index=False)
         if not sheets.ions.empty:
             sheets.ions.to_excel(writer, sheet_name="Match ions", index=False)
+        if not sheets.verifications.empty:
+            sheets.verifications.to_excel(
+                writer, sheet_name="Verifications", index=False
+            )
         sheets.provenance.to_excel(
             writer, sheet_name="Provenance", index=False, header=False
         )
@@ -352,6 +365,38 @@ def write_batch_workbook(target: str | IO[bytes], sheets: BatchSheets) -> None:
         # Auto-adjust column widths for all sheets
         for worksheet in writer.sheets.values():
             auto_adjust_column_width(worksheet)
+
+
+def _verifications_sheet(rows: list[dict]) -> pd.DataFrame:
+    """
+    The batch's current verdicts, one row per judged peak, for the
+    Verifications sheet.
+
+    The rows and columns of ``GET /api/peak-assignments/batch/{id}/verifications``
+    and the SDK's ``peak_assignments.verifications_for_batch``, under the API's
+    field names, so the sheet and the frame read alike. Excel stores no zone and
+    no nested value, so the times are naive UTC and ``context`` is its JSON.
+
+    :param rows: The rows, from ``get_scope_verifications``.
+    :return: The sheet; empty when nothing in the batch was judged.
+    """
+    if not rows:
+        return pd.DataFrame()
+    columns = list(ScopeVerificationRecord.model_fields)
+    return pd.DataFrame(
+        [
+            {
+                column: (
+                    json.dumps(row.get(column), sort_keys=True)
+                    if column == "context" and row.get(column) is not None
+                    else _naive_utc(row.get(column))
+                )
+                for column in columns
+            }
+            for row in rows
+        ],
+        columns=columns,
+    )
 
 
 async def _ionization_mode_names(mode_ids: set[str | None]) -> dict[str, str]:

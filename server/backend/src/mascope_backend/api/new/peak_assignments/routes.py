@@ -57,12 +57,16 @@ from mascope_backend.api.new.peak_assignments.schemas import (
     ProfilePreviewQueryParams,
     ProfilePreviewResponse,
     RecalibrateResponse,
+    ScopeVerificationQueryParams,
+    ScopeVerificationsResponse,
     VerifyAssignmentBody,
 )
 from mascope_backend.api.new.peak_assignments.service import (
     assign_sample_peaks,
     create_pending_run,
     create_verification,
+    get_batch_verifications,
+    get_dataset_verifications,
     get_peak_assignment_detail,
     get_peak_assignment_runs,
     get_peak_assignments,
@@ -76,6 +80,7 @@ from mascope_backend.api.new.peak_assignments.visualization import (
 )
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access,
+    check_dataset_access,
     check_sample_access,
     require_sample_role,
 )
@@ -394,6 +399,60 @@ async def get_verifications_route(
     await check_sample_access(sample_item_id, user, "guest")
     result = await get_verifications(sample_item_id=sample_item_id)
     return AssignmentVerificationsResponse.model_validate(result)
+
+
+@peak_assignments_router.get(
+    "/batch/{sample_batch_id}/verifications",
+    response_model=ScopeVerificationsResponse,
+)
+@api_route(token_access=True)
+async def get_batch_verifications_route(
+    sample_batch_id: str,
+    query_params: ScopeVerificationQueryParams = Query(),
+    user: User = Depends(current_active_user),
+) -> ScopeVerificationsResponse:
+    """
+    Retrieve the current verdicts over every sample of a batch, one row per judged peak.
+
+    Each sample's own verdicts, and the batch-level verdicts that reach a sample with
+    none of its own on the claim judged, marked ``borrowed``, as the sample's assignment
+    ledger shows them. Each row carries the sample's filename and acquisition time and
+    the peak's m/z.
+
+    :param sample_batch_id: The unique identifier of the batch.
+    :param query_params: ``verdict``, ``evidence_level``, ``since``, ``include_superseded``.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The verdicts, by sample acquisition time, then m/z.
+    """
+    await check_batch_access(sample_batch_id, user, "guest")
+    result = await get_batch_verifications(sample_batch_id, **query_params.model_dump())
+    return ScopeVerificationsResponse.model_validate(result)
+
+
+@peak_assignments_router.get(
+    "/dataset/{dataset_id}/verifications",
+    response_model=ScopeVerificationsResponse,
+)
+@api_route(token_access=True)
+async def get_dataset_verifications_route(
+    dataset_id: str,
+    query_params: ScopeVerificationQueryParams = Query(),
+    user: User = Depends(current_active_user),
+) -> ScopeVerificationsResponse:
+    """
+    Retrieve the current verdicts over every sample of a dataset, one row per judged peak.
+
+    The batch read (``/batch/{sample_batch_id}/verifications``) over each of the
+    dataset's batches, in one response.
+
+    :param dataset_id: The unique identifier of the dataset.
+    :param query_params: ``verdict``, ``evidence_level``, ``since``, ``include_superseded``.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The verdicts, by sample acquisition time, then m/z.
+    """
+    await check_dataset_access(dataset_id, user, "guest")
+    result = await get_dataset_verifications(dataset_id, **query_params.model_dump())
+    return ScopeVerificationsResponse.model_validate(result)
 
 
 @peak_assignments_router.post(
