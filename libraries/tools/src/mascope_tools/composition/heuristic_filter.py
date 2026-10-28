@@ -1373,6 +1373,351 @@ def predict_resolved_isotopes(
     )
 
 
+def _empty_isotope_data() -> dict[str, np.ndarray | list[str]]:
+    """The isotope data of a candidate whose envelope predicted no line."""
+    return {
+        "masses": [],
+        "mass_errors_ppm": [],
+        "intensity_errors": [],
+        "labels": [],
+        "predicted_masses": [],
+        "predicted_intensities": [],
+    }
+
+
+def _predicted_envelope(
+    ion_formula: str,
+    ion_charge: int,
+    envelope_floor: float,
+    scoring: PatternScoring,
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """An ion's envelope as the finder scores it: resolved, anchored, relative.
+
+    One line per peak the file can resolve (:func:`predict_resolved_isotopes`)
+    with the ion's own line first (:func:`anchor_on_monoisotopic`), every
+    abundance relative to that line. An isotopologue's share may therefore
+    exceed 1: a dibromide's 79Br81Br line is 1.95 times its monoisotopic one.
+
+    :return: The predicted m/z values, relative abundances and labels; empty
+        where nothing could be predicted.
+    """
+    predicted_mzs, predicted_intensities, labels = anchor_on_monoisotopic(
+        *predict_resolved_isotopes(
+            ion_formula, ion_charge, envelope_floor, scoring.resolution
+        )
+    )
+    if not len(predicted_mzs):
+        return predicted_mzs, predicted_intensities, labels
+    return predicted_mzs, predicted_intensities / predicted_intensities[0], labels
+
+
+def score_ion_envelope(
+    ion_formula: str,
+    ion_charge: int,
+    envelope_floor: float,
+    mzs: np.ndarray,
+    intensities: np.ndarray,
+    snrs: np.ndarray | None,
+    scoring: PatternScoring,
+) -> tuple[float, bool, dict[str, np.ndarray | list[str]]]:
+    """Score one ion's envelope against a sorted peak list.
+
+    The per-candidate statement of the finder's ranking measurement, one line
+    at a time. :func:`score_ion_envelopes` does the same for many candidates on
+    arrays and is what the finder runs; this is the rule it must equal, kept
+    readable for a caller scoring one ion and for the tests that hold the two
+    together.
+
+    :param ion_formula: The ion's formula, without its charge sign.
+    :param ion_charge: Its charge.
+    :param envelope_floor: How deep its envelope is predicted
+        (:func:`envelope_floor_for_peak`).
+    :param mzs: The peak list's m/z values, sorted ascending.
+    :param intensities: Their intensities, same order.
+    :param snrs: Their signal-to-noise, same order, or None.
+    :param scoring: What the sample is scored at.
+    :return: The fit score, whether the two lines a reading needs were found,
+        and the isotope data ``match_isotopic_pattern`` reports.
+    """
+    predicted_mzs, predicted_rel, isotope_labels = _predicted_envelope(
+        ion_formula, ion_charge, envelope_floor, scoring
+    )
+    if not len(predicted_mzs):
+        return 0.0, False, _empty_isotope_data()
+
+    observed_masses = np.zeros_like(predicted_mzs)
+    observed_intensities = observed_masses.copy()
+    observed_mass_errors_ppm = observed_masses.copy()
+    observed_intensity_error = observed_masses.copy()
+    # Per-line signal-to-noise, NaN where the line was not matched or the
+    # file carries none. It only ever widens a tolerance in the score, so a
+    # NaN costs the candidate nothing it had earned.
+    observed_snr = np.full(predicted_mzs.size, np.nan)
+
+    base_peak_intensity = None
+    for i, p_mz in enumerate(predicted_mzs):
+        mz_delta = p_mz * scoring.mz_tolerance_ppm * 1e-6
+        mz_min, mz_max = p_mz - mz_delta, p_mz + mz_delta
+
+        start_idx = np.searchsorted(mzs, mz_min, side="left")
+        end_idx = np.searchsorted(mzs, mz_max, side="right")
+        if start_idx >= end_idx:
+            continue
+
+        window_mzs = mzs[start_idx:end_idx]
+        window_intensities = intensities[start_idx:end_idx]
+        matched_index = np.argmin(np.abs(window_mzs - p_mz))
+        matched_mz = window_mzs[matched_index]
+        matched_intensity = window_intensities[matched_index]
+        matched_snr = (
+            float(snrs[start_idx:end_idx][matched_index])
+            if snrs is not None
+            else np.nan
+        )
+
+        if i == 0:
+            base_peak_intensity = matched_intensity
+            observed_intensities[0] = matched_intensity
+            observed_masses[0] = matched_mz
+            observed_snr[0] = matched_snr
+            # Signed, (observed - predicted)/predicted: the same convention as
+            # the targeted matcher's match_mz_error, so a consumer can recover the
+            # predicted m/z as observed / (1 + error/1e6).
+            observed_mass_errors_ppm[0] = (matched_mz - p_mz) / p_mz * 1e6
+            observed_intensity_error[0] = 0.0
+            continue
+
+        # Require the ion's own line established before any isotopologue. A
+        # candidate whose monoisotopic line the spectrum does not hold
+        # matches nothing and scores zero, which is the point: that line is
+        # the peak the candidate was enumerated for.
+        if base_peak_intensity is None or base_peak_intensity == 0:
+            continue
+
+        observed_rel_intensity = matched_intensity / base_peak_intensity
+        # Signed relative error, observed/predicted - 1: the same convention as
+        # the targeted matcher's match_abundance_error, so a consumer can recover
+        # the predicted relative abundance as observed_rel / (1 + error).
+        intensity_error = observed_rel_intensity / predicted_rel[i] - 1.0
+
+        # A line whose height is nowhere near its prediction is not this
+        # ion's line, and the deeper envelope makes that gate matter more
+        # than it did: a trace prediction has a real chance of landing on an
+        # unrelated peak, and this is what keeps the ion from claiming it.
+        # What the score then sees is an ABSENT line, which the
+        # detectability gate charges or ignores according to whether the
+        # noise says it should have been there.
+        if abs(intensity_error) <= ISOTOPE_MATCHING_INTENSITY_TOLERANCE:
+            observed_intensities[i] = matched_intensity
+            observed_masses[i] = matched_mz
+            observed_mass_errors_ppm[i] = (matched_mz - p_mz) / p_mz * 1e6
+            observed_intensity_error[i] = intensity_error
+            observed_snr[i] = matched_snr
+
+    # Two lines have to be there for the envelope to be evidence at all: the
+    # ion's own, which is the peak the candidate was enumerated for, and the
+    # one the prediction leads with. Both are absence tests rather than
+    # quality tests, and they are stated here rather than left to the score
+    # because the fit charges an absent line instead of refusing on it.
+    brightest = int(np.argmax(predicted_rel))
+    has_required_lines = bool(
+        observed_intensities[0] > 0 and observed_intensities[brightest] > 0
+    )
+    score = score_pattern_v2(
+        observed_mass_errors_ppm - scoring.mu_ppm,
+        observed_intensities,
+        observed_snr,
+        predicted_rel,
+        sigma_ppm=scoring.sigma_ppm,
+        k_detect=DETECT_SNR_K,
+    )
+    return (
+        score,
+        has_required_lines,
+        {
+            "masses": observed_masses,
+            "mass_errors_ppm": observed_mass_errors_ppm,
+            "intensity_errors": observed_intensity_error,
+            "labels": isotope_labels,
+            "predicted_masses": predicted_mzs,
+            "predicted_intensities": predicted_rel,
+        },
+    )
+
+
+def _nearest_in_window(
+    mzs: np.ndarray, predicted: np.ndarray, tolerance_ppm: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """The peak each predicted line matches: the nearest one inside its window.
+
+    :func:`score_ion_envelope`'s ``argmin`` over each line's window, for every
+    line at once. Inside a window the nearest peak is the last one below the
+    line or the first one at or above it, and a tie goes to the one below, as
+    ``argmin`` gives it the first index; among equal m/z values it is the first
+    of them. Distances within a window are differences of numbers within a
+    factor of two of each other, which floating point computes exactly, so the
+    comparison picks the peak ``argmin`` does.
+
+    :param mzs: The peak list's m/z values, sorted ascending.
+    :param predicted: The predicted lines' m/z values.
+    :param tolerance_ppm: The match window, either side.
+    :return: Whether each line's window holds a peak, and that peak's index
+        (a valid index, but no match, where it holds none).
+    """
+    delta = predicted * tolerance_ppm * 1e-6
+    start = np.searchsorted(mzs, predicted - delta, side="left")
+    end = np.searchsorted(mzs, predicted + delta, side="right")
+    found = start < end
+    if not mzs.size:
+        return found, np.zeros(predicted.size, dtype=np.intp)
+    # The window starts below its line, so the first peak at or above the line
+    # is never before the window's first one.
+    upper = np.searchsorted(mzs, predicted, side="left")
+    has_upper = upper < end
+    lower = np.minimum(upper - 1, end - 1)
+    has_lower = lower >= start
+    last = mzs.size - 1
+    lower = np.maximum(
+        np.searchsorted(mzs, mzs[np.clip(lower, 0, last)], side="left"), start
+    )
+    upper_distance = np.abs(mzs[np.clip(upper, 0, last)] - predicted)
+    lower_distance = np.abs(mzs[np.clip(lower, 0, last)] - predicted)
+    take_lower = has_lower & (~has_upper | (lower_distance <= upper_distance))
+    return found, np.clip(np.where(take_lower, lower, upper), 0, last)
+
+
+def score_ion_envelopes(
+    ion_formulas: Sequence[str],
+    ion_charges: Sequence[int],
+    envelope_floors: Sequence[float] | np.ndarray,
+    mzs: np.ndarray,
+    intensities: np.ndarray,
+    snrs: np.ndarray | None,
+    scoring: PatternScoring,
+) -> tuple[np.ndarray, np.ndarray, list[dict[str, np.ndarray | list[str]]]]:
+    """Score many ions' envelopes against a sorted peak list, on arrays.
+
+    :func:`score_ion_envelope` for every candidate at once, and equal to it to
+    floating-point rounding: each distinct ``(ion, charge, floor)`` envelope is
+    predicted once, every predicted line of every candidate is matched in one
+    pass (:func:`_nearest_in_window`), the intensity gate and the required-line
+    test read each envelope's own matched line, and the fit is computed for
+    all envelopes together (:func:`score_patterns_v2`).
+
+    :param ion_formulas: The ions' formulas, without their charge signs.
+    :param ion_charges: Their charges, same order.
+    :param envelope_floors: How deep each envelope is predicted, same order.
+    :param mzs: The peak list's m/z values, sorted ascending.
+    :param intensities: Their intensities, same order.
+    :param snrs: Their signal-to-noise, same order, or None.
+    :param scoring: What the sample is scored at.
+    :return: The fit scores, whether each found the two lines a reading needs,
+        and each one's isotope data, in the candidates' order.
+    """
+    count = len(ion_formulas)
+    floors = np.broadcast_to(np.asarray(envelope_floors, dtype=float), (count,))
+    envelopes: dict[tuple, tuple[np.ndarray, np.ndarray, list[str]]] = {}
+    per_candidate = []
+    for formula, charge, floor in zip(ion_formulas, ion_charges, floors):
+        key = (formula, int(charge), float(floor))
+        if key not in envelopes:
+            envelopes[key] = _predicted_envelope(formula, charge, float(floor), scoring)
+        per_candidate.append(envelopes[key])
+
+    lengths = np.array([len(env[0]) for env in per_candidate], dtype=np.intp)
+    offsets = np.concatenate([[0], np.cumsum(lengths)]).astype(np.intp)
+    scores = np.zeros(count, dtype=float)
+    required = np.zeros(count, dtype=bool)
+    if not offsets[-1]:
+        return scores, required, [_empty_isotope_data() for _ in range(count)]
+
+    nonempty = lengths > 0
+    predicted_mz = np.concatenate(
+        [np.asarray(env[0], dtype=float) for env in per_candidate if len(env[0])]
+    )
+    predicted_rel = np.concatenate(
+        [np.asarray(env[1], dtype=float) for env in per_candidate if len(env[0])]
+    )
+    group = np.repeat(np.arange(count), lengths)
+    first = offsets[:-1][group]
+    is_own = np.arange(predicted_mz.size) == first
+
+    found, index = _nearest_in_window(mzs, predicted_mz, scoring.mz_tolerance_ppm)
+    matched_mz = np.where(found, mzs[index] if mzs.size else 0.0, 0.0)
+    matched_intensity = np.where(found, intensities[index] if mzs.size else 0, 0)
+    matched_snr = (
+        np.where(found, snrs[index], np.nan)
+        if snrs is not None and mzs.size
+        else np.full(predicted_mz.size, np.nan)
+    )
+
+    # The ion's own line sets the intensity every isotopologue is read
+    # against; a candidate whose own line found nothing, or found a zero,
+    # matches no isotopologue at all.
+    base = matched_intensity[first]
+    base_found = found[first] & (base != 0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        intensity_error = (matched_intensity / base) / predicted_rel - 1.0
+    kept = np.where(
+        is_own,
+        found,
+        found
+        & base_found
+        & (np.abs(intensity_error) <= ISOTOPE_MATCHING_INTENSITY_TOLERANCE),
+    )
+
+    observed_mz = np.where(kept, matched_mz, 0.0)
+    observed_intensity = np.where(kept, matched_intensity, 0).astype(float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mass_error = (matched_mz - predicted_mz) / predicted_mz * 1e6
+    observed_mass_error = np.where(kept, mass_error, 0.0)
+    observed_intensity_error = np.where(kept & ~is_own, intensity_error, 0.0)
+    observed_snr = np.where(kept, matched_snr, np.nan)
+
+    # Each envelope's brightest line, the first of them on a tie, as argmax
+    # finds it.
+    starts = offsets[:-1][nonempty]
+    brightest_rel = np.maximum.reduceat(predicted_rel, starts)
+    brightest = np.minimum.reduceat(
+        np.where(
+            predicted_rel == np.repeat(brightest_rel, lengths[nonempty]),
+            np.arange(predicted_rel.size),
+            predicted_rel.size,
+        ),
+        starts,
+    )
+    required[nonempty] = (observed_intensity[starts] > 0) & (
+        observed_intensity[brightest] > 0
+    )
+    scores = score_patterns_v2(
+        observed_mass_error - scoring.mu_ppm,
+        observed_intensity,
+        observed_snr,
+        predicted_rel,
+        offsets,
+        sigma_ppm=scoring.sigma_ppm,
+        k_detect=DETECT_SNR_K,
+    )
+
+    isotopes = []
+    for position, (_, _, labels) in enumerate(per_candidate):
+        if not lengths[position]:
+            isotopes.append(_empty_isotope_data())
+            continue
+        lines = slice(offsets[position], offsets[position + 1])
+        isotopes.append(
+            {
+                "masses": observed_mz[lines],
+                "mass_errors_ppm": observed_mass_error[lines],
+                "intensity_errors": observed_intensity_error[lines],
+                "labels": labels,
+                "predicted_masses": predicted_mz[lines],
+                "predicted_intensities": predicted_rel[lines],
+            }
+        )
+    return scores, required, isotopes
+
+
 def match_isotopic_pattern(
     candidates: list[dict[str, Any]],
     peaks: pl.DataFrame,
@@ -1480,151 +1825,15 @@ def match_isotopic_pattern(
         base_intensity, base_snr, faintest, scoring
     )
 
-    scores = np.zeros(len(ranked), dtype=float)
-    has_required_lines = np.zeros(len(ranked), dtype=bool)
-    all_isotope_data = []
-
-    for ind, (ion_formula, ion_charge) in enumerate(zip(ion_formulas, ion_charges)):
-        # One line per peak the file can resolve, not per isotopologue: a TOF
-        # peak at the 13C position is measured against the 15N, 2H and 17O
-        # lines it holds too. See :func:`predict_resolved_isotopes`.
-        predicted_mzs, predicted_intensities, isotope_labels = (
-            predict_resolved_isotopes(
-                ion_formula, ion_charge, envelope_floor, scoring.resolution
-            )
-        )
-        # The ion's own line first, whatever order the predictor returned. Every
-        # index-0 assumption below - the intensity the envelope is normalised
-        # to, the line matched before any other, score_pattern's requirement
-        # that it be observed at all - means the monoisotopic line and not the
-        # most abundant one. See :func:`anchor_on_monoisotopic`.
-        predicted_mzs, predicted_intensities, isotope_labels = anchor_on_monoisotopic(
-            predicted_mzs, predicted_intensities, isotope_labels
-        )
-        is_isotope_predicted = len(predicted_mzs) > 0
-        if not is_isotope_predicted:
-            all_isotope_data.append(
-                {
-                    "masses": [],
-                    "mass_errors_ppm": [],
-                    "intensity_errors": [],
-                    "labels": [],
-                    "predicted_masses": [],
-                    "predicted_intensities": [],
-                }
-            )
-            continue
-
-        observed_masses = np.zeros_like(predicted_mzs)
-        observed_intensities = observed_masses.copy()
-        observed_mass_errors_ppm = observed_masses.copy()
-        observed_intensity_error = observed_masses.copy()
-        # Per-line signal-to-noise, NaN where the line was not matched or the
-        # file carries none. It only ever widens a tolerance in the score, so a
-        # NaN costs the candidate nothing it had earned.
-        observed_snr = np.full(predicted_mzs.size, np.nan)
-
-        # Relative to the ion's own line, which anchor_on_monoisotopic put at
-        # index 0. An isotopologue's predicted share may therefore exceed 1 - a
-        # dibromide's 79Br81Br line is 1.95 times its monoisotopic one - which
-        # is what an abundance relative to the ion means.
-        predicted_rel = predicted_intensities / predicted_intensities[0]
-
-        base_peak_intensity = None
-        for i, p_mz in enumerate(predicted_mzs):
-            mz_delta = p_mz * scoring.mz_tolerance_ppm * 1e-6
-            mz_min, mz_max = p_mz - mz_delta, p_mz + mz_delta
-
-            start_idx = np.searchsorted(mzs, mz_min, side="left")
-            end_idx = np.searchsorted(mzs, mz_max, side="right")
-            no_peaks_in_window = start_idx >= end_idx
-
-            if no_peaks_in_window:
-                continue
-
-            window_mzs = mzs[start_idx:end_idx]
-            window_intensities = intensities[start_idx:end_idx]
-            if not window_mzs.size:
-                continue
-
-            matched_index = np.argmin(np.abs(window_mzs - p_mz))
-            matched_mz = window_mzs[matched_index]
-            matched_intensity = window_intensities[matched_index]
-            matched_snr = (
-                float(snrs[start_idx:end_idx][matched_index])
-                if snrs is not None
-                else np.nan
-            )
-            is_monoisotopic = i == 0
-
-            if is_monoisotopic:
-                base_peak_intensity = matched_intensity
-                observed_intensities[0] = matched_intensity
-                observed_masses[0] = matched_mz
-                observed_snr[0] = matched_snr
-                # Signed, (observed - predicted)/predicted: the same convention as
-                # the targeted matcher's match_mz_error, so a consumer can recover the
-                # predicted m/z as observed / (1 + error/1e6).
-                observed_mass_errors_ppm[0] = (matched_mz - p_mz) / p_mz * 1e6
-                observed_intensity_error[0] = 0.0
-                continue  # move to next isotope
-
-            # Require the ion's own line established before any isotopologue. A
-            # candidate whose monoisotopic line the spectrum does not hold
-            # matches nothing and scores zero, which is the point: that line is
-            # the peak the candidate was enumerated for.
-            if base_peak_intensity is None or base_peak_intensity == 0:
-                continue
-
-            predicted_rel_intensity = predicted_rel[i]
-            observed_rel_intensity = matched_intensity / base_peak_intensity
-            # Signed relative error, observed/predicted - 1: the same convention as
-            # the targeted matcher's match_abundance_error, so a consumer can recover
-            # the predicted relative abundance as observed_rel / (1 + error).
-            intensity_error = observed_rel_intensity / predicted_rel_intensity - 1.0
-
-            # A line whose height is nowhere near its prediction is not this
-            # ion's line, and the deeper envelope makes that gate matter more
-            # than it did: a trace prediction has a real chance of landing on an
-            # unrelated peak, and this is what keeps the ion from claiming it.
-            # What the score then sees is an ABSENT line, which the
-            # detectability gate charges or ignores according to whether the
-            # noise says it should have been there.
-            if abs(intensity_error) <= ISOTOPE_MATCHING_INTENSITY_TOLERANCE:
-                observed_intensities[i] = matched_intensity
-                observed_masses[i] = matched_mz
-                observed_mass_errors_ppm[i] = (matched_mz - p_mz) / p_mz * 1e6
-                observed_intensity_error[i] = intensity_error
-                observed_snr[i] = matched_snr
-
-        # Two lines have to be there for the envelope to be evidence at all: the
-        # ion's own, which is the peak the candidate was enumerated for, and the
-        # one the prediction leads with. Both are absence tests rather than
-        # quality tests, and they are stated here rather than left to the score
-        # because the fit charges an absent line instead of refusing on it.
-        brightest = int(np.argmax(predicted_rel)) if predicted_rel.size else 0
-        has_required_lines[ind] = bool(
-            observed_intensities[0] > 0 and observed_intensities[brightest] > 0
-        )
-        scores[ind] = score_pattern_v2(
-            observed_mass_errors_ppm - scoring.mu_ppm,
-            observed_intensities,
-            observed_snr,
-            predicted_rel,
-            sigma_ppm=scoring.sigma_ppm,
-            k_detect=DETECT_SNR_K,
-        )
-
-        matched_isotopes = {
-            "masses": observed_masses,
-            "mass_errors_ppm": observed_mass_errors_ppm,
-            "intensity_errors": observed_intensity_error,
-            "labels": isotope_labels,
-            "predicted_masses": predicted_mzs,
-            "predicted_intensities": predicted_rel,
-        }
-
-        all_isotope_data.append(matched_isotopes)
+    scores, has_required_lines, all_isotope_data = score_ion_envelopes(
+        ion_formulas,
+        ion_charges,
+        np.full(len(ranked), envelope_floor),
+        mzs,
+        intensities,
+        snrs,
+        scoring,
+    )
 
     ranked = [
         dict(
@@ -2115,6 +2324,118 @@ def score_pattern_v2(
     if wsum <= 0:
         return 0.0
     return float(np.exp((w * np.log(L)).sum() / wsum))
+
+
+def score_patterns_v2(
+    observed_mass_errors_ppm: np.ndarray,
+    observed_intensities: np.ndarray,
+    observed_snr: np.ndarray | None,
+    predicted_rel: np.ndarray,
+    offsets: Sequence[int] | np.ndarray,
+    *,
+    k_detect: float = 3.0,
+    miss_penalty: float = 0.3,
+    sigma_ppm: float | None = None,
+    rel_detect_no_snr: float = REL_DETECT_NO_SNR,
+) -> np.ndarray:
+    """:func:`score_pattern_v2` for many envelopes at once.
+
+    The envelopes are laid end to end in the four arrays, envelope ``j`` at
+    ``offsets[j]:offsets[j + 1]`` with its anchor first, exactly as each would
+    be passed to :func:`score_pattern_v2` alone. Every term is the same
+    elementwise arithmetic, read against each envelope's own anchor, and the
+    weighted mean is summed per envelope; a score equals the one-envelope
+    function's to floating-point rounding of those sums.
+
+    Scoring one envelope at a time costs a few dozen small array operations
+    per ion, which over the 10^5 candidates of a file's first pass is most of
+    the time the pass takes; here it is the same few dozen over all of them.
+
+    :param offsets: Where each envelope starts, and the end of the last one:
+        one more entry than there are envelopes. An empty envelope scores 0,
+        as the one-envelope function scores it.
+    :raises ValueError: if the arrays do not all have one entry per line, or
+        the offsets do not end where they do.
+    :return: One score per envelope.
+    """
+    if sigma_ppm is None:
+        sigma_ppm = FALLBACK_SIGMA_PPM
+    oi = np.asarray(observed_intensities, float)
+    me = np.asarray(observed_mass_errors_ppm, float)
+    pr = np.asarray(predicted_rel, float)
+    offsets = np.asarray(offsets, dtype=np.intp)
+    n = pr.size
+    snr = (
+        np.full(n, np.nan) if observed_snr is None else np.asarray(observed_snr, float)
+    )
+    sizes = {
+        "observed_mass_errors_ppm": me.size,
+        "observed_intensities": oi.size,
+        "observed_snr": snr.size,
+        "predicted_rel": n,
+        "offsets[-1]": int(offsets[-1]) if offsets.size else 0,
+    }
+    if len(set(sizes.values())) > 1:
+        raise ValueError(
+            "score_patterns_v2 needs one entry per predicted isotopologue in every "
+            "input array, ending at the last offset; got "
+            + ", ".join(f"{k}={v}" for k, v in sizes.items())
+        )
+    count = max(offsets.size - 1, 0)
+    scores = np.zeros(count, dtype=float)
+    lengths = np.diff(offsets)
+    nonempty = lengths > 0
+    if not nonempty.any():
+        return scores
+
+    group = np.repeat(np.arange(count), lengths)
+    first = offsets[:-1][group]
+    anchor = np.arange(n) == first
+    starts = offsets[:-1][nonempty]
+    # The one-envelope function returns 0 for an envelope whose anchor is
+    # absent or has no usable mass error; those envelopes are computed with
+    # the rest and their answers discarded.
+    valid = (oi[starts] > 0) & np.isfinite(me[starts])
+
+    oi = np.where(np.isfinite(me), oi, 0.0)
+    me = np.abs(np.nan_to_num(me, nan=0.0, posinf=0.0, neginf=0.0))
+    pr = np.where(np.isfinite(pr) & (pr > 0), pr, 0.0)
+    snr_known = np.isfinite(snr) & (snr > 0)
+    inv_snr = np.where(snr_known, 1.0 / np.where(snr_known, snr, 1.0), 0.0)
+
+    matched = oi > 0
+    sigma_mass = np.hypot(sigma_ppm, MASS_SNR_K * inv_snr)
+    mass_L = np.exp(-0.5 * (me / sigma_mass) ** 2)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rel_obs = oi / oi[first]
+        sigma_rel = np.maximum.reduce(
+            [
+                rel_obs * np.sqrt(inv_snr**2 + inv_snr[first] ** 2),
+                0.05 * pr,
+                np.full(n, 1e-3),
+            ]
+        )
+        int_L = np.exp(-0.5 * ((rel_obs - pr) / sigma_rel) ** 2)
+
+    L = np.full(n, np.nan)
+    L[anchor] = mass_L[anchor]
+    m = matched & ~anchor
+    L[m] = mass_L[m] * int_L[m]
+    absent = ~matched & ~anchor
+    detectable = absent & np.where(
+        snr_known[first], pr * snr[first] >= k_detect, pr >= rel_detect_no_snr
+    )
+    L[detectable] = miss_penalty
+    include = ~np.isnan(L)
+    L = np.where(include, np.maximum(L, 1e-6), 1.0)
+    w = pr * include
+    wsum = np.add.reduceat(w, starts)
+    weighted = np.add.reduceat(w * np.log(L), starts)
+    scored = valid & (wsum > 0)
+    result = np.zeros(starts.size, dtype=float)
+    result[scored] = np.exp(weighted[scored] / wsum[scored])
+    scores[nonempty] = result
+    return scores
 
 
 def conf_to_label(conf, elements, isotope_masses):
