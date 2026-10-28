@@ -37,6 +37,11 @@ class PeakData:
     # store's stream keys; ``None`` for a store that labels no peak with one,
     # which is every store detected whole.
     streams: list[int] | None = None
+    # Per peak, whether detection flagged it a satellite: a sidelobe of a
+    # stronger peak of its own spectrum. A read leaves satellites out unless
+    # it asks for them (``satellites``), so this is all False otherwise;
+    # ``None`` for a store that flags none.
+    satellite: list[bool] | None = None
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -50,17 +55,24 @@ def _load_and_filter(
     polarity: str,
     mz_min: float | None,
     mz_max: float | None,
+    *,
+    satellites: bool = False,
 ) -> xr.Dataset:
     """Load peak data and apply polarity + m/z range filters.
 
+    :param satellites: Keep the peaks flagged satellites, which a load leaves
+        out with the weak ones by default. The weak are left out either way.
     :raises NotFoundException: If the sample file is missing.
     """
     try:
-        data = load_peak_data(filename)
+        data = load_peak_data(filename, drop_bad_peaks=not satellites)
     except FileNotFoundError as e:
         raise NotFoundException(
             f"Sample file with name '{filename}' was not found or has not been processed"
         ) from e
+    if satellites:
+        # By position, as the load drops them: two peaks can share an m/z
+        data = data.isel(mz=np.flatnonzero(~data.is_weak.values.astype(bool)))
 
     polarity_mask = np.where(data.polarity.values == polarity)[0]
     data = data.isel(mz=polarity_mask)
@@ -81,6 +93,14 @@ def _peak_signal_to_noise(data: xr.Dataset) -> list[float] | None:
     if "signal_to_noise" not in data:
         return None
     return data.signal_to_noise.values.tolist()
+
+
+def _peak_satellites(data: xr.Dataset) -> list[bool] | None:
+    """Whether each peak is flagged a satellite, or None for a store that
+    flags none."""
+    if "is_satellite" not in data:
+        return None
+    return data.is_satellite.values.astype(bool).tolist()
 
 
 def _peak_streams(data: xr.Dataset) -> list[int] | None:
@@ -142,6 +162,7 @@ def _aggregate_full_sample(
         sparsity=data.sparsity.values.tolist(),
         signal_to_noise=_peak_signal_to_noise(data),
         streams=_peak_streams(data),
+        satellite=_peak_satellites(data),
     )
 
 
@@ -205,6 +226,7 @@ def _aggregate_time_range(
             sparsity=data.sparsity.values.tolist(),
             signal_to_noise=_peak_signal_to_noise(data),
             streams=_peak_streams(data),
+            satellite=_peak_satellites(data),
             warnings=warnings,
         )
 
@@ -231,6 +253,7 @@ def _aggregate_time_range(
         sparsity=data.sparsity.values.tolist(),
         signal_to_noise=_peak_signal_to_noise(data),
         streams=_peak_streams(data),
+        satellite=_peak_satellites(data),
         warnings=warnings,
     )
 
@@ -248,6 +271,7 @@ def extract_peaks(
     t_max: float | None = None,
     mz_min: float | None = None,
     mz_max: float | None = None,
+    satellites: bool = False,
 ) -> PeakData:
     """Load peak data from a sample file and aggregate areas/heights.
 
@@ -269,6 +293,8 @@ def extract_peaks(
     :param t_max: Maximum time in seconds for time-range filtering.
     :param mz_min: Minimum m/z value for filtering.
     :param mz_max: Maximum m/z value for filtering.
+    :param satellites: Keep the peaks flagged satellites, which are left out
+        by default; ``PeakData.satellite`` says which they are.
     :raises NotFoundException: If the sample file is missing.
     :raises ValueError: If the time range is outside the sample window.
     """
@@ -276,7 +302,7 @@ def extract_peaks(
         _validate_time_range,
     )
 
-    data = _load_and_filter(filename, polarity, mz_min, mz_max)
+    data = _load_and_filter(filename, polarity, mz_min, mz_max, satellites=satellites)
 
     if data.mz.size == 0:
         return PeakData(

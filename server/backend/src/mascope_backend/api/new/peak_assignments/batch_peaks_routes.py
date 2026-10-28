@@ -1,10 +1,14 @@
 """Batch-peak read routes -- the batch overview's peak-centric data feed."""
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response
 from pydantic import BaseModel, Field, model_validator
 
 from mascope_backend.api.controllers.sample.lib.sample_batches_fetch import (
     fetch_sample_batch,
+)
+from mascope_backend.api.controllers.samples.batch_peak_table import (
+    PARQUET_MEDIA_TYPE,
+    build_batch_peak_table,
 )
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.models.base_pydantic_model import RequestBodyModel
@@ -244,6 +248,65 @@ async def get_batch_peak_ledger_route(
         batch_peak_run_id=batch_peak_run_id,
     )
     return BatchPeakRecordsResponse.model_validate(result)
+
+
+@batch_peaks_router.get(
+    "/batch/{sample_batch_id}/peaks",
+    response_class=Response,
+    responses={200: {"content": {PARQUET_MEDIA_TYPE: {}}}},
+)
+@api_route(token_access=True)
+async def get_batch_peak_lists_route(
+    sample_batch_id: str,
+    matches: bool = Query(
+        False,
+        description="Add the match columns: one row per match of a peak, a "
+        "peak no target matched keeping one row with them null.",
+    ),
+    satellites: bool = Query(
+        False,
+        description="Keep the peaks detection flagged satellites, which the "
+        "per-sample peak read leaves out; is_satellite says which they are.",
+    ),
+    average: bool = Query(
+        True,
+        description="Average each peak's area and height over its scans; "
+        "False for the sums.",
+    ),
+    user: User = Depends(current_active_user),
+) -> Response:
+    """Every peak of every sample of a batch, as one Parquet table.
+
+    The batch form of ``GET /api/samples/{sample_item_id}/peaks``: each sample
+    read as that route reads it with no time or m/z range - its own polarity,
+    the whole acquisition - and the rows stacked, in the order the sample
+    listing gives the samples. The columns: ``sample_item_id``,
+    ``sample_item_name``, ``datetime_utc`` (the sample's start), ``peak_id``,
+    ``mz``, ``sparsity``, ``signal_to_noise`` (null where the file has no
+    estimate), ``segment`` (the scan stream of a stitched sample's peak, null
+    otherwise), ``area``, ``height`` and ``is_satellite``; with ``matches``,
+    the per-match columns the per-sample read nests under ``match``.
+
+    The file's key-value metadata ``mascope`` is a JSON object: ``samples``
+    (each sample read and its row count), ``failures`` (each sample whose read
+    failed, with ``status_code`` and ``error``: the batch is answered without
+    it) and ``segments`` (per sample, the segments of a stitched spectrum, as
+    the per-sample read describes them, or null).
+
+    Not behind the peak-assignment flag: it reads the samples' own peak lists.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param matches: Add the match columns.
+    :param satellites: Keep the satellite peaks.
+    :param average: Average rather than sum.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The Parquet file.
+    """
+    await check_batch_access(sample_batch_id, user, "guest")
+    content = await build_batch_peak_table(
+        sample_batch_id, matches=matches, satellites=satellites, average=average
+    )
+    return Response(content=content, media_type=PARQUET_MEDIA_TYPE)
 
 
 @batch_peaks_router.post(
