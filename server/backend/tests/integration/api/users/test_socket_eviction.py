@@ -16,6 +16,8 @@ can observe in one process. Redis is this package's in-memory stub (see
 """
 
 import asyncio
+import json
+import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -47,7 +49,10 @@ from mascope_backend.socket.events.handlers.default.subscription import (
 from mascope_backend.socket.events.handlers.tof_agent.connection import (
     disconnect as tof_agent_disconnect,
 )
-from mascope_backend.socket.eviction import evict_ended_sessions
+from mascope_backend.socket.eviction import (
+    evict_ended_sessions,
+    sign_out_expired_socket,
+)
 from mascope_backend.socket.signed_in import SIGNED_IN_ROOM
 from mascope_backend.socket.storage import (
     SocketSessionError,
@@ -1419,3 +1424,135 @@ async def test_a_long_lived_socket_stays_on_record(person, sio, live_rate_limite
     assert storage_config.user_sockets_key(person.id) in refreshed
     assert storage_config.socket_rooms_key("sid-a") in refreshed
     assert storage_config.socket_worker_key("sid-a") in refreshed
+
+
+# --- A session ends when its token expires ---
+
+
+async def _expire_session(sid: str, expires_at: float) -> None:
+    """Rewrite the token expiry ``sid``'s session recorded."""
+    key = storage_config.session_key(sid, "/")
+    session = json.loads(await redis_storage_client.client.get(key))
+    session["expires_at"] = expires_at
+    await redis_storage_client.client.setex(
+        key, storage_config.session_ttl, json.dumps(session)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_socket_s_session_keeps_its_token_s_expiry(person, sio):
+    token = _token(person, datetime.now(timezone.utc))
+    assert await connect(
+        "sid-a", {"HTTP_COOKIE": f"{auth_settings.COOKIE_NAME}={token}"}
+    )
+
+    claims = jwt.decode(token, options={"verify_signature": False})
+    session = await get_session_user("sid-a")
+    assert session["issued_at"] == claims["iat"]
+    assert session["expires_at"] == claims["exp"]
+
+
+@pytest.mark.asyncio
+async def test_a_socket_is_signed_out_when_its_token_expires(person, sio, monkeypatch):
+    """
+    The tab is signed out over HTTP once its token expires. Its socket used to
+    keep its rooms, the signed-in room among them, for as long as it stayed
+    connected, and a logout in a tab signed in again since, with a token of
+    another issue time, could not reach it.
+    """
+    monkeypatch.setattr(storage_config, "session_renewal_interval", 0.01)
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await _open_socket("sid-b", person, datetime.now(timezone.utc))
+
+    await _expire_session("sid-a", time.time() - 1)
+    await asyncio.sleep(0.05)
+
+    await _assert_signed_out(sio, "sid-a", person)
+    sio.enter_room.reset_mock()
+    await subscribe("sid-a", OTHER_ROOM)
+    sio.enter_room.assert_not_awaited()
+    # The tab whose token has not expired carries on.
+    assert _left(sio, "sid-b") == set()
+    assert await get_session_user("sid-b")
+    assert await get_user_socket_sids(person.id) == {"sid-b"}
+    assert await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    assert await room_tracker.is_in_room(person.id, f"user-{person.id}")
+
+
+@pytest.mark.asyncio
+async def test_the_renewal_wakes_at_the_expiry(person, sio, monkeypatch):
+    """
+    The socket goes when its token does, not at the next regular tick.
+
+    The first tick, an interval after connect, finds the token expiring before
+    the second one and wakes at the expiry instead.
+    """
+    monkeypatch.setattr(storage_config, "session_renewal_interval", 1.0)
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await _expire_session("sid-a", time.time() + 1.2)
+
+    await asyncio.sleep(1.5)
+
+    # Without the early wake it would still be signed in until the tick at 2 s.
+    await _assert_signed_out(sio, "sid-a", person)
+
+
+@pytest.mark.asyncio
+async def test_a_subscribe_after_the_expiry_is_refused(person, sio):
+    """Before the renewal has signed the socket out, subscribe holds it."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await _expire_session("sid-a", time.time() - 1)
+    sio.enter_room.reset_mock()
+
+    await subscribe("sid-a", OTHER_ROOM)
+
+    sio.enter_room.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_eviction_evicts_a_socket_whose_token_has_expired(person, sio):
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await _expire_session("sid-a", time.time() - 1)
+
+    assert await evict_ended_sessions(person.id) == 1
+
+    await _assert_evicted(sio, "sid-a", person)
+
+
+@pytest.mark.asyncio
+async def test_eviction_keeps_a_socket_whose_token_has_not_expired(person, sio):
+    """The positive control for the one above."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+
+    assert await evict_ended_sessions(person.id) == 0
+
+    assert _left(sio, "sid-a") == set()
+
+
+@pytest.mark.asyncio
+async def test_a_socket_signed_in_again_is_not_signed_out_at_the_old_expiry(
+    person, sio
+):
+    """
+    The renewal read an expired session, and the tab signed in again with a
+    newer token before the sign-out ran: the session is read again, and stays.
+    """
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+
+    assert not await sign_out_expired_socket("sid-a", person.id)
+
+    assert _left(sio, "sid-a") == set()
+    assert await get_session_user("sid-a")
+
+
+@pytest.mark.asyncio
+async def test_signing_out_at_the_expiry_leaves_another_accounts_socket(
+    person, other_person, sio
+):
+    await _open_socket("sid-a", other_person, datetime.now(timezone.utc))
+    await _expire_session("sid-a", time.time() - 1)
+
+    assert not await sign_out_expired_socket("sid-a", person.id)
+
+    assert _left(sio, "sid-a") == set()
+    assert await get_session_user("sid-a")

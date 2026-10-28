@@ -31,19 +31,22 @@ from mascope_backend.socket.storage import room_tracker
 SIGNED_IN_ROOM = "user-*"
 
 
-async def admit_signed_in(sid: str, user, issued_at: Optional[int]) -> bool:
+async def admit_signed_in(
+    sid: str, user, issued_at: Optional[int], expires_at: Optional[int]
+) -> bool:
     """
     Put a web socket in the signed-in room if its session may read, else out.
 
     :param sid: The socket, on the default namespace.
     :param user: The account it has just authenticated as.
     :param issued_at: The ``iat`` of the token it authenticated with.
+    :param expires_at: The ``exp`` of that token.
     :return: Whether the socket is now in the room.
     """
     # Imported lazily: eviction imports this module to readmit a socket.
     from mascope_backend.socket.eviction import socket_hold_reason
 
-    if (reason := socket_hold_reason(user, issued_at)) is not None:
+    if (reason := socket_hold_reason(user, issued_at, expires_at)) is not None:
         runtime.logger.debug(
             f"Socket {sid} left out of the signed-in room: its user {reason}"
         )
