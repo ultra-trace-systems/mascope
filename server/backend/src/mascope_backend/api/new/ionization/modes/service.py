@@ -291,9 +291,13 @@ async def update_ionization_mode(
     :return: A dictionary containing the updated ionization mode data.
     """
     async with async_session() as session:
-        # Get the existing ionization mode
-        stmt = select(IonizationMode).where(
-            IonizationMode.ionization_mode_id == ionization_mode_id
+        # Get the existing ionization mode, locked: two edits of one version
+        # would otherwise both read it active and each mint a successor. The
+        # second waits here, then reads the row the first left inactive.
+        stmt = (
+            select(IonizationMode)
+            .where(IonizationMode.ionization_mode_id == ionization_mode_id)
+            .with_for_update()
         )
         result = await session.execute(stmt)
         ionization_mode = result.scalar_one_or_none()
@@ -427,10 +431,15 @@ async def update_ionization_mode(
             != ionization_mode.diagnostic_collection_id
         )
 
-        # Find affected sample batches (batches containing samples using this mode)
+        # Find affected sample batches: those holding samples under any
+        # version of this mode. A sample an earlier edit left on its version
+        # moves onto this one when it is re-processed, so this edit is as much
+        # its batch's as the current version's samples'.
         affected_batch_ids_result = await session.execute(
             select(distinct(SampleItem.sample_batch_id)).where(
-                SampleItem.ionization_mode_id == ionization_mode_id
+                SampleItem.ionization_mode_id.in_(
+                    await lineage(session, ionization_mode_id)
+                )
             )
         )
         affected_batch_ids = list(affected_batch_ids_result.scalars().all())
@@ -583,8 +592,11 @@ async def delete_ionization_mode(ionization_mode_id: str) -> dict:
     :return: A dictionary with a success message.
     """
     async with async_session() as session:
-        # Step 1: Fetch the ionization mode
-        ionization_mode = await session.get(IonizationMode, ionization_mode_id)
+        # Step 1: Fetch the ionization mode, locked against an edit minting
+        # a version this delete would not see
+        ionization_mode = await session.get(
+            IonizationMode, ionization_mode_id, with_for_update=True
+        )
 
         if not ionization_mode:
             raise NotFoundException(

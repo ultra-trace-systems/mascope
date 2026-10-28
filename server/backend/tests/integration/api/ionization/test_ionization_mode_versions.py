@@ -9,6 +9,7 @@ see current versions only), and a re-process moves its samples onto the
 current version before it reads their mode.
 """
 
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
@@ -422,6 +423,151 @@ async def test_a_superseded_version_is_neither_edited_nor_deleted(
     assert "Edit the current version" in edit.text
     assert remove.status_code == 400
     assert "Delete the current version" in remove.text
+
+
+async def _batch_status(async_session_factory, batch_id) -> str | None:
+    async with async_session_factory() as session:
+        return (await session.get(SampleBatch, batch_id)).status
+
+
+@pytest.mark.asyncio
+async def test_a_later_edit_flags_the_batch_of_an_earlier_versions_samples(
+    admin_client, async_session_factory, world, mode
+):
+    """The sample the first edit left on version 1 is the second edit's too:
+    re-processed, it moves onto version 3. So a calibration change made after
+    a mechanism change reaches its batch as the recalibration it needs, not
+    the rematch it holds."""
+    second = await _mint(
+        admin_client, world, mode, **_VERSIONED_EDITS["mechanisms"](world)
+    )
+    assert await _batch_status(async_session_factory, mode["batch_id"]) == "rematch"
+    assert await _item_mode(async_session_factory, mode["item_id"]) == mode["mode_id"]
+
+    await _mint(
+        admin_client,
+        world,
+        {**mode, "mode_id": second},
+        **_VERSIONED_EDITS["mechanisms"](world),
+        **_VERSIONED_EDITS["calibration collection"](world),
+    )
+
+    assert await _batch_status(async_session_factory, mode["batch_id"]) == "recalibrate"
+
+
+@pytest.mark.asyncio
+async def test_a_later_edit_waits_for_an_earlier_versions_batch(
+    admin_client, async_session_factory, world, mode
+):
+    """An edit is refused while a batch it affects processes, and a batch of
+    samples still on an earlier version is one it affects."""
+    second = await _mint(
+        admin_client, world, mode, **_VERSIONED_EDITS["mechanisms"](world)
+    )
+    async with async_session_factory() as session:
+        (await session.get(SampleBatch, mode["batch_id"])).status = "processing"
+        await session.commit()
+
+    resp = await admin_client.patch(
+        f"/api/ionization/modes/{second}",
+        json=_body(
+            world,
+            mode,
+            **_VERSIONED_EDITS["mechanisms"](world),
+            **_VERSIONED_EDITS["diagnostic collection"](world),
+        ),
+    )
+
+    assert resp.status_code == 400
+    assert "currently processing" in resp.text
+    assert (await _row(async_session_factory, second)).is_active
+
+
+@pytest.mark.asyncio
+async def test_two_edits_of_one_version_at_once_make_one_successor(
+    admin_client, async_session_factory, world, mode
+):
+    """The edited row is locked, so the second of two edits sent together
+    waits for the first and then finds the version it named replaced. Read
+    unlocked, both saw it current and each minted a version 2 of its own."""
+    url = f"/api/ionization/modes/{mode['mode_id']}"
+    responses = await asyncio.wait_for(
+        asyncio.gather(
+            admin_client.patch(
+                url, json=_body(world, mode, **_VERSIONED_EDITS["mechanisms"](world))
+            ),
+            admin_client.patch(
+                url,
+                json=_body(
+                    world, mode, **_VERSIONED_EDITS["diagnostic collection"](world)
+                ),
+            ),
+        ),
+        timeout=60,
+    )
+
+    assert sorted(resp.status_code for resp in responses) == [200, 400]
+    (refused,) = (resp for resp in responses if resp.status_code == 400)
+    assert "Edit the current version" in refused.text
+    async with async_session_factory() as session:
+        successors = (
+            (
+                await session.execute(
+                    select(IonizationMode).where(
+                        IonizationMode.supersedes_id == mode["mode_id"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert [row.is_active for row in successors] == [True]
+
+
+@pytest.mark.asyncio
+async def test_an_edit_made_during_a_delete_waits_for_it(
+    admin_client, async_session_factory, world, mode, monkeypatch
+):
+    """The delete locks the row as an edit does. An edit sent while it runs
+    waits, then finds the mode gone. Unlocked, the edit read the version the
+    delete was removing and minted a version 2 of it, and both answered 200."""
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleItem).where(SampleItem.sample_item_id == mode["item_id"])
+        )
+        await session.commit()
+    url = f"/api/ionization/modes/{mode['mode_id']}"
+    real_lineage = modes_service.lineage
+    edit = {}
+
+    async def lineage_after_an_edit(session, mode_id):
+        # The delete's read of the versions: the edit is sent here, after the
+        # delete has read the row and before it removes it, and given time
+        # to run to its end.
+        if "task" not in edit:
+            edit["task"] = asyncio.create_task(
+                admin_client.patch(
+                    url,
+                    json=_body(world, mode, **_VERSIONED_EDITS["mechanisms"](world)),
+                )
+            )
+            await asyncio.wait({edit["task"]}, timeout=2)
+        return await real_lineage(session, mode_id)
+
+    monkeypatch.setattr(modes_service, "lineage", lineage_after_an_edit)
+    deleted = await admin_client.delete(url)
+    edited = await asyncio.wait_for(edit["task"], timeout=60)
+
+    assert deleted.status_code == 200, deleted.text
+    assert edited.status_code == 404, edited.text
+    async with async_session_factory() as session:
+        assert (
+            await session.execute(
+                select(IonizationMode).where(
+                    IonizationMode.supersedes_id == mode["mode_id"]
+                )
+            )
+        ).first() is None
 
 
 # --- what reads the modes -----------------------------------------------------
