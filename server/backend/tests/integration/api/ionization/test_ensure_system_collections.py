@@ -24,6 +24,8 @@ from sqlalchemy.orm import selectinload
 
 import mascope_backend.db as db_module
 import mascope_backend.db.admin.ionization.ensure_system_modes as seed_module
+from mascope_backend.api.new.ionization.modes.schema import IonizationModeUpdate
+from mascope_backend.api.new.ionization.modes.service import update_ionization_mode
 from mascope_backend.api.new.ionization.modes.util import (
     fetch_listable_ionization_modes,
 )
@@ -31,6 +33,7 @@ from mascope_backend.db import (
     Dataset,
     IonizationMechanism,
     IonizationMode,
+    MethodBinding,
     SampleBatch,
     SampleFile,
     SampleItem,
@@ -75,6 +78,7 @@ async def fresh_db(seed_db_factory, bind_db, monkeypatch):
     """
     async with seed_db_factory() as session:
         for model in (
+            MethodBinding,
             TargetCollectionInSampleBatch,
             SampleItem,
             SampleFile,
@@ -546,24 +550,41 @@ async def test_a_deleted_seeded_collection_comes_back(fresh_db):
     assert counts["created"] == counts["pointed"] == 1
 
 
+async def _edit_mode(mode_id: str, **changes) -> str:
+    """Edit a mode as the settings pane does, echoing the rest of it back.
+
+    :return: The id of the version the edit leaves current.
+    """
+    async with db_module.async_session() as session:
+        mode = await session.get(IonizationMode, mode_id)
+    fields = {
+        "ionization_mode_name": mode.ionization_mode_name,
+        "ionization_mode_polarity": mode.ionization_mode_polarity,
+        "ionization_mechanism_ids": mode.ionization_mechanism_ids,
+    }
+    edited = await update_ionization_mode(
+        mode_id, IonizationModeUpdate(**fields, **changes)
+    )
+    return edited["data"]["ionization_mode_id"]
+
+
 @pytest.mark.asyncio
 async def test_a_choice_made_while_the_pass_runs_stands(fresh_db, monkeypatch):
     """A site pointing a mode at its own collection while the pass runs keeps
-    it: the pass points a mode only where it still points at none."""
+    it: the pass reads the mode's current version again when it points it -
+    the one the site's edit made - and points it only where it still points
+    at none. The version the edit replaced is left as it was."""
     await _seed_mechanisms_and_modes()
     site = await _site_collection(fresh_db)
     create = seed_module._create_collection
+    current: list[str] = []
 
     async def create_while_the_site_chooses(collection):
         await create(collection)
         if collection.collection_id == _BROMIDE_CALIBRANTS.collection_id:
-            async with fresh_db() as session:
-                await session.execute(
-                    update(IonizationMode)
-                    .where(IonizationMode.ionization_mode_id == _BROMIDE_MODE)
-                    .values(calibration_collection_id=site)
-                )
-                await session.commit()
+            current.append(
+                await _edit_mode(_BROMIDE_MODE, calibration_collection_id=site)
+            )
 
     monkeypatch.setattr(
         seed_module, "_create_collection", create_while_the_site_chooses
@@ -571,8 +592,15 @@ async def test_a_choice_made_while_the_pass_runs_stands(fresh_db, monkeypatch):
 
     counts = await ensure_system_ionization_collections()
 
-    assert (await _modes(fresh_db))[_BROMIDE_MODE].calibration_collection_id == site
+    modes = await _modes(fresh_db)
+    (edited,) = current
+    assert modes[edited].calibration_collection_id == site
+    assert modes[edited].diagnostic_collection_id == "sysBromideDia"
+    assert modes[edited].version == 2
+    assert modes[_BROMIDE_MODE].calibration_collection_id is None
+    assert modes[_BROMIDE_MODE].diagnostic_collection_id is None
     assert counts["pointed"] == len(_SEEDED) - 1
+    assert counts["versioned"] == 0
 
 
 @pytest.mark.asyncio
@@ -628,6 +656,134 @@ async def test_a_chemistry_that_was_not_seeded_gets_no_collections(fresh_db):
     assert "sysBromideDia" not in collections
     assert counts["collections"]["no_mode"] == 2
     assert (await _modes(fresh_db))["siteBromide"].calibration_collection_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_chemistry_only_a_superseded_version_holds_gets_no_collections(
+    fresh_db,
+):
+    """A version an edit replaced keeps its chemistry's key, and reads nothing:
+    with no current version of the chemistry, there is no mode to read its
+    collections."""
+    await _seed_mechanisms_and_modes()
+    async with fresh_db() as session:
+        await session.execute(
+            update(IonizationMode)
+            .where(IonizationMode.ionization_mode_id == _BROMIDE_MODE)
+            .values(is_active=False)
+        )
+        await session.commit()
+
+    counts = await ensure_system_ionization_collections()
+
+    collections = await _collections(fresh_db)
+    assert "sysBromideCal" not in collections
+    assert "sysBromideDia" not in collections
+    assert counts["no_mode"] == 2
+    assert counts["created"] == counts["pointed"] == len(_SEEDED) - 2
+
+
+@pytest.mark.asyncio
+async def test_a_mode_an_edit_replaced_has_its_current_version_pointed(fresh_db):
+    """A site that set its reagent's purity before this release holds the
+    chemistry's second version. That one is pointed, in place, since no sample
+    is bound under it; the first is left as the samples' record."""
+    await _seed_mechanisms_and_modes()
+    current = await _edit_mode(_BROMIDE_MODE, label_purity=0.99)
+
+    counts = await ensure_system_ionization_collections()
+
+    modes = await _modes(fresh_db)
+    assert modes[current].calibration_collection_id == "sysBromideCal"
+    assert modes[current].diagnostic_collection_id == "sysBromideDia"
+    assert (modes[current].version, modes[current].is_active) == (2, True)
+    assert modes[_BROMIDE_MODE].calibration_collection_id is None
+    assert modes[_BROMIDE_MODE].diagnostic_collection_id is None
+    assert len(modes) == len(SYSTEM_MODES) + 1
+    assert counts["pointed"] == len(_SEEDED)
+    assert counts["versioned"] == 0
+
+
+async def _routed_to_bromide(factory) -> None:
+    """A file processed under the bromide chemistry before it carried
+    collections, and the method binding that routes its method to it."""
+    batch = await _batch_serving(factory, "siteCalibrants")
+    async with factory() as session:
+        await session.execute(
+            update(SampleItem)
+            .where(SampleItem.sample_batch_id == batch)
+            .values(ionization_mode_id=_BROMIDE_MODE)
+        )
+        session.add(
+            MethodBinding(
+                method_binding_id="bindingBromide",
+                binding_key="seed-test-bromide",
+                instrument="SeedTest",
+                method_key="m.meth",
+                signature_class="TOF -",
+                ionization_mode_id=_BROMIDE_MODE,
+                candidate_mode_id=_BROMIDE_MODE,
+                chemistry_keys=["bromide"],
+                state="learned",
+                source="token",
+                first_seen=_NOW,
+                last_seen=_NOW,
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_mode_samples_are_bound_under_takes_its_collections_as_a_new_version(
+    fresh_db,
+):
+    """What the samples were processed under is not changed under them: the
+    collections go on the next version, as an edit's would, and new files of
+    the method route to it. The samples keep their version until they are
+    processed again, and the seed flags no batch: it is not the site's edit."""
+    await _seed_mechanisms_and_modes()
+    await _site_collection(fresh_db)
+    await _routed_to_bromide(fresh_db)
+
+    counts = await ensure_system_ionization_collections()
+
+    modes = await _modes(fresh_db)
+    first = modes[_BROMIDE_MODE]
+    (successor,) = [mode for mode in modes.values() if mode.supersedes_id]
+    assert (first.is_active, first.version) == (False, 1)
+    assert first.calibration_collection_id is None
+    assert first.diagnostic_collection_id is None
+    assert (successor.is_active, successor.version) == (True, 2)
+    assert successor.supersedes_id == _BROMIDE_MODE
+    assert successor.system_key == first.system_key
+    assert successor.ionization_mechanism_ids == first.ionization_mechanism_ids
+    # One version for both collections.
+    assert successor.calibration_collection_id == "sysBromideCal"
+    assert successor.diagnostic_collection_id == "sysBromideDia"
+    assert counts["pointed"] == len(_SEEDED)
+    assert counts["versioned"] == 1
+
+    async with fresh_db() as session:
+        bound = await session.scalar(
+            select(SampleItem.ionization_mode_id).where(
+                SampleItem.sample_item_id == "itemBromide"
+            )
+        )
+        binding = await session.get(MethodBinding, "bindingBromide")
+        status = await session.scalar(
+            select(SampleBatch.status).where(
+                SampleBatch.sample_batch_id == "batchBromide"
+            )
+        )
+    assert bound == _BROMIDE_MODE
+    assert binding.ionization_mode_id == successor.ionization_mode_id
+    assert binding.candidate_mode_id == successor.ionization_mode_id
+    assert status == "ready"
+
+    # The second start finds the new version pointed, and mints none.
+    again = await ensure_system_ionization_collections()
+    assert again["pointed"] == again["versioned"] == 0
+    assert len(await _modes(fresh_db)) == len(modes)
 
 
 @pytest.mark.asyncio

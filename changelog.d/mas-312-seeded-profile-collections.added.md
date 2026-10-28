@@ -9,6 +9,9 @@
   named after their chemistry (*Bromide, negative calibrants*, *Bromide,
   negative reagent ions*), so they appear in every collection list. A mode a
   site pointed at its own collection keeps it, a shipped collection a site
-  edits is left as edited, and an unedited one follows later releases.
+  edits is left as edited, and an unedited one follows later releases. A
+  shipped chemistry files were already processed under takes its
+  collections as a new version, so those files keep their results until
+  they are processed again.
   Protonation, deprotonation and the ammonium chemistries have no reagent
   in the library and get none.

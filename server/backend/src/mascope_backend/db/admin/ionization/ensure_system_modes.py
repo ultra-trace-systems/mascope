@@ -71,13 +71,22 @@ what a release of Mascope seeded it with, which its digest says:
 - holding anything else, the deployment has edited it, and it is left as it
   is.
 
-A seeded mode is pointed at its collection only where it points at none. A
-mode pointed at a collection of the deployment's keeps it: the deployment
-chose it. The API cannot clear a mode's collection, so a mode points at none
-only until the seed has pointed it, or once the collection it pointed at has
-been deleted, and then the next start creates the seeded one again and points
-the mode back at it, as it creates a deleted mechanism again. Files already
-processed under the mode keep their results until they are processed again.
+A seeded mode's current version is pointed at its collection only where it
+points at none. A mode pointed at a collection of the deployment's keeps it:
+the deployment chose it. The API cannot clear a mode's collection, so a mode
+points at none only until the seed has pointed it, or once the collection it
+pointed at has been deleted, and then the next start creates the seeded one
+again and points the mode back at it, as it creates a deleted mechanism again.
+
+A mode is a versioned setup (``api.new.ionization.modes.versions``), and a
+collection is part of what a run computes from it. So the version is pointed
+in place only while no sample is bound under it, when nothing has been
+computed from it yet. Once one is - a deployment that routed files to a
+shipped chemistry before it carried collections - the collections go on the
+next version, as an edit's would, and the method bindings follow it. The
+samples keep the version their results came from until they are processed
+again, and their batches are not flagged: the seed is not the deployment's
+edit.
 
 Entry Points:
 - Async: `ensure_system_ionization()` for every pass, as a start runs them
@@ -87,7 +96,8 @@ Entry Points:
 import asyncio
 import time
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from mascope_backend.api.controllers.ionization_mechanisms.ionization_mechanisms_controller import (
@@ -105,9 +115,14 @@ from mascope_backend.api.models.target.collections.target_collection_pydantic_mo
 from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
     TargetCompoundBase,
 )
+from mascope_backend.api.new.ionization.modes.versions import (
+    make_version,
+    repoint_routing,
+)
 from mascope_backend.db import (
     IonizationMechanism,
     IonizationMode,
+    SampleItem,
     TargetCollection,
     TargetCompoundInTargetCollection,
     async_session,
@@ -391,7 +406,8 @@ async def ensure_system_ionization_collections() -> dict[str, int]:
 
     :return: Counts of the collections created, brought up to date, held as
         they are, left as the deployment edited them, skipped for want of
-        their mode, and failed, and of the mode pointers set.
+        their mode, and failed, of the mode pointers set, and of the modes
+        that took a new version for them.
     :rtype: dict[str, int]
     """
     counts = {
@@ -402,6 +418,7 @@ async def ensure_system_ionization_collections() -> dict[str, int]:
         "no_mode": 0,
         "failed": 0,
         "pointed": 0,
+        "versioned": 0,
     }
     seeded = seeded_collections()
 
@@ -442,7 +459,8 @@ async def ensure_system_ionization_collections() -> dict[str, int]:
         }
 
     edited: list[str] = []
-    pointers: list[tuple[str, str, str]] = []
+    # Each chemistry's collections, by the field of its mode that reads them.
+    pointers: dict[str, dict[str, str]] = {}
     for collection in seeded:
         mode = modes.get(collection.system_key)
         if mode is None:
@@ -474,25 +492,15 @@ async def ensure_system_ionization_collections() -> dict[str, int]:
             counts["failed"] += 1
             continue
 
-        pointers.append(
-            (mode.ionization_mode_id, collection.mode_field, collection.collection_id)
+        pointers.setdefault(collection.system_key, {})[collection.mode_field] = (
+            collection.collection_id
         )
 
     async with async_session() as session:
-        for mode_id, field, collection_id in pointers:
-            column = getattr(IonizationMode, field)
-            # Only where it points at none. A mode pointed at a collection
-            # keeps it: the deployment chose it, before this pass or while
-            # it ran.
-            pointed = await session.execute(
-                update(IonizationMode)
-                .where(
-                    IonizationMode.ionization_mode_id == mode_id,
-                    column.is_(None),
-                )
-                .values({field: collection_id})
-            )
-            counts["pointed"] += pointed.rowcount
+        for system_key, wanted in pointers.items():
+            pointed, versioned = await _point_mode(session, system_key, wanted)
+            counts["pointed"] += pointed
+            counts["versioned"] += versioned
         await session.commit()
 
     # Every start, so the log says the pass ran on a server that needed nothing.
@@ -509,12 +517,80 @@ async def ensure_system_ionization_collections() -> dict[str, int]:
         exceptions += (
             f", {len(edited)} left as this server edited them ({', '.join(edited)})"
         )
+    versioned = (
+        f", {counts['versioned']} mode{'' if counts['versioned'] == 1 else 's'} "
+        "given a new version for them (samples are bound under the old one)"
+        if counts["versioned"]
+        else ""
+    )
     runtime.logger.info(
         f"System target collections: {counts['created']} created, "
         f"{counts['held']} held{exceptions}; {counts['pointed']} mode "
         f"collection{'' if counts['pointed'] == 1 else 's'} pointed at them"
+        f"{versioned}"
     )
     return counts
+
+
+async def _point_mode(
+    session: AsyncSession, system_key: str, wanted: dict[str, str]
+) -> tuple[int, int]:
+    """Point a chemistry's current version at its collections where it points
+    at none.
+
+    The version is read here, locked as an edit locks the one it edits, so a
+    choice the deployment made while the pass ran stands, and a version an
+    edit made meanwhile is the one pointed. Pointed in place while no sample
+    is bound under it; once one is, the collections go on its next version
+    (the module's docstring says why).
+
+    :param session: The pass's transaction; the caller commits.
+    :param system_key: The chemistry.
+    :param wanted: Its collections, by the field of the mode that reads each.
+    :return: How many of the mode's collection fields were pointed, and 1 when
+        that took a new version, else 0.
+    :rtype: tuple[int, int]
+    """
+    mode = (
+        await session.execute(
+            select(IonizationMode)
+            .where(
+                IonizationMode.system_key == system_key,
+                IonizationMode.is_active.is_(True),
+            )
+            .with_for_update(key_share=True)
+        )
+    ).scalar_one_or_none()
+    if mode is None:
+        # Released since the pass read it.
+        return 0, 0
+    changes = {
+        field: collection_id
+        for field, collection_id in wanted.items()
+        if getattr(mode, field) is None
+    }
+    if not changes:
+        return 0, 0
+
+    held = await session.scalar(
+        select(exists().where(SampleItem.ionization_mode_id == mode.ionization_mode_id))
+    )
+    if not held:
+        for field, collection_id in changes.items():
+            setattr(mode, field, collection_id)
+        return len(changes), 0
+
+    # As an edit mints one: the version it replaces goes inactive first, since
+    # the system-key index holds among the active rows.
+    successor = make_version(mode, changes)
+    mode.is_active = False
+    await session.flush()
+    session.add(successor)
+    await session.flush()
+    await repoint_routing(
+        session, mode.ionization_mode_id, successor.ionization_mode_id
+    )
+    return len(changes), 1
 
 
 def _stored_digest(collection: TargetCollection) -> str:
