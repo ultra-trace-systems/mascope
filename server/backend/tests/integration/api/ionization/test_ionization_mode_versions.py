@@ -710,6 +710,65 @@ async def test_a_collection_an_edit_replaced_is_held_only_by_samples_left_on_it(
     assert (await _row(async_session_factory, second)).calibration_collection_id is None
 
 
+@pytest.mark.asyncio
+async def test_a_collection_an_edit_replaced_moves_into_a_workspace_once_free(
+    owner_client, admin_client, async_session_factory, world, mode
+):
+    """A collection a mode names stays global, since every workspace reads the
+    mode. One an edit replaced is held only while a sample is on the version
+    that names it; after that it can move into a workspace."""
+    old_cal = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            TargetCollection(
+                target_collection_id=old_cal,
+                target_collection_name=f"old_cal (versions {old_cal})",
+                target_collection_type="CALIBRANTS",
+                workspace_id=None,
+            )
+        )
+        await session.commit()
+    second = await _mint(admin_client, world, mode, calibration_collection_id=old_cal)
+    await move_to_current_versions(sample_batch_ids=[mode["batch_id"]])
+    # Version 3 keeps the collection, and the sample stays on version 2.
+    third = await _mint(
+        admin_client,
+        world,
+        {**mode, "mode_id": second},
+        calibration_collection_id=old_cal,
+        **_VERSIONED_EDITS["mechanisms"](world),
+    )
+    url = f"/api/target/collections/{old_cal}"
+    narrow = {
+        "target_collection_name": f"old_cal (versions {old_cal})",
+        "workspace_id": world["workspace"],
+    }
+
+    # The current version holds it, which no re-process changes.
+    current = await owner_client.patch(url, json=narrow)
+    assert current.status_code == 409
+    assert f"ionization mode '{mode['name']}'" in current.text
+    assert "re-process those samples" not in current.text
+
+    await move_to_current_versions(sample_batch_ids=[mode["batch_id"]])
+    await _mint(
+        admin_client,
+        world,
+        {**mode, "mode_id": third},
+        calibration_collection_id=world["cal_a"],
+        **_VERSIONED_EDITS["mechanisms"](world),
+    )
+    held = await owner_client.patch(url, json=narrow)
+    assert held.status_code == 409
+    assert f"version 3 of '{mode['name']}'" in held.text
+    assert "re-process those samples" in held.text
+
+    await move_to_current_versions(sample_batch_ids=[mode["batch_id"]])
+    moved = await owner_client.patch(url, json=narrow)
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["data"]["workspace_id"] == world["workspace"]
+
+
 # --- what reads the modes -----------------------------------------------------
 
 
