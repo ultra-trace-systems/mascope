@@ -33,6 +33,7 @@ from sqlalchemy import select
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     generate_target_ions_from_composition,
 )
+from mascope_backend.api.new.ionization.modes.versions import sample_label_purity
 from mascope_backend.api.new.match.params.lib import apply_match_params
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
@@ -43,6 +44,7 @@ from mascope_backend.db import IonizationMechanism, async_session
 from mascope_backend.runtime import runtime
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
+from mascope_tools.composition.custom_elements import labelled_purity
 from mascope_tools.composition.mass_accuracy import MASS_ACCURACY_MIN_ANCHORS
 from mascope_tools.composition.profiles import resolve_fallback_sigma_ppm
 
@@ -320,6 +322,11 @@ async def score_seeds(
     where the seeds are too few to fit their own (:func:`gate_and_score`). No
     candidate enumeration, no untargeted stage, no arbitration.
 
+    Labelled ions are read at the purity the sample's ionization setup carries
+    (``custom_elements.labelled_purity``), as a run of the sample reads them:
+    a run's re-score, the batch search's propagation to each member's sample
+    and the inspector's evidence and alternatives all score here.
+
     :param sample: The sample being scored against.
     :param seeds: Distinct ``(formula, ionization_mechanism_id)`` pairs.
     :param match_params: The sample's resolved match parameters.
@@ -335,7 +342,26 @@ async def score_seeds(
     """
     if not seeds:
         return {}, {}, {}, pd.DataFrame()
+    with labelled_purity(await sample_label_purity(sample.sample_item_id)):
+        return await _score_seeds(
+            sample, seeds, match_params, reagent_offset=reagent_offset, config=config
+        )
 
+
+async def _score_seeds(
+    sample,
+    seeds: set[tuple[str, str]],
+    match_params,
+    *,
+    reagent_offset: ReagentOffset | None | object,
+    config: PeakAssignmentConfig | None,
+) -> tuple[
+    dict[tuple[str, str], str],
+    dict[str, float | None],
+    dict[tuple[str, str], dict],
+    pd.DataFrame,
+]:
+    """:func:`score_seeds` at the purity it has set."""
     mechanisms_by_id = await fetch_mechanisms_by_id(
         {mechanism_id for _, mechanism_id in seeds}
     )
