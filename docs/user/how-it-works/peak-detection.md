@@ -100,6 +100,17 @@ The cumulative peak area is computed by evaluating the predefined empirical peak
 ### Signal-to-Noise Ratio
 Peaks exhibiting a signal-to-noise ratio ($\text{SNR}$) below a strict threshold ($\text{SNR} < 3$) are flagged as weak.
 
+### Local Floor (Orbitrap)
+An Orbitrap peak's $\text{SNR}$ is the instrument's: its noise is one figure for a wide stretch of the spectrum, and it does not follow a floor that rises locally.
+Around a dominant ion, such as a chemical-ionization reagent ion of millions of counts, a spectrum averaged over many microscans holds a continuous floor of maxima, a centroid every few ppm over several Da.
+Averaging lowered the noise and left the floor, so each of its maxima reads an $\text{SNR}$ far above the threshold, and such a file can hold tens of thousands of them.
+
+An Orbitrap peak is therefore also measured against the peaks of its own spectrum (its polarity, or its scan stream) within $\pm 3000\text{ ppm}$ of its m/z.
+Where that window holds at least $300$ other peaks, one every $20\text{ ppm}$ on average, the stretch is a floor rather than a list of resolved ions, and a peak lower than $5$ times the median height of the window's peaks is flagged as weak.
+The window is wide so that the comb of side lobes a few hundred ppm either side of a reagent ion, dense over too short a stretch to fill it, is left to the satellite flag below.
+A real ion in the floor stands out of it and is kept.
+Where the window holds fewer peaks, the stretch says nothing of a floor, and its peaks are judged by their $\text{SNR}$ alone.
+
 ### Satellite Peak Identification
 Fourier-transform and Orbitrap mass spectrometers can generate electronic ringing artifacts, apodization side lobes, or high-intensity harmonic shoulders flanking major ionic signals.
 These are formally classified as satellite peaks and must be flagged to prevent redundant compound assignment.
