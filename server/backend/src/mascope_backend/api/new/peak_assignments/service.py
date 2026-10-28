@@ -26,6 +26,7 @@ from types import SimpleNamespace
 import pandas as pd
 from fastapi import status
 from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy.orm import aliased
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.controllers.samples.lib.samples_peaks import extract_peaks
@@ -66,6 +67,14 @@ from mascope_backend.api.new.peak_assignments.admission import (
 from mascope_backend.api.new.peak_assignments.artifact_pass import (
     build_artifact_assignments,
     claim_artifact_peaks,
+)
+from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
+    claim_of,
+    is_stale,
+)
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    mz_from_delta,
+    resolve_candidate,
 )
 from mascope_backend.api.new.peak_assignments.calibration_store import (
     load_calibration,
@@ -158,12 +167,15 @@ from mascope_backend.api.new.reference import service as reference_service
 from mascope_backend.api.new.reference.licenses import reference_license_gate
 from mascope_backend.db import (
     AssignmentVerification,
+    BatchPeak,
     BatchPeakOccurrence,
+    BatchPeakVerification,
     IonizationMechanism,
     IonizationMode,
     PeakAssignment,
     PeakAssignmentRun,
     Sample,
+    SampleBatch,
     TargetCollectionInSampleBatch,
     TargetCompound,
     TargetCompoundInTargetCollection,
@@ -976,6 +988,269 @@ async def get_verifications(sample_item_id: str) -> dict:
             f"Retrieved {len(data)} verification"
             f"{'s' if len(data) != 1 else ''} for sample "
             f"'{sample.sample_item_name}'"
+        ),
+        "results": len(data),
+        "data": data,
+    }
+
+
+async def get_scope_verifications(
+    *,
+    sample_batch_id: str | None = None,
+    dataset_id: str | None = None,
+    verdict: str | None = None,
+    evidence_level: str | None = None,
+    since: dt | None = None,
+    include_superseded: bool = False,
+) -> list[dict]:
+    """The verdicts over every sample of a batch or a dataset, one row per
+    judged peak, as each sample's assignment ledger shows them.
+
+    A sample's own verdicts come first in precedence. A batch-level verdict
+    reaches a sample's peak when the peak folded into the judged batch peak and
+    the peak's own claim (formula, mechanism) is the one judged, so a dissenting
+    sample stays out from under a verdict about another formula; it is listed
+    ``borrowed``, and only where the sample has no current verdict of its own on
+    that claim. The precedence is settled on the whole record before the filters
+    apply, so a filter never lets a borrowed verdict through in place of the
+    sample's own one.
+
+    Each row carries the sample's filename and acquisition time and the peak's
+    m/z. Superseded per-sample verdicts are listed with ``include_superseded``;
+    batch-level ones are live only, since a replaced one reaches no sample.
+
+    :param sample_batch_id: The batch whose samples to read (or ``dataset_id``).
+    :param dataset_id: The dataset whose samples to read.
+    :param verdict: Keep only this verdict.
+    :param evidence_level: Keep only this evidence level.
+    :param since: Keep only verdicts recorded at or after this moment; naive is UTC.
+    :param include_superseded: Also list the per-sample verdicts a later one replaced.
+    :return: The rows, by sample acquisition time, then m/z, newest verdict first.
+    """
+    if (sample_batch_id is None) == (dataset_id is None):
+        raise ValueError("give exactly one of sample_batch_id and dataset_id")
+    samples = select(Sample.sample_item_id)
+    if sample_batch_id is not None:
+        samples = samples.where(Sample.sample_batch_id == sample_batch_id)
+    else:
+        samples = samples.join(
+            SampleBatch, SampleBatch.sample_batch_id == Sample.sample_batch_id
+        ).where(SampleBatch.dataset_id == dataset_id)
+    samples = samples.scalar_subquery()
+
+    # The peak's m/z: off the judged ledger row, else off any row of the same
+    # sample and peak - a re-run sets the judged one's id to NULL.
+    other_row = aliased(PeakAssignment)
+    any_row_mz = (
+        select(func.max(other_row.sample_peak_mz))
+        .where(
+            other_row.sample_item_id == AssignmentVerification.sample_item_id,
+            other_row.sample_peak_id == AssignmentVerification.sample_peak_id,
+        )
+        .correlate(AssignmentVerification)
+        .scalar_subquery()
+    )
+    async with async_session() as session:
+        sample_rows = {
+            row.sample_item_id: row
+            for row in (
+                await session.execute(
+                    select(
+                        Sample.sample_item_id,
+                        Sample.sample_item_name,
+                        Sample.sample_batch_id,
+                        Sample.filename,
+                        Sample.datetime,
+                        Sample.datetime_utc,
+                    ).where(Sample.sample_item_id.in_(samples))
+                )
+            ).all()
+        }
+        own = (
+            await session.execute(
+                select(
+                    AssignmentVerification,
+                    func.coalesce(PeakAssignment.sample_peak_mz, any_row_mz),
+                )
+                .outerjoin(
+                    PeakAssignment,
+                    PeakAssignment.peak_assignment_id
+                    == AssignmentVerification.peak_assignment_id,
+                )
+                .where(AssignmentVerification.sample_item_id.in_(samples))
+            )
+        ).all()
+        reaching = (
+            await session.execute(
+                select(
+                    BatchPeakOccurrence.sample_item_id,
+                    BatchPeakOccurrence.sample_peak_id,
+                    BatchPeakOccurrence.candidate,
+                    BatchPeakOccurrence.mz_delta_ppm,
+                    PeakAssignment.assigned_formula,
+                    PeakAssignment.ionization_mechanism_id,
+                    BatchPeakVerification,
+                    BatchPeak,
+                )
+                .join(
+                    BatchPeakVerification,
+                    BatchPeakVerification.batch_peak_id
+                    == BatchPeakOccurrence.batch_peak_id,
+                )
+                .join(
+                    BatchPeak,
+                    BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
+                )
+                .outerjoin(
+                    PeakAssignment,
+                    PeakAssignment.peak_assignment_id
+                    == BatchPeakOccurrence.peak_assignment_id,
+                )
+                .where(
+                    BatchPeakOccurrence.sample_item_id.in_(samples),
+                    BatchPeakVerification.superseded_utc.is_(None),
+                )
+            )
+        ).all()
+
+    # The identities a sample's own current verdict holds, which a batch-level
+    # verdict does not cover.
+    rows: list[dict] = []
+    judged = set()
+    for record, mz in own:
+        if record.superseded_utc is None:
+            judged.add(
+                (
+                    record.sample_item_id,
+                    record.sample_peak_id,
+                    record.assigned_formula,
+                    record.ionization_mechanism_id,
+                )
+            )
+        rows.append(
+            {
+                **record.to_dict(),
+                "sample_peak_mz": mz,
+                "borrowed": False,
+            }
+        )
+    for (
+        sample_item_id,
+        sample_peak_id,
+        candidate,
+        mz_delta_ppm,
+        row_formula,
+        row_mechanism,
+        record,
+        anchor,
+    ) in reaching:
+        # The member's own claim: its entry in the anchor's registry (none for
+        # an unassigned member), or the ledger row it was folded from on an
+        # anchor that predates the registry.
+        if anchor.candidates is not None:
+            entry = resolve_candidate(anchor.candidates, candidate)
+            claim = (entry.get("formula"), entry.get("ionization_mechanism_id"))
+        else:
+            claim = (row_formula, row_mechanism)
+        if claim != (record.assigned_formula, record.ionization_mechanism_id):
+            continue
+        if (sample_item_id, sample_peak_id, *claim) in judged:
+            continue
+        rows.append(
+            {
+                "sample_item_id": sample_item_id,
+                "sample_peak_id": sample_peak_id,
+                "sample_peak_mz": mz_from_delta(anchor.mz, mz_delta_ppm),
+                "assigned_formula": record.assigned_formula,
+                "ionization_mechanism_id": record.ionization_mechanism_id,
+                "verdict": record.verdict,
+                "evidence_level": record.evidence_level,
+                "note": record.note,
+                "context": record.context,
+                "verified_by": record.verified_by,
+                "verified_utc": record.verified_utc,
+                "superseded_utc": None,
+                "borrowed": True,
+                "batch_peak_verification_id": record.batch_peak_verification_id,
+                "batch_peak_id": record.batch_peak_id,
+                "stale": is_stale(record.to_dict(), claim_of(anchor)),
+            }
+        )
+
+    if since is not None and since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    kept = []
+    for row in rows:
+        if row["superseded_utc"] is not None and not include_superseded:
+            continue
+        if verdict is not None and row["verdict"] != verdict:
+            continue
+        if evidence_level is not None and row["evidence_level"] != evidence_level:
+            continue
+        if since is not None and (
+            row["verified_utc"] is None or row["verified_utc"] < since
+        ):
+            continue
+        sample = sample_rows.get(row["sample_item_id"])
+        kept.append(
+            {
+                **row,
+                "sample_item_name": sample.sample_item_name if sample else None,
+                "sample_batch_id": sample.sample_batch_id if sample else None,
+                "filename": sample.filename if sample else None,
+                "datetime": sample.datetime if sample else None,
+                "datetime_utc": sample.datetime_utc if sample else None,
+            }
+        )
+
+    def order(row: dict) -> tuple:
+        when = row["datetime_utc"]
+        verified = row["verified_utc"]
+        return (
+            when is None,
+            when.timestamp() if when else 0.0,
+            row["sample_item_id"],
+            row["sample_peak_mz"] is None,
+            row["sample_peak_mz"] or 0.0,
+            row["sample_peak_id"],
+            -(verified.timestamp() if verified else 0.0),
+        )
+
+    kept.sort(key=order)
+    return kept
+
+
+@api_controller()
+async def get_batch_verifications(sample_batch_id: str, **filters) -> dict:
+    """The verdicts over every sample of a batch; see :func:`get_scope_verifications`.
+
+    :param sample_batch_id: The batch.
+    :param filters: ``verdict``, ``evidence_level``, ``since``, ``include_superseded``.
+    :return: Status envelope with the rows.
+    """
+    data = await get_scope_verifications(sample_batch_id=sample_batch_id, **filters)
+    return _scope_envelope(data, "batch")
+
+
+@api_controller()
+async def get_dataset_verifications(dataset_id: str, **filters) -> dict:
+    """The verdicts over every sample of a dataset; see :func:`get_scope_verifications`.
+
+    :param dataset_id: The dataset.
+    :param filters: ``verdict``, ``evidence_level``, ``since``, ``include_superseded``.
+    :return: Status envelope with the rows.
+    """
+    data = await get_scope_verifications(dataset_id=dataset_id, **filters)
+    return _scope_envelope(data, "dataset")
+
+
+def _scope_envelope(data: list[dict], scope: str) -> dict:
+    borrowed = sum(1 for row in data if row["borrowed"])
+    return {
+        "status": "success",
+        "message": (
+            f"Retrieved {len(data)} verdict{'s' if len(data) != 1 else ''} over "
+            f"the {scope}'s samples, {borrowed} of them batch-level"
         ),
         "results": len(data),
         "data": data,

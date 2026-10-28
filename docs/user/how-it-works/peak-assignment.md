@@ -891,6 +891,18 @@ formula or retract it. Batch-level verdicts are kept apart from the labelled rec
 confidence calibration is fit on: one judgment fanned out over a batch would count as
 many correlated labels, so it counts as none.
 
+### The verdicts of a batch or dataset
+
+The verdicts leave the app as one table for a whole batch or dataset: the *Verifications*
+sheet of the batch data spreadsheet ([Export files](../reference/exports.md#verifications)),
+and the SDK's `peak_assignments.verifications_for_batch` and `verifications_for_dataset`.
+It has one row per judged peak, as each sample's assignment ledger shows it: the sample's
+own current verdict, or the batch-level verdict it borrows, marked so. The sample's own
+verdict wins before any filter applies, so asking for the confirmed verdicts never lists a
+borrowed confirmation on a peak the sample itself rejected. Each row names the sample's
+file and acquisition time, the peak's m/z, the evidence level and, on the sample's own
+verdict, the score it was given when it was judged.
+
 ## Assignment runs
 
 --8<-- "_help/assignment-runs.md"

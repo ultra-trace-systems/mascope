@@ -9,7 +9,7 @@ Four exports are made from the app:
 
 | Export | Where | Format |
 |---|---|---|
-| **Batch data** | Right-click a batch, *Download > Batch data* | A spreadsheet (`.xlsx`) of five sheets, below |
+| **Batch data** | Right-click a batch, *Download > Batch data* | A spreadsheet (`.xlsx`) of up to six sheets, below |
 | **Peak data** | Right-click a batch, *Download > Peak data*; or a sample's own *Download > Peak data* | A CSV, semicolon-separated |
 | **Batch ledger** | The batch peaks view's menu behind the cog, *Export ledger (CSV)* | A CSV: one row per member peak, described under [Batch peaks](../how-it-works/peak-assignment.md#batch-peaks) |
 | **Deposit package** | Right-click a dataset, *Prepare for publication* | A zip archive of the whole dataset, to upload to a data repository such as Zenodo, [below](#the-deposit-package) |
@@ -85,10 +85,40 @@ data.
 Rows carry the ids of the records they describe (sample item, target compound,
 target ion), not the ids of the match rows, which a rematch replaces.
 
+### Verifications
+
+The batch's current [verification verdicts](../how-it-works/peak-assignment.md#verifying-assignments),
+one row per judged peak, as each sample's assignment ledger shows them.
+Written only when something in the batch was judged. The sheet is the table
+`GET /api/peak-assignments/batch/{sample_batch_id}/verifications` answers and
+the SDK's `peak_assignments.verifications_for_batch` reads, row for row and
+under the same column names, so a script reads the sheet and the frame alike.
+
+A row is either the sample's own verdict, or a batch-level verdict that
+reaches the sample, with `borrowed` true. A batch-level verdict reaches a
+sample when the sample's peak folded into the judged batch peak and claims
+the formula and mechanism judged, and the sample has no current verdict of
+its own on it. A verdict a later one replaced is not listed.
+
+| Column | Content |
+|---|---|
+| `sample_item_id`, `sample_item_name`, `sample_batch_id`, `filename`, `datetime`, `datetime_utc` | The sample. `datetime` is the acquisition's start in the instrument's local time, `datetime_utc` in UTC |
+| `sample_peak_id`, `sample_peak_mz` | The judged peak and its m/z |
+| `assigned_formula`, `ionization_mechanism_id` | The claim judged |
+| `verdict`, `evidence_level`, `note`, `verified_by`, `verified_utc` | The verdict, the evidence it rests on, the note, the user's id and when it was recorded |
+| `superseded_utc` | Empty: only current verdicts are listed |
+| `context` | On a batch-level verdict, the batch peak's consensus as the user saw it, as JSON |
+| `fit_score`, `evidence`, `p_correct` | The assignment's score when the sample's own verdict was recorded; empty on a borrowed one |
+| `borrowed` | Whether the verdict is a batch-level one reaching the sample |
+| `assignment_verification_id`, `peak_assignment_id`, `peak_assignment_run_id` | The records behind the sample's own verdict |
+| `batch_peak_verification_id`, `batch_peak_id`, `stale` | The records behind a borrowed verdict; `stale` when the batch peak's consensus has since left the formula judged |
+
+Times are in UTC and written without a zone, which is all Excel stores.
+
 ### Provenance sheet
 
-The [provenance block](#provenance) of the build that wrote the file, one
-key/value row per entry with nested keys joined by a dot
+The last sheet. The [provenance block](#provenance) of the build that wrote
+the file, one key/value row per entry with nested keys joined by a dot
 (`produced_with.mascope_version`), and `inputs` naming the dataset, the batch
 and the target collections.
 

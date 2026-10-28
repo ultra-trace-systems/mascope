@@ -189,7 +189,9 @@ OTHER_TOKEN_ROUTES = {
     ("POST", "/api/match/rematch/sample/{sample_item_id}"),
     # Peak assignment: the SDK's sample-level reads and the engine's writes.
     ("GET", "/api/peak-assignments/batch/{sample_batch_id}/profile-preview"),
+    ("GET", "/api/peak-assignments/batch/{sample_batch_id}/verifications"),
     ("POST", "/api/peak-assignments/calibration/{instrument}/recalibrate"),
+    ("GET", "/api/peak-assignments/dataset/{dataset_id}/verifications"),
     ("GET", "/api/peak-assignments/sample/{sample_item_id}"),
     ("POST", "/api/peak-assignments/sample/{sample_item_id}/assign"),
     (
