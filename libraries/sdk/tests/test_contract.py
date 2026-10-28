@@ -883,6 +883,29 @@ class TestLoaderContract:
         )
         assert not bulk["is_satellite"].any()
 
+    def test_peak_lists_of_named_samples_are_theirs_in_the_whole_batch(self, mascope):
+        from pandas.testing import assert_frame_equal
+
+        _skip_unless_attr(mascope.batch_peaks, "peak_lists")
+        _skip_unless_param(mascope.batch_peaks.peak_lists, "samples")
+        _, batches = _first_dataset_and_batches(mascope)
+        batch_id = batches.iloc[0]["sample_batch_id"]
+        whole = mascope.batch_peaks.peak_lists(batch_id)
+        chosen = whole["sample_item_id"].iloc[-1]
+
+        named = mascope.batch_peaks.peak_lists(
+            batch_id, samples=[chosen, "no-such-sample"]
+        )
+
+        assert [s["sample_item_id"] for s in named.attrs["samples"]] == [chosen]
+        assert [
+            (f["sample_item_id"], f["status_code"]) for f in named.attrs["failures"]
+        ] == [("no-such-sample", 404)]
+        assert_frame_equal(
+            named.reset_index(drop=True),
+            whole[whole["sample_item_id"] == chosen].reset_index(drop=True),
+        )
+
     def test_load_peaks_saves_a_snapshot_that_reads_back_equal(self, mascope, tmp_path):
         import pandas as pd
         from pandas.testing import assert_frame_equal
