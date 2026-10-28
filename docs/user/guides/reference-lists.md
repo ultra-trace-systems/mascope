@@ -279,8 +279,6 @@ Open the home menu, choose **Settings**, and press **Reference lists** under
 **Data**. Any signed-in user can open it: the lists belong to the deployment,
 not to a workspace, so everyone sees the same ones.
 
-![The Reference lists dialog on the demo dataset](images/reference-lists.png)
-
 Each row is one loaded list:
 
 - **List**: its label, and the source name it loads as under it.
