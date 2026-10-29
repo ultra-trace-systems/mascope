@@ -1,63 +1,37 @@
 
 # MASCOPE BASE CONFIGURATION
-# Shared defaults for all modes 
-
-# Each section may also have
-# log_level =  "trace", "debug", "info", "warning", "success", "error" or "critical"
+# Shared defaults for all modes. dev.mascope.toml and prod.mascope.toml
+# override them, and an env's own <mode>.mascope.toml overrides those
+# (docs/maintaining.md, "Where a deployment's settings live").
+#
+# The feature settings of [meta] and [backend] are live lines holding the
+# defaults of libraries/runtime/src/mascope_runtime/config.py, whose field
+# comments explain each one, as the docs/maintaining.md section named beside
+# it does. Change one in the env's toml, not here. A setting that is unset by
+# default has no line: the EXAMPLES block at the end of this file shows it.
+#
+# Any section may also set log_level: "trace", "debug", "info", "warning",
+# "success", "error" or "critical".
 
 [meta]
 description = "The default runtime env"
 api_port = 8090
 filestore = './filestore'
-# Peak-centric assignment (assign a composition to every peak) - see
-# docs/user/how-it-works/peak-assignment.md. Off by default. Set this to true
-# to turn on assignment at sample ingest (the fast database-only stage), the
-# assignment views in the UI, and the API write routes. Targeted matching is
-# unchanged either way - the two coexist. Off, ingest assigns nothing, the
-# assignment views are hidden, and the write routes return 403 (the read routes
-# stay open, so ledgers written while it was on remain inspectable). Both sides
-# read this same value at start, so changing it takes a stack restart and
-# nothing more (prod restarts the frontend container too; in dev, restart the
-# dev server).
-# Superseded re-runs are reclaimed with the prune_peak_assignment_runs script
-# (a host provisioned with tooling/ubuntu.sh runs it nightly on a timer; any
-# other deployment should schedule it itself). A sample's ingest run is never
-# superseded, so that pass does not bound the ledger itself - the two settings
-# below do (docs/maintaining.md).
+# --- Feature settings. The backend and the web app both read [meta] at
+# start, so a change takes a stack restart. [meta] is published to the
+# browser before anyone signs in: never put a secret in it.
+# Peak assignment and what ingest writes ("Peak assignment").
 peak_assignment = false
-# Ingest-time assignment can be bounded without switching the feature off -
-# the views, on-demand runs and imports keep working either way. Assignment at
-# ingest writes one ledger row and one batch-peak occurrence per detected peak
-# (about 1 KB per peak, 2-8 MB for a typical sample), permanently.
-# `peak_assignment_on_ingest = false` assigns on demand only (what a
-# high-throughput instrument wants); `peak_assignment_ingest_max_peaks` skips
-# (and logs) a sample denser than this at ingest, 0 meaning no ceiling. Both
-# take effect on restart.
 peak_assignment_on_ingest = true
-peak_assignment_ingest_max_peaks = 100000
-# Which ledger an ingest-time assignment writes: "batch" (the default) folds the
-# sample into the batch peaks and writes no per-sample run - one member row of
-# some 200 bytes per detected peak, the Sample view served from the batch
-# ledger; "sample" writes a per-sample run as well and folds it, about a
-# kilobyte per detected peak. An explicit run on a sample always writes one.
-# Takes effect on restart.
-peak_assignment_ingest_ledger = "batch"
-# Uploads: size cap (GB) for a single resumable (tus) upload, enforced by the
-# backend and used by the web uploader to size its own client-side limit (see
-# docs/maintaining.md). It lives here rather than in [backend] because both
-# sides read it, both at start, so changing it takes a stack restart. A value
-# still under [backend] keeps working and is promoted with a warning.
-# tus_max_upload_gb = 5
-# Legal and support links, shown on the sign-in screen and in the home menu's
-# About tab. The defaults are Ultra Trace's published privacy notice and
-# support address; a deployment operated by someone else should point them at
-# its own (docs/maintaining.md). An empty string hides a link, and no terms of
-# service are linked until one is set. privacy_notice_url and terms_url take an
-# http(s) URL, support_url an http(s) or mailto: one. Read by the web app at
-# start, so a change takes a stack restart.
-# privacy_notice_url = "https://ultratrace.eu/mascope/privacy"
-# terms_url = ""
-# support_url = "mailto:support@ultratrace.eu"
+peak_assignment_ingest_max_peaks = 100000   # 0: no ceiling
+peak_assignment_ingest_ledger = "batch"     # or "sample"
+# Size cap (GB) of one resumable upload ("Upload size cap"). A value still
+# under [backend] in an env's toml is promoted here, with a warning.
+tus_max_upload_gb = 5
+# Sign-in screen and About tab links; "" hides one ("Legal and support links").
+privacy_notice_url = "https://ultratrace.eu/mascope/privacy"
+terms_url = ""
+support_url = "mailto:support@ultratrace.eu"
 
 [cli]
 color = "blue"
@@ -71,113 +45,25 @@ log_path = './logs'
 color = "green"
 # paths
 filestreams = './filestreams'
-# Uploads: free space (GB) that must remain on the upload spool's filesystem
-# after a resumable upload is admitted, so N concurrent uploads cannot fill the
-# disk. 0 disables the check. The per-upload size cap is meta.tus_max_upload_gb.
-# tus_min_free_disk_gb = 10
-# Two-factor authentication: the lowest role required to hold a second factor.
-# Unset (the default) means nobody is required to enrol, though anyone may turn
-# it on for their own account. Set to "admin" to cover admins and owners, or
-# "guest" to cover everyone. A name that is not a role stops the backend at
-# startup rather than silently requiring nothing. Requires
-# .runtime/secrets/mfa_encryption_key.txt (see docs/hosting.md).
-# mfa_required_min_role = "admin"
-# Agent credentials: when true, bearer tokens for the agent services
-# (file-agent, instrument-agent, tof-agent, export-agent) are refused unless
-# they are bound to a paired device. Leave false until every agent machine on
-# this deployment has been (re-)paired - pairing binds the token to a device
-# automatically; tokens issued before the device registry have no binding.
-# require_device_tokens = false
-# m/z calibration quality bar: "warn" (the default) marks a calibration
-# below the bar with an amber badge and its reasons, and still matches and
-# assigns the sample; "enforce" leaves such a sample out of matching and peak
-# assignment until it is recalibrated or an operator accepts the fit in the
-# calibration dialog. Run on "warn" first, fix the calibration collections
-# the badges point at, then switch (docs/user/how-it-works/calibration.md).
-# Takes effect on restart, for calibrations from then on.
-# calibration_quality_gate = "warn"
-# Method bindings: what an acquisition method, seen running a chemistry once,
-# does for the files that follow it. "shadow" (the default) learns a binding
-# from every file that routes on a stronger rung - a person's choice or its
-# filename token - and routes nothing on what it learned; "off" records
-# nothing; "route" also binds a file NO TOKEN NAMES to the chemistry its
-# acquisition method has been seen running, instead of parking it for someone
-# to choose.
-#
-# "route" can only ever affect a file that parks today: it sits below the
-# filename token, so a file a token names is bound exactly as before, and a
-# method that has been seen running two chemistries is skipped rather than
-# guessed at. What it gains is concentrated: on the production fleet nearly
-# all of it is at the sites whose file names carry no token at all, so switch
-# it on there first and watch the parked count. Takes effect on restart, and
-# applies to files converted from then on.
-#
-# What this deployment would route, and where a file name says otherwise, is
-# what `db script run report_method_binding_disagreements` reports. It writes
-# nothing, so it is worth reading before and after a change here.
-# method_binding = "shadow"
-# Chemistry detection: what each MS1 polarity's spectrum names by its reagent
-# ions, read as a file is bound or parked. "audit" (the default) stores the
-# detector's call on the file beside the rung and mode that bound it, and
-# binds nothing: no file is routed, calibrated or matched any differently.
-# "off" stores nothing. It reads the polarity's peak list once more per file,
-# a fraction of a second. Takes effect on restart, for files bound from then
-# on.
-# chemistry_detection = "audit"
-# Composite scan streams: how a raw Orbitrap file is processed whose
-# acquisition method runs more than one experiment in a polarity, most often
-# several scan ranges of one chemistry. true (the default) detects each
-# experiment's peaks over its own scans and stitches the ranges into one
-# spectrum per polarity, each m/z read from the range that owns it, and
-# calibrates each range on its own. false pools every MS1 scan of a polarity
-# into one peak list, so each ion is divided by the scans of every
-# experiment, those that never measured it included; set it only to keep new
-# files comparable with a pooled history (docs/maintaining.md, "The composite
-# cut").
-#
-# A file with one experiment in each polarity - nearly every file - is
-# processed the same either way. A file already converted keeps what was
-# decided for it until it is re-processed from Raw files, which decides again
-# under the setting as it is then. Takes effect on a restart: of the file
-# converter for new files, of the backend for re-processing.
+# --- Feature settings. Backend-only; each takes effect on a restart.
+# Free space (GB) an admitted upload must leave; 0: no check ("Upload disk floor").
+tus_min_free_disk_gb = 10
+# Refuse agent tokens not bound to a paired device ("Paired instrument machines").
+require_device_tokens = false
+# "warn" or "enforce" a calibration below the quality bar ("Calibration
+# quality gate").
+calibration_quality_gate = "warn"
+# "shadow", "route" or "off" ("Method bindings").
+method_binding = "shadow"
+# "audit" or "off" ("Chemistry detection").
+chemistry_detection = "audit"
+# Stitch an Orbitrap file's scan ranges per polarity ("The composite cut").
 composite_scan_streams = true
-# Axis fingerprint: the m/z offset a raw Orbitrap file's mass calibration
-# stored in each frequency band of the Orbitrap axis, read back from the
-# stored profile. "ingest" (the default) computes it as each file is converted
-# and stores it in the file's .props, adding about a second to the conversion;
-# "off" stores {} in its place. It is a measurement for clients that correct
-# the axis themselves: nothing in Mascope's own processing reads it and no m/z
-# is altered by it, so switching it off changes no result. Takes effect on a
-# restart of the file converter, for the files converted from then on;
-# switching it back on does not compute it for the files converted while it
-# was off.
-# axis_fingerprint = "ingest"
-# Reference chemistry: the per-record licence tags peak assignment's database
-# stage is allowed to match against. Unset (the default) means no gating -
-# every active reference source is matched, which is what every deployment did
-# before this setting existed. Set it only to decline sources whose terms you
-# have not accepted (HMDB, for one, asks that commercial terms be verified
-# first); narrowing it shrinks what assignment can find, and nothing in the UI
-# says so. The gate is an EXACT string match on the tag, so every tag left out
-# is dropped silently. All six: public-domain (comptox, pubchem), CC-BY-4.0
-# (chebi, lipidmaps), CC0 (coconut), open (norman), hmdb-attribution (hmdb),
-# custom (hand-authored rows with no licence of their own). `mascope reference
-# sources` / `status` print them too, on a monorepo checkout, and every run
-# records the set it ran under. An empty list is refused - delete the line to
-# allow every licence. The example below declines HMDB and keeps the other
-# five; write yours the same way round rather than allowlisting a few tags from
-# memory. A written-out list freezes the vocabulary, so re-check it after an
-# upgrade that adds a source - its tag will not be in your list.
-# reference_licenses = ["public-domain", "CC-BY-4.0", "CC0", "open", "custom"]
-# Deployment identity: the name this deployment carries in the provenance of
-# everything it exports (the batch spreadsheet's Provenance sheet, the SDK's
-# frames). Unset (the default), the backend generates one on its first start
-# and keeps it with the data, in deployment.json at the root of the filestore,
-# so it survives updates and a restore from backup; `mascope env sync` leaves
-# it behind. Set it to choose the name - but not on envs synced from one
-# another, since the sync copies this config with the env. 1-64 letters,
-# digits, ".", "_" or "-", starting with a letter or digit. Read at start.
-# deployment_id = "example-lab"
+# "ingest" or "off" ("Axis fingerprint").
+axis_fingerprint = "ingest"
+# Unset by default, so no line here; see EXAMPLES: mfa_required_min_role
+# ("Two-factor authentication"), reference_licenses ("Reference licence
+# gating") and deployment_id ("Deployment identity").
 # scripts
 run = "uv run mascope-backend run api-server"
 
@@ -265,8 +151,7 @@ run = "uv run mascope-backend run file-converter"
 tags = ['lab', 'orbi', 'tof', 'file', 'all']
 log_path = './logs'
 color = "magenta"
-# settings
-# acquisition_filter = { min = '2020-01-01T00:00' }
+# settings (acquisition_filter: see EXAMPLES)
 sample_table_defaults = { columns = ["sample_item_name", "index"], sort_field = "index", sort_order = -1 }
 # scripts
 run = "cd ./server/frontend && npm install && npm run dev"
@@ -281,12 +166,11 @@ color = "purple"
 mask = '*.raw'
 timeout = 10
 source = './agents/file'
-# recursive = false
-# instrument = ''
+recursive = false
+instrument = ''
 host = 'localhost'
 access_token = ''
-# filename_prefix = ''
-# filename_suffix = ''
+# filename_prefix and filename_suffix: see EXAMPLES
 
 # scripts
 run = "uv run mascope agent file"
@@ -333,3 +217,27 @@ color = "white"
 tags = ['lib']
 log_path = './logs'
 color = "white"
+
+# EXAMPLES - NOT DEFAULTS
+#
+# Each of these settings is unset by default, and unset means what its
+# docs/maintaining.md section says. The values below are only examples: copy
+# one into the env's toml, under its section, to set it.
+#
+# [backend]
+# mfa_required_min_role = "admin"   # "Two-factor authentication"
+# # "Reference licence gating". Declines HMDB and keeps the other five tags.
+# # The gate is an exact string match: all six are public-domain, CC-BY-4.0,
+# # CC0, open, hmdb-attribution and custom. Delete a tag, never write a list
+# # from memory, and re-check it after an upgrade that adds a source.
+# reference_licenses = ["public-domain", "CC-BY-4.0", "CC0", "open", "custom"]
+# deployment_id = "example-lab"     # "Deployment identity"
+#
+# [frontend]
+# # The range the Raw files list opens on ("Raw files time range").
+# acquisition_filter = { min = '2020-01-01T00:00' }
+#
+# [file-agent]
+# # Added to an uploaded file's name (docs/user/instruments/index.md).
+# filename_prefix = "lab-a_"
+# filename_suffix = "_lab-a"

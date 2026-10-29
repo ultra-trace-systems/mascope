@@ -833,8 +833,9 @@ _EXAMPLE = 'reference_licenses = ["'
 _TAG_LIST = re.compile(r'\[\s*"')
 
 _ROOT = Path(__file__).parents[3]
-# Both toml copies wrap their enumeration in the same two sentences.
-_TOML_BOUNDS = ("is dropped silently.", "). `mascope")
+# Both toml copies wrap their enumeration, in the EXAMPLES block, in the same
+# two phrases.
+_TOML_BOUNDS = ("all six are", ". Delete a tag")
 
 # Every hand-written place that has to name the whole vocabulary, as
 # label -> (file, the markers its enumeration sits between).
