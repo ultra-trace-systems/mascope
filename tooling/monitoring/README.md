@@ -397,6 +397,12 @@ whose currency is in question answering the question about itself. A lookup that
 cannot resolve the current release records `lag=unknown` and changes nothing —
 an unreachable third party must never be able to redden an assessment.
 
+The release is looked up once, before either vantage runs, and passed to both
+suites as `MASCOPE_PENTEST_CURRENT_RELEASE`, so each report records the lag
+too. Only a release tag is passed: when the lookup fails or names anything
+else, the reports say `unknown`. The report's verdict is a record; the exit
+code is still this script's.
+
 `tooling/cli/tests/test_run_assessment.py` runs this script as it is, with
 `ssh` and `curl` stubbed, through the lag matrix and the exit-code overrides;
 CI runs it with the CLI tests. Deploy the script from a checkout, so what runs

@@ -49,10 +49,12 @@ for last; do :; done
 exec bash -c "$last"
 """
 
-# The target's suite interpreter: writes the report bytes STUB_ORIGIN_REPORT
-# names, as the suite would, and exits STUB_SUITE_RC.
+# The target's suite interpreter: records the release it was given, writes the
+# report bytes STUB_ORIGIN_REPORT names, as the suite would, and exits
+# STUB_SUITE_RC.
 ORIGIN_PYTHON_STUB = """#!/usr/bin/env bash
 echo "suite output"
+echo "release=${MASCOPE_PENTEST_CURRENT_RELEASE-<unset>}" > "$STUB_ORIGIN_ENV"
 mkdir -p report
 [ -n "$STUB_ORIGIN_REPORT" ] && cp "$STUB_ORIGIN_REPORT" report/pentest-report.json
 exit "${STUB_SUITE_RC:-0}"
@@ -86,6 +88,7 @@ CDN_PYTHON_STUB = """#!/usr/bin/env bash
   echo "vantage=$MASCOPE_PENTEST_VANTAGE"
   echo "verify=$MASCOPE_PENTEST_VERIFY_TLS"
   echo "header=$MASCOPE_PENTEST_HEADER_NAME:$MASCOPE_PENTEST_HEADER_VALUE"
+  echo "release=${MASCOPE_PENTEST_CURRENT_RELEASE-<unset>}"
   echo "args=$*"
 } > "$STUB_CDN_ENV"
 mkdir -p report
@@ -127,6 +130,7 @@ def _run(
     cdn_rc=0,
     old_records=(),
     leftover=None,
+    extra_env=None,
 ):
     """
     Run the runner once; return (exit code, summary file, heartbeats).
@@ -137,6 +141,7 @@ def _run(
         past the retention.
     :param leftover: A report an earlier run left in both suite copies'
         ``report/``, at the target and here.
+    :param extra_env: Further variables in the runner's own environment.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -178,6 +183,7 @@ def _run(
         "STUB_SUITE_RC": str(suite_rc),
         "STUB_PINGS": str(tmp_path / "pings"),
         "STUB_SSH_ARGS": str(tmp_path / "ssh-args"),
+        "STUB_ORIGIN_ENV": str(tmp_path / "origin-env"),
         "STUB_SLEEPS": str(tmp_path / "sleeps"),
     }
     if cdn is not None:
@@ -215,6 +221,7 @@ def _run(
         (target / "report" / "pentest-report.json").write_text(json.dumps(leftover))
     if release is not None:
         env["STUB_RELEASE"] = release
+    env.update(extra_env or {})
     result = subprocess.run(
         ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
     )
@@ -380,6 +387,59 @@ def test_the_header_goes_to_the_local_cdn_run_and_never_to_the_target(tmp_path):
     assert "MASCOPE_PENTEST_VANTAGE=origin" in ssh_args
     assert HEADER_VALUE not in ssh_args
     assert "X-Assessment" not in ssh_args
+
+
+def test_the_current_release_goes_to_both_suites(tmp_path):
+    # The report's copy of the lag needs the release the runner looked up, so
+    # the lookup happens before either run.
+    rc, summary, _ = _run(
+        tmp_path, report=_report(), release=_tag("v1.7.10"), cdn=_report()
+    )
+    assert rc == 90
+    assert summary.endswith("lag=behind current=v1.7.10")
+    assert "MASCOPE_PENTEST_CURRENT_RELEASE='v1.7.10'" in (
+        (tmp_path / "ssh-args").read_text()
+    )
+    assert (tmp_path / "origin-env").read_text().split() == ["release=v1.7.10"]
+    assert "release=v1.7.10" in (tmp_path / "cdn-env").read_text().splitlines()
+
+
+@pytest.mark.parametrize(
+    "release",
+    [
+        None,
+        "{not json",
+        _tag("nightly"),
+        # Anything that is not a release tag stays off the target's command
+        # line, a quote that would end the assignment included.
+        _tag("v1.7.10' && touch pwned && echo '"),
+    ],
+    ids=["unreachable", "malformed", "non-release", "injection"],
+)
+def test_no_current_release_goes_to_the_suites_without_a_release_tag(tmp_path, release):
+    rc, summary, _ = _run(tmp_path, report=_report(), release=release, cdn=_report())
+    assert rc == 0
+    assert "lag=unknown" in summary
+    ssh_args = (tmp_path / "ssh-args").read_text()
+    assert "MASCOPE_PENTEST_CURRENT_RELEASE" not in ssh_args
+    assert "pwned" not in ssh_args
+    assert not (tmp_path / "target" / "pwned").exists()
+    assert (tmp_path / "origin-env").read_text().split() == ["release=<unset>"]
+    # Set empty, not left unset, so nothing inherited can stand in for it.
+    assert "release=" in (tmp_path / "cdn-env").read_text().splitlines()
+
+
+def test_a_release_in_the_environment_does_not_stand_in_for_the_lookup(tmp_path):
+    rc, _, _ = _run(
+        tmp_path,
+        report=_report(),
+        cdn=_report(),
+        extra_env={"MASCOPE_PENTEST_CURRENT_RELEASE": "v1.7.2"},
+    )
+    # The CDN suite runs here and would inherit an exported value. (The
+    # origin's would not: ssh carries no environment, only the stub does.)
+    assert rc == 0
+    assert "release=" in (tmp_path / "cdn-env").read_text().splitlines()
 
 
 def test_a_failing_cdn_run_fails_the_run(tmp_path):
