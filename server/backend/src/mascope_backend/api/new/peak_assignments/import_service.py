@@ -67,10 +67,12 @@ from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_samp
 from mascope_backend.api.controllers.samples.lib.samples_peaks import extract_peaks
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import (
+    ApiException,
     DuplicateException,
     NotFoundException,
 )
 from mascope_backend.api.new.peak_assignments.admission import (
+    CLAIM_HELD_CODE,
     assignment_claim,
     in_flight_run_id,
 )
@@ -831,11 +833,31 @@ async def import_assignment_run(
     # requests; this is the part that spans processes.
     async with assignment_claim("sample", sample_item_id) as acquired:
         if not acquired:
-            raise DuplicateException(
+            raise _claim_held(
+                sample,
                 f"Another peak assignment operation is in progress for sample "
-                f"'{sample.sample_item_name}'. Retry when it has finished."
+                f"'{sample.sample_item_name}'. Retry when it has finished.",
             )
         return await _import_chunk(sample, body, user_id, allow_reserved_engine)
+
+
+def _claim_held(sample, message: str) -> ApiException:
+    """The 409 for a request another one holds the sample's claim against.
+
+    Coded, so a client can tell it from the 409s over the run's state: this
+    one applied nothing, and the same request goes through once the other
+    finishes. An import's append retried after a timeout meets exactly this
+    while its first attempt is still running, and resends the same chunk.
+
+    :param sample: The sample whose claim is held.
+    :param message: What went wrong, for a person.
+    :return: The exception to raise.
+    """
+    return ApiException(
+        message,
+        {"code": CLAIM_HELD_CODE, "sample_item_id": sample.sample_item_id},
+        409,
+    )
 
 
 async def _import_chunk(
@@ -1094,9 +1116,10 @@ async def abandon_import_run(sample_item_id: str, peak_assignment_run_id: str) -
     sample = await fetch_sample(sample_item_id)
     async with assignment_claim("sample", sample_item_id) as acquired:
         if not acquired:
-            raise DuplicateException(
+            raise _claim_held(
+                sample,
                 f"A peak assignment request is in flight for sample "
-                f"'{sample.sample_item_name}'. Retry when it has finished."
+                f"'{sample.sample_item_name}'. Retry when it has finished.",
             )
         return await _abandon_run(sample, peak_assignment_run_id)
 

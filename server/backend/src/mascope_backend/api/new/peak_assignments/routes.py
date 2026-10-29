@@ -788,7 +788,10 @@ async def import_assignment_run_route(
     Returns 403 when peak assignment is not enabled for this environment, 409
     when another run for this sample is still in flight (naming it) or a chunk
     arrives out of order, 413 when one request's body exceeds the byte cap, and
-    422 when the payload is well-formed but refused.
+    422 when the payload is well-formed but refused. A 409 with the code
+    `assignment_claim_held` applied nothing: another request on this sample was
+    still running, and the same request goes through once it finishes - the one
+    a retried chunk meets while its first attempt is still being applied.
 
     :param sample_item_id: The unique identifier of the sample.
     :param body: The run metadata and this chunk's assignment rows.
@@ -825,7 +828,9 @@ async def abandon_import_run_route(
 
     Deliberately restricted to runs in `importing`: a completed run is ledger
     data, and removing that is retention's business rather than a client's.
-    Anything else is refused with 409.
+    Anything else is refused with 409, as is a delete that meets another
+    request on this sample still running (code `assignment_claim_held`, which
+    goes through once that one finishes).
 
     Returns 403 when peak assignment is not enabled for this environment.
 
