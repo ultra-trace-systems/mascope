@@ -16,6 +16,7 @@ reported a failed sample; a stitched sample's segments are listed per sample.
 import datetime as dt
 import io
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -374,6 +375,35 @@ async def test_an_empty_batch_is_an_empty_table_with_the_columns(stores):
 
     assert rows == []
     assert meta["samples"] == [] and meta["failures"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_table_is_built_off_the_event_loop(stores):
+    # A large batch's rows, with their matches, take minutes to build: done on
+    # the loop, every other request on the worker would wait for them
+    loop_thread = threading.get_ident()
+    built_on: dict[str, list[int]] = {"_as_table": [], "_parquet": []}
+
+    def on_its_thread(name):
+        real = getattr(batch_peak_table, name)
+
+        def recorded(*args, **kwargs):
+            built_on[name].append(threading.get_ident())
+            return real(*args, **kwargs)
+
+        return patch.object(batch_peak_table, name, recorded)
+
+    matches = AsyncMock(side_effect=lambda _s, _i, ids, **_: [[] for _ in ids])
+    with (
+        on_its_thread("_as_table"),
+        on_its_thread("_parquet"),
+        patch.object(batch_peak_table, "query_peak_matches", matches),
+    ):
+        rows, _ = await table(matches=True)
+
+    assert {row["sample_item_id"] for row in rows} == {"si_1", "si_2", "si_3"}
+    assert len(built_on["_as_table"]) == 3 and len(built_on["_parquet"]) == 1
+    assert loop_thread not in built_on["_as_table"] + built_on["_parquet"]
 
 
 @pytest.mark.asyncio

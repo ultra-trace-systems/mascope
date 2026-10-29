@@ -149,6 +149,7 @@ async def _sample_table(
         "height": peaks.heights or [],
         "is_satellite": peaks.satellite or [False] * count,
     }
+    per_peak = None
     if matches:
         per_peak = await query_peak_matches(
             sample.sample_item_id,
@@ -156,9 +157,22 @@ async def _sample_table(
             peaks.peak_ids,
             instrument_type=sample.instrument_type,
         )
-        columns = _one_row_per_match(columns, per_peak)
-    table = pa.Table.from_pydict(columns, schema=table_schema(matches=matches))
+    # Off the event loop: a few thousand peaks with their matches take long
+    # enough to expand and convert that every other request on the worker
+    # would wait for them
+    table = await asyncio.to_thread(_as_table, columns, per_peak)
     return table, segments.described if segments else None
+
+
+def _as_table(
+    columns: dict[str, list[Any]], per_peak: list[list[dict]] | None
+) -> pa.Table:
+    """A sample's columns as a table, one row per match where ``per_peak``
+    gives each peak's matches."""
+    matches = per_peak is not None
+    if matches:
+        columns = _one_row_per_match(columns, per_peak)
+    return pa.Table.from_pydict(columns, schema=table_schema(matches=matches))
 
 
 def _one_row_per_match(
@@ -259,23 +273,26 @@ async def build_batch_peak_table(
         segments[sample.sample_item_id] = sample_segments
         read_samples.append({**where, "rows": table.num_rows})
 
-    schema = table_schema(matches=matches)
+    said = {
+        "version": TABLE_VERSION,
+        "sample_batch_id": sample_batch_id,
+        "samples": read_samples,
+        "failures": failures,
+        "segments": segments,
+    }
+    # Off the event loop too: stacking and compressing a few thousand
+    # samples' rows takes seconds
+    return await asyncio.to_thread(
+        _parquet, tables, table_schema(matches=matches), said
+    )
+
+
+def _parquet(tables: list[pa.Table], schema: pa.Schema, said: dict) -> bytes:
+    """The samples' tables stacked into one Parquet file, ``said`` in its
+    metadata."""
     table = (
         pa.concat_tables(tables) if tables else schema.empty_table()
-    ).replace_schema_metadata(
-        {
-            METADATA_KEY: json.dumps(
-                {
-                    "version": TABLE_VERSION,
-                    "sample_batch_id": sample_batch_id,
-                    "samples": read_samples,
-                    "failures": failures,
-                    "segments": segments,
-                },
-                default=str,
-            ).encode()
-        }
-    )
+    ).replace_schema_metadata({METADATA_KEY: json.dumps(said, default=str).encode()})
     buffer = io.BytesIO()
     pq.write_table(table, buffer, compression="zstd")
     return buffer.getvalue()
