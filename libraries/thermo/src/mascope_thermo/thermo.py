@@ -930,6 +930,72 @@ def get_centroids(
         return backend.average_centroids(indices, ppm=ppm, average=average)
 
 
+def get_centroid_flag_shares(
+    datafile_path: str,
+    masses: np.ndarray,
+    resolutions: np.ndarray,
+    flag: str = "exception",
+    t_min: float | None = None,
+    t_max: float | None = None,
+    polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
+) -> np.ndarray:
+    """The share of each averaged peak's per-scan centroids that carry a flag.
+
+    Over the scans :func:`get_centroids` averages for the same selection, it
+    counts the centroids each scan stores within half a width of each peak's
+    m/z, and of them those carrying ``flag``. The centroids are every one a
+    scan stores (``ReaderBackend.centroid_masses``), the flagged ones
+    included, which the averaged centroids pool too: the instrument's flag on
+    a centroid is a statement about one scan, and this is how the scans
+    averaged into a peak voted.
+
+    Read one scan at a time, so a long acquisition is never held whole.
+
+    :param datafile_path: Path to the Thermo Fisher raw file (.raw).
+    :param masses: The averaged peaks' m/z, as :func:`get_centroids` gives
+        them: on the axis the scans recorded.
+    :param resolutions: Each peak's resolution (m/z over its FWHM).
+    :param flag: The name of a centroid flag
+        (:data:`mascope_thermo.backend.CENTROID_FLAGS`).
+    :param t_min: Minimum time [s], as for :func:`get_centroids`.
+    :param t_max: Maximum time [s], as for :func:`get_centroids`.
+    :param polarity: Polarity of the scans, as for :func:`get_centroids`.
+    :param stream: Key of the scan stream, as for :func:`get_centroids`.
+    :return: One share per peak, NaN where no centroid falls within its width
+        or the width is unknown.
+    :raises ValueError: If ``flag`` is not a flag's name.
+    """
+    bit = centroid_flag_mask([flag])
+    masses = np.asarray(masses, dtype=np.float64)
+    resolutions = np.asarray(resolutions, dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        half_width = np.where(resolutions > 0, masses / resolutions / 2, np.nan)
+    known = np.isfinite(half_width)
+    lower = masses[known] - half_width[known]
+    upper = masses[known] + half_width[known]
+    total = np.zeros(lower.size, dtype=np.int64)
+    flagged = np.zeros(lower.size, dtype=np.int64)
+    with open_backend(datafile_path) as backend:
+        indices = backend.scan_indices(
+            polarity=polarity, t_min=t_min, t_max=t_max, stream=stream
+        )
+        for scan in indices:
+            scan_masses = backend.centroid_masses(scan)
+            order = np.argsort(scan_masses, kind="stable")
+            scan_masses = scan_masses[order]
+            carries = (backend.centroid_flags(scan)[order] & bit) != 0
+            first = np.searchsorted(scan_masses, lower, side="left")
+            last = np.searchsorted(scan_masses, upper, side="right")
+            carried = np.concatenate(([0], np.cumsum(carries)))
+            total += last - first
+            flagged += carried[last] - carried[first]
+    shares = np.full(masses.size, np.nan)
+    counted = total > 0
+    shares[np.flatnonzero(known)[counted]] = flagged[counted] / total[counted]
+    return shares
+
+
 def get_centroids_per_scan(
     datafile_path: str,
     t_min: float | None = None,
