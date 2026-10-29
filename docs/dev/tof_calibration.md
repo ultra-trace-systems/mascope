@@ -13,11 +13,11 @@ in the Linear project
 this note is its record.*
 
 **Status.** Milestone 0 (measure) is done: the assessment that started the project, the audit
-tool and the fleet baseline (section 2). One instrument's calibrant set has been corrected, and
-TOF M's were measured and kept (milestone 1). Of the node's changes (milestone 2), the record that
-says what a fit was made on is in (MAS-182); the rest are still to come. Sites are named by letter
-and instruments by neutral labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this
-repository.
+tool and the fleet baseline (section 2). Of the calibrant sets (milestone 1), TOF H's has been
+corrected, and TOF M's and site B's were measured and kept. Of the node's changes (milestone 2),
+the record that says what a fit was made on is in (MAS-182); the rest are still to come. Sites
+are named by letter and instruments by neutral labels (TOF H, TOF M, B1–B3) throughout, as
+everywhere in this repository.
 
 ## 1. The problem
 
@@ -332,6 +332,145 @@ and B2 have most of their strong peaks
 ([#2464](https://github.com/ultra-trace-systems/mascope/issues/2464)). The axes of B1's ambient
 mode and of B2's second ambient/zero mode (#2463).
 
+### Site B's calibrant sets on 2026-10-29
+
+A screen of site B's five nitrate and bromide modes for calibrants above the top of their sets
+(MAS-180). It ran read-only on the site, release v1.13.0, through the database's read-only role,
+with the audit code of develop at `46e303c5e`. Per mode it read two files a day over the 60 days
+2026-08-30 to 10-28 (*sampled*), every file of one recent day (*day*), and the files parked at
+`calibration_failed`. That is 711 files.
+
+- Each file was refit under its mode's collection, and under the collection with the passing
+  candidates added, on the axis the file carries. On the day runs every refit reproduced the
+  stored fit but one. Over the 60 days, 90 of B1 bromide's 102 and 28 of B2 bromide's 112 stored
+  fits had kept other points; the numbers below are the refit's.
+- Cells give the sampled run, then the day run in parentheses, in ppm.
+
+**The rules.** A candidate passes when it passes all six, in each run:
+
+- *presence*: all its lines on peaks of S/N ≥ 10 in at least 90% of the files;
+- *stable*: the IQR of its offset over the files at most 3 ppm;
+- *neighbour*: a peak of a tenth of its intensity within one FWHM in at most 10% of the files;
+- *¹³C*: the ¹³C line of the peak 1 Da below moves its centroid by more than 1 ppm in at most 10%
+  of the files;
+- *side ion*: in at most 10% of the files does another ion of its compound read more than 3 ppm
+  off while the 15 ppm rule would keep it;
+- *agrees*: its median offset within 2 ppm, or its IQR, of the other passing candidates within a
+  factor 1.5 in m/z; within 5 ppm of the axis where there are fewer than two of those.
+
+The candidates were the CcHhOo members under each mechanism of the mode in at least half the
+sampled files, from 150 Th up, and named ions: HSO4−·(H2SO4)n, n = 0–3; HSO4−·HNO3 and
+(HNO3)3·NO3− (251 Th) in the nitrate modes; Br3−, Br−·(H2O)n, n = 1–4, Br−·HNO3 and Br−·H2SO4 in
+the bromide modes.
+
+**No ion above a set's top calibrant passes, in any mode.** All five sets stay as they are, on the
+plan owner's word (MAS-584).
+
+- HSO4−·(H2SO4)n are absent on all three instruments. HSO4− itself is in 0–9% of the files, and
+  in 67% of B2 nitrate's, where it reads +7 ppm with an IQR of 12.
+- (HNO3)3·NO3− (251 Th) and Br−·H2SO4 (179 Th) are absent, or in at most 3% of the files. Where a
+  line is matched at 251 Th in the bromide modes it reads +70 ppm: a neighbour, as in the
+  baseline.
+- Br3− (241 Th) already tops both bromide sets, and Br−·HNO3 is already in B2's.
+- Above the top only CHO members are left. None passes on B1 or B3. On B2 nitrate four pass, at
+  164–234 Th, and they fail on new files (below).
+
+| Instrument, mode | Calibrant span, Th (points) | Strong peaks to | Its calibrants | Passes above the top |
+| -- | -- | --: | -- | -- |
+| B1, bromide | 79–241 (8) | 500 | −3.4 to +4.7; Br−·(H2O)2–4 −6 to −7, held out | none |
+| B1, nitrate | 62–125 (3) | 500 | −5.1 to +3.9 | none |
+| B2, bromide | 62–241 (8–10) | 700 | within ±2 from 79 Th; NO3− +5.2 | none; Br−·H2O, inside the span |
+| B2, nitrate | 62–188 (3) | 700 | −1.1 to +0.6 | four CHO adducts, 164–234 Th |
+| B3, nitrate | 62–188 (3) | 500 | −1.5 to +2.5 | none |
+
+- **B1 bromide.** Br− reads +4.7 (+4.2), Br−·H2O −3.4 (−3.2), Br2− −1.5 (−1.9), Br3− +2.2
+  (+1.8). Br−·(H2O)2–4 at 115–151 Th, held out, read −6 to −7. That bow is the two-parameter
+  model's (MAS-183), not the set's. Br−·(H2O)2–4 are in 94–100% of the files but lie below the
+  top. Seven CHO members are in 51–86% of the files. The bromide adducts among them, at
+  205–259 Th, read +19 to +24 ppm: they are other ions.
+- **B1 nitrate.** NO3− reads +3.9, H2NO4− −5.1, HN2O6− +1.3. The 188 Th trimer is kept in 12% of
+  the sampled files and in none of the day's 48. Its 23 CHO members read −21 to +21, with IQRs of
+  5–16. Most NO3− adducts read high and most [M−H]− ions low, so they are no yardstick.
+- **B2 bromide.** Everything from 79 to 241 Th reads within ±2; NO3− reads +5.2 at 62 Th. Br−·H2O
+  (97 Th) passes every rule (below). No CHO member passes.
+- **B2 nitrate.** The three ions read +0.6, −1.1 and +0.5. Held out, NO3− adducts at 164–234 Th
+  read +0.8 to +1.9 (+1.1 to +2.1). Ions at 248–294 Th that miss a rule read −1.0 to +2.5 (−3.6
+  to +4.8, IQR up to 16). So today's set holds the axis within ±2.1 ppm to 234 Th, and within
+  ±5 ppm to 294 Th as far as those ions read it.
+- **B3 nitrate.** −1.5, +2.5 and −1.2. Nothing passes. The strongest NO3− adducts at 224–260 Th
+  read +5 to +11 on the day, while their [M−H]− ions at 161–197 Th read −8 to −1: the pairs
+  disagree.
+
+**How a new file is calibrated.** Each file was also calibrated as the pipeline calibrates a new
+one: from the converter's axis, in up to seven attempts that double the tolerance and widen the
+refine window (15/100 ppm first, 240/241 on the fifth), judged by the quality bar. *Converter's
+axis*: its median offset before any fit. *Attempt*: the attempt that fits, under today's set, as
+counts of files.
+
+| Instrument, mode | Converter's axis, ppm | Attempt that fits | Clears the bar | Kept another peak |
+| -- | --: | -- | -- | -- |
+| B1, bromide | +88 (+60) | 1 in 83, 4 in 19 of 102 (1) | all | 10 of 102 (1 of 24) |
+| B1, nitrate | +87 (+61) | 1 in 52, 4–5 in 50 of 102 (1) | all | none |
+| B2, bromide | +127 (+172) | 4–5 in 101 of 112 (5) | all | none |
+| B2, nitrate | +128 (+170) | 4–5 in 105 of 110 (5) | all; 2 of 112 have too few calibrant peaks | none |
+| B3, nitrate | −15 (−10) | 1 (1) | all | none |
+
+- B2's axis is further off than the first attempt's 100 ppm window in 101–103 of the 112 sampled
+  files, and in every file of the day. So a new B2 file is calibrated at a tolerance of 120 to
+  240 ppm. The site's records agree: 67% of B2 bromide's and 82% of B2 nitrate's fits in the
+  window were made at 240 ppm.
+- Today's sets still land exactly on B2, because their ions have no neighbour inside those
+  windows.
+
+**B2 nitrate, the rules' proposal.** Four compounds: C3H4O4, C4H6O3, C7H10O4 and C8H12O4. Their
+NO3− adducts at 164–234 Th are in 91–100% of the files, with an IQR of 2.5 ppm at most. Refit on
+the axis the files carry, the set keeps 8–11 points to 234 Th and moves the 200–300 Th band from
++1.8 (+2.2) to +0.4 (+0.3) ppm.
+
+- **It fails on new files.** On the day, all 33 files were fitted on the first attempt, on wrong
+  peaks between 157 and 234 Th, 233 ppm off, and every one cleared the quality bar. Over the 60
+  days, 20 of 111 files kept a wrong peak, and the bar flagged 13
+  ([#2776](https://github.com/ultra-trace-systems/mascope/issues/2776)).
+- On the day, the compounds' [M−H]− ions at 101–171 Th are kept off the axis in 18–70% of the
+  files: a compound brings an ion for every mechanism of the mode (MAS-186).
+- **The lean pair**, C3H4O4 and C7H10O4 (6–7 points to 220 Th), lands where it should. It gains up
+  to 1.3 ppm at 200–300 Th but costs 0.8–1.3 ppm at NO3−, and 6 of the day's 33 files and 4 of
+  111 sampled miss the bar (`residual`).
+- B2's and B3's nitrate collections hold the same three compounds, and each is used by two modes:
+  most likely they are one collection. An edit for B2 would reach B3, where these ions fail the
+  rules.
+
+**B2 bromide, H2O.** It adds Br−·H2O at 97 and 99 Th, inside the span. It is in every file at +0.1
+to +0.2 ppm (IQR at most 1.0) and passes every rule in both runs, taking the fit from 8 to 10
+points (10 to 12 on the day). New files fit on the same attempts, all clear the bar and none keeps
+another peak. No line moves by more than 0.1 ppm, so it was not added.
+
+**The parked files.** 954 B2 files are at `calibration_failed`, from 2026-09-24 to 10-24, B2's
+last file (804 at the baseline's count).
+
+- 950 are in one ambient/zero mode and 4 in the other. Each has the same reason: the mode has no
+  calibration collection. The file keeps the converter's record, and the pipeline matches no file
+  on that.
+- B2's nitrate and bromide modes have no parked file, so no set changes the count. All 954 stay
+  parked until calibration transfer (MAS-187) gives them a neighbouring fit, as MAS-178 chose for
+  multi-scheme instruments.
+- B1 has two: one in its ambient mode, for the same reason, and one nitrate file with too few
+  calibrant peaks under every set.
+
+**Against the brief's check.**
+
+- *Each band up to the highest with strong peaks within ±5 ppm*: no set can meet it. No mode has a
+  reading above its top calibrant but B2 nitrate, which holds within ±2.1 ppm to 234 Th on
+  held-out ions. Inside its span B1 bromide misses ±5 ppm by the model's bow (MAS-183). Elsewhere
+  only two calibrants sit just outside: H2NO4− on B1 nitrate at −5.1 and NO3− on B2 bromide at
+  +5.2.
+- *The `calibration_failed` count on B2's new files drops to its explained remainder*: all 954 are
+  explained, and none is in a mode a set calibrates (MAS-187).
+
+**Not measured.** A reading of the axis above the top calibrant on B1, B3 and B2 bromide, and
+above 294 Th on B2 nitrate. Why most files of B2's other ambient/zero mode, and of B1's, end
+`done`: the screen reads no file of a mode without a collection.
+
 ## 3. How TOF calibration works today
 
 The node is `TofCalibrationHandler` in
@@ -520,8 +659,12 @@ Configuration on the sites, applied on the plan owner's word and measured before
   | 278 | NO3−·C10H16O5, not in the fit | 0.0 (+1.4) | −0.5 (0.0) |
   | 312 | NO3−·C10H18O7, not in the fit | +0.9 (+2.3) | +0.9 (+1.4) |
   | 300–500 | family | no reading | +1.5 [13] (no reading) |
-- **Site B**: nitrate and bromide sets for B1–B3, with spare points beyond the three-ion nitrate
-  series (MAS-180).
+- **Site B**: the nitrate and bromide sets of B1–B3 stay as they are (MAS-180, done; the plan
+  owner's word in MAS-584). No ion above any set's top calibrant passes the rules: section 2,
+  "Site B's calibrant sets on 2026-10-29". B2's nitrate set already holds within ±2.1 ppm to
+  234 Th; the only ions that reach further fit new files on wrong peaks (#2776). B1 bromide's bow
+  needs the three-parameter model (MAS-183), not a set. Reaching the top of these axes would take
+  a calibrant dosed into the inlet, a choice for the lab.
 - **Modes without calibrants** (site B ambient and zero): a decision (section 5).
 - **How to choose calibrants**: a section in the user docs on the four ways a set goes wrong
   (it stops below the analysed range; a calibrant merges with an unresolved CHO neighbour, O
@@ -602,7 +745,7 @@ the answers.
   runs and exports made on the old axis, what customers hear and when, and how long the previous
   parameters are kept. *Leaning:* section 6.
 - **Calibrant sets per instrument** (milestone 1) are applied on the plan owner's word, one
-  instrument at a time.
+  instrument at a time. *Decided* for site B: keep all five nitrate and bromide sets (MAS-584).
 - Related, in the assignment quality plan ([`assignment_quality_plan.md`](assignment_quality_plan.md)):
   the calibrant cap and the offset term live in the same node and the same quality block (MAS-53,
   MAS-145); the cap's TOF default is off.
@@ -621,8 +764,10 @@ its parameters.
 **Readiness** (MAS-193). A read-only census per site: files per instrument × mode × record kind ×
 month; whether the oldest files still hold the stores a refit needs (`peak_timeseries.zarr` with a
 `tof` coordinate, `sum_signal.zarr`) in the current format; every file classed as refit-ready,
-needs re-detection first, or has no peaks; why 804 B2 files are parked at `calibration_failed`;
-which files have no sample item and so no mode. The table comes here.
+needs re-detection first, or has no peaks; which files have no sample item and so no mode. The
+table comes here. Why B2's files are parked at `calibration_failed` is known: all 954 by
+2026-10-24 are in its two ambient/zero modes, which have no calibrant collection (section 2), and
+they wait for calibration transfer (MAS-187).
 
 **The runner** (MAS-195), in `tooling/` beside the audit tool, on the pattern of the paced
 re-process driver of the composite-cut rollout (MAS-90: 7,358 files on one site in ten hours):
