@@ -12,12 +12,60 @@ route instead
 ([Importing an engine's batch result](../how-it-works/peak-assignment.md#importing-an-engines-batch-result)).
 
 The route is `POST /api/peak-assignments/sample/{sample_item_id}/runs/import`.
-The SDK does not wrap it yet; call it with an API token the way
+The SDK wraps it as `mascope.peak_assignments.import_run` (below); another
+client calls it with an API token the way
 [Calling the API directly](index.md#calling-the-api-directly) describes. It
 needs the **editor** role in the sample's workspace, and a server with peak
 assignment switched on (403 otherwise). A blank sample is refused, as it is
 for an in-app run, and so is a sample with another run in flight (409, naming
 the run).
+
+## From the SDK
+
+`import_run` takes the rows as a DataFrame, one row per peak in the fields of
+[A row](#a-row), and keeps to the rest of this page itself: it picks the
+`import_id`, sizes the requests from the caps, follows the row offset the
+server reports, and returns the new run's id.
+
+```python
+run_id = mascope.peak_assignments.import_run(
+    sample_id,
+    rows,
+    engine="my-engine",
+    engine_version="0.3.1",
+    tier_bands={"assigned": 0.75, "candidate": 0.45},
+    calibration={"method": "none"},
+)
+```
+
+- It checks the frame before anything is sent, and raises
+  `ImportValidationError` naming the column and the rows: a missing required
+  field, a value outside a vocabulary, a peak twice, an owner that is not a
+  row of the frame, a NaN in `sample_peak_mz` or `sample_peak_intensity`. A
+  NaN anywhere else is sent as null.
+- Where the frame has a `tier` column, a row stating a tier its bare
+  `fit_score` cannot reach is refused there too. The evidence is never above
+  the fit. Any other disagreement is the server's to find.
+- An `adduct` column of notations (`[M+H]+`) fills in
+  `ionization_mechanism_id` where a row has none: the one mechanism the server
+  lists under exactly that notation, else null.
+- A frame read with `get()` imports as it is. Its `tier` goes as
+  `engine_tier`, where the frame has none, and the server derives the tier
+  again. Its owner links go from `iso_child` rows only.
+- The first request and the last are sent once. If an answer is lost, the
+  error says where the run would show. A request that meets the sample's
+  claim (below) waits and goes again.
+- A request refused after the run was created deletes the run before the
+  error is raised, and so does a request between that goes unanswered on
+  every try. So such an import leaves nothing `importing`.
+  `abandon_import(sample_id, run_id)` deletes one that a lost answer left.
+- A frame well short of the sample's latest completed run is published with
+  a warning, for the reason under
+  [What an import replaces](#what-an-import-replaces-and-what-it-keeps).
+
+The tutorial notebook `11_assignment_round_trip.ipynb` takes a sample through
+the whole loop: its peaks out, a small engine, the import, the run read back,
+and a comparison with Mascope's own run on the sample.
 
 ## The request
 
@@ -121,8 +169,15 @@ inside an applied chunk, is a 409, and the client resynchronises from the last
 minting a second one. Re-sending the finalizing chunk returns the original
 success without folding the batch a second time.
 
-A 409's body is prose, not data. Recover state rather than parse it: the
-in-flight run and its id are in the run listing
+**One request at a time per sample.** Each request takes the sample's claim
+while it runs. A request that meets another one still running is refused with
+a 409 whose `detail.code` is `assignment_claim_held`; it applied nothing, and
+the same request goes through once the other finishes. A chunk retried after
+a timeout meets exactly this while its first attempt is still being applied:
+wait, and send the same chunk again.
+
+Any other 409's body is prose, not data. Recover state rather than parse it:
+the in-flight run and its id are in the run listing
 (`GET /api/peak-assignments/sample/{id}/runs`, which lists runs of every
 status), and the accepted row count is in the last response the client saw.
 

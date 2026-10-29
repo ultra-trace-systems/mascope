@@ -8,14 +8,19 @@ composition against a sample (see ``docs/dev/sdk_peak_assignment.md``).
 Reads the verification verdicts of one sample, or of a whole batch or
 dataset in one request.
 
+Publishes a run an engine outside Mascope computed, with
+:meth:`PeakAssignmentsResource.import_run`.
+
 The two writes, :meth:`PeakAssignmentsResource.assign` and
 :meth:`PeakAssignmentsResource.verify`, are sent once and never again on a
 lost answer: a verdict sent twice is two labels in the confidence
-calibration, and a launch sent twice is refused as already in flight.
+calibration, and a launch sent twice is refused as already in flight. So are
+the first and the last request of an import.
 """
 
 import time
-from collections.abc import Mapping
+import uuid
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any, TypedDict
 
@@ -28,12 +33,15 @@ from ..exceptions import (
     AssignmentRunError,
     AssignmentTimeoutError,
     ConflictError,
+    ImportValidationError,
     MascopeAPIError,
     MascopeConnectionError,
+    MascopeError,
     SampleIneligibleError,
     ServerError,
     ValidationError,
 )
+from . import _assignment_import as _import
 from ._base import (
     BaseResource,
     Needs,
@@ -55,6 +63,21 @@ TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 #: tells it apart from a request body it could not read (also 422).
 SAMPLE_INELIGIBLE_CODE = "sample_ineligible"
 
+#: The code the server gives a 409 that refused a request only because another
+#: request on the sample was still running: nothing was applied, and the same
+#: request goes through once that one finishes.
+CLAIM_HELD_CODE = "assignment_claim_held"
+
+#: How a server from before :data:`CLAIM_HELD_CODE` ends that 409's message,
+#: and no other.
+_CLAIM_HELD_PROSE = "Retry when it has finished."
+
+#: Times a request the claim refuses is sent in all, and the seconds between
+#: two sends: doubling from the first, up to the last. About five minutes in
+#: all, which outlasts the slowest chunk a server applies.
+CLAIM_ATTEMPTS = 20
+CLAIM_PAUSES = (2.0, 15.0)
+
 #: The role the two writes need, and the switch they need on the server.
 _EDITOR = "editor on the sample, on a server with peak assignment enabled"
 
@@ -63,6 +86,11 @@ DEFAULT_POLL_INTERVAL = 5.0
 
 #: Default seconds to wait for a launched run before handing back its id.
 DEFAULT_WAIT_TIMEOUT = 1800.0
+
+#: An import whose frame holds fewer rows than this share of the sample's
+#: latest completed run is warned about: the batch ledger takes the sample's
+#: whole contribution from the newest run, so the peaks left out leave it.
+COVERAGE_WARNING_SHARE = 0.9
 
 
 class AssignmentConfig(TypedDict, total=False):
@@ -98,6 +126,48 @@ class AssignmentConfig(TypedDict, total=False):
     candidate_threshold: float
 
 
+def _is_lost(error: Exception) -> bool:
+    """Whether a write's answer was lost, rather than the write refused."""
+    if isinstance(error, MascopeConnectionError):
+        return True
+    return isinstance(error, ServerError) and error.status_code in (502, 503, 504)
+
+
+def _latest_completed(runs: pd.DataFrame | None) -> pd.Series | None:
+    """The newest completed run of a :meth:`~PeakAssignmentsResource.list_runs`
+    frame, which is the one a ledger read without a run id reads."""
+    if runs is None:
+        return None
+    completed = runs[runs["status"] == "completed"]
+    if completed.empty:
+        return None
+    return completed.sort_values(
+        "peak_assignment_run_utc_created", ascending=False
+    ).iloc[0]
+
+
+def _is_claim_held(error: ConflictError) -> bool:
+    """Whether a 409 refused a request only because another one was running.
+
+    By the code; a server from before the code says it in its message alone.
+    """
+    if error.code is not None:
+        return error.code == CLAIM_HELD_CODE
+    return error.message.endswith(_CLAIM_HELD_PROSE)
+
+
+def _extended(error: Exception, extra: str) -> Exception:
+    """The same kind of error as *error*, *extra* added to its message."""
+    if isinstance(error, MascopeConnectionError):
+        return type(error)(f"{error.message} {extra}", url=error.url)
+    return type(error)(
+        f"{error.message} {extra}",
+        status_code=error.status_code,
+        url=error.url,
+        body=error.body,
+    )
+
+
 def _answer_lost(error: Exception, what: str) -> Exception:
     """The error of a write whose answer did not arrive, saying so.
 
@@ -111,17 +181,11 @@ def _answer_lost(error: Exception, what: str) -> Exception:
     :return: The same kind of error, its message extended; *error* itself
         when it is not a lost answer.
     """
-    hint = f"The server may have carried it out: {what} before sending it again."
-    if isinstance(error, MascopeConnectionError):
-        return type(error)(f"{error.message} {hint}", url=error.url)
-    if isinstance(error, ServerError) and error.status_code in (502, 503, 504):
-        return type(error)(
-            f"{error.message} {hint}",
-            status_code=error.status_code,
-            url=error.url,
-            body=error.body,
-        )
-    return error
+    if not _is_lost(error):
+        return error
+    return _extended(
+        error, f"The server may have carried it out: {what} before sending it again."
+    )
 
 
 class PeakAssignmentsResource(BaseResource):
@@ -1066,6 +1130,396 @@ class PeakAssignmentsResource(BaseResource):
         if not data:
             return None
         return _coerce_utc_columns(_coerce_datetime_columns(pd.DataFrame(data)))
+
+    def import_run(
+        self,
+        sample_id: str,
+        df: pd.DataFrame,
+        *,
+        engine: str,
+        engine_version: str,
+        tier_bands: Mapping[str, float],
+        calibration: Mapping[str, Any],
+        config: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Publish an assignment run an engine outside Mascope computed.
+
+        The run lands beside the sample's other runs: the same ledger, the
+        same run selector and the same batch fold-in as a run this server
+        computed, stamped with *engine*. The contract is the page
+        `Publishing an assignment run
+        <https://github.com/ultra-trace-systems/mascope/blob/master/docs/user/sdk/publishing-assignments.md>`_;
+        this method keeps to it, and checks the frame before anything is
+        sent.
+
+        The frame holds one row per peak, the peak's ``sample_peak_id`` and
+        ``role`` and its observed ``sample_peak_mz`` and
+        ``sample_peak_intensity`` at least, and any other column of a row:
+        ``sample_peak_tof``, ``assigned_formula``, ``ion_formula``,
+        ``ionization_mechanism_id``, ``isotope_label``, ``isotope_formula``,
+        ``source``, ``fit_score``, ``mz_error_ppm``, ``abundance_error``,
+        ``tier``, ``engine_tier``, ``target_compound_id``, ``target_ion_id``,
+        ``owner_sample_peak_id``, ``alternatives`` and ``provenance``. A
+        frame read with :meth:`get` is one: the columns the server computes
+        or looks up itself are left out, its ``owner_peak_assignment_id``
+        links are sent as ``owner_sample_peak_id`` from ``iso_child`` rows
+        (a reagent's isotope lines go without theirs), and its ``tier`` goes
+        as ``engine_tier`` where the frame states none, as the server
+        derives the tier again. Any other column is left out, with a
+        warning.
+
+        What is checked here, so that a refusal costs no upload:
+
+        - ``role``, ``source``, ``tier`` and ``engine_tier`` hold values of
+          their vocabularies (``identified`` is read as ``assigned``), and
+          ``fit_score`` lies in 0 to 1.
+        - Each peak has one row, and an ``owner_sample_peak_id`` names
+          another row of the frame, from an ``iso_child`` row, and not
+          another ``iso_child``.
+        - A NaN in a column that may be null is sent as null. In
+          ``sample_peak_mz`` or ``sample_peak_intensity`` it raises, naming
+          the rows: which number stands in for a missing one is the
+          caller's to say.
+        - **A ``tier`` column is better left out**: the server derives each
+          row's tier from its ``fit_score``, ``assigned_formula`` and the
+          run's *tier_bands*. Where the frame has one, a row stating a tier
+          its bare ``fit_score`` cannot reach is refused: the server reads
+          the tier off the evidence, which is the fit weighted by the
+          formula's plausibility and so never above it. A row the fit does
+          clear goes to the server, which has the last word. A tier the
+          engine reached by rules of its own goes in ``engine_tier``.
+
+        An ``adduct`` column, notations such as ``[M+H]+``, fills in
+        ``ionization_mechanism_id`` where a row has none: the mechanism of
+        ``mascope.ionization.list()`` with exactly that notation, and null
+        when no single one has it. A null loses nothing but the join, as the
+        adduct is in ``ion_formula``.
+
+        The rows go in as many requests as the server's caps call for, by
+        row count and by bytes. The first and the last are sent once and
+        not again on a lost answer, like :meth:`assign`; the ones between
+        may be sent again, as the server applies each row offset once. Any
+        request the server holds up behind another one on the sample (a 409
+        with the code ``assignment_claim_held``, which applied nothing) is
+        sent again once that one finishes. If the server refuses a request after
+        the run was created, or a request between goes unanswered on every
+        try, the run is deleted with its rows (:meth:`abandon_import`)
+        before the error is raised, so such an import leaves no run behind.
+
+        A frame with materially fewer rows than the sample's latest
+        completed run is published all the same, with a warning: the batch
+        ledger takes the sample's whole contribution from the newest run,
+        so the peaks it leaves out leave the batch overview.
+
+        :param sample_id: The ID of the sample.
+        :type sample_id: str
+        :param df: The run's rows, one per peak.
+        :type df: pd.DataFrame
+        :param engine: The engine's name, as the run selector shows it.
+            ``mascope``, ``mascope-copy`` and ``batch`` are the server's own.
+            Name the engine, not the build: runs are kept per engine.
+        :type engine: str
+        :param engine_version: The engine's version.
+        :type engine_version: str
+        :param tier_bands: The ``assigned`` and ``candidate`` thresholds the
+            engine tiered with, on the evidence scale.
+        :type tier_bands: Mapping[str, float]
+        :param calibration: What the engine calibrated against, as JSON of
+            its own. An import bypasses the sample's m/z verification, so
+            this goes on the record in its place; an engine that calibrated
+            nothing says so here.
+        :type calibration: Mapping[str, Any]
+        :param config: The engine's run configuration, stored as it is.
+            Keep the engine's own numbers for a row, such as its own
+            P(correct), in the row's ``provenance`` under
+            ``engine_provenance``: ``p_correct``, ``calibration`` and
+            ``corroboration`` at its top level are stripped, and
+            ``evidence`` and ``plausibility`` overwritten.
+        :type config: Mapping[str, Any], optional
+        :return: The new run's ``peak_assignment_run_id``, completed.
+        :rtype: str
+        :raises ImportValidationError: If the frame or the bands would be
+            refused, or cannot be sent; it names the column and the rows.
+            Nothing was sent.
+        :raises ConflictError: If the sample has a run in flight (409).
+        :raises ValidationError: If the server refused the import (422): a
+            peak the sample does not have, a mechanism of the wrong
+            polarity, a tier its evidence does not earn.
+        :raises PermissionDeniedError: Without the editor role on the
+            sample, or when the server has peak assignment switched off.
+        :raises MascopeConnectionError: If the answer to the first or the
+            last request was lost; it says where to look. If one between
+            went unanswered, it says whether the run was abandoned.
+
+        Example::
+
+            peaks = mascope.samples.get_peaks("sample-123", matches=False)
+            rows = my_engine.assign(peaks)  # one row per peak
+            run_id = mascope.peak_assignments.import_run(
+                "sample-123",
+                rows,
+                engine="my-engine",
+                engine_version="0.3.1",
+                tier_bands={"assigned": 0.75, "candidate": 0.45},
+                calibration={"method": "none"},
+            )
+            mascope.peak_assignments.get("sample-123", run_id=run_id)
+        """
+        bands = _import.normalise_bands(tier_bands)
+        if not isinstance(calibration, Mapping):
+            raise ImportValidationError(
+                "calibration must be a mapping: what the engine calibrated "
+                "against, or that it calibrated nothing."
+            )
+        rows, sizes, labels = _import.prepare_rows(
+            df, bands, self._client.ionization.list
+        )
+        head: dict[str, Any] = {"engine": engine, "engine_version": engine_version}
+        create = {
+            **head,
+            "tier_bands": bands,
+            "calibration": dict(calibration),
+            "config": None if config is None else dict(config),
+        }
+        chunk: dict[str, Any] = {
+            "run_id": None,
+            "import_id": uuid.uuid4().hex,
+            "index": 0,
+            "complete": False,
+        }
+        # The create carries the most besides its rows; a row that fits
+        # beside it fits beside any other request's.
+        budget = _import.MAX_BODY_BYTES - _import.body_bytes(
+            {**create, "chunk": {**chunk, "run_id": "x" * 32}, "rows": []}
+        )
+        _import.check_sizes(labels, sizes, budget)
+        self._warn_partial(sample_id, len(rows))
+
+        max_rows = _import.DEFAULT_MAX_ROWS
+        while True:
+            start = chunk["index"]
+            end = _import.chunk_end(sizes, start, max_rows, budget)
+            chunk["complete"] = end == len(rows)
+            body = {
+                **(create if chunk["run_id"] is None else head),
+                "rows": rows[start:end],
+                "chunk": dict(chunk),
+            }
+            state = self._send_import(sample_id, body)
+            chunk["run_id"] = state["peak_assignment_run_id"]
+            max_rows = int(state.get("max_rows_per_request") or max_rows)
+            if chunk["complete"] and state.get("run_status") == "completed":
+                logger.info(
+                    "Imported run '{}' into '{}': {} row(s)",
+                    chunk["run_id"],
+                    sample_id,
+                    state["rows"],
+                )
+                return chunk["run_id"]
+            # The next chunk starts where the server says the run ends, which
+            # is where this one did unless a retry got there first.
+            accepted = int(state["rows"])
+            if chunk["complete"] or not start < accepted <= len(rows):
+                self._abandon_stopped(sample_id, chunk["run_id"])
+                raise MascopeAPIError(
+                    f"Import run '{chunk['run_id']}' is "
+                    f"'{state.get('run_status')}' with {accepted} row(s) after "
+                    f"rows {start} to {end} of {len(rows)} were sent"
+                    f"{' to finish it' if chunk['complete'] else ''}; the "
+                    "import was abandoned."
+                )
+            if accepted != end:
+                logger.info(
+                    "Import run '{}' holds {} row(s), not {}: carrying on from there",
+                    chunk["run_id"],
+                    accepted,
+                    end,
+                )
+            chunk["index"] = accepted
+
+    def _send_import(self, sample_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Send one request of an import, and return the import's state.
+
+        The create and the finalize are sent once on a lost answer; the
+        requests between are sent again on a transient failure, as the
+        server applies a row offset once. A request the sample's claim held
+        up applied nothing, and goes again. A request refused after the run
+        exists abandons it, and so does a request between left unanswered.
+        """
+        chunk = body["chunk"]
+        run_id = chunk["run_id"]
+        once = run_id is None or chunk["complete"]
+
+        def send() -> list[dict[str, Any]]:
+            return self._write(
+                "POST",
+                f"peak-assignments/sample/{sample_id}/runs/import",
+                Needs("import an assignment run into", "sample", sample_id, _EDITOR),
+                data=body,
+                max_attempts=1 if once else None,
+            )
+
+        try:
+            # An append retried after a timeout meets its first attempt still
+            # running under the sample's claim; once that is done, the same
+            # chunk is answered as a replay or applied. Any request may meet
+            # another client's, and none applied anything.
+            data = self._past_the_claim(sample_id, send)
+        except (MascopeAPIError, MascopeConnectionError) as e:
+            if _is_lost(e) and once:
+                raise self._import_lost(e, sample_id, run_id) from e
+            if run_id is None:
+                raise
+            # An append cannot have finished the import, so a run whose
+            # append went unanswered is importing whatever became of it.
+            abandoned = self._abandon_stopped(sample_id, run_id)
+            if _is_lost(e):
+                raise _extended(
+                    e,
+                    f"No answer came for a chunk of import run '{run_id}', "
+                    "which cannot have finished it; "
+                    + (
+                        "the import was abandoned."
+                        if abandoned
+                        else f"abandon_import('{sample_id}', '{run_id}') "
+                        "deletes it while it is 'importing'."
+                    ),
+                ) from e
+            raise
+        return data[0]
+
+    @staticmethod
+    def _past_the_claim(sample_id: str, send: Callable[[], Any]) -> Any:
+        """*send*, sent again while another request holds the sample.
+
+        A request the sample's claim refuses applied nothing, so sending it
+        again is safe; any other answer is *send*'s own.
+        """
+        first, last = CLAIM_PAUSES
+        for attempt in range(CLAIM_ATTEMPTS - 1):
+            try:
+                return send()
+            except ConflictError as e:
+                if not _is_claim_held(e):
+                    raise
+            pause = min(first * 2**attempt, last)
+            # INFO: the request applied nothing, and goes again
+            logger.info(
+                "Another request on '{}' is still running; sending again in {} s",
+                sample_id,
+                pause,
+            )
+            time.sleep(pause)
+        return send()
+
+    @staticmethod
+    def _import_lost(error: Exception, sample_id: str, run_id: str | None) -> Exception:
+        """*error*, saying where a lost import request would show."""
+        if run_id is None:
+            what = (
+                f"list_runs('{sample_id}') shows the run if it was created, and "
+                f"abandon_import('{sample_id}', <its id>) deletes it while it "
+                "is 'importing'"
+            )
+        else:
+            what = (
+                f"list_runs('{sample_id}') shows run '{run_id}' 'completed' if "
+                f"the import finished, and abandon_import('{sample_id}', "
+                f"'{run_id}') deletes it while it is 'importing'"
+            )
+        return _answer_lost(error, what)
+
+    def _abandon_stopped(self, sample_id: str, run_id: str) -> bool:
+        """Delete an import that stopped partway, if it still can.
+
+        :return: Whether the run was deleted.
+        """
+        try:
+            self._past_the_claim(
+                sample_id, lambda: self.abandon_import(sample_id, run_id)
+            )
+        except MascopeError as e:
+            # WARNING: the run holds the sample until retention reclaims it
+            logger.warning(
+                "Could not abandon import run '{}' of '{}': {}. "
+                "abandon_import('{}', '{}') tries again.",
+                run_id,
+                sample_id,
+                e,
+                sample_id,
+                run_id,
+            )
+            return False
+        logger.info("Abandoned import run '{}' of '{}'", run_id, sample_id)
+        return True
+
+    def _warn_partial(self, sample_id: str, n_rows: int) -> None:
+        """Warn when *n_rows* is materially fewer than the latest run holds."""
+        latest = _latest_completed(self.list_runs(sample_id))
+        if latest is None:
+            return
+        envelope = self._get_envelope(
+            f"peak-assignments/sample/{sample_id}",
+            params={
+                "peak_assignment_run_id": latest["peak_assignment_run_id"],
+                "limit": 1,
+                "offset": 0,
+            },
+        )
+        total = int(envelope.get("total") or 0)
+        if n_rows < COVERAGE_WARNING_SHARE * total:
+            # WARNING: the import withdraws peaks from the batch overview
+            logger.warning(
+                "The frame holds {} row(s) and the latest completed run of "
+                "'{}' ({}) holds {}. The batch ledger takes the sample from "
+                "its newest run, so the peaks the frame leaves out leave the "
+                "batch overview.",
+                n_rows,
+                sample_id,
+                latest.get("engine"),
+                total,
+            )
+
+    def abandon_import(self, sample_id: str, run_id: str) -> dict[str, Any]:
+        """Delete an import that never finished, with the rows it staged.
+
+        An import that stops partway, its client gone or its answer lost,
+        leaves a run ``importing``, and that run refuses every other import
+        and in-app run on the sample until it ends. :meth:`import_run`
+        abandons the runs the server refuses itself; this is the way out
+        for the rest. Only an ``importing`` run can go: a completed one is
+        ledger data, aged out by retention. Sent once.
+
+        :param sample_id: The ID of the sample.
+        :type sample_id: str
+        :param run_id: The run, ``importing`` in :meth:`list_runs`.
+        :type run_id: str
+        :return: The abandoned run's ``peak_assignment_run_id`` and the
+            ``rows`` it had staged.
+        :rtype: dict[str, Any]
+        :raises ConflictError: If the run is not ``importing``.
+        :raises NotFoundError: If the sample has no such run.
+        :raises PermissionDeniedError: Without the editor role on the
+            sample, or when the server has peak assignment switched off.
+
+        Example::
+
+            runs = mascope.peak_assignments.list_runs("sample-123")
+            for run_id in runs[runs["status"] == "importing"]["peak_assignment_run_id"]:
+                mascope.peak_assignments.abandon_import("sample-123", run_id)
+        """
+        try:
+            data = self._write(
+                "DELETE",
+                f"peak-assignments/sample/{sample_id}/runs/{run_id}",
+                Needs("abandon an import into", "sample", sample_id, _EDITOR),
+                max_attempts=1,
+            )
+        except (MascopeConnectionError, ServerError) as e:
+            raise _answer_lost(
+                e, f"list_runs('{sample_id}') no longer lists '{run_id}' if it went"
+            ) from e
+        return data[0]
 
 
 def _is_ineligible(error: MascopeAPIError) -> bool:

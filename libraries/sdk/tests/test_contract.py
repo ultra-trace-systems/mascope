@@ -1876,6 +1876,92 @@ class TestScopeVerificationsContract:
         assert confirmed["borrowed"].all()
 
 
+@requires_stack
+class TestPeakAssignmentImportContract:
+    """An external engine's run published with ``import_run`` and read back,
+    on the scratch copy. Skips on a stack whose peak assignment is off, as
+    the import is refused there with a 403.
+    """
+
+    def test_a_two_row_import_reads_back_with_its_engine_provenance(
+        self, scratch, scratch_matched
+    ):
+        import pandas as pd
+
+        peak_assignments = scratch.client.peak_assignments
+        _skip_unless_attr(peak_assignments, "import_run")
+        from mascope_sdk import PermissionDeniedError
+
+        batch_id, _ = scratch_matched
+        # The last sample: the launch tests take the first they can assign.
+        sample_id = scratch.client.samples._list_by_id(batch_id).iloc[-1][
+            "sample_item_id"
+        ]
+        sample = scratch.client.samples.get(sample_id)
+        intensity = "height" if sample["instrument_type"] == "orbi" else "area"
+        peaks = scratch.client.samples.get_peaks(sample_id, matches=False)
+        top, other = peaks.nlargest(2, intensity).to_dict("records")
+        frame = pd.DataFrame(
+            [
+                {
+                    "sample_peak_id": top["peak_id"],
+                    "sample_peak_mz": top["mz"],
+                    "sample_peak_intensity": top[intensity],
+                    "role": "M0",
+                    "assigned_formula": "C6H12O6",
+                    "source": "untargeted",
+                    "fit_score": 0.9,
+                    "engine_tier": "candidate",
+                    "provenance": {
+                        # Reserved: the server strips them.
+                        "p_correct": 0.99,
+                        "calibration": {"provisional": False},
+                        "corroboration": {"n_adducts": 3},
+                        "engine_provenance": {"p_correct": 0.42},
+                    },
+                },
+                {
+                    "sample_peak_id": other["peak_id"],
+                    "sample_peak_mz": other["mz"],
+                    "sample_peak_intensity": other[intensity],
+                    "role": "unassigned",
+                },
+            ]
+        )
+
+        try:
+            run_id = peak_assignments.import_run(
+                sample_id,
+                frame,
+                engine="sdk-contract",
+                engine_version="1.0",
+                tier_bands={"assigned": 0.75, "candidate": 0.45},
+                calibration={"method": "none"},
+                config={"purpose": "contract test"},
+            )
+        except PermissionDeniedError as e:
+            pytest.skip(f"peak assignment is switched off on the stack: {e.message}")
+
+        ledger = peak_assignments.get(sample_id, run_id=run_id)
+        assert sorted(ledger["sample_peak_id"]) == sorted(frame["sample_peak_id"])
+        run = ledger.attrs["run"]
+        assert run["status"] == "completed"
+        assert run["engine"] == "sdk-contract"
+        assert run["engine_version"] == "1.0"
+        assert run["calibration"] == {"method": "none"}
+        assert run["tier_bands"] == {"assigned": 0.75, "candidate": 0.45}
+        assert run["config"] == {"purpose": "contract test"}
+        row = ledger.set_index("sample_peak_id").loc[top["peak_id"]]
+        assert row["engine_tier"] == "candidate"
+        assert row["tier"] in ("assigned", "candidate", "below_assignability")
+        assert pd.isna(row["p_correct"])
+
+        full = peak_assignments.detail(sample_id, row["peak_assignment_id"])
+        provenance = full["provenance"]
+        assert provenance["engine_provenance"] == {"p_correct": 0.42}
+        assert not {"p_correct", "calibration", "corroboration"} & set(provenance)
+
+
 def _signed_in(email: str, password: str):
     """A session signed in as *email*, for what a token may not do."""
     import requests

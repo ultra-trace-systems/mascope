@@ -248,6 +248,31 @@ class SampleIneligibleError(ValidationError):
         self.reason = self.detail.get("reason")
 
 
+class ImportValidationError(MascopeError, ValueError):
+    """Raised when ``peak_assignments.import_run`` refuses a frame itself.
+
+    Nothing has been sent: the frame, or an argument beside it, is one the
+    server would refuse, or one that cannot be sent at all - a NaN in a
+    column that may not be null, a value no JSON can carry. A subclass of
+    :class:`ValueError` too, as the other checks a call makes before it
+    sends anything raise.
+
+    :ivar column: The column at fault, or None when the fault is not one
+        column's.
+    :vartype column: str | None
+    :ivar rows: The index labels of the rows at fault, empty when the
+        fault is not a row's.
+    :vartype rows: list
+    """
+
+    def __init__(
+        self, message: str, *, column: str | None = None, rows: list | None = None
+    ):
+        self.column = column
+        self.rows = list(rows or [])
+        super().__init__(message)
+
+
 class AssignmentRunError(MascopeError):
     """Raised when a peak assignment run ended without a ledger.
 

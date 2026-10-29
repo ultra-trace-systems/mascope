@@ -94,6 +94,7 @@ This creates a `tutorials/` folder with the following notebooks:
 | 8   | `08_correlation_analysis.ipynb`    | Find co-varying peaks via correlation and clustering    |
 | 9   | `09_batch_stages.ipynb`            | Split a batch into stages and compare per-stage averages |
 | 10  | `10_peak_assignment.ipynb`         | Read a server-side peak-assignment run: tiers, sources, Van Krevelen |
+| 11  | `11_assignment_round_trip.ipynb`   | Assign a sample's peaks yourself, publish the run, compare it with Mascope's |
 
 Open them in VS Code (or any Jupyter-compatible IDE) and run the cells. Each notebook is self-contained, just make sure your `.env` credentials are set up first (see [Configuration](#configuration)).
 
@@ -749,8 +750,101 @@ verdicts a later one replaced; batch-level verdicts are listed live only).
 The batch data spreadsheet carries the same table as its *Verifications*
 sheet.
 
+### Publishing a run of your own
+
+An engine outside Mascope can publish its result for a sample as a run of its
+own: the same ledger, run selector and batch fold-in as a run Mascope
+computed, stamped with the engine's name. `import_run` takes one row per peak
+and returns the new run's id.
+
+```python
+peaks = mascope.samples.get_peaks(sample_id)
+rows = my_engine(peaks)  # a DataFrame, one row per peak
+
+run_id = mascope.peak_assignments.import_run(
+    sample_id,
+    rows,
+    engine="my-engine",
+    engine_version="0.3.1",
+    tier_bands={"assigned": 0.75, "candidate": 0.45},
+    calibration={"method": "none"},
+    config={"window_ppm": 3},  # the engine's own settings, stored as they are
+)
+theirs = mascope.peak_assignments.get(sample_id, run_id=run_id)
+```
+
+The columns of a row:
+
+| Column | Meaning |
+| --- | --- |
+| `sample_peak_id` | The peak (`peak_id` of `get_peaks`). Required, one row per peak |
+| `sample_peak_mz`, `sample_peak_intensity` | The peak as the engine observed it. Required, and never NaN. The intensity is the peak **height** for an Orbitrap file and the peak **area** for a TOF file, the quantity Mascope's own engine uses |
+| `role` | Required: `M0`, `iso_child`, `reagent`, `artifact` or `unassigned` |
+| `sample_peak_tof` | The peak's time of flight, if the engine has it |
+| `assigned_formula`, `ion_formula`, `isotope_label`, `isotope_formula` | What the engine assigned |
+| `ionization_mechanism_id` | This server's mechanism id, if the engine has it |
+| `adduct` | The adduct's notation, `[M+H]+`; fills in `ionization_mechanism_id` where a row has none (below) |
+| `source` | `database`, `untargeted`, `manual`, `reagent` or `artifact` |
+| `fit_score`, `mz_error_ppm`, `abundance_error` | The engine's measurement; `fit_score` between 0 and 1 |
+| `tier` | Better left out: the server derives it (below) |
+| `engine_tier` | The tier the engine concluded by rules of its own; stored as it is |
+| `target_compound_id`, `target_ion_id` | For a `database` row, the library compound and ion |
+| `owner_sample_peak_id` | For an `iso_child` row, the `sample_peak_id` of the row it belongs to |
+| `alternatives`, `provenance` | The inspector's detail. Keep the engine's own numbers under `provenance["engine_provenance"]` |
+
+A frame read with `get()` imports as it is. The columns the server computes
+or looks up itself are left out. Its `owner_peak_assignment_id` links are sent
+as `owner_sample_peak_id` from `iso_child` rows; a reagent's isotope lines,
+which the in-app engine also links, go without the link. Its `tier` goes as
+`engine_tier`, where the frame has none, and the server derives `tier` again:
+the in-app engine settles some rows below what their evidence earns. Any
+other column is left out with a warning.
+
+- **The frame is checked before anything is sent**, and a fault raises
+  `ImportValidationError`, naming the `column` and the `rows`. It catches a
+  missing required column, a value outside a vocabulary, a peak twice, an
+  owner that is not a row of the frame or is itself an `iso_child`, a NaN in
+  `sample_peak_mz` or `sample_peak_intensity`, and a value no JSON can carry. A
+  NaN in any other column is sent as null.
+- **Leave `tier` out.** The server reads each row's tier off its evidence,
+  `fit_score` weighted by the chemical plausibility of `assigned_formula`,
+  under `tier_bands`. Where the frame has a `tier` column, a row stating a
+  tier its bare `fit_score` cannot reach is refused here, as evidence is never
+  above the fit. Any other disagreement is the server's 422 to raise. A row
+  with no fit or no formula is `unassigned` or `below_assignability`.
+- **An `adduct` is resolved by its exact notation**: the one mechanism of
+  `mascope.ionization.list()` written that way, and null when no single one
+  is. A null loses nothing but the join: the adduct is in `ion_formula`.
+- **The rows go in as many requests as the server's caps call for**, by row
+  count and by bytes. The first request and the last are sent once, like
+  `assign`: if an answer is lost, the error says where to look before sending
+  it again. The ones between are sent again, which is safe, as the server
+  applies each row offset once. Any request the server holds up behind
+  another one on the sample (409, code `assignment_claim_held`) waits for it
+  and goes again.
+- **A refused import leaves no run.** If the server refuses a request after
+  the run was created, or a request between goes unanswered on every try,
+  `import_run` deletes the run before raising.
+  `abandon_import(sample_id, run_id)` deletes any other run left `importing`,
+  which holds the sample until it ends.
+- **A frame well short of the sample's latest completed run** is published
+  with a warning: the batch ledger takes the sample's whole contribution from
+  its newest run, so the peaks the frame leaves out leave the batch overview.
+
+The rules the server holds an import to are on the page
+[Publishing an assignment run](https://github.com/ultra-trace-systems/mascope/blob/master/docs/user/sdk/publishing-assignments.md):
+the reserved provenance keys (`p_correct`, `calibration` and `corroboration`
+stripped, `evidence` and `plausibility` overwritten), the `import_id` that
+makes a repeated create return its run, the 1000-row and 5 MB caps on one
+request, and what an import replaces and keeps. `import_run` chooses the
+`import_id` and sizes the requests itself. The same page says why
+`calibration` is required: an import bypasses the sample's m/z verification,
+so what the engine calibrated against goes on the record instead.
+
 For cross-sample analysis use the [`load_assignments`](#load_assignments-peak-assignments-across-batches)
-loader; for a guided walk-through see tutorial notebook `10_peak_assignment.ipynb`.
+loader; for a guided walk-through see tutorial notebook `10_peak_assignment.ipynb`,
+and `11_assignment_round_trip.ipynb` for publishing a run and comparing it with
+Mascope's.
 
 ## Changing Data
 
@@ -1023,8 +1117,10 @@ The compound list is shared by every workspace, so `add`, `update` and `remove` 
 | `fit_aggregate(sample_id, formula, ionization_mechanism_id)` | Score a composition against a sample: its isotope table | `dict` |
 | `verifications_for_batch(batch_id, verdict=, evidence_level=, since=, include_superseded=)` | The current verdicts over every sample of a batch, one row per judged peak | `pd.DataFrame│None` |
 | `verifications_for_dataset(dataset_id, verdict=, evidence_level=, since=, include_superseded=)` | The same over every sample of a dataset, in one read | `pd.DataFrame│None` |
+| `import_run(sample_id, df, engine=, engine_version=, tier_bands=, calibration=, config=)` | Publish an external engine's run, one row per peak | `str` |
+| `abandon_import(sample_id, run_id)` | Delete an import left `importing`, with its rows | `dict` |
 
-`get` reads the latest completed run unless `run_id` is given, and pages through the API internally — the whole run comes back as one DataFrame. See [Peak Assignments](#peak-assignments) and [Running and verifying](#running-and-verifying).
+`get` reads the latest completed run unless `run_id` is given, and pages through the API internally — the whole run comes back as one DataFrame. See [Peak Assignments](#peak-assignments), [Running and verifying](#running-and-verifying) and [Publishing a run of your own](#publishing-a-run-of-your-own).
 
 #### `mascope.batch_peaks`
 

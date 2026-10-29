@@ -819,8 +819,11 @@ in-app path does not:
 > the send-once knob on `http_post` and `http_request`, and the error body on
 > `MascopeAPIError` with `ConflictError` for 409. The route's 409 and 422 now carry the
 > codes this section asked for, `assignment_in_flight` and `sample_ineligible`. A poll
-> that times out raises `AssignmentTimeoutError` carrying the run id. `import_run`
-> (step 6) does not exist yet.
+> that times out raises `AssignmentTimeoutError` carrying the run id. *Status
+> (2026-10-29).* Step 6 has shipped: `import_run` with `abandon_import`, and the
+> round-trip notebook `11_assignment_round_trip.ipynb`. A request the server refuses
+> after the run was created deletes the run, so a refused import leaves nothing
+> `importing`.
 
 v1 deferred these behind one question - "should the SDK trigger heavy async
 runs?" (the v1 decision log, removed). **Decided: yes.** The ground shifted after the question was
@@ -1135,6 +1138,9 @@ Each step is its own PR, and each leaves the system shippable:
    of two engines per sample, joins them on `sample_peak_id` and reports where
    they agree, where they read the same ion as different neutral/adduct pairs,
    and how that varies with peak intensity (its README lists the outputs).
+   **Shipped**: `import_run`, `abandon_import` and the notebook
+   `11_assignment_round_trip.ipynb`, whose comparison makes that script's join
+   on one sample.
 7. **`peaky publish`** - the consumer, in the peaky repository (out of this
    repo's scope; listed so the sequence has its end state).
 8. **Demo bundle seeds a completed assignment run** - unblocks the v1
@@ -1165,10 +1171,8 @@ can be answered once real imported ledgers exist, not prerequisites.
   import instead, so what the inspector renders is Mascope's own or nothing.
 - **Step 5 has shipped**, the retry-safety and error-body plumbing (§8.3)
   with it.
-- **Step 6 proceeds.** §8.5.2 is settled at the floor, so `import_run` resolves
-  mechanisms by exact-string match and sends null otherwise. Its other
-  prerequisites are stated rather than open: the numeric chunk cap and the body
-  allowance, the per-column null policy, and the null-`fit_score` exemption.
+- **Step 6 has shipped.** §8.5.2 settled at the floor, so `import_run` resolves
+  mechanisms by exact-string match and sends null otherwise.
 - **Step 8 is implementable, but it is not a code PR.** The demo stack fetches
   bundle content from a published Zenodo version - the init container refuses a
   registry entry with no download URL, and CI boots that same stack before
