@@ -35,6 +35,7 @@ from .exceptions import (
     ConfigurationError,
     ConfirmationRequiredError,
     ConflictError,
+    ImportValidationError,
     MascopeAPIError,
     MascopeConnectionError,
     MascopeError,
@@ -93,6 +94,7 @@ __all__ = [
     "SampleIneligibleError",
     "AssignmentRunError",
     "AssignmentTimeoutError",
+    "ImportValidationError",
     "MascopeConnectionError",
     "MascopeTimeoutError",
     # Agent helpers

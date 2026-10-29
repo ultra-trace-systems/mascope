@@ -274,6 +274,7 @@ Now that you're set up, work through the tutorial notebooks in order:
 | 8   | `08_correlation_analysis.ipynb`    | Find co-varying peaks via correlation and clustering      |
 | 9   | `09_batch_stages.ipynb`            | Split a batch into stages and compare per-stage averages  |
 | 10  | `10_peak_assignment.ipynb`         | Read a peak-assignment run: tiers, sources, Van Krevelen  |
+| 11  | `11_assignment_round_trip.ipynb`   | Assign a sample's peaks yourself, publish the run, compare it with Mascope's |
 
 For full API documentation and advanced usage, see the
 [SDK overview](index.md).
