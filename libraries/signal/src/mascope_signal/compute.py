@@ -1745,6 +1745,64 @@ async def get_orbi_centroids(
     return masses, intensities, resolutions, signal_to_noise
 
 
+async def get_orbi_centroid_flag_shares(
+    base_filename: str,
+    masses: np.ndarray,
+    resolutions: np.ndarray,
+    flag: str = "exception",
+    polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
+    calibration: dict | None | object = RECORD_ON_FILE,
+) -> np.ndarray:
+    """The share of each peak's per-scan centroids that carry a centroid flag.
+
+    For the peaks :func:`get_orbi_centroids` gives for the same selection:
+    over the scans averaged into them, the centroids within half a width of
+    each peak, and of those the ones the instrument flagged
+    (``mascope_thermo.thermo.get_centroid_flag_shares``).
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :param masses: The peaks' m/z, on the file's axis as
+        :func:`get_orbi_centroids` returns them.
+    :type masses: np.ndarray
+    :param resolutions: Each peak's resolution (m/z over its FWHM).
+    :type resolutions: np.ndarray
+    :param flag: The name of a centroid flag, defaults to ``exception``.
+    :type flag: str, optional
+    :param polarity: Polarity of the scans, as for :func:`get_orbi_centroids`.
+    :type polarity: Literal['+', '-'], optional
+    :param stream: Key of the scan stream, as for :func:`get_orbi_centroids`.
+    :type stream: str, optional
+    :param calibration: The calibration record the masses were put on the
+        file's axis by, as handed to :func:`get_orbi_centroids`: they are
+        taken off it again by the same factor, since a scan's centroids are
+        read as it recorded them. Left out, the record the file holds.
+    :type calibration: dict | None, optional
+    :return: One share per peak, NaN where no centroid falls within its width.
+    :rtype: np.ndarray
+    """
+    sample_type = m_name.get_sample_file_type(base_filename)
+    if sample_type != "orbi_raw":
+        raise NotImplementedError(
+            "Centroid flags are only read from Orbitrap raw files."
+        )
+    if calibration is RECORD_ON_FILE:
+        calibration = m_io.read_props(base_filename)["mz_calibration"]
+    recorded = np.asarray(masses, dtype=np.float64)
+    if calibration:
+        recorded = recorded / m_factor.stream_factor(calibration, stream)
+    return await asyncio.to_thread(
+        m_thermo.get_centroid_flag_shares,
+        m_name.filename_to_datafile_path(base_filename),
+        recorded,
+        resolutions,
+        flag=flag,
+        polarity=polarity,
+        stream=stream,
+    )
+
+
 def get_orbi_centroids_per_scan(
     base_filename: str,
     t_min: float | None = None,

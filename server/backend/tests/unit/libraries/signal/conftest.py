@@ -88,8 +88,8 @@ def instrument_functions():
 def acquire(monkeypatch, sample_file_path):
     """Make the test sample a raw Orbitrap file read from scripted scans."""
 
-    def _acquire(scans, microscans=None, resolutions=None):
-        acquisition = ScriptedAcquisition(scans, microscans, resolutions)
+    def _acquire(scans, microscans=None, resolutions=None, flags=None):
+        acquisition = ScriptedAcquisition(scans, microscans, resolutions, flags)
         monkeypatch.setattr(
             m_compute.m_name, "get_sample_file_type", lambda _: "orbi_raw"
         )
