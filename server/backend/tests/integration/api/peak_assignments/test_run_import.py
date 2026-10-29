@@ -2022,6 +2022,141 @@ class TestRunProvenanceIsServed:
         assert record["calibration"] is None
 
 
+class TestRunWidthIsServed:
+    """A run answers the mass-error width it scored at, whichever engine ran it.
+
+    An external engine comparing itself to a run should read the width that
+    run judged a mass error against rather than measure it again. An in-app
+    run recorded it in its config's ``pattern_scoring`` snapshot; an imported
+    one says it in ``scoring_width`` beside its calibration.
+    """
+
+    WIDTH = {
+        "sigma_ppm": 0.85,
+        "sigma_source": "fitted",
+        "mu_ppm": -0.4,
+        "mu_source": "lock_mass",
+    }
+
+    async def _record(self, client, sample_item_id) -> dict:
+        response = await client.get(
+            f"/api/peak-assignments/sample/{sample_item_id}/runs"
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["data"][0]
+
+    @pytest.mark.asyncio
+    async def test_an_imported_run_serves_the_width_it_disclosed(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        response = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], scoring_width=self.WIDTH),
+        )
+        assert response.status_code == 200, response.text
+
+        record = await self._record(editor_client, import_sample)
+
+        assert {key: record[key] for key in self.WIDTH} == self.WIDTH
+        run_id = response.json()["data"][0]["peak_assignment_run_id"]
+        async with async_session_factory() as session:
+            assert (await _run_of(session, run_id)).scoring_width == self.WIDTH
+
+    @pytest.mark.asyncio
+    async def test_an_import_that_disclosed_no_width_answers_null(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        """Its opaque config is never read for one, whatever it holds."""
+        await _post(
+            editor_client,
+            import_sample,
+            _body(
+                [_row("peak-0")],
+                config={"pattern_scoring": {"sigma_ppm": 3.0, "mu_ppm": 1.0}},
+            ),
+        )
+
+        record = await self._record(editor_client, import_sample)
+
+        assert [record[key] for key in self.WIDTH] == [None] * 4
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "width",
+        [
+            {"sigma_ppm": 0.0, "sigma_source": "fitted"},
+            {"sigma_ppm": 1.0},
+            {"sigma_ppm": 1.0, "sigma_source": ""},
+        ],
+    )
+    async def test_a_width_without_a_positive_sigma_and_its_source_is_refused(
+        self, editor_client, import_sample, feature_enabled, width
+    ):
+        response = await _post(
+            editor_client, import_sample, _body([_row("peak-0")], scoring_width=width)
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_an_in_app_run_serves_the_width_its_snapshot_recorded(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        async with async_session_factory() as session:
+            session.add(
+                PeakAssignmentRun(
+                    peak_assignment_run_id=gen_id(),
+                    sample_item_id=import_sample,
+                    engine="mascope",
+                    engine_version="test",
+                    status="completed",
+                    config={
+                        "pattern_scoring": {
+                            "sigma_ppm": 1.2345,
+                            "mu_ppm": 0.5,
+                            "sigma_source": "instrument_class",
+                            "mu_source": "reagent",
+                            "fitted_anchors": 3,
+                        }
+                    },
+                    peak_assignment_run_utc_created=datetime.now(timezone.utc),
+                )
+            )
+            await session.commit()
+
+        record = await self._record(editor_client, import_sample)
+
+        assert {key: record[key] for key in self.WIDTH} == {
+            "sigma_ppm": 1.2345,
+            "sigma_source": "instrument_class",
+            "mu_ppm": 0.5,
+            "mu_source": "reagent",
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_in_app_run_that_never_scored_answers_null(
+        self, editor_client, import_sample, feature_enabled, async_session_factory
+    ):
+        async with async_session_factory() as session:
+            session.add(
+                PeakAssignmentRun(
+                    peak_assignment_run_id=gen_id(),
+                    sample_item_id=import_sample,
+                    engine="mascope",
+                    engine_version="test",
+                    status="failed",
+                    config={"search_scope": {}},
+                    peak_assignment_run_utc_created=datetime.now(timezone.utc),
+                )
+            )
+            await session.commit()
+
+        record = await self._record(editor_client, import_sample)
+
+        assert [record[key] for key in self.WIDTH] == [None] * 4
+
+
 class TestOwnerLinkageIsOneLevelDeep:
     """Owner linkage models an isotopologue naming the M0 it belongs to.
 

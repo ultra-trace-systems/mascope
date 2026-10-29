@@ -567,6 +567,27 @@ A run's ledger does not say who computed it — the run does. `list_runs` (and
 | `engine_version` | That engine's version string. |
 | `tier_bands` | The `assigned` / `candidate` evidence thresholds the run tiered with. |
 | `calibration` | What an external engine disclosed about its calibration at import. Null for `mascope` runs, whose calibration state is the sample's own. |
+| `sigma_ppm`, `sigma_source` | The mass-error width the run scored at [ppm], and where it came from. A `mascope` run says `fitted` (the sample's own lines) or `instrument_class` (too few lines, so the class stood in). An imported run gives what its engine disclosed. |
+| `mu_ppm`, `mu_source` | The mass-error centre the run corrected by [ppm], and where it came from: `fitted`, `reagent` or `none` for a `mascope` run. |
+
+The four width columns are null for a run that never reached scoring, an
+import that disclosed no width, and the `batch` run. Read the width a run
+scored at here instead of measuring it again from the spectrum.
+
+A sample without any run still says what width its lines have.
+`mascope.samples.get(sample_id)["line_width"]` holds:
+
+| Key | Meaning |
+| --- | --- |
+| `instrument_class` | `orbi` or `tof`: the class the assignment engine reads the file as. |
+| `reference_mz` | The m/z the width is quoted at, 200. |
+| `resolution` | The resolving power m/dm there, from the instrument functions detection fitted to the file. |
+| `fwhm_ppm` | The full width at half maximum of a line there [ppm], `1e6 / resolution`. |
+
+`resolution` and `fwhm_ppm` are null for a blank and for a file whose
+instrument functions were never fitted. The line width is not the run's
+`sigma_ppm`: one is how wide a peak is, the other how widely the measured
+masses scatter around the true ones.
 
 This matters because reads default to the **latest completed run whatever its
 engine**, so a published run is what you get unless you ask for another. It is

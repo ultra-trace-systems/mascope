@@ -98,7 +98,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.6 - the import contract: a verdict on batch rows, the engine tier where the user looks | - |  | planned; between rounds |
 | 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - |  | planned; after 3.5; feeds 4.3 and the axis-fingerprint project; the labelled sets wait for a release carrying the reference's #77 |
 | 5.8 - an identification level in Mascope's own vocabulary | - |  | planned 2026-10-14 (decision 30 taken); after 3.7 |
-| 5.9 - the width a run scored at, served on the run and sample records | - |  | planned 2026-10-22, from the readiness check (the digest's one unbinned ask); MAS-410 |
+| 5.9 - the width a run scored at, served on the run and sample records | #2784 | | built: `sigma_ppm`, `sigma_source`, `mu_ppm`, `mu_source` on the run record and in `list_runs` (an import discloses them in `scoring_width`); `line_width` on the sample record; no run or gate number moves; MAS-410 |
 | 5.10 - the instrument's side-lobe flag: Exception-majority peaks into the satellite flag | #2779 |  | built: a peak most of whose per-scan centroids the instrument flagged is a satellite, unless on an isotopologue line; the averaged profile kept as measured (MAS-577); MAS-443 |
 | 5.12 - the per-sample scoring derivation as one library function, and a bulk candidate scorer | #2767 | | built: `pattern_scoring_for_sample` and `score_candidates` in `mascope_tools`, the engine and the finder call them; no score moves beyond rounding; MAS-569 |
 | 5.13 - the current verdicts of a batch or dataset in one read, through the API, the SDK and the export | - |  | built: one row per judged peak, a batch-level verdict marked `borrowed` where it reaches a sample, a sheet of the batch export; MAS-570 |
@@ -1211,6 +1211,24 @@ under its milestone 5.
   as a reading, not a target. No run or gate number moves.
 - **Size.** S. Independent; between rounds, with 5.6 at the earliest
   (MAS-410).
+- **As built.** What was stored decided the shape. An in-app run already
+  kept its `pattern_scoring` snapshot in its config, so the runs listing
+  lifts the four numbers from it and nothing is backfilled. No per-peak
+  resolution survives detection into the peak table, but the instrument
+  functions detection fitted are kept per file, so the sample record reads
+  the width off them at m/z 200, by the sample's polarity as the engine
+  does. An imported run discloses its width in an optional `scoring_width`
+  field on the sample import, beside `calibration` (the owner's answer to
+  MAS-575: not gated on 5.6), kept in a column of its own because an
+  import's config is opaque. On the testbed copy every completed in-app
+  run answers a width (55 `fitted`, 3,423 `instrument_class`). The imported
+  reference runs answer none yet: they carry a `pattern_scoring` key in
+  their opaque config, which the server does not read. Served line widths
+  at m/z 200: Orbitrap files median R 118,944 (8.4 ppm FWHM), TOF files
+  6,286 (159 ppm). The reference's own measurement from the raw profile,
+  as a reading on twelve samples of each class: within 0.98 to 1.12 of the
+  served R on the Orbitrap (median 1.04), whose served profile is drawn
+  from the stored resolutions; 0.53 to 1.31 on the TOF (median 1.09).
 
 ### 5.10 The instrument's side-lobe flag: Exception-majority peaks into the satellite flag
 

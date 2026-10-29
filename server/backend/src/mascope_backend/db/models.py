@@ -2433,6 +2433,13 @@ class PeakAssignmentRun(Base):
     confidence_calibration: Mapped[Optional[dict]] = mapped_column(
         JSON(none_as_null=True)
     )
+    # The mass-error width an imported run's engine disclosed it scored at:
+    # ``sigma_ppm``, ``sigma_source``, ``mu_ppm``, ``mu_source``. An in-app
+    # run keeps the same numbers in its config's ``pattern_scoring`` snapshot,
+    # which the runs listing reads instead; an import's config is opaque, so
+    # its disclosure needs a place of its own. NULL for in-app runs and for
+    # imports that disclosed none.
+    scoring_width: Mapped[Optional[dict]] = mapped_column(JSON(none_as_null=True))
     # The importing client's own id for the logical import. What makes the
     # request that *creates* a run idempotent: the row-offset check covers every
     # later chunk, but the first one has no run id yet to be idempotent about,

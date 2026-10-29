@@ -292,6 +292,13 @@ class SamplesResource(BaseResource):
     def get(self, sample_id: str) -> dict | None:
         """Get details of a specific sample.
 
+        The details include ``line_width``, what width the sample's lines
+        have, whether or not it has an assignment run:
+        ``instrument_class`` (``orbi`` or ``tof``), ``reference_mz`` (200),
+        and ``resolution`` and ``fwhm_ppm`` [ppm] there, from the instrument
+        functions detection fitted to the file. The last two are None for a
+        blank or a file never fitted.
+
         :param sample_id: The ID of the sample to retrieve.
         :type sample_id: str
         :return: A dictionary containing the sample details, or None if not found.
