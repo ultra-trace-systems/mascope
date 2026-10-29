@@ -33,6 +33,9 @@ acquisition/instrument routes):
 - ``check_target_collection_access``:  target_collection_id → workspace_id
 - ``check_target_ion_read_access_bulk``: list of target_ion_ids via their collections
 - ``accessible_workspace_ids_for_user``: set of workspace_ids user is a member of
+- ``workspace_scope_for_user``: the same, or ``ALL_WORKSPACES`` for a superuser
+- ``target_list_scope``: a target list's filter checks and its collection scope
+- ``where_collection_visible``: restrict a collection query to a scope
 - ``access_granted``: run any of the above and report pass/fail as a bool
 
 All return ``WorkspaceMember`` on success or raise ``ForbiddenAccessException``.
@@ -923,6 +926,88 @@ async def accessible_workspace_ids_for_user(user: User) -> set[str]:
                 )
             )
         return set(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Target list scope
+# ---------------------------------------------------------------------------
+
+
+class _AllWorkspaces:
+    """Type of :data:`ALL_WORKSPACES`, its one instance."""
+
+    def __repr__(self) -> str:
+        return "ALL_WORKSPACES"
+
+
+ALL_WORKSPACES = _AllWorkspaces()
+"""The workspace scope that restricts nothing: superusers and trusted internal
+callers. It is a value of its own, never a default, so a caller that leaves
+the scope out gets an error rather than every workspace's collections."""
+
+WorkspaceScope = set[str] | frozenset[str] | _AllWorkspaces
+
+
+async def workspace_scope_for_user(user: User) -> WorkspaceScope:
+    """The workspaces whose target collections ``user`` can read.
+
+    :data:`ALL_WORKSPACES` for a superuser, else the workspaces they are a
+    member of (global collections are readable by everyone on top of these;
+    see :func:`where_collection_visible`).
+    """
+    if user.is_superuser:
+        return ALL_WORKSPACES
+    return await accessible_workspace_ids_for_user(user)
+
+
+async def target_list_scope(
+    user: User,
+    *,
+    sample_batch_id: str | None = None,
+    target_collection_id: str | None = None,
+    show_target_collection: bool = False,
+) -> WorkspaceScope | None:
+    """Check a target ion, compound or isotope list's filters for ``user``.
+
+    A named batch or collection needs the guest role on its workspace (a
+    global collection is readable by anyone signed in). Returns the scope that
+    ``show_target_collection`` lists collections in, or None when it is off,
+    so the workspace lookup runs only when its result is used.
+
+    :raises ForbiddenAccessException: When ``user`` cannot read the batch or
+        the collection.
+    """
+    if sample_batch_id:
+        await check_batch_access(sample_batch_id, user, "guest")
+    if target_collection_id:
+        await check_target_collection_access(target_collection_id, user, "guest")
+    if not show_target_collection:
+        return None
+    return await workspace_scope_for_user(user)
+
+
+def where_collection_visible(stmt, scope: WorkspaceScope):
+    """Restrict ``stmt``, which selects from ``TargetCollection``, to ``scope``.
+
+    The collections of the workspaces in ``scope`` and the global ones (no
+    workspace) remain; :data:`ALL_WORKSPACES` leaves ``stmt`` as it is.
+
+    :raises TypeError: When ``scope`` is neither a set of workspace ids nor
+        :data:`ALL_WORKSPACES`, None included: a missing scope fails closed.
+    """
+    if scope is ALL_WORKSPACES:
+        return stmt
+    if not isinstance(scope, (set, frozenset)):
+        raise TypeError(
+            "A target collection list needs a workspace scope: a set of "
+            f"workspace ids or ALL_WORKSPACES, not {scope!r}"
+        )
+    return stmt.where(
+        or_(
+            TargetCollection.workspace_id.in_(scope),
+            TargetCollection.workspace_id.is_(None),
+        )
+    )
 
 
 async def user_can_subscribe_to_room(room: str, user: User) -> bool:

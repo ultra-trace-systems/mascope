@@ -26,6 +26,10 @@ from mascope_backend.api.models.target.compounds.target_compound_pydantic_model 
     TargetCompoundSortColumn,
     TargetCompoundUpdate,
 )
+from mascope_backend.api.new.workspaces.dependencies import (
+    WorkspaceScope,
+    where_collection_visible,
+)
 from mascope_backend.db import (
     IonizationMechanism,
     TargetCollection,
@@ -55,7 +59,7 @@ async def get_target_compounds(
     sample_batch_id: Optional[str] = None,
     target_collection_id: Optional[str] = None,
     show_target_collection: bool = False,
-    accessible_workspace_ids: set[str] | None = None,
+    accessible_workspace_ids: WorkspaceScope | None = None,
     sort: str = None,
     order: str = None,
     page: int | None = None,
@@ -86,9 +90,10 @@ async def get_target_compounds(
     :param show_target_collection: Include target collection data in the response, defaults to False.
     :type show_target_collection: bool, optional
     :param accessible_workspace_ids: With ``show_target_collection``, list only the
-        collections of these workspaces and the global ones; None lists every
-        collection (superusers and internal callers), defaults to None.
-    :type accessible_workspace_ids: set[str] | None, optional
+        collections of these workspaces and the global ones; ``ALL_WORKSPACES``
+        lists every collection (superusers and internal callers). Required with
+        ``show_target_collection``: left out, the list raises ``TypeError``.
+    :type accessible_workspace_ids: WorkspaceScope | None, optional
     :param sort: Column name to sort by, defaults to None.
     :type sort: str, optional
     :param order: Direction to sort the results ('asc' or 'desc'), defaults to None.
@@ -151,13 +156,7 @@ async def get_target_compounds(
                     == TargetCompoundInTargetCollection.target_collection_id,
                 )
                 # Restrict to collections the caller can see (workspace ACL).
-                if accessible_workspace_ids is not None:
-                    stmt = stmt.where(
-                        or_(
-                            TargetCollection.workspace_id.in_(accessible_workspace_ids),
-                            TargetCollection.workspace_id.is_(None),
-                        )
-                    )
+                stmt = where_collection_visible(stmt, accessible_workspace_ids)
                 stmt = stmt.add_columns(
                     TargetCompoundInTargetCollection.target_collection_id,
                     TargetCollection.target_collection_name,
