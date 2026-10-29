@@ -298,7 +298,9 @@ async def get_peak_assignment_runs_route(
 
     :param sample_item_id: The unique identifier of the sample.
     :param user: The current authenticated user. Requires workspace guest role.
-    :return: Run records with status, engine version, and configuration.
+    :return: Run records with status, engine version, and configuration,
+        and the mass-error width each run scored at (`sigma_ppm`, `mu_ppm`
+        and their sources), null where a run recorded none.
     """
     await check_sample_access(sample_item_id, user, "guest")
     result = await get_peak_assignment_runs(sample_item_id=sample_item_id)
@@ -778,7 +780,9 @@ async def import_assignment_run_route(
     importer's. `tier_bands` and `calibration` are required: tiers are validated
     against the bands the engine actually tiered with, and an import bypasses
     the m/z verification gate, so what it calibrated against goes on the record.
-    `config` is opaque and stored verbatim.
+    `scoring_width` is optional: the mass-error width and centre the engine
+    scored at, served on the run as `sigma_ppm`, `sigma_source`, `mu_ppm` and
+    `mu_source`. `config` is opaque and stored verbatim.
 
     **Partial imports are allowed, and they replace.** A run may cover a subset
     of the sample's peaks, but the batch overview takes the sample's whole

@@ -694,6 +694,9 @@ def _new_run(sample, body, engine: str) -> PeakAssignmentRun:
         config=body.config,
         tier_bands=body.tier_bands.model_dump(),
         calibration=body.calibration,
+        scoring_width=(
+            None if body.scoring_width is None else body.scoring_width.model_dump()
+        ),
         import_key=body.chunk.import_id,
         peak_assignment_run_utc_created=dt.now(timezone.utc),
     )

@@ -159,7 +159,10 @@ async def get_sample_route(
     :type user: User
     :param membership: Workspace membership with guest role on the sample.
     :type membership: WorkspaceMember
-    :return: A dictionary containing the sample details.
+    :return: A dictionary containing the sample details, with `line_width`:
+        the file's `instrument_class` (`orbi` or `tof`), and its
+        `resolution` and `fwhm_ppm` at `reference_mz` (200) from the
+        instrument functions detection fitted, null for a file never fitted.
     :rtype: dict
     """
     return await get_sample(sample_item_id=sample_item_id)

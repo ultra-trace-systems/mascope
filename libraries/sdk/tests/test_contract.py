@@ -238,6 +238,18 @@ class TestClientContract:
         names = matched["target_collection_names"].explode().dropna()
         assert not names.empty, "matched peaks should name their collections"
 
+    def test_a_sample_says_its_class_and_line_width(self, mascope):
+        """Whether or not it has an assignment run: the demo has none."""
+        sample = mascope.samples.get(_first_sample_id(mascope))
+
+        width = sample["line_width"]
+        # The demo samples are cut from raw Orbitrap files.
+        assert width["instrument_class"] == "orbi"
+        assert width["reference_mz"] == 200.0
+        if width["resolution"] is not None:
+            assert width["resolution"] > 0
+            assert width["fwhm_ppm"] == pytest.approx(1e6 / width["resolution"])
+
     def test_get_single_sample(self, mascope):
         sample_id = _first_sample_id(mascope)
 
@@ -272,6 +284,16 @@ class TestPeakAssignmentContract:
         completed = runs[runs["status"] == "completed"]
         assert not completed.empty
         assert completed.iloc[0]["engine_version"]
+
+    def test_list_runs_serves_the_width_each_run_scored_at(self, mascope):
+        sample_id = _sample_with_completed_run(mascope)
+
+        runs = mascope.peak_assignments.list_runs(sample_id)
+
+        assert {"sigma_ppm", "sigma_source", "mu_ppm", "mu_source"} <= set(runs.columns)
+        scored = runs[runs["sigma_ppm"].notna()]
+        assert (scored["sigma_ppm"] > 0).all()
+        assert scored["sigma_source"].notna().all()
 
     def test_get_returns_one_row_per_peak_with_run_attrs(self, mascope):
         sample_id = _sample_with_completed_run(mascope)

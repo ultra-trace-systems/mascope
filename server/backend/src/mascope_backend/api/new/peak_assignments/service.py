@@ -230,6 +230,38 @@ from mascope_tools.composition.reagents import (
 # -------------------------------------------------------------------
 
 
+#: The keys of a run's scoring width, as the runs listing serves them.
+SCORING_WIDTH_KEYS = ("sigma_ppm", "sigma_source", "mu_ppm", "mu_source")
+
+
+def scoring_width(run: PeakAssignmentRun) -> dict:
+    """The mass-error width a run scored at, and where each number came from.
+
+    An imported run answers with what its engine disclosed. An in-app run
+    answers from the ``pattern_scoring`` snapshot it wrote into its config
+    when it scored; an import's config is opaque, so the same key there is
+    the engine's own business and is not read.
+
+    :param run: The run.
+    :return: ``sigma_ppm``, ``sigma_source``, ``mu_ppm`` and ``mu_source``,
+        each None where the run recorded none.
+    """
+    if run.scoring_width is not None:
+        width = run.scoring_width
+    elif run.engine == IN_APP_ENGINE and isinstance(run.config, dict):
+        width = run.config.get(PATTERN_SCORING_KEY)
+    else:
+        width = None
+    if not isinstance(width, dict):
+        width = {}
+    return {key: width.get(key) for key in SCORING_WIDTH_KEYS}
+
+
+def run_record(run: PeakAssignmentRun) -> dict:
+    """The run as the runs listing serves it, its scoring width lifted out."""
+    return {**run.to_dict(), **scoring_width(run)}
+
+
 @api_controller()
 async def get_peak_assignment_runs(sample_item_id: str) -> dict:
     """
@@ -258,7 +290,7 @@ async def get_peak_assignment_runs(sample_item_id: str) -> dict:
         # the fallback for a sample that has none.
         derived = await fold_run_record(session, sample)
 
-    data = [run.to_dict() for run in runs]
+    data = [run_record(run) for run in runs]
     if derived is not None:
         data.append(derived)
     return {

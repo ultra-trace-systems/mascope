@@ -3,7 +3,7 @@
 # Making the SDK peak-assignment aware (read-first)
 
 - **Status:** building
-- **As of:** 2026-10-28
+- **As of:** 2026-10-29
 - **Tracked in:** MAS-71 in [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) for the import contract; the SDK write wrappers (section 8.4 steps 5 and 6) are MAS-330 and MAS-345, the demo bundle MAS-331 and the reference identities in frames MAS-332, in [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) milestone 3 (filed 2026-10-22)
 - **What:** The SDK's peak-assignment surface; section 8 is the run-import contract.
 
@@ -191,6 +191,7 @@ Request, top level:
 | `config` | the engine's full run configuration, **opaque JSON**, stored **verbatim** - the server never reads it and never writes into it. Size-capped (below) |
 | `tier_bands` | the `assigned` / `candidate` thresholds the engine tiered with, on the **evidence** scale (`fit_score` x chemical plausibility - see "Tier coherence" in Validation), **required** - a first-class run field, *not* buried in opaque `config`, because the server validates rows against it. Same two keys, same `{tier: threshold}` shape as before; only the scale the numbers are read on moved. The legacy key `identified` is accepted and normalised to `assigned` (see "Enum validity" in Validation) |
 | `calibration` | the client's calibration state, **required** - its own nullable JSON column on the run, *not* a reserved key inside `config` |
+| `scoring_width` | optional: `{sigma_ppm, sigma_source, mu_ppm, mu_source}`, the mass-error width the engine scored at and its centre. Its own nullable JSON column, like `calibration`, read from the request that creates the run. `sigma_ppm` (> 0) and `sigma_source` are required inside it. Served on the run record as the same four fields an in-app run serves from its `pattern_scoring` snapshot (MAS-410); omitted, all four are null |
 | `rows` | assignment rows (below) |
 | `chunk` | assembly control: `{run_id, import_id, index, complete}`, **required** (`import_id` with it) - see "One logical import" |
 

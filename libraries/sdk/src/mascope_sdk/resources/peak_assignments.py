@@ -212,6 +212,14 @@ class PeakAssignmentsResource(BaseResource):
                  - ``calibration``: What an external engine disclosed about
                    its calibration at import (dict). Null for ``mascope``
                    runs, whose calibration state is the sample's own.
+                 - ``sigma_ppm`` / ``sigma_source``: The mass-error width
+                   the run scored at [ppm], and where it came from:
+                   ``fitted`` or ``instrument_class`` for a ``mascope`` run,
+                   the engine's own word for an imported one.
+                 - ``mu_ppm`` / ``mu_source``: The mass-error centre the
+                   run corrected by [ppm], and where it came from. All four
+                   are null for a run that never reached scoring, an import
+                   that disclosed no width, and the ``batch`` run.
                  - ``error``: Failure reason, if any
                  - ``peak_assignment_run_utc_created`` /
                    ``peak_assignment_run_utc_completed``: Timestamps (UTC)
