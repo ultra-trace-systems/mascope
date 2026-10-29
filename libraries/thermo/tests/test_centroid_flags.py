@@ -479,3 +479,19 @@ def test_to_dict_leaves_out_the_excluded_flags(scripted_file, monkeypatch):
     assert [scan["flags"] for scan in every] == [FLAGS] * 3
     assert [scan["flags"] for scan in kept] == [[0, 8, 10]] * 3
     assert [scan["scan"] for scan in kept] == SCAN_NUMBERS
+
+
+def test_get_centroid_flag_shares_reads_the_flags_of_every_centroid(scripted_file):
+    """The share of each peak's centroids carrying a flag, the Reference and
+    Exception centroids included: one centroid under each of the first five
+    peaks, and 102 and 103 under the last, as wide as the two."""
+    masses = np.array([*MZS, 102.5])
+    resolutions = np.array([1e4] * len(MZS) + [102.5 / 1.2])
+
+    exception = m_thermo.get_centroid_flag_shares(scripted_file, masses, resolutions)
+    reference = m_thermo.get_centroid_flag_shares(
+        scripted_file, masses, resolutions, flag="reference"
+    )
+
+    assert exception.tolist() == [0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+    assert reference.tolist() == [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]

@@ -842,6 +842,76 @@ def test_centroids_average_matches_thermo(monkeypatch, path):
         )
 
 
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_centroid_flag_shares_match_thermo(monkeypatch, path):
+    """Both backends give a peak the same share of Exception centroids, and so
+    peak detection the same side lobes (``flag_exception_peaks``).
+
+    For one peak list the shares are identical: they count the per-scan
+    centroids and flags, which agree centroid for centroid
+    (:func:`test_per_scan_reads_match_thermo`). Each backend's own averaged
+    peaks differ a little in m/z and more in resolution, which sets the
+    window counted in: a median of 1.2 times, 2.9 at the 99th percentile. So
+    one backend's window can take in a centroid the other's leaves out, and
+    where that centroid decides, a share of half meets one over it. Where
+    OpenTFRaw's averaged resolution is an outlier (GitHub #2780), its window
+    holds no centroid and the peak has no share. On the 165 demo raws and 88
+    customer Orbitrap files of three instruments, 22 of the 25,761 matched
+    peaks either backend put over half were over half under one only: 18
+    with a share of exactly half on the other, 3 with no share under
+    OpenTFRaw, one at 0.6 against 0.33. That is at most 2 a file and at most
+    2.9 % of a file's peaks over half, so the bound allows 3 a file or 2 %
+    of its peaks over half, whichever is more. It pins the verdicts, not the
+    window, which hardly moves them (a Thermo window twice as wide turns 78
+    peaks, at most 3 a file): ``test_centroid_flag_shares.py`` pins that.
+    """
+    path = str(path)
+    t_min, t_max = _bounded_window(monkeypatch, path)
+    window = dict(t_min=t_min, t_max=t_max)
+
+    om, _, orr, _ = _run_under(
+        monkeypatch, "opentfraw", m_thermo.get_centroids, path, **window
+    )
+    tm, _, tr, _ = _run_under(
+        monkeypatch, "thermo", m_thermo.get_centroids, path, **window
+    )
+    if om.size == 0 or tm.size == 0:
+        pytest.skip("no centroids")
+
+    shares = {
+        name: _run_under(
+            monkeypatch,
+            name,
+            m_thermo.get_centroid_flag_shares,
+            path,
+            om,
+            orr,
+            **window,
+        )
+        for name in ("opentfraw", "thermo")
+    }
+    np.testing.assert_array_equal(shares["opentfraw"], shares["thermo"])
+
+    own = _run_under(
+        monkeypatch, "thermo", m_thermo.get_centroid_flag_shares, path, tm, tr, **window
+    )
+    order = np.argsort(tm)
+    pos = np.clip(np.searchsorted(tm[order], om), 1, tm.size - 1)
+    nearest = np.where(
+        np.abs(tm[order][pos - 1] - om) < np.abs(tm[order][pos] - om), pos - 1, pos
+    )
+    paired = order[nearest]
+    matched = np.abs(tm[paired] - om) / om * 1e6 <= 1.0
+    ours = shares["opentfraw"][matched] > 0.5
+    theirs = own[paired[matched]] > 0.5
+    either = int((ours | theirs).sum())
+    differ = int((ours != theirs).sum())
+    assert differ <= max(3, 0.02 * either), (
+        f"{differ} of the {either} matched peaks over half Exception under "
+        "either backend are over half under one only"
+    )
+
+
 def _profile_fwhm_ppm(mz, inten, center, window_ppm=40):
     """FWHM (in ppm) of the peak nearest `center` in a profile spectrum, or
     None if it can't be measured cleanly. Half-max crossings are linearly
