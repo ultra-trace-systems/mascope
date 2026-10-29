@@ -1,7 +1,7 @@
 # TOF mass calibration
 
 - **Status:** building
-- **As of:** 2026-10-27
+- **As of:** 2026-10-29
 - **Tracked in:** [TOF mass calibration](https://linear.app/ultra-trace/project/tof-mass-calibration-8271ef05d142) (Linear, MAS-171 to MAS-197)
 - **What:** TOF mass calibration across the analysed range: measure, fix calibrants, model, re-calibrate.
 
@@ -13,10 +13,11 @@ in the Linear project
 this note is its record.*
 
 **Status.** Milestone 0 (measure) is done: the assessment that started the project, the audit
-tool and the fleet baseline (section 2). One instrument's calibrant set has been corrected
-(milestone 1). Of the node's changes (milestone 2), the record that says what a fit was made on is
-in (MAS-182); the rest are still to come. Sites are named by letter and instruments by neutral
-labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this repository.
+tool and the fleet baseline (section 2). One instrument's calibrant set has been corrected, and
+TOF M's were measured and kept (milestone 1). Of the node's changes (milestone 2), the record that
+says what a fit was made on is in (MAS-182); the rest are still to come. Sites are named by letter
+and instruments by neutral labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this
+repository.
 
 ## 1. The problem
 
@@ -471,8 +472,54 @@ Configuration on the sites, applied on the plan owner's word and measured before
   as the cluster C13H25NO2), 5 points at 41, 60, 100, 119 and 228 Th, post-fit 3–4 ppm. New files
   calibrate on it from 2026-10-19 (MAS-172, done). The batches of 2026-10-12 to 10-16 (about 600
   files) and two earlier files are still on the old set (MAS-176).
-- **TOF M**: high-mass calibrants that reach the top of its ~1,000 Th axis, chosen from the
-  baseline (MAS-179).
+- **TOF M**: both sets kept as they are (MAS-179, done). A read-only screen with the audit's code,
+  on 253 files over the 60 days to 2026-10-28, found no ion above either top calibrant that passes
+  the rules. Each axis stays extrapolated above its top calibrant: 241 Th in the bromide/nitrate
+  mode, 188 Th in the nitrate mode.
+  - *Bromide/nitrate.* Br3− at 241 Th is the highest reagent ion: in every file, within ±0.2 ppm.
+    HSO4−·(H2SO4)n are absent: the lines at 195, 293 and 489 Th read −90 to +68 ppm, other peaks.
+    Above 241 Th the only candidates are CHO members in at most 80% of the files. Their M+1 lines
+    show fewer carbons than their formulas, or they read 21–28 ppm off. The one new ion that passes
+    every rule, NO3−·C7H10O4 at 220 Th, lies inside the span and moves no band by more than 0.3 ppm.
+  - *Nitrate.* No reagent ion lies above (HNO3)2·NO3− at 188 Th, which is kept in 84% of the files
+    and in 28% of the latest day's. NO3− adducts of C7–C10 organics at 236–312 Th are strong, with
+    no neighbour within a peak width, but are in only 69–90% of the files. On today's axis they
+    read −1.5 to +0.9 ppm over the 60 days and −0.2 to +2.3 on the latest day. Two of them,
+    NO3−·C10H16O5 (278 Th) and NO3−·C10H18O7 (312 Th), were refitted into the set as a test (the
+    table). Each, held out, reads within 1.4 ppm. The axis steadies: over the 60 days the seven
+    candidate ions at 236–296 Th outside the set vary from file to file by an IQR of 0.6–1.6 ppm
+    instead of 2.4–3.9. But the fit tilts. Take the organic ions at 150–250 Th that pass the
+    neighbour and ¹³C rules, are in every file of the latest day and read within 5 ppm: ten ions.
+    On that day each reads 0.6–1.3 ppm lower, further from zero (−1.1 to +0.2 over the 60 days),
+    and the calibrant lines at 150–200 Th read −1.0 ppm instead of −0.1. A lower band reads worse,
+    so the set is kept. A wider variant, with NO3−·C7H10O5 (236 Th) and NO3−·C10H18O6 (296 Th) too,
+    tilts the same way.
+  - *Nitrate, mode 0 only.* The test fitted the node's one model today, mode 0, so the verdict is
+    mode 0's. With the two ions in, the lines the fit keeps bow on the latest day: +0.5 ppm at
+    40–100 Th, −0.7 at 100–150, −1.0 at 150–200, 0.0 at 278 Th and +0.8 at 312 Th. That is the
+    shape the three-parameter model (MAS-183) is there to remove. The comparison is repeated under
+    it before site A's history is re-calibrated (MAS-196):
+    [#2785](https://github.com/ultra-trace-systems/mascope/issues/2785).
+  - *Second nitrate mode.* Five files on one day. Nothing passes, and its collection serves seven
+    modes. Unchanged.
+  - Reaching the top would take an ion in every file above those masses, such as a calibrant dosed
+    into the inlet: a choice for the lab, not a set change. Until then the coverage check (MAS-184)
+    is what flags the extrapolation.
+
+  The nitrate test under mode 0, ppm, 60 days (latest day). *Calibrant lines*: the lines the fit
+  kept. *Family*: the audit's CHO·NO3− family offset, median [IQR] (section 2).
+
+  | Band or line (Th) | Read on | Today's set | With the two |
+  | -- | -- | --: | --: |
+  | 40–100 | calibrant lines | −1.3 (−0.9) | −1.1 (+0.5) |
+  | 100–150 | calibrant lines | −0.3 (+0.1) | −0.4 (−0.7) |
+  | 100–150 | family | −1.8 [2] (no reading) | −1.4 [2] (no reading) |
+  | 150–200 | calibrant lines | −0.2 (−0.1) | −0.4 (−1.0) |
+  | 150–200 | family | −2.4 [4] (−1.1 [4]) | −2.4 [2] (−2.1 [4]) |
+  | 200–300 | family | −1.0 [4] (−0.2 [4]) | −1.4 [3] (−1.5 [4]) |
+  | 278 | NO3−·C10H16O5, not in the fit | 0.0 (+1.4) | −0.5 (0.0) |
+  | 312 | NO3−·C10H18O7, not in the fit | +0.9 (+2.3) | +0.9 (+1.4) |
+  | 300–500 | family | no reading | +1.5 [13] (no reading) |
 - **Site B**: nitrate and bromide sets for B1–B3, with spare points beyond the three-ion nitrate
   series (MAS-180).
 - **Modes without calibrants** (site B ambient and zero): a decision (section 5).
