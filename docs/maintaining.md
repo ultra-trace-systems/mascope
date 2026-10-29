@@ -17,6 +17,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Start / stop the stack | `mascope prod up --detach` / `mascope prod down` |
 | Container status / logs | `mascope prod ps` / `mascope prod logs --follow` |
 | **Status at a glance** | `mascope prod doctor` (add `--json` to script it) |
+| Which settings this server overrides, and in which file | `mascope prod config` (`--all` for every setting) |
 | **Check for an update (applies nothing)** | `mascope prod update --check` |
 | Update now | `mascope prod update` |
 | Approve / defer a pending migration update, or retry / quiet a held release | `mascope prod update --confirm` / `--snooze 7` |
@@ -90,6 +91,66 @@ then reinstall the CLI from that checkout, then `mascope prod update` - in that
 order, see [Rolling out a release across several
 servers](#rolling-out-a-release-across-several-servers) for why the CLI has to
 move before the stack does.
+
+## The settings a deployment overrides
+
+A deployment's settings come from three layers, applied in order:
+`base.mascope.toml` and `prod.mascope.toml`, both shipped with the release,
+then the env's own `.runtime/env/<env>/prod.mascope.toml`. Whatever makes one
+server run differently from another is in that last file, or in a default a
+release changed. `mascope prod config` shows both, read-only:
+
+```
+$ mascope prod config
+Env "prod" in prod mode: settings that differ from the model defaults
+Layers, applied in this order:
+  base  /app/base.mascope.toml
+  mode  /app/prod.mascope.toml
+  env   /app/.runtime/env/prod/prod.mascope.toml
+
+[backend]
+  calibration_quality_gate = "enforce"     env      default "warn"
+
+[backend.database]
+  shm_size = "20g"                         mode     default "1g"
+  ...
+
+[file-converter]
+  raw_threads = 1                          base     default 2
+```
+
+Each line is a setting whose value differs from the config model's default,
+with the layer that set it: `base`, `mode` or `env`. A setting the release's
+`base.mascope.toml` moves away from the model's default shows as `base`, not
+as a default. A setting is credited to the last layer that writes it, even
+when it writes the value the layer below already gave: such a pin stays when
+a later release changes that value. Three more notes a line can carry:
+
+- **`unknown key, ignored by the loader`**: the config model has no such
+  setting, so the backend drops it without a word. Usually a misspelt key, or
+  a setting from another release.
+- **`no default`**: a setting the model leaves to the layers, such as an
+  agent's `host`. It is listed only when the mode or env layer sets it.
+- **`<hidden>`**: a credential, such as `[file-agent] access_token`. Its value
+  is never printed. Nothing is read from `.runtime/secrets` either.
+
+`--all` prints every setting of the effective config, defaults included, and
+`--json` emits the same rows for scripting. Values are shown as the files
+write them: a relative path stays relative, and a `MASCOPE_LOGLEVEL` or
+`MASCOPE_API_PORT` set in the environment is not applied.
+
+**It reads the image's layers, not the host's.** The backend container reads
+the `base.mascope.toml` and `prod.mascope.toml` baked into its image; only the
+env directory is mounted from the host. A home made by `mascope init` keeps
+its own copies of those two files until `mascope init --force`. So the command
+runs its report inside the running backend container, against the image's
+files and config models, and needs the stack up. When a host copy differs
+from the image's, it warns on stderr and names the file: the image's copy is
+the one in force, and the one the report shows.
+
+On a development machine, `mascope dev config` reports the active env the same
+way, from the files `mascope dev run` reads. Set `MASCOPE_ENV` to report
+another env.
 
 ## Provisioning
 

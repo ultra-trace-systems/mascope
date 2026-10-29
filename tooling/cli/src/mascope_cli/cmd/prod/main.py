@@ -31,6 +31,7 @@ from typing import Annotated, NoReturn, Optional
 
 import typer
 
+from mascope_cli import config_layers
 from mascope_cli.checkout import backend_path
 from mascope_cli.cmd import lib
 from mascope_cli.cmd.prod import auto_update, cli_drift, preflight, release_manifest
@@ -1477,6 +1478,136 @@ def doctor(
     else:
         typer.echo(prod_doctor.format_text(report))
     raise typer.Exit(report.exit_code)
+
+
+def _image_config_report(container: str) -> dict:
+    """
+    The config layer report, read inside the running backend container.
+
+    The backend reads the base and mode layers baked into its image, not the
+    host's copies, and validates them against the image's config models. So
+    the report is built there: this CLI pipes `mascope_cli.config_layers`, a
+    stdlib-only module, into the image's own Python, which prints the report
+    as one JSON line. The env layer is the host's file either way: compose
+    mounts the env directory into the container.
+
+    :param container: The backend container's name
+    :return: The report, as `config_layers.collect` returns it
+    :raises typer.Exit: When the container cannot run it
+    """
+    source = Path(config_layers.__file__).read_text(encoding="utf-8")
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                "-i",
+                container,
+                config_layers.IMAGE_PYTHON,
+                "-",
+                "--home",
+                config_layers.IMAGE_HOME,
+                "--env",
+                runtime.env.name,
+                "--mode",
+                _MODE,
+            ],
+            input=source,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        typer.secho(
+            f"Could not read the config in {container}: {exc}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    lines = result.stdout.strip().splitlines()
+    if result.returncode != 0 or not lines:
+        typer.secho(
+            f"Could not read the config in {container}; is the stack up "
+            "(`mascope prod ps`)?",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        typer.echo(result.stderr.strip(), err=True)
+        raise typer.Exit(1)
+    return json.loads(lines[-1])
+
+
+def _host_copies_differ(report: dict) -> list[str]:
+    """
+    The shipped layers whose host copy differs from the image's.
+
+    A home made by `mascope init` keeps its copies of base.mascope.toml and
+    prod.mascope.toml until `mascope init --force`, while the image carries
+    the release's. The backend reads the image's, so a host copy that differs
+    misleads whoever reads it on the host. Compared by the digest of the
+    parsed content, so a comment or the layout alone is no difference.
+
+    :param report: The image's report
+    :return: Paths of the host copies that differ from the image's
+    """
+    host = {
+        "base": runtime.path("base.mascope.toml"),
+        "mode": runtime.path(f"{_MODE}.mascope.toml"),
+    }
+    differ = []
+    for layer in report["layers"]:
+        path = host.get(layer["layer"])
+        if path is None:
+            continue
+        digest = config_layers.layer_digest(config_layers.read_layer(path))
+        if digest != layer["digest"]:
+            differ.append(path)
+    return differ
+
+
+@prod_app.command(name="config")
+def config_report(
+    show_all: Annotated[
+        bool,
+        typer.Option("--all", help="Print every setting, not only the overrides."),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit the report as JSON instead of text."),
+    ] = False,
+) -> None:
+    """
+    Show which config settings this deployment runs differently from the defaults.
+
+    Reads the config layers in the running backend container, as the backend
+    does: the image's base.mascope.toml and prod.mascope.toml, then the env's
+    own prod.mascope.toml. Prints every setting whose value differs from the
+    config model's default, with the layer that set it (base, mode or env).
+    Credentials are never printed. Warns when the host's copies of the
+    shipped layers differ from the image's, which are the ones in force.
+    Needs the stack up.
+
+    \b
+    Examples:
+        mascope prod config
+        mascope prod config --all
+        mascope prod config --json
+    """
+    container = runtime.full_config.backend.get_backend_container_name(mode=_MODE)
+    report = _image_config_report(container)
+    for path in _host_copies_differ(report):
+        typer.secho(
+            f"{path} differs from the image's copy; the backend reads the "
+            "image's, which this report shows.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    if as_json:
+        typer.echo(config_layers.format_json(report, show_all=show_all))
+        return
+    heading = config_layers.title(runtime.env.name, _MODE, show_all=show_all)
+    typer.echo(config_layers.format_text(report, show_all=show_all, title=heading))
 
 
 @prod_app.command(

@@ -13,6 +13,7 @@ from typing import Annotated, List, Optional
 
 import typer
 
+from mascope_cli import config_layers
 from mascope_cli.cmd import lib
 from mascope_cli.cmd.dev.db import (
     create_database,
@@ -518,6 +519,46 @@ def restart(
         args.append(service)
 
     _run_dev_compose(args)
+
+
+@dev_app.command(name="config")
+def config_report(
+    show_all: Annotated[
+        bool,
+        typer.Option("--all", help="Print every setting, not only the overrides."),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit the report as JSON instead of text."),
+    ] = False,
+) -> None:
+    """
+    Show which config settings this env runs differently from the defaults.
+
+    Reads the three config layers as the backend does (base.mascope.toml,
+    dev.mascope.toml, then the env's own dev.mascope.toml) and prints every
+    setting whose value differs from the config model's default, with the
+    layer that set it. Credentials are never printed. Set MASCOPE_ENV to
+    report another env.
+
+    \b
+    Examples:
+        mascope dev config
+        mascope dev config --all
+        MASCOPE_ENV=testbed mascope dev config --json
+    """
+    report = config_layers.collect(
+        {
+            "base": runtime.path("base.mascope.toml"),
+            "mode": runtime.path(f"{_MODE}.mascope.toml"),
+            "env": runtime.env.path(f"./{_MODE}.mascope.toml"),
+        }
+    )
+    if as_json:
+        typer.echo(config_layers.format_json(report, show_all=show_all))
+        return
+    heading = config_layers.title(runtime.env.name, _MODE, show_all=show_all)
+    typer.echo(config_layers.format_text(report, show_all=show_all, title=heading))
 
 
 @dev_app.command()
