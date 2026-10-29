@@ -99,7 +99,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - |  | planned; after 3.5; feeds 4.3 and the axis-fingerprint project; the labelled sets wait for a release carrying the reference's #77 |
 | 5.8 - an identification level in Mascope's own vocabulary | - |  | planned 2026-10-14 (decision 30 taken); after 3.7 |
 | 5.9 - the width a run scored at, served on the run and sample records | - |  | planned 2026-10-22, from the readiness check (the digest's one unbinned ask); MAS-410 |
-| 5.10 - the instrument's side-lobe flag: Exception centroids out of the averaged profile, the averaged centroids and peak detection | - |  | planned 2026-10-23, from the centroid-flag census after MAS-6; measured beside 5.4; MAS-443 |
+| 5.10 - the instrument's side-lobe flag: Exception-majority peaks into the satellite flag | #2779 |  | built: a peak most of whose per-scan centroids the instrument flagged is a satellite, unless on an isotopologue line; the averaged profile kept as measured (MAS-577); MAS-443 |
 | 5.12 - the per-sample scoring derivation as one library function, and a bulk candidate scorer | #2767 | | built: `pattern_scoring_for_sample` and `score_candidates` in `mascope_tools`, the engine and the finder call them; no score moves beyond rounding; MAS-569 |
 
 ## Purpose
@@ -1211,58 +1211,69 @@ under its milestone 5.
 - **Size.** S. Independent; between rounds, with 5.6 at the earliest
   (MAS-410).
 
-### 5.10 The instrument's side-lobe flag: Exception centroids out of the averaged profile and peak detection
+### 5.10 The instrument's side-lobe flag: Exception-majority peaks into the satellite flag
 
-- **What.** Measure first. On the demo raws and the gate's Orbitrap sets,
-  take for every peak the picker keeps the share of its per-scan centroids
-  that the instrument flagged Exception (Thermo's `PeakOptions` value 8,
-  `CENTROID_FLAGS["exception"]`, read on both backends by
-  `ReaderBackend.centroid_flags` since MAS-6). Count the Exception-majority
-  peaks the sidelobe flag already takes, those it misses, and the
-  satellites that are not Exception-majority, and read ten of each against
-  the raw profile. The census below read one instrument, so first check
-  the gate's other instruments against the published demo raws: the same
-  shape, and a share in their range (3.9-6.8 % of centroids per file),
-  read as a range only, since on one instrument the share moves with the
-  method. If Exception-majority peaks turn out to be ions (an
-  isotopologue, a weak real peak), stop there and report. Otherwise leave
-  every Exception centroid out of the OpenTFRaw backend's
-  `average_profile`, blanking its profile chunk per scan before averaging
-  as the vendor's averaging does, and out of `average_centroids` on both
-  backends, and bump `AVERAGED_PROFILE_GENERATION`. Keep the centroids
-  flagged Reference (the lock mass is an ion and can be the base peak) and
-  the Fragmented and Merged ones that are not also Exception.
-- **Why.** The reader opens a file with `IncludeReferenceAndExceptionData`
-  to keep the lock mass, which lets the Exception centroids in too, and
-  nothing downstream reads the flag. A census on 2026-10-23 read every
-  centroid of the 161 raws of demo bundle 1.3.1, all MS1 and from one
-  instrument: 5.2 % of their 940,950 centroids are flagged Exception, 3.9
-  to 6.8 % per file, and no file has none. Four MS2 raws from the same
-  instrument, which a 1.4.0 candidate bundle adds, flag more: 11.5 % of
-  their MS1 centroids (6.4 to 12.5 % per file) and 5.1 % of their MS2
-  ones. Read on every 16th demo raw (3,319 flagged centroids), 99.8 % sit
+As built (MAS-443). The step was planned as Exception centroids out of the
+averaged profile and the averaged centroids; its measurement stopped that,
+and the plan owner's call on MAS-577 (2026-10-29) moved it to the picker,
+with the averaged profile kept as measured.
+
+- **What.** For every peak of each spectrum it averages (a polarity, or a
+  scan stream), the raw Orbitrap detector reads the share of the per-scan
+  centroids within half the peak's width that the instrument flagged
+  Exception (Thermo's `PeakOptions` value 8, `CENTROID_FLAGS["exception"]`,
+  read on both backends since MAS-6). A peak over half is marked
+  `is_satellite`, which a load already drops, unless it sits within half its
+  width (never under 1 ppm) of an isotopologue line (13C, 2H, 15N, 17O,
+  18O, 34S, 37Cl, 81Br) of a peak under half, at a height that line can have
+  beside it (the reference's ratio band and mass cap). The averaged profile
+  and the averaged centroids keep every centroid, as the vendor's
+  `AverageScans` does on a file opened as the reader opens one; no profile or
+  centroid moves and `AVERAGED_PROFILE_GENERATION` stays at 6. The share is
+  not stored.
+- **Why.** The flag is mostly the FT side lobe: on the 161 MS1 demo raws
+  5.2 % of the centroids carry it (3.9 to 6.8 % per file), 99.7 % of them
   within 200 ppm of an unflagged, brighter line at under 5 % of its height
-  (a median 0.6 %, 33 ppm away), in clusters, and most clear an S/N of 3
-  in a single scan (a median 4.4); the candidate raws' 48,960 flagged
-  centroids show the same shape. That is the FT side lobe, and at 33 ppm
-  it is resolved, so it reaches the picker as a peak of its own. The ratio
-  test catches part of them: the log ("What the FT sidelobe flag still has
-  to find") records 43-236 peaks per Orbitrap set that the reference labels
-  artifacts and the flag misses, at -56 to +45 ppm around set A's reagent
-  ion, which is where Exception centroids sit. The instrument has already
-  said which centroids they are.
-- **Where.** `libraries/thermo/src/mascope_thermo/backend.py`
-  (`average_profile`, `average_centroids`, `AVERAGED_PROFILE_GENERATION`)
-  and `reader_pipeline.md`; read only, for the measurement,
-  `mascope_signal.peak` and `mascope_tools.alignment.utils`. A change to the
-  averaged profile moves the reproducibility goldens and ships with a new
-  demo bundle.
-- **Verify.** No peak the picker keeps on the demo raws is
-  Exception-majority; every peak lost is one the measurement read as a
-  lobe; no isotopologue of a bright line is lost; both backends leave out
-  the same centroids; G6 and G8 unchanged.
-- **Size.** L. Beside 5.4: the measurement reads what both take, and the
-  two land apart by footprint (MAS-443).
+  (a median 0.6 %, 33 ppm away), and instruments B and C show the same
+  shape. 11,758 of the 218,933 peaks the demo raws keep are
+  Exception-majority, and the ratio test takes about half of them. But the
+  instrument flags by position, and it flags real lines where it expects a
+  lobe of a brighter one: an ion's 2H line lies 2.92 mDa above its 13C line,
+  about 2.4 widths at m/z 150-230, and 345 Exception-majority demo peaks sit
+  there against 82 and 27 at offsets moved by 0.6 mDa. Leaving every
+  Exception centroid out of the averages would have lost 595 of the goldens'
+  948 matched 2H lines. Against control offsets the exemption finds real
+  13C, 2H and 18O lines among the flagged peaks, and real links out to about
+  0.6 FWHM from the exact spacing, a line averaged with the lobe it sits on
+  being centroided between the two; hence half the width. 29Si is left out:
+  its spacing falls 3.8 mDa below 13C's, on the negative lobe of an ion's
+  13C line. The report and the readings against the raw profile are on
+  MAS-443.
+- **Measured.** On the 165 demo raws and 88 Orbitrap raws of the gate's
+  sets A, C, C2, D, K, K2, K3, L (the demo instrument), B and G, H, I:
+  18,311 kept peaks Exception-majority, 4,032 of them spared on a line,
+  14,279 marked; 5,843 of those were not satellites before (3,343 on the
+  161 MS1 demo raws, 1.5 % of their kept peaks). Of the demo goldens' 42,570 matched
+  peaks, 307 sit on a newly marked peak: 62 M0 lines, every one read is a
+  lobe of a bright line the matcher took for an ion (a shoulder pair, a
+  ringing comb whose 13C copy is flagged too); 120 13C, 37 15N, 34 18O and
+  28 2H lines, nearly all more than half a width from the exact line of
+  their ion, which the matcher's window took. A few are a real line averaged
+  with a lobe and pulled further out than half its width.
+- **Where.** `mascope_thermo.thermo.get_centroid_flag_shares`,
+  `mascope_signal.compute.get_orbi_centroid_flag_shares`,
+  `mascope_signal.peak.OrbiPeakDetector`,
+  `mascope_tools.alignment.utils.flag_exception_peaks`;
+  `reader_pipeline.md` (sections 2 and 7) and the how-it-works page on peak
+  detection.
+- **Verify.** No Exception-majority peak the demo raws keep is outside the
+  satellite flag except on an isotopologue line; every matched compound lost
+  sat at an Exception-majority peak; both backends give the same shares
+  (`test_centroid_flag_shares_match_thermo`); G6 and G8 unchanged, read on
+  the planner's pass. The goldens move with the satellite flag and ship with
+  a new demo bundle.
+- **Size.** L. Beside 5.4 (MAS-69), which reads the same lobes by their
+  width-scaled signatures and can take the instrument's flag as one of them.
 
 ### 5.12 The per-sample scoring derivation as one library function, and a bulk candidate scorer
 

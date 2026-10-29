@@ -31,7 +31,7 @@ from mascope_match.params import (
 )
 from mascope_signal.runtime import runtime
 from mascope_thermo.thermo import NoScansFoundError
-from mascope_tools.alignment.utils import flag_satellite_peaks
+from mascope_tools.alignment.utils import flag_exception_peaks, flag_satellite_peaks
 
 
 # Restrict large chunks for dask
@@ -87,6 +87,12 @@ LOCAL_FLOOR_MIN_NEIGHBOURS = 300
 LOCAL_FLOOR_FACTOR = 5.0
 
 PEAK_ID_LENGTH = 20
+
+#: Where a raw Orbitrap file's peaks carry, from their reading to the
+#: satellite flag, whether the instrument marked them as side lobes
+#: (``mascope_tools.alignment.utils.flag_exception_peaks``). It goes into
+#: ``is_satellite`` and is not written to the store.
+EXCEPTION_PEAK = "is_exception_peak"
 
 #: The ``.props`` entry that records the decision a file's peak store is built
 #: by: true where its peaks are detected per scan stream. Absent where nobody
@@ -638,6 +644,11 @@ class OrbiPeakDetector(BasePeakDetector):
         """
         if peak_shape is None:
             peak_shape = self._peak_shape
+        if calibration is m_compute.RECORD_ON_FILE:
+            # Read once, for the centroids and for their flags below: the
+            # flags are read where the scans recorded the centroids, so the
+            # peaks are taken back there by the factor they came by
+            calibration = m_io.read_props(self._filename)["mz_calibration"]
         (
             peak_mzs,
             peak_heights,
@@ -646,6 +657,28 @@ class OrbiPeakDetector(BasePeakDetector):
         ) = await m_compute.get_orbi_centroids(
             self._filename, polarity=polarity, stream=stream, calibration=calibration
         )
+
+        # The peaks the instrument marked as side lobes, scan by scan. Read
+        # here, where the peaks are one spectrum, and carried as far as the
+        # satellite flag (_flag_satellite_peaks), which takes them in.
+        exception_share = await m_compute.get_orbi_centroid_flag_shares(
+            self._filename,
+            peak_mzs,
+            resolutions,
+            polarity=polarity,
+            stream=stream,
+            calibration=calibration,
+        )
+        is_exception_peak = flag_exception_peaks(
+            pd.DataFrame(
+                {
+                    "mz": peak_mzs,
+                    "intensity": peak_heights,
+                    "exception_share": exception_share,
+                    "resolution": resolutions,
+                }
+            )
+        )["is_exception_peak"].values
 
         # The m/z peak area is the integral of the analytic peak model, so it is
         # computed on a self-built grid inside calculate_peak_area and does not
@@ -669,6 +702,7 @@ class OrbiPeakDetector(BasePeakDetector):
                 "sum_peak_heights": (("mz"), peak_heights),
                 "signal_to_noise": (("mz"), signal_to_noise),
                 "polarity": (("mz"), np.full(peak_mzs.shape, polarity)),
+                EXCEPTION_PEAK: (("mz"), is_exception_peak),
             }
         ).assign_coords(mz=("mz", peak_mzs))
 
@@ -687,6 +721,11 @@ class OrbiPeakDetector(BasePeakDetector):
         self._peak_timeseries = store.assign({"is_weak": (("mz"), is_weak)})
 
     def _flag_satellite_peaks(self):
+        """Flag the side lobes of strong peaks as satellites: the peaks the
+        ratio test of ``flag_satellite_peaks`` reads as one, and those the
+        instrument marked (``flag_exception_peaks``, read as each spectrum's
+        peaks were). The instrument's mark is not kept in the store beside
+        the flag it went into."""
         peaks_df = pd.DataFrame(
             {
                 "mz": self.peak_timeseries.mz.values,
@@ -710,7 +749,8 @@ class OrbiPeakDetector(BasePeakDetector):
                         peaks_df[in_stream].reset_index(drop=True)
                     )
                     is_satellite[in_stream] = flagged["is_satellite_peak"].values
-        self._peak_timeseries = self.peak_timeseries.assign(
+        is_satellite = is_satellite | self.peak_timeseries[EXCEPTION_PEAK].values
+        self._peak_timeseries = self.peak_timeseries.drop_vars(EXCEPTION_PEAK).assign(
             {"is_satellite": (("mz"), is_satellite)}
         )
 
