@@ -368,35 +368,36 @@ plan owner's word (MAS-584).
 
 - HSO4−·(H2SO4)n are absent on all three instruments. HSO4− itself is in 0–9% of the files, and
   in 67% of B2 nitrate's, where it reads +7 ppm with an IQR of 12.
-- (HNO3)3·NO3− (251 Th) and Br−·H2SO4 (179 Th) are absent, or in at most 3% of the files. Where a
-  line is matched at 251 Th in the bromide modes it reads +70 ppm: a neighbour, as in the
-  baseline.
+- (HNO3)3·NO3− (251 Th) and Br−·H2SO4 (179 Th) are absent, or in at most 3% of the sampled files.
+  On the day the 251 Th line is in 15% of B2 nitrate's files, at +4.1 ppm with an IQR of 17, and
+  in 4% of B3's. Where a line is matched at 251 Th in the bromide modes it reads +70 ppm: a
+  neighbour, as in the baseline.
 - Br3− (241 Th) already tops both bromide sets, and Br−·HNO3 is already in B2's.
 - Above the top only CHO members are left. None passes on B1 or B3. On B2 nitrate four pass, at
   164–234 Th, and they fail on new files (below).
 
 | Instrument, mode | Calibrant span, Th (points) | Strong peaks to | Its calibrants | Passes above the top |
 | -- | -- | --: | -- | -- |
-| B1, bromide | 79–241 (8) | 500 | −3.4 to +4.7; Br−·(H2O)2–4 −6 to −7, held out | none |
+| B1, bromide | 79–241 (8) | 500 | −3.4 to +4.2; Br−·(H2O)2–4 −6 to −7, held out | none |
 | B1, nitrate | 62–125 (3) | 500 | −5.1 to +3.9 | none |
 | B2, bromide | 62–241 (8–10) | 700 | within ±2 from 79 Th; NO3− +5.2 | none; Br−·H2O, inside the span |
 | B2, nitrate | 62–188 (3) | 700 | −1.1 to +0.6 | four CHO adducts, 164–234 Th |
 | B3, nitrate | 62–188 (3) | 500 | −1.5 to +2.5 | none |
 
-- **B1 bromide.** Br− reads +4.7 (+4.2), Br−·H2O −3.4 (−3.2), Br2− −1.5 (−1.9), Br3− +2.2
-  (+1.8). Br−·(H2O)2–4 at 115–151 Th, held out, read −6 to −7. That bow is the two-parameter
-  model's (MAS-183), not the set's. Br−·(H2O)2–4 are in 94–100% of the files but lie below the
-  top. Seven CHO members are in 51–86% of the files. The bromide adducts among them, at
-  205–259 Th, read +19 to +24 ppm: they are other ions.
+- **B1 bromide.** An ion reads the mean of its isotope lines. Br− reads +4.2 (+4.1), Br−·H2O
+  −3.4 (−3.2), Br2− −1.6 (−1.9), Br3− +2.2 (+1.4). Br−·(H2O)2–4 at 115–151 Th, held out, read −6
+  to −7. That bow is the two-parameter model's (MAS-183), not the set's. Br−·(H2O)2–4 are in
+  94–100% of the files but lie below the top. Seven CHO members are in 51–86% of the files. The
+  bromide adducts among them, at 205–259 Th, read +19 to +24 ppm: they are other ions.
 - **B1 nitrate.** NO3− reads +3.9, H2NO4− −5.1, HN2O6− +1.3. The 188 Th trimer is kept in 12% of
-  the sampled files and in none of the day's 48. Its 23 CHO members read −21 to +21, with IQRs of
-  5–16. Most NO3− adducts read high and most [M−H]− ions low, so they are no yardstick.
+  the sampled files and in none of the day's 48. The mode's 23 CHO members read −21 to +21, with
+  IQRs of 5–16. Most NO3− adducts read high and most [M−H]− ions low, so they are no yardstick.
 - **B2 bromide.** Everything from 79 to 241 Th reads within ±2; NO3− reads +5.2 at 62 Th. Br−·H2O
   (97 Th) passes every rule (below). No CHO member passes.
 - **B2 nitrate.** The three ions read +0.6, −1.1 and +0.5. Held out, NO3− adducts at 164–234 Th
-  read +0.8 to +1.9 (+1.1 to +2.1). Ions at 248–294 Th that miss a rule read −1.0 to +2.5 (−3.6
-  to +4.8, IQR up to 16). So today's set holds the axis within ±2.1 ppm to 234 Th, and within
-  ±5 ppm to 294 Th as far as those ions read it.
+  read +0.8 to +1.9 (+1.1 to +2.1). Ions at 248–294 Th that miss a rule read −1.0 to +2.5 (−6.4
+  to +4.8, IQR up to 16), so they are no yardstick. Today's set holds the axis within ±2.1 ppm to
+  234 Th, and nothing reads it above.
 - **B3 nitrate.** −1.5, +2.5 and −1.2. Nothing passes. The strongest NO3− adducts at 224–260 Th
   read +5 to +11 on the day, while their [M−H]− ions at 161–197 Th read −8 to −1: the pairs
   disagree.
@@ -468,7 +469,7 @@ last file (804 at the baseline's count).
   explained, and none is in a mode a set calibrates (MAS-187).
 
 **Not measured.** A reading of the axis above the top calibrant on B1, B3 and B2 bromide, and
-above 294 Th on B2 nitrate. Why most files of B2's other ambient/zero mode, and of B1's, end
+above 234 Th on B2 nitrate. Why most files of B2's other ambient/zero mode, and of B1's, end
 `done`: the screen reads no file of a mode without a collection.
 
 ## 3. How TOF calibration works today
