@@ -357,11 +357,12 @@ def load_peaks(
     by name, iterating all samples, and concatenating peak data into a single
     DataFrame enriched with batch and sample metadata.
 
-    Each batch is read in one request (``batch_peaks.peak_lists``) from a
-    server that offers it; with ``samples``, the request names the samples
-    chosen (a hundred per request), so the server reads no others. From an
-    older server, whose answer to that is 404, each sample is read on its
-    own, concurrently. A progress bar is displayed during loading.
+    Each batch is read a hundred samples per request
+    (``batch_peaks.peak_lists``) from a server that offers it, so a batch of
+    up to a hundred samples is one request; with ``samples``, the requests
+    name the samples chosen, so the server reads no others. From an older
+    server, whose answer to that is 404, each sample is read on its own,
+    concurrently. A progress bar counts the requests.
 
     :param client: The MascopeClient instance.
     :type client: MascopeClient
@@ -382,9 +383,9 @@ def load_peaks(
                   batch. Not valid with a compiled pattern. Defaults to False.
     :type exact: bool
     :param matches: Include matched compounds/ions/isotopes. By default they
-                    are left out when each batch is read in one request, and
-                    included when an older server has each sample read on
-                    its own, as they always were.
+                    are left out when batches are read through the batch
+                    read, and included when an older server has each sample
+                    read on its own, as they always were.
     :type matches: bool | None
     :param areas: Include peak areas. Defaults to True.
     :type areas: bool
@@ -400,6 +401,8 @@ def load_peaks(
                           Defaults to 100.
     :type confirm_above: int | None
     :param max_workers: Maximum number of concurrent requests. Defaults to 8.
+                        Batch reads go at most two at a time, as the server
+                        reads several samples of each at once.
     :type max_workers: int
     :return: A DataFrame containing all peaks enriched with columns:
 
@@ -410,7 +413,7 @@ def load_peaks(
              Plus all columns from
                :meth:`~mascope_sdk.resources.samples.SamplesResource.get_peaks`,
              and ``is_satellite`` (False throughout: satellite peaks are left
-             out) where each batch was read in one request.
+             out) where batches were read through the batch read.
 
              When a peak matches multiple isotopes it is expanded into
              one row per match.  Use ``target_ion_id`` /
@@ -502,10 +505,19 @@ def load_peaks(
 #: batch in one request, and each sample has to be read on its own.
 _NO_BATCH_READ = object()
 
-#: Samples named in one batch read when a load asks for part of a batch.
-#: Each ID goes in the request's URL; a hundred keep it well inside the 8 KB
-#: a proxy commonly allows a request line.
+#: Samples in one batch read. The server builds the whole table before it
+#: answers, at about a quarter of a second per sample (half a second with
+#: matches), so a read of a hundred is answered in under a minute, well
+#: inside the client's read timeout and a proxy's. A larger batch, or part of
+#: one, is read in parts that name their samples; each ID goes in the
+#: request's URL, and a hundred keep it well inside the 8 KB a proxy commonly
+#: allows a request line.
 _SAMPLES_PER_READ = 100
+
+#: Batch reads sent at once. The server reads several samples of each read
+#: at a time, so two keep about as many stores open as the per-sample
+#: fan-out's eight requests did.
+_CONCURRENT_BATCH_READS = 2
 
 
 def _load_batch_peak_lists(
@@ -525,17 +537,20 @@ def _load_batch_peak_lists(
     (:meth:`~mascope_sdk.resources.batch_peaks.BatchPeaksResource.peak_lists`),
     and are laid out as :func:`load_sample_peaks` lays out its per-sample
     reads: the same rows, the same columns in the same order, the same
-    ``attrs``. Where only some samples of a batch are asked for, the read
-    names them, so the server opens no other sample's peaks: a hundred per
-    request (:data:`_SAMPLES_PER_READ`).
+    ``attrs``. A batch is read a hundred samples per request
+    (:data:`_SAMPLES_PER_READ`), so no request takes the server long enough
+    to pass a timeout; each part names its samples, so the server opens no
+    other sample's peaks. A whole batch that fits in one read is asked for by
+    its ID alone.
 
     A sample the server could not read is a failure of that sample; a read
     that failed is a failure of each of its samples asked for; so is a sample
     asked for that the read neither answered nor named. Each is named in
     ``attrs["failures"]`` as the per-sample read's would be.
 
-    :param whole_batches: Every sample of each batch is asked for, so each
-        batch is read whole, in one request.
+    :param whole_batches: Every sample of each batch is asked for, so a
+        batch of at most :data:`_SAMPLES_PER_READ` samples is read whole, in
+        one request that names none.
     :return: What :func:`load_sample_peaks` would, or :data:`_NO_BATCH_READ`
         when the server answers 404 to every batch: it is older than the
         read, and is not asked again.
@@ -552,11 +567,10 @@ def _load_batch_peak_lists(
     # whether it names them
     reads: list[tuple[int, str, list[tuple[Any, str]], bool]] = []
     for batch_id, tasks in by_batch.items():
-        step = len(tasks) if whole_batches else _SAMPLES_PER_READ
-        for begin in range(0, len(tasks), step):
-            reads.append(
-                (len(reads), batch_id, tasks[begin : begin + step], not whole_batches)
-            )
+        named = not whole_batches or len(tasks) > _SAMPLES_PER_READ
+        for begin in range(0, len(tasks), _SAMPLES_PER_READ):
+            part = tasks[begin : begin + _SAMPLES_PER_READ]
+            reads.append((len(reads), batch_id, part, named))
 
     def _fetch(
         index: int, batch_id: str, tasks: list[tuple[Any, str]], named: bool
@@ -571,7 +585,7 @@ def _load_batch_peak_lists(
     frames, failed = run_concurrent(
         _fetch,
         reads,
-        max_workers=min(max_workers, len(reads)),
+        max_workers=min(max_workers, _CONCURRENT_BATCH_READS, len(reads)),
         desc="Loading peaks",
         unit="read",
     )

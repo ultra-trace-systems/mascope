@@ -211,7 +211,7 @@ class BatchPeaksResource(BaseResource):
         samples. The server sends the table as Parquet, so a batch of
         hundreds of samples is one request rather than one per sample.
         :meth:`~mascope_sdk.MascopeClient.load_peaks` reads batches this way
-        from a server that offers it.
+        from a server that offers it, a hundred samples per call.
 
         This is the read and nothing else: it does not need the batch to have
         a ledger, and it is not stamped with the server's provenance.
@@ -260,6 +260,10 @@ class BatchPeaksResource(BaseResource):
                  not stitched.
         :rtype: pd.DataFrame
         :raises NotFoundError: From a server older than this read.
+        :raises MascopeTimeoutError: If the server takes longer than the
+            client's read timeout. Not retried, unlike other reads: the server
+            builds the whole table before it answers, so a retry would only
+            build it again. Ask for fewer ``samples`` at a time instead.
         :raises PermissionDeniedError: Without the guest role on the batch.
         :raises ValueError: If ``samples`` is empty: the server reads every
             sample of a batch when it is given none.
@@ -285,6 +289,9 @@ class BatchPeaksResource(BaseResource):
                 **({} if samples is None else {"sample_item_id": list(samples)}),
             },
             stream=True,
+            # The server builds the whole table before it answers: sent again,
+            # the read would only start over, beside the build still running
+            retry_timeouts=False,
         )
         table = pq.read_table(io.BytesIO(response.content))
         said = json.loads(

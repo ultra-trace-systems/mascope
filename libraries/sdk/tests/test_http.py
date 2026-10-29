@@ -15,6 +15,7 @@ from mascope_sdk import _http
 from mascope_sdk.exceptions import (
     AuthenticationError,
     MascopeAPIError,
+    MascopeTimeoutError,
     NotFoundError,
     ServerError,
     ValidationError,
@@ -226,3 +227,46 @@ def test_a_request_whose_failure_is_tolerated_is_tried_once(monkeypatch):
 
     assert seen["gets"] == 1
     assert seen["sleeps"] == []
+
+
+def _always_timing_out(monkeypatch):
+    """Time every GET out, recording the requests and the backoff sleeps."""
+    seen = {"gets": 0, "sleeps": []}
+
+    def fake_get(url, **kwargs):
+        seen["gets"] += 1
+        raise requests.exceptions.ReadTimeout("read timed out")
+
+    monkeypatch.setattr(_http.requests, "get", fake_get)
+    monkeypatch.setattr(_http.time, "sleep", seen["sleeps"].append)
+    return seen
+
+
+def test_a_timeout_is_retried_by_default(monkeypatch):
+    seen = _always_timing_out(monkeypatch)
+
+    with pytest.raises(MascopeTimeoutError):
+        _http.http_get("http://server", "x", "token")
+
+    assert seen["gets"] == _http.RETRY_MAX_ATTEMPTS
+
+
+def test_a_read_built_in_full_is_not_sent_again_after_a_timeout(monkeypatch):
+    """The server would only build the same answer again, from the start,
+    while it may still be building the first."""
+    seen = _always_timing_out(monkeypatch)
+
+    with pytest.raises(MascopeTimeoutError):
+        _http.http_get("http://server", "x", "token", retry_timeouts=False)
+
+    assert seen["gets"] == 1
+    assert seen["sleeps"] == []
+
+
+def test_such_a_read_still_retries_any_other_transient_failure(monkeypatch):
+    seen = _always_unavailable(monkeypatch)
+
+    with pytest.raises(ServerError):
+        _http.http_get("http://server", "x", "token", retry_timeouts=False)
+
+    assert seen["gets"] == _http.RETRY_MAX_ATTEMPTS

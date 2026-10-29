@@ -883,6 +883,52 @@ class TestLoaderContract:
         )
         assert not bulk["is_satellite"].any()
 
+    def test_load_peaks_reads_a_large_batch_in_parts_as_in_one(
+        self, mascope, monkeypatch
+    ):
+        from pandas.testing import assert_frame_equal
+
+        from mascope_sdk import _loaders
+        from mascope_sdk.resources import _base
+
+        _skip_unless_attr(mascope.batch_peaks, "peak_lists")
+        # The SDK that reads a batch of over a hundred samples in parts
+        _skip_unless_attr(_loaders, "_CONCURRENT_BATCH_READS")
+        dataset, batches = _first_dataset_and_batches(mascope)
+        batch = batches.iloc[0]
+        real_get = _base.http_get
+        named: list[list[str] | None] = []
+
+        def counted(*args, **kwargs):
+            path = kwargs.get("path", args[1] if len(args) > 1 else "")
+            if path.startswith("batch-peaks/"):
+                named.append((kwargs.get("params") or {}).get("sample_item_id"))
+            return real_get(*args, **kwargs)
+
+        def load():
+            named.clear()
+            return mascope.load_peaks(
+                dataset=dataset["dataset_id"],
+                batches=batch["sample_batch_name"],
+                exact=True,
+                confirm_above=None,
+                matches=False,
+            )
+
+        monkeypatch.setattr(_base, "http_get", counted)
+        whole = load()
+        count = len(mascope.samples.list(batch["sample_batch_id"]))
+        assert count > 1 and named == [None]
+        # A demo batch fits in one read: cut it into two parts or more
+        monkeypatch.setattr(_loaders, "_SAMPLES_PER_READ", max(1, count // 3))
+        parts = load()
+
+        assert len(named) >= 2 and all(named)
+        assert sum(len(n) for n in named) == count
+        assert parts.attrs["complete"] and whole.attrs["complete"]
+        assert parts.attrs["segments"] == whole.attrs["segments"]
+        assert_frame_equal(parts, whole)
+
     def test_peak_lists_of_named_samples_are_theirs_in_the_whole_batch(self, mascope):
         from pandas.testing import assert_frame_equal
 

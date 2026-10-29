@@ -261,19 +261,20 @@ peaks = mascope.load_peaks(
 peaks = pd.read_parquet("uronium.parquet")  # later, anywhere: attrs included
 ```
 
-Each batch comes in one request: the server sends all of its samples' peak
-lists as one table (`batch_peaks.peak_lists`). With `samples=`, the request
-names the samples chosen, up to a hundred per request, and the server reads
-no others. A server older than that read
-answers 404, and `load_peaks` then reads each sample on its own, eight at a
+Each batch comes a hundred samples per request: the server sends their peak
+lists as one table (`batch_peaks.peak_lists`), so a batch of up to a hundred
+samples is one request. A larger batch is read in parts, so that no request
+takes the server long enough to time out, two parts at a time. With
+`samples=`, the requests name the samples chosen, and the server reads no
+others. A server older than that read answers 404, and `load_peaks` then reads each sample on its own, eight at a
 time, as it always did. The frame is the same either way, with two
 differences:
 
-- **Match columns.** `matches` left out reads no matches where each batch
-  comes in one request, and reads them from an older server, as before.
+- **Match columns.** `matches` left out reads no matches where batches are
+  read a hundred samples per request, and reads them from an older server, as before.
   Pass `matches=True` or `matches=False` to get the same columns from
   either.
-- **`is_satellite`.** The one-request read adds this column. It is False
+- **`is_satellite`.** The batch read adds this column. It is False
   throughout, because satellite peaks are left out, as `get_peaks` leaves
   them out.
 

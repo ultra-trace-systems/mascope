@@ -608,9 +608,9 @@ class MascopeClient:
         and concatenating peak data into a single DataFrame enriched with batch and
         sample metadata.
 
-        Each batch is read in one request from a server that offers it; from
-        an older one, each sample is read on its own, concurrently. A progress
-        bar is displayed during loading.
+        Each batch is read a hundred samples per request from a server that
+        offers it; from an older one, each sample is read on its own,
+        concurrently. A progress bar counts the requests.
 
         :param dataset: Dataset name or literal substring (or ID); pass a
                         compiled ``re.Pattern`` to match by regex.
@@ -631,10 +631,11 @@ class MascopeClient:
                       False.
         :type exact: bool
         :param matches: Include matched compounds/ions/isotopes. By default
-                        they are left out where each batch is read in one
-                        request, and included where an older server has each
-                        sample read on its own, as they always were. Pass
-                        True or False to have the same columns from either.
+                        they are left out where batches are read through
+                        the batch read, and included where an older server
+                        has each sample read on its own, as they always were.
+                        Pass True or False to have the same columns from
+                        either.
         :type matches: bool | None
         :param areas: Include peak areas. Defaults to True.
         :type areas: bool
@@ -650,6 +651,8 @@ class MascopeClient:
                               Defaults to 100.
         :type confirm_above: int | None
         :param max_workers: Maximum number of concurrent requests. Defaults to 8.
+                            Batch reads go at most two at a time, as the
+                            server reads several samples of each at once.
         :type max_workers: int
         :param save_path: Also write the frame to this path as a Parquet
                           file, ``attrs`` included: a snapshot of the load
@@ -666,7 +669,7 @@ class MascopeClient:
             Plus all columns from
             :meth:`~mascope_sdk.resources.samples.SamplesResource.get_peaks`,
             and ``is_satellite`` (False throughout: satellite peaks are left
-            out) where each batch was read in one request.
+            out) where batches were read through the batch read.
 
             When a peak matches multiple isotopes it is expanded
             into one row per match.  Use ``target_ion_id`` /
