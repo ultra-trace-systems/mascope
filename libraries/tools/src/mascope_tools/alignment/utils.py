@@ -33,6 +33,53 @@ MAX_RETRIES = 5  # Number of retries for fetching data from server
 # Satellite peak detection defaults
 NEUTRON_MASS = 1.00866491606  # Da
 
+#: The share of a peak's per-scan centroids that must carry the instrument's
+#: Exception flag for :func:`flag_exception_peaks` to read the peak as a side
+#: lobe: more than half. The share is bimodal (measured on the demo raws and
+#: three instruments of the assignment gate, 85 % of the peaks with any flagged
+#: centroid are over 0.8), so where the line is drawn hardly matters.
+EXCEPTION_MAJORITY = 0.5
+
+#: How close an Exception-majority peak must sit to an isotopologue line of
+#: another peak to be spared, in its own FWHM (and never under
+#: ``ISOTOPOLOGUE_TOLERANCE_PPM``): within half its width, the window its
+#: share of flagged centroids is counted in. The instrument flags a real line
+#: where it expects a lobe of a brighter one, and the two are averaged into one
+#: peak, centroided between them: measured on the demo raws and the gate's
+#: Orbitrap sets, real links run out to about 0.6 FWHM from the exact spacing
+#: over a floor of chance ones that is flat in the offset.
+ISOTOPOLOGUE_TOLERANCE_FWHM = 0.5
+ISOTOPOLOGUE_TOLERANCE_PPM = 1.0
+
+#: The isotopologue lines that spare an Exception-majority peak, as (element,
+#: heavy isotope, light isotope): those of C, H, N and O, which every ion the
+#: composition search builds is made of, and of the S, Cl and Br that reagent
+#: ions carry. The instrument flags real 13C, 2H and 18O lines beside a
+#: brighter line, where it expects a lobe of that line. Not 29Si: its spacing
+#: sits 3.8 mDa below 13C's, where the negative lobe of an ion's 13C line
+#: falls, so it would spare that lobe of every bright ion.
+ISOTOPOLOGUE_LINES = (
+    ("C", 13, 12),
+    ("H", 2, 1),
+    ("N", 15, 14),
+    ("O", 17, 16),
+    ("O", 18, 16),
+    ("S", 34, 32),
+    ("Cl", 37, 35),
+    ("Br", 81, 79),
+)
+
+#: The share of its partner's height a 13C line can have: from about half a
+#: carbon to about 47 carbons. The other lines' range is this one scaled by
+#: their per-atom abundance ratio over 13C's, so an 81Br line may stand above
+#: its partner, as a monobromide's does about half the time.
+ISOTOPOLOGUE_RATIO_13C = (0.004, 0.5)
+
+#: ... and never above this many times the share the most atoms of the element
+#: the partner's mass can hold would make: a 13C line at 0.3 of an m/z 168
+#: line would need 28 carbons.
+ISOTOPOLOGUE_MASS_CAP = 1.5
+
 
 def create_cache_folder():
     os.makedirs(CACHE_FOLDER, exist_ok=True)
@@ -544,4 +591,125 @@ def flag_satellite_peaks(
 
     out = peaks.copy()
     out["is_satellite_peak"] = full_flags
+    return out
+
+
+def _isotopologue_spacings() -> list[tuple[float, float, float]]:
+    """Each of :data:`ISOTOPOLOGUE_LINES` as (its spacing above the light
+    line [Da], the per-atom abundance ratio of heavy to light, the light
+    isotope's mass [Da])."""
+    from pyteomics.mass import nist_mass
+
+    lines = []
+    for element, heavy, light in ISOTOPOLOGUE_LINES:
+        heavy_mass, heavy_abundance = nist_mass[element][heavy]
+        light_mass, light_abundance = nist_mass[element][light]
+        lines.append(
+            (heavy_mass - light_mass, heavy_abundance / light_abundance, light_mass)
+        )
+    return lines
+
+
+def _at_isotopologue_line(
+    mz: np.ndarray,
+    intensity: np.ndarray,
+    tolerance: np.ndarray,
+    candidates: np.ndarray,
+    partners: np.ndarray,
+) -> np.ndarray:
+    """Which candidates sit on an isotopologue line of a partner.
+
+    A candidate does when a partner peak sits one of the spacings of
+    :data:`ISOTOPOLOGUE_LINES` below it, within the candidate's ``tolerance``
+    [m/z], and the candidate's share of the partner's height is one that line
+    of an ion of the partner's mass can have (:data:`ISOTOPOLOGUE_RATIO_13C`,
+    :data:`ISOTOPOLOGUE_MASS_CAP`). Singly charged ions only.
+
+    :param mz: The peaks' m/z.
+    :param intensity: Their heights.
+    :param tolerance: How far from the line each candidate may sit [m/z].
+    :param candidates: The peaks to test.
+    :param partners: The peaks a candidate may be a line of.
+    :return: True for each candidate on such a line.
+    """
+    order = np.argsort(mz, kind="stable")
+    mz_sorted = mz[order]
+    spared = np.zeros(mz.size, dtype=bool)
+    tested = np.flatnonzero(candidates)
+    lines = _isotopologue_spacings()
+    _, carbon_ratio, _ = lines[0]
+    low_13c, high_13c = ISOTOPOLOGUE_RATIO_13C
+    for spacing, per_atom, light_mass in lines:
+        scale = per_atom / carbon_ratio
+        tested = tested[~spared[tested]]
+        target = mz[tested] - spacing
+        first = np.searchsorted(mz_sorted, target - tolerance[tested], side="left")
+        last = np.searchsorted(mz_sorted, target + tolerance[tested], side="right")
+        for i, lo, hi in zip(tested, first, last):
+            for k in order[lo:hi]:
+                if not partners[k] or not intensity[k] > 0:
+                    continue
+                highest = min(
+                    high_13c * scale,
+                    ISOTOPOLOGUE_MASS_CAP * per_atom * mz[k] / light_mass,
+                )
+                if low_13c * scale <= intensity[i] / intensity[k] <= highest:
+                    spared[i] = True
+                    break
+    return spared
+
+
+def flag_exception_peaks(
+    peaks: pd.DataFrame,
+    majority: float = EXCEPTION_MAJORITY,
+    tolerance_fwhm: float = ISOTOPOLOGUE_TOLERANCE_FWHM,
+) -> pd.DataFrame:
+    """Flag the peaks of one spectrum the instrument marked as side lobes.
+
+    An Orbitrap marks each centroid of a scan it reads as a weak side lobe of
+    a brighter peak with its Exception flag (Thermo's ``PeakOptions`` value 8,
+    ``mascope_thermo.backend.CENTROID_FLAGS``). A peak of an averaged spectrum
+    most of whose per-scan centroids carry it is a side lobe, and is flagged
+    here, unless it sits on an isotopologue line of another peak that is not
+    such a peak itself, at a height that line can have
+    (:data:`ISOTOPOLOGUE_LINES`). The instrument flags
+    by position, and a real line can sit where it expects a lobe: an ion's 2H
+    line lies 2.92 mDa above its 13C line, about 2.4 widths at m/z 150-230,
+    and is flagged there whenever the 13C line is bright. A side lobe of a
+    peak's own isotopologue line sits one spacing above the same lobe of the
+    peak, which is flagged too, and so spares nothing.
+
+    The ratio test of :func:`flag_satellite_peaks` reads the peak list alone;
+    this one reads what the instrument said of each centroid, and catches the
+    lobes of the peaks that test does not take as a base.
+
+    :param peaks: One spectrum's peaks, with ``mz``, ``intensity``,
+        ``exception_share`` (the share of the per-scan centroids within the
+        peak's width that carry the flag, NaN where none fall there) and
+        ``resolution`` (m/z over the peak's FWHM).
+    :param majority: The share over which a peak is the instrument's lobe.
+    :param tolerance_fwhm: How close to an isotopologue line, in the peak's
+        own FWHM, spares a peak; never under
+        :data:`ISOTOPOLOGUE_TOLERANCE_PPM`.
+    :return: A copy of ``peaks`` with the boolean column ``is_exception_peak``.
+    :raises ValueError: If a column is missing.
+    """
+    missing = {"mz", "intensity", "exception_share", "resolution"} - set(peaks.columns)
+    if missing:
+        raise ValueError(f"peaks must contain the columns {sorted(missing)}.")
+    out = peaks.copy()
+    mz = out["mz"].to_numpy(dtype=float)
+    intensity = out["intensity"].to_numpy(dtype=float)
+    resolution = out["resolution"].to_numpy(dtype=float)
+    lobe = out["exception_share"].to_numpy(dtype=float) > majority
+    if lobe.any():
+        with np.errstate(divide="ignore", invalid="ignore"):
+            fwhm = np.where(resolution > 0, mz / resolution, np.nan)
+        tolerance = np.fmax(
+            tolerance_fwhm * fwhm, ISOTOPOLOGUE_TOLERANCE_PPM * 1e-6 * mz
+        )
+        lobe &= ~_at_isotopologue_line(
+            mz, intensity, tolerance, candidates=lobe, partners=~lobe
+        )
+    out["is_exception_peak"] = lobe
     return out
