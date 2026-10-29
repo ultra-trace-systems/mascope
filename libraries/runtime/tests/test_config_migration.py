@@ -82,3 +82,20 @@ def test_backend_config_disk_floor_default():
     )
     with pytest.raises(ValidationError):
         BackendConfig(name="backend", tus_min_free_disk_gb=-1)
+
+
+def test_a_meta_cap_at_the_default_does_not_hide_the_legacy_one():
+    """base.mascope.toml writes the default out as a live [meta] line, so the
+    merged [meta] always holds one. Taken for an operator's own value, it
+    would drop a site's raised [backend] cap back to 5 GB on upgrade, with a
+    warning in the log as the only trace."""
+    logger = _RecordingLogger()
+    default = MetaConfig().tus_max_upload_gb
+    raw = migrate_legacy_options(
+        {"meta": {"tus_max_upload_gb": default}, "backend": {"tus_max_upload_gb": 20}},
+        logger,
+    )
+    assert raw["meta"]["tus_max_upload_gb"] == 20
+    assert "tus_max_upload_gb" not in raw["backend"]
+    assert len(logger.warnings) == 1
+    assert "has moved to [meta]" in logger.warnings[0]
