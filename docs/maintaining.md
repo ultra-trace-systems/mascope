@@ -1941,6 +1941,69 @@ nothing. `STITCH_REPORT_FILES` caps the raw Orbitrap files one run walks
 mascope prod db script run report_stitch_overlaps
 ```
 
+### Calibration quality gate
+
+What happens to a sample whose m/z calibration falls below the quality bar is
+`calibration_quality_gate` in the `[backend]` section of the env's config
+toml:
+
+```toml
+[backend]
+calibration_quality_gate = "warn"   # "warn" (the default) or "enforce"
+```
+
+`"warn"` marks such a calibration with an amber badge and its reasons, and
+still matches and assigns the sample. `"enforce"` leaves the sample out of
+matching and peak assignment until it is recalibrated or an operator accepts
+the fit in the calibration dialog.
+[How it works: calibration](user/how-it-works/calibration.md#verification)
+describes both. Run on `"warn"` first, fix the calibration collections the
+badges point at, then switch. It takes effect on restart (`mascope prod up`),
+for calibrations from then on: a stored calibration keeps the verdict it was
+given.
+
+### Chemistry detection
+
+Chemistry detection reads which chemistry each MS1 polarity's spectrum names
+by its reagent ions, as a file is bound to an ionization mode or parked. It is
+`chemistry_detection` in the `[backend]` section of the env's config toml:
+
+```toml
+[backend]
+chemistry_detection = "audit"   # "audit" (the default) or "off"
+```
+
+`"audit"` stores the detector's call on the file, beside the rung and mode that
+bound it, and binds nothing: no file is routed, calibrated or matched any
+differently. `"off"` stores nothing. The audit reads the polarity's peak list
+once more per file, a fraction of a second. Its calls are how the detector is
+measured against the bindings before it may ever bind a file itself
+([the design note](dev/ingest_routing_and_splitting.md), section 5.4). It
+takes effect on restart, for files bound from then on.
+
+### Axis fingerprint
+
+The axis fingerprint of a raw Orbitrap file is the m/z offset its mass
+calibration stored in each frequency band of the Orbitrap axis, read back
+from the stored profile ([How it works:
+calibration](user/how-it-works/calibration.md#the-orbitrap-axis-fingerprint),
+and [the SDK](user/sdk/index.md#the-axis-fingerprint-of-an-orbitrap-file)
+that serves it). It is `axis_fingerprint` in the `[backend]` section of the
+env's config toml:
+
+```toml
+[backend]
+axis_fingerprint = "ingest"   # "ingest" (the default) or "off"
+```
+
+`"ingest"` computes it as each file is converted and stores it in the file's
+`.props`, adding about a second to the conversion. `"off"` stores `{}` in its
+place. It is a measurement for clients that correct the axis themselves:
+nothing in Mascope's own processing reads it and no m/z is altered by it, so
+switching it off changes no result. It takes effect on a restart of the file
+converter, for the files converted from then on. Switching it back on does not
+compute it for the files converted while it was off.
+
 ### The MS2 store
 
 A raw Orbitrap file that holds fragmentation scans gets an MS2 store when it
@@ -2408,6 +2471,24 @@ configured with the same `deployment_id` mint global ids that can name
 different records with the same string: give every deployment whose exports
 may meet a name of its own, and leave it unset where you have no reason to
 choose one.
+
+### Raw files time range
+
+The **Raw files** list opens on the last 7 days of acquisitions. A deployment
+can open it on another range with `acquisition_filter` in the `[frontend]`
+section of the env's config toml. It is unset by default; the lines below are
+examples:
+
+```toml
+[frontend]
+acquisition_filter = { min = '2020-01-01T00:00' }   # a fixed range; max is optional too
+# acquisition_filter = 'Last 30 days'              # or one of the list's presets
+```
+
+A string names a preset of the list's time selector, or a look-back of the
+same form, such as `'Last 14 days'`. One that names neither is logged as a
+warning, and the list opens on the default. The web app reads it at
+start, so a change takes a stack restart.
 
 ### Where a deployment's settings live
 
