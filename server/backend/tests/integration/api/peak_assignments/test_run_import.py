@@ -527,6 +527,8 @@ class TestChunkedAssembly:
         )
 
         assert response.status_code == 409
+        # Not the claim's code: sending it again cannot change this answer.
+        assert "code" not in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_a_completed_run_takes_no_more_rows(
@@ -542,6 +544,7 @@ class TestChunkedAssembly:
         )
 
         assert response.status_code == 409
+        assert "code" not in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_an_unknown_run_id_is_not_found(
@@ -2284,6 +2287,7 @@ class TestAbandonTakesTheSampleClaim:
             )
 
         assert blocked.status_code == 409
+        assert blocked.json()["detail"]["code"] == "assignment_claim_held"
 
         # And it succeeds once the claim is released, so the refusal was the
         # claim and not the run's state.
@@ -2291,6 +2295,48 @@ class TestAbandonTakesTheSampleClaim:
             f"/api/peak-assignments/sample/{import_sample}/runs/{run_id}"
         )
         assert released.status_code == 200
+
+
+class TestAChunkMeetingTheClaimIsCoded:
+    """A chunk refused by the claim applied nothing, and says so by its code.
+
+    A client retries an append after a timeout, which is when its first attempt
+    is most likely still running under the claim. That 409 has to be told from
+    the ones over the run's state, since only it goes through when sent again.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_append_refused_by_the_claim_goes_through_once_it_is_free(
+        self, editor_client, import_sample, feature_enabled
+    ):
+        from mascope_backend.api.new.peak_assignments.admission import assignment_claim
+
+        first = await _post(
+            editor_client,
+            import_sample,
+            _body([_row("peak-0")], complete=False, import_id="import-claimed"),
+        )
+        run_id = first.json()["data"][0]["peak_assignment_run_id"]
+        append = _body(
+            [_row("peak-1")],
+            run_id=run_id,
+            index=1,
+            complete=False,
+            import_id="import-claimed",
+        )
+
+        async with assignment_claim("sample", import_sample) as acquired:
+            assert acquired, "the fixture sample should be free to claim here"
+            blocked = await _post(editor_client, import_sample, append)
+
+        assert blocked.status_code == 409
+        detail = blocked.json()["detail"]
+        assert detail["code"] == "assignment_claim_held"
+        assert detail["sample_item_id"] == import_sample
+
+        sent_again = await _post(editor_client, import_sample, append)
+        assert sent_again.status_code == 200
+        assert sent_again.json()["data"][0]["rows"] == 2
 
 
 class TestAnAssemblingRunIsNotServedByExplicitId:
