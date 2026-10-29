@@ -40,7 +40,9 @@
 #   RECORDS              where logs, report archives and summaries are kept
 #   MAX_BYTES            cap on the pulled report stream (default 20 MB)
 #   HC_URL               optional healthchecks.io-style ping URL
-#   RELEASE_API          release endpoint used by the lag check
+#   RELEASE_API          release endpoint used by the lag check; the tag it
+#                        names goes to both vantages' suites as
+#                        MASCOPE_PENTEST_CURRENT_RELEASE, a record only
 #   RELEASE_TIMEOUT      lookup timeout; a failed lookup is never fatal
 #   MASCOPE_PENTEST_*    target credentials, passed through to the suite
 #   CDN_TARGET           public URL through the CDN; unset = origin run only
@@ -97,6 +99,13 @@ run_origin() {
     # The previous run's report is cleared first: report/ persists, and a run
     # that aborts before writing one (a WAF-refused 403, a usage error, a
     # crash) would otherwise archive the last good report under today's date.
+    #
+    # The current release goes along when the lookup named one, as a record
+    # for the report; the verdict and the exit code stay this script's. Only a
+    # validated release tag is ever spliced into the remote command line.
+    local release_env=""
+    [ -n "$current_release" ] && \
+        release_env="MASCOPE_PENTEST_CURRENT_RELEASE='${current_release}' "
     local remote_cmd="cd ${SUITE_DIR} && \
   rm -f report/pentest-report.json report/pentest-report.md && \
   MASCOPE_PENTEST_TARGET='${MASCOPE_PENTEST_TARGET}' \
@@ -106,7 +115,7 @@ run_origin() {
   MASCOPE_PENTEST_LOWPRIV_PASSWORD='${MASCOPE_PENTEST_LOWPRIV_PASSWORD:-}' \
   MASCOPE_PENTEST_VERIFY_TLS=false \
   MASCOPE_PENTEST_VANTAGE=origin \
-  ./.venv/bin/python -m pytest -q"
+  ${release_env}./.venv/bin/python -m pytest -q"
 
     ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" "$remote_cmd" > "$1" 2>&1
     local rc=$?
@@ -128,6 +137,8 @@ run_cdn() {
     (
         cd "$CDN_SUITE_DIR" || exit 2
         # As at the origin: an aborted run must leave no report to archive.
+        # The release is set even when empty, so none inherited from cron's
+        # environment can stand in for a lookup that failed.
         rm -f report/pentest-report.json report/pentest-report.md
         MASCOPE_PENTEST_TARGET="$CDN_TARGET" \
         MASCOPE_PENTEST_EMAIL="${MASCOPE_PENTEST_EMAIL}" \
@@ -138,6 +149,7 @@ run_cdn() {
         MASCOPE_PENTEST_HEADER_VALUE="${MASCOPE_PENTEST_HEADER_VALUE:-}" \
         MASCOPE_PENTEST_VERIFY_TLS=true \
         MASCOPE_PENTEST_VANTAGE=cdn \
+        MASCOPE_PENTEST_CURRENT_RELEASE="${current_release}" \
         exec ./.venv/bin/python -m pytest -q
     ) > "$1" 2>&1
     local rc=$?
@@ -152,7 +164,29 @@ report_json() {
     tar -xzOf "$1" report/pentest-report.json 2>/dev/null | head -c 4000000
 }
 
-current="" looked_up=""
+# Keep this in step with RELEASE_TAG_PATTERN in mascope_runtime: a box
+# piloting a pre-release runs a real release tag, and leaving it out here
+# would silently disarm the staleness check for the deployments most likely to
+# be forgotten - a candidate is short-lived by intention, not by mechanism.
+release_tag='^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.?[0-9]+)?$'
+
+# The current release, looked up HERE, once, before either vantage runs, so
+# both are measured against the same release and each report can record it.
+# A failed lookup leaves it empty and is never fatal. $current keeps whatever
+# the API named, for the summary; $current_release only a release tag, so
+# nothing unvalidated reaches the target's command line.
+lookup_release() {
+    current="$(curl -fsS -m "$RELEASE_TIMEOUT" --retry 2 \
+        -H 'Accept: application/vnd.github+json' "$RELEASE_API" 2>/dev/null \
+      | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("tag_name") or "")
+except Exception:
+    print("")' 2>/dev/null)"
+    current_release=""
+    [[ "$current" =~ $release_tag ]] && current_release="$current"
+    return 0
+}
 
 # Runs one vantage and leaves its verdict in $summary and $suite_rc.
 assess() {  # $1 = origin | cdn
@@ -196,29 +230,12 @@ print("build=%s findings=%s accepted=%s stale=%s verified=%s not_assessed=%s" % 
     #
     # A lookup that fails must never redden an assessment - an unreachable
     # third party is not a security finding - so an undeterminable answer is
-    # recorded as "unknown" and leaves the exit code alone. Looked up once, so
-    # both vantages are measured against the same release.
+    # recorded as "unknown" and leaves the exit code alone. The release was
+    # looked up once, before either run, so both vantages are measured
+    # against the same one (see lookup_release).
     if [ "$summary" != "report unreadable" ]; then
         local assessed
         assessed="$(printf '%s' "$summary" | sed -n 's/.*build=\([^ ]*\).*/\1/p')"
-        if [ -z "$looked_up" ]; then
-            current="$(curl -fsS -m "$RELEASE_TIMEOUT" --retry 2 \
-                -H 'Accept: application/vnd.github+json' "$RELEASE_API" 2>/dev/null \
-              | python3 -c 'import json,sys
-try:
-    print(json.load(sys.stdin).get("tag_name") or "")
-except Exception:
-    print("")' 2>/dev/null)"
-            looked_up=1
-        fi
-
-        # Keep this in step with RELEASE_TAG_PATTERN in mascope_runtime: a box
-        # piloting a pre-release runs a real release tag, and leaving it out
-        # here would silently disarm the staleness check for the deployments
-        # most likely to be forgotten - a candidate is short-lived by
-        # intention, not by mechanism.
-        local release_tag='^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.?[0-9]+)?$'
-
         local lag=unknown
         if [[ "$assessed" =~ $release_tag ]] && [[ "$current" =~ $release_tag ]]; then
             if [ "$assessed" = "$current" ]; then
@@ -263,6 +280,7 @@ except Exception:
 # then ranks below its own release and rc.10 above rc.9.
 _precedence() { printf '%s' "${1#v}" | sed -E 's/-(alpha|beta|rc)/~\1/'; }
 
+lookup_release
 assess origin
 origin_rc=$suite_rc origin_summary=$summary
 final_rc=$origin_rc final_summary=$origin_summary
