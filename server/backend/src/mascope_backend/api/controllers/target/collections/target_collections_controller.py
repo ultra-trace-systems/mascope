@@ -34,6 +34,10 @@ from mascope_backend.api.new.ionization.modes.versions import (
     held_by_earlier_versions,
     still_held,
 )
+from mascope_backend.api.new.workspaces.dependencies import (
+    WorkspaceScope,
+    where_collection_visible,
+)
 from mascope_backend.db import (
     IonizationMode,
     TargetCollection,
@@ -55,7 +59,7 @@ async def get_target_collections(
     sample_batch_id: str | None = None,
     target_collection_type: list[str] | None = None,
     workspace_id: str | None = None,
-    accessible_workspace_ids: set[str] | None = None,
+    accessible_workspace_ids: WorkspaceScope | None = None,
     sort: str | None = None,
     order: str | None = None,
     page: int | None = None,
@@ -82,6 +86,11 @@ async def get_target_collections(
     :param workspace_id: Filter collections by workspace ID. Null-workspace (global)
                          collections are always included. Defaults to None.
     :type workspace_id: str | None, optional
+    :param accessible_workspace_ids: List only the collections of these workspaces
+        and the global ones; ``ALL_WORKSPACES`` lists every collection
+        (superusers and internal callers). Required: left out, the list raises
+        ``TypeError``.
+    :type accessible_workspace_ids: WorkspaceScope
     :param target_collection_type: Filter by target collection types, can specify
     multiple types, defaults to None
     :type target_collection_type: list[str] | None, optional
@@ -132,14 +141,7 @@ async def get_target_collections(
             )
 
         # Restrict to collections the caller can see (workspace ACL).
-        # accessible_workspace_ids is None for superusers (no restriction).
-        if accessible_workspace_ids is not None:
-            stmt = stmt.where(
-                or_(
-                    TargetCollection.workspace_id.in_(accessible_workspace_ids),
-                    TargetCollection.workspace_id.is_(None),
-                )
-            )
+        stmt = where_collection_visible(stmt, accessible_workspace_ids)
         # Apply sorting if specified
         if sort:
             stmt = stmt.order_by(

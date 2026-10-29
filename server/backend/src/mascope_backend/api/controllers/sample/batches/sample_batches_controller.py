@@ -80,6 +80,7 @@ from mascope_backend.api.new.ionization.modes.util import (
     resolve_ionization_modes_by_tokens,
 )
 from mascope_backend.api.new.temp.storage import download_name, user_temp_path
+from mascope_backend.api.new.workspaces.dependencies import ALL_WORKSPACES
 from mascope_backend.db import (
     Dataset,
     SampleBatch,
@@ -253,13 +254,16 @@ async def get_batch_targets(sample_batch_id: str, deduplicate: bool = False) -> 
     sample_batch_name = sample_batch["sample_batch_name"]
 
     # Step 2: Fetch target collections
-    collections_response = await get_target_collections(sample_batch_id=sample_batch_id)
+    collections_response = await get_target_collections(
+        sample_batch_id=sample_batch_id, accessible_workspace_ids=ALL_WORKSPACES
+    )
     target_collections = collections_response["data"]
 
     # Step 3: Fetch target compounds
     compounds_response = await get_target_compounds(
         sample_batch_id=sample_batch_id,
         show_target_collection=not deduplicate,
+        accessible_workspace_ids=ALL_WORKSPACES,
     )
     target_compounds = compounds_response["data"]
 
@@ -267,6 +271,7 @@ async def get_batch_targets(sample_batch_id: str, deduplicate: bool = False) -> 
     ions_response = await get_target_ions(
         sample_batch_id=sample_batch_id,
         show_target_collection=not deduplicate,
+        accessible_workspace_ids=ALL_WORKSPACES,
     )
     target_ions = ions_response["data"]
 
@@ -274,6 +279,7 @@ async def get_batch_targets(sample_batch_id: str, deduplicate: bool = False) -> 
     isotopes_response = await get_target_isotopes(
         sample_batch_id=sample_batch_id,
         show_target_collection=not deduplicate,
+        accessible_workspace_ids=ALL_WORKSPACES,
     )
     target_isotopes = isotopes_response["data"]
 

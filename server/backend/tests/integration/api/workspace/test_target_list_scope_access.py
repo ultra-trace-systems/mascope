@@ -23,11 +23,32 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
+from mascope_backend.api.controllers.sample.batches.sample_batches_controller import (
+    get_batch_targets,
+)
+from mascope_backend.api.controllers.target.collections.target_collections_controller import (
+    get_target_collections,
+)
+from mascope_backend.api.controllers.target.compounds.target_compounds_controller import (
+    get_target_compounds,
+)
+from mascope_backend.api.controllers.target.ions.target_ions_controller import (
+    get_target_ions,
+)
+from mascope_backend.api.controllers.target.isotopes.target_isotopes_controller import (
+    get_target_isotopes,
+)
+from mascope_backend.api.new.workspaces import dependencies as workspace_dependencies
+from mascope_backend.api.new.workspaces.dependencies import (
+    ALL_WORKSPACES,
+    where_collection_visible,
+)
 from mascope_backend.db import (
     IonizationMechanism,
     TargetCollection,
+    TargetCollectionInSampleBatch,
     TargetCompound,
     TargetCompoundInTargetCollection,
     TargetIon,
@@ -298,3 +319,144 @@ async def test_show_target_collection_lists_every_collection_to_a_superuser(
 
     assert resp.status_code == 200, resp.text
     assert _collections(url, scope, resp) == set(scope.collection.values())
+
+
+# --- The scope is explicit --------------------------------------------------
+
+
+def _raised_for_a_missing_scope(excinfo) -> bool:
+    """A TypeError from the clause builder, maybe wrapped by ``api_controller``."""
+    exc = excinfo.value
+    while exc is not None:
+        if isinstance(exc, TypeError) and "workspace scope" in str(exc):
+            return True
+        exc = exc.__cause__
+    return False
+
+
+@pytest.mark.parametrize("missing", [None, ["ws"], "ws"])
+def test_the_visibility_clause_refuses_anything_but_a_scope(missing):
+    """Left out, the scope is an error: it never means every workspace."""
+    with pytest.raises(TypeError, match="workspace scope"):
+        where_collection_visible(select(TargetCollection), missing)
+
+
+def test_all_workspaces_leaves_the_query_as_it_is():
+    stmt = select(TargetCollection)
+
+    assert where_collection_visible(stmt, ALL_WORKSPACES) is stmt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "get_list", [get_target_ions, get_target_compounds, get_target_isotopes]
+)
+async def test_a_list_showing_collections_without_a_scope_fails_closed(scope, get_list):
+    with pytest.raises(Exception) as excinfo:
+        await get_list(show_target_collection=True)
+
+    assert _raised_for_a_missing_scope(excinfo)
+
+
+@pytest.mark.asyncio
+async def test_the_collection_list_without_a_scope_fails_closed(scope):
+    with pytest.raises(Exception) as excinfo:
+        await get_target_collections()
+
+    assert _raised_for_a_missing_scope(excinfo)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("workspaces", "visible"),
+    [("alpha", {"alpha", "global"}), ("all", {"alpha", "beta", "global"})],
+)
+async def test_the_collection_list_keeps_to_its_scope(
+    scope, ws_alpha, workspaces, visible
+):
+    ws_ids = ALL_WORKSPACES if workspaces == "all" else {ws_alpha["workspace_id"]}
+
+    response = await get_target_collections(accessible_workspace_ids=ws_ids)
+
+    listed = {row["target_collection_id"] for row in response["data"]}
+    assert listed & set(scope.collection.values()) == {
+        scope.collection[name] for name in visible
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deduplicate", [False, True])
+async def test_a_batchs_targets_list_every_collection_of_the_batch(
+    async_session_factory, scope, alpha_batch, deduplicate
+):
+    """The batch route checks the batch; its lists pass ALL_WORKSPACES."""
+    async with async_session_factory() as session:
+        session.add(
+            TargetCollectionInSampleBatch(
+                target_collection_id=scope.collection["alpha"],
+                sample_batch_id=alpha_batch,
+            )
+        )
+        await session.commit()
+    try:
+        response = await get_batch_targets(alpha_batch, deduplicate=deduplicate)
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(TargetCollectionInSampleBatch).where(
+                    TargetCollectionInSampleBatch.sample_batch_id == alpha_batch,
+                    TargetCollectionInSampleBatch.target_collection_id
+                    == scope.collection["alpha"],
+                )
+            )
+            await session.commit()
+
+    data = response["data"]
+    assert scope.collection["alpha"] in {
+        row["target_collection_id"] for row in data["target_collections"]
+    }
+    assert scope.compound["alpha"] in {
+        row["target_compound_id"] for row in data["target_compounds"]
+    }
+
+
+# --- The workspace lookup runs only when its result is used ------------------
+
+
+@pytest.fixture
+def workspace_lookups(monkeypatch):
+    """Count the calls of the membership lookup behind every scope."""
+    calls = []
+    lookup = workspace_dependencies.accessible_workspace_ids_for_user
+
+    async def counted(user):
+        calls.append(user.id)
+        return await lookup(user)
+
+    monkeypatch.setattr(
+        workspace_dependencies, "accessible_workspace_ids_for_user", counted
+    )
+    return calls
+
+
+@pytest.mark.asyncio
+@EVERY_LIST
+@pytest.mark.parametrize(("show", "lookups"), [("false", 0), ("true", 1)])
+async def test_a_guests_list_looks_up_workspaces_only_to_show_collections(
+    guest_client, scope, workspace_lookups, url, show, lookups
+):
+    resp = await guest_client.get(url, params={"show_target_collection": show})
+
+    assert resp.status_code == 200, resp.text
+    assert len(workspace_lookups) == lookups
+
+
+@pytest.mark.asyncio
+@EVERY_LIST
+async def test_a_superusers_list_looks_up_no_workspaces(
+    owner_client, scope, workspace_lookups, url
+):
+    resp = await owner_client.get(url, params={"show_target_collection": "true"})
+
+    assert resp.status_code == 200, resp.text
+    assert workspace_lookups == []
