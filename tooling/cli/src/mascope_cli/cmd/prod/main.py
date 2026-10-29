@@ -1585,8 +1585,9 @@ def config_report(
     own prod.mascope.toml. Prints every setting whose value differs from the
     config model's default, with the layer that set it (base, mode or env).
     Credentials are never printed. Warns when the host's copies of the
-    shipped layers differ from the image's, which are the ones in force.
-    Needs the stack up.
+    shipped layers differ from the image's: the backend reads the image's,
+    but `mascope prod up` passes some of the host's to compose. Needs the
+    stack up.
 
     \b
     Examples:
@@ -1598,8 +1599,12 @@ def config_report(
     report = _image_config_report(container)
     for path in _host_copies_differ(report):
         typer.secho(
-            f"{path} differs from the image's copy; the backend reads the "
-            "image's, which this report shows.",
+            f"{path} differs from the image's copy. The backend reads the "
+            "image's, which this report shows, but `mascope prod up` still "
+            "passes the host copy's settings to compose: the Postgres server "
+            "settings and user in [backend.database], the container names, "
+            "[meta] filestore and [frontend]. `mascope init --force` brings "
+            "the host copy in line with the release.",
             fg=typer.colors.YELLOW,
             err=True,
         )
