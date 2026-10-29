@@ -124,7 +124,10 @@ with the layer that set it: `base`, `mode` or `env`. A setting the release's
 `base.mascope.toml` moves away from the model's default shows as `base`, not
 as a default. A setting is credited to the last layer that writes it, even
 when it writes the value the layer below already gave: such a pin stays when
-a later release changes that value. Three more notes a line can carry:
+a later release changes that value. A setting the mode or env layer moves
+back to the model's default is listed too, since it differs from what the
+layers below give. Its note reads `default; over base 1`, naming that layer
+and its value. Three more notes a line can carry:
 
 - **`unknown key, ignored by the loader`**: the config model has no such
   setting, so the backend drops it without a word. Usually a misspelt key, or
@@ -132,7 +135,8 @@ a later release changes that value. Three more notes a line can carry:
 - **`no default`**: a setting the model leaves to the layers, such as an
   agent's `host`. It is listed only when the mode or env layer sets it.
 - **`<hidden>`**: a credential, such as `[file-agent] access_token`. Its value
-  is never printed. Nothing is read from `.runtime/secrets` either.
+  is never printed, nor is one nested in a table, such as under a misspelt
+  section. Nothing is read from `.runtime/secrets` either.
 
 `--all` prints every setting of the effective config, defaults included, and
 `--json` emits the same rows for scripting. Values are shown as the files
@@ -145,8 +149,13 @@ env directory is mounted from the host. A home made by `mascope init` keeps
 its own copies of those two files until `mascope init --force`. So the command
 runs its report inside the running backend container, against the image's
 files and config models, and needs the stack up. When a host copy differs
-from the image's, it warns on stderr and names the file: the image's copy is
-the one in force, and the one the report shows.
+from the image's, it warns on stderr and names the file. The report shows
+the image's copy, which is what the backend reads. The host's copy still
+sets what `mascope prod up` passes to compose, though: the Postgres server
+settings and user in `[backend.database]`, the container names, `filestore`
+in `[meta]` and the whole `[frontend]` section. For those settings the host
+copy is the one in force. `mascope init --force` brings it back in line with
+the release.
 
 On a development machine, `mascope dev config` reports the active env the same
 way, from the files `mascope dev run` reads. Set `MASCOPE_ENV` to report

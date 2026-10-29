@@ -192,6 +192,79 @@ def test_a_setting_without_a_default_departs_only_above_base(report):
     )
 
 
+def test_a_layer_that_sets_the_default_back_over_base_departs(tmp_path):
+    # Base runs one raw thread against the model's two; a server whose env
+    # toml asks for two again runs differently from the others.
+    report = config_layers.collect(
+        _home(tmp_path, env="[file-converter]\nraw_threads = 2\n")
+    )
+
+    raw_threads = _rows(report)[("file_converter", "raw_threads")]
+    assert (raw_threads["value"], raw_threads["default"]) == (2, 2)
+    assert raw_threads["layer"] == "env"
+    assert raw_threads["overrides"] == {"layer": "base", "value": 1}
+    assert raw_threads["differs"]
+    assert raw_threads in config_layers.select(report)
+    line = next(
+        line
+        for line in config_layers.format_text(report).splitlines()
+        if "raw_threads" in line
+    )
+    assert line.split() == [
+        "raw_threads",
+        "=",
+        "2",
+        "env",
+        "default;",
+        "over",
+        "base",
+        "1",
+    ]
+
+
+def test_a_layer_that_repeats_the_value_below_overrides_nothing(report):
+    pool_timeout = _rows(report)[("backend.database", "pool_timeout")]
+
+    assert pool_timeout["overrides"] is None
+    # A setting no lower layer writes has the default as its baseline.
+    assert _rows(report)[("backend", "calibration_quality_gate")]["overrides"] is None
+
+
+def test_the_mode_layer_overrides_base_too(tmp_path):
+    (tmp_path / "base.mascope.toml").write_text("[file-converter]\nraw_threads = 1\n")
+    (tmp_path / "prod.mascope.toml").write_text("[file-converter]\nraw_threads = 2\n")
+
+    report = config_layers.collect(
+        config_layers.layer_paths(str(tmp_path), "s", "prod")
+    )
+
+    raw_threads = _rows(report)[("file_converter", "raw_threads")]
+    assert raw_threads["overrides"] == {"layer": "base", "value": 1}
+    assert raw_threads["differs"]
+
+
+def test_each_module_is_named_as_the_loader_names_it(report):
+    rows = _rows(report)
+
+    for section, name in (("backend", "backend"), ("file_converter", "file-converter")):
+        row = rows[(section, "name")]
+        assert (row["value"], row["default"], row["differs"]) == (name, name, False)
+    every = config_layers.format_text(report, show_all=True)
+    assert "name = null" not in every
+    # meta is no module: the loader's name has no field to land in.
+    assert ("meta", "name") not in rows
+
+
+def test_a_date_in_a_layer_prints_as_its_iso_form(tmp_path):
+    report = config_layers.collect(
+        _home(tmp_path, env="[backend]\nrollout_started = 2026-10-01T00:00:00\n")
+    )
+
+    text = config_layers.format_text(report)
+
+    assert 'rollout_started = "2026-10-01 00:00:00"' in text
+
+
 def test_a_section_no_layer_writes_is_left_out(report):
     assert not any(row["section"] == "tof_agent" for row in report["rows"])
 
@@ -217,6 +290,62 @@ def test_a_credential_is_never_in_the_report(report):
     assert "tok-do-not-print" not in text
     assert "tok-do-not-print" not in json.dumps(report)
     assert "tok-do-not-print" not in config_layers.format_json(report, show_all=True)
+
+
+NESTED_CREDENTIALS = """
+[file-agent]
+auth = { access_token = "nested-token", hosts = [{ password = "in-a-list" }] }
+signing_secret_key = "a-secret-key"
+cloud_credentials = "some-credentials"
+private_key = "a-private-key"
+
+[file-agent.extra]
+password = "under-an-unknown-table"
+
+[backend.databse]
+password = "under-a-misspelt-section"
+"""
+
+
+def test_a_credential_nested_in_a_table_is_never_in_the_report(tmp_path):
+    report = config_layers.collect(_home(tmp_path, env=NESTED_CREDENTIALS))
+    rows = _rows(report)
+
+    assert rows[("file_agent", "auth")]["value"] == {
+        "access_token": config_layers.HIDDEN,
+        "hosts": [{"password": config_layers.HIDDEN}],
+    }
+    assert rows[("backend", "databse")]["value"] == {"password": config_layers.HIDDEN}
+    outputs = (
+        json.dumps(report),
+        config_layers.format_text(report, show_all=True),
+        config_layers.format_json(report, show_all=True),
+    )
+    for secret in (
+        "nested-token",
+        "in-a-list",
+        "a-secret-key",
+        "some-credentials",
+        "a-private-key",
+        "under-an-unknown-table",
+        "under-a-misspelt-section",
+    ):
+        assert not any(secret in output for output in outputs), secret
+
+
+def test_the_credential_a_layer_overrides_is_hidden_too(tmp_path):
+    (tmp_path / "base.mascope.toml").write_text(
+        "[file-agent]\nsource = '.'\nhost = 'h'\naccess_token = 'base-token'\n"
+    )
+    paths = config_layers.layer_paths(str(tmp_path), "site", "prod")
+    Path(paths["env"]).parent.mkdir(parents=True)
+    Path(paths["env"]).write_text("[file-agent]\naccess_token = 'env-token'\n")
+
+    report = config_layers.collect(paths)
+
+    token = _rows(report)[("file_agent", "access_token")]
+    assert token["overrides"] == {"layer": "base", "value": config_layers.HIDDEN}
+    assert "base-token" not in json.dumps(report)
 
 
 def test_a_policy_switch_named_after_tokens_is_shown(report):
@@ -429,6 +558,13 @@ def test_prod_config_warns_when_the_hosts_copy_is_not_the_images(cli_runner, ima
     assert result.exit_code == 0, result.output
     assert "base.mascope.toml differs from the image's copy" in result.stderr
     assert "prod.mascope.toml differs" not in result.stderr
+    # The host copy still feeds compose: the warning says what it sets and
+    # how to bring it back in line.
+    warning = " ".join(result.stderr.split())
+    assert "still passes the host copy's settings to compose" in warning
+    assert "[backend.database]" in warning
+    assert "[frontend]" in warning
+    assert "`mascope init --force` brings the host copy in line" in warning
     report = json.loads(result.stdout[result.stdout.index("{") :])
     assert _rows(report)[("meta", "api_port")]["value"] == 8091
 

@@ -50,7 +50,10 @@ LAUNCHER_KEYS = frozenset({"name", "color", "tags", "run"})
 
 #: A key whose value is a credential: its value is never printed. Matches the
 #: end of the key, so `require_device_tokens` (a policy switch) is not one.
-_SECRET_KEY = re.compile(r"(?:^|_)(?:token|password|passwd|secret|api_key)$")
+_SECRET_KEY = re.compile(
+    r"(?:^|_)(?:token|password|passwd|secret|credentials?|"
+    r"(?:api|secret|private)_key)$"
+)
 
 #: What a credential's value reads as.
 HIDDEN = "<hidden>"
@@ -81,6 +84,21 @@ def layer_paths(home: str, env: str, mode: str) -> dict[str, str]:
     }
 
 
+def _read_toml(path: str) -> dict | None:
+    """A TOML file as written, None when it does not exist."""
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def _normalized(raw: dict | None) -> dict | None:
+    """A layer's sections keyed as the loader keys them."""
+    if raw is None:
+        return None
+    return {section.replace("-", "_"): value for section, value in raw.items()}
+
+
 def read_layer(path: str) -> dict | None:
     """
     One layer's TOML, its section names as the loader keys them.
@@ -91,11 +109,7 @@ def read_layer(path: str) -> dict | None:
     :param path: The TOML file
     :return: Its sections, or None when the file does not exist
     """
-    if not os.path.exists(path):
-        return None
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
-    return {section.replace("-", "_"): value for section, value in raw.items()}
+    return _normalized(_read_toml(path))
 
 
 def layer_digest(layer: dict | None) -> str | None:
@@ -186,16 +200,48 @@ def _plain(value: Any) -> Any:
 
 
 def _shown(key: str, value: Any) -> Any:
-    """The value as printed: a credential's is hidden, an empty one is not."""
+    """
+    The value as printed: a credential's is hidden, an empty one is not.
+
+    Recurses into tables and arrays, so a credential nested in the value of
+    an unknown key (`auth = { access_token = "..." }`, a misspelt section) is
+    hidden as well.
+    """
     if _SECRET_KEY.search(key) and value not in (None, ""):
         return HIDDEN
+    if isinstance(value, dict):
+        return {k: _shown(k, v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_shown(key, item) for item in value]
     return value
+
+
+def _lookup(tree: dict, path: tuple[str, ...]) -> Any:
+    """The value at a key path of merged layers, `_REQUIRED` when unset."""
+    node: Any = tree
+    for key in path:
+        if not isinstance(node, dict) or key not in node:
+            return _REQUIRED
+        node = node[key]
+    return node
+
+
+class _Layers(typing.NamedTuple):
+    """What `_walk` needs to know of the layers besides the merged values."""
+
+    #: The layer that last set each key path
+    origin: dict[tuple[str, ...], str]
+    #: Per layer, the merged values and origins of the layers below it
+    below: dict[str, tuple[dict, dict[tuple[str, ...], str]]]
+    #: Values the loader fills in itself (each module's `name`), which are
+    #: their own baseline
+    filled: dict[tuple[str, ...], Any]
 
 
 def _walk(
     model: type | None,
     effective: dict,
-    origin: dict[tuple[str, ...], str],
+    layers: _Layers,
     path: tuple[str, ...],
     rows: list[dict],
 ) -> None:
@@ -204,10 +250,11 @@ def _walk(
 
     :param model: The section's config model, None for a key the model lacks
     :param effective: The section's merged values
-    :param origin: The layer that last set each key path
+    :param layers: Origins, the layers below each, and the loader's values
     :param path: The section's key path
     :param rows: Where the rows go
     """
+    origin = layers.origin
     fields = model.model_fields if model is not None else {}
     # A nested model's rows follow the section's own, as a TOML file writes
     # `[backend.database]` after the keys of `[backend]`.
@@ -219,6 +266,11 @@ def _walk(
             tables.append((nested, value if isinstance(value, dict) else {}, key))
             continue
         default = _default_of(field)
+        filled = layers.filled.get((*path, key), _REQUIRED)
+        if filled is not _REQUIRED:
+            # The loader's own value (a module's `name`): the baseline, and
+            # what the setting reads as when no layer writes it.
+            default = filled
         if value is _REQUIRED:
             # Unset: the model's default, or nothing, which the loader would
             # refuse (a required setting no layer writes).
@@ -234,6 +286,7 @@ def _walk(
                 layer=layer,
                 default=default,
                 known=True,
+                below=_below(layers, (*path, key), layer),
             )
         )
     for key in effective:
@@ -252,7 +305,24 @@ def _walk(
             )
         )
     for nested, values, key in tables:
-        _walk(nested, values, origin, (*path, key), rows)
+        _walk(nested, values, layers, (*path, key), rows)
+
+
+def _below(
+    layers: _Layers, key_path: tuple[str, ...], layer: str
+) -> tuple[str, Any] | None:
+    """
+    The layer and value a setting would have without the layer that set it.
+
+    :return: None when no layer below sets it (the baseline is the default)
+    """
+    if layer not in layers.below:
+        return None
+    merged, origin = layers.below[layer]
+    value = _lookup(merged, key_path)
+    if value is _REQUIRED:
+        return None
+    return origin.get(key_path, "default"), value
 
 
 def _row(
@@ -263,11 +333,17 @@ def _row(
     layer: str,
     default: Any,
     known: bool,
+    below: tuple[str, Any] | None = None,
 ) -> dict:
     """One setting of the report, as JSON-ready data."""
     has_default = default is not _REQUIRED
     plain_default = _plain(default) if has_default else None
     plain_value = _plain(value)
+    # What the setting overrides: the value of the layers below the one that
+    # set it, when they give another one.
+    overrides = None
+    if below is not None and _plain(below[1]) != plain_value:
+        overrides = {"layer": below[0], "value": _shown(key, _plain(below[1]))}
     return {
         "section": ".".join(path),
         "key": key,
@@ -276,12 +352,20 @@ def _row(
         "default": _shown(key, plain_default),
         "has_default": has_default,
         "known": known,
-        "differs": _differs(known, has_default, layer, plain_value, plain_default),
+        "overrides": overrides,
+        "differs": _differs(
+            known, has_default, layer, plain_value, plain_default, overrides
+        ),
     }
 
 
 def _differs(
-    known: bool, has_default: bool, layer: str, value: Any, default: Any
+    known: bool,
+    has_default: bool,
+    layer: str,
+    value: Any,
+    default: Any,
+    overrides: dict | None,
 ) -> bool:
     """
     Whether a setting departs from what the release would run with.
@@ -289,13 +373,16 @@ def _differs(
     A key the model does not know always does: the loader ignores it. A
     setting with no model default (an agent's `host`) has the base layer's
     value as its baseline, so it departs only when a later layer sets it, or
-    when nothing does, which the loader would refuse.
+    when nothing does, which the loader would refuse. A setting the mode or
+    env layer moves away from what the layers below give departs too, even
+    when it moves it back to the model's default (an env toml setting
+    `raw_threads = 2` over base's 1).
     """
     if not known:
         return True
     if not has_default:
         return layer != "base"
-    return value != default
+    return value != default or overrides is not None
 
 
 def collect(paths: dict[str, str]) -> dict:
@@ -312,31 +399,40 @@ def collect(paths: dict[str, str]) -> dict:
     :param paths: Path of each layer's TOML file (`layer_paths`)
     :return: `layers` (path, found and digest of each) and `rows` (one per
         setting: section, key, value, layer, default, has_default, known,
-        differs)
+        overrides, differs)
     """
     from mascope_runtime.config import RuntimeConfig
 
-    layers = {name: read_layer(paths[name]) for name in LAYERS}
+    raw = {name: _read_toml(paths[name]) for name in LAYERS}
+    layers = {name: _normalized(raw[name]) for name in LAYERS}
     merged: dict = {}
     origin: dict[tuple[str, ...], str] = {}
+    below: dict[str, tuple[dict, dict[tuple[str, ...], str]]] = {}
+    filled: dict[tuple[str, ...], Any] = {}
     for name in LAYERS:
         layer = layers[name]
         if layer is None:
             continue
+        if name != LAYERS[0]:
+            below[name] = (_migrate(merged), dict(origin))
         merged = _deep_merge(merged, layer)
+        # The loader names each module after its section as first written.
+        for section in raw[name]:
+            filled.setdefault((section.replace("-", "_"), "name"), section)
         # Attribute after the layer's own migration, so a setting written in
         # its old section is credited to the section it now lives in.
         for key_path in _origins(_migrate(layer)):
             origin[key_path] = name
     effective = _migrate(merged)
+    fields = RuntimeConfig.model_fields
+    context = _Layers(origin=origin, below=below, filled=filled)
 
     rows: list[dict] = []
-    fields = RuntimeConfig.model_fields
     for section, values in effective.items():
         if not isinstance(values, dict):
             continue
         model = _model_of(fields[section].annotation) if section in fields else None
-        _walk(model, values, origin, (section,), rows)
+        _walk(model, values, context, (section,), rows)
 
     return {
         "layers": [
@@ -374,7 +470,8 @@ def _toml_value(value: Any) -> str:
     """A value as it reads in a TOML file (close enough for a report)."""
     if value == HIDDEN:
         return value
-    return json.dumps(value)
+    # A TOML date or time is no JSON type: it reads as its ISO form.
+    return json.dumps(value, default=str)
 
 
 def _heading(section: str) -> str:
@@ -418,6 +515,10 @@ def format_text(report: dict, *, show_all: bool = False, title: str = "") -> str
             note = "unknown key, ignored by the loader"
         elif not row["has_default"]:
             note = "no default"
+        elif row["differs"] and row["value"] == row["default"] and row["overrides"]:
+            # Set back to the model's default over what a lower layer gives.
+            below = row["overrides"]
+            note = f"default; over {below['layer']} {_toml_value(below['value'])}"
         elif row["differs"]:
             note = f"default {_toml_value(row['default'])}"
         else:
