@@ -185,6 +185,7 @@ class BaseResource:
         path: str,
         params: dict[str, Any] | None = None,
         stream: bool = False,
+        retry_timeouts: bool = True,
     ) -> Any:
         """Make a GET request to the API.
 
@@ -194,6 +195,9 @@ class BaseResource:
         :type params: dict[str, Any], optional
         :param stream: Whether to stream the response.
         :type stream: bool, optional
+        :param retry_timeouts: With ``stream``, try a read that timed out
+            again (:func:`~mascope_sdk._http.http_get`).
+        :type retry_timeouts: bool, optional
         :return: Parsed JSON response data.
         :rtype: Any
         """
@@ -207,6 +211,7 @@ class BaseResource:
                 timeout=self._client._timeout,
                 verify_ssl=self._client._verify_ssl,
                 service_name=self._client._service_name,
+                retry_timeouts=retry_timeouts,
             )
 
         # The one way a response is unwrapped: a read that also hands the

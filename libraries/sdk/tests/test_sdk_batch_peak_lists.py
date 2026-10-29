@@ -138,9 +138,12 @@ class FakeServer:
         self.named: list[list[str] | None] = []
         #: Samples gone from the server after the listing: no read names them.
         self.vanished: set[str] = set()
+        #: Per request, the options it was sent with beyond its parameters.
+        self.options: list[dict] = []
 
     def http_get(self, url, path, access_token, params=None, **kwargs):
         self.paths.append(path)
+        self.options.append(kwargs)
         params = params or {}
         if path == "ionization_mechanisms":
             return _Response(
@@ -441,6 +444,41 @@ class TestASampleFilter:
             _na_as_none(bulk.drop(columns=["is_satellite"])), _na_as_none(fan_out)
         )
 
+    def test_a_batch_larger_than_one_read_is_read_in_parts(self, serve, monkeypatch):
+        # The server builds a read's table in full before it answers: a whole
+        # large batch in one request would pass the read timeout
+        monkeypatch.setattr(_loaders, "_SAMPLES_PER_READ", 1)
+        client, server = serve()
+
+        bulk = _load(client, matches=False)
+        fan_out = _fan_out(serve, matches=False)
+
+        assert server.paths.count("batch-peaks/batch/b1/peaks") == 2
+        # Each part of the larger batch names its samples; the batch that
+        # fits in one read is still asked for by its id alone
+        assert sorted(server.named, key=str) == [None, ["s1"], ["s2"]]
+        pd.testing.assert_frame_equal(
+            _na_as_none(bulk.drop(columns=["is_satellite"])), _na_as_none(fan_out)
+        )
+
+    def test_parts_are_read_two_at_a_time(self, serve, monkeypatch):
+        # The server reads several samples of each part at once: eight parts
+        # at a time would open several times the stores the fan-out did
+        monkeypatch.setattr(_loaders, "_SAMPLES_PER_READ", 1)
+        client, _ = serve()
+        workers: list[int] = []
+        real = _loaders.run_concurrent
+
+        def recorded(fn, items, *, max_workers, **kwargs):
+            workers.append(max_workers)
+            return real(fn, items, max_workers=max_workers, **kwargs)
+
+        monkeypatch.setattr(_loaders, "run_concurrent", recorded)
+
+        _load(client, max_workers=8)
+
+        assert workers == [2]
+
     def test_a_part_that_failed_fails_its_samples_alone(self, serve, monkeypatch):
         monkeypatch.setattr(_loaders, "_SAMPLES_PER_READ", 1)
         client, server = serve(sample_ids=("s1", "s2"))
@@ -459,6 +497,22 @@ class TestASampleFilter:
         assert [
             (f["sample_item_id"], f["error_type"]) for f in peaks.attrs["failures"]
         ] == [("s2", "ServerError")]
+
+
+class TestATimeout:
+    def test_a_read_that_timed_out_is_not_sent_again(self, serve):
+        # Sent again, the server would build the same table from the start,
+        # beside the build still running for the read that timed out
+        client, server = serve()
+
+        _load(client)
+
+        reads = [
+            options
+            for path, options in zip(server.paths, server.options)
+            if path.startswith("batch-peaks/")
+        ]
+        assert reads and all(o.get("retry_timeouts") is False for o in reads)
 
 
 class TestAnOlderServer:

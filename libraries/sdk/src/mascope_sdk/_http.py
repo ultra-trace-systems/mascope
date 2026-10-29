@@ -212,6 +212,7 @@ def _send_with_retries(
     full_url: str,
     send: Callable[[], requests.Response],
     attempts: int,
+    retry_timeouts: bool = True,
 ) -> requests.Response:
     """Send a request, retrying what is transient, and map its status.
 
@@ -223,6 +224,9 @@ def _send_with_retries(
     :type send: Callable[[], requests.Response]
     :param attempts: How many times to try a transient failure.
     :type attempts: int
+    :param retry_timeouts: Try a read that timed out again. False for a read
+        the server takes minutes to answer, which would only start over.
+    :type retry_timeouts: bool
     :return: The response of the first attempt that succeeded.
     :rtype: requests.Response
     """
@@ -233,7 +237,7 @@ def _send_with_retries(
             return response
 
         except Timeout as e:
-            if attempt == attempts:
+            if attempt == attempts or not retry_timeouts:
                 raise MascopeTimeoutError(
                     f"Request timed out: {e}", url=full_url
                 ) from e
@@ -285,6 +289,7 @@ def http_get(
     service_name: str = "mascope_sdk",
     verify_ssl: bool = False,
     max_attempts: int | None = None,
+    retry_timeouts: bool = True,
 ) -> requests.Response:
     """Send a GET request to the specified API endpoint.
 
@@ -308,6 +313,10 @@ def http_get(
         raising it; :data:`RETRY_MAX_ATTEMPTS` when None. 1 for a request whose
         failure the caller tolerates, so it costs one attempt and no backoff.
     :type max_attempts: int, optional
+    :param retry_timeouts: Try a request that timed out again, as any other
+        transient failure. False for a read the server builds in full before
+        it answers: sent again, it would only be built again from the start.
+    :type retry_timeouts: bool, optional
     :return: The response object.
     :rtype: requests.Response
     :raises AuthenticationError: If authentication fails (401/403).
@@ -336,6 +345,7 @@ def http_get(
             stream=stream,
         ),
         max_attempts or RETRY_MAX_ATTEMPTS,
+        retry_timeouts=retry_timeouts,
     )
 
 

@@ -8,6 +8,9 @@
   `batch_peaks.peak_lists` is the read itself, and can keep the satellite
   peaks the per-sample read leaves out, flagged in `is_satellite`. With a
   sample filter, `load_peaks` names the chosen samples in the request, and
-  the server reads only those.
+  the server reads only those. A batch of more than a hundred samples is
+  read a hundred at a time, two requests at once, so no request takes the
+  server long enough to pass the read timeout; a read that does time out is
+  not sent again.
   `load_peaks(..., save_path=...)` writes the frame and its `attrs` as a
   Parquet file that `pd.read_parquet` reads back without a server.
