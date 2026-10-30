@@ -1,4 +1,4 @@
-from sqlalchemy import exists, or_, select
+from sqlalchemy import and_, exists, or_, select
 
 from mascope_backend.db import (
     IonizationMode,
@@ -6,6 +6,7 @@ from mascope_backend.db import (
     SampleItem,
     async_session,
 )
+from mascope_backend.ionization_catalogue import seeded_collection_ids
 from mascope_backend.method_keys import instrument_key
 from mascope_backend.runtime import runtime
 
@@ -118,13 +119,23 @@ def system_mode_adopted():
     target collection, a sample bound to it, or an edit. Anything less and the
     mode is still exactly as it was seeded. A version that supersedes another
     is the deployment's edit, and the samples of the mode it replaced are
-    bound under the earlier version, not under it.
+    bound under the earlier version, not under it. A collection Mascope seeds
+    for the chemistry is not the deployment's, so a mode pointed at one is not
+    adopted by that alone: offering the shipped chemistries is the browser's
+    change to make, not a side effect of shipping their collections.
 
     :return: A SQL predicate over ``IonizationMode``.
     """
+    seeded = seeded_collection_ids()
     return or_(
-        IonizationMode.calibration_collection_id.is_not(None),
-        IonizationMode.diagnostic_collection_id.is_not(None),
+        and_(
+            IonizationMode.calibration_collection_id.is_not(None),
+            IonizationMode.calibration_collection_id.not_in(seeded),
+        ),
+        and_(
+            IonizationMode.diagnostic_collection_id.is_not(None),
+            IonizationMode.diagnostic_collection_id.not_in(seeded),
+        ),
         IonizationMode.supersedes_id.is_not(None),
         exists().where(
             SampleItem.ionization_mode_id == IonizationMode.ionization_mode_id
@@ -136,10 +147,11 @@ async def fetch_listable_ionization_modes() -> list[IonizationMode]:
     """Fetch the ionization modes a deployment should be offered.
 
     A mode Mascope ships is left out until the deployment adopts it. Before
-    that it calibrates and matches nothing, so offering it would only invite a
-    sample that cannot be processed. After it, the mode has to be listed: it
-    is a mode like any other, and a sample bound to one carries an id the
-    browser must resolve.
+    that, offering it is the browser's step (MAS-337), not the listing's: the
+    collections Mascope seeds for a chemistry let its mode calibrate, but do
+    not adopt it (``system_mode_adopted``). After it, the mode has to be
+    listed: it is a mode like any other, and a sample bound to one carries an
+    id the browser must resolve.
 
     Current versions only; a sample bound under an earlier one is resolved
     through its successor's ``superseded_ids`` (``service.listed``).
