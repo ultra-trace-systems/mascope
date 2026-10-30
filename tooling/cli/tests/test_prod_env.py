@@ -152,6 +152,87 @@ def test_a_tag_that_is_not_a_release_warns_before_falling_back(monkeypatch):
     assert "latest" in warnings[0]
 
 
+# --- the release a wheel install recorded ---
+
+
+def _record(home, version):
+    prod_main.deployed_release.save(str(home), version)
+
+
+def test_a_wheel_install_deploys_its_recorded_release(monkeypatch, tmp_path):
+    # The gap this closes: off a checkout, the release `prod update --version`
+    # deployed was forgotten with its process, and the next `prod up` - a
+    # restart, a reboot - moved the stack to `latest`.
+    monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
+    monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
+    monkeypatch.setattr(
+        prod_main.runtime, "parse_version", lambda **kw: "unknown-version"
+    )
+    _record(tmp_path, "v1.12.0")
+    warnings = []
+    monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
+
+    assert prod_main._deploy_version() == "v1.12.0"
+    assert warnings == []
+
+
+def test_the_pin_wins_over_the_record(monkeypatch, tmp_path):
+    monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "1")
+    monkeypatch.setenv("MASCOPE_VERSION", "v1.13.0")
+    monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
+    _record(tmp_path, "v1.12.0")
+
+    assert prod_main._deploy_version() == "v1.13.0"
+
+
+@pytest.mark.parametrize(
+    ("head", "expected"),
+    [
+        ("v1.13.0", "v1.13.0"),  # the checked-out release tag
+        ("2026.01.01-abc1234", "latest"),  # a master checkout follows latest
+    ],
+)
+def test_a_checkout_ignores_the_record(monkeypatch, tmp_path, head, expected):
+    # On a checkout the tag is the record. A file left in its `.runtime/` (a
+    # home that ran the wheel first) must not outvote it, nor turn a master
+    # checkout into a release one.
+    monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
+    monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
+    monkeypatch.setattr(prod_main.runtime, "parse_version", lambda **kw: head)
+    monkeypatch.setattr(prod_main.runtime, "tags_at_head", lambda **kw: [])
+    _record(tmp_path, "v1.12.0")
+
+    assert prod_main._deploy_version() == expected
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{not json",
+        '{"version": "latest"}',
+        '{"version": 12}',
+        '["v1.12.0"]',
+    ],
+)
+def test_an_unreadable_record_warns_before_falling_back(monkeypatch, tmp_path, content):
+    monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
+    monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
+    monkeypatch.setattr(
+        prod_main.runtime, "parse_version", lambda **kw: "unknown-version"
+    )
+    record = prod_main.deployed_release.path(str(tmp_path))
+    record.parent.mkdir(parents=True)
+    record.write_text(content, encoding="utf-8")
+    warnings = []
+    monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
+
+    assert prod_main._deploy_version() == "latest"
+    assert any("deployed-release.json" in w for w in warnings), warnings
+    assert any("latest" in w for w in warnings), warnings
+    # The record is there, only unreadable: the warning must not deny it.
+    assert not any("no deployed release recorded" in w for w in warnings), warnings
+
+
 # --- _compose_env ---
 
 

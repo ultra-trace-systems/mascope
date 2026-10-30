@@ -591,3 +591,38 @@ def test_doctor_command_json(monkeypatch, cli_runner):
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["ok"] is True and payload["images"]["count"] == 11
+
+
+def test_doctor_reports_drift_from_a_wheel_deployments_record(
+    monkeypatch, cli_runner, tmp_path
+):
+    """The record is what a wheel install's next `up` deploys: DRIFT against it.
+
+    Without it, `prod doctor` on a wheel install compared the containers with
+    `latest`, so a stack on a recorded release read as drifting and one that
+    really drifted read as whatever `latest` happened to be.
+    """
+    prod_main.runtime.full_config  # noqa: B018 - built before MASCOPE_PATH moves
+    monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
+    prod_main.deployed_release.save(str(tmp_path), "v1.12.0")
+    monkeypatch.setattr(
+        doctor,
+        "_run",
+        lambda cmd: _completed(
+            stdout="ghcr.io/ultra-trace-systems/mascope/backend:v1.11.0\n"
+        ),
+    )
+
+    def fake_build_report(**kwargs):
+        report = _healthy_report()
+        report.versions = doctor.version_status(
+            kwargs["expected_version"], kwargs["versioned_specs"][:1]
+        )
+        return report
+
+    monkeypatch.setattr(prod_main.prod_doctor, "build_report", fake_build_report)
+
+    result = cli_runner.invoke(prod_main.prod_app, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "backend v1.11.0  DRIFT (this deployment deploys v1.12.0)" in result.stdout

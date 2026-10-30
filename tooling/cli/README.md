@@ -53,19 +53,31 @@ Run `mascope --help` or `mascope <command> --help` for the full reference.
 with them and runs any pending database migrations (preceded by an automatic
 pre-migration dump). Move to a specific release with
 `mascope prod update --version v1.2.0`, or pin the deployed version for all
-commands with `MASCOPE_VERSION`; without a pin the stack follows the
-`latest` release images.
+commands with `MASCOPE_VERSION`.
+
+## The deployed release
+
+A runtime home made by `pip install mascope-cli` and `mascope init` has no
+source checkout to say which release it runs, so it keeps a record of its own
+in `.runtime/deployed-release.json`:
+
+- **What writes it.** `mascope prod update --version v1.2.0`, the unattended
+  `mascope prod update --auto`, and `mascope prod up --detach` with a
+  `MASCOPE_VERSION` pin to a release tag, each once the stack is up healthy.
+  Any other `up` leaves the record as it is.
+- **What reads it.** `mascope prod up`, a plain `mascope prod update`,
+  `mascope prod doctor` and `--auto` use the recorded release when no
+  `MASCOPE_VERSION` pin is set. `--auto` never moves the stack back past it.
+- **Back to `latest`.** `mascope prod update --version latest` removes the
+  record. With no record and no pin, the stack follows the `latest` images.
+- **On a checkout install** the checked-out tag says which release runs, and
+  the record is neither written nor read.
 
 ## Limits of a wheel install
 
-A runtime home made by `pip install mascope-cli` and `mascope init` starts a
-stack, but does not yet carry one across releases the way a server's source
-checkout does:
+A wheel install starts a stack and keeps its release, but does not yet carry
+one across releases the way a server's source checkout does:
 
-- **It records no deployed release.** `mascope prod update --version v1.2.0`
-  pins the release for that command only, and says so. The next
-  `mascope prod up` deploys `latest` again. To stay on a release, set
-  `MASCOPE_VERSION=v1.2.0` in the environment the stack is started from.
 - **The compose file and config layers are the CLI's own.** `mascope init`
   writes the copies this CLI version ships, and `prod update` never refreshes
   them. `mascope init --force` overwrites the base and mode layers wholesale.

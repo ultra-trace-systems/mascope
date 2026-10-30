@@ -496,3 +496,58 @@ def test_auto_still_updates_a_latest_deployment(auto_env):
         prod_main._auto(pull=True)
 
     assert e.value.exit_code == au.AUTO_OK
+
+
+# --- a wheel deployment: the release it recorded ---
+
+
+def test_auto_refuses_to_move_a_wheel_deployment_backwards(auto_env, tmp_path):
+    # Off a checkout the guard has only the record to go on: without it, a
+    # wheel install piloting a candidate read as `latest` and was "updated"
+    # back to the newest full release.
+    prod_main.deployed_release.save(str(tmp_path), "v2.0.0-rc.1")
+    auto_env.setattr(prod_main.auto_update, "clear_pending", lambda p: None)
+
+    def _never(**kwargs):
+        raise AssertionError("classified an older release as an update")
+
+    auto_env.setattr(prod_main.preflight, "build_plan", _never)
+
+    with pytest.raises(typer.Exit) as e:
+        prod_main._auto(pull=True)
+
+    assert e.value.exit_code == au.AUTO_OK
+
+
+def test_auto_records_the_release_it_applied_on_a_wheel(auto_env, tmp_path):
+    prod_main.deployed_release.save(str(tmp_path), "v1.3.0")
+    auto_env.setattr(
+        prod_main.preflight, "build_plan", lambda **k: _plan("fast-update")
+    )
+    auto_env.setattr(prod_main.auto_update, "in_window", lambda now, window: True)
+    auto_env.setattr(prod_main.auto_update, "wait_healthy", lambda c: True)
+    auto_env.setattr(prod_main, "check_data_dirs", lambda mode: None)
+    auto_env.setattr(prod_main, "_run_compose", lambda args: None)
+
+    with pytest.raises(typer.Exit) as e:
+        prod_main._auto(pull=True)
+
+    assert e.value.exit_code == au.AUTO_OK
+    assert prod_main.deployed_release.load(str(tmp_path)) == "v1.4.0"
+
+
+def test_auto_records_nothing_when_the_apply_is_unhealthy(auto_env, tmp_path):
+    prod_main.deployed_release.save(str(tmp_path), "v1.3.0")
+    auto_env.setattr(
+        prod_main.preflight, "build_plan", lambda **k: _plan("fast-update")
+    )
+    auto_env.setattr(prod_main.auto_update, "in_window", lambda now, window: True)
+    auto_env.setattr(prod_main.auto_update, "wait_healthy", lambda c: False)
+    auto_env.setattr(prod_main, "check_data_dirs", lambda mode: None)
+    auto_env.setattr(prod_main, "_run_compose", lambda args: None)
+
+    with pytest.raises(typer.Exit) as e:
+        prod_main._auto(pull=True)
+
+    assert e.value.exit_code == au.AUTO_ERROR
+    assert prod_main.deployed_release.load(str(tmp_path)) == "v1.3.0"
