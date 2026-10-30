@@ -55,7 +55,9 @@ Reading isotope ratios scan by scan over the scans that carry the rare isotopolo
 
 The kept scans are the line's upward fluctuations, so this reading errs high where the mean over every scan errs low.
 The overshoot is about a quarter at a per-scan signal-to-noise of 3 when half the scans keep the line, and a few percent when nine in ten do.
-That is a smaller error, and on the side the tolerance forgives.
+Those figures hold for a file with many scans.
+The overshoot grows when a file has few scans: on the demo set's four-point series, 13C lines missing a fifth to a half of the scans read 1.54 of their predicted share, and lines missing more read 4.5.
+The isotope ratio tolerance is symmetric, so an overshoot costs a line as much as an undershoot of the same size.
 A censoring-aware estimate needs the per-scan presence count, which the peak store does not keep yet.
 
 **On a TOF file the ratio is the mean over every scan.**
