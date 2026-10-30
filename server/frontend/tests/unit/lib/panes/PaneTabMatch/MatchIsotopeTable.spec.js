@@ -196,3 +196,65 @@ describe('MatchIsotopeTable opening row', () => {
     expect(await mainRowFormulas()).toEqual(['[13C][15N]C8H16O7-'])
   })
 })
+
+// Beside each line's r.a., the table shows what was measured: the line's
+// intensity relative to the ion's most abundant line, in the r.a.'s units, and
+// on an Orbitrap file the scans that ratio was read over, those where both
+// lines are present.
+describe('MatchIsotopeTable measured ratio', () => {
+  const matched = (relative, scans) => ({
+    sample_peak_intensity_relative: relative,
+    ratio_scan_count: scans
+  })
+
+  /** The text of one column's cells, row by row. */
+  async function cells(header) {
+    const wrapper = await mountTable()
+    return wrapper
+      .find(`[data-header="${header}"]`)
+      .findAll('span')
+      .map((cell) => cell.text())
+  }
+
+  beforeEach(() => {
+    visualized.ion = { target_ion_formula: 'C10H15O2-' }
+    visualized.isotopes = [
+      { ...isotope(167.1078, 'C10H15O2-', 1), match: matched(1, 240) },
+      { ...isotope(168.1112, '[13C]C9H15O2-', 0.1093), match: matched(0.1107, 118) },
+      // A TOF line, or one matched before the count was kept: a ratio, no count
+      { ...isotope(169.112, '[18O]C10H15O-', 0.0041), match: matched(0.0039, null) },
+      // Unmatched: a zero placeholder, which is not a measurement
+      { ...isotope(169.1145, '[13C]2C8H15O2-', 0.0054), match: matched(0, null) }
+    ]
+  })
+
+  it('shows the measured ratio of every line with a peak', async () => {
+    expect(await cells('measured')).toEqual(['100.000%', '11.070%', '0.390%'])
+  })
+
+  it('shows the scans a ratio was read over where it was read scan by scan', async () => {
+    expect(await cells('scans')).toEqual(['240', '118'])
+  })
+
+  // A bromine pair: the r.a. is a share of the whole envelope, so the measured
+  // ratio to the most abundant line is put on the same footing by that line's r.a.
+  it("reads the measured share in the r.a.'s units", async () => {
+    visualized.ion = { target_ion_formula: 'CH2Br-' }
+    visualized.isotopes = [
+      { ...isotope(92.9345, 'CH2Br-', 0.5), match: matched(1, 4) },
+      { ...isotope(94.9325, '[81Br]CH2-', 0.48), match: matched(0.97, 3) }
+    ]
+
+    expect(await cells('measured')).toEqual(['50.000%', '48.500%'])
+  })
+
+  it('shows a ratio of zero read over scans as a measurement', async () => {
+    visualized.isotopes = [
+      { ...isotope(167.1078, 'C10H15O2-', 1), match: matched(1, 240) },
+      { ...isotope(168.1112, '[13C]C9H15O2-', 0.1093), match: matched(0, 0) }
+    ]
+
+    expect(await cells('measured')).toEqual(['100.000%', '0.000%'])
+    expect(await cells('scans')).toEqual(['240', '0'])
+  })
+})
