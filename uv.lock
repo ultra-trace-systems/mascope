@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = "==3.12.*"
 resolution-markers = [
     "sys_platform == 'win32'",
@@ -1532,7 +1532,7 @@ lint = [{ name = "ruff", specifier = ">=0.16.3,<0.18" }]
 
 [[package]]
 name = "mascope-ai"
-version = "2026.10.21"
+version = "2026.10.30"
 source = { editable = "libraries/ai" }
 dependencies = [
     { name = "loguru" },

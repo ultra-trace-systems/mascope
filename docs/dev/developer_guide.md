@@ -2772,13 +2772,13 @@ This library exposes a public Python SDK for end-users to leverage especially in
 #### Publish
 
 Publishing to [PyPI](https://pypi.org/) is automated for `mascope-sdk`,
-`mascope-tools`, `mascope-runtime`, `mascope-cli` and `mascope-file-agent` by
-the `publish-pypi` workflow (`.github/workflows/publish-pypi.yaml`). To release
-a new version:
+`mascope-tools`, `mascope-ai`, `mascope-runtime`, `mascope-cli` and
+`mascope-file-agent` by the `publish-pypi` workflow
+(`.github/workflows/publish-pypi.yaml`). To release a new version:
 
 1. In a PR, set `version` in the package's `pyproject.toml`
-   (under `libraries/sdk/`, `libraries/tools/`, `libraries/runtime/`,
-   `tooling/cli/` or `agents/file/`) to the commit date in unpadded
+   (under `libraries/sdk/`, `libraries/tools/`, `libraries/ai/`,
+   `libraries/runtime/`, `tooling/cli/` or `agents/file/`) to the commit date in unpadded
    CalVer (e.g. `2026.7.6` — no leading zeros; PEP 440 strips them anyway):
 
    ```sh

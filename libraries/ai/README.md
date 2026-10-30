@@ -29,6 +29,16 @@ peaks.df.groupby("target_compound_formula")["height"].mean()  # in Python
 
 ## Connecting
 
+The toolkit is on PyPI, and needs no checkout of this repository:
+
+```bash
+pip install mascope-ai   # the toolkit, the MCP server and the mascope-ai command
+mascope-ai setup         # checks the install, the configuration and the token
+```
+
+In a checkout, `uv sync` installs it from `libraries/ai` with the rest of the
+workspace, and `uv run mascope-ai ...` runs it: the developer variant.
+
 `Toolkit()` makes an SDK client from the environment (`MASCOPE_URL`,
 `MASCOPE_ACCESS_TOKEN`, or a `.env` file), presenting the service name
 `ai-agent`: generate an **AI Agent** token for it in Mascope's settings. Pass
@@ -231,9 +241,17 @@ over stdio in the Model Context Protocol. The agent runs it with the user's
 own AI Agent token and its own model subscription:
 
 ```bash
-mascope-ai setup                                   # check, then register:
-claude mcp add mascope -- python -m mascope_ai mcp  # the Python mascope_ai is in
+pip install mascope-ai
+mascope-ai setup                          # check, then register:
+claude mcp add mascope -- mascope-ai mcp
 ```
+
+`mascope-ai` must be on the PATH Claude Code starts the server with. When it
+is not, as with a virtual environment Claude Code does not activate, register
+the Python it was installed into instead: `setup` prints that line, `claude
+mcp add mascope -- /path/to/python -m mascope_ai mcp`. The same line with the
+checkout's `.venv` Python runs the server from a checkout: the developer
+variant.
 
 | Tool | Returns |
 | ---- | ------- |
