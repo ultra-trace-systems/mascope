@@ -138,6 +138,24 @@ class TestOrbitrapReadsOverPresentScans:
         )
         assert result.loc["iso-1", "ratio_scan_count"] == N_SCANS // 2
 
+    def test_a_line_present_without_its_anchor_counts_only_the_shared_scans(
+        self, monkeypatch
+    ):
+        # The anchor is in the first half only, the line in every scan: the
+        # scans where the anchor is absent add nothing to either side.
+        peaks = _peaks(
+            [
+                (100.0, "p-anchor", np.where(FIRST_HALF, 1000.0, 0.0)),
+                (101.0, "p-line", np.full(N_SCANS, 100.0)),
+            ]
+        )
+        result = _compute(monkeypatch, peaks, _targets(ION))
+
+        assert result.loc["iso-1", "sample_peak_intensity_relative"] == pytest.approx(
+            0.1
+        )
+        assert result.loc["iso-1", "ratio_scan_count"] == N_SCANS // 2
+
     def test_a_line_never_present_with_its_anchor_reads_zero(self, monkeypatch):
         peaks = _peaks(
             [
