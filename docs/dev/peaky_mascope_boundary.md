@@ -150,7 +150,10 @@ stage 3 because they are small and the matcher fix is overdue on its own.
 
 **Also decided 2026-10-30, in the meeting:** the split of section 2 is accepted
 as written (PKY-1); peaky stays the interactive AI data analysis and reporting
-tool (PKY-2); the corpus comes first and peaky's owner builds it (PKY-3).
+tool (PKY-2); the corpus comes first and peaky's owner builds it (PKY-3);
+a parity run reads develop's library through a git-ref development extra
+while releases keep the PyPI pin, and the old path stays one release behind
+a switch (PKY-4, section 8).
 
 Still open, each a Decision issue in Linear:
 
@@ -160,8 +163,6 @@ Still open, each a Decision issue in Linear:
   plan owner and peaky's owner.*
 - The acceptance rule for a code change judged on the bench (PKY-17). *Call
   for both owners.*
-- How a parity run reads an unreleased library, and how long the escape hatch
-  lives (PKY-4). *Call for peaky's owner, with the plan owner.*
 - The trace as the unit of work, decided on the bench after stage 4 (PKY-31).
 
 ## 8. How a rule moves: the protocol and the register
