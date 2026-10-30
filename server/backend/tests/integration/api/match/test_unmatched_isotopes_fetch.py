@@ -20,11 +20,22 @@ rules under test are:
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 import pytest_asyncio
 
+from mascope_backend.api.controllers.match.aggregate.match_aggregate_controller import (
+    aggregate_match_isotope_filtered_data,
+)
+from mascope_backend.api.controllers.match.aggregate.sample.match_aggregate_sample_controller import (
+    aggregate_sample_match_ion,
+)
 from mascope_backend.api.controllers.target.lib.fetch.target_isotopes_fetch import (
+    fetch_existing_main_isotope_references,
     fetch_sample_unmatched_target_isotopes,
+)
+from mascope_backend.api.new.match.records.isotope.service import (
+    get_match_isotope_records,
 )
 from mascope_backend.db import (
     Dataset,
@@ -327,3 +338,122 @@ class TestFetchSampleUnmatchedTargetIsotopes:
             match_chain.sample, MATCH_PARAMS
         )
         assert set(df["target_ion_id"]) == {match_chain.ion1, match_chain.ion2}
+
+
+class TestStoredAnchorAndScanCount:
+    """What an Orbitrap line's ratio is read against, and over, round-trips.
+
+    A line computed for an ion matched in an earlier run reads its ratio over
+    the stored anchor's per-scan series, which it finds by the anchor's peak;
+    the scans the ratio was read over are stored and read back on the
+    Match tab's route.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_reference_carries_the_anchors_peak(
+        self, match_chain, async_session_factory
+    ):
+        anchor = make_match_isotope_row(match_chain.item, match_chain.iso1a, 0.9)
+        anchor.sample_peak_mz = 181.07
+        async with async_session_factory() as session:
+            session.add(anchor)
+            await session.commit()
+
+        df = await fetch_existing_main_isotope_references(
+            match_chain.item, [match_chain.ion1]
+        )
+
+        assert df.to_dict("records") == [
+            {
+                "target_ion_id": match_chain.ion1,
+                "sample_peak_intensity": 0.0,
+                "relative_abundance": 1.0,
+                "sample_peak_id": anchor.sample_peak_id,
+                "sample_peak_mz": 181.07,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_scan_count_is_stored_and_read_back(
+        self, match_chain, async_session_factory
+    ):
+        line = make_match_isotope_row(match_chain.item, match_chain.iso1b, 0.9)
+        line.ratio_scan_count = 37
+        async with async_session_factory() as session:
+            session.add(line)
+            await session.commit()
+
+        df = await aggregate_match_isotope_filtered_data(
+            sample_item_id=match_chain.item,
+            target_ion_id=match_chain.ion1,
+            match_params=MATCH_PARAMS,
+        )
+
+        counts = df.set_index("target_isotope_id")["ratio_scan_count"]
+        assert counts[match_chain.iso1b] == 37
+        # The main isotope has no stored row: rebuilt unmatched, nothing read
+        assert pd.isna(counts[match_chain.iso1a])
+
+    @pytest.mark.asyncio
+    async def test_a_sample_with_no_stored_rows_still_has_the_column(self, match_chain):
+        df = await aggregate_match_isotope_filtered_data(
+            sample_item_id=match_chain.item,
+            target_ion_id=match_chain.ion1,
+            match_params=MATCH_PARAMS,
+        )
+
+        assert df["ratio_scan_count"].isna().all()
+
+    @pytest.mark.asyncio
+    async def test_the_match_tabs_ion_route_returns_the_scan_count(
+        self, match_chain, async_session_factory
+    ):
+        line = make_match_isotope_row(match_chain.item, match_chain.iso1b, 0.9)
+        line.ratio_scan_count = 37
+        async with async_session_factory() as session:
+            session.add(line)
+            await session.commit()
+
+        result = await aggregate_sample_match_ion(
+            sample_item_id=match_chain.item,
+            target_ion_id=match_chain.ion1,
+            target_collection_id=match_chain.collection,
+            match_params=MATCH_PARAMS,
+        )
+
+        counts = {
+            isotope["target_isotope_id"]: isotope["match"]["ratio_scan_count"]
+            for isotope in result["data"]["match_isotopes"]
+        }
+        assert counts == {match_chain.iso1a: None, match_chain.iso1b: 37}
+
+    @pytest.mark.asyncio
+    async def test_the_isotope_records_route_returns_the_scan_count(
+        self, match_chain, async_session_factory
+    ):
+        line = make_match_isotope_row(match_chain.item, match_chain.iso1b, 0.9)
+        line.ratio_scan_count = 37
+        async with async_session_factory() as session:
+            session.add(line)
+            await session.commit()
+
+        records = await get_match_isotope_records(
+            sample_item_id=match_chain.item, target_ion_id=match_chain.ion1
+        )
+
+        counts = {
+            record["target_isotope_id"]: record["match"]["ratio_scan_count"]
+            for record in records["data"]
+        }
+        assert counts == {match_chain.iso1a: None, match_chain.iso1b: 37}
+
+    @pytest.mark.asyncio
+    async def test_a_batch_record_has_no_scan_count(self, match_chain):
+        records = await get_match_isotope_records(
+            sample_batch_id=match_chain.batch, target_ion_id=match_chain.ion1
+        )
+
+        assert records["data"]
+        assert all(
+            record["match"]["ratio_scan_count"] is None for record in records["data"]
+        )

@@ -325,6 +325,7 @@ async def aggregate_match_isotope_filtered_data(
                 MatchIsotope.sample_peak_tof,
                 MatchIsotope.match_score,
                 MatchIsotope.signal_to_noise,
+                MatchIsotope.ratio_scan_count,
             )
             .select_from(MatchIsotope)
             .where(MatchIsotope.sample_item_id.in_(sample_item_ids))
@@ -432,6 +433,7 @@ def _assemble_filtered_isotope_frame(
         "match_abundance_error",
         "sample_peak_intensity",
         "sample_peak_intensity_relative",
+        "ratio_scan_count",
         "sample_peak_mz",
         "sample_peak_tof",
         "match_score",

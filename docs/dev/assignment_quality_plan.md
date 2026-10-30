@@ -83,6 +83,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.4h - the inspector links the other channels, and the listing column folds | - |  | planned, from the same notes |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | #2593 (the gate's anchors) |  | in two PRs (decided 2026-10-22). Built: the mass gate's fit takes the reagent pass's monoisotopic lines beside its commits; estimated on the pass-10 ledgers, all seven K3 files fit a calibration. Planned: the cap and the offset report (MAS-469), landing with 3.5b |
 | 3.5b - the envelope's tolerance, fitted per run | - |  | planned, from the plan owner's reading of 2026-09-25 and the pass-9 ledgers |
+| 3.5c - the targeted matcher reads an isotope line over the scans that hold its anchor | - |  | built: an Orbitrap line's ratio is read over the scans it shares with its anchor, the count stored and shown in the Match tab; TOF unchanged |
 | 3.6 - priors and the dataset's context | - |  | planned; two riders from the reference's 0.10 line (the review section) |
 | 3.7 - stage 3 gate, engine 0.6.0 | - |  | planned; read against the literature and chemical reasoning, not the reference (decision 27) |
 | 4.1 - series detection on the batch ledger | - |  | planned |
@@ -761,6 +762,41 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   rest, which is the cylinder's own certified components. Both re-base
   every set, so one pass measures them. Landing it next also makes the
   open call above moot: the band is left as it is.
+
+### 3.5c The targeted matcher reads an isotope line over the scans that hold its anchor
+
+- **What.** The targeted matcher (`mascope_match.compute.isotopes`) reads
+  an Orbitrap line's intensity relative to its anchor over the scans where
+  the line and the anchor are both present: the line's sum over those
+  scans over the anchor's sum over the same scans, in place of the ratio
+  of the two means over every scan. The count of those scans is stored on
+  the match isotope row (`ratio_scan_count`) and shown in the Match tab's
+  isotope table beside the measured ratio. An ion whose anchor was matched
+  in an earlier run reads against that stored anchor's series, found by
+  its peak. A TOF file keeps the mean over mean: it detects on its summed
+  spectrum, and its series is not thresholded per scan.
+- **Why.** An Orbitrap scan keeps a centroid only where it clears that
+  scan's floor, and the stored intensity divides the sum by every scan, so
+  a dim line is read diluted by the share of scans it missed. 5.3's table
+  (1,018 committed 13C lines at an expected S/N of 10 to 50): 0.94 of the
+  share missing no scan, 0.88 up to a fifth, 0.72 a fifth to a half, 0.44
+  more. The two lower rows exceed the 0.2 isotope ratio tolerance, which
+  zeroes the line's score. Conditioning on the anchor keeps a compound
+  present for only part of the file honest.
+- **Known limit.** The kept scans are the line's upward fluctuations, so
+  the reading overshoots where the dilution undershoots: about a quarter at
+  a per-scan S/N of 3 with half the scans keeping the line, a few percent
+  at nine in ten. The censoring-aware estimate is 3.5d (the presence
+  count).
+- **Where.** `libraries/match/src/mascope_match/compute/isotopes.py`
+  (`present_scan_ratios`); `match_isotope.ratio_scan_count`; the reference
+  fetch (`fetch_existing_main_isotope_references`) carries the stored
+  anchor's peak; `MatchIsotopeTable.vue`; `docs/user/how-it-works/matching.md`.
+- **Verify.** The 79Br/81Br known-answer control on the demo set's bromide
+  ions, old reading against new; 5.3's table re-read by the new reading;
+  the demo set's match categories before and after. The reproducibility
+  goldens compare peak m/z and intensity only and do not move.
+- **Size.** S. Before 3.5d, whose scorer form it previews.
 
 ### 3.6 Priors and the dataset's context
 

@@ -187,6 +187,7 @@ async def aggregate_sample_match_ion(
                     "sample_peak_intensity_relative": row[
                         "sample_peak_intensity_relative"
                     ],
+                    "ratio_scan_count": row.get("ratio_scan_count"),
                     "sample_peak_tof": row["sample_peak_tof"],
                     "match_abundance_error": row["match_abundance_error"],
                     "match_mz_error": row["match_mz_error"],

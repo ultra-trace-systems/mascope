@@ -37,6 +37,7 @@ MATCH_ISOTOPE_VALUE_COLUMNS = [
     "sample_peak_tof",
     "match_score",
     "signal_to_noise",
+    "ratio_scan_count",
 ]
 
 
@@ -47,10 +48,11 @@ def snr_columns_json_safe(df: pd.DataFrame) -> pd.DataFrame:
     the v2 score and is NaN whenever a row has no signal-to-noise data (files
     without noise data, reconstructed unmatched rows, and rows stored before
     the column existed). NaN is not JSON - starlette refuses to serialize it -
-    so it must leave the frame as None.
+    so it must leave the frame as None. ``ratio_scan_count`` is NaN the same
+    way, wherever a ratio was not read scan by scan.
     """
     df = df.copy()
-    for column in ("signal_to_noise", "is_satellite"):
+    for column in ("signal_to_noise", "is_satellite", "ratio_scan_count"):
         if column in df.columns and df[column].isna().any():
             df[column] = df[column].astype(object).where(df[column].notna(), None)
     return df
