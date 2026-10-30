@@ -40,12 +40,23 @@ class MatchIsotopeBase(BaseModel):
         ),
     )
 
-    @field_validator("signal_to_noise", mode="before")
+    ratio_scan_count: Optional[int] = Field(
+        None,
+        description=(
+            "Scans an Orbitrap line's ratio to its anchor was read over: those "
+            "where the line and its anchor are both present. None where the "
+            "ratio is the mean over every scan (TOF files, a line read without "
+            "its anchor's series)"
+        ),
+    )
+
+    @field_validator("signal_to_noise", "ratio_scan_count", mode="before")
     @classmethod
     def _nan_to_none(cls, value: object) -> object:
         """Coerce NaN to None: the compute frame carries NaN for "no SNR for
-        this row", but the persisted (and JSON) representation of that is
-        NULL/None - NaN is not JSON and must not reach the database."""
+        this row" and "not read scan by scan", but the persisted (and JSON)
+        representation of that is NULL/None - NaN is not JSON and must not
+        reach the database."""
         if isinstance(value, float) and math.isnan(value):
             return None
         return value
@@ -65,6 +76,7 @@ MatchIsotopeSortColumn = Literal[
     "match_mz_error",
     "match_score",
     "signal_to_noise",
+    "ratio_scan_count",
     "match_isotope_utc_created",
     "match_isotope_utc_modified",
 ]

@@ -171,3 +171,13 @@ class TestMatchIsotopeBaseSignalToNoise:
 
     def test_absent_key_defaults_to_none(self):
         assert MatchIsotopeBase(**self.BASE_ROW).model_dump()["signal_to_noise"] is None
+
+    def test_ratio_scan_count_is_persisted_as_an_integer(self):
+        # The compute frame holds the count as a float column (NaN for "not
+        # read scan by scan"), so a whole float must land as the integer
+        model = MatchIsotopeBase(**{**self.BASE_ROW, "ratio_scan_count": 37.0})
+        assert model.model_dump()["ratio_scan_count"] == 37
+
+    def test_ratio_scan_count_nan_is_persisted_as_none(self):
+        model = MatchIsotopeBase(**{**self.BASE_ROW, "ratio_scan_count": np.nan})
+        assert model.model_dump()["ratio_scan_count"] is None

@@ -2353,6 +2353,11 @@ class MatchIsotope(Base):
     # data, sentinel rows, and every row stored before the column existed); the
     # v2 fit score then falls back to its no-SNR mode for that row.
     signal_to_noise: Mapped[Optional[float]] = mapped_column(Float)
+    # Scans an Orbitrap line's ratio to its anchor was read over: those where
+    # the line and its anchor are both present. NULL where the ratio is the
+    # mean over mean (TOF files, a line without its anchor's series, and every
+    # row stored before the column existed).
+    ratio_scan_count: Mapped[Optional[int]] = mapped_column(Integer)
     match_isotope_utc_created: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True)
     )

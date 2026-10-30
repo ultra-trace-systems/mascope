@@ -902,7 +902,7 @@ QUESTIONS: tuple[Question, ...] = (
                     "status": "probable",
                     "ion": PROTONATED,
                     "mechanism": "[M+H]+",
-                    "ion_score": Close(0.995059, abs=1e-6),
+                    "ion_score": Close(0.994886, abs=1e-6),
                 }
             ],
             "candidates": ["C10H16O2", "CH14N2O6", "CH17N3O6", "H13NO5"],
@@ -925,6 +925,20 @@ QUESTIONS: tuple[Question, ...] = (
             "resolve",
         ),
         golden=_golden_uronium_peak,
+        # The answer matches the compound afresh; the goldens hold the bundle's
+        # stored match, computed before an Orbitrap line's ratio was read over
+        # the scans it shares with its anchor (mascope#2772), which reads a
+        # line kept in only some scans a little higher
+        near_golden={
+            "peak_mz": _peak_mz(169.122318),
+            "assigned": [
+                {
+                    "status": "probable",
+                    "ion": PROTONATED,
+                    "ion_score": Close(0.995059, abs=1e-6),
+                }
+            ],
+        },
         check=_nothing_unscored_is_a_verdict,
     ),
 )
