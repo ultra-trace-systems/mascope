@@ -373,8 +373,9 @@ credential for this host: all it can do is name a version, which is bounded
 and held to the shape of one before it is used. Each release is assessed
 once, whatever its run concluded. A red run pages, and repeating it each tick
 would only spend the target's rate limits. The watch needs a target that
-reports a pinned release (v1.14.0 or later, `MASCOPE_VERSION` set). A target
-that answers nothing usable leaves each tick logging `cannot read the
+reports a pinned release (v1.14.0 or later, `MASCOPE_VERSION` set to a
+release, not `latest`). A target that answers nothing usable, `unknown` or
+`latest` included, leaves each tick logging `cannot read the
 deployed release`, and the periodic run's summary ends in
 `deployed=unreadable` until it is fixed.
 

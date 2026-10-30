@@ -659,6 +659,9 @@ def test_a_release_already_assessed_is_not_assessed_again(tmp_path):
         None,
         "{not json",
         _deployed("unknown"),
+        # The rolling tag names no release: keyed on it, the watch would
+        # assess once and never again.
+        _deployed("latest"),
         json.dumps({"data": {"version": 7}}),
         json.dumps({"version": "v1.7.3"}),
         # The target's answer, held to the shape of a version: nothing it says
@@ -671,6 +674,7 @@ def test_a_release_already_assessed_is_not_assessed_again(tmp_path):
         "unreachable",
         "malformed",
         "unknown",
+        "latest",
         "not-a-string",
         "no-envelope",
         "injection",
@@ -812,14 +816,19 @@ def test_a_periodic_run_on_a_new_release_leaves_the_watch_nothing_to_do(tmp_path
     assert _state(tmp_path, "last-run-version") == "v1.7.3"
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [None, _deployed("unknown"), _deployed("latest")],
+    ids=["unreachable", "unknown", "latest"],
+)
 def test_a_periodic_run_that_cannot_read_the_release_says_the_watch_is_blind(
-    tmp_path,
+    tmp_path, answer
 ):
     rc, summary, _ = _run(
         tmp_path,
         report=_report(),
         release=_tag("v1.7.2"),
-        deployed=None,
+        deployed=answer,
         state={"last-run-version": "v1.7.2"},
     )
     assert rc == 0
