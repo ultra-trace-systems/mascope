@@ -192,9 +192,13 @@ flowchart TD
     I --> J["Delete the copy and its tests;<br/>record the parity numbers in the register"]
 ```
 
-The parity run need not wait for the release: peaky's development extras may
-depend on the git ref of develop's library subdirectory, while its releases keep
-the PyPI pin. The two kinds of move are kept apart as the assessment keeps them:
+Two rules of the protocol were decided on 2026-10-30 (PKY-4). The parity run
+does not wait for a release: peaky's development extras depend on the git ref
+of develop's library subdirectory, while its releases keep the PyPI floor pin,
+so shipped peaky stays reproducible and validation loses the release lag. The
+old path stays one peaky release behind a switch after the default flips, then
+the switch, the copy and their tests are deleted together. The two kinds of
+move are kept apart as the assessment keeps them:
 "same output, cheaper" is proven by a byte-level ledger diff, "different output,
 better" by the bench card and the hold-outs, never by the training score.
 
