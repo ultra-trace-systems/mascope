@@ -38,7 +38,7 @@ is wrong.
 | Shared maths | `mascope_tools` | Scoring, the per-sample scoring derivation, isotope prediction, the formula grid, plausibility, mechanism notation, profiles, calibration. One function per rule; both engines call it. |
 | Transport | `mascope_sdk` | Every read and write either engine makes against a server. No engine carries a URL path of its own. |
 | Research platform | peaky | Where a new rule is tried first: the fast experiment loop, offline replay, the bench and its corpus, reporting over any ledger. The interim producer of results until the matching Mascope step lands. |
-| Chemistry as data | Peaky's owner, in whichever repository the consumer reads | Reagent and reference-ion libraries, chemistry profiles and contexts, the known-species registry, the corpus's entry rules and its vetting. |
+| Chemistry as data | Peaky's owner authors it; it lives where its consumer reads it (decided 2026-10-30, PKY-35) | Reagent profiles and chemistry contexts, the reagent-cluster library, the reference lists and the known-species registry: in Mascope, as the library's presets and the server's cited reference sources (versioned rows once step 4.5 lands), read by peaky through the library and the SDK. The reference ions `peaky mass-qc` reads and the scorecard rosters: in peaky. The corpus's entry rules and its vetting: with the corpus. One copy wherever the bench would notice two disagreeing; register rows A9 to A12. |
 
 The assessment's steps 0 and 1 (the corpus and bench; performance with
 identical output) proceed in peaky as written. Its steps 2 to 6 (one noise
@@ -156,6 +156,16 @@ a parity run reads develop's library through a git-ref development extra
 while releases keep the PyPI pin, and the old path stays one release behind
 a switch (PKY-4, section 8).
 
+**Decided 2026-10-30 after the meeting, by the plan owner, as the note
+leaned:** the chemistry as data lives where its consumer reads it, and
+peaky's owner authors it there. The profiles and contexts, the reagent-cluster
+library, the reference lists and the known-species registry are one copy in
+Mascope, which peaky reads; a change is a PR to the library until step 4.5
+serves them as versioned rows, and a superseding row after. The reference
+ions `peaky mass-qc` reads and the rosters stay peaky's, and an ion enters a
+Mascope list only with a work that names it (PKY-35; section 2 and register
+rows A9 to A12).
+
 Still open, each a Decision issue in Linear:
 
 - The corpus schema and its entry rules, agreed before the scorer is written
@@ -164,9 +174,6 @@ Still open, each a Decision issue in Linear:
   plan owner and peaky's owner.*
 - The acceptance rule for a code change judged on the bench (PKY-17). *Call
   for both owners.*
-- Where the chemistry as data lives, who edits it and how the other side
-  reads it (PKY-35); section 2 names the location once it is decided. *Call
-  for peaky's owner and the plan owner.*
 - The trace as the unit of work, decided on the bench after stage 4 (PKY-31).
 
 ## 8. How a rule moves: the protocol and the register
@@ -218,11 +225,11 @@ Two rules keep the two repositories from working against each other:
   a release does, as `sdk-compat.yaml` does for the SDK.
 
 The register is the coordination record: one row per rule here, and one issue
-per row in the Linear project *Peaky, thinner*: A1 is PKY-27, A2 PKY-28, A3
-PKY-5, A4 PKY-6, A5 PKY-7, A6 PKY-29, A7 PKY-30 and A8 PKY-32. The corpus and
-the bench
-are PKY-15 to PKY-26 in *Assignment truth corpus and bench*, with the baseline
-cards (PKY-25) the blocker of every move that changes output.
+per row that moves in the Linear project *Peaky, thinner*: A1 is PKY-27, A2
+PKY-28, A3 PKY-5, A4 PKY-6, A5 PKY-7, A6 PKY-29, A7 PKY-30, A8 PKY-32, A9
+PKY-36, A10 PKY-37 and A11 PKY-38; A12 moves nothing and has none. The corpus
+and the bench are PKY-15 to PKY-26 in *Assignment truth corpus and bench*, with
+the baseline cards (PKY-25) the blocker of every move that changes output.
 
 | Rule | Peaky today | Library | Mascope step | Library version | Peaky PR | Bench | State |
 |---|---|---|---|---|---|---|---|
@@ -232,6 +239,10 @@ cards (PKY-25) the blocker of every move that changes output.
 | A4 The run publish transport | `io/publish.py`, the raw posts | `peak_assignments.import_run` | MAS-345 | the first `mascope-sdk` after 2026.10.28 | | | SDK merged 2026-10-30; translation and pre-validation stay in peaky |
 | A5 The batch time series load | `io/io_mascope.py`, `fetch_batch_peaks` | `load_peaks` on the bulk route, with `save_path` | 5.11, MAS-568 | the first `mascope-sdk` after 2026.10.28 | | | merged 2026-10-30; same output |
 | A6 The minor-line response | `assignment/iso_response.py` | the presence-corrected share in `score_pattern_v2` | 3.5d, MAS-582 | | | | Todo; the curve stays as the fallback for stores without the count |
-| The formula grid, profiles and contexts, reagent libraries, the width model, side lobes, the axis correction | `assignment/`, `batch/` | as stages 3 and 4 land each | | | | | not scheduled; one row each when they are |
+| The formula grid, the width model, side lobes, the axis correction | `assignment/`, `batch/` | as stages 3 and 4 land each | | | | | not scheduled; one row each when they are |
 | A7 Batch isotope checks, evidence levels, the axis lock model | `batch/iso_checks.py`, `assignment/levels/`, `batch/axislock.py` | specification first, by peaky's owner | stage 4 | | | | waits for stage 4; the reverse direction of the chart |
 | A8 The MS2 source and the fragment composition rules | `ms2/sources.py`, `ms2/subformula.py` | the MS2 store's scans and window routes; `composition.ms2` | the MS2 project's phases 0, 1 and 5 (MAS-389, MAS-390; the core MAS-387 merged) | `mascope-tools` 2026.10.27 for the core, and the SDK release carrying the routes | | | the MS2 note's appendix A is this row's own register; same output, peaky's known answers as the proof; the binding class and replicates stay in peaky until MAS-401 |
+| A9 Reagent profiles and chemistry contexts, as data | `chem/profiles.py`, `chem/contexts.py` | the presets in `composition.profiles`; the served rows after 4.5 | 4.5, MAS-65 (the rows; the presets are in since 1.1) | `mascope-tools` 2026.10.27 | | | same output expected, the presets were ported verbatim; peaky's `load_config` extras stay as its research overlay |
+| A10 The reagent-cluster library | `chem/reagents.py`, `build_library` | `composition.reagents` and the profile's cluster grammar | 3.3 (built), 3.3d | | | | different output expected; an ion only peaky names enters the library with its citation first; the ledger-coupled labeler stays in peaky |
+| A11 Reference peaklists and the known-species registry | `data/peaklists/`, the lists in `passes/directors.py` | the server's cited reference sources, through `client.reference` | 2.5a, 2.5b (built) | `mascope-sdk` 2026.10.28 | | | pass 0 stays in peaky and reads the server; a list Mascope lacks is loaded as a cited source first |
+| A12 Reference ions for mass QC, and the rosters | `data/reference_ions/`, `chem/reference_ions.py`, `data/rosters/` | stays in peaky | MAS-177 reads the table as an input | | | | no move; an ion enters a Mascope list only with a work that names it; the rosters are corpus sources (PKY-18) |
