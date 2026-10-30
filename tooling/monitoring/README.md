@@ -304,12 +304,13 @@ filling disk does not stop a rollout (`tooling/fleet/README.md`).
 ## 10. Scheduled security assessment (`run-assessment.sh`)
 
 [`run-assessment.sh`](run-assessment.sh) runs the pen-test suite
-(`security/pentest/`) against a deployment on a schedule and keeps the reports
-here. Uptime Kuma tells you the site answers; nothing else tells you TLS is
-still enforced, the security headers are still set, or tenant isolation still
-holds. Because deployed images are pinned, what a periodic run actually detects
-between releases is **environment drift** — an edge rule, a firewall change, a
-certificate approaching expiry.
+(`security/pentest/`) against a deployment on a schedule and whenever a new
+release reaches it, and keeps the reports here. Uptime Kuma tells you the site
+answers; nothing else tells you TLS is still enforced, the security headers
+are still set, or tenant isolation still holds. Because deployed images are
+pinned, what a periodic run actually detects between releases is
+**environment drift** — an edge rule, a firewall change, a certificate
+approaching expiry. What a release changes, the deploy run (below) assesses.
 
 **It runs from the monitoring box, driving the suite over SSH on the target.**
 Two reasons, and neither is convenience: a report stored on the system under
@@ -343,7 +344,54 @@ Setup:
    loopback listener differs from :443 only in asking for no client
    certificate, so the refusal itself is outside this vantage; read the
    report with that in mind.
-4. Cron it clear of the backup windows, e.g. `30 5 * * 0`.
+4. Cron it clear of the backup windows, e.g. `30 5 * * 0`, and add the
+   deploy watch beside it (see "Two triggers"):
+
+   ```cron
+   30 5 * * 0  /opt/pentest-runner/run-assessment.sh 2>&1 | logger -t pentest
+   */5 * * * * /opt/pentest-runner/run-assessment.sh --on-deploy 2>&1 | logger -t pentest-watch
+   ```
+
+**Two triggers.** They answer different questions, so both run.
+
+- **The periodic run** (no arguments) asks whether the ground has shifted:
+  certificates, edge rules, base images, drift, none of which has a commit.
+  Its heartbeat (`HC_URL`) is the dead-man switch, so it always runs, on
+  every tick of its schedule, whatever ran before it.
+- **The deploy run** (`--on-deploy`) asks whether this build broke a control.
+  Each tick it reads the release the target reports on its anonymous
+  `/api/version/public` route, on the target as the suite runs there, and
+  assesses a release no run has started on yet. Otherwise it does nothing,
+  and pings nothing. Its heartbeat is `DEPLOY_HC_URL`, or `HC_URL` when that
+  is unset, so a deploy run that finds a broken control still pages.
+
+The watch reads the deployment instead of being told by it. Whatever
+promotes a release — the auto-update timer, an operator's `mascope prod
+update`, a fleet playbook, a rollback — changes what the target reports, so
+one watch covers every path. The target is treated as hostile and holds no
+credential for this host: all it can do is name a version, which is bounded
+and held to the shape of one before it is used. Each release is assessed
+once, whatever its run concluded. A red run pages, and repeating it each tick
+would only spend the target's rate limits. The watch needs a target that
+reports a pinned release (v1.14.0 or later, `MASCOPE_VERSION` set). A target
+that answers nothing usable leaves each tick logging `cannot read the
+deployed release`, and the periodic run's summary ends in
+`deployed=unreadable` until it is fixed.
+
+**Runs never overlap, and are spaced.** The suite verifies login rate limits
+whose windows are a minute (per address) and five minutes (per account), so
+two runs back to back throttle each other's controls, and two an hour apart do
+not. A lock in `RECORDS` is held for the whole of a run. The next run starts
+no sooner than `MIN_INTERVAL` seconds (default 600) after the last one ended.
+A deploy run that meets either is deferred, logging why, and the next tick
+looks again. A periodic run waits for both, up to `LOCK_WAIT` seconds
+(default 7200) for the lock, and starts its heartbeat only once it runs.
+
+A run whose controls were throttled anyway says so: the summary's
+`throttled=N` counts the controls a rate limit answered first, and the
+report opens with a notice (`security/pentest/README.md`, "Reading the
+results"). It does not change the exit code. A throttled control is not
+assessed, and not-assessed never fails a run.
 
 **The CDN vantage.** The origin run never crosses the edge, so it cannot see
 anything the edge answers itself: the HTTPS redirect (`TLS-02`), WAF
@@ -389,6 +437,7 @@ succeeded and the run still is not evidence:
 | Exit | Meaning |
 | --- | --- |
 | `1` | the report was unusable (empty archive, unreadable JSON) |
+| `75` | a periodic run waited `LOCK_WAIT` for another run and assessed nothing |
 | `90` | the target is **behind the current release** — honest, but about an artifact deployed nowhere |
 
 The lag comparison happens **here, never on the target**: the suite executes on
@@ -404,17 +453,24 @@ else, the reports say `unknown`. The report's verdict is a record; the exit
 code is still this script's.
 
 `tooling/cli/tests/test_run_assessment.py` runs this script as it is, with
-`ssh` and `curl` stubbed, through the lag matrix and the exit-code overrides;
-CI runs it with the CLI tests. Deploy the script from a checkout, so what runs
+`ssh` and `curl` stubbed, through the lag matrix, the exit-code overrides and
+the two triggers; CI runs it with the CLI tests. Deploy the script from a checkout, so what runs
 here is what was reviewed (`sha256sum` it against the tag), and change it by a
 pull request rather than on the box.
 
 Each vantage leaves three files in `RECORDS`: `<ts>-<vantage>.log`,
 `<ts>-<vantage>.tar.gz` and `<ts>-<vantage>.summary`, where the vantage is
 `origin` or `cdn`. With both, `<ts>-vantage.md` and `<ts>-vantage.json` hold
-the comparison. Everything is pruned at 400 days. The heartbeat then carries
-both summaries and the comparison's counts
+the comparison. Everything is pruned at 400 days, deploy runs and periodic
+ones alike. A summary reads
+`build=... findings=N accepted=N stale=N verified=N not_assessed=N throttled=N lag=... trigger=schedule`,
+or `trigger=deploy` for a deploy run. The heartbeat carries it, and with both
+vantages carries both summaries and the comparison's counts
 (`origin: ... | cdn: ... | vantages: agree=N disagree=N edge=N origin_only=N`).
+Three dotfiles beside them hold the triggers' state: `.run.lock`,
+`.last-run-end` and `.last-run-version`, the release the last run started on.
+Remove `.last-run-version` to have the next watch tick assess the deployed
+release again.
 
 **Do not "simplify" the report retrieval.** It is written defensively against
 the box it talks to: the report is pulled as one stream rather than a remote

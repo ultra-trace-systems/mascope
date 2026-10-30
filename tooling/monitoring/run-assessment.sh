@@ -26,10 +26,32 @@
 # two reports are kept under one timestamp with a comparison that says, per
 # control, where the vantages disagree and which layer answered.
 #
+# Two triggers, answering different questions. Without arguments this is the
+# periodic run, from cron: "has the ground shifted?" - certificates, edge rules,
+# base images, drift, none of which has a commit - and its heartbeat is the
+# dead-man switch, so it always runs, waiting its turn if it must. With
+# --on-deploy it is the deploy watch, from a frequent cron: "did this build
+# break a control?". It asks the target which release it runs, and assesses
+# only a release no run has started on yet; otherwise it does nothing at all.
+#
+# The watch reads the deployment rather than being told by it. Whatever
+# promotes a release - the auto-update timer, an operator, a fleet playbook,
+# a rollback - changes what the target reports, so one watch covers them all,
+# and the target, treated as hostile, holds no credential for this host. All
+# it can do is name a version, which is validated before it is used.
+#
+# Runs never overlap and are spaced: a lock is held for the whole run, and the
+# next one starts no sooner than MIN_INTERVAL after the last ended. The login
+# rate limits the suite verifies have windows of a minute or five, so two runs
+# back to back would throttle each other's controls; ten minutes apart they do
+# not. A deploy run that meets the lock or the interval is deferred - the next
+# watch tick looks again - and a periodic one waits.
+#
 # Exit code is the suite's, so the heartbeat below reflects the assessment
 # rather than the plumbing - with two deliberate overrides: an unusable
 # report (1) and a target behind the current release (90). Both are cases
-# where pytest succeeded and the run is still not evidence.
+# where pytest succeeded and the run is still not evidence. A periodic run
+# that could not get the lock within LOCK_WAIT exits 75 and assesses nothing.
 #
 # Config (env vars, or an optional sourced file - see CONFIG below). The
 # credentials live only in that file, never here:
@@ -52,12 +74,28 @@
 #                        origin run spent for the same account
 #   MASCOPE_PENTEST_HEADER_NAME / _VALUE
 #                        the header the edge's skip rule matches (CDN run only)
+#   MIN_INTERVAL         seconds from the end of one run to the start of the
+#                        next (default 600)
+#   LOCK_WAIT            seconds a periodic run waits for a run in progress
+#                        (default 7200)
+#   DEPLOY_HC_URL        heartbeat for deploy runs (default HC_URL), so a
+#                        deploy run that fails still pages
 #
 # Each vantage leaves three files in RECORDS: <ts>-<vantage>.log (the suite's
 # output), <ts>-<vantage>.tar.gz (the report), and <ts>-<vantage>.summary
 # (this script's own verdict, so an archived run still states what it
 # concluded). With both vantages, <ts>-vantage.{md,json} holds the comparison.
+# The summary ends in the trigger, trigger=schedule or trigger=deploy. Three
+# dotfiles in RECORDS hold the triggers' state: .run.lock, .last-run-end (when
+# the last run ended) and .last-run-version (the release the last run started
+# on).
 set -uo pipefail
+
+case "${1:-}" in
+    "") TRIGGER=schedule ;;
+    --on-deploy) TRIGGER=deploy ;;
+    *) echo "usage: ${0##*/} [--on-deploy]" >&2; exit 2 ;;
+esac
 
 CONFIG="${PENTEST_RUNNER_ENV:-/opt/pentest-runner/config.env}"
 [ -r "$CONFIG" ] && . "$CONFIG"
@@ -74,18 +112,89 @@ RELEASE_TIMEOUT="${RELEASE_TIMEOUT:-10}"   # lookup only; never fatal
 CDN_TARGET="${CDN_TARGET:-}"
 CDN_SUITE_DIR="${CDN_SUITE_DIR:-/opt/pentest-runner/suite/pentest}"
 VANTAGE_GAP="${VANTAGE_GAP:-300}"
+MIN_INTERVAL="${MIN_INTERVAL:-600}"
+LOCK_WAIT="${LOCK_WAIT:-7200}"
+DEPLOY_HC_URL="${DEPLOY_HC_URL:-$HC_URL}"
 
 SSH_OPTS=(-i "$SSH_KEY" -o IdentitiesOnly=yes -o ForwardAgent=no
           -o BatchMode=yes -o StrictHostKeyChecking=accept-new
           -o ConnectTimeout=20)
-
-ts="$(date -u +%Y-%m-%dT%H%M%SZ)"
 
 ping_hc() {  # $1 = path suffix ("/start", "/fail", "")
     [ -n "$HC_URL" ] || return 0
     curl -fsS -m 10 --retry 3 --data-binary "${2:-}" "${HC_URL}$1" >/dev/null 2>&1 || true
 }
 
+# The release the target says it runs, from its anonymous version route, read
+# on the target for the same reason the suite runs there: the origin may answer
+# only the CDN. Empty when it cannot be read or names nothing usable. The answer
+# is the target's, so it is bounded, parsed by a JSON parser and held to the
+# shape of a version before it is compared, stored or printed.
+deployed_version() {
+    ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" \
+        "curl -fsS -k -m 10 '${MASCOPE_PENTEST_TARGET}/api/version/public'" \
+        2>/dev/null | head -c 4096 | python3 -c 'import json, re, sys
+try:
+    v = json.load(sys.stdin)["data"]["version"]
+    ok = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,99}", v) and v != "unknown"
+except Exception:
+    ok = False
+print(v if ok else "")' 2>/dev/null
+}
+
+# Seconds since the last run ended; empty when no run has recorded its end. An
+# end in the future (the clock stepped back) counts as just now, so no run
+# waits longer than MIN_INTERVAL.
+since_last_run() {
+    local end elapsed
+    end="$(cat "${RECORDS}/.last-run-end" 2>/dev/null)"
+    [[ "$end" =~ ^[0-9]+$ ]] || return 0
+    elapsed=$(( $(date +%s) - end ))
+    echo $(( elapsed < 0 ? 0 : elapsed ))
+}
+
+# One run at a time, for as long as this process lives: the lock goes with it,
+# however it ends.
+exec 9>>"${RECORDS}/.run.lock"
+deployed=""
+if [ "$TRIGGER" = deploy ]; then
+    # Checked in this order so a tick that cannot run touches nothing, the
+    # target included.
+    if ! flock -n 9; then
+        echo "deploy run deferred: a run is in progress"
+        exit 0
+    fi
+    elapsed="$(since_last_run)"
+    if [ -n "$elapsed" ] && [ "$elapsed" -lt "$MIN_INTERVAL" ]; then
+        echo "deploy run deferred: the last run ended ${elapsed}s ago"
+        exit 0
+    fi
+    deployed="$(deployed_version)"
+    if [ -z "$deployed" ]; then
+        echo "deploy watch: cannot read the deployed release"
+        exit 0
+    fi
+    # Assessed once per release, whatever the run concluded: a red run pages,
+    # and repeating it every tick would only spend the target's rate limits.
+    [ "$deployed" = "$(cat "${RECORDS}/.last-run-version" 2>/dev/null)" ] && exit 0
+    HC_URL="$DEPLOY_HC_URL"
+else
+    if ! flock -w "$LOCK_WAIT" 9; then
+        ping_hc "/fail" "no run: another held the lock for ${LOCK_WAIT}s"
+        exit 75
+    fi
+    elapsed="$(since_last_run)"
+    if [ -n "$elapsed" ] && [ "$elapsed" -lt "$MIN_INTERVAL" ]; then
+        sleep $(( MIN_INTERVAL - elapsed ))
+    fi
+    deployed="$(deployed_version)"
+fi
+# Recorded at the start, by either trigger, so a periodic run on a new release
+# leaves the watch nothing to repeat.
+[ -n "$deployed" ] && printf '%s\n' "$deployed" > "${RECORDS}/.last-run-version"
+trap 'date +%s > "${RECORDS}/.last-run-end"' EXIT
+
+ts="$(date -u +%Y-%m-%dT%H%M%SZ)"
 ping_hc "/start"
 
 # Runs the suite on the target and pulls its report back. $1 = log, $2 = archive.
@@ -204,11 +313,12 @@ try:
 except Exception:
     print("report unreadable"); raise SystemExit
 s = d.get("summary", {})
-print("build=%s findings=%s accepted=%s stale=%s verified=%s not_assessed=%s" % (
+print("build=%s findings=%s accepted=%s stale=%s verified=%s not_assessed=%s"
+      " throttled=%s" % (
     (d.get("build") or {}).get("identity", "?"),
     s.get("findings", "?"), s.get("accepted_findings", 0),
     s.get("stale_baseline_entries", 0), s.get("controls_verified", "?"),
-    s.get("not_assessed", "?")))
+    s.get("not_assessed", "?"), s.get("throttled", "?")))
 ' 2>/dev/null)"
     summary="${summary:-report unreadable}"
 
@@ -270,7 +380,13 @@ print("build=%s findings=%s accepted=%s stale=%s verified=%s not_assessed=%s" % 
     # the target was current - and until this existed only in the heartbeat
     # ping, i.e. in a third party's UI. Keep a copy beside the archive so an
     # archived run still states what it concluded, and so the evidence is
-    # readable without leaving this host.
+    # readable without leaving this host. It ends in the trigger, so a deploy
+    # run reads as one in the archive and in the heartbeat. A periodic run
+    # that could not read the deployed release says so: the deploy watch reads
+    # it the same way, so it is blind too, and would otherwise be blind in
+    # silence.
+    summary="${summary} trigger=${TRIGGER}"
+    [ -n "$deployed" ] || summary="${summary} deployed=unreadable"
     printf '%s\n' "$summary" > "${RECORDS}/${ts}-${vantage}.summary"
 }
 
