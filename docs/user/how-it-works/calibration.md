@@ -152,6 +152,10 @@ It is stored with the file and served through the API and the SDK ([The axis fin
 Mascope itself changes no m/z with the fingerprint.
 Its own Orbitrap calibration is the one-point scaling above: one factor per file, or per scan range, multiplied into every m/z.
 On a model whose data system uses no such bands, as on the Exploris models measured, the fingerprint shows no steps between bands.
+On a model whose FFT step is not a power of two in kHz, such as the Exploris MX, each mode carries the flag `fft_step_not_power_of_two`.
+Its spacing is then read against the measured step rather than the nominal one.
+So every absolute level of such a mode, such as `s_ppm`, `levels` and `s_lock_eff_ppm`, is off the correction the file stores by one constant per file: 2.4 to 4 ppm on the files measured.
+The steps between its bands are not affected.
 A file converted before the fingerprint existed has none until an operator runs the backfill script for it.
 
 The measurement, its quality flags and the code are described in the [reader pipeline notes](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/thermo/docs/reader_pipeline.md#71-the-axis-fingerprint).
