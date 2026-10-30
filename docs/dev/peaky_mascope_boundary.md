@@ -4,7 +4,7 @@
 - **As of:** 2026-10-30
 - **Tracked in:** [Assignment truth corpus and bench](https://linear.app/ultra-trace/project/assignment-truth-corpus-and-bench-90d43812ff0f)
   and [Peaky, thinner: the research and reporting platform](https://linear.app/ultra-trace/project/peaky-thinner-the-research-and-reporting-platform-81db9b25bea2)
-  (Linear, team Peaky, PKY-1 to PKY-31, filed 2026-10-30); the Mascope-side
+  (Linear, team Peaky, PKY-1 onward, filed from 2026-10-30); the Mascope-side
   steps in [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c)
   (MAS-568 to MAS-570, MAS-581, MAS-582, MAS-609, MAS-610)
 - **What:** One page on what Mascope owns, what peaky
@@ -164,6 +164,9 @@ Still open, each a Decision issue in Linear:
   plan owner and peaky's owner.*
 - The acceptance rule for a code change judged on the bench (PKY-17). *Call
   for both owners.*
+- Where the chemistry as data lives, who edits it and how the other side
+  reads it (PKY-35); section 2 names the location once it is decided. *Call
+  for peaky's owner and the plan owner.*
 - The trace as the unit of work, decided on the bench after stage 4 (PKY-31).
 
 ## 8. How a rule moves: the protocol and the register
