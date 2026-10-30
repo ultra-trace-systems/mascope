@@ -368,7 +368,10 @@ The toolkit is the asset; transports are disposable adapters.
 ```
 
 Near-term: an MCP server driven by Claude Code, heavy compute in local Python
-via Bash, the user's own token and subscription. Long-term: a chat panel in the
+via Bash, the user's own token and subscription. The toolkit is published to
+PyPI as `mascope-ai`, so its users need no checkout: `pip install mascope-ai`,
+`mascope-ai setup`, then `claude mcp add mascope -- mascope-ai mcp`. A
+developer runs the same server from a checkout's environment instead. Long-term: a chat panel in the
 web app over Anthropic's code-execution sandbox with programmatic tool calling
 (PTC) — the sandbox has no network access, so `mascope_ai` calls pause the
 container, execute server-side with the user's credentials, and return data
