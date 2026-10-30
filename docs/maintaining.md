@@ -78,10 +78,12 @@ that is less than its window.
 
 **Version** compares the tag the containers are actually running against the
 one this deployment would deploy right now (the `MASCOPE_VERSION` pin, else the
-release tag checked out, else `latest`). A mismatch is reported as drift:
+release tag checked out, else on a wheel install the release recorded in
+`.runtime/deployed-release.json`, else `latest`). A mismatch is reported as
+drift:
 
 ```
-Version  backend latest · frontend latest  DRIFT (this checkout deploys vX.Y.Z)
+Version  backend latest · frontend latest  DRIFT (this deployment deploys vX.Y.Z)
 ```
 
 Drift means the next `mascope prod up` - a restart, or a reboot - moves the
@@ -90,7 +92,8 @@ the two into line: `git checkout <tag>` for the release the server should run,
 then reinstall the CLI from that checkout, then `mascope prod update` - in that
 order, see [Rolling out a release across several
 servers](#rolling-out-a-release-across-several-servers) for why the CLI has to
-move before the stack does.
+move before the stack does. On a wheel install, `mascope prod update --version
+<tag>` deploys the release and records it in one step.
 
 ## The settings a deployment overrides
 
@@ -274,7 +277,9 @@ mascope prod update --version v1.3.0 # deploy a specific pinned release
 
 `mascope prod update` on its own follows the rolling **`latest`** master build,
 whose version shows in the UI as a date+hash build id (e.g.
-`2026.07.08-ab12cd34`) - *not* the newest `vX.Y.Z` release. To run a pinned
+`2026.07.08-ab12cd34`) - *not* the newest `vX.Y.Z` release. On a wheel install
+with a release recorded in `.runtime/deployed-release.json`, it redeploys that
+release instead; `--version latest` clears the record and follows `latest`. To run a pinned
 release, pass `--version vX.Y.Z` - a successful update then also moves the
 deployment checkout to that tag, so the server keeps tracking (and
 reporting) that release across restarts and future updates. Checking the

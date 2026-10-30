@@ -103,6 +103,9 @@ def _reset_cli_state(monkeypatch):
 
     for var in env_vars:
         os.environ.pop(var, None)
+    # A wheel install's deployed-release record (TEST_HOME is no checkout):
+    # one test's `prod update --version` would pick the next test's release.
+    (TEST_HOME / ".runtime" / "deployed-release.json").unlink(missing_ok=True)
     runtime.env.name = env_name
     runtime.state.mode = "dev"
     runtime.state.env = "default"

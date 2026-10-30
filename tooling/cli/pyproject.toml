@@ -17,11 +17,12 @@ requires-python = ">=3.12,<3.13"
 # commands are registered only in a source checkout (main.py), and their
 # packages come from the root pyproject.toml, which only a checkout installs.
 dependencies = [
-    # >=2026.9.15: the prod commands import is_release_tag and
-    # release_sort_key, which no earlier published runtime has, and an earlier
-    # MetaConfig would silently ignore settings the bundled base.mascope.toml
-    # sets (the peak-assignment ingest ledger among them).
-    "mascope_runtime[logs]>=2026.9.15",
+    # >=2026.9.30: the prod commands import mascope_runtime.atomic, which no
+    # earlier published runtime has (is_release_tag and release_sort_key need
+    # 2026.9.15), and an earlier MetaConfig would silently ignore settings the
+    # bundled base.mascope.toml sets (the peak-assignment ingest ledger among
+    # them).
+    "mascope_runtime[logs]>=2026.9.30",
     "typer>=0.27.1,<0.28",
     "rich>=15.0.0,<16",
 ]
