@@ -884,7 +884,7 @@
        "no_segment_table"
       ]
      },
-     "description": "grid_weak is advisory (n_hits < 10 or k_max - k_min of the hits < 20) and can occur on a dominant mode."
+     "description": "grid_weak is advisory (n_hits < 10 or k_max - k_min of the hits < 20) and can occur on a dominant mode. fft_step_not_power_of_two: the measured FFT step is not within a relative 1e-3 (0.1 %) of a power of two in kHz (as on an Exploris MX), so s is read against the measured step instead of the nominal FFT bin. Every absolute level of such a mode (s_ppm, levels, s_lock_eff_ppm and the values derived from them) is then offset from the stored per-chunk m/z correction by one constant per file, measured at 2.4 to 4 ppm; the steps between bands are not affected."
     }
    }
   }
