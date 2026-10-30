@@ -369,7 +369,7 @@ plan owner's word (MAS-584).
 - HSO4−·(H2SO4)n are absent on all three instruments. HSO4− itself is in 0–9% of the files, and
   in 67% of B2 nitrate's, where it reads +7 ppm with an IQR of 12.
 - (HNO3)3·NO3− (251 Th) and Br−·H2SO4 (179 Th) are absent, or in at most 3% of the sampled files.
-  On the day the 251 Th line is in 15% of B2 nitrate's files, at +4.1 ppm with an IQR of 17, and
+  On the day the 251 Th line is in 15% of B2 nitrate's files, at +4.6 ppm with an IQR of 16, and
   in 4% of B3's. Where a line is matched at 251 Th in the bromide modes it reads +70 ppm: a
   neighbour, as in the baseline.
 - Br3− (241 Th) already tops both bromide sets, and Br−·HNO3 is already in B2's.
@@ -395,8 +395,8 @@ plan owner's word (MAS-584).
 - **B2 bromide.** Everything from 79 to 241 Th reads within ±2; NO3− reads +5.2 at 62 Th. Br−·H2O
   (97 Th) passes every rule (below). No CHO member passes.
 - **B2 nitrate.** The three ions read +0.6, −1.1 and +0.5. Held out, NO3− adducts at 164–234 Th
-  read +0.8 to +1.9 (+1.1 to +2.1). Ions at 248–294 Th that miss a rule read −1.0 to +2.5 (−6.4
-  to +4.8, IQR up to 16), so they are no yardstick. Today's set holds the axis within ±2.1 ppm to
+  read +0.8 to +1.9 (+1.1 to +2.1). Ions at 248–294 Th that miss a rule read +0.9 to +4.2 (−4.4
+  to +5.5, IQR up to 14), so they are no yardstick. Today's set holds the axis within ±2.1 ppm to
   234 Th, and nothing reads it above.
 - **B3 nitrate.** −1.5, +2.5 and −1.2. Nothing passes. The strongest NO3− adducts at 224–260 Th
   read +5 to +11 on the day, while their [M−H]− ions at 161–197 Th read −8 to −1: the pairs
