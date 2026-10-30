@@ -94,10 +94,11 @@ between the two owners before the scorer is written, and is not decided here.
 ## 5. Keeping peaky useful
 
 - **Thinner, not rebuilt.** Each piece that lands in `mascope_tools` replaces
-  peaky's copy, verified on the bench. Peaky's reverse-engineered write
-  client goes first: organising data is the AI layer's gated plan and apply
-  (PKY-5); its publish transport follows now that the SDK has the per-sample
-  import wrapper (MAS-345, merged 2026-10-30).
+  peaky's copy, verified on the bench. Peaky's publish transport can move now
+  that the SDK has the per-sample import wrapper (MAS-345, merged 2026-10-30).
+  Its reverse-engineered write client goes once its replacement, the AI
+  layer's gated plan and apply, is reachable over MCP and one line to install
+  (PKY-5, after MAS-544 and MAS-611); until then `curate` stays.
 - **Offline first.** The batch snapshot the SDK writes (MAS-568, merged 2026-10-30) and
   peaky's offline sample registration together let a whole batch run from local
   files, which also removes every redundant load the assessment measured.
@@ -224,10 +225,10 @@ cards (PKY-25) the blocker of every move that changes output.
 |---|---|---|---|---|---|---|---|
 | A1 The per-sample scoring derivation | `io/io_mascope.py`, `scoring_for_sample` | `composition.scoring.pattern_scoring_for_sample` | 5.12, MAS-569 | the first `mascope-tools` after 2026.10.27 | | | library merged 2026-10-29; different output: Mascope's carries the resolution term |
 | A2 Scoring a candidate list | `io/local_scoring.py`, `score_candidates_local` | `composition.scoring.score_candidates` | 5.12, MAS-569 | same | | | library merged 2026-10-29; same output expected |
-| A3 Workspace, dataset, batch and sample writes | `io/curate.py` | retired: the AI layer's plan and apply | MAS-138, MAS-544 | `mascope-sdk` 2026.10.28 | | | the toolkit's plan builders merged; delete, no parity needed |
+| A3 Workspace, dataset, batch and sample writes | `io/curate.py` | retired: the AI layer's plan and apply | MAS-138, MAS-544, MAS-611 | `mascope_ai` on PyPI (MAS-611) | | | plan builders merged (MAS-138); waits for MAS-544 and MAS-611; delete, no parity needed |
 | A4 The run publish transport | `io/publish.py`, the raw posts | `peak_assignments.import_run` | MAS-345 | the first `mascope-sdk` after 2026.10.28 | | | SDK merged 2026-10-30; translation and pre-validation stay in peaky |
 | A5 The batch time series load | `io/io_mascope.py`, `fetch_batch_peaks` | `load_peaks` on the bulk route, with `save_path` | 5.11, MAS-568 | the first `mascope-sdk` after 2026.10.28 | | | merged 2026-10-30; same output |
 | A6 The minor-line response | `assignment/iso_response.py` | the presence-corrected share in `score_pattern_v2` | 3.5d, MAS-582 | | | | Todo; the curve stays as the fallback for stores without the count |
 | The formula grid, profiles and contexts, reagent libraries, the width model, side lobes, the axis correction | `assignment/`, `batch/` | as stages 3 and 4 land each | | | | | not scheduled; one row each when they are |
 | A7 Batch isotope checks, evidence levels, the axis lock model | `batch/iso_checks.py`, `assignment/levels/`, `batch/axislock.py` | specification first, by peaky's owner | stage 4 | | | | waits for stage 4; the reverse direction of the chart |
-| A8 The MS2 source and the fragment composition rules | `ms2/sources.py`, `ms2/subformula.py` | the MS2 store's scans and window routes; `composition.ms2` | the MS2 project's phases 0, 1 and 5 (MAS-389, MAS-390; the core MAS-387 merged) | the first `mascope-tools` after 2026.10.27, and the SDK release carrying the routes | | | the MS2 note's appendix A is this row's own register; same output, peaky's known answers as the proof; the binding class and replicates stay in peaky until MAS-401 |
+| A8 The MS2 source and the fragment composition rules | `ms2/sources.py`, `ms2/subformula.py` | the MS2 store's scans and window routes; `composition.ms2` | the MS2 project's phases 0, 1 and 5 (MAS-389, MAS-390; the core MAS-387 merged) | `mascope-tools` 2026.10.27 for the core, and the SDK release carrying the routes | | | the MS2 note's appendix A is this row's own register; same output, peaky's known answers as the proof; the binding class and replicates stay in peaky until MAS-401 |
