@@ -95,9 +95,10 @@ between the two owners before the scorer is written, and is not decided here.
 
 - **Thinner, not rebuilt.** Each piece that lands in `mascope_tools` replaces
   peaky's copy, verified on the bench. Peaky's reverse-engineered write
-  client goes first, since the SDK now carries those writes; its publish
-  transport follows once the SDK has the per-sample import wrapper (MAS-345).
-- **Offline first.** The batch snapshot the SDK will write (MAS-568) and
+  client goes first: organising data is the AI layer's gated plan and apply
+  (PKY-5); its publish transport follows now that the SDK has the per-sample
+  import wrapper (MAS-345, merged 2026-10-30).
+- **Offline first.** The batch snapshot the SDK writes (MAS-568, merged 2026-10-30) and
   peaky's offline sample registration together let a whole batch run from local
   files, which also removes every redundant load the assessment measured.
 - **The report front-end for either engine.** Peaky's PDF, workbook, clustering
@@ -119,14 +120,14 @@ between the two owners before the scorer is written, and is not decided here.
 | The per-sample scoring derivation as one library function, and a bulk candidate scorer | 5.12, MAS-569, [#2758](https://github.com/ultra-trace-systems/mascope/issues/2758) | Merged 2026-10-29 ([PR 2767](https://github.com/ultra-trace-systems/mascope/pull/2767)); Stage A scores its frame in one pass, and peaky can import the derivation it re-implemented |
 | The current verdicts of a batch or dataset in one read, in the SDK and the export | 5.13, MAS-570, [#2759](https://github.com/ultra-trace-systems/mascope/issues/2759) | Merged 2026-10-29 ([PR 2769](https://github.com/ultra-trace-systems/mascope/pull/2769)); the corpus's living branch has its export |
 | The SDK's assign, verify and list_verifications wrappers | MAS-330 | Merged 2026-10-29 ([PR 2763](https://github.com/ultra-trace-systems/mascope/pull/2763)) |
-| The SDK per-sample `import_run` and the round-trip notebook | MAS-345 | [PR 2774](https://github.com/ultra-trace-systems/mascope/pull/2774) open, waiting for merge; once in, peaky's publish and curate modules need no transport of their own |
-| The width a run scored at, served on the run and sample records | 5.9, MAS-410 | [PR 2784](https://github.com/ultra-trace-systems/mascope/pull/2784) open, waiting for merge |
-| A batch's peak lists in one read, and the SDK parquet snapshot | 5.11, MAS-568, [#2757](https://github.com/ultra-trace-systems/mascope/issues/2757) | In progress; [PR 2764](https://github.com/ultra-trace-systems/mascope/pull/2764) open with conflicts against develop to resolve |
+| The SDK per-sample `import_run` and the round-trip notebook | MAS-345 | Merged 2026-10-30 ([PR 2774](https://github.com/ultra-trace-systems/mascope/pull/2774)); peaky's publish module needs no transport of its own |
+| The width a run scored at, served on the run and sample records | 5.9, MAS-410 | Merged 2026-10-30 ([PR 2784](https://github.com/ultra-trace-systems/mascope/pull/2784)) |
+| A batch's peak lists in one read, and the SDK parquet snapshot | 5.11, MAS-568, [#2757](https://github.com/ultra-trace-systems/mascope/issues/2757) | Merged 2026-10-30 ([PR 2764](https://github.com/ultra-trace-systems/mascope/pull/2764)) |
 | The targeted matcher reads an isotope line over the scans that hold its anchor | 3.5c, MAS-581, [#2772](https://github.com/ultra-trace-systems/mascope/issues/2772) | Todo, filed 2026-10-29 |
 | The stored scan presence count, served, and the scorer reading the corrected share | 3.5d, MAS-582, [#2773](https://github.com/ultra-trace-systems/mascope/issues/2773) | Todo, after 3.5c |
 | A verdict on batch import rows, and the engine tier where the user looks | 5.6, MAS-71 | Backlog |
 
-The last three rows are one finding from this review: an Orbitrap isotope
+The 3.5c and 3.5d rows are one finding from this review: an Orbitrap isotope
 line censored in part of a file's scans is stored at its sum over every scan,
 so it reads low in proportion to the scans it misses (step 5.3 measured 0.94 of
 its share missing none, 0.44 missing more than half). Both engines model that
@@ -215,11 +216,11 @@ cards (PKY-25) the blocker of every move that changes output.
 
 | Rule | Peaky today | Library | Mascope step | Library version | Peaky PR | Bench | State |
 |---|---|---|---|---|---|---|---|
-| The per-sample scoring derivation | `io/io_mascope.py`, `scoring_for_sample` | `composition.scoring.pattern_scoring_for_sample` | 5.12, MAS-569 | the first `mascope-tools` after 2026.10.27 | | | library merged 2026-10-29; different output: Mascope's carries the resolution term |
-| Scoring a candidate list | `io/local_scoring.py`, `score_candidates_local` | `composition.scoring.score_candidates` | 5.12, MAS-569 | same | | | library merged 2026-10-29; same output expected |
-| Workspace, dataset, batch and sample writes | `io/curate.py` | the SDK's write wrappers | MAS-137, MAS-330 | the first `mascope-sdk` after 2026.10.28 | | | SDK merged 2026-10-29; delete, no parity needed |
-| The run publish transport | `io/publish.py`, the raw posts | `peak_assignments.import_run` | MAS-345 | after PR 2774 | | | PR open; translation and pre-validation stay in peaky |
-| The batch time series load | `io/io_mascope.py`, `fetch_batch_peaks` | `load_peaks` on the bulk route, with `save_path` | 5.11, MAS-568 | after PR 2764 | | | in progress; same output |
-| The minor-line response | `assignment/iso_response.py` | the presence-corrected share in `score_pattern_v2` | 3.5d, MAS-582 | | | | Todo; the curve stays as the fallback for stores without the count |
+| A1 The per-sample scoring derivation | `io/io_mascope.py`, `scoring_for_sample` | `composition.scoring.pattern_scoring_for_sample` | 5.12, MAS-569 | the first `mascope-tools` after 2026.10.27 | | | library merged 2026-10-29; different output: Mascope's carries the resolution term |
+| A2 Scoring a candidate list | `io/local_scoring.py`, `score_candidates_local` | `composition.scoring.score_candidates` | 5.12, MAS-569 | same | | | library merged 2026-10-29; same output expected |
+| A3 Workspace, dataset, batch and sample writes | `io/curate.py` | retired: the AI layer's plan and apply | MAS-138, MAS-544 | `mascope-sdk` 2026.10.28 | | | the toolkit's plan builders merged; delete, no parity needed |
+| A4 The run publish transport | `io/publish.py`, the raw posts | `peak_assignments.import_run` | MAS-345 | the first `mascope-sdk` after 2026.10.28 | | | SDK merged 2026-10-30; translation and pre-validation stay in peaky |
+| A5 The batch time series load | `io/io_mascope.py`, `fetch_batch_peaks` | `load_peaks` on the bulk route, with `save_path` | 5.11, MAS-568 | the first `mascope-sdk` after 2026.10.28 | | | merged 2026-10-30; same output |
+| A6 The minor-line response | `assignment/iso_response.py` | the presence-corrected share in `score_pattern_v2` | 3.5d, MAS-582 | | | | Todo; the curve stays as the fallback for stores without the count |
 | The formula grid, profiles and contexts, reagent libraries, the width model, side lobes, the axis correction | `assignment/`, `batch/` | as stages 3 and 4 land each | | | | | not scheduled; one row each when they are |
-| Batch isotope checks, evidence levels, the axis lock model | `batch/iso_checks.py`, `assignment/levels/`, `batch/axislock.py` | specification first, by peaky's owner | stage 4 | | | | waits for stage 4; the reverse direction of the chart |
+| A7 Batch isotope checks, evidence levels, the axis lock model | `batch/iso_checks.py`, `assignment/levels/`, `batch/axislock.py` | specification first, by peaky's owner | stage 4 | | | | waits for stage 4; the reverse direction of the chart |
