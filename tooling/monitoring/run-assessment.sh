@@ -127,16 +127,19 @@ ping_hc() {  # $1 = path suffix ("/start", "/fail", "")
 
 # The release the target says it runs, from its anonymous version route, read
 # on the target for the same reason the suite runs there: the origin may answer
-# only the CDN. Empty when it cannot be read or names nothing usable. The answer
-# is the target's, so it is bounded, parsed by a JSON parser and held to the
-# shape of a version before it is compared, stored or printed.
+# only the CDN. Empty when it cannot be read or names no release: "unknown" (no
+# version set) and "latest" (the rolling tag) name none, and a watch keyed on
+# either would assess once and never again. The answer is the target's, so it
+# is bounded, parsed by a JSON parser and held to the shape of a version before
+# it is compared, stored or printed.
 deployed_version() {
     ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" \
         "curl -fsS -k -m 10 '${MASCOPE_PENTEST_TARGET}/api/version/public'" \
         2>/dev/null | head -c 4096 | python3 -c 'import json, re, sys
 try:
     v = json.load(sys.stdin)["data"]["version"]
-    ok = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,99}", v) and v != "unknown"
+    ok = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,99}", v)
+    ok = ok and v not in ("unknown", "latest")
 except Exception:
     ok = False
 print(v if ok else "")' 2>/dev/null
