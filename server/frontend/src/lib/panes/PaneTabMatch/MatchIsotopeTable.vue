@@ -28,6 +28,27 @@ const rowClass = (data) =>
     ? 'main-isotope-row'
     : ''
 
+// The r.a. of the ion's most abundant line: the line the matcher reads every
+// ratio against (not the M0 row, which for a bromine cluster is a lighter line).
+const anchorAbundance = computed(() =>
+  Math.max(0, ...(app.data.match.visualized.isotopes ?? []).map((i) => i.relative_abundance))
+)
+
+// The line's measured share, in the r.a.'s own units so the two read side by
+// side: its intensity relative to the most abundant line, times that line's
+// r.a. Shown for a line with a peak: an unmatched one has a zero placeholder,
+// and no count, which is not a measurement.
+const measuredShare = (match) =>
+  match && (match.ratio_scan_count != null || match.sample_peak_intensity_relative > 0)
+    ? match.sample_peak_intensity_relative * anchorAbundance.value
+    : null
+
+// The scans an Orbitrap line's ratio was read over: those where the line and
+// the ion's most abundant line are both present. None on a TOF file, whose
+// ratio is the mean over every scan, and on a match computed before the count
+// was kept.
+const ratioScanCount = (match) => match?.ratio_scan_count ?? null
+
 // Compute UI-based match category for display
 const uiMatchCategory = (match) => {
   if (!match) return
@@ -105,6 +126,34 @@ const uiMatchCategory = (match) => {
           <BaseCopyableField :field="num.relativeAbundance.format(data.relative_abundance)" />
         </template>
       </Column>
+
+      <!-- Measured share Column: the line against the ion's most abundant line, in r.a. units -->
+      <Column header="measured" style="width: 6rem">
+        <template #body="{ data }">
+          <span
+            v-if="measuredShare(data.match) != null"
+            v-tooltip="
+              'Measured share: the line\'s intensity relative to the ion\'s most abundant line, times that line\'s r.a.'
+            "
+          >
+            {{ num.relativeAbundance.format(measuredShare(data.match)) }}
+          </span>
+        </template>
+      </Column>
+
+      <!-- Scans Column: what the measured ratio was read over -->
+      <Column header="scans" style="width: 3.5rem">
+        <template #body="{ data }">
+          <span
+            v-if="ratioScanCount(data.match) != null"
+            v-tooltip="
+              'Scans the ratio was read over: those where this line and the most abundant line are both present'
+            "
+          >
+            {{ ratioScanCount(data.match) }}
+          </span>
+        </template>
+      </Column>
     </DataTable>
   </div>
 </template>
@@ -118,9 +167,9 @@ const uiMatchCategory = (match) => {
   overflow: hidden;
   min-height: 0;
   padding: 0rem;
-  width: 40%;
+  width: 45%;
   min-width: 300px;
-  max-width: 500px;
+  max-width: 640px;
 }
 
 .isotope-table-container :deep(.p-datatable) {
