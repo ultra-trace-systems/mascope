@@ -14,6 +14,11 @@ from mascope_match.runtime import runtime
 
 MATCH_WINDOW_AMU = 0.5  # Da
 
+# Rows of the match frame whose per-scan series are read at once by
+# `present_scan_ratios`: each block loads the series of its lines and anchors
+# only, so the memory taken is bounded by the block, not by the target list.
+SCAN_RATIO_BLOCK_ROWS = 512
+
 
 def _within_window_mask(
     values: np.ndarray, targets: np.ndarray, window: float
@@ -77,12 +82,17 @@ async def compute_match_isotopes(
     :param existing_reference_df: DataFrame containing existing main isotope reference data
         (target_ion_id, sample_peak_intensity, relative_abundance) for proper abundance error
         calculation when computing additional isotopes for ions that already have matches.
+        With the stored anchor's sample_peak_id and sample_peak_mz, an Orbitrap line
+        is read against that anchor's per-scan series (`present_scan_ratios`).
     :type existing_reference_df: pd.DataFrame | None, optional
     :return: DataFrame with match details for all target isotopes, including those without matches
     :rtype: pd.DataFrame
     :raises ValueError: If an error occurs during the matching process.
 
     Notes:
+    - On an Orbitrap file a line's relative intensity is read over the scans
+      where it and its anchor are both present, and ``ratio_scan_count`` says
+      how many (`present_scan_ratios`); a TOF file keeps the mean over mean.
     - Matching is done at the isotope level. Ion, compound and collection level matches are
       aggregated in a separate process.
     - Isotopes without matching peaks are assigned a match score of 0 and placeholder values
@@ -111,9 +121,14 @@ async def compute_match_isotopes(
 
         # --- Load sample peak timeseries ---
         runtime.logger.debug("Load and parse sample peaks")
+        # An ion whose anchor was matched in an earlier run is read against
+        # that anchor's series, so its peak is loaded with the targets' own.
+        reference_mzs = _reference_peak_mzs(existing_reference_df)
         peak_timeseries = await load_peaks(
             filename=filename,
-            target_mzs=target_isotopes_df.mz,
+            target_mzs=np.concatenate(
+                [np.asarray(target_isotopes_df.mz, dtype=float), reference_mzs]
+            ),
             polarity=polarity,
         )
         # Get positive-intensity, averaged peaks
@@ -136,6 +151,9 @@ async def compute_match_isotopes(
             sample_peak_tof=np.nan,
             signal_to_noise=np.nan,  # carried for the v2 (SNR-aware) match score
             is_satellite=False,  # v2 treats satellite-matched isotopologues as absent
+            # Scans the line's ratio to its anchor was read over; NaN where it
+            # was not read scan by scan (a TOF file, an unmatched line)
+            ratio_scan_count=np.nan,
         )
 
         # Ensure sample_peak_id dtype is an object
@@ -153,8 +171,20 @@ async def compute_match_isotopes(
         # Calculate match stats for isotopes with actual matches
         if matched_mask.any():
             runtime.logger.debug("Calculate match statistics for matched isotopes")
+            scan_ratios = None
+            if instrument_type == "orbi":
+                # An Orbitrap scan keeps a centroid only where it clears that
+                # scan's floor; a TOF file detects on its summed spectrum and
+                # its series is not thresholded per scan, so it keeps the
+                # mean over mean.
+                scan_ratios = present_scan_ratios(
+                    match_isotope_df,
+                    peak_timeseries,
+                    parsed_peaks["peak_positions"],
+                    existing_reference_df,
+                )
             match_isotope_df = calculate_match_stats(
-                match_isotope_df, existing_reference_df
+                match_isotope_df, existing_reference_df, scan_ratios
             )
 
         # Set default values for unmatched isotopes
@@ -263,6 +293,9 @@ def _parse_and_filter_peaks(peaks: "xarray.DataArray") -> dict:  # type: ignore 
         "signal_to_noise": snr[non_zero_mask] if snr is not None else None,
         "is_satellite": sat[non_zero_mask] if sat is not None else None,
         "non_zero_mask": non_zero_mask,
+        # Where each kept peak sits on the series' m/z axis, so a matched peak
+        # (an index into the kept ones) finds its per-scan series again
+        "peak_positions": np.flatnonzero(non_zero_mask),
     }
 
 
@@ -395,9 +428,168 @@ def _match_assign(match_isotope_df: pd.DataFrame, parsed_peaks: dict) -> pd.Data
     return match_isotope_df
 
 
+def _reference_peak_mzs(existing_reference_df: pd.DataFrame | None) -> np.ndarray:
+    """The m/z of the stored anchors in `existing_reference_df`, if it has them.
+
+    :param existing_reference_df: Existing main isotope references, as
+        ``fetch_existing_main_isotope_references`` returns them, or None
+    :type existing_reference_df: pd.DataFrame | None
+    :return: Finite m/z values of the referenced peaks; empty when there are none
+    :rtype: np.ndarray
+    """
+    if (
+        existing_reference_df is None
+        or existing_reference_df.empty
+        or "sample_peak_mz" not in existing_reference_df
+    ):
+        return np.empty(0, dtype=float)
+    mzs = existing_reference_df["sample_peak_mz"].to_numpy(dtype=float)
+    return mzs[np.isfinite(mzs)]
+
+
+def _main_isotope_rows(match_isotope_df: pd.DataFrame) -> pd.Series:
+    """Label of each ion's main isotope row, by target ion.
+
+    The same rule as `calculate_match_stats`: the row with the highest
+    relative abundance, the first of them on a tie.
+    """
+    return match_isotope_df.groupby("target_ion_id")["relative_abundance"].idxmax()
+
+
+def present_scan_ratios(
+    match_isotope_df: pd.DataFrame,
+    peaks: "xarray.DataArray",  # type: ignore # noqa: F821
+    peak_positions: np.ndarray,
+    existing_reference_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Each matched line's intensity relative to its anchor, read over the
+    scans where both are present.
+
+    An Orbitrap scan keeps a centroid only where it clears that scan's floor,
+    and a peak's stored intensity divides its sum over the scans by all of
+    them. A dim isotope line, kept in some scans and lost in others while its
+    anchor is in every one, is then served diluted by the share of scans it
+    missed, and so is a ratio of the two means. The ratio here is the line's
+    sum over the scans where the line and its anchor both are, over the
+    anchor's sum over the same scans. Conditioning on the anchor keeps a
+    compound present for part of the file honest: where the anchor is absent,
+    the compound is, and nothing was censored.
+
+    Known limit: the scans that keep a dim line are its upward fluctuations,
+    so the mean over them overshoots where the mean over every scan
+    undershoots - by about a quarter at a per-scan S/N of 3 with half the
+    scans keeping the line, by a few percent when nine in ten do. A
+    censoring-aware estimate needs the per-scan noise and presence count the
+    store does not keep yet.
+
+    The anchor is an ion's main isotope, as in `calculate_match_stats`; an ion
+    in `existing_reference_df` is read against the stored anchor instead,
+    found on the series' axis by its ``sample_peak_id``. A row is not read -
+    NaN in both columns, left to the mean over mean - when it is unmatched,
+    when its anchor is unmatched or not on the axis, or when its anchor is
+    present in no scan.
+
+    :param match_isotope_df: Match frame after `_match_assign`, with its
+        ``matched_peak_idx`` column
+    :type match_isotope_df: pd.DataFrame
+    :param peaks: Per-scan series (mz, time) the matched peaks were read from
+    :type peaks: xarray.DataArray
+    :param peak_positions: Position on `peaks`' m/z axis of each peak
+        `_match_assign` chose from (``_parse_and_filter_peaks``'
+        ``peak_positions``)
+    :type peak_positions: np.ndarray
+    :param existing_reference_df: Existing main isotope references, with
+        ``sample_peak_id`` for the stored anchors, or None
+    :type existing_reference_df: pd.DataFrame | None
+    :return: ``sample_peak_intensity_relative`` and ``ratio_scan_count`` per
+        row, on the frame's index
+    :rtype: pd.DataFrame
+    """
+    result = pd.DataFrame(
+        {"sample_peak_intensity_relative": np.nan, "ratio_scan_count": np.nan},
+        index=match_isotope_df.index,
+    )
+    if match_isotope_df.empty:
+        return result
+
+    # --- Each row's line on the series' axis (-1: unmatched) ---
+    matched_idx = match_isotope_df["matched_peak_idx"]
+    line_pos = np.full(len(match_isotope_df), -1, dtype=np.int64)
+    matched = matched_idx.notna().to_numpy()
+    line_pos[matched] = np.asarray(peak_positions)[
+        matched_idx[matched].to_numpy(dtype=np.int64)
+    ]
+    line_pos_by_label = pd.Series(line_pos, index=match_isotope_df.index)
+
+    # --- Each ion's anchor on the series' axis (-1: none to read against) ---
+    main_rows = _main_isotope_rows(match_isotope_df)
+    anchor_by_ion = pd.Series(
+        line_pos_by_label.loc[main_rows.to_numpy()].to_numpy(),
+        index=main_rows.index,
+    )
+    if (
+        existing_reference_df is not None
+        and not existing_reference_df.empty
+        and "target_ion_id" in existing_reference_df
+    ):
+        references = existing_reference_df.drop_duplicates(subset="target_ion_id")
+        position_of_peak = {
+            peak_id: position
+            for position, peak_id in enumerate(np.asarray(peaks["peak_id"].values))
+        }
+        peak_ids = (
+            references["sample_peak_id"]
+            if "sample_peak_id" in references
+            else pd.Series(None, index=references.index)
+        )
+        for ion_id, peak_id in zip(references["target_ion_id"], peak_ids):
+            if ion_id in anchor_by_ion.index:
+                anchor_by_ion[ion_id] = position_of_peak.get(peak_id, -1)
+
+    anchor_pos = (
+        anchor_by_ion.reindex(match_isotope_df["target_ion_id"])
+        .fillna(-1)
+        .to_numpy(dtype=np.int64)
+    )
+    readable = np.flatnonzero((line_pos >= 0) & (anchor_pos >= 0))
+    if readable.size == 0:
+        return result
+
+    # --- Read in blocks, rows grouped by anchor so a block loads few of them ---
+    readable = readable[np.argsort(anchor_pos[readable], kind="stable")]
+    ratios = np.full(len(match_isotope_df), np.nan)
+    counts = np.full(len(match_isotope_df), np.nan)
+    for start in range(0, readable.size, SCAN_RATIO_BLOCK_ROWS):
+        rows = readable[start : start + SCAN_RATIO_BLOCK_ROWS]
+        needed, inverse = np.unique(
+            np.concatenate([line_pos[rows], anchor_pos[rows]]), return_inverse=True
+        )
+        series = np.asarray(peaks.isel(mz=needed).values, dtype=float)
+        series = np.nan_to_num(series, nan=0.0)
+        line = series[inverse[: rows.size]]
+        anchor = series[inverse[rows.size :]]
+
+        line_present = line > 0
+        anchor_present = anchor > 0
+        both = line_present & anchor_present
+        line_sum = np.where(both, line, 0.0).sum(axis=1)
+        anchor_sum = np.where(both, anchor, 0.0).sum(axis=1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(anchor_sum > 0, line_sum / anchor_sum, 0.0)
+        # An anchor present in no scan gives nothing to read against
+        anchor_seen = anchor_present.any(axis=1)
+        ratios[rows] = np.where(anchor_seen, ratio, np.nan)
+        counts[rows] = np.where(anchor_seen, both.sum(axis=1), np.nan)
+
+    result["sample_peak_intensity_relative"] = ratios
+    result["ratio_scan_count"] = counts
+    return result
+
+
 def calculate_match_stats(
     match_isotope_df: pd.DataFrame,
     existing_reference_df: pd.DataFrame | None = None,
+    scan_ratios: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Calculate match statistics for isotopes.
 
@@ -407,6 +599,10 @@ def calculate_match_stats(
         data (target_ion_id, sample_peak_intensity, relative_abundance) from previously computed
         matches. When provided, these references take priority for abundance error calculation.
     :type existing_reference_df: pd.DataFrame | None, optional
+    :param scan_ratios: Optional ratios read scan by scan (`present_scan_ratios`):
+        a row it read takes its ``sample_peak_intensity_relative`` and
+        ``ratio_scan_count`` from it instead of the ratio of the two means
+    :type scan_ratios: pd.DataFrame | None, optional
     :return: DataFrame with match statistics for each isotope, including relative peak intensities,
               abundance matching errors, isotope similarities, m/z errors, and match scores.
     :rtype: pd.DataFrame
@@ -414,9 +610,7 @@ def calculate_match_stats(
 
     # --- Collect abundance and intensity reference values ---
     # Find the rows with maximum relative_abundance per target ion; "main isotopes"
-    idx_max_abundance = (
-        match_isotope_df.groupby("target_ion_id")["relative_abundance"].idxmax().values
-    )
+    idx_max_abundance = _main_isotope_rows(match_isotope_df).values
     # Get the sample_peak_intensity values for the main isotopes
     main_isotope_df = match_isotope_df.loc[
         idx_max_abundance,
@@ -467,6 +661,16 @@ def calculate_match_stats(
     sample_peak_intensity_relative = match_isotope_df["sample_peak_intensity"].div(
         abundance_reference_df["sample_peak_intensity_reference"]
     )
+    if scan_ratios is not None:
+        read = scan_ratios["sample_peak_intensity_relative"].reindex(
+            match_isotope_df.index
+        )
+        sample_peak_intensity_relative = read.where(
+            read.notna(), sample_peak_intensity_relative
+        )
+        match_isotope_df.loc[:, "ratio_scan_count"] = scan_ratios[
+            "ratio_scan_count"
+        ].reindex(match_isotope_df.index)
     match_isotope_df.loc[:, "sample_peak_intensity_relative"] = (
         sample_peak_intensity_relative.where(
             np.isfinite(sample_peak_intensity_relative), 0.0

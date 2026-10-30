@@ -56,3 +56,17 @@ def test_other_columns_are_untouched():
     assert result["match_score"].tolist() == [0.9]
     # The input frame keeps its NaN; persistence still sees the raw values.
     assert np.isnan(df["signal_to_noise"].iloc[0])
+
+
+def test_nan_ratio_scan_count_serializes_as_null():
+    """A ratio not read scan by scan (a TOF row, an unmatched row) has no count."""
+    df = pd.DataFrame(
+        {"target_ion_id": ["ion-1", "ion-1"], "ratio_scan_count": [np.nan, 12.0]}
+    )
+
+    parsed = json.loads(
+        json.dumps(snr_columns_json_safe(df).to_dict("records"), allow_nan=False)
+    )
+
+    assert parsed[0]["ratio_scan_count"] is None
+    assert parsed[1]["ratio_scan_count"] == 12
