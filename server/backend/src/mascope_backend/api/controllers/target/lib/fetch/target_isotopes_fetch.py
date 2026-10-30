@@ -38,7 +38,9 @@ async def fetch_existing_main_isotope_references(
     Fetches existing main isotope reference data for abundance error calculation.
 
     For each target_ion_id that has existing matches, retrieves the main isotope's
-    (highest relative_abundance) sample_peak_intensity and relative_abundance values.
+    (highest relative_abundance) sample_peak_intensity and relative_abundance values,
+    and the peak it was matched to (sample_peak_id, sample_peak_mz), whose per-scan
+    series an Orbitrap line's ratio is read against.
 
     Only matched isotopes (a real, non-empty sample_peak_id) are considered: an
     unmatched isotope has zero intensity and makes a degenerate reference, and
@@ -50,7 +52,8 @@ async def fetch_existing_main_isotope_references(
     :type sample_item_id: str
     :param target_ion_ids: List of target ion IDs to find references for
     :type target_ion_ids: list[str]
-    :return: DataFrame with columns (target_ion_id, sample_peak_intensity, relative_abundance)
+    :return: DataFrame with columns (target_ion_id, sample_peak_intensity,
+        relative_abundance, sample_peak_id, sample_peak_mz)
     :rtype: pd.DataFrame
     """
     if not target_ion_ids:
@@ -82,6 +85,8 @@ async def fetch_existing_main_isotope_references(
                 TargetIsotope.target_ion_id,
                 MatchIsotope.sample_peak_intensity,
                 TargetIsotope.relative_abundance,
+                MatchIsotope.sample_peak_id,
+                MatchIsotope.sample_peak_mz,
             )
             .join(
                 MatchIsotope,

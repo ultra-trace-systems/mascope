@@ -36,10 +36,37 @@ High-resolution profile spectra allow precise apex intensity determination from 
 **Time-of-Flight (TOF) instruments** use **peak area** for signal intensity quantification.
 Since TOF peaks are resolved through multi-peak fitting rather than Gaussian centroiding, the integrated peak area provides a more robust measure of ion abundance that is less sensitive to peak shape variations and baseline uncertainties.
 
+#### What an isotope ratio is read over
+
+An isotope line is judged by its intensity relative to the ion's most abundant line, and the two instrument types read that ratio differently.
+
+**On an Orbitrap file the ratio is read over the scans that hold both lines.**
+An Orbitrap scan keeps a centroid only where it clears that scan's noise floor, so a dim isotope line is kept in some scans and lost in others, while its brighter anchor line is in every one.
+A peak's stored intensity is its sum over the scans divided by all of them, so a line kept in half the scans is stored at half its mean.
+A ratio of the two stored intensities would then read the line low by the share of scans it missed: on 1,018 committed 13C lines at an expected signal-to-noise of 10 to 50, lines missing a fifth to a half of the scans read 0.72 of their predicted share, and lines missing more read 0.44.
+Both fall outside the default isotope ratio tolerance of 20 %, so true isotope lines were dropped and their ions under-scored.
+
+The matcher therefore sums the line and the anchor over the scans where **both** are present and divides the two sums.
+Requiring the anchor too keeps a compound that is in only part of the file honest: where the anchor is absent, the compound is absent, and nothing was censored.
+The number of scans the ratio was read over is stored with the match and shown in the **scans** column of the Match tab's isotope table.
+Beside it, the **measured** column puts the ratio in the units of the theoretical **r.a.**: the line's ratio to the most abundant line, times that line's r.a.
+A line that never shares a scan with its anchor reads a ratio of zero over zero scans.
+Reading isotope ratios scan by scan over the scans that carry the rare isotopologue is how Orbitrap isotope-ratio work avoids this bias (Eiler et al., 2017).
+
+The kept scans are the line's upward fluctuations, so this reading errs high where the mean over every scan errs low.
+The overshoot is about a quarter at a per-scan signal-to-noise of 3 when half the scans keep the line, and a few percent when nine in ten do.
+That is a smaller error, and on the side the tolerance forgives.
+A censoring-aware estimate needs the per-scan presence count, which the peak store does not keep yet.
+
+**On a TOF file the ratio is the mean over every scan.**
+A TOF file detects its peaks on the summed spectrum, and its per-scan series is not thresholded scan by scan, so there is nothing censored to correct.
+The **scans** column stays empty for it, as it does for a match computed before the count was kept.
+
 ### Mass Window Slicing and Extraction
 Experimental peak timeseries data are loaded within a localized mass tolerance window of 0.5 Da around the target theoretical mass-to-charge ($m/z$) values.
 If a specific scan polarity is defined, the matching engine filters out opposite-polarity peaks.
 The retrieved raw timeseries are collapsed along the time dimension to calculate a mean intensity profile, retaining only peaks with positive intensity values.
+On an Orbitrap file each matched line's ratio to its anchor is then read from the series themselves, over the scans the two share ([above](#what-an-isotope-ratio-is-read-over)).
 
 ## Isotope-Peak Assignment and Selection Constraints
 The core alignment mechanism operates at the individual isotope level and employs a competitive prioritization strategy governed by a strict hierarchy of constraints.
@@ -120,3 +147,7 @@ ranking (ROC-AUC) and calibration over v1. The fit score is the scoring engine o
 [peak assignment](peak-assignment.md); its full model, parameters and literature references
 are in the developer reference, `libraries/tools/docs/fit_score.md`. The legacy v1
 score is retained for the targeted path and documented above for reference.
+
+## References
+
+- Eiler, J., Cesar, J., Chimiak, L., Dallas, B., Grice, K., Griep-Raming, J., Juchelka, D., Kitchen, N., Lloyd, M., Makarov, A., Robins, R., Schwieters, J. (2017). Analysis of molecular isotopic structures at high precision and accuracy by Orbitrap mass spectrometry. *International Journal of Mass Spectrometry* 422, 126-142. [doi:10.1016/j.ijms.2017.10.002](https://doi.org/10.1016/j.ijms.2017.10.002)
