@@ -210,7 +210,8 @@ Two rules keep the two repositories from working against each other:
 
 The register is the coordination record: one row per rule here, and one issue
 per row in the Linear project *Peaky, thinner*: A1 is PKY-27, A2 PKY-28, A3
-PKY-5, A4 PKY-6, A5 PKY-7, A6 PKY-29 and A7 PKY-30. The corpus and the bench
+PKY-5, A4 PKY-6, A5 PKY-7, A6 PKY-29, A7 PKY-30 and A8 PKY-32. The corpus and
+the bench
 are PKY-15 to PKY-26 in *Assignment truth corpus and bench*, with the baseline
 cards (PKY-25) the blocker of every move that changes output.
 
@@ -224,3 +225,4 @@ cards (PKY-25) the blocker of every move that changes output.
 | A6 The minor-line response | `assignment/iso_response.py` | the presence-corrected share in `score_pattern_v2` | 3.5d, MAS-582 | | | | Todo; the curve stays as the fallback for stores without the count |
 | The formula grid, profiles and contexts, reagent libraries, the width model, side lobes, the axis correction | `assignment/`, `batch/` | as stages 3 and 4 land each | | | | | not scheduled; one row each when they are |
 | A7 Batch isotope checks, evidence levels, the axis lock model | `batch/iso_checks.py`, `assignment/levels/`, `batch/axislock.py` | specification first, by peaky's owner | stage 4 | | | | waits for stage 4; the reverse direction of the chart |
+| A8 The MS2 source and the fragment composition rules | `ms2/sources.py`, `ms2/subformula.py` | the MS2 store's scans and window routes; `composition.ms2` | the MS2 project's phases 0, 1 and 5 (MAS-389, MAS-390; the core MAS-387 merged) | the first `mascope-tools` after 2026.10.27, and the SDK release carrying the routes | | | the MS2 note's appendix A is this row's own register; same output, peaky's known answers as the proof; the binding class and replicates stay in peaky until MAS-401 |
