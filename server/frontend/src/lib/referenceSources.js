@@ -81,3 +81,29 @@ export function referenceUrl(reference) {
   const doi = reference?.trim().replace(/^(https?:\/\/(dx\.)?doi\.org\/|doi:\s*)/i, '')
   return doi && /^10\.\d{4,}\/\S+$/.test(doi) ? `https://doi.org/${doi}` : null
 }
+
+/** An http(s) URL in running text, up to the next space. */
+const URL_IN_TEXT = /https?:\/\/[^\s<>"]+/g
+
+/**
+ * A reference's note split into its text and the http(s) URLs in it, so each
+ * URL can be shown as a link: a thesis cited by its ISBN carries where it is
+ * open access in its note. A full stop, comma or closing bracket that ends a
+ * sentence after a URL stays text.
+ *
+ * @param {string|null|undefined} note
+ * @returns {{text: string, url?: string}[]}
+ */
+export function noteParts(note) {
+  if (!note) return []
+  const parts = []
+  let last = 0
+  for (const match of note.matchAll(URL_IN_TEXT)) {
+    const url = match[0].replace(/[.,;:!?)\]'}]+$/, '')
+    if (match.index > last) parts.push({ text: note.slice(last, match.index) })
+    parts.push({ text: url, url })
+    last = match.index + url.length
+  }
+  if (last < note.length) parts.push({ text: note.slice(last) })
+  return parts
+}

@@ -3,11 +3,12 @@ import { computed, ref } from 'vue'
 
 import Button from 'primevue/button'
 
-import { CITATIONS_SHOWN, referenceUrl } from '@/lib/referenceSources'
+import { CITATIONS_SHOWN, noteParts, referenceUrl } from '@/lib/referenceSources'
 
 // The publications a list cites, in its row of the Reference lists dialog:
-// each citation with its DOI linked to doi.org, or its ISBN. A list citing
-// many shows the first few and a button for the rest, so its row stays short.
+// each citation with its DOI linked to doi.org, or its ISBN, and its note
+// with any URL in it linked. A list citing many shows the first few and a
+// button for the rest, so its row stays short.
 
 const props = defineProps({
   references: { type: Array, default: () => [] }
@@ -34,6 +35,14 @@ const hidden = computed(() => props.references.length - CITATIONS_SHOWN)
         >{{ reference.doi }}</a
       >
       <span v-else-if="reference.isbn" class="id">ISBN {{ reference.isbn }}</span>
+      <span v-if="reference.note" class="note"
+        ><template v-for="(part, j) in noteParts(reference.note)" :key="j"
+          ><a v-if="part.url" :href="part.url" target="_blank" rel="noopener noreferrer">{{
+            part.text
+          }}</a
+          ><template v-else>{{ part.text }}</template></template
+        ></span
+      >
     </li>
     <li v-if="hidden > 0" class="more">
       <Button
@@ -63,6 +72,11 @@ const hidden = computed(() => props.references.length - CITATIONS_SHOWN)
 .id {
   display: block;
   white-space: nowrap;
+}
+
+.note {
+  display: block;
+  color: var(--p-text-muted-color);
 }
 
 .more {

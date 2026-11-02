@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 import {
   REFERENCE_LISTS_GUIDE_URL,
   loadedLabel,
+  noteParts,
   polarityLabel,
   referenceUrl,
   windowLabel
@@ -72,6 +73,30 @@ describe('referenceUrl', () => {
     expect(referenceUrl('S. Kang, thesis, 2021')).toBeNull()
     expect(referenceUrl('')).toBeNull()
     expect(referenceUrl(null)).toBeNull()
+  })
+})
+
+describe('noteParts', () => {
+  it('splits out each http(s) URL, leaving a sentence-ending stop as text', () => {
+    expect(noteParts('Open access in the repository, http://hdl.handle.net/2128/30658.')).toEqual([
+      { text: 'Open access in the repository, ' },
+      { text: 'http://hdl.handle.net/2128/30658', url: 'http://hdl.handle.net/2128/30658' },
+      { text: '.' }
+    ])
+    expect(noteParts('https://a.example/x (or https://b.example/y), both')).toEqual([
+      { text: 'https://a.example/x', url: 'https://a.example/x' },
+      { text: ' (or ' },
+      { text: 'https://b.example/y', url: 'https://b.example/y' },
+      { text: '), both' }
+    ])
+  })
+
+  it('keeps a note without a URL as one piece of text, and none as nothing', () => {
+    expect(noteParts('Printed edition only; see ftp://x.example')).toEqual([
+      { text: 'Printed edition only; see ftp://x.example' }
+    ])
+    expect(noteParts('')).toEqual([])
+    expect(noteParts(null)).toEqual([])
   })
 })
 
