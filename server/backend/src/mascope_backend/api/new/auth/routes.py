@@ -9,6 +9,7 @@ from mascope_backend.api.new.auth.devices.routes import devices_router
 from mascope_backend.api.new.auth.login import login_router
 from mascope_backend.api.new.auth.mfa.routes import mfa_router
 from mascope_backend.api.new.auth.pairing.routes import pairing_router
+from mascope_backend.api.new.auth.turnstile import login_options_router
 
 
 # main Auth router
@@ -30,6 +31,11 @@ auth_router.include_router(
         Depends(rate_limit_login_by_account(times=15, seconds=300)),
     ],
 )
+
+# What the sign-in form needs before anyone signs in (the Turnstile site key).
+# Outside the login limits above: every load of the login page reads it, and
+# those reads must not spend a visitor's sign-in attempts.
+auth_router.include_router(login_options_router)
 
 # Include the access token router within the main auth router for nested routing
 auth_router.include_router(access_token_router)

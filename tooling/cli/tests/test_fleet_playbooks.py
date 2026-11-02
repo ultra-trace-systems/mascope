@@ -145,6 +145,30 @@ def test_the_frontend_publishes_its_loopback_listener_on_loopback_only():
     )
 
 
+def test_the_backend_reads_the_turnstile_site_key_and_secret():
+    """
+    The backend, which checks the sign-in's Turnstile token, gets the site key
+    from the host's environment and the secret key as a compose secret.
+
+    A site key that never reached the container would leave Turnstile off on a
+    site that turned it on; a secret that never reached it would refuse every
+    sign-in there.
+    """
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    backend = compose["services"]["backend"]
+
+    assert backend["environment"]["MASCOPE_TURNSTILE_SITE_KEY"] == (
+        "${MASCOPE_TURNSTILE_SITE_KEY:-}"
+    )
+    assert backend["environment"]["TURNSTILE_SECRET_KEY_FILE"] == (
+        "/run/secrets/turnstile_secret_key"
+    )
+    assert "turnstile_secret_key" in backend["secrets"]
+    assert compose["secrets"]["turnstile_secret_key"]["file"] == (
+        ".runtime/secrets/turnstile_secret_key.txt"
+    )
+
+
 # curl for the reboot probe: answers STUB_<port> for a URL on that port, and
 # logs each port it was asked to STUB_LOG. "000" is curl's own answer when the
 # connection is refused: it prints the write-out and exits non-zero.

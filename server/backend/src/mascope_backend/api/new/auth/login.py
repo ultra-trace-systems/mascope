@@ -21,7 +21,7 @@ browser's other tabs are signed out with it, and their sockets go too: every
 socket the ending token authenticated (:func:`sign_out_session`).
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi_users.authentication import Strategy
@@ -35,6 +35,7 @@ from mascope_backend.api.new.auth import (
 )
 from mascope_backend.api.new.auth.mfa.cookie import set_pending_cookie
 from mascope_backend.api.new.auth.mfa.pending import create_pending_token
+from mascope_backend.api.new.auth.turnstile import TOKEN_FIELD, verify_turnstile
 from mascope_backend.api.new.users.user_manager.dependencies import get_user_manager
 from mascope_backend.api.new.users.user_manager.service import UserManager
 from mascope_backend.db import User
@@ -59,6 +60,7 @@ async def login_route(
     credentials: OAuth2PasswordRequestForm = Depends(),
     user_manager: UserManager = Depends(get_user_manager),
     strategy: Strategy[User, int] = Depends(auth_backend_jwt.get_strategy),
+    turnstile_token: str | None = Form(None, alias=TOKEN_FIELD),
 ):
     """
     Verify credentials and either open a session or ask for a second factor.
@@ -67,12 +69,19 @@ async def login_route(
     :param credentials: Submitted username and password.
     :param user_manager: User manager, for authentication and its login hook.
     :param strategy: Session token strategy for the cookie backend.
+    :param turnstile_token: The Turnstile widget's token, when the site has
+        Turnstile on (see api/new/auth/turnstile.py).
     :raises HTTPException: 400 when the credentials are wrong or the account is
         inactive - the same response the library gives, so a caller cannot tell
-        the two apart.
+        the two apart. 400 or 503 when the site's Turnstile check stops the
+        sign-in, which it does before the password is looked at.
     :return: The transport's session response, or a 200 marking that a code is
         still owed.
     """
+    # Before authenticate(): a sign-in without a solved challenge must not get
+    # as far as a password guess.
+    await verify_turnstile(request, turnstile_token)
+
     user = await user_manager.authenticate(credentials)
 
     # A machine account is refused with the same response as bad credentials: it

@@ -49,10 +49,51 @@ def test_init_creates_the_operator_supplied_ca_empty(cli_runner, tmp_path):
     result = _init(cli_runner, home)
 
     assert result.exit_code == 0
-    assert PLACEHOLDER_SECRETS == ("origin_pull_ca.pem",)
+    assert "origin_pull_ca.pem" in PLACEHOLDER_SECRETS
     ca = home / ".runtime" / "secrets" / "origin_pull_ca.pem"
     assert ca.is_file()
     assert ca.read_bytes() == b""
+
+
+def test_init_creates_the_turnstile_secret_empty(cli_runner, tmp_path):
+    # The site's Turnstile secret key is the operator's to bring as well, and
+    # an empty file reads as "no secret" to the backend.
+    home = tmp_path / "home"
+
+    result = _init(cli_runner, home)
+
+    assert result.exit_code == 0
+    secret = home / ".runtime" / "secrets" / "turnstile_secret_key.txt"
+    assert secret.is_file()
+    assert secret.read_bytes() == b""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no owner-only file mode")
+def test_init_creates_the_turnstile_secret_owner_only(cli_runner, tmp_path, open_umask):
+    # The operator writes the secret key into the file the CLI made, and the
+    # file keeps its mode: made at the umask, the key would be world-readable.
+    # The CA holds nothing secret and stays at the umask.
+    home = tmp_path / "home"
+
+    _init(cli_runner, home)
+
+    secrets_dir = home / ".runtime" / "secrets"
+    mode = stat.S_IMODE((secrets_dir / "turnstile_secret_key.txt").stat().st_mode)
+    assert mode == 0o600, f"turnstile_secret_key.txt is mode {oct(mode)}"
+    ca_mode = stat.S_IMODE((secrets_dir / "origin_pull_ca.pem").stat().st_mode)
+    assert ca_mode == 0o644, f"origin_pull_ca.pem is mode {oct(ca_mode)}"
+
+
+def test_init_keeps_an_operator_supplied_turnstile_secret(cli_runner, tmp_path):
+    home = tmp_path / "home"
+    secret = home / ".runtime" / "secrets" / "turnstile_secret_key.txt"
+    secret.parent.mkdir(parents=True)
+    secret.write_bytes(b"0x4AAA-the-operators-key\n")
+
+    result = _init(cli_runner, home, "--force")
+
+    assert result.exit_code == 0
+    assert secret.read_bytes() == b"0x4AAA-the-operators-key\n"
 
 
 def test_init_keeps_an_operator_supplied_ca(cli_runner, tmp_path):
