@@ -84,7 +84,10 @@
 # Each vantage leaves three files in RECORDS: <ts>-<vantage>.log (the suite's
 # output), <ts>-<vantage>.tar.gz (the report), and <ts>-<vantage>.summary
 # (this script's own verdict, so an archived run still states what it
-# concluded). With both vantages, <ts>-vantage.{md,json} holds the comparison.
+# concluded). The summary names the listener the suite measured, and says
+# origin_pull=not_assessed when that is the host's loopback listener, :8443,
+# which an origin run with origin pulls on has to use. With both vantages,
+# <ts>-vantage.{md,json} holds the comparison.
 # The summary ends in the trigger, trigger=schedule or trigger=deploy. Three
 # dotfiles in RECORDS hold the triggers' state: .run.lock, .last-run-end (when
 # the last run ended) and .last-run-version (the release the last run started
@@ -316,12 +319,26 @@ try:
 except Exception:
     print("report unreadable"); raise SystemExit
 s = d.get("summary", {})
+# The listener the run measured. The report comes from the target, so only
+# an integer port, a literal boolean and a known id reach the summary, and a
+# report from a suite that predates the field says "?" rather than passing for
+# :443.
+l = d.get("listener")
+l = l if isinstance(l, dict) else {}
+port = l.get("port")
+listener = "?"
+if type(port) is int:
+    listener = ("loopback:%d" if l.get("loopback") is True else "%d") % port
+unseen = l.get("unseen")
+unseen = [u.get("id") for u in unseen if isinstance(u, dict)] if isinstance(
+    unseen, list) else []
 print("build=%s findings=%s accepted=%s stale=%s verified=%s not_assessed=%s"
-      " throttled=%s" % (
+      " throttled=%s listener=%s%s" % (
     (d.get("build") or {}).get("identity", "?"),
     s.get("findings", "?"), s.get("accepted_findings", 0),
     s.get("stale_baseline_entries", 0), s.get("controls_verified", "?"),
-    s.get("not_assessed", "?"), s.get("throttled", "?")))
+    s.get("not_assessed", "?"), s.get("throttled", "?"), listener,
+    " origin_pull=not_assessed" if "origin-pull" in unseen else ""))
 ' 2>/dev/null)"
     summary="${summary:-report unreadable}"
 

@@ -112,10 +112,22 @@ CDN_TARGET = "https://app.invalid"
 HEADER_VALUE = "edge-bypass-0123456789"
 
 
-def _report(build="v1.7.2", findings=0, rows=None, throttled=0):
+#: The listener a run against a deployment's :443 records.
+PUBLIC_LISTENER = {
+    "port": 443,
+    "loopback": False,
+    "loopback_listener": False,
+    "unseen": [],
+}
+
+
+def _report(
+    build="v1.7.2", findings=0, rows=None, throttled=0, listener=PUBLIC_LISTENER
+):
     report = {
         **(rows or {}),
         "build": {"identity": build},
+        "listener": listener,
         "summary": {
             "findings": findings,
             "accepted_findings": 0,
@@ -127,6 +139,8 @@ def _report(build="v1.7.2", findings=0, rows=None, throttled=0):
     }
     if throttled is None:  # a report from a suite that predates the count
         del report["summary"]["throttled"]
+    if listener is None:  # one from a suite that predates the listener
+        del report["listener"]
     return report
 
 
@@ -276,7 +290,9 @@ def _tag(tag):
     return json.dumps({"tag_name": tag})
 
 
-COUNTS = "findings=0 accepted=0 stale=0 verified=40 not_assessed=3 throttled=0"
+COUNTS = (
+    "findings=0 accepted=0 stale=0 verified=40 not_assessed=3 throttled=0 listener=443"
+)
 
 # (id, assessed build, release lookup answer or None for unreachable, suite exit,
 #  expected exit, expected lag part of the summary)
@@ -590,7 +606,63 @@ def test_the_summary_counts_the_throttled_controls(tmp_path, throttled, says):
     # A degraded run is told apart, not failed: a throttled control is not
     # assessed, and not-assessed never reddens a run.
     assert rc == 0
-    assert f" not_assessed=3 {says} lag=current" in summary
+    assert f" not_assessed=3 {says} listener=443 lag=current" in summary
+    assert pings[-1] == f"{HC_URL} {summary}"
+
+
+# --------------------------------------------------------------------------- #
+# The listener, as the summary carries it
+# --------------------------------------------------------------------------- #
+
+ORIGIN_PULL = {"id": "origin-pull", "title": "t", "reason": "r"}
+
+
+@pytest.mark.parametrize(
+    "listener, says",
+    [
+        (
+            {
+                "port": 8443,
+                "loopback": True,
+                "loopback_listener": True,
+                "unseen": [ORIGIN_PULL],
+            },
+            "listener=loopback:8443 origin_pull=not_assessed",
+        ),
+        (
+            {"port": 8080, "loopback": True, "loopback_listener": False, "unseen": []},
+            "listener=loopback:8080",
+        ),
+        (None, "listener=?"),
+        # The report is the target's: nothing but an integer port, a literal
+        # boolean and a known id reaches the summary and the heartbeat.
+        (
+            {"port": "443 lag=current", "loopback": "yes", "unseen": "origin-pull"},
+            "listener=?",
+        ),
+        ({"port": 8443, "loopback": "yes", "unseen": [{"id": ["x"]}]}, "listener=8443"),
+        ([ORIGIN_PULL], "listener=?"),
+        # Iterating a number would leave the whole report unreadable.
+        ({"port": 443, "loopback": False, "unseen": 7}, "listener=443"),
+    ],
+    ids=[
+        "loopback-listener",
+        "loopback",
+        "old",
+        "hostile",
+        "not-boolean",
+        "not-object",
+        "unseen-not-a-list",
+    ],
+)
+def test_the_summary_names_the_listener(tmp_path, listener, says):
+    rc, summary, pings = _run(
+        tmp_path, report=_report(listener=listener), release=_tag("v1.7.2")
+    )
+    # Recorded, not failed: what the loopback listener cannot see is not a
+    # finding, and not a pass either.
+    assert rc == 0
+    assert summary.endswith(f" throttled=0 {says} lag=current trigger=schedule")
     assert pings[-1] == f"{HC_URL} {summary}"
 
 
