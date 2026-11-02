@@ -33,6 +33,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Write the MS2 stores of files converted before them, and list their groups (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
 | List the files whose peak store lacks a scan they read, to re-process them | `mascope prod db script run report_stale_peak_stores` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
+| Fill the model of instruments registered before it was read (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run backfill_instrument_model`, then without `DRY_RUN` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` (fill rate and projection on each line) |
 | Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
@@ -2293,6 +2294,31 @@ Everything is set through the environment:
 
 The TOF mass calibration plan ([tof_calibration.md](dev/tof_calibration.md))
 is where the audit's readings go and what they decide.
+
+### Instruments without a model
+
+Each instrument is a row of its own, with its class, vendor, model and the
+model's PSI-MS term. Registering a file fills the model from what the file
+names. The upgrade that made the table knew no model, so an instrument whose
+files were all registered before it has none until a new file arrives, and
+the instrument list, the batch export and a deposit package show none for
+it. Once, after that upgrade, fill them from the files already there:
+
+```sh
+DRY_RUN=1 mascope prod db script run backfill_instrument_model   # what it would fill
+mascope prod db script run backfill_instrument_model
+```
+
+For each instrument with no model it looks through the instrument's
+Orbitrap files, newest first, and takes the first model one names: in the
+file's props (recorded at conversion, or in its axis fingerprint), else, only
+when no file's props name one, in the header of the raw file kept beside one
+of the newest few files. It writes the model and its PSI-MS term together, as
+a registration does, the term left empty for a model the vocabulary has no
+term for. A row that already has a model is never touched, so a file
+registered during the run wins and running it again changes nothing. A TOF
+instrument has no model to find, since a TofDaq file names its digitizer and
+not the instrument, and is only counted.
 
 ### Loading reference chemistry data
 
