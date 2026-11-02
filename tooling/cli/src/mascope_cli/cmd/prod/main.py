@@ -32,6 +32,7 @@ from typing import Annotated, NoReturn, Optional
 import typer
 
 from mascope_cli import config_layers
+from mascope_cli import release as mascope_release
 from mascope_cli.checkout import backend_path
 from mascope_cli.cmd import lib
 from mascope_cli.cmd.prod import (
@@ -758,7 +759,9 @@ def manifest(
 
     Records the Alembic head baked into the current source tree so a deployed
     stack can classify a pending update (`mascope prod update --check
-    --manifest ...`) without inspecting the release image. Intended to run at
+    --manifest ...`) without inspecting the release image, and the CLI version
+    cut with the release, which a wheel install needs to deploy it (none when
+    the checkout's CLI names another release). Intended to run at
     release build time; the produced JSON is published alongside the release
     images (e.g. as a GitHub Release asset).
 
@@ -777,6 +780,12 @@ def manifest(
     except release_manifest.ManifestError as e:
         runtime.logger.error(str(e))
         raise typer.Exit(1)
+    if data.get("cli_version") is None:
+        runtime.logger.warning(
+            f"The manifest names no CLI: this checkout's CLI was cut with "
+            f"{mascope_release.RELEASE}, not '{app_version}', so a wheel install "
+            "cannot deploy this release."
+        )
 
     text = release_manifest.write_manifest(data, output)
     if output is not None:

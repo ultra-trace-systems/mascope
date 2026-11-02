@@ -5,7 +5,9 @@ A release manifest is a small JSON document published alongside a release's
 container images. It records the Alembic head baked into that release, so the
 update preflight (and, later, an automated updater) can tell whether moving to
 the release will run a database migration - the downtime-bearing case - without
-having to spawn a throwaway container to read the head out of the image.
+having to spawn a throwaway container to read the head out of the image. It
+also names the CLI cut with the release (``cli_version``), the one a wheel
+install has to run to deploy it (``mascope_cli.release``).
 
 The manifest is deliberately minimal and forward-compatible: consumers check
 ``schema_version`` and read the fields they understand. Generation reads the
@@ -18,6 +20,8 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from mascope_cli import release
+
 
 # NOTE: alembic is imported lazily inside read_alembic_head(), not at module
 # level. Only a source checkout installs it (the root pyproject.toml), while this
@@ -26,7 +30,9 @@ from typing import Optional
 # has no alembic. Only manifest *generation* (a release-build step) needs it.
 
 # Bump when the manifest shape changes incompatibly. Consumers reject a
-# schema_version they do not recognise rather than misread newer fields.
+# schema_version they do not recognise rather than misread newer fields. A new
+# optional field is not such a change: `cli_version` was added under 1, so the
+# CLIs already deployed keep reading the manifests of the releases after it.
 SCHEMA_VERSION = 1
 
 # Conventional filename for the published manifest artifact (e.g. a GitHub
@@ -75,6 +81,21 @@ def read_alembic_head(backend_path: Path) -> str:
     return heads[0]
 
 
+def manifest_cli_version(app_version: str) -> Optional[str]:
+    """
+    The CLI version a manifest for ``app_version`` names, or None.
+
+    The CLI in the checkout being released is the one cut with the release
+    only when it says so (``mascope_cli.release.RELEASE``). A release built
+    from a checkout whose CLI names another - a pre-release cut without a CLI
+    of its own - has no CLI a wheel install could deploy it with, and naming
+    the checkout's CLI would send every wheel install to one that refuses it.
+    """
+    if app_version != release.RELEASE:
+        return None
+    return release.cli_version()
+
+
 def build_manifest(app_version: str, backend_path: Path) -> dict:
     """
     Assemble the release manifest for ``app_version`` from a backend checkout.
@@ -83,6 +104,7 @@ def build_manifest(app_version: str, backend_path: Path) -> dict:
         "schema_version": SCHEMA_VERSION,
         "app_version": app_version,
         "alembic_head": read_alembic_head(backend_path),
+        "cli_version": manifest_cli_version(app_version),
         "generated_at": datetime.datetime.now(datetime.timezone.utc)
         .replace(microsecond=0)
         .isoformat()
