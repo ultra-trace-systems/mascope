@@ -342,8 +342,13 @@ Setup:
    edge"), set `MASCOPE_PENTEST_TARGET=https://127.0.0.1:8443`: its :443 then
    answers 403 to everything without Cloudflare's client certificate. That
    loopback listener differs from :443 only in asking for no client
-   certificate, so the refusal itself is outside this vantage; read the
-   report with that in mind.
+   certificate, so the refusal itself is outside this vantage. The report
+   says so: it records the listener it measured (`listener` in
+   `pentest-report.json`, a **Listener** line in the Markdown) and, against
+   the loopback listener, a notice that the origin-pull refusal was not
+   assessed. The summary then reads `listener=loopback:8443
+   origin_pull=not_assessed`. Check the refusal itself from the host with
+   the `:443` request in `docs/maintaining.md`, "Turning origin pulls on".
 4. Cron it clear of the backup windows, e.g. `30 5 * * 0`, and add the
    deploy watch beside it (see "Two triggers"):
 
@@ -464,8 +469,11 @@ Each vantage leaves three files in `RECORDS`: `<ts>-<vantage>.log`,
 `origin` or `cdn`. With both, `<ts>-vantage.md` and `<ts>-vantage.json` hold
 the comparison. Everything is pruned at 400 days, deploy runs and periodic
 ones alike. A summary reads
-`build=... findings=N accepted=N stale=N verified=N not_assessed=N throttled=N lag=... trigger=schedule`,
-or `trigger=deploy` for a deploy run. The heartbeat carries it, and with both
+`build=... findings=N accepted=N stale=N verified=N not_assessed=N throttled=N listener=PORT lag=... trigger=schedule`,
+or `trigger=deploy` for a deploy run. `listener` is the port the suite
+measured, `loopback:PORT` on the host's own loopback, followed by
+`origin_pull=not_assessed` on the :8443 listener (setup, step 3), and `?`
+for a report from a suite that predates it. The heartbeat carries it, and with both
 vantages carries both summaries and the comparison's counts
 (`origin: ... | cdn: ... | vantages: agree=N disagree=N edge=N origin_only=N`).
 Three dotfiles beside them hold the triggers' state: `.run.lock`,
