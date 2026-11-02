@@ -18,6 +18,7 @@ import typer
 
 import mascope_cli.cmd.prod.auto_update as au
 from mascope_cli.cmd import init as init_cmd
+from mascope_cli.runtime import get_runtime
 
 
 prod_main = importlib.import_module("mascope_cli.cmd.prod.main")
@@ -165,6 +166,38 @@ def test_a_release_no_cli_names_is_refused_without_an_install_command(
     assert wheel.compose == []
     assert any("no published CLI names" in e for e in wheel.errors), wheel.errors
     assert not any("uv tool install" in e for e in wheel.errors), wheel.errors
+
+
+def _unread_manifest(served):
+    """`download_manifest` that fails to fetch, or serves bytes that do not read."""
+
+    def _download(repo, tag, dest_dir):
+        if served == "fetch":
+            raise au.ManifestUnavailable(f"reading release {tag}: HTTP Error 403")
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        path = dest_dir / "mascope-manifest.json"
+        path.write_bytes(served)
+        return path
+
+    return _download
+
+
+@pytest.mark.parametrize("served", ["fetch", b"{not json"])
+def test_a_manifest_that_could_not_be_read_is_not_a_release_without_a_cli(
+    wheel, cli_runner, served
+):
+    """The operator is told to retry or install by hand, not to use a checkout."""
+    wheel.setattr(prod_main.auto_update, "download_manifest", _unread_manifest(served))
+
+    result = cli_runner.invoke(prod_main.prod_app, ["update", "--version", _NEXT])
+
+    assert result.exit_code == 1
+    assert wheel.compose == []
+    assert any("could not be read" in e for e in wheel.errors), wheel.errors
+    assert any("Run this again later" in e for e in wheel.errors), wheel.errors
+    assert not any("no published CLI names" in e for e in wheel.errors)
+    if served == "fetch":
+        assert any("HTTP Error 403" in e for e in wheel.errors), wheel.errors
 
 
 def test_the_clis_own_release_is_deployed(wheel, cli_runner):
@@ -347,6 +380,79 @@ def test_the_first_up_after_an_upgrade_refreshes_the_home(wheel, cli_runner):
     assert any("prod.mascope.toml" in w and "replaced" in w for w in warnings), warnings
 
 
+def _previous_layers(env, **edits):
+    """
+    The previous release's layers in the home, read by the runtime.
+
+    The base layer is the bundled one, the prod layer the bundled one with
+    other values. The runtime reads its layers from the home it was built on,
+    so it is pointed at this one, and loads them as the prod callback does.
+    """
+    layer = _bundled("prod.mascope.toml")
+    for old, new in edits.values():
+        assert layer.count(old) == 1, old
+        layer = layer.replace(old, new)
+    (env.home / "base.mascope.toml").write_bytes(_bundled("base.mascope.toml"))
+    (env.home / "prod.mascope.toml").write_bytes(layer)
+    env.setattr(get_runtime(), "_path", str(env.home))
+    prod_main.runtime.state.override("mode", prod_main._MODE)
+    prod_main.runtime.reload_config()
+
+
+_OLD_SHM = (b'shm_size = "20g"', b'shm_size = "999m"')
+_OLD_BACKEND = (
+    b'workers = "auto"',
+    b'workers = "auto"\ncontainer_name = "old_backend"',
+)
+
+
+def _record_shm_size(env):
+    """Stub `_run_compose` with one that lists the shm_size each call saw."""
+    seen = []
+    env.setattr(
+        prod_main,
+        "_run_compose",
+        lambda args, building=False: seen.append(
+            prod_main.runtime.full_config.backend.database.shm_size
+        ),
+    )
+    return seen
+
+
+def test_the_up_that_refreshes_deploys_on_the_new_settings(wheel, cli_runner):
+    """Compose gets the new release's layers, not those the callback loaded."""
+    _previous_layers(wheel, shm=_OLD_SHM)
+    assert prod_main.runtime.full_config.backend.database.shm_size == "999m"
+    seen = _record_shm_size(wheel)
+
+    result = cli_runner.invoke(prod_main.prod_app, ["up", "--detach"])
+
+    assert result.exit_code == 0, result.output
+    assert seen == ["20g"]
+
+
+def test_an_unpinned_detached_up_records_the_clis_release(wheel, cli_runner):
+    """The upgrade path the README gives: install the CLI, then `prod up`."""
+    prod_main.deployed_release.save(str(wheel.home), "v1.11.0")
+    wheel.delenv("_MASCOPE_VERSION_PINNED", raising=False)
+    wheel.delenv("MASCOPE_VERSION", raising=False)
+
+    result = cli_runner.invoke(prod_main.prod_app, ["up", "--detach"])
+
+    assert result.exit_code == 0, result.output
+    assert prod_main.deployed_release.load(str(wheel.home)) == _OWN
+
+
+def test_a_foreground_up_records_nothing(wheel, cli_runner):
+    """It returns once the stack has stopped again."""
+    prod_main.deployed_release.save(str(wheel.home), "v1.11.0")
+
+    result = cli_runner.invoke(prod_main.prod_app, ["up"])
+
+    assert result.exit_code == 0, result.output
+    assert prod_main.deployed_release.load(str(wheel.home)) == "v1.11.0"
+
+
 def test_an_update_refreshes_before_it_pulls(wheel, cli_runner):
     """The pull reads the compose file: the release's images, not the last's."""
     (wheel.home / "docker-compose.yaml").write_bytes(b"# v1.11.0's compose file\n")
@@ -472,7 +578,7 @@ def test_a_held_release_is_not_handed_over(auto):
     assert _handover(auto.home) is None
 
 
-@pytest.mark.parametrize("cli", [None, ..., "2026.11.2; rm -rf /"])
+@pytest.mark.parametrize("cli", [None, ...])
 def test_a_newer_release_without_a_cli_is_an_error(auto, cli):
     auto.setattr(
         prod_main.auto_update, "download_manifest", _manifest_stub({_NEXT: cli})
@@ -487,6 +593,41 @@ def test_a_newer_release_without_a_cli_is_an_error(auto, cli):
 
     assert _handover(auto.home) is None
     assert any("names no CLI" in e for e in auto.errors), auto.errors
+
+
+@pytest.mark.parametrize(
+    ("served", "cause"),
+    [
+        ("fetch", "could not be fetched"),
+        (b"{not json", "is invalid"),
+        (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "app_version": _NEXT,
+                    "alembic_head": _HEAD,
+                    "cli_version": "2026.11.2; rm -rf /",
+                }
+            ).encode(),
+            "invalid cli_version",
+        ),
+    ],
+)
+def test_a_newer_release_whose_manifest_is_unread_names_the_cause(auto, served, cause):
+    auto.setattr(prod_main.auto_update, "download_manifest", _unread_manifest(served))
+
+    def _never(**kwargs):
+        raise AssertionError("classified a release it cannot follow")
+
+    auto.setattr(prod_main.preflight, "build_plan", _never)
+
+    assert _run_auto() == au.AUTO_ERROR
+
+    assert _handover(auto.home) is None
+    assert any(cause in e for e in auto.errors), auto.errors
+    assert not any("names no CLI" in e for e in auto.errors), auto.errors
+    status = (au.update_dir(str(auto.home)) / "status.log").read_text("utf-8")
+    assert cause in status
 
 
 def test_an_unwritable_handover_is_an_error(auto):
@@ -517,6 +658,26 @@ def test_the_clis_own_release_is_applied_on_its_refreshed_files(auto):
     assert (auto.home / "docker-compose.yaml").read_bytes() == _bundled(
         "docker-compose.yaml"
     )
+
+
+def test_the_apply_runs_on_the_refreshed_settings(auto):
+    """`_auto` read its config before the refresh; the apply reads it after."""
+    auto.setattr(prod_main.mascope_release, "RELEASE", _NEXT)
+    _previous_layers(auto, shm=_OLD_SHM, backend=_OLD_BACKEND)
+    assert prod_main.runtime.full_config.backend.database.shm_size == "999m"
+    waited = []
+    auto.setattr(
+        prod_main.auto_update, "wait_healthy", lambda c: waited.append(c) or True
+    )
+    seen = _record_shm_size(auto)
+    auto.setattr(
+        prod_main.preflight, "build_plan", lambda **k: _plan("fast-update", _NEXT)
+    )
+
+    assert _run_auto() == au.AUTO_OK
+
+    assert waited == ["mascope_prod_backend"]
+    assert seen == ["20g", "20g", "20g"]
 
 
 def test_an_unhealthy_apply_records_nothing(auto):
@@ -553,6 +714,23 @@ def test_auto_on_a_checkout_never_hands_over(auto):
     assert _run_auto() == au.AUTO_OK
 
     assert _handover(auto.home) is None
+    assert [call[0] for call in auto.compose] == ["pull", "up", "ps"]
+
+
+def test_auto_on_a_checkout_classifies_without_a_reachable_manifest(auto):
+    """Off a wheel install the manifest only saves an image inspection."""
+    auto.setattr(prod_main.runtime, "parse_version", lambda **kw: "v1.12.0")
+    auto.setattr(prod_main.auto_update, "download_manifest", _unread_manifest("fetch"))
+    heads = []
+    auto.setattr(
+        prod_main.preflight,
+        "build_plan",
+        lambda **k: heads.append(k["target_head"]) or _plan("fast-update"),
+    )
+
+    assert _run_auto() == au.AUTO_OK
+
+    assert heads == [None]
     assert [call[0] for call in auto.compose] == ["pull", "up", "ps"]
 
 

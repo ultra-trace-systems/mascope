@@ -218,6 +218,59 @@ def test_download_manifest_no_asset(monkeypatch, tmp_path):
     )
 
 
+def test_download_manifest_of_no_such_release(monkeypatch, tmp_path):
+    def _missing(url, **k):
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(au, "_http_get_json", _missing)
+    assert (
+        au.download_manifest("ultra-trace-systems/mascope", "v9.9.9", tmp_path) is None
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        urllib.error.URLError("no network"),
+        urllib.error.HTTPError("u", 403, "rate limit exceeded", {}, None),
+        ValueError("not JSON"),
+    ],
+)
+def test_download_manifest_that_cannot_read_the_release_raises(
+    monkeypatch, tmp_path, error
+):
+    """Not knowing whether a release has a manifest is not "it has none"."""
+
+    def _boom(url, **k):
+        raise error
+
+    monkeypatch.setattr(au, "_http_get_json", _boom)
+    with pytest.raises(au.ManifestUnavailable):
+        au.download_manifest("ultra-trace-systems/mascope", "v1.4.0", tmp_path)
+
+
+def test_download_manifest_that_cannot_download_the_asset_raises(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        au,
+        "_http_get_json",
+        lambda url, **k: {
+            "assets": [
+                {
+                    "name": au.MANIFEST_FILENAME,
+                    "browser_download_url": "https://example.test/m.json",
+                }
+            ]
+        },
+    )
+
+    def _boom(url, dest, **k):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(au, "_http_download", _boom)
+    with pytest.raises(au.ManifestUnavailable, match="connection reset"):
+        au.download_manifest("ultra-trace-systems/mascope", "v1.4.0", tmp_path)
+
+
 # --- _auto orchestration ---
 
 

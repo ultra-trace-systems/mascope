@@ -570,17 +570,17 @@ def test_an_update_replaces_an_unreadable_record(manual_update, wheel_home, cli_
     assert prod_main.deployed_release.load(str(wheel_home)) == "v1.12.0"
 
 
-def test_a_detached_up_keeps_an_unreadable_record(
+def test_a_detached_up_replaces_an_unreadable_record(
     manual_update, wheel_home, cli_runner
 ):
-    """An unpinned `up` writes no record, so a bad one stays for its owner."""
+    """An unpinned `up` records what ran, as an update does."""
     record = prod_main.deployed_release.path(str(wheel_home))
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text('{"version": "1.12.0"}', encoding="utf-8")
 
     assert _up(manual_update, cli_runner, "--detach") == ["v1.12.0"]
 
-    assert record.read_text(encoding="utf-8") == '{"version": "1.12.0"}'
+    assert prod_main.deployed_release.load(str(wheel_home)) == "v1.12.0"
 
 
 def test_a_detached_up_without_a_record_never_falls_back_to_latest(
@@ -594,7 +594,7 @@ def test_a_detached_up_without_a_record_never_falls_back_to_latest(
     assert not any("latest" in w for w in warnings), warnings
 
 
-def test_an_unpinned_up_does_not_record_the_cli_version(
+def test_an_unpinned_up_records_the_release_not_the_cli_version(
     manual_update, wheel_home, cli_runner
 ):
     """Unpinned, MASCOPE_VERSION holds the CLI's own calver, never a release."""
@@ -603,4 +603,4 @@ def test_an_unpinned_up_does_not_record_the_cli_version(
 
     assert _up(manual_update, cli_runner, "--detach") == ["v1.12.0"]
 
-    assert prod_main.deployed_release.load(str(wheel_home)) is None
+    assert prod_main.deployed_release.load(str(wheel_home)) == "v1.12.0"
