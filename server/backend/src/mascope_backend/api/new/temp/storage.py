@@ -8,7 +8,8 @@ is known or guessable. The basename reduction plus the containment check also
 close off path traversal.
 
 A download stays for :data:`DOWNLOAD_RETENTION_S` after it was last written.
-Each write sweeps every user's directory of the downloads older than that, so
+Each write starts a sweep, in a thread beside the event loop, of every user's
+directory for the downloads older than that, so
 the space a download takes is given back by the next one, with no timer to
 run; the startup reset still empties ``temp/`` as a whole.
 """
@@ -16,6 +17,7 @@ run; the startup reset still empties ``temp/`` as a whole.
 import os
 import re
 import shutil
+import threading
 import time
 
 from mascope_backend.runtime import runtime
@@ -33,6 +35,11 @@ DOWNLOAD_RETENTION_S = 24 * 60 * 60
 _SWEEP_INTERVAL_S = 60
 
 _last_sweep: float | None = None
+
+#: The thread of the latest sweep. Exports run on the API worker's event loop,
+#: and removing a day of raw-file bundles and deposit packages takes seconds,
+#: so the sweep runs beside the loop rather than on it.
+_sweeper: threading.Thread | None = None
 
 
 def user_temp_dir(user_id: int, *, create: bool = True) -> str:
@@ -53,13 +60,22 @@ def user_temp_dir(user_id: int, *, create: bool = True) -> str:
 
 
 def _sweep_now_and_then() -> None:
-    """Sweep expired downloads, at most once per :data:`_SWEEP_INTERVAL_S`."""
-    global _last_sweep
+    """Start a sweep of expired downloads in a thread of its own.
+
+    At most once per :data:`_SWEEP_INTERVAL_S`, and never while the previous
+    sweep is still running. The caller does not wait for it.
+    """
+    global _last_sweep, _sweeper
     now = time.monotonic()
     if _last_sweep is not None and now - _last_sweep < _SWEEP_INTERVAL_S:
         return
+    if _sweeper is not None and _sweeper.is_alive():
+        return
     _last_sweep = now
-    sweep_expired_downloads()
+    _sweeper = threading.Thread(
+        target=sweep_expired_downloads, name="temp-download-sweep", daemon=True
+    )
+    _sweeper.start()
 
 
 def sweep_expired_downloads(max_age_s: float = DOWNLOAD_RETENTION_S) -> int:

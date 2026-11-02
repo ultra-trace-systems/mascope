@@ -6,6 +6,7 @@ via a crafted filename.
 """
 
 import os
+import threading
 import time
 
 import pytest
@@ -120,6 +121,14 @@ DAY = 24 * 60 * 60
 def fresh_sweeper(monkeypatch):
     """Forget the last sweep, so the next write sweeps whatever ran before."""
     monkeypatch.setattr(storage, "_last_sweep", None)
+    monkeypatch.setattr(storage, "_sweeper", None)
+
+
+def _join_sweep():
+    """Wait for the sweep a write started, if it started one."""
+    if storage._sweeper is not None:
+        storage._sweeper.join(timeout=10)
+        assert not storage._sweeper.is_alive()
 
 
 def _write(path, age_s=0.0):
@@ -204,6 +213,7 @@ def test_writing_a_download_sweeps_expired_ones(temp_base, fresh_sweeper):
     old = _write(str(temp_base / "temp" / "2" / "old.zip"), DAY + 60)
 
     storage.user_temp_path(1, "new.csv")
+    _join_sweep()
 
     assert not os.path.exists(old)
 
@@ -213,6 +223,7 @@ def test_reading_a_download_does_not_sweep(temp_base, fresh_sweeper):
     old = _write(str(temp_base / "temp" / "1" / "old.zip"), DAY + 60)
 
     storage.user_temp_path(1, "old.zip", create=False)
+    _join_sweep()
 
     assert os.path.exists(old)
 
@@ -220,11 +231,58 @@ def test_reading_a_download_does_not_sweep(temp_base, fresh_sweeper):
 def test_writes_sweep_at_most_once_a_minute(temp_base, fresh_sweeper):
     """An export writing many files scans the directories once."""
     storage.user_temp_path(1, "first.csv")
+    _join_sweep()
     old = _write(str(temp_base / "temp" / "2" / "old.zip"), DAY + 60)
 
     storage.user_temp_path(1, "second.csv")
+    _join_sweep()
 
     assert os.path.exists(old)
+
+
+def test_a_write_does_not_wait_for_the_sweep(temp_base, fresh_sweeper, monkeypatch):
+    """The sweep runs beside the event loop: the export that starts it goes on."""
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_sweep(*args, **kwargs):
+        started.set()
+        release.wait(timeout=10)
+        return 0
+
+    monkeypatch.setattr(storage, "sweep_expired_downloads", slow_sweep)
+    try:
+        path = storage.user_temp_path(1, "new.csv")
+        assert started.wait(timeout=10)
+        assert storage._sweeper.is_alive()
+        assert storage._sweeper is not threading.current_thread()
+        assert path == os.path.join(storage.user_temp_dir(1, create=False), "new.csv")
+    finally:
+        release.set()
+        _join_sweep()
+
+
+def test_a_running_sweep_is_not_started_twice(temp_base, fresh_sweeper, monkeypatch):
+    """A sweep that outlasts the interval is not joined by a second one."""
+    release = threading.Event()
+    calls = []
+
+    def slow_sweep(*args, **kwargs):
+        calls.append(1)
+        release.wait(timeout=10)
+        return 0
+
+    monkeypatch.setattr(storage, "sweep_expired_downloads", slow_sweep)
+    try:
+        storage.user_temp_path(1, "first.csv")
+        first = storage._sweeper
+        monkeypatch.setattr(storage, "_last_sweep", None)  # the interval passed
+        storage.user_temp_path(1, "second.csv")
+        assert storage._sweeper is first
+    finally:
+        release.set()
+        _join_sweep()
+    assert len(calls) == 1
 
 
 def test_sweep_does_not_follow_a_linked_user_directory(temp_base):
