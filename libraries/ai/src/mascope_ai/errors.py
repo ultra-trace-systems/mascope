@@ -63,6 +63,17 @@ def _listed(items: Sequence[Any]) -> list[Any]:
     ]
 
 
+#: Kinds whose plural is not the kind with an ``s``.
+_PLURALS = {"batch": "batches"}
+
+
+def _plural(kind: str | None) -> str:
+    """The plural of a kind for a message, ``objects`` for no kind."""
+    if not kind:
+        return "objects"
+    return _PLURALS.get(kind, kind + "s")
+
+
 class AmbiguousName(ToolkitError):
     """A name that matches more than one object.
 
@@ -84,7 +95,7 @@ class AmbiguousName(ToolkitError):
         more = len(self.candidates) - LISTED
         super().__init__(
             f"{query!r} matches {len(self.candidates)} "
-            f"{kind + 's' if kind else 'objects'}: {shown}"
+            f"{_plural(kind)}: {shown}"
             f"{f' and {more} more' if more > 0 else ''}. "
             "Pass one of them (its Ref or its ID), or a more specific name."
         )
