@@ -53,12 +53,13 @@ class Fleet(BaseHTTPRequestHandler):
     ``GET /<alias>/api/version/public`` answers what ``answers[alias]`` holds:
     a version string (wrapped as the route wraps it), an int (that HTTP
     status), or bytes (sent as they are). Every ``POST`` is a ping, recorded
-    as ``(path, body)``.
+    as ``(path, body)``, and answered with no HTTP at all while ``garbled``.
     """
 
     answers: dict = {}
     pings: list = []
     agents: list = []
+    garbled = False
 
     def do_GET(self):  # noqa: N802 - the stdlib's name
         self.agents.append(self.headers.get("User-Agent"))
@@ -80,6 +81,9 @@ class Fleet(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         self.pings.append((self.path, body.decode()))
+        if self.garbled:
+            self.wfile.write(b"not http\r\n\r\n")
+            return
         self.send_response(200)
         self.end_headers()
 
@@ -89,7 +93,11 @@ class Fleet(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def fleet():
-    handler = type("FleetHandler", (Fleet,), {"answers": {}, "pings": [], "agents": []})
+    handler = type(
+        "FleetHandler",
+        (Fleet,),
+        {"answers": {}, "pings": [], "agents": [], "garbled": False},
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -173,14 +181,14 @@ def _config(tmp_path, fleet, upstream, deployments, urls=None, **check) -> Path:
     return path
 
 
-def _run(tmp_path, fleet, upstream, answers, urls=None, **check):
+def _run(tmp_path, fleet, upstream, answers, urls=None, python=None, **check):
     """One run of the check, with ``answers`` as the deployments' versions."""
     fleet.answers.clear()
     fleet.answers.update(answers)
     fleet.pings.clear()
     config = _config(tmp_path, fleet, upstream, answers, urls, **check)
     return subprocess.run(
-        [sys.executable, "-I", str(SCRIPT), "--config", str(config)],
+        [python or sys.executable, "-I", str(SCRIPT), "--config", str(config)],
         capture_output=True,
         text=True,
         timeout=120,
@@ -361,14 +369,31 @@ def test_a_fragment_the_release_compiled_away_still_marks_its_fix(
 
 def test_a_fix_merged_into_master_alone_counts(tmp_path, fleet, upstream):
     upstream.release("v1.0.0")
+    # A hotfix lands as the release flow lands it: a PR into master may leave
+    # no fragment, so it is compiled away on the branch, and the PR merges
+    # with a merge commit. That merge matches master's previous commit on
+    # every fragment path, which is what hides the fix from a plain log.
+    upstream.git("switch", "-q", "-c", "hotfix", "master")
+    fix = upstream.fix("mas-1-hotfix")
+    upstream.commit(
+        "docs(release): prep v1.0.1",
+        {"CHANGELOG.md": "## [1.0.1]\n"},
+        remove=["changelog.d/mas-1-hotfix.security.md"],
+    )
     upstream.git("switch", "-q", "master")
-    upstream.fix("mas-1-hotfix")
+    upstream.git("merge", "-q", "--no-ff", "-m", "Merge hotfix v1.0.1", "hotfix")
+    upstream.release("v1.0.1")
     upstream.git("switch", "-q", "develop")
 
-    result = _run(tmp_path, fleet, upstream, {"server-a": "v1.0.0"})
+    result = _run(
+        tmp_path, fleet, upstream, {"server-a": "v1.0.0", "server-b": "v1.0.1"}
+    )
 
     assert result.returncode == 1
-    assert "mas-1-hotfix" in result.stdout
+    assert result.stdout.splitlines() == [
+        f"behind: server-a runs v1.0.0, missing {fix[:9]} mas-1-hotfix"
+        " (merged 2026-10-03, released in v1.0.1)"
+    ]
 
 
 def test_a_dated_build_tag_is_no_release_of_the_fix(tmp_path, fleet, upstream):
@@ -462,6 +487,7 @@ def test_a_release_tag_moved_or_deleted_upstream_is_followed(tmp_path, fleet, up
         (b"<html>maintenance</html>", "answered no version"),
         (b'{"data": {}}', "answered no version"),
         (b'{"data": {"version": 7}}', "answered no version"),
+        (b"[" * 4000, "answered no version"),
     ],
 )
 def test_a_version_that_names_no_release_of_the_repository_is_a_finding(
@@ -498,6 +524,84 @@ def test_a_deployment_that_does_not_answer_is_a_finding(tmp_path, fleet, upstrea
     assert result.returncode == 1
     assert result.stdout.startswith("unreadable: server-a no answer (")
     assert _final_ping(fleet)[0] == "/ping/fail"
+
+
+def test_a_body_nested_past_the_recursion_limit_ends_no_run(tmp_path, fleet, upstream):
+    # python3.10, the oldest the host may run, decodes JSON recursively and
+    # gives up within MAX_ANSWER with a RecursionError; a newer one may decode
+    # it as a plain error, so only that interpreter shows the difference.
+    python = shutil.which("python3.10") or pytest.skip("no python3.10 on PATH")
+    upstream.fix("mas-1-token-expiry")
+    upstream.release("v1.0.0")
+
+    result = _run(
+        tmp_path,
+        fleet,
+        upstream,
+        {"server-a": b"[" * 4000, "server-b": "v1.0.0"},
+        python=python,
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert result.stdout.splitlines() == ["unreadable: server-a answered no version"]
+    assert _final_ping(fleet)[0] == "/ping/fail"
+
+
+def test_a_deployment_url_urllib_cannot_open_is_a_finding(tmp_path, fleet, upstream):
+    upstream.release("v1.0.0")
+
+    result = _run(
+        tmp_path,
+        fleet,
+        upstream,
+        {"server-a": "v1.0.0", "server-b": "v1.0.0"},
+        urls={"server-a": "http://[server-a"},
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert result.stdout.splitlines() == [
+        "unreadable: server-a has a URL that cannot be opened"
+    ]
+
+
+# -- a heartbeat that misbehaves ends no run ---------------------------------
+
+
+def test_a_heartbeat_that_answers_no_http_ends_no_run(tmp_path, fleet, upstream):
+    upstream.release("v1.0.0")
+    upstream.fix("mas-1-token-expiry")
+    fleet.garbled = True
+
+    result = _run(tmp_path, fleet, upstream, {"server-a": "v1.0.0"})
+
+    assert result.returncode == 1, result.stderr
+    assert "mas-1-token-expiry" in result.stdout
+    # Each ping is tried three times, the /start before the check included.
+    assert [path for path, _ in fleet.pings] == ["/ping/start"] * 3 + ["/ping/fail"] * 3
+
+
+def test_a_heartbeat_url_urllib_cannot_open_ends_no_run(tmp_path, fleet, upstream):
+    upstream.release("v1.0.0")
+    upstream.fix("mas-1-token-expiry")
+    fleet.answers.update({"server-a": "v1.0.0"})
+    config = _config(tmp_path, fleet, upstream, ["server-a"])
+    config.write_text(
+        config.read_text().replace(
+            f"heartbeat = {fleet.url}/ping", "heartbeat = http://[hc"
+        )
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), "--config", str(config)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, **GIT_ENV, "no_proxy": "*"},
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "mas-1-token-expiry" in result.stdout
+    assert "Traceback" not in result.stderr
 
 
 # -- a check that cannot look fails ------------------------------------------

@@ -251,11 +251,18 @@ def marked_fixes(config: Config) -> list[Fix]:
     an addition too: the pathspec leaves its old name out, so git has nothing
     to pair it with as a rename. A rename from one security fragment to
     another is no addition, and the fix keeps the commit that first added it.
+
+    The walk follows every parent of a merge. With a pathspec, git otherwise
+    follows only a parent the merge matches for those paths, and a hotfix
+    reaches master in just that shape: its fragment compiled away on its
+    branch before the merge, so the merge matches master's previous commit,
+    and the commit that added the fragment would never be walked.
     """
     refs = [f"{REF_NAMESPACE}/{b}" for b in config.branches]
     out = git(
         config.repository,
         "log",
+        "--full-history",
         "--diff-filter=A",
         "--format=commit %H %cs",
         "--name-only",
@@ -286,12 +293,15 @@ def marked_fixes(config: Config) -> list[Fix]:
 
 def deployed_version(url: str, timeout: float) -> tuple[str | None, str]:
     """The release a deployment reports, or None and why it names none."""
-    request = urllib.request.Request(
-        url.rstrip("/") + "/api/version/public",
-        # A name of its own, so an edge rule can let the check through.
-        headers={"Accept": "application/json", "User-Agent": "mascope-fix-distance"},
-    )
     try:
+        request = urllib.request.Request(
+            url.rstrip("/") + "/api/version/public",
+            # A name of its own, so an edge rule can let the check through.
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "mascope-fix-distance",
+            },
+        )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read(MAX_ANSWER)
     except urllib.error.HTTPError as exc:
@@ -299,9 +309,15 @@ def deployed_version(url: str, timeout: float) -> tuple[str | None, str]:
     except (OSError, http.client.HTTPException) as exc:
         reason = getattr(exc, "reason", None) or type(exc).__name__
         return None, f"no answer ({reason})"
+    except ValueError:
+        # A URL the configuration's pattern lets through and urllib does not.
+        return None, "has a URL that cannot be opened"
     try:
         version = json.loads(body)["data"]["version"]
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, RecursionError):
+        # RecursionError is a body nested past the interpreter's limit, which
+        # python3.10 reaches within MAX_ANSWER: it must not end the run before
+        # the deployments after this one are checked.
         return None, "answered no version"
     if not isinstance(version, str) or not VERSION_SHAPE.fullmatch(version):
         return None, "answered no version"
@@ -357,7 +373,10 @@ def ping(url: str, suffix: str = "", body: str = "") -> None:
                 urllib.request.Request(url + suffix, data=body.encode()), timeout=10
             ).close()
             return
-        except OSError:
+        except (OSError, http.client.HTTPException, ValueError):
+            # An answer that is no HTTP, which is no OSError, and a URL urllib
+            # cannot parse too: the /start ping comes first, and must not end
+            # the run before it has checked anything.
             if attempt < 2:
                 time.sleep(2**attempt)
 
