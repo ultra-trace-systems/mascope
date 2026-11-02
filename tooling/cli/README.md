@@ -90,7 +90,7 @@ layers are that release's. So the CLI deploys that release and no other.
   that, then run `--auto` again as a new process, which applies it.
 - **What ran last** is kept in `.runtime/deployed-release.json`, written once
   the stack is up healthy on a release (`prod update`, `--auto`, and
-  `prod up --detach` with a `MASCOPE_VERSION` pin to the CLI's release).
+  `prod up --detach`, which deploys the CLI's release).
   `mascope prod doctor` reports drift between the containers and the CLI's
   release until the `prod up` after an upgrade.
 - **On a checkout install** the checked-out tag says which release runs, and

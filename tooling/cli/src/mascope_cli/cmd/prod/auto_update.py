@@ -483,17 +483,29 @@ def latest_release_tag(repo: str) -> Optional[str]:
     return tag or None
 
 
+class ManifestUnavailable(Exception):
+    """A release's manifest exists, or may, but could not be fetched."""
+
+
 def download_manifest(repo: str, tag: str, dest_dir: Path) -> Optional[Path]:
     """
     Download the release's manifest asset into ``dest_dir``. Returns the path,
-    or None if the release has no manifest asset (releases predating the
-    manifest) or it could not be fetched.
+    or None if no release ``tag`` exists or it has no manifest asset (releases
+    predating the manifest).
+
+    :raises ManifestUnavailable: The release or its manifest could not be
+        fetched (no network, a rate limit, a server error), so whether it
+        has one is not known.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     try:
         release = _http_get_json(f"{_GITHUB_API}/repos/{repo}/releases/tags/{tag}")
-    except (urllib.error.URLError, OSError, ValueError):
-        return None
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise ManifestUnavailable(f"reading release {tag} of '{repo}': {e}") from e
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise ManifestUnavailable(f"reading release {tag} of '{repo}': {e}") from e
 
     asset_url = next(
         (
@@ -509,9 +521,11 @@ def download_manifest(repo: str, tag: str, dest_dir: Path) -> Optional[Path]:
     path = dest_dir / MANIFEST_FILENAME
     try:
         _http_download(asset_url, path)
-    except (urllib.error.URLError, OSError):
-        return None
-    return path if path.exists() else None
+    except (urllib.error.URLError, OSError) as e:
+        raise ManifestUnavailable(f"downloading {tag}'s manifest: {e}") from e
+    if not path.exists():
+        raise ManifestUnavailable(f"downloading {tag}'s manifest: nothing written")
+    return path
 
 
 # --- Health check ---
