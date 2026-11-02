@@ -214,6 +214,38 @@ def test_a_peak_of_a_few_ions_over_an_empty_baseline_is_not_strong():
     assert real >= calibration_config.TOF_SNR_THRESHOLD * 10
 
 
+@pytest.mark.parametrize(
+    "seed, ions_per_unit",
+    [
+        pytest.param(7, 16, id="seed7-16"),
+        pytest.param(7, 20, id="seed7-20"),
+        pytest.param(11, 20, id="seed11-20"),
+        pytest.param(1, 16, id="seed1-16"),
+        pytest.param(2, 20, id="seed2-20"),
+    ],
+)
+def test_a_peak_of_a_few_ions_over_a_half_filled_baseline_is_not_strong(
+    seed, ions_per_unit
+):
+    """A baseline about half filled with stray ions has a MAD above zero
+    but far below one ion's height, and no peak stands less than one ion
+    above its baseline: one ion floors every window's noise, not only an
+    empty one's. Divided by the MAD alone, peaks of three and four ions
+    scored 14 to 209, past the TOF calibration's gate of ten."""
+    peak_mzs = np.array([100.0, 101.0, 102.0, 103.0])
+    peak_ions = np.array([3, 3, 4, 300])
+    mz_axis, signal = _counted_spectrum(seed, peak_mzs, peak_ions, ions_per_unit)
+    assert 0 < median_abs_deviation(signal, scale="normal") < 0.5
+
+    snr = _snr(mz_axis, signal, peak_mzs, peak_ions.astype(float))
+
+    noise_peaks, real = snr[:3], snr[3]
+    assert np.all(noise_peaks < 6)
+    assert np.all(noise_peaks > 1)
+    assert real >= calibration_config.TOF_SNR_THRESHOLD * 10
+    assert real <= 400
+
+
 def test_one_ions_height_is_measured_over_the_whole_spectrum():
     """A peak whose own window holds no stray ion still reads its ions: the
     height of one is measured wherever the baseline is empty, not only

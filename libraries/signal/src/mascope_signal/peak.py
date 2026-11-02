@@ -927,14 +927,18 @@ class TofPeakDetector(BasePeakDetector):
         near zero and the column stopped tracking height.
 
         The spread is the MAD scaled to a standard deviation, so a small peak
-        too weak to be fitted does not count as noise. Where the baseline is
-        mostly empty and the MAD is zero, the spectrum is counting single
-        ions, and the noise is the height one of them leaves
-        (:func:`_event_height`), or the standard deviation where that is
-        larger. The standard deviation alone shrinks with how rarely an ion
-        arrives, so a peak of a few ions over an empty baseline scored ten
-        or more, as a strong peak does, and over a window with no ion in it
-        had no ratio at all.
+        too weak to be fitted does not count as noise; where the baseline is
+        mostly empty and the MAD is zero, it is the standard deviation. A
+        spectrum whose baseline is mostly empty somewhere is counting single
+        ions, and no peak's noise there is less than the height one of them
+        leaves (:func:`_event_height`), measured over those windows: nothing
+        stands less than one ion above its baseline. The standard deviation
+        of an empty baseline shrinks with how rarely an ion arrives, and the
+        MAD of one about half filled with stray ions is a small fraction of
+        an ion, so without the floor a peak of a few ions scored ten or more,
+        as a strong peak does, and over a window with no ion in it had no
+        ratio at all. A spectrum with no mostly empty baseline has no ion to
+        measure and keeps the MAD.
         A peak with no baseline left has no ratio (NaN), nor has one over a
         flat baseline in a spectrum with no single ion to measure.
 
@@ -966,29 +970,27 @@ class TofPeakDetector(BasePeakDetector):
         window_start = np.searchsorted(mz_axis, peak_mzs - half_window)
         window_end = np.searchsorted(mz_axis, peak_mzs + half_window, side="right")
 
-        # Where the baseline is mostly empty the MAD is zero, and the noise is
-        # read after every window is seen: one ion's height is measured over
-        # all of them
-        empty = []
+        # Every noise is read after every window is seen: one ion's height is
+        # measured over the windows whose baseline is mostly empty, and it
+        # floors the noise of all of them
+        spreads = []
         sparse = np.zeros(mz_axis.size, dtype=bool)
         for i in range(len(peak_mzs)):
             window = slice(window_start[i], window_end[i])
             baseline = signal[window][~in_core[window]]
             if baseline.size == 0:
                 continue
-            noise = median_abs_deviation(baseline, scale="normal")
+            spread = median_abs_deviation(baseline, scale="normal")
+            if spread == 0:
+                spread = np.std(baseline)
+                sparse[window] = True
+            spreads.append((i, spread))
+
+        event = _event_height(signal, in_core, sparse)
+        for i, spread in spreads:
+            noise = max(spread, event)
             if noise > 0:
                 snr[i] = peak_heights[i] / noise
-            else:
-                empty.append((i, np.std(baseline)))
-                sparse[window] = True
-
-        if empty:
-            event = _event_height(signal, in_core, sparse)
-            for i, spread in empty:
-                noise = max(spread, event)
-                if noise > 0:
-                    snr[i] = peak_heights[i] / noise
 
         return snr
 
