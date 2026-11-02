@@ -692,12 +692,15 @@ def export_goldens(
                            refresh. When it records MS2 goldens, this run must
                            export spectra for every file they covered that is
                            still in ``raw_entries`` (:func:`check_ms2_kept`).
+                           When it records ion goldens, this run must export
+                           golden ions too.
     :return: The manifest ``expected`` block, or ``None`` if no peaks have been
              matched yet (logged as a warning so ``--update`` still records the
              snapshot rather than aborting).
     :raises RuntimeError: If the demo database does not cover ``raw_entries``,
-                          or if this run would drop MS2 goldens of a file
-                          still in the raw set.
+                          if this run would drop MS2 goldens of a file still
+                          in the raw set, or if it would drop the prior ion
+                          goldens.
     """
     import pandas as pd
 
@@ -764,6 +767,20 @@ def export_goldens(
             f"in the raw set: {_sample(ms2_dropped)}"
         )
 
+    # The per-ion goldens have the same shape: their block is written only when
+    # the export returns rows, so an empty ion export would drop the prior ones.
+    ion_rows = get_golden_ions()
+    if prior_expected and prior_expected.get("ions") and not ion_rows:
+        raise RuntimeError(
+            "Refusing to write expected/ goldens: this run would drop the ion "
+            "goldens the bundle had.\n"
+            f"  - the prior manifest records {prior_expected['ions']} and this "
+            f"run exported no golden ions beside its {len(rows)} golden peak(s)"
+            "\nCheck that the rebuild wrote per-ion match scores (an ion is "
+            "exported when its match score is above zero), then re-run "
+            "--update."
+        )
+
     dest_dir = out_dir / "expected"
     dest_dir.mkdir(parents=True, exist_ok=True)
     peaks_path = dest_dir / "peaks.parquet"
@@ -799,7 +816,6 @@ def export_goldens(
 
     # Per-ION scores: this is the level the consolidated v2 match score operates at
     # (the per-isotopologue peaks.parquet above is unchanged by it).
-    ion_rows = get_golden_ions()
     if ion_rows:
         ions_path = dest_dir / "ions.parquet"
         pd.DataFrame(ion_rows).to_parquet(ions_path, index=False)
@@ -854,7 +870,8 @@ def build(
     :raises RuntimeError: If ``update`` is set and the demo database does not
         cover the bundle's raw set (see :func:`check_raw_coverage`), or if it
         would drop MS2 goldens the prior manifest had for a file still in the
-        raw set (see :func:`check_ms2_kept`); neither the goldens nor the
+        raw set (see :func:`check_ms2_kept`), or the prior manifest's ion
+        goldens (see :func:`export_goldens`); neither the goldens nor the
         snapshot are written in that case.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
