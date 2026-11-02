@@ -339,6 +339,40 @@ class BatchesResource(BaseResource):
             data=body,
         )
 
+    def move(self, batch_id: str, dataset_id: str) -> dict[str, Any]:
+        """Move a batch, with everything in it, into another dataset.
+
+        The batch keeps its ID, its samples, their matches and its target
+        collections; only its dataset changes. The dataset may be in another
+        workspace, as long as the batch's collections are global or of that
+        workspace. ACQUISITION batches and datasets take no move, and a
+        locked dataset takes no batch, whatever the caller's role.
+
+        :param batch_id: The batch.
+        :type batch_id: str
+        :param dataset_id: The dataset to move it into.
+        :type dataset_id: str
+        :return: The moved batch.
+        :rtype: dict[str, Any]
+        :raises PermissionDeniedError: Without the editor role on the batch
+            and on the destination dataset, the global admin role for a
+            locked batch or one leaving a locked dataset, or if the
+            destination is locked.
+        """
+        return self._write(
+            "POST",
+            f"sample/batches/{batch_id}/move",
+            Needs(
+                "move",
+                "batch",
+                batch_id,
+                f"editor on the batch and on dataset '{dataset_id}'"
+                " (a locked batch or source dataset: the global admin role;"
+                " a locked destination: none)",
+            ),
+            data={"dataset_id": dataset_id},
+        )
+
     def delete(self, batch_id: str) -> dict[str, Any]:
         """Delete a batch and its samples. This cannot be undone.
 

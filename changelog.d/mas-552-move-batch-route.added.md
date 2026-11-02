@@ -6,4 +6,5 @@
   batch leaving a locked dataset; a locked destination takes none.
   ACQUISITION batches and datasets are refused, as is a collection of the
   batch scoped to a workspace other than the destination's. The route
-  answers an SDK token.
+  answers an SDK token, and `mascope.batches.move(batch_id, dataset_id)`
+  calls it.

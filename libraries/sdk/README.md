@@ -921,9 +921,12 @@ mascope.matching.save_batch(batch_id)
 - A method returns the route's data: the dataset, batch, sample or collection
   as it now is. One whose route answers with a message alone returns that
   answer as a dict.
-- A **copy**, a **move** and a **batch delete** run in the background on the
-  server: the call returns once the work has started, with its `process_id`,
-  and the result shows in the listings when it is done.
+- A **copy**, a **sample move** and a **batch delete** run in the background
+  on the server: the call returns once the work has started, with its
+  `process_id`, and the result shows in the listings when it is done.
+- `batches.move` and `datasets.move` are one write each and return the moved
+  object. A moved batch keeps its ID, its samples and its target
+  collections; a sample move makes each sample anew under a new ID.
 - Some updates replace rather than add. `batches.update` takes the batch's
   target collections and sets them to that list, so to only rename a batch
   send the collections it has now; `collections.associate` sets the batches a

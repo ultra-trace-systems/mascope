@@ -224,6 +224,13 @@ REQUESTS = [
         None,
     ),
     (
+        lambda r: r["batches"].move("b-1", "ds-2"),
+        "POST",
+        "sample/batches/b-1/move",
+        {"dataset_id": "ds-2"},
+        None,
+    ),
+    (
         lambda r: r["batches"].delete("b-1"),
         "DELETE",
         "sample/batches/b-1",
@@ -587,6 +594,13 @@ REFUSALS = [
         "batch",
         "b-1",
         "dataset 'ds-2' (a locked dataset: none)",
+    ),
+    (
+        lambda r: r["batches"].move("b-1", "ds-2"),
+        "move",
+        "batch",
+        "b-1",
+        "dataset 'ds-2' (a locked batch or source dataset",
     ),
     (
         lambda r: r["batches"].delete("b-1"),
