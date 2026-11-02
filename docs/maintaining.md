@@ -2309,6 +2309,11 @@ docker compose exec backend python -m mascope_backend.db.scripts.reference_sync 
   spectrum.
 - The load reports how many records it left out and why: MS1 or MS3 records,
   predicted (in-silico) spectra, records without a precursor.
+- A loaded library is not a reference list. It does not show on
+  **Reference lists** or in `GET /api/reference/sources`, and its name answers
+  404 on `GET /api/reference/sources/{name}/compounds`. To check that a load
+  landed, run `mascope reference status` (monorepo checkouts only), which lists
+  spectral loads with their spectrum counts.
 
 Every spectrum keeps the licence its record states. Any of the three libraries
 can hold spectra a commercial deployment may not use:

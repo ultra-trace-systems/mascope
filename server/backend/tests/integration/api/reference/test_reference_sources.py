@@ -78,7 +78,7 @@ async def sources(async_session_factory):
                 # The spectral library counts its spectra.
                 record_count=5 if name == _SPECTRA else len(formulas),
                 is_active=active,
-                # The shipped list's rows predate the column.
+                # The shipped list's row takes the column's default kind.
                 kind={_SPECTRA: SPECTRUM_KIND, _CUSTOM: COMPOUND_KIND}.get(name),
                 ingested_at=_NOW,
                 known_window={"c_max": 20},
