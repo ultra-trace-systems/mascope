@@ -1889,20 +1889,25 @@ class Toolkit:
 
     @_recorded("plan_organize")
     def plan_organize(self, moves: Sequence[Move]) -> Plan:
-        """Plan moves of datasets into workspaces and samples into batches.
+        """Plan moves of datasets into workspaces, batches into datasets and
+        samples into batches.
 
         Writes nothing: the plan says what would change, and :meth:`apply`
-        makes it once a person approved it. Mascope has no route that moves
-        a batch into another dataset, so a batch's move is refused here.
+        makes it once a person approved it. A moved batch keeps its ID, its
+        samples and its collections; a moved sample is made anew under a
+        new ID. A batch moves into a dataset of the client's workspace.
 
         :param moves: ``Move(item, to)`` each: a dataset and the workspace it
-            goes into, or a sample and its new batch; Refs, or names or IDs
-            with ``kind``. ``(item, to)`` tuples are taken too.
+            goes into, a batch and its new dataset, or a sample and its new
+            batch; Refs, or names or IDs with ``kind``. ``(item, to)`` tuples
+            are taken too.
         :return: The plan, kept in the session.
         :raises AccessDenied: When the user's role in a workspace the moves
             touch is not enough: the apply would be refused.
-        :raises InvalidRequest: On a batch, a locked sample or batch, or an
-            object already where it would go.
+        :raises InvalidRequest: On a locked sample, a locked destination
+            batch or dataset, an acquisition batch or destination dataset, a
+            destination outside the client's workspace, or an object already
+            where it would go.
         """
         return writes.plan_organize(self, moves)
 

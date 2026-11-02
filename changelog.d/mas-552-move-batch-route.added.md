@@ -8,3 +8,5 @@
   batch scoped to a workspace other than the destination's. The route
   answers an SDK token, and `mascope.batches.move(batch_id, dataset_id)`
   calls it.
+  The AI toolkit's `plan_organize` plans a batch's move too,
+  `Move(batch, dataset)`, into a dataset of the client's workspace.

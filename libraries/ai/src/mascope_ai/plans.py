@@ -110,10 +110,10 @@ class Change:
 class Move:
     """One move for :meth:`~mascope_ai.toolkit.Toolkit.plan_organize`.
 
-    :ivar item: What moves: a dataset or a sample, as its Ref, or its name
-        or ID with *kind*.
-    :ivar to: Where: a workspace for a dataset, a batch for a sample; a Ref,
-        a name or an ID.
+    :ivar item: What moves: a dataset, a batch or a sample, as its Ref, or
+        its name or ID with *kind*.
+    :ivar to: Where: a workspace for a dataset, a dataset for a batch, a
+        batch for a sample; a Ref, a name or an ID.
     :ivar kind: The kind *item* names when it is a string.
     """
 

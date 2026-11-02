@@ -169,8 +169,9 @@ token = approver.approve(plan)  # once they approved it
 receipt = kit.apply(plan.id, token)
 ```
 
-- **The builders.** `plan_organize` moves datasets into workspaces and
-  samples into batches (Mascope has no route that moves a batch).
+- **The builders.** `plan_organize` moves datasets into workspaces, batches
+  into datasets of the client's workspace, and samples into batches. A
+  moved batch keeps its ID; a moved sample is made anew under a new one.
   `plan_collection` creates a target collection, from formulas or a `base`
   collection's compounds. `plan_associate` sets the batches a collection is
   associated with, as the cheap batches-only update. `plan_match` runs

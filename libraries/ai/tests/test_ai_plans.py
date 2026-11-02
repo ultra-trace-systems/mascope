@@ -37,7 +37,8 @@ from mascope_ai.plans import PlanStore, token_fingerprint
 
 #: The routes that change the fake's world.
 CHANGING = re.compile(
-    r"workspaces/\w+/datasets/\w+/move|sample/items/move|target/collections(/\w+)?"
+    r"workspaces/\w+/datasets/\w+/move|sample/(batches/\w+|items)/move"
+    r"|target/collections(/\w+)?"
     r"|match/aggregate/(sample|batch)/\w+/(save|resave)"
 )
 
@@ -58,6 +59,13 @@ def approve(kit: Toolkit, plan: Plan) -> str:
 def ws2_editor(api):
     """The user is an editor in Workspace B too."""
     api.roles["ws2"] = "editor"
+
+
+@pytest.fixture
+def analysis(api):
+    """Every dataset and batch of the fake is a user's, not the ingest's."""
+    api.types.update({d: "ANALYSIS" for d in api.datasets})
+    api.types.update({b: "ANALYSIS" for b in api.batches})
 
 
 @pytest.fixture
@@ -212,7 +220,8 @@ def test_a_dataset_of_another_workspace_is_refused_at_planning(
 def test_what_the_server_refuses_whatever_the_role_fails_at_planning(
     kit, api, ws2_editor
 ):
-    with pytest.raises(InvalidRequest, match="no route that moves a batch"):
+    # The recorded rows are ACQUISITION: the ingest's batches move nowhere
+    with pytest.raises(InvalidRequest, match="acquisition batch"):
         kit.plan_organize([Move("Calibration", "Campaign (2026)", kind="batch")])
     with pytest.raises(InvalidRequest, match="already"):
         kit.plan_organize([Move("s21", "Spring 2026", kind="sample")])
@@ -246,6 +255,148 @@ def test_a_locked_dataset_is_planned_with_the_global_role_it_needs(
         plan.required_role
     )
     assert any("locked" in warning for warning in plan.warnings)
+
+
+def test_a_batch_move_is_one_write_and_the_batch_keeps_its_id(kit, api, analysis):
+    plan = kit.plan_organize([Move("Calibration", "Campaign (2026)", kind="batch")])
+
+    assert changed(api) == []
+    assert plan.summary == "Move 1 batch(es)"
+    assert plan.reversible and plan.gate == "confirm"
+    (change,) = plan.changes
+    assert (change.ref.id, change.field, change.before, change.after) == (
+        "b4",
+        "dataset",
+        "d2",
+        "d1",
+    )
+    assert "from dataset 'Calibration runs' into dataset 'Campaign (2026)'" in (
+        change.note
+    )
+    assert {ref.id for ref in plan.affected} == {"b4", "d1"}
+    assert "editor in workspace 'Workspace A'" in plan.required_role
+    assert not plan.warnings
+
+    receipt = kit.apply(plan.id, approve(kit, plan))
+
+    assert changed(api) == [
+        ("POST", "sample/batches/b4/move", {}, {"dataset_id": "d1"})
+    ]
+    assert api.batches["b4"] == ("d1", "Calibration")
+    assert api.samples["s41"] == ("b4", "Cal_1")  # the samples go with it
+    assert receipt.complete and receipt.applied == (0,)
+    assert [(r.id, r.parent) for r in receipt.results] == [("b4", "d1")]
+
+
+def test_a_batch_and_a_sample_move_in_one_plan(kit, api, analysis):
+    plan = kit.plan_organize(
+        [
+            Move("b4", "d1", kind="batch"),
+            Move("s21", "Blank (A)", kind="sample"),
+        ]
+    )
+
+    assert plan.summary == "Move 1 batch(es) and 1 sample(s)"
+    kit.apply(plan.id, approve(kit, plan))
+    assert [call[1] for call in changed(api)] == [
+        "sample/batches/b4/move",
+        "sample/items/move",
+    ]
+
+
+def test_a_batch_move_needs_editor_in_its_workspace(kit, api, analysis):
+    api.roles["ws1"] = "guest"
+
+    with pytest.raises(AccessDenied) as refused:
+        kit.plan_organize([Move("b4", "d1", kind="batch")])
+    assert "editor in workspace 'Workspace A'" in refused.value.required_role
+
+
+def test_a_batch_move_the_server_refuses_whatever_the_role_fails_at_planning(
+    kit, api, analysis, elsewhere
+):
+    with pytest.raises(InvalidRequest, match="already"):
+        kit.plan_organize([Move("b4", "d2", kind="batch")])
+    with pytest.raises(InvalidRequest, match="moved twice"):
+        kit.plan_organize(
+            [Move("b4", "d1", kind="batch"), Move("b4", "d1", kind="batch")]
+        )
+    # Outside the client's workspace: the batch, or the dataset it would go to
+    with pytest.raises(InvalidRequest, match="not in workspace 'Workspace A'"):
+        kit.plan_organize([Move(elsewhere, "d1")])
+    other = Ref(id="d9", kind="dataset", name="Other campaign", parent="ws2")
+    with pytest.raises(InvalidRequest, match="not in workspace 'Workspace A'"):
+        kit.plan_organize([Move("b4", other, kind="batch")])
+    api.types["d1"] = "ACQUISITION"
+    with pytest.raises(InvalidRequest, match="acquisition dataset"):
+        kit.plan_organize([Move("b4", "d1", kind="batch")])
+    api.types["d1"] = "ANALYSIS"
+    api.locked.add("d1")
+    with pytest.raises(InvalidRequest, match="locked dataset, whatever the role"):
+        kit.plan_organize([Move("b4", "d1", kind="batch")])
+    assert changed(api) == []
+    assert kit.session.plans.plans() == []
+
+
+@pytest.mark.parametrize(
+    ("dataset", "named"),
+    [("d1", "Campaign (2026)"), ("d2", "Calibration runs")],
+    ids=["destination", "source"],
+)
+def test_a_batch_move_after_its_datasets_move_is_refused(
+    kit, api, analysis, ws2_editor, dataset, named
+):
+    # The batch would follow its dataset into Workspace B
+    with pytest.raises(InvalidRequest, match="before the dataset move") as refused:
+        kit.plan_organize(
+            [Move(dataset, "ws2", kind="dataset"), Move("b4", "d1", kind="batch")]
+        )
+    assert f"dataset {named!r}" in str(refused.value)
+    assert changed(api) == []
+
+    # The other order moves the batch while both datasets are still at home
+    plan = kit.plan_organize(
+        [Move("b4", "d1", kind="batch"), Move(dataset, "ws2", kind="dataset")]
+    )
+    kit.apply(plan.id, approve(kit, plan))
+    assert [call[1] for call in changed(api)] == [
+        "sample/batches/b4/move",
+        f"workspaces/ws1/datasets/{dataset}/move",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("locked", "named"),
+    [("b4", "batch 'Calibration'"), ("d2", "dataset 'Calibration runs'")],
+    ids=["batch", "source dataset"],
+)
+def test_a_locked_batch_or_source_is_planned_with_the_global_role_it_needs(
+    kit, api, analysis, locked, named
+):
+    api.locked.add(locked)
+
+    plan = kit.plan_organize([Move("b4", "d1", kind="batch")])
+
+    assert f"the global admin role for locked {named}" in plan.required_role
+    assert any(named in warning for warning in plan.warnings)
+
+
+def test_a_batch_moved_meanwhile_is_drift(kit, api, analysis):
+    plan = kit.plan_organize([Move("b4", "d1", kind="batch")])
+    api.batches["b4"] = ("d1", "Calibration")  # moved meanwhile
+
+    with pytest.raises(PlanDrifted) as drifted:
+        kit.apply(plan.id, approve(kit, plan))
+
+    assert drifted.value.diff == [
+        {
+            "ref": plan.changes[0].ref.to_dict(),
+            "field": "dataset",
+            "planned_before": "d2",
+            "now": "d1",
+        }
+    ]
+    assert changed(api) == []
 
 
 # --- the approval -------------------------------------------------------------------
