@@ -184,6 +184,15 @@ Feature) carries the kind. Milestones are not used.
   added the entry with `git commit --fixup` and an autosquash rebase, so
   every commit still passes. "A branch with an entry in `CHANGELOG.md`" in
   `changelog.d/README.md` has the exact commands.
+- **A security fix files its entry under `security`, never `fixed`** -
+  `changelog.d/<branch>.security.md`. That fragment is the one mark of a
+  security-relevant fix: the monitoring host's check
+  (`tooling/monitoring/security-fix-distance.py`) reads it from the moment
+  the fix merges and reports each production deployment that does not run
+  it yet. A security fix filed as `fixed` is one that check never sees. A
+  fix is security-relevant when it closes a way to read, change or reach
+  what an account or a visitor should not: an access check, a session or
+  authentication flaw, an exposed secret or file, an injection.
 - **Anonymize commit messages and PR descriptions** - this repository is public,
   so text pushed to GitHub must never contain real instrument names or IDs,
   customer names, internal or customer server hostnames, tailnet/LAN addresses,

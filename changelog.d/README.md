@@ -21,6 +21,10 @@ Name the file `<branch>.<section>.md`:
   uses it, and a branch name is the one that is sure not to.
 - `<section>` is where the entry goes in the release: `added`, `changed`,
   `deprecated`, `removed`, `performance`, `fixed` or `security`.
+  A fix that closes a security weakness goes under `security`, never
+  `fixed`: the monitoring host reads these fragments to report the
+  deployments that do not run a merged security fix yet
+  (`tooling/monitoring/README.md`, section 11).
 
 The file holds the entry exactly as `CHANGELOG.md` is to show it - a bullet
 starting `- `, continuation lines indented two spaces, a bold lead sentence as
