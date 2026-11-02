@@ -221,6 +221,66 @@ describe('DialogReferenceLists', () => {
     expect(items()).toHaveLength(2)
   })
 
+  it("shows a reference's note under it, with its URL linked", async () => {
+    const handle = 'http://hdl.handle.net/2128/30658'
+    store.value = makeStore({
+      list: [
+        source({
+          references: [
+            citation(1, {
+              doi: null,
+              isbn: '978-3-95806-596-3',
+              note: `Open access in the repository, ${handle}.`
+            }),
+            citation(2, { note: 'Corrected in a later erratum.' })
+          ]
+        })
+      ]
+    })
+    const { wrapper } = await mountDialog()
+
+    const items = bodyRows(wrapper)[0].findAll(':scope > td').at(-1).findAll('li.citation')
+    const thesis = items[0].get('.note')
+    expect(thesis.text()).toBe(`Open access in the repository, ${handle}.`)
+    const link = thesis.get('a')
+    expect(link.attributes('href')).toBe(handle)
+    expect(link.text()).toBe(handle)
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toBe('noopener noreferrer')
+    expect(items[0].text()).toContain('ISBN 978-3-95806-596-3')
+
+    const plain = items[1].get('.note')
+    expect(plain.text()).toBe('Corrected in a later erratum.')
+    expect(plain.find('a').exists()).toBe(false)
+    // A note without a URL adds no link: only the DOI's is there.
+    expect(items[1].findAll('a')).toHaveLength(1)
+  })
+
+  it('opens the third of three references behind a "1 more" button', async () => {
+    store.value = makeStore({
+      list: [source({ references: [citation(1), citation(2), citation(3)] })]
+    })
+    const { wrapper } = await mountDialog()
+
+    const cell = () => bodyRows(wrapper)[0].findAll(':scope > td').at(-1)
+    expect(cell().findAll('li.citation')).toHaveLength(2)
+    expect(cell().find('.note').exists()).toBe(false)
+    const more = cell()
+      .findAll('button')
+      .find((b) => b.text() === '1 more')
+    expect(more, 'no "1 more" button').toBeDefined()
+    await more.trigger('click')
+    expect(cell().findAll('li.citation')).toHaveLength(3)
+  })
+
+  it('shows no button for exactly two references', async () => {
+    store.value = makeStore({ list: [source({ references: [citation(1), citation(2)] })] })
+    const { wrapper } = await mountDialog()
+    const cell = bodyRows(wrapper)[0].findAll(':scope > td').at(-1)
+    expect(cell.findAll('li.citation')).toHaveLength(2)
+    expect(cell.find('li.more').exists()).toBe(false)
+  })
+
   it('shows a list with no references field as citing none', async () => {
     const { references, ...older } = source()
     expect(references).toEqual([])

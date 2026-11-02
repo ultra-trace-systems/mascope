@@ -294,8 +294,9 @@ Each row is one loaded list:
 - **Species** and **Loaded**: how many compounds it holds, and when it was
   loaded.
 - **References**: the publications the list comes from, each with its DOI
-  linked to doi.org, or its ISBN. A list citing more than two shows the rest
-  behind a button. They are what the list's load recorded: a list file's own
+  linked to doi.org, or its ISBN. A reference's note shows under it, with
+  any web address in it as a link: a thesis cited by its ISBN notes where it
+  is open access. A list citing more than two shows the rest behind a button. They are what the list's load recorded: a list file's own
   references, or the publication a sync was given
   ([Citing the list's publication](#citing-the-lists-publication)). A list
   loaded with neither cites none.
