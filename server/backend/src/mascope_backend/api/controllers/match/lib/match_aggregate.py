@@ -198,9 +198,8 @@ def _can_score_v2(df: pd.DataFrame) -> bool:
     """True iff the v2 fit score can actually be computed from this frame.
 
     The emptiness half of :func:`effective_match_score_version` is load-bearing here:
-    on an empty-but-columned frame ``groupby(...).apply(...)`` yields a DataFrame
-    rather than a Series, and the ``.rename("match_score_v2")`` that follows is then
-    read as an index mapper and raises.
+    on an empty-but-columned frame keyed by ``sample_item_id``, :func:`_v2_ion_scores`
+    has no sample chunks to score, and its ``pd.concat`` of none raises.
     """
     return effective_match_score_version(df) == 2
 
@@ -214,11 +213,12 @@ def _v2_ion_scores(isotope_df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     whole batch -- ``aggregate_matches`` is invoked with a ``sample_batch_id`` -- so
     it can mix files and even instrument classes. Fitting once over that union would
     subtract one batch-wide mu from a well-centred file's mass errors and stretch or
-    squeeze every Gaussian to the batch-average sigma, making an ion's score depend on which other
-    samples happened to be aggregated with it. Grouping by ``sample_item_id`` fixes
-    both, and separates instruments as a side effect (a sample has exactly one file
-    and one instrument). This mirrors the per-sample engine path in
-    ``api/new/peak_assignments/engine.py``, so batch and single-sample scoring agree.
+    squeeze every Gaussian to the batch-average sigma, making an ion's score depend
+    on which other samples happened to be aggregated with it. Grouping by
+    ``sample_item_id`` fixes both, and separates instruments as a side effect (a
+    sample has exactly one file and one instrument). This mirrors the per-sample
+    engine path in ``api/new/peak_assignments/engine.py``, so batch and
+    single-sample scoring agree.
 
     An ion is one combination of ``keys`` -- the same narrow id columns the v1
     aggregation groups on -- rather than of every label column that happens to ride
