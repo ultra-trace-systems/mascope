@@ -914,3 +914,281 @@ def test_an_unknown_argument_is_refused(tmp_path):
     rc, summary, pings = _run(tmp_path, args=("--on-deploy-now",), report=_report())
     assert (rc, summary, pings) == (2, None, [])
     assert not _suite_ran(tmp_path)
+
+
+# --------------------------------------------------------------------------- #
+# The production trigger: the non-mutating subset against each deployment
+# --------------------------------------------------------------------------- #
+
+PRODUCTION = ("--production",)
+PRODUCTION_HC = "https://heartbeat.invalid/production"
+
+# The production run's suite runs here, from PRODUCTION_SUITE_DIR, once per
+# deployment. Its interpreter appends the environment and arguments each run
+# was given to STUB_PROD_ENV, and writes the report and exits with the code
+# STUB_PROD_DIR holds for the deployment it was pointed at, as the suite would.
+PRODUCTION_PYTHON_STUB = """#!/usr/bin/env bash
+host="${MASCOPE_PENTEST_TARGET#https://}"
+{
+  echo "target=$MASCOPE_PENTEST_TARGET"
+  echo "vantage=$MASCOPE_PENTEST_VANTAGE"
+  echo "verify=$MASCOPE_PENTEST_VERIFY_TLS"
+  echo "header=$MASCOPE_PENTEST_HEADER_NAME:$MASCOPE_PENTEST_HEADER_VALUE"
+  echo "account=$MASCOPE_PENTEST_EMAIL:$MASCOPE_PENTEST_PASSWORD"
+  echo "lowpriv=$MASCOPE_PENTEST_LOWPRIV_EMAIL:$MASCOPE_PENTEST_LOWPRIV_PASSWORD"
+  echo "aggressive=$MASCOPE_PENTEST_AGGRESSIVE"
+  echo "release=${MASCOPE_PENTEST_CURRENT_RELEASE-<unset>}"
+  echo "args=$*"
+  if flock -n "$STUB_LOCK" true; then echo lock=free; else echo lock=held; fi
+} >> "$STUB_PROD_ENV"
+mkdir -p report
+[ -f "$STUB_PROD_DIR/$host.json" ] && cp "$STUB_PROD_DIR/$host.json" report/pentest-report.json
+exit "$(cat "$STUB_PROD_DIR/$host.rc" 2>/dev/null || echo 0)"
+"""
+
+
+def _run_production(
+    tmp_path,
+    deployments,
+    *,
+    targets=None,
+    release=_tag("v1.7.2"),
+    extra_env=None,
+    state=None,
+    old_records=(),
+    leftover=None,
+):
+    """
+    Run the runner with --production; return (exit code, summaries, heartbeats).
+
+    :param deployments: ``{name: (report or None, suite exit)}``; each is served
+        at ``https://<name>.invalid``.
+    :param targets: PRODUCTION_TARGETS as given, when not built from those.
+    :return: The summaries by record name (``prod-<name>``).
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in (("ssh", SSH_STUB), ("curl", CURL_STUB), ("sleep", SLEEP_STUB)):
+        (bin_dir / name).write_text(body)
+        (bin_dir / name).chmod(0o755)
+    records = tmp_path / "records"
+    records.mkdir(exist_ok=True)
+    for name in old_records:
+        (records / name).write_text("old")
+        os.utime(records / name, (0, 0))
+    for name, value in (state or {}).items():
+        (records / f".{name}").write_text(f"{value}\n")
+
+    suite = tmp_path / "suite"
+    (suite / ".venv" / "bin").mkdir(parents=True)
+    (suite / ".venv" / "bin" / "python").write_text(PRODUCTION_PYTHON_STUB)
+    (suite / ".venv" / "bin" / "python").chmod(0o755)
+    if leftover is not None:
+        (suite / "report").mkdir()
+        (suite / "report" / "pentest-report.json").write_text(json.dumps(leftover))
+    served = tmp_path / "served"
+    served.mkdir()
+    for name, (report, rc) in deployments.items():
+        if report is not None:
+            (served / f"{name}.invalid.json").write_text(json.dumps(report))
+        (served / f"{name}.invalid.rc").write_text(str(rc))
+    if targets is None:
+        targets = " ".join(f"{name}=https://{name}.invalid" for name in deployments)
+
+    # As on the monitoring host, the header lives in the config file.
+    config = tmp_path / "config.env"
+    config.write_text(
+        "MASCOPE_PENTEST_HEADER_NAME=X-Assessment\n"
+        f"MASCOPE_PENTEST_HEADER_VALUE={HEADER_VALUE}\n"
+    )
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "PENTEST_RUNNER_ENV": str(config),
+        "RECORDS": str(records),
+        "HC_URL": HC_URL,
+        "PRODUCTION_HC_URL": PRODUCTION_HC,
+        "RELEASE_API": RELEASE_API,
+        "STUB_RELEASE_API": RELEASE_API,
+        # Staging's account, in the environment cron gives the runner: it must
+        # not follow the run to production.
+        "MASCOPE_PENTEST_EMAIL": "admin@example.com",
+        "MASCOPE_PENTEST_PASSWORD": "secret",
+        "MASCOPE_PENTEST_LOWPRIV_EMAIL": "viewer@example.com",
+        "MASCOPE_PENTEST_LOWPRIV_PASSWORD": "secret",
+        "MASCOPE_PENTEST_AGGRESSIVE": "1",
+        "PRODUCTION_TARGETS": targets,
+        "PRODUCTION_SUITE_DIR": str(suite),
+        "STUB_PROD_DIR": str(served),
+        "STUB_PROD_ENV": str(tmp_path / "prod-env"),
+        "STUB_PINGS": str(tmp_path / "pings"),
+        "STUB_SSH_ARGS": str(tmp_path / "ssh-args"),
+        "STUB_SLEEPS": str(tmp_path / "sleeps"),
+        "STUB_LOCK": str(records / ".run.lock"),
+        "MIN_INTERVAL": "600",
+    }
+    if release is not None:
+        env["STUB_RELEASE"] = release
+    env.update(extra_env or {})
+    result = subprocess.run(
+        ["bash", str(SCRIPT), *PRODUCTION],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    (tmp_path / "stdout").write_text(result.stdout + result.stderr)
+    summaries = {
+        path.name[19:].removesuffix(".summary"): path.read_text().strip()
+        for path in records.glob("*-prod-*.summary")
+    }
+    pings_file = tmp_path / "pings"
+    pings = pings_file.read_text().splitlines() if pings_file.exists() else []
+    return result.returncode, summaries, pings
+
+
+def _production_runs(tmp_path):
+    """Each run's recorded environment, as a dict, in the order they ran."""
+    path = tmp_path / "prod-env"
+    if not path.exists():
+        return []
+    runs, current = [], {}
+    for line in path.read_text().splitlines():
+        key, _, value = line.partition("=")
+        current[key] = value
+        if key == "lock":
+            runs.append(current)
+            current = {}
+    return runs
+
+
+def test_production_runs_the_non_mutating_subset_against_each_deployment(tmp_path):
+    rc, summaries, pings = _run_production(
+        tmp_path, {"a": (_report(), 0), "b": (_report(build="v1.7.1"), 0)}
+    )
+    assert rc == 0, (tmp_path / "stdout").read_text()
+    runs = _production_runs(tmp_path)
+    assert [run["target"] for run in runs] == ["https://a.invalid", "https://b.invalid"]
+    for run in runs:
+        assert run["args"] == "-m pytest -q --non-mutating"
+        assert run["vantage"] == "cdn"
+        assert run["verify"] == "true"
+        assert run["header"] == f"X-Assessment:{HEADER_VALUE}"
+        # No account goes along: the subset signs in nowhere.
+        assert run["account"] == ":"
+        assert run["lowpriv"] == ":"
+        assert run["aggressive"] == ""
+        assert run["release"] == "v1.7.2"
+        assert run["lock"] == "held"
+
+    a = f"build=v1.7.2 {COUNTS} lag=current trigger=production"
+    b = f"build=v1.7.1 {COUNTS} lag=behind current=v1.7.2 trigger=production"
+    assert summaries == {"prod-a": a, "prod-b": b}
+    # Behind is recorded, not turned into a failure: this is the build users run.
+    assert pings == [f"{PRODUCTION_HC}/start ", f"{PRODUCTION_HC} a: {a} | b: {b}"]
+
+    names = {path.name[18:] for path in (tmp_path / "records").glob("2*")}
+    assert names == {
+        f"-prod-{name}.{kind}" for name in "ab" for kind in ("log", "tar.gz", "summary")
+    }
+    # Nothing of it reaches the staging host.
+    assert not (tmp_path / "ssh-args").exists()
+
+
+def test_a_failing_deployment_fails_the_run_and_the_rest_are_still_assessed(
+    tmp_path,
+):
+    rc, summaries, pings = _run_production(
+        tmp_path, {"a": (_report(findings=2), 1), "b": (_report(), 0)}
+    )
+    assert rc == 1
+    assert set(summaries) == {"prod-a", "prod-b"}
+    assert pings[-1].startswith(f"{PRODUCTION_HC}/fail suite exit 1 | a: build=")
+
+
+def test_a_production_run_without_its_own_heartbeat_pings_nothing(tmp_path):
+    # Not the periodic run's check: daily pings would keep that weekly
+    # dead-man switch green, and turn its failure back to up.
+    rc, summaries, pings = _run_production(
+        tmp_path, {"a": (_report(), 0)}, extra_env={"PRODUCTION_HC_URL": ""}
+    )
+    assert (rc, set(summaries)) == (0, {"prod-a"})
+    assert pings == []
+
+
+def test_an_aborted_production_run_does_not_archive_the_previous_report(tmp_path):
+    rc, summaries, _ = _run_production(
+        tmp_path, {"a": (None, 4)}, leftover=_report(build="v1.7.1")
+    )
+    assert rc == 4
+    assert summaries == {"prod-a": "report unreadable trigger=production"}
+
+
+def test_a_production_run_leaves_the_staging_state_alone(tmp_path):
+    # Inside the interval after a staging run: a production run spends none of
+    # that target's login windows, so it neither waits nor moves the interval.
+    end = int(time.time()) - 60
+    rc, _, _ = _run_production(
+        tmp_path,
+        {"a": (_report(), 0)},
+        state={"last-run-end": end, "last-run-version": "v1.7.1"},
+    )
+    assert rc == 0
+    assert not (tmp_path / "sleeps").exists()
+    assert _state(tmp_path, "last-run-end") == str(end)
+    assert _state(tmp_path, "last-run-version") == "v1.7.1"
+
+
+def test_a_production_run_waits_for_the_lock_and_fails_loudly_past_it(tmp_path):
+    holder = _hold_the_lock(tmp_path)
+    try:
+        rc, summaries, pings = _run_production(
+            tmp_path, {"a": (_report(), 0)}, extra_env={"LOCK_WAIT": "1"}
+        )
+    finally:
+        holder.close()
+    assert (rc, summaries) == (75, {})
+    assert not _production_runs(tmp_path)
+    assert pings == [f"{PRODUCTION_HC}/fail no run: another held the lock for 1s"]
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        "",
+        "a=http://a.invalid",
+        "A=https://a.invalid",
+        "a=https://a.invalid b",
+        "../a=https://a.invalid",
+        "a=https://a.invalid/';touch${IFS}pwned;'",
+        "a=https://",
+        "a=https://a.invalid a=https://b.invalid",
+    ],
+    ids=[
+        "none",
+        "plain-http",
+        "upper-case",
+        "no-url",
+        "path",
+        "quote",
+        "no-host",
+        "repeated-name",
+    ],
+)
+def test_a_production_target_that_is_not_name_and_https_url_refuses_the_run(
+    tmp_path, targets
+):
+    rc, summaries, pings = _run_production(
+        tmp_path, {"a": (_report(), 0)}, targets=targets
+    )
+    assert (rc, summaries, pings) == (2, {}, [])
+    assert not _production_runs(tmp_path)
+    assert not list(tmp_path.rglob("pwned"))
+
+
+def test_retention_prunes_the_production_records(tmp_path):
+    old = ["2025-01-01T000000Z-prod-a.log", "2025-01-01T000000Z-prod-b.tar.gz"]
+    _run_production(tmp_path, {"a": (_report(), 0)}, old_records=[*old, "keep-me.txt"])
+    names = {path.name for path in (tmp_path / "records").iterdir()}
+    assert not names & set(old)
+    assert "keep-me.txt" in names

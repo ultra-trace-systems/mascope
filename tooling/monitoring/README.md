@@ -304,8 +304,9 @@ filling disk does not stop a rollout (`tooling/fleet/README.md`).
 ## 10. Scheduled security assessment (`run-assessment.sh`)
 
 [`run-assessment.sh`](run-assessment.sh) runs the pen-test suite
-(`security/pentest/`) against a deployment on a schedule and whenever a new
-release reaches it, and keeps the reports here. Uptime Kuma tells you the site
+(`security/pentest/`) against a staging deployment on a schedule and whenever
+a new release reaches it, runs the suite's non-mutating subset against each
+production deployment on a schedule of its own, and keeps the reports here. Uptime Kuma tells you the site
 answers; nothing else tells you TLS is still enforced, the security headers
 are still set, or tenant isolation still holds. Because deployed images are
 pinned, what a periodic run actually detects between releases is
@@ -449,6 +450,65 @@ fails the run at collection, so a new one cannot reach production by default.
 `selftest/test_classification.py` pins the first row against the markers, so
 a control moved into it changes this table in the same pull request.
 
+**Production.** `run-assessment.sh --production` runs the non-mutating subset
+(`pytest --non-mutating`) against every deployment in `PRODUCTION_TARGETS`,
+here, through the CDN, as the CDN vantage runs: the operator header sent, TLS
+verified. No account goes along. Each deployment's report has the format and
+the retention of a staging run's.
+
+1. Check that every deployment runs v1.14.0 or later. The subset signs in
+   nowhere, so it learns the build only from the anonymous
+   `/api/version/public`, which v1.14.0 added. On an older deployment the
+   suite cannot say which build it assessed, so it aborts that deployment's
+   run with exit `4` and no report. Its summary reads `report unreadable
+   trigger=production`, and the heartbeat fails on every run until it is
+   upgraded or taken out of `PRODUCTION_TARGETS`.
+2. Use the CDN vantage's suite copy (`CDN_SUITE_DIR`), or set
+   `PRODUCTION_SUITE_DIR` to another, synced to the tag production runs.
+3. Give each deployment's hostname the same WAF skip rule as the staging one
+   (the CDN vantage, step 2), matching the same header and value.
+4. In `config.env`, list the deployments as `NAME=URL` pairs, the public
+   `https://` addresses. `NAME` (lower-case letters, digits, `-`) names the
+   records, so the records on this box never need the hostname to say which
+   deployment they are:
+
+   ```sh
+   PRODUCTION_TARGETS="site-a=https://a.example.com site-b=https://b.example.com"
+   PRODUCTION_HC_URL=https://hc-ping.com/...   # optional; no heartbeat without
+   ```
+
+   An entry that is not `NAME=https://...`, or a `NAME` given twice, refuses
+   the whole run (exit 2) before anything is sent. Give `PRODUCTION_HC_URL` a
+   check of its own: without it the production run pings nothing. It never
+   falls back to `HC_URL`, whose weekly check its daily pings would keep green
+   after the periodic run stopped.
+5. Cron it beside the others. It takes the same lock, so it never runs inside
+   a staging run, waiting up to `LOCK_WAIT` like the periodic run. It neither
+   waits out `MIN_INTERVAL` nor moves it: it spends none of the staging
+   target's login windows.
+
+   ```cron
+   15 6 * * *  /opt/pentest-runner/run-assessment.sh --production 2>&1 | logger -t pentest-prod
+   ```
+
+Every deployment is assessed even when one fails. The run's exit code is the
+first failing deployment's. A deployment behind the current release is
+recorded (`lag=behind`) and not turned into exit `90`: what production runs is
+the build users have, so the report is evidence about it. Its heartbeat is
+`PRODUCTION_HC_URL`, carrying each deployment's summary as
+`site-a: build=... | site-b: ...`.
+
+**Telling the assessment from an attack.** Every request the suite sends names
+it in its user agent, `mascope-security-assessment/1
+(+https://github.com/ultra-trace-systems/mascope/tree/develop/security/pentest)`.
+It is in each deployment's nginx access log. GlitchTip keeps it too, with the
+request of any event raised while handling one: error reporting runs with
+`send_default_pii=False`, which strips cookies, auth headers and client
+addresses but keeps the user agent. So an event the assessment provoked is
+traceable to it rather than read as an attack. Search for the string in
+GlitchTip and in the logs to tell an assessment's traffic from anything else.
+The same string at an hour no run is scheduled is someone else using it.
+
 **Exit codes.** Normally the suite's, so the heartbeat reflects the assessment
 rather than the plumbing. With both vantages, either one failing fails the
 job, and the origin's code wins when both fail. A disagreement between them
@@ -458,8 +518,9 @@ succeeded and the run still is not evidence:
 | Exit | Meaning |
 | --- | --- |
 | `1` | the report was unusable (empty archive, unreadable JSON) |
-| `75` | a periodic run waited `LOCK_WAIT` for another run and assessed nothing |
-| `90` | the target is **behind the current release** — honest, but about an artifact deployed nowhere |
+| `75` | a periodic or `--production` run waited `LOCK_WAIT` for another run and assessed nothing |
+| `90` | the target is **behind the current release** — honest, but about an artifact deployed nowhere. Never for `--production`, which records the lag only |
+| `2` | `--production` without `PRODUCTION_TARGETS`, with an entry that is not `NAME=https://URL`, or with a `NAME` given twice; nothing was sent |
 
 The lag comparison happens **here, never on the target**: the suite executes on
 the box under test, so a release lookup performed there would be the deployment
@@ -482,8 +543,10 @@ pull request rather than on the box.
 Each vantage leaves three files in `RECORDS`: `<ts>-<vantage>.log`,
 `<ts>-<vantage>.tar.gz` and `<ts>-<vantage>.summary`, where the vantage is
 `origin` or `cdn`. With both, `<ts>-vantage.md` and `<ts>-vantage.json` hold
-the comparison. Everything is pruned at 400 days, deploy runs and periodic
-ones alike. A summary reads
+the comparison. A production run leaves the same three files per deployment,
+`<ts>-prod-<NAME>.{log,tar.gz,summary}`, with `trigger=production` in the
+summary. Everything is pruned at 400 days, deploy runs, periodic and
+production ones alike. A summary reads
 `build=... findings=N accepted=N stale=N verified=N not_assessed=N throttled=N listener=PORT lag=... trigger=schedule`,
 or `trigger=deploy` for a deploy run. `listener` is the port the suite
 measured, `loopback:PORT` on the host's own loopback, followed by
