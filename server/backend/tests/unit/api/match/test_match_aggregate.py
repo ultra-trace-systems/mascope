@@ -15,11 +15,13 @@ under test:
   ``matched`` and zero-fills samples with no matches.
 """
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from mascope_backend.api.controllers.match.lib.match_aggregate import (
     MATCH_ISOTOPE_VALUE_COLUMNS,
+    _v2_ion_scores,
     aggregate_match_collections,
     aggregate_match_compounds,
     aggregate_match_compounds_light,
@@ -31,7 +33,9 @@ from mascope_backend.api.controllers.match.lib.match_aggregate import (
     set_alarm_mode,
     set_ions_match_category,
 )
+from mascope_backend.api.controllers.match.lib.match_score_v2 import ion_score_v2
 from mascope_match.params import BaseMatchParams
+from mascope_tools.composition.mass_accuracy import fit_sample_mass_accuracy
 
 
 def make_match_params(probable: float, possible: float) -> BaseMatchParams:
@@ -137,6 +141,121 @@ class TestAggregateMatchIonsLight:
         assert result.loc["ion_1", "sample_peak_intensity_sum"] == 120.0
         assert result.loc["ion_2", "match_score"] == pytest.approx(0.8)
         assert result.loc["ion_2", "sample_peak_intensity_sum"] == 40.0
+
+
+V2_KEYS = [
+    "sample_item_id",
+    "target_ion_id",
+    "target_compound_id",
+    "target_collection_id",
+]
+
+
+def _batch_isotopes(seed: int) -> pd.DataFrame:
+    """A batch's isotope rows: two samples, each off by its own mass offset,
+    with ions shared between collections (the same lines twice), a missing
+    compound id, absent lines and missing SNR, shuffled."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for sample, offset in (("si-a", 1.5), ("si-b", -0.8)):
+        for ion in range(25):
+            lines = int(rng.integers(1, 7))
+            abundance = np.r_[1.0, rng.uniform(0.01, 0.6, lines - 1)]
+            collections = ["tc-1", "tc-2"] if ion % 5 == 0 else ["tc-1"]
+            found = rng.random(lines) < 0.85
+            errors = offset + rng.normal(0, 0.4, lines)
+            intensity = np.where(found, rng.uniform(1e3, 1e6, lines), 0.0)
+            snr = np.where(rng.random(lines) < 0.8, rng.uniform(3, 500, lines), np.nan)
+            for collection in collections:
+                for line in range(lines):
+                    rows.append(
+                        {
+                            "sample_item_id": sample,
+                            "target_ion_id": f"ion-{ion}",
+                            "target_compound_id": (
+                                None if ion == 3 else f"compound-{ion}"
+                            ),
+                            "target_collection_id": collection,
+                            "relative_abundance": abundance[line],
+                            "match_mz_error": errors[line],
+                            "sample_peak_intensity": intensity[line],
+                            "signal_to_noise": snr[line],
+                        }
+                    )
+    return pd.DataFrame(rows).sample(frac=1, random_state=seed).reset_index(drop=True)
+
+
+def _ion_by_ion(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    """What ``_v2_ion_scores`` returned when it scored one ion at a time."""
+    chunks = (
+        [group for _, group in frame.groupby("sample_item_id", sort=False)]
+        if "sample_item_id" in keys
+        else [frame]
+    )
+    scores = []
+    for chunk in chunks:
+        mu, sigma = fit_sample_mass_accuracy(chunk)
+        scores.append(
+            chunk.groupby(keys, sort=False, dropna=False).apply(
+                lambda g: ion_score_v2(g, sigma_ppm=sigma, mu=mu),
+                include_groups=False,
+            )
+        )
+    return pd.concat(scores).rename("match_score_v2").reset_index()
+
+
+class TestV2IonScores:
+    @pytest.mark.parametrize("seed", range(4))
+    @pytest.mark.parametrize("keys", [V2_KEYS, ["target_ion_id"]])
+    def test_every_ion_at_once_scores_as_each_does_alone(self, seed, keys):
+        frame = _batch_isotopes(seed)
+        if keys == ["target_ion_id"]:
+            frame = frame[frame["sample_item_id"] == "si-a"]
+
+        scored = _v2_ion_scores(frame, keys)
+        expected = _ion_by_ion(frame, keys)
+
+        assert list(scored.columns) == keys + ["match_score_v2"]
+        pd.testing.assert_frame_equal(scored[keys], expected[keys], check_dtype=False)
+        np.testing.assert_allclose(
+            scored["match_score_v2"], expected["match_score_v2"], rtol=0, atol=1e-12
+        )
+
+    def test_an_ion_is_one_combination_of_the_keys(self):
+        # One ion id under two compounds, with lines of its own under each: the
+        # two are scored apart, as two groups of the keys were.
+        frame = _batch_isotopes(2)
+        other = frame[frame["target_ion_id"] == "ion-1"].copy()
+        other["target_compound_id"] = "compound-other"
+        other["match_mz_error"] += 3.0
+        frame = pd.concat([frame, other], ignore_index=True)
+
+        scored = _v2_ion_scores(frame, V2_KEYS)
+        expected = _ion_by_ion(frame, V2_KEYS)
+
+        np.testing.assert_allclose(
+            scored["match_score_v2"], expected["match_score_v2"], rtol=0, atol=1e-12
+        )
+
+    def test_each_sample_is_read_at_its_own_offset(self):
+        # Each sample's ions are read at that sample's own offset, and the
+        # offset matters: read at none, the same ion scores lower.
+        frame = _batch_isotopes(0)
+        scored = _v2_ion_scores(frame, V2_KEYS).set_index(V2_KEYS)["match_score_v2"]
+        one_sample = frame[frame["sample_item_id"] == "si-a"]
+        mu, sigma = fit_sample_mass_accuracy(one_sample)
+        ion = one_sample[
+            (one_sample["target_ion_id"] == "ion-1")
+            & (one_sample["target_collection_id"] == "tc-1")
+        ]
+
+        assert mu == pytest.approx(1.5, abs=0.3)
+        assert scored[("si-a", "ion-1", "compound-1", "tc-1")] == pytest.approx(
+            ion_score_v2(ion, sigma_ppm=sigma, mu=mu), abs=1e-12
+        )
+        assert ion_score_v2(ion, sigma_ppm=sigma, mu=0.0) < ion_score_v2(
+            ion, sigma_ppm=sigma, mu=mu
+        )
 
 
 class TestAggregateMatchCompoundsLight:
