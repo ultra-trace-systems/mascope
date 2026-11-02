@@ -72,10 +72,12 @@ $$\text{Window}_{\text{baseline}} = \pm \max\left(0.5,\ 10 \cdot w\right)$$
 
 Every fitted peak's core, $\pm 3w$ around its centre, is cut out of the window, not only the peak's own: in a TOF spectrum the window holds the peak's wings and its neighbours at the same unit mass, and counting them as noise would make the noise grow with the heights around the peak.
 The local noise ($\sigma_{\text{noise}}$) is the median absolute deviation of the remaining points, scaled to a standard deviation, so a peak too small to be fitted does not count as noise either.
-Where the baseline is mostly empty, that deviation is zero: the spectrum is counting single ions, as an ambient-mode TOF's often is, and each ion is a short blip above zero.
-The noise there is the height of one ion: the median height of the blips in the empty stretches of the whole spectrum, leaving out any that reach into a fitted peak.
-Where the standard deviation of the remaining points is larger, it stands in.
-So over an empty baseline a peak's $\text{SNR}$ is about the number of ions it holds, and a peak of a few stray ions stays below the gates that read the $\text{SNR}$.
+Where the baseline is mostly empty, that deviation is zero, and the standard deviation of the remaining points stands in.
+Such a spectrum is counting single ions, as an ambient-mode TOF's often is, and each ion is a short blip above zero.
+One ion's height is the median height of the blips in the empty stretches of the whole spectrum, leaving out any that reach into a fitted peak.
+No peak's noise is less than that height, whether its own baseline is empty or about half filled with stray ions: nothing stands less than one ion above its baseline.
+So over a sparse baseline a peak's $\text{SNR}$ is about the number of ions it holds, and a peak of a few stray ions stays below the gates that read the $\text{SNR}$.
+A spectrum with no mostly empty stretch has no single ion to measure, and its noise is the deviation alone.
 A peak with no baseline left in its window has no $\text{SNR}$, nor has one over a flat baseline in a spectrum with no single ion to measure.
 
 The localized signal-to-noise ratio is given by:
