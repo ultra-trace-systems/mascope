@@ -23,6 +23,7 @@ from mascope_backend.api.models.target.compounds.target_compound_pydantic_model 
 )
 from mascope_backend.db import IonizationMechanism, IonizationMode, TargetCollection
 from mascope_backend.ionization_catalogue import (
+    NAMED_BEFORE,
     SEEDED_BEFORE,
     SYSTEM_MODES,
     _neutral,
@@ -59,7 +60,7 @@ CALIBRANTS = {
         ("[(CH4N2O)2+H]+", "CH4N2O"),
         ("[(CH4N2O)3+H]+", "C2H8N4O2"),
     ],
-    # The EASY-IC lock mass, an Orbitrap's one anchor.
+    # The charge-transfer (EASY-IC) lock mass, an Orbitrap's one anchor.
     "ambient-negative": [("[C16H10]-", "C16H10")],
     "ambient-positive": [("[C16H10]+", "C16H10")],
 }
@@ -83,12 +84,12 @@ SEEDED_DIGESTS = {
     "sysBromideDia": "4a139370a962997a",
     "sysIodideCal": "f4825b329b2990e3",
     "sysIodideDia": "e808f225d923c917",
-    "sysAmbientNegCal": "b2d76539eb9b82d5",
-    "sysAmbientNegDia": "f4c16fab7de8e61a",
+    "sysAmbientNegCal": "6baa13c90da5dd82",
+    "sysAmbientNegDia": "7542acc9f1fca4af",
     "sysUroniumCal": "23abfad0e4bbf4bc",
     "sysUroniumDia": "ec1418fcd33dc2ef",
-    "sysAmbientPosCal": "c4f44a2b608566be",
-    "sysAmbientPosDia": "4ddb6e7698e0352f",
+    "sysAmbientPosCal": "c0da51cbf39db2e2",
+    "sysAmbientPosDia": "acd8c07034a3ab89",
 }
 
 #: The one ion a seeded compound gives beside the library's: ``()`` read
@@ -169,9 +170,11 @@ def test_the_calibrants_are_the_reagents_own_cluster_series(system_key):
 @pytest.mark.parametrize(
     "system_key", sorted(set(CALIBRANTS) - {"ambient-negative", "ambient-positive"})
 )
-def test_a_reagent_gives_a_tof_three_anchors_spread_over_the_range(system_key):
-    """A TOF axis is fitted on three points at least, and fits the range it is
-    anchored over: the series climbs by the reagent's own mass each rung."""
+def test_a_reagent_gives_a_tof_the_three_anchors_its_fit_needs(system_key):
+    """The floor, not sufficiency: a TOF fit needs three points to run, and
+    the series climbs by the reagent's own mass each rung. Every series is
+    exactly three, at the low end of the range, so a TOF fit on one has no
+    point to spare (GitHub #2689)."""
     labels = {
         compound.name
         for compound in _by_key("calibration_collection_id")[system_key].compounds
@@ -261,6 +264,28 @@ def test_the_ids_are_the_modes_own_fit_the_column_and_are_unique():
         assert collection.collection_id == mode_id + suffix[collection.mode_field]
         assert len(collection.collection_id) <= column
         assert hasattr(IonizationMode, collection.mode_field)
+
+
+def test_the_charge_transfer_modes_are_named_as_their_profile_is():
+    """Read as an Orbitrap's, electron transfer is the EASY-IC source, and the
+    mode says so: "ambient" is an APi-TOF's own ions with no reagent, which
+    the collections of these modes would not fit."""
+    for system_key in ("ambient-negative", "ambient-positive"):
+        _, name, polarity, mechanisms = _MODES[system_key]
+        profile = detect_reagent_profile(mechanisms, polarity, instrument_type="orbi")
+
+        assert profile.name.startswith("EASYIC")
+        assert name == profile.label
+
+
+def test_a_name_seeded_before_is_no_chemistrys_name_now():
+    """A current name in NAMED_BEFORE would rename one chemistry's mode to
+    another's, or read the current name as the one to replace."""
+    names = {name for _, name, *_ in _MODES.values()}
+
+    assert set(NAMED_BEFORE) <= set(_MODES)
+    for earlier in NAMED_BEFORE.values():
+        assert not earlier & names
 
 
 def test_the_names_say_whose_they_are():

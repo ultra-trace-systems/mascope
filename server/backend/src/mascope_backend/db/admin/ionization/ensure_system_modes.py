@@ -44,12 +44,18 @@ engine searches differently (``reagents.SecondaryChannel``); the row on its
 own only makes the channel searchable. For the modes themselves:
 
 - a row already carrying the ``system_key`` is left as it is, collections and
-  all;
+  all, but for its name: one still under a name an earlier release seeded it
+  under (``NAMED_BEFORE``) is given the chemistry's, in place, as an edit of a
+  name is made. Not where another mode holds that name, and not where
+  acquisition batches are named for either name, since a daily batch is found
+  again by its mode's name and an edit of the name is refused there too. Both
+  are logged, and the row keeps the name it has while either holds;
 - a row under the catalogue's own id but no key - what a downgrade leaves
   behind - is claimed rather than duplicated, but only while it is still what
-  was seeded: name, polarity, no token, the same mechanisms. Edited in the
-  meantime, it is left alone and logged, because claiming it would lock
-  somebody's edit under the catalogue's key;
+  was seeded: name (this release's or an earlier one's, which is then renamed
+  as above), polarity, no token, the same mechanisms. Edited in the meantime,
+  it is left alone and logged, because claiming it would lock somebody's edit
+  under the catalogue's key;
 - a chemistry whose name some other mode already uses is skipped and logged,
   because ``create_ionization_mode`` refuses a duplicate name and answers
   ``MultipleResultsFound`` when two rows already share one.
@@ -96,7 +102,7 @@ Entry Points:
 import asyncio
 import time
 
-from sqlalchemy import exists, select, update
+from sqlalchemy import exists, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -115,6 +121,7 @@ from mascope_backend.api.models.target.collections.target_collection_pydantic_mo
 from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
     TargetCompoundBase,
 )
+from mascope_backend.api.new.ionization.modes.service import named_for_mode
 from mascope_backend.api.new.ionization.modes.versions import (
     make_version,
     repoint_routing,
@@ -122,12 +129,14 @@ from mascope_backend.api.new.ionization.modes.versions import (
 from mascope_backend.db import (
     IonizationMechanism,
     IonizationMode,
+    SampleBatch,
     SampleItem,
     TargetCollection,
     TargetCompoundInTargetCollection,
     async_session,
 )
 from mascope_backend.ionization_catalogue import (
+    NAMED_BEFORE,
     SEEDED_BEFORE,
     SYSTEM_MODES,
     SeededCollection,
@@ -257,13 +266,16 @@ async def ensure_system_ionization_mechanisms() -> dict[str, int]:
 async def ensure_system_ionization_modes() -> dict[str, int]:
     """Create the catalogue's modes that this deployment can hold.
 
-    :return: Counts of the modes seeded, claimed, and skipped for a missing
-        mechanism or a name in use.
+    :return: Counts of the modes seeded, claimed, renamed, left under an
+        earlier name, and skipped for a missing mechanism, a name in use or an
+        edit.
     :rtype: dict[str, int]
     """
     counts = {
         "seeded": 0,
         "claimed": 0,
+        "renamed": 0,
+        "not_renamed": 0,
         "no_mechanism": 0,
         "name_taken": 0,
         "edited": 0,
@@ -294,7 +306,9 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
         }
         ids_in_use = {mode.ionization_mode_id for mode in every_row}
         keyed = {
-            mode.system_key for mode in existing.values() if mode.system_key is not None
+            mode.system_key: mode
+            for mode in existing.values()
+            if mode.system_key is not None
         }
         names_in_use = {
             mode.ionization_mode_name: mode.ionization_mode_id
@@ -306,7 +320,12 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
         }
 
         for system_key, mode_id, name, polarity, wanted in SYSTEM_MODES:
-            if system_key in keyed:
+            earlier_names = NAMED_BEFORE.get(system_key, frozenset())
+            current = keyed.get(system_key)
+            if current is not None:
+                if current.ionization_mode_name in earlier_names:
+                    renamed = await _rename(session, current, name, names_in_use)
+                    counts["renamed" if renamed else "not_renamed"] += 1
                 continue
 
             mechanism_ids = [
@@ -324,7 +343,7 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
                 # re-pointed one would lock that edit under the catalogue's
                 # key - which the guard then refuses to undo, token included.
                 still_ours = (
-                    claimable.ionization_mode_name == name
+                    claimable.ionization_mode_name in {name, *earlier_names}
                     and claimable.ionization_mode_polarity == polarity
                     and claimable.ionization_mode_token is None
                     and set(claimable.ionization_mechanism_ids or [])
@@ -346,6 +365,9 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
                     .values(system_key=system_key)
                 )
                 counts["claimed"] += 1
+                if claimable.ionization_mode_name != name:
+                    renamed = await _rename(session, claimable, name, names_in_use)
+                    counts["renamed" if renamed else "not_renamed"] += 1
                 continue
             if mode_id in ids_in_use:
                 # A superseded version holds the catalogue's id: the chemistry
@@ -383,10 +405,10 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
 
         await session.commit()
 
-    if counts["seeded"] or counts["claimed"]:
+    if counts["seeded"] or counts["claimed"] or counts["renamed"]:
         runtime.logger.info(
             f"System ionization modes: {counts['seeded']} created, "
-            f"{counts['claimed']} claimed"
+            f"{counts['claimed']} claimed, {counts['renamed']} renamed"
         )
     if counts["no_mechanism"]:
         runtime.logger.warning(
@@ -394,6 +416,59 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
             "an ionization mechanism they need could not be created here"
         )
     return counts
+
+
+async def _rename(
+    session: AsyncSession,
+    mode: IonizationMode,
+    name: str,
+    names_in_use: dict[str, str],
+) -> bool:
+    """Give a shipped mode still under an earlier release's name the one its
+    chemistry has now, in place, as an edit of the name is made.
+
+    Not where another current mode holds that name, which would make two rows
+    share it, and not where acquisition batches are named for either name: a
+    file's daily batch is found by its mode's name, so the day's next file
+    would start a second batch under the new one, or join a batch another
+    mode's files went to under it. An edit of the name is refused there for
+    the same reason (``update_ionization_mode``).
+
+    :param session: The pass's transaction; the caller commits.
+    :param mode: The current version, loaded in ``session``, under another
+        name than ``name``.
+    :param name: The chemistry's name.
+    :param names_in_use: The ids of the current modes, by name.
+    :return: Whether the mode was renamed.
+    :rtype: bool
+    """
+    old = mode.ionization_mode_name
+    taken_by = names_in_use.get(name)
+    if taken_by is not None:
+        runtime.logger.warning(
+            f"Ionization mode {mode.ionization_mode_id} keeps the name {old!r} "
+            "an earlier release gave it: the name its chemistry has now, "
+            f"{name!r}, is used by mode {taken_by}. Rename that mode to let "
+            "Mascope rename this one."
+        )
+        return False
+    batched = await session.scalar(
+        select(
+            exists().where(
+                SampleBatch.sample_batch_type == "ACQUISITION",
+                or_(named_for_mode(old), named_for_mode(name)),
+            )
+        )
+    )
+    if batched:
+        runtime.logger.warning(
+            f"Ionization mode {mode.ionization_mode_id} keeps the name {old!r} "
+            "an earlier release gave it, because acquisition batches are named "
+            f"for it or for the name its chemistry has now, {name!r}."
+        )
+        return False
+    mode.ionization_mode_name = name
+    return True
 
 
 async def ensure_system_ionization_collections() -> dict[str, int]:

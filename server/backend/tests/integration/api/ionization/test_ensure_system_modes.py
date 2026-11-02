@@ -15,20 +15,28 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
-from mascope_backend.db import IonizationMechanism, IonizationMode
+from mascope_backend.db import (
+    Dataset,
+    IonizationMechanism,
+    IonizationMode,
+    SampleBatch,
+    Workspace,
+)
 from mascope_backend.db.admin.ionization.ensure_system_modes import (
     ensure_system_ionization_modes,
 )
 from mascope_backend.db.id import gen_id
-from mascope_backend.ionization_catalogue import SYSTEM_MODES
+from mascope_backend.ionization_catalogue import NAMED_BEFORE, SYSTEM_MODES
 from mascope_tools.composition.mechanism_notation import mechanism_spellings
 
 
-# "Ambient, negative" is the catalogue's simplest entry: one mechanism,
+# Negative charge transfer is the catalogue's simplest entry: one mechanism,
 # electron capture - "[M]-.", or "-" on a row still holding the legacy spelling.
+# It is also one an earlier release seeded under another name.
 _AMBIENT = next(entry for entry in SYSTEM_MODES if entry[0] == "ambient-negative")
 _KEY, _MODE_ID, _NAME, _POLARITY, _MECHANISMS = _AMBIENT
 _SPELLINGS = mechanism_spellings(_MECHANISMS)
+(_EARLIER_NAME,) = NAMED_BEFORE[_KEY]
 
 
 @pytest_asyncio.fixture
@@ -347,3 +355,173 @@ async def test_a_name_only_a_superseded_version_holds_is_free_to_seed(
     assert counts["name_taken"] == 0
     assert seeded is not None
     assert seeded.ionization_mode_name == _NAME
+
+
+# --- a chemistry renamed under its key -------------------------------------
+
+
+async def _seeded_as_an_earlier_release(async_session_factory, **fields):
+    """The chemistry's mode as an earlier release seeded it, under its key."""
+    mechanism_id = await _add_mechanism(async_session_factory, _MECHANISMS[0], "-")
+    await _add_mode(
+        async_session_factory,
+        _MODE_ID,
+        **{
+            "ionization_mode_name": _EARLIER_NAME,
+            "ionization_mechanism_ids": [mechanism_id],
+            "system_key": _KEY,
+            **fields,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_mode_under_the_name_an_earlier_release_gave_it_is_renamed(
+    async_session_factory, clean_slate
+):
+    """In place, as an edit of a name is made: the same row, the same version."""
+    await _seeded_as_an_earlier_release(async_session_factory)
+
+    counts = await ensure_system_ionization_modes()
+    again = await ensure_system_ionization_modes()
+
+    mode = await _mode(async_session_factory, _KEY)
+    assert counts["renamed"] == 1
+    assert again["renamed"] == again["not_renamed"] == 0
+    assert mode.ionization_mode_id == _MODE_ID
+    assert mode.ionization_mode_name == _NAME
+    assert (mode.version, mode.is_active) == (1, True)
+
+
+@pytest.mark.asyncio
+async def test_a_keyed_mode_under_a_name_no_release_gave_it_is_left_as_it_is(
+    async_session_factory, clean_slate
+):
+    """Only a name the catalogue lists as its own earlier one is replaced."""
+    await _seeded_as_an_earlier_release(
+        async_session_factory, ionization_mode_name="Named some other way"
+    )
+
+    counts = await ensure_system_ionization_modes()
+
+    mode = await _mode(async_session_factory, _KEY)
+    assert counts["renamed"] == counts["not_renamed"] == 0
+    assert mode.ionization_mode_name == "Named some other way"
+
+
+@pytest.mark.asyncio
+async def test_the_rename_waits_while_another_mode_holds_the_name(
+    async_session_factory, clean_slate
+):
+    """Two rows under one name turn a later create into a 500."""
+    await _seeded_as_an_earlier_release(async_session_factory)
+    theirs = gen_id()
+    await _add_mode(
+        async_session_factory,
+        theirs,
+        ionization_mode_name=_NAME,
+        ionization_mechanism_ids=[],
+    )
+    try:
+        counts = await ensure_system_ionization_modes()
+        mode = await _mode(async_session_factory, _KEY)
+    finally:
+        await _drop_modes(async_session_factory, theirs)
+
+    assert counts["renamed"] == 0
+    assert counts["not_renamed"] == 1
+    assert mode.ionization_mode_name == _EARLIER_NAME
+
+
+async def _batch_named(async_session_factory, name, batch_type):
+    """A daily batch named as one of a mode's is, and the dataset it is in."""
+    workspace_id, dataset_id, batch_id = gen_id(), gen_id(), gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            Workspace(
+                workspace_id=workspace_id,
+                workspace_name=f"Rename test {workspace_id}",
+                is_system=True,
+            )
+        )
+        session.add(
+            Dataset(
+                dataset_id=dataset_id,
+                workspace_id=workspace_id,
+                dataset_name="2026",
+                dataset_type="ACQUISITION",
+            )
+        )
+        session.add(
+            SampleBatch(
+                sample_batch_id=batch_id,
+                dataset_id=dataset_id,
+                sample_batch_name=f"2026-10-27 {name} acquisition",
+                sample_batch_type=batch_type,
+                polarity=_POLARITY,
+            )
+        )
+        await session.commit()
+    return workspace_id, dataset_id, batch_id
+
+
+async def _drop_batch(async_session_factory, workspace_id, dataset_id, batch_id):
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleBatch).where(SampleBatch.sample_batch_id == batch_id)
+        )
+        await session.execute(delete(Dataset).where(Dataset.dataset_id == dataset_id))
+        await session.execute(
+            delete(Workspace).where(Workspace.workspace_id == workspace_id)
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("named_for", "batch_type", "renamed"),
+    [
+        ("earlier", "ACQUISITION", False),
+        ("current", "ACQUISITION", False),
+        ("earlier", "ANALYSIS", True),
+    ],
+    ids=["old-name", "new-name", "not-an-acquisition-batch"],
+)
+async def test_the_rename_waits_while_acquisition_batches_are_named_for_it(
+    async_session_factory, clean_slate, named_for, batch_type, renamed
+):
+    """A file's daily batch is found by its mode's name, so the day's next
+    file would start a second batch, or join another mode's. An edit of the
+    name is refused there too; a batch a person named is not a daily one."""
+    await _seeded_as_an_earlier_release(async_session_factory)
+    batch = await _batch_named(
+        async_session_factory,
+        _EARLIER_NAME if named_for == "earlier" else _NAME,
+        batch_type,
+    )
+    try:
+        counts = await ensure_system_ionization_modes()
+        mode = await _mode(async_session_factory, _KEY)
+    finally:
+        await _drop_batch(async_session_factory, *batch)
+
+    assert counts["renamed"] == int(renamed)
+    assert counts["not_renamed"] == int(not renamed)
+    assert mode.ionization_mode_name == (_NAME if renamed else _EARLIER_NAME)
+
+
+@pytest.mark.asyncio
+async def test_a_row_a_downgrade_left_under_an_earlier_name_is_claimed_and_renamed(
+    async_session_factory, clean_slate
+):
+    """It is still what was seeded, by the release that seeded it."""
+    await _seeded_as_an_earlier_release(async_session_factory, system_key=None)
+    try:
+        counts = await ensure_system_ionization_modes()
+        mode = await _mode(async_session_factory, _KEY)
+    finally:
+        await _drop_modes(async_session_factory, _MODE_ID)
+
+    assert (counts["claimed"], counts["renamed"]) == (1, 1)
+    assert mode.ionization_mode_id == _MODE_ID
+    assert mode.ionization_mode_name == _NAME

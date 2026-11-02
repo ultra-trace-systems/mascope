@@ -84,7 +84,7 @@ async def listed(modes: list[IonizationMode]) -> list[dict]:
 _BATCH_DATE_LENGTH = len("2026-01-01")
 
 
-def _named_for_mode(mode_name: str):
+def named_for_mode(mode_name: str):
     """The daily ACQUISITION batches named for a mode, as a filter.
 
     A bound batch is named ``"<date> <mode name> acquisition"``
@@ -474,7 +474,7 @@ async def update_ionization_mode(
             select(SampleBatch).where(
                 and_(
                     SampleBatch.sample_batch_type == "ACQUISITION",
-                    or_(*(_named_for_mode(name) for name in named)),
+                    or_(*(named_for_mode(name) for name in named)),
                 )
             )
         )

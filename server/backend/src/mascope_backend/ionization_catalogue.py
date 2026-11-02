@@ -24,10 +24,13 @@ ions an environment's every spectrum carries in its background, and a fit on
 the sample's own assignments (self-consistency) - stay out until the reagent
 ions prove insufficient for a chemistry. Where they fall short is known
 already. Protonation, deprotonation and the two ammonium chemistries have no
-reagent in the library and ship without collections. An ambient mode's reagent
-is an Orbitrap's EASY-IC beam, whose one ion cannot fit a TOF axis, which
-needs three points. And a file whose scan window holds none of its chemistry's
-anchors is not calibrated on them.
+reagent in the library and ship without collections. A charge-transfer mode's
+reagent is an Orbitrap's EASY-IC beam, whose one ion cannot fit a TOF axis,
+which needs three points. The reagents with a cluster series give a TOF those
+three and no more, all at the low end of the range: one bad match fails the
+fit or keeps the wrong point, and the rest of the range is extrapolated. And a
+file whose scan window holds none of its chemistry's anchors is not calibrated
+on them.
 
 The mechanisms ship too (:func:`shipped_mechanisms`): every one a shipped mode
 declares and every secondary channel an assignment profile can open, so the
@@ -42,9 +45,10 @@ servers needs it equal.
 Adding, renaming or removing an entry here is safe at any time:
 :mod:`mascope_backend.db.admin.ionization.ensure_system_modes` reads this list
 at every start and creates what is missing, so a new chemistry arrives with
-the release that adds it and needs no migration. A renamed entry leaves the
-old row behind under its old key, to be retired deliberately rather than by a
-rewrite of history.
+the release that adds it and needs no migration. An entry given a new key
+leaves the old row behind under its old key, to be retired deliberately rather
+than by a rewrite of history. An entry given a new name under its key renames
+its row, the name it had going into :data:`NAMED_BEFORE`.
 
 Kept secret-free and import-light, like ``roles``: the mechanism list and the
 collections are read off the assignment profiles and the reagent-ion library
@@ -72,6 +76,13 @@ if TYPE_CHECKING:
 # database, but ``create_ionization_mode`` refuses a duplicate and reads the row
 # with ``scalar_one_or_none``, so two rows sharing one turn a later create into
 # a 500. Seeding skips a name already in use rather than adding a second row.
+#
+# The two electron-transfer chemistries are named for what they are read as,
+# an Orbitrap's EASY-IC source, as the assignment profiles name them
+# (``EASYIC_NEG`` / ``EASYIC_POS``): "ambient" is the other chemistry declared
+# the same way, an APi-TOF's own ambient ions with no reagent, which their
+# collections would not fit. Their keys and ids keep the word they were first
+# seeded under, since an identity is not renamed.
 SYSTEM_MODES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     (
         "nitrate",
@@ -111,7 +122,7 @@ SYSTEM_MODES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     (
         "ambient-negative",
         "sysAmbientNeg",
-        "Ambient, negative",
+        "Charge transfer (EASY-IC), negative",
         "-",
         ("[M]-.",),
     ),
@@ -146,11 +157,21 @@ SYSTEM_MODES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     (
         "ambient-positive",
         "sysAmbientPos",
-        "Ambient, positive",
+        "Charge transfer (EASY-IC), positive",
         "+",
         ("[M]+.",),
     ),
 )
+
+#: The names earlier releases seeded a chemistry's mode under, by its key. The
+#: name is the chemistry's, which a deployment cannot change, so a current
+#: version still under one of these is given the chemistry's name at the next
+#: start (``ensure_system_modes``). A change to a name in
+#: :data:`SYSTEM_MODES` adds the name it replaces here.
+NAMED_BEFORE: dict[str, frozenset[str]] = {
+    "ambient-negative": frozenset({"Ambient, negative"}),
+    "ambient-positive": frozenset({"Ambient, positive"}),
+}
 
 # What a deployment may change on a seeded mode: which target collections it
 # points at, the seeded ones or its own, and its labelled reagent's isotopic
@@ -419,19 +440,23 @@ def seeded_collections() -> tuple[SeededCollection, ...]:
 
     The calibrants are the reagent's own cluster series: the bare reagent ion
     and its clusters with itself (``[Br]-``, ``[Br2]-``, ``[Br3]-``;
-    ``[NO3]-`` and the nitrate core with one and two acids). The series spans
-    the low end of the range, so it gives a TOF the three anchors spread over
-    the range its axis needs, and an Orbitrap the one it needs wherever its
-    window starts. The diagnostics are every line of the reagent: the series,
-    its hydrates, its oxides and what else the source makes of it alone. The
-    air's ions are in neither, being the discharge's rather than the reagent's.
+    ``[NO3]-`` and the nitrate core with one and two acids). That gives an
+    Orbitrap the one anchor it needs wherever its window holds one, and a TOF
+    the three points its fit needs to run and none to spare: one bad match
+    fails the fit or keeps the wrong point. The series ends at m/z 188
+    (nitrate) to 381 (iodide), so the rest of a TOF's range is extrapolated
+    from its low end. The diagnostics are every line of the reagent: the
+    series, its hydrates, its oxides and what else the source makes of it
+    alone. The air's ions are in neither, being the discharge's rather than
+    the reagent's.
 
     The chemistry is read off the mode's mechanisms as an Orbitrap's file
     would be (``detect_reagent_profile``). The reagents read the same on any
-    instrument, but an ambient mode names a reagent only on an Orbitrap, where
-    it is the EASY-IC beam, whose one ion is the lock mass. On a TOF the same
-    mode has no reagent, and that one ion cannot fit a TOF axis, so a TOF file
-    under it is not calibrated, as it was not before.
+    instrument, but electron transfer names a reagent only on an Orbitrap,
+    where it is the charge-transfer (EASY-IC) beam, whose one ion is the lock
+    mass. On a TOF the same mechanisms are an ambient-ion mode with no reagent,
+    and that one ion cannot fit a TOF axis, so a TOF file under a
+    charge-transfer mode is not calibrated, as it was not before.
 
     :return: Two collections per seeded chemistry with a reagent, calibrants
         first, in the order of :data:`SYSTEM_MODES`.
