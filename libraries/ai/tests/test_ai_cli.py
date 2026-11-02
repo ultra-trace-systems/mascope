@@ -242,7 +242,7 @@ class TestList:
     def test_an_ambiguous_batch_says_so(self, env, capsys):
         code, out, err = run(capsys, "list", "samples", "--batch", "Spring")
         assert code == 1
-        assert "'Spring' matches 2 batch" in err
+        assert "'Spring' matches 2 batches: " in err
 
     def test_sessions_and_their_frames(self, env, capsys, kit):
         frame = Toolkit(kit.client, session=Session("conversation-2")).load_spectrum(

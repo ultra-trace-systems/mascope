@@ -14,9 +14,11 @@ import pytest
 
 from mascope_ai import (
     AccessDenied,
+    AmbiguousName,
     InvalidRequest,
     NotAuthenticated,
     NotFound,
+    Ref,
     RowCapExceeded,
     ToolkitError,
     Unavailable,
@@ -182,3 +184,16 @@ class TestToDict:
         assert "passed 900 rows after 3 sample(s)" in data["message"]
         assert "50 sample(s) were left unread" in data["message"]
         json.dumps(data)
+
+
+class TestAmbiguousName:
+    @pytest.mark.parametrize(
+        ("kind", "plural"),
+        [("batch", "batches"), ("dataset", "datasets"), (None, "objects")],
+    )
+    def test_the_kind_is_named_in_the_plural(self, kind, plural):
+        refs = [Ref(f"x{i}", kind or "sample", f"Spring {i}") for i in range(2)]
+
+        error = AmbiguousName("Spring", kind, refs)
+
+        assert str(error).startswith(f"'Spring' matches 2 {plural}: ")
