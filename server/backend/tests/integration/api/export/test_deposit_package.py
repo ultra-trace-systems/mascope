@@ -1352,6 +1352,29 @@ async def test_the_preview_flags_what_a_deposit_lacks(
 
 
 @pytest.mark.asyncio
+async def test_the_build_reports_the_gaps_the_preview_flags(
+    editor_client, members, dataset, out, async_session_factory, temp
+):
+    """The operator command warns of what "Prepare for publication" flags:
+    the build reports the preview's gaps, from the same rule."""
+    async with async_session_factory() as session:
+        row = await session.get(Dataset, dataset.ids.dataset)
+        row.license = None
+        row.dataset_description = ""
+        await session.commit()
+    resp = await editor_client.get(
+        _preview_path(dataset.ids.workspace, dataset.ids.dataset)
+    )
+    preview = resp.json()["data"]["gaps"]
+    summary = await build_package(dataset.ids.dataset, str(out))
+    assert [gap["field"] for gap in summary["gaps"]] == [
+        "license",
+        "dataset_description",
+    ]
+    assert summary["gaps"] == preview
+
+
+@pytest.mark.asyncio
 async def test_the_app_builds_the_archive_the_command_builds(
     editor_client, members, dataset, out, temp, frozen_clock, notifications, test_users
 ):
