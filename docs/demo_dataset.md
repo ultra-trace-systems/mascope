@@ -473,6 +473,13 @@ repo); `<BUNDLE>` is the working bundle directory the tooling accumulates into.
    the check that would have caught bundle v1.0.0 shipping with 152 of its 161
    files.
 
+   On a refresh it also refuses to drop goldens the prior manifest had: the
+   MS2 goldens of a file still in the raw set that produced no spectra this
+   time (`build_bundle.check_ms2_kept`), and the per-ion goldens
+   (`expected/ions.parquet`) when this run exported no ions beside its peaks.
+   Either refusal leaves `expected/`, `snapshot/` and the manifest as they
+   were.
+
 5. **Publish** to Zenodo and register the bundle — see [D](#d-publish-to-zenodo-versioning).
    Confirm `<BUNDLE>.deid_report.md` before publishing.
 

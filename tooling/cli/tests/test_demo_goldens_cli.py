@@ -1,5 +1,5 @@
 """
-The demo CLI's MS2 golden wiring: what the bundle build exports and counts as
+The demo CLI's MS2 and ion golden wiring: what the bundle build exports and counts as
 covered, what `mascope demo verify` compares, and what the cached-bundle check
 verifies.
 
@@ -296,6 +296,111 @@ def test_snapshot_update_refuses_to_drop_the_prior_manifests_ms2_goldens(
     monkeypatch.setattr(build_bundle, "export_snapshot", _no_snapshot)
 
     with pytest.raises(RuntimeError, match="would drop MS2 goldens"):
+        build_bundle.build(tmp_path, update=True)
+
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest
+
+
+# --- a refresh keeps the ion goldens ----------------------------------------
+
+
+def _ion(filename: str) -> dict:
+    return {
+        "filename": filename,
+        "target_ion_id": "ion-urea-1",
+        "target_ion_formula": "CH5N2O+",
+        "match_score": 0.9,
+        "match_category": "good",
+    }
+
+
+def _prior_ions(out_dir, rows: list[dict]) -> dict:
+    """The ``expected`` block of a prior manifest with ion goldens of ``rows``."""
+    (out_dir / "expected").mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_parquet(out_dir / "expected" / "ions.parquet", index=False)
+    return {
+        "peaks": "expected/peaks.parquet",
+        "ions": "expected/ions.parquet",
+        "ions_sha256": bundles.sha256_file(out_dir / "expected" / "ions.parquet"),
+    }
+
+
+def test_a_refresh_that_exports_no_ions_of_a_bundle_with_ion_goldens_is_refused(
+    backend_goldens, tmp_path
+):
+    """Peaks export as before, ions come back empty: the run is refused before
+    anything is written, so the prior ion golden stays in place."""
+    prior = _prior_ions(tmp_path, [_ion(_db_name(MS1))])
+    before = (tmp_path / "expected" / "ions.parquet").read_bytes()
+    backend_goldens.peaks = [_peak(_db_name(MS1))]
+    backend_goldens.ingested = [_db_name(MS1)]
+
+    with pytest.raises(RuntimeError, match="would drop the ion goldens") as info:
+        build_bundle.export_goldens(tmp_path, _raw_entries(MS1), prior)
+
+    assert "expected/ions.parquet" in str(info.value)
+    assert (tmp_path / "expected" / "ions.parquet").read_bytes() == before
+    assert not (tmp_path / "expected" / "peaks.parquet").exists()
+
+
+def test_a_refresh_that_exports_ions_again_writes_them(
+    backend_goldens, tmp_path, warnings
+):
+    prior = _prior_ions(tmp_path, [_ion(_db_name(MS1))])
+    backend_goldens.peaks = [_peak(_db_name(MS1))]
+    backend_goldens.ions = [{**_ion(_db_name(MS1)), "match_score": 0.8}]
+    backend_goldens.ingested = [_db_name(MS1)]
+
+    expected = build_bundle.export_goldens(tmp_path, _raw_entries(MS1), prior)
+
+    assert expected["ions"] == "expected/ions.parquet"
+    ions_path = tmp_path / "expected" / "ions.parquet"
+    assert pd.read_parquet(ions_path).to_dict("records") == backend_goldens.ions
+    assert expected["ions_sha256"] == bundles.sha256_file(ions_path)
+    assert warnings == []
+
+
+@pytest.mark.parametrize(
+    "prior",
+    [None, {"peaks": "expected/peaks.parquet", "sha256": "x" * 64}],
+    ids=["first-build", "bundle-without-ions"],
+)
+def test_a_run_without_ions_of_a_bundle_that_never_had_them_writes_no_ions_block(
+    backend_goldens, tmp_path, warnings, prior
+):
+    backend_goldens.peaks = [_peak(_db_name(MS1))]
+    backend_goldens.ingested = [_db_name(MS1)]
+
+    expected = build_bundle.export_goldens(tmp_path, _raw_entries(MS1), prior)
+
+    assert expected is not None
+    assert "ions" not in expected
+    assert not (tmp_path / "expected" / "ions.parquet").exists()
+    assert warnings == []
+
+
+def test_snapshot_update_refuses_to_drop_the_prior_manifests_ion_goldens(
+    backend_goldens, tmp_path, monkeypatch
+):
+    """`build(update=True)` hands the prior manifest's ion goldens to the
+    export: the refusal leaves the manifest and the snapshot as they were."""
+    manifest = {
+        "bundle_version": tmp_path.name,
+        "raw": _raw_entries(MS1),
+        "measurement": {},
+        "expected": _prior_ions(tmp_path, [_ion(_db_name(MS1))]),
+    }
+    manifest_path = tmp_path / bundles.MANIFEST_NAME
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    backend_goldens.peaks = [_peak(_db_name(MS1))]
+    backend_goldens.ingested = [_db_name(MS1)]
+
+    def _no_snapshot(_out_dir):
+        raise AssertionError("the snapshot was exported after a refused export")
+
+    monkeypatch.setattr(build_bundle, "export_snapshot", _no_snapshot)
+
+    with pytest.raises(RuntimeError, match="would drop the ion goldens"):
         build_bundle.build(tmp_path, update=True)
 
     assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest
