@@ -119,6 +119,7 @@ Beside its parameters and the counts and mean errors of its quality block, a TOF
 - **Node version**: the version of the calibration step that made the fit.
 
 The calibration dialog lists the points of the fit it previews, a line the fit left out in muted text, and the badge of a calibrated TOF sample names the span.
+A sample list (`GET /api/samples`) leaves the points out of each sample's record, so a large batch's list stays small; the rest of the record is there. `GET /api/calibration/mz_calibration` answers one sample's whole record, points included.
 A record written before these were kept has the counts and mean errors only, and reads and applies as it always did.
 
 ### Orbitrap One-Point Scaling Calibration

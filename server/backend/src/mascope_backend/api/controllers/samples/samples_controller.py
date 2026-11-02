@@ -71,6 +71,31 @@ def _nearest_listed_mz(filename: str, peak_mz: float) -> float:
     return float(listed[np.abs(listed - peak_mz).argmin()])
 
 
+def _listed_mz_calibration(record: dict | None) -> dict | None:
+    """A sample's calibration record as a sample list carries it.
+
+    A TOF fit's quality block lists every calibrant line the fit chose from
+    (``quality.points``), which no list reads: the sample's badge reads the
+    counts, the errors and the ``span``, and the calibration dialog reads the
+    points of the fit it previews, from ``GET /calibration/mz_calibration``.
+    The list leaves them out, so a batch's list does not carry the lines of
+    every sample in it. The stored record is not changed.
+
+    :param record: ``sample_file.mz_calibration``, or None
+    :type record: dict | None
+    :return: The record without ``quality.points``, the record itself where
+        it has none
+    :rtype: dict | None
+    """
+    quality = record.get("quality") if isinstance(record, dict) else None
+    if not isinstance(quality, dict) or "points" not in quality:
+        return record
+    return {
+        **record,
+        "quality": {key: value for key, value in quality.items() if key != "points"},
+    }
+
+
 @api_controller()
 async def get_samples(
     sample_item_id: str | None = None,
@@ -121,7 +146,8 @@ async def get_samples(
     :return: Dictionary with status, message, results count, and sample data
         with nested match information, and each sample's ``ms2_group_count``:
         how many MS2 groups the group inventory lists for it, 0 for a sample
-        with none
+        with none. A sample's ``mz_calibration`` leaves out a TOF fit's
+        ``quality.points`` (:func:`_listed_mz_calibration`)
     :rtype: dict
     """
     async with async_session() as session:
@@ -200,6 +226,9 @@ async def get_samples(
                 column.name: getattr(row.Sample, column.name)
                 for column in Sample.__table__.columns
             }
+            sample_data["mz_calibration"] = _listed_mz_calibration(
+                sample_data["mz_calibration"]
+            )
 
             if row.MatchSample:
                 match_data = {
