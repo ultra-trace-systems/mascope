@@ -90,16 +90,52 @@ for i in range(int(sys.argv[2])):
     manifest.append({"type": "call", "op": "find", "i": i})
 """
 
+#: A racing writer: as WRITER, but once imported it touches argv[3] and waits
+#: for argv[4] to exist, so two of them start appending together rather than
+#: one finishing before the other has imported pandas.
+RACER = """
+import sys, time
+from pathlib import Path
+from mascope_ai import Manifest
+
+manifest = Manifest(sys.argv[1])
+Path(sys.argv[3]).touch()
+go = Path(sys.argv[4])
+while not go.exists():
+    time.sleep(0.001)
+for i in range(int(sys.argv[2])):
+    manifest.append({"type": "call", "op": "find", "i": i})
+"""
+
 
 def _writer(path, count):
     return subprocess.Popen([sys.executable, "-c", WRITER, str(path), str(count)])
+
+
+def _racers(path, count, n):
+    """Start n racing writers, wait until each has imported, then let them go."""
+    ready = [path.with_name(f"ready{k}") for k in range(n)]
+    go = path.with_name("go")
+    racers = [
+        subprocess.Popen(
+            [sys.executable, "-c", RACER, str(path), str(count), str(r), str(go)]
+        )
+        for r in ready
+    ]
+    deadline = time.monotonic() + 120
+    while not all(r.exists() for r in ready):
+        assert all(racer.poll() is None for racer in racers), "a writer died"
+        assert time.monotonic() < deadline, "the writers never got ready"
+        time.sleep(0.01)
+    go.touch()
+    return racers
 
 
 class TestTwoWriters:
     def test_two_processes_never_give_two_records_one_seq(self, tmp_path):
         path = tmp_path / "manifest.jsonl"
 
-        writers = [_writer(path, 200) for _ in range(2)]
+        writers = _racers(path, 200, 2)
         assert [writer.wait(timeout=120) for writer in writers] == [0, 0]
 
         seqs = [record["seq"] for record in Manifest(path).records()]
