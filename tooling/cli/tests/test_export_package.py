@@ -702,7 +702,7 @@ def test_a_release_that_reports_no_gaps_is_named(
     cli_runner, operator_install, tmp_path, warnings
 ):
     """A deployed release from before the builder reported its gaps: the
-    operator is sent to the app's check rather than told nothing is missing."""
+    operator is told what to check by hand rather than that nothing is missing."""
     builder, _ = operator_install
     summary = _package("")
     del summary["gaps"]
@@ -712,8 +712,9 @@ def test_a_release_that_reports_no_gaps_is_named(
     result = cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert warnings == [
-        "The release deployed predates the deposit checks: open the dataset's "
-        "Prepare for publication in Mascope to see what it lacks."
+        "The release deployed does not report the deposit checks: check that "
+        "the dataset has a licence, authors, a description and samples "
+        "before depositing."
     ]
 
 

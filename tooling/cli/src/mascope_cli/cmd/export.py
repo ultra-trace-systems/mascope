@@ -319,8 +319,9 @@ def _print_summary(package: dict) -> None:
     gaps = package.get("gaps")
     if gaps is None:
         runtime.logger.warning(
-            "The release deployed predates the deposit checks: open the dataset's "
-            "Prepare for publication in Mascope to see what it lacks."
+            "The release deployed does not report the deposit checks: check that "
+            "the dataset has a licence, authors, a description and samples "
+            "before depositing."
         )
     for gap in gaps or ():
         runtime.logger.warning(gap["message"])
