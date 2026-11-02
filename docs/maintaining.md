@@ -1905,12 +1905,19 @@ with no token and are left out of the ionization listing until a deployment
 adopts one; a second start changes nothing.
 
 The shipped collections are read off the reagent-ion library. Nitrate,
-15N-nitrate, bromide, iodide, uronium and the two ambient chemistries each get
-a calibrant collection, the reagent ion and its own clusters (`[Br]-`,
-`[Br2]-` and `[Br3]-` for bromide; the fluoranthene ion of an Orbitrap's
-EASY-IC beam for the ambient ones), and a diagnostic collection, every ion
-the reagent makes on its own. Protonation, deprotonation and the ammonium
-chemistries have no reagent there and get none. The collections are global,
+15N-nitrate, bromide, iodide, uronium and the two charge-transfer (EASY-IC)
+chemistries each get a calibrant collection, the reagent ion and its own
+clusters (`[Br]-`, `[Br2]-` and `[Br3]-` for bromide; the fluoranthene ion of
+an Orbitrap's EASY-IC beam for charge transfer), and a diagnostic collection,
+every ion the reagent makes on its own. Protonation, deprotonation and the
+ammonium chemistries have no reagent there and get none. The charge-transfer
+chemistries are an Orbitrap's EASY-IC source, not an APi-TOF's ambient ions
+with no reagent: their one calibrant is the source's lock mass, which a TOF
+fit cannot use. A cluster series gives a TOF fit the three points it needs to
+run and none to spare, all at the low end of the range: the series ends at
+m/z 188 for nitrate and 381 for iodide. A mode whose files reach well above
+that, or whose spectra do not show every cluster, is better served by a
+calibrant collection of the deployment's own. The collections are global,
 named after their chemistry (*Bromide, negative calibrants*, *Bromide,
 negative reagent ions*) under fixed ids (`sysBromideCal`, `sysBromideDia`),
 and a start points each shipped mode at its own only where the mode points at
@@ -1925,6 +1932,13 @@ serves for a rematch as an edit would, and leaves an edited one as it is. The
 start's log line `System target collections: ...` counts both and names the
 edited ones. A deleted one comes back at the next start, as a deleted shipped
 mechanism does; to stop a mode using it, point the mode at another collection.
+
+Earlier releases shipped the two charge-transfer modes as *Ambient,
+negative* and *Ambient, positive*. A start renames a shipped mode still under
+the name an earlier release gave it, in place, under the same id. It leaves
+the old name where another mode already holds the new one, or where
+acquisition batches are named for either, since a mode's daily batch is found
+by its name; the start logs a warning naming the mode then.
 
 The first start on a large library is the slow one: about 6.5 s per missing
 mechanism against a 1,466-compound library, 85 s for thirteen. The backend's
