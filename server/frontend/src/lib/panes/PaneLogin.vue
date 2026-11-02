@@ -49,7 +49,10 @@ const submitLogin = async () => {
     // The server's refusal is already on screen as a notification.
   } finally {
     signingIn.value = false
-    // A token is good for one sign-in, accepted or not.
+    // A token is good for one sign-in, accepted or not. Drop it here too: a
+    // sign-in that goes on to the code step unmounts the widget first, and the
+    // widget's own reset then never runs.
+    turnstileToken.value = null
     turnstile.value?.reset()
   }
 }
