@@ -34,7 +34,7 @@ sudo usermod -aG docker "$USER"      # log out/in for the group to take effect
 docker --version && docker compose version
 ```
 
-**Storage, if this box also receives the fleet's backups (§11).** Everything
+**Storage, if this box also receives the fleet's backups (§12).** Everything
 below assumes a redundant data volume mounted before any service starts —
 GlitchTip's Postgres, Kuma's SQLite, the restic repos and the assessment
 records all live on it. Use RAID or ZFS: a backup host whose own disk has no
@@ -489,7 +489,111 @@ size-bounded before it lands, the archive is never extracted, and only counts
 are sent to the heartbeat service — finding detail describes weaknesses in your
 own deployment and the heartbeat is a third party.
 
-## 11. Receiving the fleet's backups
+## 11. Security fixes not yet deployed (`security-fix-distance.py`)
+
+A fix on `develop` is not a fix in production.
+[`security-fix-distance.py`](security-fix-distance.py) asks one question, on a
+schedule: is there a merged security fix that a production deployment does
+not run? It names each deployment that is behind and the fix it is missing.
+When every deployment runs every fix, it says nothing.
+
+- **A security fix** is a commit that adds a changelog fragment in the
+  security section, `changelog.d/<branch>.security.md` (`CLAUDE.md`,
+  Conventions). The fragment lands with the fix, at merge, so the check sees
+  the fix from that moment. Cutting a release deletes the fragment, but the
+  commit that added it still marks the fix. A security fix filed under
+  `fixed` is one the check never sees. Fixes released before the fragments
+  existed are in `CHANGELOG.md` alone and are not checked.
+- **What a deployment runs** is the release its backend reports on the
+  anonymous `/api/version/public` route, read from this box through the
+  deployment's public URL. It is the running backend answering, never a
+  record of what was deployed.
+- **A deployment has a fix** when the release tag it runs contains the fix's
+  commit (`git tag --contains`). A release candidate has the fixes its own
+  tag holds, and no later ones.
+- **A version the check cannot place is a finding**, never a skip: no answer,
+  an HTTP error, `unknown`, `latest`, a dated build tag, or a release tag the
+  repository does not have. None of them shows the fix is there.
+
+The check keeps a bare clone of its own and fetches `develop`, `master` and
+the tags into it on every run. It needs no token: the repository is public.
+The first run fetches the whole history, about 100 MB; later runs fetch only
+what is new, in a second or two. A run that cannot fetch fails its
+heartbeat, rather than reading a stale clone.
+
+Setup:
+
+1. Copy the script from a checkout to `/opt/pentest-runner/`, and
+   `sha256sum` it against the tag, as for `run-assessment.sh`. It needs `git`
+   and the host's `python3`, 3.10 or later, and nothing else.
+2. Add a heartbeat check (healthchecks.io, or any service with the same
+   `/start` and `/fail` URLs) with a period of one hour and a grace of one
+   hour.
+3. Write `/opt/pentest-runner/fix-distance.ini` (`chmod 600`), with one line
+   per production deployment. The aliases are yours. They appear in the log,
+   never in the heartbeat.
+
+   ```ini
+   [check]
+   heartbeat = https://hc-ping.com/<uuid>
+   # Optional, with their defaults:
+   # repository = /opt/pentest-runner/fix-distance.git
+   # remote = https://github.com/ultra-trace-systems/mascope.git
+   # branches = develop master
+   # timeout = 10
+
+   [deployments]
+   server-a = https://a.example.com
+   server-b = https://b.example.com
+   ```
+
+4. Cron it, hourly:
+
+   ```cron
+   17 * * * * python3 -I /opt/pentest-runner/security-fix-distance.py 2>&1 | logger -t fix-distance
+   ```
+
+   `--config <path>` reads another file.
+
+Each run pings `/start`, then the heartbeat with
+`fixes=N unreleased=N deployments=N behind=N unreadable=N`: plain on success,
+on `/fail` when anything is behind or unreadable. A check that stops running
+stops pinging, and the heartbeat pages: that is the dead-man switch.
+
+Which deployment misses which fix stays on this box, in the log
+(`journalctl -t fix-distance`): it describes an open weakness of the fleet,
+and the heartbeat service is a third party. One line per finding:
+
+```text
+behind: server-a runs v1.15.0, missing 1a2b3c4d5 mas-123-session-expiry (merged 2026-10-28, not released)
+behind: server-b runs v1.14.0, missing 5e6f7a8b9 mas-120-secret-file-modes (merged 2026-10-20, released in v1.15.0)
+unreadable: server-c runs 'latest', which names no release
+```
+
+`not released` means no release holds the fix yet, so every deployment is
+behind until one is cut and rolled out. `released in vX.Y.Z` names the first
+release that holds it. There is no grace period: a fix reports from the run
+after it merges, and the heartbeat stays failed until it runs everywhere.
+
+The route is anonymous, but it is read through the edge. An edge rule that
+challenges scripts has to let this box's requests to `/api/version/public`
+through, or every deployment reads as unreadable. The check sends the
+User-Agent `mascope-fix-distance`.
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | every deployment runs every marked fix; nothing on stdout |
+| `1` | a deployment is behind, or its release cannot be read |
+| `2` | the configuration is unusable (missing, no heartbeat, no deployments) |
+| `3` | the repository could not be fetched: the check is blind |
+
+`tooling/cli/tests/test_security_fix_distance.py` runs the script as it is,
+against a real git repository and a local server standing in for the
+deployments and the heartbeat. It shows the check failing both ways: a marked
+fix no release holds reports, and a fleet that runs every fix is quiet. CI
+runs it with the CLI tests.
+
+## 12. Receiving the fleet's backups
 
 If this box is also the off-site restic target for your Mascope servers (the
 arrangement `tooling/backup-cron.sh` on each server expects), that side needs
@@ -520,7 +624,7 @@ Points that are easy to get wrong, each of which has bitten someone:
   sshd drop-in and the key directory are configuration, though: name them in
   `EXTRA_CONFIG_PATHS`, or a rebuilt box refuses every server.
 
-## 12. Restoring this host
+## 13. Restoring this host
 
 Worth reading before you need it, and worth drilling once. The backup from §5
 contains the monitoring data *and* the configuration that makes it meaningful —
@@ -541,7 +645,7 @@ named in `EXTRA_CONFIG_PATHS`.
    restic dump <id> glitchtip-db.sql \
      | docker compose -f /opt/glitchtip/compose.yaml exec -T postgres psql -U postgres
    ```
-6. Re-add the scheduled jobs (§5, §9, §10) — cron entries are not part of the
+6. Re-add the scheduled jobs (§5, §9, §10, §11) — cron entries are not part of the
    backup unless you put `/var/spool/cron` in `EXTRA_CONFIG_PATHS`.
 7. Verify rather than assume: monitors listed and green, a test event reaching
    GlitchTip, and a `restic check` on the restored repo.
