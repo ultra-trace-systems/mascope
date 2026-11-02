@@ -980,8 +980,12 @@ The command reads whatever dataset it is given, whichever workspace it is in:
 whoever runs it has the database. When it is done it says what it wrote, and
 warns when the archive is not ready to deposit as it stands:
 
-- **No licence, or no authors.** A repository asks for both. The user adds
-  them to the dataset in the app, and the package is built again.
+- **No licence, no authors, no description, or no samples.** These are the
+  gaps the app's **Prepare for publication** flags, by the same rule. A
+  repository asks for the first three, and a package of no samples describes
+  no measurement. The user fills them in on the dataset in the app, and the
+  package is built again. A deployed release from before this check reports
+  no gaps: the command says so, and **Prepare for publication** shows them.
 - **Sample files with no raw file.** The filestore keeps only the data
   converted from them, so the package describes them without the file.
 - **Raw files changed since upload.** Their SHA-256 is not the one recorded

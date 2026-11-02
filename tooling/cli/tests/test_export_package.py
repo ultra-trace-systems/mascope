@@ -10,7 +10,6 @@ reads the outcome from the builder's log, how the archive gets to where it
 was asked for, and what the operator is told.
 """
 
-import json
 import os
 import signal
 import subprocess
@@ -40,14 +39,10 @@ def _inside(command) -> str:
     return f"{PACKAGES}/{_run(command)}/mascope-package_ds1_Air.zip"
 
 
-def _write_archive(path, **dataset) -> None:
-    """A package archive with a manifest, as much as the summary reads."""
-    manifest = {
-        "dataset": {"license": "CC-BY-4.0", "authors": [{"name": "A"}], **dataset}
-    }
+def _write_archive(path) -> None:
+    """A package archive; the summary reads nothing in it."""
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("mascope-package_ds1_Air/README.md", "# Air\n")
-        zf.writestr("mascope-package_ds1_Air/manifest.json", json.dumps(manifest))
 
 
 def _package(archive, **counts) -> dict:
@@ -61,6 +56,7 @@ def _package(archive, **counts) -> dict:
         "raw_files_changed": 0,
         "batches": 2,
         "target_collections": 1,
+        "gaps": [],
         **counts,
     }
 
@@ -107,14 +103,12 @@ class FakeDocker:
         python=CONTAINER_PYTHON,
         copy_exit=0,
         pkill_exit=0,
-        dataset=None,
         interrupt=False,
         during=None,
     ):
         self.python = python
         self.pkill_exit = pkill_exit
         self.copy_exit = copy_exit
-        self.dataset = dataset or {}
         self.interrupt = interrupt
         # A verb ("pkill", "rm") and how to interrupt the command while it
         # runs; ``finished`` records the verbs that ran to their end.
@@ -127,7 +121,7 @@ class FakeDocker:
         if cmd[:2] == ["docker", "cp"]:
             _interrupt(self.interrupt)
             if self.copy_exit == 0:
-                _write_archive(cmd[3], **self.dataset)
+                _write_archive(cmd[3])
             return subprocess.CompletedProcess(cmd, self.copy_exit, "", "no space left")
         if cmd[:2] == ["docker", "exec"] and "sh" in cmd:
             if self.python is None:
@@ -675,11 +669,20 @@ def test_an_output_directory_that_is_a_file_is_refused(
 def test_the_operator_is_told_what_to_check_before_depositing(
     cli_runner, operator_install, tmp_path, warnings
 ):
-    builder, docker = operator_install
+    """The gaps are the builder's, as "Prepare for publication" shows them:
+    the command prints each and keeps no rule of its own."""
+    builder, _ = operator_install
+    gaps = [
+        {"field": "license", "message": "No licence."},
+        {"field": "authors", "message": "No authors."},
+        {"field": "dataset_description", "message": "No description."},
+        {"field": "samples", "message": "No samples."},
+    ]
     builder.outcome = lambda command: {
-        "package": _package(_inside(command), raw_files_included=2, raw_files_changed=1)
+        "package": _package(
+            _inside(command), raw_files_included=2, raw_files_changed=1, gaps=gaps
+        )
     }
-    docker.dataset = {"license": None, "authors": None}
     result = cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert warnings == [
@@ -687,10 +690,30 @@ def test_the_operator_is_told_what_to_check_before_depositing(
         "converted from them: the package describes them without the file.",
         "1 raw file(s) are not the files uploaded: their SHA-256 differs from "
         "the one recorded at upload. The manifest gives both.",
-        "The dataset records no licence, which a repository asks for. Add it "
-        "to the dataset in Mascope and build the package again.",
-        "The dataset records no authors, which a repository asks for. Add them "
-        "to the dataset in Mascope and build the package again.",
+        "No licence.",
+        "No authors.",
+        "No description.",
+        "No samples.",
+        "Fill these in on the dataset in Mascope and build the package again.",
+    ]
+
+
+def test_a_release_that_reports_no_gaps_is_named(
+    cli_runner, operator_install, tmp_path, warnings
+):
+    """A deployed release from before the builder reported its gaps: the
+    operator is sent to the app's check rather than told nothing is missing."""
+    builder, _ = operator_install
+    summary = _package("")
+    del summary["gaps"]
+    builder.outcome = lambda command: {
+        "package": {**summary, "archive": _inside(command)}
+    }
+    result = cli_runner.invoke(app, ["export", "package", "ds1", "-o", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert warnings == [
+        "The release deployed predates the deposit checks: open the dataset's "
+        "Prepare for publication in Mascope to see what it lacks."
     ]
 
 

@@ -106,11 +106,15 @@ async def build_package(dataset_id: str, output: str) -> dict:
     :param output: The archive's path, or an existing directory to write it
         into as ``<package name>.zip``. Written as ``<path>.part`` and moved
         into place when complete, so no half-written archive has its name.
-    :return: What was written: see :func:`write_package`.
+    :return: What was written, as :func:`write_package` reports it, and
+        ``gaps``: what the dataset lacks for a deposit, from
+        :func:`package_gaps`, so the operator command warns of what the app
+        flags.
     :rtype: dict
     :raises DatasetNotFound: If there is no such dataset.
     """
     package = await collect_package(dataset_id)
     if os.path.isdir(output):
         output = os.path.join(output, f"{package.name}.zip")
-    return await write_package(package, output)
+    summary = await write_package(package, output)
+    return {**summary, "gaps": package_gaps(package.manifest)}

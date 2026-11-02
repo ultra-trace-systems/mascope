@@ -26,7 +26,6 @@ import subprocess
 import sys
 import threading
 import uuid
-import zipfile
 from pathlib import Path
 from typing import Annotated
 
@@ -287,17 +286,6 @@ def _checked(status: int, outcome: dict | None, hint: str = "") -> dict:
     return outcome["package"]
 
 
-def _manifest(archive: str) -> dict:
-    """The manifest of a package archive."""
-    with zipfile.ZipFile(archive) as zf:
-        name = next(
-            n
-            for n in zf.namelist()
-            if n.count("/") == 1 and n.endswith("/manifest.json")
-        )
-        return json.loads(zf.read(name))
-
-
 def _megabytes(size: int) -> str:
     return f"{size / 1e6:.1f} MB"
 
@@ -327,16 +315,19 @@ def _print_summary(package: dict) -> None:
             "uploaded: their SHA-256 differs from the one recorded at upload. "
             "The manifest gives both."
         )
-    dataset = _manifest(package["archive"])["dataset"]
-    for field, what, them in (
-        ("license", "licence", "it"),
-        ("authors", "authors", "them"),
-    ):
-        if not dataset.get(field):
-            runtime.logger.warning(
-                f"The dataset records no {what}, which a repository asks for. "
-                f"Add {them} to the dataset in Mascope and build the package again."
-            )
+    # The builder's own rule, the one "Prepare for publication" shows.
+    gaps = package.get("gaps")
+    if gaps is None:
+        runtime.logger.warning(
+            "The release deployed predates the deposit checks: open the dataset's "
+            "Prepare for publication in Mascope to see what it lacks."
+        )
+    for gap in gaps or ():
+        runtime.logger.warning(gap["message"])
+    if gaps:
+        runtime.logger.warning(
+            "Fill these in on the dataset in Mascope and build the package again."
+        )
     # Through the logger, so that it comes after the warnings it follows.
     runtime.logger.info(
         "Read its README.md, then upload the archive to a repository such as "

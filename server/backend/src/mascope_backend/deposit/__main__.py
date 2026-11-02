@@ -14,7 +14,7 @@ itself, also when it is interrupted (SIGINT), so two runs share no path and
 neither leaves a directory behind.
 
 The logger owns stdout, so the outcome is the last line printed: one JSON
-object, ``{"package": {...}}`` with what ``write_package`` reports, or
+object, ``{"package": {...}}`` with what ``build_package`` reports, or
 ``{"error": "..."}`` with the exit status 1.
 """
 

@@ -47,7 +47,7 @@ async def export_dataset_package(
     :param process_id: This task's process id; names its build directory.
     :param parent_id: The parent process, if any.
     :return: The message, ``data`` with the archive's file name and what
-        ``write_package`` reports of it but its path on the server, and the
+        ``build_package`` reports of it but its path on the server, and the
         notification's ``download``.
     :rtype: dict
     :raises NotFoundException: If there is no such dataset.
