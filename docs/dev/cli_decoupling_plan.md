@@ -1,7 +1,7 @@
 # CLI decoupling plan
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-11-02
 - **Tracked in:** [CLI decoupling](https://linear.app/ultra-trace/project/cli-decoupling-f732d6d0ca80) (Linear, MAS-112 to MAS-122)
 - **What:** The standalone operator CLI, the wheel install, and what a server installs.
 
@@ -254,10 +254,21 @@ without touching a site.
    keeps one source for both and makes `uv tool install mascope-cli==<calver>`
    the update, with the unattended path installing the CLI and applying the
    release in two separate processes, so the rule in `cli_drift.py` (never
-   reinstall the running tool from inside its own run) holds.
+   reinstall the running tool from inside its own run) holds. **Decided on
+   2026-11-02 (MAS-118): the first.**
 3. **Implement step 2**, with the release manifest naming its CLI version,
    and operator settings kept in the env overlay
    (`.runtime/env/<env>/<mode>.mascope.toml`), which no refresh touches.
+   Built in MAS-121: `mascope_cli.release.RELEASE`, set at release prep and
+   pinned to `CITATION.cff` by a test, names the CLI's release; the manifest's
+   `cli_version` names the CLI (schema 1 still, the field being optional).
+   A wheel install deploys `RELEASE` alone and refuses another target,
+   naming its CLI; the first `prod up` after an upgrade rewrites the home's
+   layers and compose files, keeping a copy under `.runtime/replaced/`; and
+   `--auto` hands an update over (exit 40, `.runtime/update/cli-to-install`)
+   only where it would apply it, so installing the CLI early never lets a
+   reboot bring a migration forward. The unit that acts on exit 40 is step
+   8.1's.
 
 ### Phase 8 - boot, timers and the move (if 6 is b; 8.2 either way)
 

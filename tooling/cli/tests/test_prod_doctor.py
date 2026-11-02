@@ -593,18 +593,19 @@ def test_doctor_command_json(monkeypatch, cli_runner):
     assert payload["ok"] is True and payload["images"]["count"] == 11
 
 
-def test_doctor_reports_drift_from_a_wheel_deployments_record(
+def test_doctor_reports_drift_from_a_wheel_installs_cli_release(
     monkeypatch, cli_runner, tmp_path
 ):
-    """The record is what a wheel install's next `up` deploys: DRIFT against it.
+    """The CLI's release is what a wheel install's next `up` deploys: DRIFT.
 
-    Without it, `prod doctor` on a wheel install compared the containers with
-    `latest`, so a stack on a recorded release read as drifting and one that
-    really drifted read as whatever `latest` happened to be.
+    After the CLI is upgraded and before the `prod up` that applies it, the
+    containers still run the previous release, which doctor has to say rather
+    than compare them with `latest` or with what ran last.
     """
     prod_main.runtime.full_config  # noqa: B018 - built before MASCOPE_PATH moves
     monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
-    prod_main.deployed_release.save(str(tmp_path), "v1.12.0")
+    monkeypatch.setattr(prod_main.mascope_release, "RELEASE", "v1.12.0")
+    prod_main.deployed_release.save(str(tmp_path), "v1.11.0")
     monkeypatch.setattr(
         doctor,
         "_run",

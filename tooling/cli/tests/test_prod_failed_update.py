@@ -63,6 +63,10 @@ def auto_env(monkeypatch, root):
     monkeypatch.setattr(prod_main, "_prune_images", lambda: None)
     monkeypatch.setattr(prod_main, "_align_checkout", lambda *a: None)
     monkeypatch.setattr(prod_main, "_warn_if_cli_stale", lambda **k: None)
+    # The updater as a checkout install runs it: the temp home is no checkout,
+    # which would make it a wheel install's, deploying only its CLI's release
+    # (that hand-over is tested in test_prod_wheel_release.py).
+    monkeypatch.setattr(prod_main, "_is_wheel_install", lambda *a, **k: False)
     return monkeypatch
 
 

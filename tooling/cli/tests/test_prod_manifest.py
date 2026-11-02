@@ -153,6 +153,30 @@ def test_load_manifest_wrong_schema(tmp_path):
         rm.load_manifest(path)
 
 
+@pytest.mark.parametrize("cli_version", ["2026.11.2", "2026.11.2.post1", None])
+def test_load_manifest_accepts_a_cli_version_or_none(tmp_path, cli_version):
+    path = tmp_path / "m.json"
+    path.write_text(
+        json.dumps({**_valid_manifest(), "cli_version": cli_version}), encoding="utf-8"
+    )
+
+    assert rm.load_manifest(path)["cli_version"] == cli_version
+
+
+@pytest.mark.parametrize(
+    "cli_version", ["2026.11.2; curl evil", "latest", "", "v2026.11.2", 2026]
+)
+def test_load_manifest_rejects_a_cli_version_that_is_no_version(tmp_path, cli_version):
+    """It goes into an install command, so it must be a version and nothing else."""
+    path = tmp_path / "m.json"
+    path.write_text(
+        json.dumps({**_valid_manifest(), "cli_version": cli_version}), encoding="utf-8"
+    )
+
+    with pytest.raises(rm.ManifestError):
+        rm.load_manifest(path)
+
+
 def test_load_manifest_missing_field(tmp_path):
     path = tmp_path / "m.json"
     bad = _valid_manifest()

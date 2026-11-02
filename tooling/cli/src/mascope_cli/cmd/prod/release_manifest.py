@@ -17,6 +17,7 @@ build time where the checkout is the source of truth for the head.
 
 import datetime
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +39,10 @@ SCHEMA_VERSION = 1
 # Conventional filename for the published manifest artifact (e.g. a GitHub
 # Release asset). Kept here so producer and consumer agree on one name.
 MANIFEST_FILENAME = "mascope-manifest.json"
+
+# What a `cli_version` may be: a PEP 440 release such as the CLI's calver
+# (2026.10.28), optionally with a suffix (2026.10.28.post1, 2026.11.1rc1).
+_CLI_VERSION = re.compile(r"[0-9]+(\.[0-9]+)*([.]?(a|b|rc|post|dev)[0-9]+)*")
 
 
 class ManifestError(RuntimeError):
@@ -140,6 +145,15 @@ def load_manifest(path: Path) -> dict:
     for field in ("app_version", "alembic_head"):
         if not data.get(field):
             raise ManifestError(f"Manifest is missing required field '{field}'")
+
+    # Optional: absent from the manifests of releases before it, null for a
+    # release cut without a CLI. A value goes into an install command, so it
+    # has to read as a version and nothing else.
+    cli_version = data.get("cli_version")
+    if cli_version is not None and (
+        not isinstance(cli_version, str) or not _CLI_VERSION.fullmatch(cli_version)
+    ):
+        raise ManifestError(f"Manifest names an invalid cli_version {cli_version!r}")
 
     return data
 

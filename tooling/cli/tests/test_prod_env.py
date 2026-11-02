@@ -70,15 +70,17 @@ def test_branch_build_deploys_latest(monkeypatch):
     assert prod_main._deploy_version() == "latest"
 
 
-def test_pip_installed_cli_deploys_latest(monkeypatch):
+def test_pip_installed_cli_deploys_its_release(monkeypatch):
     # Outside a checkout the CLI's own calver package version (v2026.x.y)
-    # must not be mistaken for an app release image tag: deploy `latest`.
+    # must not be mistaken for an app release image tag: deploy the release
+    # the CLI was cut with.
     monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
     monkeypatch.setattr(
         prod_main.runtime, "parse_version", lambda **kw: "unknown-version"
     )
     monkeypatch.setattr("mascope_cli.version.metadata.version", lambda name: "2026.7.7")
-    assert prod_main._deploy_version() == "latest"
+    monkeypatch.setattr(prod_main.mascope_release, "RELEASE", "v1.12.0")
+    assert prod_main._deploy_version() == "v1.12.0"
 
 
 def test_version_is_resolved_from_the_deployment_checkout(monkeypatch):
@@ -99,8 +101,12 @@ def test_version_is_resolved_from_the_deployment_checkout(monkeypatch):
     assert seen["cwd"] == "/srv/mascope"
 
 
-def test_unresolvable_version_warns_before_falling_back(monkeypatch):
+def test_unresolvable_version_warns_before_falling_back(monkeypatch, tmp_path):
     # The silent fallback is what let a reboot swap release channels unnoticed.
+    # A checkout git cannot read: the CLI's source is there, so it is no wheel
+    # install, whose release the installed CLI would decide.
+    (tmp_path / "tooling" / "cli" / "src" / "mascope_cli").mkdir(parents=True)
+    monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
     monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
     monkeypatch.setattr(
         prod_main.runtime, "parse_version", lambda **kw: "unknown-version"
@@ -152,23 +158,24 @@ def test_a_tag_that_is_not_a_release_warns_before_falling_back(monkeypatch):
     assert "latest" in warnings[0]
 
 
-# --- the release a wheel install recorded ---
+# --- a wheel install: the release its CLI was cut with ---
 
 
 def _record(home, version):
     prod_main.deployed_release.save(str(home), version)
 
 
-def test_a_wheel_install_deploys_its_recorded_release(monkeypatch, tmp_path):
-    # The gap this closes: off a checkout, the release `prod update --version`
-    # deployed was forgotten with its process, and the next `prod up` - a
-    # restart, a reboot - moved the stack to `latest`.
+def test_a_wheel_install_deploys_its_clis_release_not_the_record(monkeypatch, tmp_path):
+    # The record says what ran last. After the CLI is upgraded, the next `up`
+    # is the update to the CLI's release, on the files the CLI bundles; a
+    # restart or a reboot never falls back to `latest`.
     monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
     monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
     monkeypatch.setattr(
         prod_main.runtime, "parse_version", lambda **kw: "unknown-version"
     )
-    _record(tmp_path, "v1.12.0")
+    monkeypatch.setattr(prod_main.mascope_release, "RELEASE", "v1.12.0")
+    _record(tmp_path, "v1.11.0")
     warnings = []
     monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
 
@@ -214,23 +221,22 @@ def test_a_checkout_ignores_the_record(monkeypatch, tmp_path, head, expected):
         '["v1.12.0"]',
     ],
 )
-def test_an_unreadable_record_warns_before_falling_back(monkeypatch, tmp_path, content):
+def test_an_unreadable_record_changes_nothing(monkeypatch, tmp_path, content):
+    """The record is not what a wheel install deploys, so it cannot derail one."""
     monkeypatch.setenv("_MASCOPE_VERSION_PINNED", "0")
     monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
     monkeypatch.setattr(
         prod_main.runtime, "parse_version", lambda **kw: "unknown-version"
     )
+    monkeypatch.setattr(prod_main.mascope_release, "RELEASE", "v1.12.0")
     record = prod_main.deployed_release.path(str(tmp_path))
     record.parent.mkdir(parents=True)
     record.write_text(content, encoding="utf-8")
     warnings = []
     monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
 
-    assert prod_main._deploy_version() == "latest"
-    assert any("deployed-release.json" in w for w in warnings), warnings
-    assert any("latest" in w for w in warnings), warnings
-    # The record is there, only unreadable: the warning must not deny it.
-    assert not any("no deployed release recorded" in w for w in warnings), warnings
+    assert prod_main._deploy_version() == "v1.12.0"
+    assert warnings == []
 
 
 # --- _compose_env ---
@@ -352,7 +358,10 @@ def test_update_pulls_then_restarts_then_reports(cli_runner, compose):
     assert steps == ["pull", "up --detach", "ps"]
 
 
-def test_update_version_pin_reaches_compose(cli_runner, compose):
+def test_update_version_pin_reaches_compose(cli_runner, compose, monkeypatch):
+    # The test home is a wheel install's: only the CLI's release deploys.
+    monkeypatch.setattr(prod_main.mascope_release, "RELEASE", "v1.2.0")
+
     result = cli_runner.invoke(app, ["prod", "update", "--version", "v1.2.0"])
 
     assert result.exit_code == 0
@@ -369,7 +378,9 @@ def test_update_rejects_a_non_release_version(cli_runner, compose):
     assert compose.calls == []
 
 
-def test_update_accepts_a_prerelease_version(cli_runner, compose):
+def test_update_accepts_a_prerelease_version(cli_runner, compose, monkeypatch):
+    monkeypatch.setattr(prod_main.mascope_release, "RELEASE", "v2.0.0-rc.1")
+
     result = cli_runner.invoke(app, ["prod", "update", "--version", "v2.0.0-rc.1"])
 
     assert result.exit_code == 0
