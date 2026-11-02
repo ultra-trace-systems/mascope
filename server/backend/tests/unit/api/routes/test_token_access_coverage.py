@@ -118,6 +118,7 @@ SDK_WRITES = {
     # batches
     ("PATCH", "/api/sample/batches/{sample_batch_id}"): "batches.update",
     ("POST", "/api/sample/batches/{sample_batch_id}/copy"): "batches.copy",
+    ("POST", "/api/sample/batches/{sample_batch_id}/move"): "batches.move",
     # samples
     ("PATCH", "/api/sample/items/{sample_item_id}"): "samples.update",
     ("POST", "/api/sample/items/move"): "samples.move",

@@ -134,6 +134,14 @@ WRITES = [
         202,
     ),
     Write(
+        "POST",
+        "/api/sample/batches/{batch}/move",
+        lambda ids: {"dataset_id": ids["dataset"]},
+        _BATCHES,
+        "move_sample_batch",
+        200,
+    ),
+    Write(
         "PATCH",
         "/api/sample/items/{item}",
         lambda ids: {"sample_item": _sample_item(ids)},
@@ -525,6 +533,14 @@ DESTINATION_WRITES = [
         _BATCHES,
         "copy_sample_batch",
         202,
+    ),
+    Write(
+        "POST",
+        "/api/sample/batches/{batch}/move",
+        lambda ids: {"dataset_id": ids["dest_dataset"]},
+        _BATCHES,
+        "move_sample_batch",
+        200,
     ),
     Write(
         "POST",

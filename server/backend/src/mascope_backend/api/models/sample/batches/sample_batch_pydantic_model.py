@@ -290,3 +290,9 @@ class SampleBatchCopyBody(BaseModel):
     sample_batch_description: str | None = Field(
         None, description="Description of the new sample batch"
     )
+
+
+class SampleBatchMoveBody(BaseModel):
+    """Request body for moving a sample batch into another dataset."""
+
+    dataset_id: str = Field(..., description="ID of the dataset to move the batch into")
