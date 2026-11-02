@@ -15,7 +15,9 @@ Four exports are made from the app:
 | **Deposit package** | Right-click a dataset, *Prepare for publication* | A zip archive of the whole dataset, to upload to a data repository such as Zenodo, [below](#the-deposit-package) |
 
 Each export made from the app is written in the background, and the browser
-downloads the file when it is ready. The same data is one call away in the
+downloads the file when it is ready. The server keeps the file for 24 hours,
+so a notification's download works for a day; after that, export it again.
+The same data is one call away in the
 [Python SDK](../sdk/index.md), whose frames carry the same
 [provenance](#provenance) on `df.attrs["provenance"]`.
 

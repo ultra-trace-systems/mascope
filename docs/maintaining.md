@@ -946,9 +946,10 @@ from the app: right-click the dataset, *Prepare for publication*. The app and
 the command run one builder, so the archive is the same. The app builds it in
 a directory of the build's own under the env's `temp/packages/`, then moves it
 into the user's own temp directory, from which the browser downloads it. It
-stays there, the latest one per dataset and user, until the backend restarts
-and empties `temp/` (#2726). On a server where users package large datasets,
-plan for their raw files' size again on the env's disk.
+stays there for 24 hours, the latest one per dataset and user, as every temp
+download does ([Disk space](#temp-downloads)). On a server where users package
+large datasets, plan for a day's worth of their raw files' size again on the
+env's disk.
 
 ```bash
 mascope export package <dataset id>                 # into the current directory
@@ -1069,6 +1070,20 @@ Configure it in `/etc/mascope/disk-check.env` (chmod 600, template
 sudo systemctl start mascope-disk-check.service   # run it now
 journalctl -u mascope-disk-check.service          # what it found
 ```
+
+### Temp downloads
+
+Every download the app writes - a spreadsheet, a CSV, the raw-file bundle, a
+dataset's [deposit package](#packaging-a-dataset-for-deposit) - goes into the
+user's own directory under the env's `temp/`, from which the browser fetches
+it. The bundle and the package copy raw files, so they can be as large as a
+dataset. A download stays for **24 hours** after it was written: each new
+export removes every user's downloads older than that. So `temp/` holds about
+one day of downloads. While no one exports, the older ones wait for the next
+export. A restart empties `temp/` as a whole. A user who comes back after a
+day exports again. The uploads in flight under `temp/tus/` and the package
+builds under `temp/packages/` are not downloads; uploads have a sweep of their
+own ([Upload disk floor](#upload-disk-floor)).
 
 ### The update disk guard
 
