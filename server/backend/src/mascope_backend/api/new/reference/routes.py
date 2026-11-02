@@ -16,7 +16,7 @@ async def get_reference_sources_route(user=Depends(guest_user)):
     """
     List the reference sources this deployment has loaded.
 
-    One row per active source: its name, version, label, licence, polarity,
+    One row per active compound source: its name, version, label, licence, polarity,
     whether its radicals may be matched, the window its compounds are matched
     in, how many compounds it holds, when it was loaded, and ``admitted``,
     whether the deployment's ``[backend] reference_licenses`` lets Stage A of
@@ -24,6 +24,7 @@ async def get_reference_sources_route(user=Depends(guest_user)):
     it; any other source is labelled by its name. ``references`` are the
     publications the source comes from, as recorded when it was loaded: each a
     ``citation`` with its ``doi`` or ``isbn``, and a ``note``. Sorted by label.
+    A spectral library's load holds spectra, not compounds, and is not listed.
 
     Reference data belongs to the deployment, not to a workspace, so any
     signed-in user reads it. Open to an API token with its service name, because
@@ -66,7 +67,7 @@ async def get_reference_source_compounds_route(
     :param user: The currently authenticated user.
     :return: ``{"name", "version", "data": [...], "total": N}``.
     :raises NotFoundException: When the source has no such version, or no
-        active one when none is named.
+        active one when none is named, or is a spectral library's load.
     :rtype: dict
     """
     found = await source_compounds(name, version=version, page=page, limit=limit)

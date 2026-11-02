@@ -98,7 +98,7 @@ compounds = mascope.reference.compounds("nitroaromatics")
 
 | Read | SDK | Operation | Returns |
 |---|---|---|---|
-| The loaded lists | `mascope.reference.sources()` | `GET /api/reference/sources` | one row per active list: its name, label, the publications it comes from (citation with DOI or ISBN), version, licence, polarity, size, load date, and `admitted`, whether the server's licence gate lets peak assignment match it |
+| The loaded lists | `mascope.reference.sources()` | `GET /api/reference/sources` | one row per active compound list, spectral libraries left out: its name, label, the publications it comes from (citation with DOI or ISBN), version, licence, polarity, size, load date, and `admitted`, whether the server's licence gate lets peak assignment match it |
 | What one list holds | `mascope.reference.compounds(name, version=None)` | `GET /api/reference/sources/{name}/compounds` | one row per compound of the active version, or of the one named: name, formula, mass, InChIKey, the list's own id, the DOI it cites, tags |
 
 Any role reads them: the lists belong to the server, not to a workspace. The

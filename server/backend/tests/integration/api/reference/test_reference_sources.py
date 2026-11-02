@@ -3,8 +3,9 @@ Integration: the reference sources API says which sources are loaded and what
 one of them holds.
 
 Seeds a shipped list's source in two versions (the older one replaced), a
-custom source under another licence and a source that was deactivated, then
-reads both routes through the HTTP stack as a signed-in user who is a member
+custom source under another licence, a source that was deactivated and a
+spectral library's load, which neither route serves as a list, then reads
+both routes through the HTTP stack as a signed-in user who is a member
 of no workspace: reference data belongs to the deployment, not to one.
 """
 
@@ -22,6 +23,7 @@ from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_reference import canonical_formula, catalogue, monoisotopic_mass
 from mascope_reference.adapters.peaklist import list_citations
+from mascope_reference.schema import COMPOUND_KIND, SPECTRUM_KIND
 
 
 _NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -32,6 +34,8 @@ _SHIPPED = next(p for p in catalogue() if p.id == "contaminants-keller2008")
 
 _CUSTOM = "d-test-custom-list"
 _RETIRED = "d-test-retired-list"
+#: An active MS/MS library: it holds spectra, so it is no compound list.
+_SPECTRA = "d-test-spectral-library"
 
 _HOM = ("C10H16O3", "C10H16O4", "C10H16O5")
 
@@ -57,7 +61,7 @@ def _compound(source_id: int, formula: str, native_id: str, license: str):
 
 @pytest_asyncio.fixture
 async def sources(async_session_factory):
-    """The four source rows and their compounds, removed afterwards."""
+    """The five source rows and their compounds, removed afterwards."""
     source_ids = []
     async with async_session_factory() as session:
         for name, version, license, active, formulas in (
@@ -65,13 +69,17 @@ async def sources(async_session_factory):
             (_SHIPPED.id, "new", "CC-BY-4.0", True, _HOM),
             (_CUSTOM, "1", "restricted", True, _HOM[:2]),
             (_RETIRED, "1", "CC-BY-4.0", False, _HOM[:1]),
+            (_SPECTRA, "1", "CC-BY-4.0", True, ()),
         ):
             source = ReferenceSource(
                 name=name,
                 version=version,
                 license=license,
-                record_count=len(formulas),
+                # The spectral library counts its spectra.
+                record_count=5 if name == _SPECTRA else len(formulas),
                 is_active=active,
+                # The shipped list's rows predate the column.
+                kind={_SPECTRA: SPECTRUM_KIND, _CUSTOM: COMPOUND_KIND}.get(name),
                 ingested_at=_NOW,
                 known_window={"c_max": 20},
                 allow_radicals=name == _CUSTOM,
@@ -137,7 +145,11 @@ async def _sources(client) -> list[dict]:
     assert response.status_code == 200
     body = response.json()
     assert body["total"] == len(body["data"])
-    return [s for s in body["data"] if s["name"] in (_SHIPPED.id, _CUSTOM, _RETIRED)]
+    return [
+        s
+        for s in body["data"]
+        if s["name"] in (_SHIPPED.id, _CUSTOM, _RETIRED, _SPECTRA)
+    ]
 
 
 @pytest.mark.asyncio
@@ -314,6 +326,9 @@ async def test_a_named_version_is_served_even_when_replaced(outsider_client, sou
     [
         (_SHIPPED.id, {"version": "missing"}),
         (_RETIRED, {}),
+        # A spectral library holds no compounds to page through.
+        (_SPECTRA, {}),
+        (_SPECTRA, {"version": "1"}),
         ("no-such-source", {}),
     ],
 )

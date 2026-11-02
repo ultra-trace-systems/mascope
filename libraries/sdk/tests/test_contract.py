@@ -2226,7 +2226,11 @@ def _reference_sources(mascope):
 
 
 def _largest_reference_source(mascope):
-    """The reference source with the most compounds, as a row of sources()."""
+    """The reference source with the most compounds, as a row of sources().
+
+    The server lists compound sources only, so a spectral library loaded on
+    the stack, whose ``record_count`` counts spectra, is never the one picked.
+    """
     sources = _reference_sources(mascope)
     return sources.loc[sources["record_count"].idxmax()]
 

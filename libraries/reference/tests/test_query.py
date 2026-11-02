@@ -32,6 +32,8 @@ from mascope_reference.query import (  # noqa: E402
     xref_cas_number,
 )
 from mascope_reference.schema import (  # noqa: E402
+    COMPOUND_KIND,
+    SPECTRUM_KIND,
     reference_compound,
     reference_source,
 )
@@ -205,11 +207,18 @@ GALACTOSE = "WQZGKKKJIJFFOK-SVZMEOIVSA-N"
 MANNOSE = "WQZGKKKJIJFFOK-QTVWNMPRSA-N"
 
 
-def _source(conn, name: str, *, active: bool = True, license: str = "CC-BY-4.0"):
+def _source(
+    conn,
+    name: str,
+    *,
+    active: bool = True,
+    license: str = "CC-BY-4.0",
+    kind: str | None = None,
+):
     """Insert a reference source; its id."""
     return conn.execute(
         reference_source.insert()
-        .values(name=name, version="v1", license=license, is_active=active)
+        .values(name=name, version="v1", license=license, is_active=active, kind=kind)
         .returning(reference_source.c.reference_source_id)
     ).scalar_one()
 
@@ -502,6 +511,41 @@ async def test_active_sources_are_the_active_versions_by_name(sync_engine, db_pa
     assert hom.known_window == {"c_max": 20}
     assert hom.allow_radicals is True
     assert hom.polarity == "negative"
+
+
+@pytest.mark.asyncio
+async def test_active_sources_leave_out_a_spectral_library(sync_engine, db_path):
+    # A row of the compound kind is listed as one with no kind is, which
+    # predates the column; an active spectral library's load is not.
+    with sync_engine.begin() as conn:
+        _source(conn, "amines", kind=COMPOUND_KIND)
+        _source(conn, "hom")
+        _source(conn, "msms-library", kind=SPECTRUM_KIND)
+    rows = await _read(db_path, active_sources)
+    assert [row.name for row in rows] == ["amines", "hom"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [None, "v1"])
+async def test_source_compounds_of_a_spectral_library_are_none(
+    sync_engine, db_path, version
+):
+    with sync_engine.begin() as conn:
+        _source(conn, "msms-library", kind=SPECTRUM_KIND)
+    assert (
+        await _read(db_path, source_compounds, "msms-library", version=version) is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_source_compounds_of_a_compound_kind_source_are_read(
+    sync_engine, db_path
+):
+    with sync_engine.begin() as conn:
+        source = _source(conn, "amines", kind=COMPOUND_KIND)
+        _compound(conn, source, "a", monoisotopic_mass=180.06)
+    page = await _read(db_path, source_compounds, "amines")
+    assert [r.source_native_id for r in page.records] == ["a"]
 
 
 @pytest.mark.asyncio

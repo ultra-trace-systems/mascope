@@ -8,7 +8,8 @@ each source, so a re-synced source does not double annotations.
 :func:`structures_by_formula` pages through the same rows for a person
 choosing a compound's structure among them. :func:`active_sources` and
 :func:`source_compounds` say which sources are loaded and what one of them
-holds, for a person reading the lists rather than an annotation.
+holds, for a person reading the lists rather than an annotation; both see
+compound sources only, never a spectral library's load.
 """
 
 import re
@@ -22,7 +23,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mascope_reference.normalize import canonical_formula
 from mascope_reference.record import ReferenceRecord
-from mascope_reference.schema import reference_compound, reference_source
+from mascope_reference.schema import (
+    COMPOUND_KIND,
+    reference_compound,
+    reference_source,
+)
 
 
 # The compound columns a query selects, in the order they are read back.
@@ -409,16 +414,27 @@ _SOURCE_COLUMNS = (
     reference_source.c.citations,
 )
 
+# A source of compounds rather than a spectral library's load. A row with no
+# kind predates the column and is a compound source, as in ``known.py``.
+_IS_COMPOUND_SOURCE = (
+    func.coalesce(reference_source.c.kind, COMPOUND_KIND) == COMPOUND_KIND
+)
+
 
 async def active_sources(session: AsyncSession) -> list[SourceRow]:
-    """The active version of every loaded source, by name.
+    """The active version of every loaded compound source, by name.
+
+    A spectral library's load is left out: it holds spectra, not compounds,
+    so it is no list :func:`source_compounds` could page through.
 
     :param session: Active async session.
-    :return: One row per active source version, ordered by name and version.
+    :return: One row per active compound source version, ordered by name and
+        version.
     """
     stmt = (
         select(*_SOURCE_COLUMNS)
         .where(reference_source.c.is_active.is_(True))
+        .where(_IS_COMPOUND_SOURCE)
         .order_by(
             reference_source.c.name,
             reference_source.c.version,
@@ -450,7 +466,8 @@ async def source_compounds(
     :param limit: Rows per page, 1 to :data:`SOURCE_PAGE_CAP`.
     :param offset: Rows to skip.
     :return: The page, or None when the source has no such version, or no
-        active one when none is asked for.
+        active one when none is asked for; a spectral library's load is no
+        compound source, so it reads as None too.
     :raises ValueError: On a ``limit`` outside its range or a negative
         ``offset``.
     """
@@ -459,7 +476,7 @@ async def source_compounds(
     if offset < 0:
         raise ValueError(f"offset must not be negative, not {offset}")
     which = select(reference_source.c.reference_source_id, reference_source.c.version)
-    which = which.where(reference_source.c.name == name)
+    which = which.where(reference_source.c.name == name).where(_IS_COMPOUND_SOURCE)
     if version is None:
         which = which.where(reference_source.c.is_active.is_(True))
     else:

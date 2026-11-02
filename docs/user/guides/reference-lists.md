@@ -266,7 +266,9 @@ comes from (`references`), and `admitted`, which says whether the
 deployment's licence gate lets peak assignment match it.
 `GET /api/reference/sources/<name>/compounds` pages through what one source
 holds (`page`, `limit` up to 1000, and `version` for a load other than the
-active one). In the app, the same is under
+active one). Both list compound sources only: a spectral library loaded for
+MS/MS matching holds spectra, not compounds, so it is not listed, and its name
+answers 404 on the compounds route. In the app, the same is under
 [Reference lists](#see-the-loaded-lists-in-the-app).
 
 **License / attribution.** Set a per-record `license` column if the list carries
