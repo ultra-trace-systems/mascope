@@ -294,3 +294,104 @@ def test_sweep_does_not_follow_a_linked_user_directory(temp_base):
 
     assert storage.sweep_expired_downloads() == 0
     assert os.path.exists(target)
+
+
+def test_a_rewrite_during_a_sweep_keeps_the_new_copy(
+    temp_base, fresh_sweeper, monkeypatch
+):
+    """A deposit package rebuilt the next day survives the sweep beside it.
+
+    The sweep has decided the old archive is expired when the rebuild moves
+    the new one in under the same name. The new archive must stay.
+    """
+    old = _write(str(temp_base / "temp" / "1" / "dataset.zip"), DAY + 60)
+    build = temp_base / "temp" / "packages" / "dataset.zip"
+    os.makedirs(build.parent)
+    build.write_text("new")
+    monkeypatch.setattr(storage, "_last_sweep", time.monotonic())  # no 2nd sweep
+
+    decided, release = threading.Event(), threading.Event()
+    tomb_path = storage._tomb_path
+
+    def gated_tomb_path(path):
+        decided.set()
+        assert release.wait(timeout=10)
+        return tomb_path(path)
+
+    monkeypatch.setattr(storage, "_tomb_path", gated_tomb_path)
+    sweep = threading.Thread(target=storage.sweep_expired_downloads)
+    sweep.start()
+    try:
+        assert decided.wait(timeout=10)
+        rebuild = threading.Thread(
+            target=lambda: os.replace(build, storage.user_temp_path(1, "dataset.zip"))
+        )
+        rebuild.start()
+        rebuild.join(timeout=0.2)  # it waits for the sweep to move the old copy
+    finally:
+        release.set()
+        sweep.join(timeout=10)
+    rebuild.join(timeout=10)
+
+    with open(old) as handle:
+        assert handle.read() == "new"
+    assert [n for n in os.listdir(os.path.dirname(old))] == ["dataset.zip"]
+
+
+def test_a_rewrite_after_the_old_copy_is_moved_aside_keeps_the_new_copy(
+    temp_base, fresh_sweeper, monkeypatch
+):
+    """The sweep removes the moved-aside copy, never the path itself.
+
+    The rebuild lands after the sweep has moved the old archive aside and
+    released the lock, but before the removal. The new archive must stay.
+    """
+    old = _write(str(temp_base / "temp" / "1" / "dataset.zip"), DAY + 60)
+    build = temp_base / "temp" / "packages" / "dataset.zip"
+    os.makedirs(build.parent)
+    build.write_text("new")
+    monkeypatch.setattr(storage, "_last_sweep", time.monotonic())  # no 2nd sweep
+
+    buried, release = threading.Event(), threading.Event()
+    bury = storage._bury_if_expired
+
+    def gated_bury(path, cutoff):
+        tomb = bury(path, cutoff)
+        buried.set()
+        assert release.wait(timeout=10)
+        return tomb
+
+    monkeypatch.setattr(storage, "_bury_if_expired", gated_bury)
+    sweep = threading.Thread(target=storage.sweep_expired_downloads)
+    sweep.start()
+    try:
+        assert buried.wait(timeout=10)
+        os.replace(build, storage.user_temp_path(1, "dataset.zip"))
+    finally:
+        release.set()
+        sweep.join(timeout=10)
+
+    with open(old) as handle:
+        assert handle.read() == "new"
+    assert [n for n in os.listdir(os.path.dirname(old))] == ["dataset.zip"]
+
+
+def test_claiming_a_path_keeps_its_expired_copy_from_the_sweep(temp_base):
+    """A writer about to replace an old copy makes it fresh first; a reader not."""
+    rewrite = _write(str(temp_base / "temp" / "1" / "again.csv"), DAY + 60)
+    read = _write(str(temp_base / "temp" / "1" / "read.csv"), DAY + 60)
+
+    storage.user_temp_path(1, "again.csv")
+    storage.user_temp_path(1, "read.csv", create=False)
+
+    assert storage.sweep_expired_downloads() == 1
+    assert os.path.exists(rewrite)
+    assert not os.path.exists(read)
+
+
+def test_sweep_removes_an_expired_entry_left_moved_aside(temp_base):
+    """An entry a sweep moved aside but did not remove goes in the next one."""
+    tomb = _write(str(temp_base / "temp" / "1" / ".expired-abc"), DAY + 60)
+
+    assert storage.sweep_expired_downloads() == 1
+    assert not os.path.exists(tomb)
