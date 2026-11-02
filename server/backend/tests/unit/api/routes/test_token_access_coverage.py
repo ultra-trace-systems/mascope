@@ -77,9 +77,12 @@ TOOLKIT_READS = {
     ),
     # the four loaders, and the provenance block every Frame cites
     ("GET", "/api/samples/{sample_item_id}/peaks"): (
-        "load_peaks, load_peaks_by_stage, and load_timeseries resolving a formula"
+        "load_peaks, load_peaks_by_stage, load_timeseries resolving a formula, "
+        "and compute_timeseries counting the peaks without a series"
     ),
-    ("POST", "/api/samples/{sample_item_id}/peaks/timeseries"): "load_timeseries",
+    ("POST", "/api/samples/{sample_item_id}/peaks/timeseries"): (
+        "load_timeseries, and compute_timeseries filling the series cache"
+    ),
     ("GET", "/api/samples/{sample_item_id}/spectrum"): "load_spectrum",
     ("GET", "/api/provenance"): "the provenance record of every Frame",
     # the oracle

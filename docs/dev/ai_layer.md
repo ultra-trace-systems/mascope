@@ -73,6 +73,11 @@ Four RPC-style POSTs are queries, not mutations
 though `peaks/timeseries` computes and stores a peak's time series the first
 time it is asked for one, which `compute_peak_timeseries` drives on purpose
 ([samples.py:671-778](../../libraries/sdk/src/mascope_sdk/resources/samples.py)).
+The toolkit treats filling that cache as a read (MAS-531): it is derived from
+the sample's data, under the same guest ACL `load_timeseries` already fills it
+with, and changes no object of the user's. `compute_timeseries` is bounded by
+its cap of peaks per call (500, a ceiling the toolkit is built with), not by
+plan/apply.
 The high-level loaders stamp the server's provenance block (deployment id,
 `mascope_version`, `match_score_version`, `peak_assignment_engine_version`) on
 every frame they return as `df.attrs["provenance"]`: the five loaders stamp
@@ -423,6 +428,7 @@ load_timeseries(compound=None, ion=None, isotope=None, *,
                 dataset=None, batches=None) -> Frame
 load_spectrum(sample, mz_range=None) -> Frame
 load_peaks_by_stage(sample, stages) -> Frame
+compute_timeseries(sample, mz_range=None, *, max_peaks=500) -> dict
 ```
 
 `find` is one fuzzy entry point rather than four `list()` calls; it is backed
@@ -447,6 +453,14 @@ outright; otherwise it loads sample by sample through the SDK's concurrent
 fetch, keeps a running row count, and stops at the cap, raising with the count
 reached and the samples left unloaded so the model narrows the query itself.
 A Frame above the cap is never materialised. Loads never prompt.
+
+`compute_timeseries` (MAS-531) has the server compute the per-scan time series
+a stage left out, so that the stage loaded again is whole. Its cost is one
+request per peak, the data file read back for each, so its cap is in peaks:
+it counts the peaks without a series first and refuses before computing any
+when they are more than `max_peaks`, naming the count, so the model narrows
+`mz_range`. 500 is the default and the most a call may ask for; the ceiling
+is set when the toolkit is built.
 
 ### 3.3 Tool surface: the oracle
 
@@ -939,6 +953,8 @@ carries its user's rights, no more.
 | `describe` collection | `GET /api/target/collections/{id}` | collection guest | **opened** |
 | `load_peaks`, `load_peaks_by_stage` | `GET /api/samples/{id}/peaks` | sample guest | yes |
 | `load_timeseries` | `POST /api/samples/{id}/peaks/timeseries` | sample guest | yes |
+| `compute_timeseries`: the peaks, and those with a series | `GET /api/samples/{id}/peaks` | sample guest | yes |
+| `compute_timeseries`: a time-series cache fill, treated as a read | `POST /api/samples/{id}/peaks/timeseries` | sample guest | yes |
 | `load_spectrum` | `GET /api/samples/{id}/spectrum` | sample guest | yes |
 | provenance of every Frame | `GET /api/provenance` | global guest | yes |
 | `match_compounds` | `POST /api/match/aggregate/sample/{id}/compounds` | sample guest | yes |

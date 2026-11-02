@@ -75,6 +75,7 @@ SURFACE = (
     "load_timeseries",
     "load_spectrum",
     "load_peaks_by_stage",
+    "compute_timeseries",
     "query_by_mz",
     "match_compounds",
     "derive",

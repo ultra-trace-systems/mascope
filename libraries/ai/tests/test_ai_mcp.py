@@ -105,6 +105,7 @@ class TestProtocol:
             "load_timeseries",
             "load_spectrum",
             "load_peaks_by_stage",
+            "compute_timeseries",
             "query_by_mz",
             "match_compounds",
             "answer",
@@ -397,6 +398,12 @@ class TestArguments:
             ("load_spectrum", {"sample": "s21", "mz_range": [1]}, "mz_range is"),
             ("load_spectrum", {"sample": "s21", "t_range": "0-1"}, "t_range is"),
             ("query_by_mz", {"mz": "x", "mechanisms": ["[M+Br]-"]}, "mz is a number"),
+            ("compute_timeseries", {"sample": "s21", "mz_range": [1]}, "mz_range is"),
+            (
+                "compute_timeseries",
+                {"sample": "s21", "max_peaks": 0},
+                "max_peaks is a positive integer",
+            ),
             (
                 "load_peaks_by_stage",
                 {"sample": "s21", "stages": [[0, "x"]]},
@@ -644,6 +651,41 @@ class TestFrames:
         out = ok(server, "load_peaks_by_stage", sample="s21", stages=[[0, 5]])
         assert out["complete"] is False
         assert "4 peak(s) left out" in out["failures"][0]
+
+    def test_compute_timeseries_makes_a_stage_whole(self, api, server, kit):
+        api.drop_series("s21", below_mz=100)
+        stage = {"sample": "s21", "stages": [[0, 5]], "matches": False}
+        assert ok(server, "load_peaks_by_stage", **stage)["complete"] is False
+
+        out = ok(server, "compute_timeseries", sample="s21")
+
+        assert out == {
+            "ref": {"kind": "sample", "id": "s21", "name": "Sample 1", "parent": "b2"},
+            "mz_range": None,
+            "peaks": 12,
+            "had_timeseries": 8,
+            "computed": 4,
+        }
+        assert ok(server, "load_peaks_by_stage", **stage)["complete"] is True
+
+    def test_compute_timeseries_takes_its_range_and_cap(self, api, server, kit):
+        api.drop_series("s21")
+        out = ok(
+            server, "compute_timeseries", sample="s21", mz_range=[100, 125], max_peaks=3
+        )
+        assert out["computed"] == 3
+        params = last_call(kit)["params"]
+        assert params["mz_range"] == [100.0, 125.0]
+        assert params["max_peaks"] == 3
+
+    def test_compute_timeseries_over_the_cap_is_refused(self, api, server):
+        api.drop_series("s21")
+        out = refused(server, "compute_timeseries", sample="s21", max_peaks=11)
+        assert out["error"] == "invalid_request"
+        assert "12 peak(s)" in out["message"] and "Narrow mz_range" in out["message"]
+        out = refused(server, "compute_timeseries", sample="s21", max_peaks=501)
+        assert "at most 500" in out["message"]
+        assert api.requests_to(r"samples/s21/peaks/timeseries", "POST") == []
 
 
 class TestTheHandle:
