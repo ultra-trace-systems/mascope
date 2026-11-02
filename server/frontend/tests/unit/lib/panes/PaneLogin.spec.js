@@ -141,6 +141,31 @@ describe('PaneLogin with Turnstile', () => {
     expect(loginButton(wrapper).attributes('disabled')).toBeDefined()
   })
 
+  it('spends the token on a sign-in that goes on to the code step', async () => {
+    mocks.auth = makeAuth('site-key-1')
+    // The password step answers that a code is needed: the code step replaces
+    // the form, and its widget, before the attempt finishes.
+    mocks.auth.login = vi.fn(async () => {
+      mocks.auth.mfaPending = true
+      await flushPromises()
+    })
+    const wrapper = await mountPane()
+    turnstile.solve('token-1')
+    await flushPromises()
+
+    await loginButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(wrapper.find('#login-mfa-code').exists()).toBe(true)
+
+    // Cancel: the form comes back with a fresh widget, still unsolved.
+    mocks.auth.mfaPending = false
+    await flushPromises()
+    await wrapper.get('#login-password input').setValue('a password')
+
+    expect(turnstile.render).toHaveBeenCalledTimes(2)
+    expect(loginButton(wrapper).attributes('disabled')).toBeDefined()
+  })
+
   it('takes the form back when the token expires', async () => {
     mocks.auth = makeAuth('site-key-1')
     const wrapper = await mountPane()

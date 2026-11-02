@@ -1531,8 +1531,11 @@ see it. It is off unless the site turns it on.
    with the site key. The app's Content-Security-Policy allows
    `challenges.cloudflare.com` on every site, so nginx needs no change.
 
-The security suite signs in with a password and cannot solve the check, so on
-a site with Turnstile on its signed-in checks cannot sign in.
+The security suite and the release smoke test (`tooling/smoke-test.sh`) sign
+in with a password and cannot solve the check. On a site with Turnstile on, the
+security suite's signed-in checks cannot sign in, and the smoke test stops at
+`[smoke] FAIL: login rejected` on a healthy server. Read that failure as the
+check doing its job, not as a broken deployment.
 
 **Turning it off.** Remove `MASCOPE_TURNSTILE_SITE_KEY` from
 `/etc/environment`, unset it, and bring the stack up again. The secret file can
