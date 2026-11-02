@@ -9,6 +9,9 @@ Hermetic, over conftest.py's recorded server.
 
 import json
 import re
+import subprocess
+import sys
+import time
 
 import pandas as pd
 import pytest
@@ -21,7 +24,7 @@ from mascope_ai import (
     Session,
     Toolkit,
 )
-from mascope_ai.manifest import CLIENT_COMPUTED, COMPUTED
+from mascope_ai.manifest import CLIENT_COMPUTED, COMPUTED, locked
 
 
 def _calls(kit):
@@ -75,6 +78,54 @@ class TestTheFile:
         assert manifest.records() == []
         assert manifest.touched() == []
         assert manifest.since_last_answer() == []
+
+
+#: A second writer: appends argv[2] records to the manifest at argv[1].
+WRITER = """
+import sys
+from mascope_ai import Manifest
+
+manifest = Manifest(sys.argv[1])
+for i in range(int(sys.argv[2])):
+    manifest.append({"type": "call", "op": "find", "i": i})
+"""
+
+
+def _writer(path, count):
+    return subprocess.Popen([sys.executable, "-c", WRITER, str(path), str(count)])
+
+
+class TestTwoWriters:
+    def test_two_processes_never_give_two_records_one_seq(self, tmp_path):
+        path = tmp_path / "manifest.jsonl"
+
+        writers = [_writer(path, 200) for _ in range(2)]
+        assert [writer.wait(timeout=120) for writer in writers] == [0, 0]
+
+        seqs = [record["seq"] for record in Manifest(path).records()]
+        assert len(seqs) == 400
+        assert seqs == list(range(400))
+
+    def test_a_writer_waits_for_the_lock(self, tmp_path):
+        manifest = Manifest(tmp_path / "manifest.jsonl")
+        manifest.append({"type": "toolkit"})
+
+        with locked(manifest.lock_path):
+            writer = _writer(manifest.path, 1)
+            time.sleep(1.0)
+            # Held here, so the other process has not counted or written.
+            assert writer.poll() is None
+            assert len(manifest.records()) == 1
+        assert writer.wait(timeout=60) == 0
+
+        assert [r["seq"] for r in manifest.records()] == [0, 1]
+
+    def test_the_lock_is_beside_the_manifest(self, tmp_path):
+        manifest = Manifest(tmp_path / "s" / "manifest.jsonl")
+        manifest.append({"type": "toolkit"})
+
+        assert manifest.lock_path == tmp_path / "s" / "manifest.lock"
+        assert manifest.lock_path.exists()
 
 
 class TestCalls:

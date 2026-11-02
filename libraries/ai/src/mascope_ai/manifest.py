@@ -23,12 +23,18 @@ a line, appended to and never rewritten:
     inferred.
 
 A record's ``seq`` counts the lines of the file, so a session reopened by
-another toolkit numbers on. The manifest is a record, not a source of truth
+another toolkit numbers on. Writers count and append under an exclusive lock
+on ``manifest.lock`` beside the file, so two processes writing one session at
+once (the MCP server and a ``Toolkit(session=...)`` in another Python) never
+give two records the same ``seq``. The manifest is a record, not a source of truth
 for the data: the Frames' queries are what reload them.
 """
 
 import json
+import os
 import platform
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -79,6 +85,41 @@ def ref_list(refs) -> list[dict[str, Any]]:
     return out
 
 
+@contextmanager
+def locked(path: Path) -> Iterator[None]:
+    """Hold an exclusive lock on the file at *path* (made if missing), across
+    processes, until the block ends.
+
+    A lock file of its own rather than the manifest: on Windows a lock is
+    mandatory, so one on the manifest would fail its readers meanwhile.
+    """
+    with path.open("a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            while True:
+                try:
+                    # LK_LOCK itself gives up after about ten seconds.
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    continue
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 class Manifest:
     """A session's ``manifest.jsonl``.
 
@@ -87,6 +128,11 @@ class Manifest:
 
     def __init__(self, path: Path | str):
         self.path = Path(path)
+
+    @property
+    def lock_path(self) -> Path:
+        """The file :meth:`append` locks, beside the manifest."""
+        return self.path.with_suffix(".lock")
 
     def __repr__(self) -> str:
         return f"Manifest({str(self.path)!r})"
@@ -101,15 +147,16 @@ class Manifest:
         return [r for r in records if kind is None or r.get("type") == kind]
 
     def append(self, record: dict[str, Any]) -> dict[str, Any]:
-        """Add *record*, numbered and stamped; return it as written."""
+        """Add *record*, numbered and stamped; return it as written.
+
+        The count and the write happen under :func:`locked`, so a record
+        another process appends meanwhile cannot take the same ``seq``.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        seq = (
-            sum(1 for line in self.path.read_text().splitlines() if line)
-            if self.path.exists()
-            else 0
-        )
-        written = jsonable({"seq": seq, "at": now(), **record})
-        with self.path.open("a") as out:
+        with locked(self.lock_path), self.path.open("a+") as out:
+            out.seek(0)
+            seq = sum(1 for line in out.read().splitlines() if line)
+            written = jsonable({"seq": seq, "at": now(), **record})
             out.write(json.dumps(written, sort_keys=False) + "\n")
         return written
 
