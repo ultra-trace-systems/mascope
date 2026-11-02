@@ -16,9 +16,8 @@ from mascope_backend.api.controllers.match.lib.match_aggregate import (
     snr_columns_json_safe,
 )
 from mascope_backend.api.controllers.match.lib.match_score_v2 import (
-    ion_score_v2,
+    ion_scores_v2,
     match_score_version,
-    sample_noise_floor,
 )
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.controllers.target.ions.target_ions_controller import (
@@ -502,16 +501,19 @@ async def aggregate_sample_match_compounds(
         # consolidated mascope_tools v2 score (additive + gated; v1 unchanged).
         if match_score_version() == 2:
             _mu, _sigma = fit_sample_mass_accuracy(filtered_match_isotope_df)
-            _noise = sample_noise_floor(filtered_match_isotope_df)
+            # Every ion at once, the fit `ion_score_v2` gives each one alone, read
+            # off each ion's first row.
             _v2 = (
-                filtered_match_isotope_df.groupby(
-                    "target_ion_id", sort=False, dropna=False
+                filtered_match_isotope_df[["target_ion_id"]]
+                .assign(
+                    match_score_v2=ion_scores_v2(
+                        filtered_match_isotope_df,
+                        "target_ion_id",
+                        sigma_ppm=_sigma,
+                        mu=_mu,
+                    )
                 )
-                .apply(
-                    lambda g: ion_score_v2(g, sigma_ppm=_sigma, mu=_mu, noise=_noise)
-                )
-                .rename("match_score_v2")
-                .reset_index()
+                .drop_duplicates("target_ion_id")
             )
             match_ions_df = match_ions_df.merge(_v2, on="target_ion_id", how="left")
             match_ions_df["match_score"] = match_ions_df["match_score_v2"].fillna(

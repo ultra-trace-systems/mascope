@@ -3,9 +3,8 @@ from typing import Optional, Tuple
 import pandas as pd
 
 from mascope_backend.api.controllers.match.lib.match_score_v2 import (
-    ion_score_v2,
+    ion_scores_v2,
     match_score_version,
-    sample_noise_floor,
 )
 from mascope_backend.api.models.target.collections.config import (
     target_collection_config,
@@ -209,23 +208,23 @@ def _can_score_v2(df: pd.DataFrame) -> bool:
 def _v2_ion_scores(isotope_df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     """Per-ion v2 fit scores for ``isotope_df``, keyed by ``keys``.
 
-    The mass-accuracy fit and the noise floor are measured PER SAMPLE, which is what
-    their names and docstrings promise: ``fit_sample_mass_accuracy`` returns one
-    file's systematic mass offset and its robust spread, and ``sample_noise_floor``
-    one file's baseline. An aggregation frame here routinely spans a whole batch --
-    ``aggregate_matches`` is invoked with a ``sample_batch_id`` -- so it can mix files
-    and even instrument classes. Fitting once over that union would subtract one
-    batch-wide mu from a well-centred file's mass errors and stretch or squeeze every
-    Gaussian to the batch-average sigma, making an ion's score depend on which other
+    The mass-accuracy fit is measured PER SAMPLE, which is what its name and
+    docstring promise: ``fit_sample_mass_accuracy`` returns one file's systematic
+    mass offset and its robust spread. An aggregation frame here routinely spans a
+    whole batch -- ``aggregate_matches`` is invoked with a ``sample_batch_id`` -- so
+    it can mix files and even instrument classes. Fitting once over that union would
+    subtract one batch-wide mu from a well-centred file's mass errors and stretch or
+    squeeze every Gaussian to the batch-average sigma, making an ion's score depend on which other
     samples happened to be aggregated with it. Grouping by ``sample_item_id`` fixes
     both, and separates instruments as a side effect (a sample has exactly one file
     and one instrument). This mirrors the per-sample engine path in
     ``api/new/peak_assignments/engine.py``, so batch and single-sample scoring agree.
 
-    Grouping is on ``keys`` only -- the same narrow id columns the v1 aggregation
-    groups on -- rather than on every label column that happens to ride along, and
-    ``include_groups=False`` keeps the key columns out of the per-group frame
-    (pandas 2.2 deprecation; the default flips in pandas 3).
+    An ion is one combination of ``keys`` -- the same narrow id columns the v1
+    aggregation groups on -- rather than of every label column that happens to ride
+    along. Each sample's ions are scored together by ``ion_scores_v2``, the fit
+    ``ion_score_v2`` gives each one alone, and the score is read off each ion's
+    first row.
 
     The per-sample split is skipped when ``keys`` does not carry ``sample_item_id``:
     such a key set cannot name a per-sample score in the first place, so the caller's
@@ -240,14 +239,12 @@ def _v2_ion_scores(isotope_df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     scores = []
     for chunk in chunks:
         mu, sigma = fit_sample_mass_accuracy(chunk)
-        noise = sample_noise_floor(chunk)
-        scores.append(
-            chunk.groupby(keys, sort=False, dropna=False).apply(
-                lambda g: ion_score_v2(g, sigma_ppm=sigma, mu=mu, noise=noise),
-                include_groups=False,
-            )
+        ion = chunk.groupby(keys, sort=False, dropna=False).ngroup().to_numpy()
+        fit = ion_scores_v2(
+            chunk.assign(_v2_ion=ion), "_v2_ion", sigma_ppm=sigma, mu=mu
         )
-    return pd.concat(scores).rename("match_score_v2").reset_index()
+        scores.append(chunk[keys].assign(match_score_v2=fit).drop_duplicates(keys))
+    return pd.concat(scores, ignore_index=True)
 
 
 async def set_ions_match_category(
