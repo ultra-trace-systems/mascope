@@ -158,6 +158,11 @@ Each session keeps `manifest.jsonl`, one JSON record a line:
   `unscored` (candidates Mascope did not score) and `inferred` (the model's
   own statements).
 
+A record's `seq` counts the records before it. Several processes can write
+one session at once, such as the MCP server and a `Toolkit(session=...)` in
+your own Python: each writes under a lock on `manifest.lock` beside the
+file, so no two records share a `seq`.
+
 `session.manifest.touched()` lists every object the session touched. A table
 computed in Python is kept with `kit.derive(df, [frames])`, and its
 `source_refs` are those of the Frames it came from. So an answer built on it
