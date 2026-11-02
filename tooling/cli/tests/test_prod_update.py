@@ -273,6 +273,10 @@ def manual_update(monkeypatch, mascope_home):
     monkeypatch.setattr(prod_main, "_prune_images", lambda: None)
     monkeypatch.setattr(prod_main, "_align_checkout", lambda *a: None)
     monkeypatch.setattr(prod_main, "_warn_if_cli_stale", lambda **k: None)
+    # The update as a checkout install runs it, whatever release it names:
+    # the test home is no checkout, so it would be a wheel install's, which
+    # deploys only its CLI's release (`wheel_home` puts the real check back).
+    monkeypatch.setattr(prod_main, "_is_wheel_install", lambda *a, **k: False)
     yield monkeypatch
     shutil.rmtree(au.update_dir(str(mascope_home)), ignore_errors=True)
 
@@ -335,18 +339,28 @@ def test_failed_manual_update_keeps_the_pending_record(
     assert au.load_pending(str(mascope_home)).version == "v1.12.0"
 
 
-# --- a wheel deployment keeps the release an update deployed ---
+# --- a wheel deployment deploys its CLI's release, and keeps a record of it ---
+
+
+# Before the manual_update fixture stands in for it.
+_is_wheel_install = prod_main._is_wheel_install
 
 
 @pytest.fixture
 def wheel_home(manual_update, tmp_path):
-    """`prod update` and `prod up` on a runtime home that is no git checkout.
+    """`prod update` and `prod up` on a wheel install, its CLI cut with v1.12.0.
 
     MASCOPE_PATH moves to a fresh directory, so no record reaches the shared
     test home. The runtime singleton is built first: built from the empty
-    directory, its config would not load.
+    directory, its config would not load. No release manifest is found, so
+    a refusal names no CLI to install (test_prod_wheel_release.py has those).
     """
     prod_main.runtime.full_config  # noqa: B018
+    manual_update.setattr(prod_main, "_is_wheel_install", _is_wheel_install)
+    manual_update.setattr(prod_main.mascope_release, "RELEASE", "v1.12.0")
+    manual_update.setattr(
+        prod_main.auto_update, "download_manifest", lambda *a, **k: None
+    )
     manual_update.setenv("MASCOPE_PATH", str(tmp_path))
     return tmp_path
 
@@ -373,6 +387,17 @@ def _up(monkeypatch, cli_runner, *args):
 def _update(cli_runner, *args):
     result = cli_runner.invoke(prod_main.prod_app, ["update", *args])
     assert result.exit_code == 0, result.output
+
+
+def _refused(monkeypatch, cli_runner, *args):
+    """Run a prod command that has to be refused before any compose call."""
+
+    def _never(*a, **k):
+        raise AssertionError("ran docker compose for a release it refuses")
+
+    monkeypatch.setattr(prod_main, "_run_compose", _never)
+    result = cli_runner.invoke(prod_main.prod_app, list(args))
+    assert result.exit_code == 1, result.output
 
 
 def test_a_wheel_update_is_redeployed_by_the_next_up(
@@ -402,10 +427,11 @@ def test_a_wheel_update_records_the_release_atomically(
     assert json.loads(record.read_text(encoding="utf-8"))["version"] == "v1.12.0"
 
 
-def test_a_wheel_update_without_version_redeploys_the_recorded_release(
+def test_a_wheel_update_without_version_deploys_the_clis_release(
     manual_update, wheel_home, cli_runner
 ):
-    prod_main.deployed_release.save(str(wheel_home), "v1.12.0")
+    """Not the recorded one: after a CLI upgrade, this is the update."""
+    prod_main.deployed_release.save(str(wheel_home), "v1.11.0")
     targets = []
     manual_update.setattr(
         prod_main, "_settle_pending", lambda target, path: targets.append(target)
@@ -414,18 +440,16 @@ def test_a_wheel_update_without_version_redeploys_the_recorded_release(
     _update(cli_runner)
 
     assert targets == ["v1.12.0"]
+    assert prod_main.deployed_release.load(str(wheel_home)) == "v1.12.0"
 
 
-def test_a_wheel_update_to_latest_clears_the_record(
-    manual_update, wheel_home, cli_runner
-):
+def test_a_wheel_update_to_latest_is_refused(manual_update, wheel_home, cli_runner):
+    """`latest` is the rolling master build, whose compose file is not the CLI's."""
     prod_main.deployed_release.save(str(wheel_home), "v1.12.0")
 
-    _update(cli_runner, "--version", "latest")
-    _forget_the_pin()
+    _refused(manual_update, cli_runner, "update", "--version", "latest")
 
-    assert prod_main.deployed_release.load(str(wheel_home)) is None
-    assert _up(manual_update, cli_runner, "--detach") == ["latest"]
+    assert prod_main.deployed_release.load(str(wheel_home)) == "v1.12.0"
 
 
 def test_a_failed_wheel_update_records_nothing(manual_update, wheel_home, cli_runner):
@@ -457,7 +481,7 @@ def test_an_unwritable_record_does_not_fail_the_update(
 
     _update(cli_runner, "--version", "v1.12.0")
 
-    assert any("MASCOPE_VERSION=v1.12.0" in w for w in warnings), warnings
+    assert any("could not be updated" in w for w in warnings), warnings
 
 
 def test_a_checkout_update_writes_no_record(manual_update, cli_runner, release_repo):
@@ -510,13 +534,14 @@ def test_a_failed_up_records_nothing(manual_update, wheel_home, cli_runner):
     assert prod_main.deployed_release.load(str(wheel_home)) is None
 
 
-def test_a_non_release_pin_leaves_the_record(manual_update, wheel_home, cli_runner):
-    """A pin to another image tag is temporary: the release stays to return to."""
+@pytest.mark.parametrize("pin", ["sha-abc1234", "latest", "v1.11.0"])
+def test_a_pin_to_another_tag_is_refused(manual_update, wheel_home, cli_runner, pin):
+    """Any tag but the CLI's release would start on another release's files."""
     prod_main.deployed_release.save(str(wheel_home), "v1.12.0")
-    manual_update.setenv("MASCOPE_VERSION", "sha-abc1234")
+    manual_update.setenv("MASCOPE_VERSION", pin)
     manual_update.setenv("_MASCOPE_VERSION_PINNED", "1")
 
-    assert _up(manual_update, cli_runner, "--detach") == ["sha-abc1234"]
+    _refused(manual_update, cli_runner, "up", "--detach")
 
     assert prod_main.deployed_release.load(str(wheel_home)) == "v1.12.0"
 
@@ -548,39 +573,25 @@ def test_an_update_replaces_an_unreadable_record(manual_update, wheel_home, cli_
 def test_a_detached_up_keeps_an_unreadable_record(
     manual_update, wheel_home, cli_runner
 ):
-    """The fallback past a bad record must leave the file its warning names."""
+    """An unpinned `up` writes no record, so a bad one stays for its owner."""
     record = prod_main.deployed_release.path(str(wheel_home))
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text('{"version": "1.12.0"}', encoding="utf-8")
 
-    assert _up(manual_update, cli_runner, "--detach") == ["latest"]
+    assert _up(manual_update, cli_runner, "--detach") == ["v1.12.0"]
 
     assert record.read_text(encoding="utf-8") == '{"version": "1.12.0"}'
 
 
-def test_a_latest_pin_on_a_detached_up_keeps_the_record(
-    manual_update, wheel_home, cli_runner
-):
-    """Only `update --version latest` clears the record, not a passing pin."""
-    prod_main.deployed_release.save(str(wheel_home), "v1.12.0")
-    manual_update.setenv("MASCOPE_VERSION", "latest")
-    manual_update.setenv("_MASCOPE_VERSION_PINNED", "1")
-
-    assert _up(manual_update, cli_runner, "--detach") == ["latest"]
-    _forget_the_pin()
-
-    assert prod_main.deployed_release.load(str(wheel_home)) == "v1.12.0"
-
-
-def test_a_detached_up_without_a_record_warns_once(
+def test_a_detached_up_without_a_record_never_falls_back_to_latest(
     manual_update, wheel_home, cli_runner
 ):
     warnings = []
     manual_update.setattr(prod_main.runtime.logger, "warning", warnings.append)
 
-    assert _up(manual_update, cli_runner, "--detach") == ["latest"]
+    assert _up(manual_update, cli_runner, "--detach") == ["v1.12.0"]
 
-    assert len(warnings) == 1, warnings
+    assert not any("latest" in w for w in warnings), warnings
 
 
 def test_an_unpinned_up_does_not_record_the_cli_version(
@@ -590,6 +601,6 @@ def test_an_unpinned_up_does_not_record_the_cli_version(
     manual_update.setenv("MASCOPE_VERSION", "v2026.9.30")
     manual_update.setenv("_MASCOPE_VERSION_PINNED", "0")
 
-    assert _up(manual_update, cli_runner, "--detach") == ["latest"]
+    assert _up(manual_update, cli_runner, "--detach") == ["v1.12.0"]
 
     assert prod_main.deployed_release.load(str(wheel_home)) is None

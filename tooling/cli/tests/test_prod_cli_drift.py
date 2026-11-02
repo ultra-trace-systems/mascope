@@ -199,6 +199,9 @@ def test_update_invokes_stale_check(monkeypatch, cli_runner):
     monkeypatch.setattr(
         prod_main, "_warn_if_cli_stale", lambda *, auto: calls.append(auto)
     )
+    # The test home is no checkout, so it is a wheel install's: the release
+    # has to be the CLI's own.
+    monkeypatch.setattr(prod_main.mascope_release, "RELEASE", "v1.2.0")
 
     result = cli_runner.invoke(prod_main.prod_app, ["update", "--version", "v1.2.0"])
     assert result.exit_code == 0

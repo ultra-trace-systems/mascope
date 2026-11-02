@@ -171,6 +171,10 @@ def auto_env(monkeypatch, tmp_path):
     monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
     monkeypatch.delenv("MASCOPE_UPDATE_WINDOW", raising=False)
     monkeypatch.delenv("MASCOPE_UPDATE_GRACE_DAYS", raising=False)
+    # The updater as a checkout install runs it: the temp home is no checkout,
+    # which would make it a wheel install's, deploying only its CLI's release
+    # (that hand-over is tested in test_prod_wheel_release.py).
+    monkeypatch.setattr(prod_main, "_is_wheel_install", lambda *a, **k: False)
     return monkeypatch
 
 

@@ -21,10 +21,12 @@ mascope prod up     # pull and start the production stack
 ```
 
 `mascope init` creates the runtime home at `~/.mascope`
-(`%LOCALAPPDATA%\Mascope` on Windows) — configuration TOMLs you can edit,
-docker compose files, and generated application secrets. Set `MASCOPE_PATH`
+(`%LOCALAPPDATA%\Mascope` on Windows) — the configuration TOMLs, docker
+compose files, and generated application secrets. Set `MASCOPE_PATH`
 to place it elsewhere. Re-running `init` is safe: existing files are kept and
-secrets are never regenerated.
+secrets are never regenerated. Put your own settings in the env overlay,
+`.runtime/env/default/prod.mascope.toml`, not in the TOMLs at the top of the
+home: those are the release's, and a CLI upgrade replaces them.
 
 To try Mascope without a deployment, the self-contained demo stack ships in
 the runtime home as well:
@@ -39,7 +41,7 @@ docker compose -f docker-compose.demo.yaml up -d
 ```sh
 mascope prod ps                  # container status
 mascope prod logs --follow       # stream logs
-mascope prod update              # update the stack to the latest release
+mascope prod update              # deploy the release this CLI was cut with
 mascope prod db backup           # dump the database
 mascope prod db restore --yes    # restore the latest dump
 mascope logs query --grep error  # search the application's file logs
@@ -51,41 +53,60 @@ Run `mascope --help` or `mascope <command> --help` for the full reference.
 
 `mascope prod update` pulls the target release images, restarts the stack
 with them and runs any pending database migrations (preceded by an automatic
-pre-migration dump). Move to a specific release with
-`mascope prod update --version v1.2.0`, or pin the deployed version for all
-commands with `MASCOPE_VERSION`.
+pre-migration dump).
 
 ## The deployed release
 
 A runtime home made by `pip install mascope-cli` and `mascope init` has no
-source checkout to say which release it runs, so it keeps a record of its own
-in `.runtime/deployed-release.json`:
+source checkout to say which release it runs. Its CLI says it: each CLI
+version is cut with one Mascope release, and its compose file and config
+layers are that release's. So the CLI deploys that release and no other.
 
-- **What writes it.** `mascope prod update --version v1.2.0`, the unattended
-  `mascope prod update --auto`, and `mascope prod up --detach` with a
-  `MASCOPE_VERSION` pin to a release tag, each once the stack is up healthy.
-  Any other `up` leaves the record as it is.
-- **What reads it.** `mascope prod up`, a plain `mascope prod update`,
-  `mascope prod doctor` and `--auto` use the recorded release when no
-  `MASCOPE_VERSION` pin is set. `--auto` never moves the stack back past it.
-- **Back to `latest`.** `mascope prod update --version latest` removes the
-  record. With no record and no pin, the stack follows the `latest` images.
+- **Moving to another release** is installing its CLI, then `mascope prod up`:
+
+  ```sh
+  uv tool install mascope-cli==<calver>   # the CLI cut with the release
+  mascope prod up --detach
+  ```
+
+  `mascope prod up` and `mascope prod update` refuse any other release, a
+  `--version` or a `MASCOPE_VERSION` pin, `latest` included. The refusal
+  names the CLI to install, read from the release's manifest
+  (`mascope-manifest.json`, whose `cli_version` names it). Going back to an
+  earlier release is the same, with its CLI.
+- **The first `prod up` after the CLI is upgraded** writes the new release's
+  config layers and compose files over the home's
+  (`base.mascope.toml`, `prod.mascope.toml`, `dev.mascope.toml` and the three
+  `docker-compose*.yaml`). It keeps a copy of what it replaced under
+  `.runtime/replaced/`, and does it once per CLI version, recorded in
+  `.runtime/config-files.json`. It never touches `.runtime/`: not the env
+  overlay `.runtime/env/<env>/prod.mascope.toml`, where your settings belong,
+  and never the secrets.
+- **The unattended update** (`mascope prod update --auto`) finds the newest
+  release and classifies it as before. When it is due - a fast update in the
+  maintenance window, or a migration update past its grace or confirmed - and
+  its CLI is newer, it exits with code **40** and writes the requirement to
+  install (`mascope-cli==<calver>`) to `.runtime/update/cli-to-install`. Install
+  that, then run `--auto` again as a new process, which applies it.
+- **What ran last** is kept in `.runtime/deployed-release.json`, written once
+  the stack is up healthy on a release (`prod update`, `--auto`, and
+  `prod up --detach` with a `MASCOPE_VERSION` pin to the CLI's release).
+  `mascope prod doctor` reports drift between the containers and the CLI's
+  release until the `prod up` after an upgrade.
 - **On a checkout install** the checked-out tag says which release runs, and
-  the record is neither written nor read.
+  none of this applies.
 
 ## Limits of a wheel install
 
-A wheel install starts a stack and keeps its release, but does not yet carry
-one across releases the way a server's source checkout does:
+A wheel install starts a stack and moves it across releases with its CLI, but
+lacks what a server's source checkout gets from `tooling/ubuntu.sh`:
 
-- **The compose file and config layers are the CLI's own.** `mascope init`
-  writes the copies this CLI version ships, and `prod update` never refreshes
-  them. `mascope init --force` overwrites the base and mode layers wholesale.
 - **There are no boot or update units.** Nothing starts the stack at boot or
-  runs the unattended update, backup retention or disk check. A checkout
-  install gets these as systemd units from `tooling/ubuntu.sh`.
-- **A CLI behind the release goes unnoticed.** There is no checkout to
-  compare it with; upgrade it with `pip install -U mascope-cli`.
+  runs the unattended update, backup retention or disk check, nor installs
+  the CLI an `--auto` exit 40 names. A checkout install gets these as systemd
+  units from `tooling/ubuntu.sh`.
+- **Only a release cut with a CLI can be deployed.** A pre-release built
+  without a CLI of its own, or the rolling `latest`, needs a checkout.
 
 ## Development
 

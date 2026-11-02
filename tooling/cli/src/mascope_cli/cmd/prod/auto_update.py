@@ -12,6 +12,11 @@ release, classifies it with the preflight, and acts by classification:
   update and notify, so a human can schedule the window. Applying migration
   updates on confirmation or after a grace period is handled separately.
 
+On a wheel install, which deploys only its CLI's release, an update that is
+due to apply to a newer release is handed over instead: the run names the
+release's CLI and exits ``AUTO_INSTALL_CLI``, for the unit to install it and
+run again as a new process.
+
 Finding the latest release and downloading its manifest use the public GitHub
 REST API over plain HTTPS - no token and no ``gh`` needed, since the repository
 and its release assets are public. A nightly timer stays well within the
@@ -40,6 +45,10 @@ from mascope_cli.cmd.prod.release_manifest import MANIFEST_FILENAME
 AUTO_OK = 0  # nothing to do, or a fast update applied cleanly
 AUTO_MIGRATION_PENDING = 30  # a migration update was recorded + notified
 AUTO_ERROR = 2  # discovery, apply, or health check failed
+# A wheel install's update is due, and only the newest release's own CLI can
+# apply it: install the CLI `cli_handover_path` names, then run --auto again as
+# a new process. Never the running process itself (see cli_drift).
+AUTO_INSTALL_CLI = 40
 
 
 @dataclass
@@ -296,6 +305,26 @@ def should_apply_migration(
         pending.first_seen_at
     ) + datetime.timedelta(days=grace_days)
     return now >= grace_deadline
+
+
+def cli_handover_path(mascope_path: str) -> Path:
+    """
+    The file naming the CLI to install after an ``AUTO_INSTALL_CLI`` exit.
+
+    One line, the requirement to pass to ``uv tool install`` (for example
+    ``mascope-cli==2026.11.2``), rewritten by every run that exits so. Read it
+    only after such an exit: other runs leave it as it was.
+    """
+    return update_dir(mascope_path) / "cli-to-install"
+
+
+def record_cli_handover(mascope_path: str, requirement: str) -> None:
+    """Write ``requirement`` to `cli_handover_path`, atomically."""
+    path = cli_handover_path(mascope_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".tmp.{path.name}")
+    temp.write_text(requirement + "\n", encoding="utf-8")
+    os.replace(temp, path)
 
 
 def record_status(mascope_path: str, message: str) -> None:

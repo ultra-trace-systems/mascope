@@ -10,8 +10,13 @@ This command deliberately never touches the Runtime singleton — it must
 work before any environment exists.
 """
 
+import datetime
+import json
 import os
 import secrets as _secrets
+import shutil
+import uuid
+from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 from typing import Annotated, Optional
@@ -19,6 +24,7 @@ from typing import Annotated, Optional
 import typer
 
 from mascope_cli.home import default_home
+from mascope_runtime.atomic import replace_with_retry, write_json
 
 
 # Config layers + compose files shipped as package data (mascope_cli/data/).
@@ -88,17 +94,113 @@ RUNTIME_DIRS = (
 )
 
 
+# Under the home: which CLI version last brought the CONFIG_FILES to its own
+# copies (`refresh_config_files`), and where the copies it replaced are kept.
+REFRESH_STAMP = Path(".runtime") / "config-files.json"
+REPLACED_DIR = Path(".runtime") / "replaced"
+
+
+def _bundled(name: str) -> bytes:
+    """The bytes of the bundled config or compose file ``name``."""
+    return (resources.files("mascope_cli") / "data" / name).read_bytes()
+
+
 def _write_config_files(home: Path, force: bool) -> list[str]:
     """Copy bundled config/compose files into the home; returns files written."""
     written = []
-    data_root = resources.files("mascope_cli") / "data"
     for name in CONFIG_FILES:
         target = home / name
         if target.exists() and not force:
             continue
-        target.write_bytes((data_root / name).read_bytes())
+        target.write_bytes(_bundled(name))
         written.append(name)
     return written
+
+
+@dataclass
+class Refresh:
+    """What `refresh_config_files` changed in a home."""
+
+    # The CONFIG_FILES rewritten with this CLI's copies, in CONFIG_FILES order.
+    written: list[str]
+    # Where the copies they replaced were kept; None when none was replaced
+    # (every written file was missing).
+    replaced_dir: Optional[Path]
+
+
+def _refreshed_by(home: Path) -> Optional[str]:
+    """The CLI version the stamp names, or None (no stamp, or unreadable)."""
+    try:
+        data = json.loads((home / REFRESH_STAMP).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    version = data.get("cli_version") if isinstance(data, dict) else None
+    return version if isinstance(version, str) else None
+
+
+def _replace_bytes(target: Path, content: bytes) -> None:
+    """Write ``content`` over ``target`` by a rename, so it is never half-written."""
+    temp = target.with_name(f".tmp.{target.name}.{uuid.uuid4().hex}")
+    try:
+        temp.write_bytes(content)
+        replace_with_retry(str(temp), str(target))
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def refresh_config_files(home: Path, cli_version: str) -> Optional[Refresh]:
+    """
+    Bring a wheel install's config layers and compose files to this CLI's.
+
+    A wheel install deploys only the release its CLI was cut with, and that
+    release's compose file and config layers are the copies the CLI bundles:
+    after the CLI is upgraded, the home's copies are the previous release's.
+    This rewrites each of ``CONFIG_FILES`` that differs from the bundled copy,
+    once per CLI version (the stamp under ``.runtime/`` records which), so a
+    hand edit made after the refresh lasts until the next upgrade. What it
+    replaces is copied first into ``.runtime/replaced/<when>/``.
+
+    Never touched: anything under ``.runtime/``, so neither the env overlay
+    (``.runtime/env/<env>/<mode>.mascope.toml``), where operator settings
+    belong, nor the secrets.
+
+    :param home: The runtime home.
+    :param cli_version: The running CLI's version, for the stamp.
+    :return: What was rewritten, or None when this CLI version already
+        refreshed the home or nothing differed.
+    :raises OSError: A copy or a write failed. Files already rewritten stay
+        rewritten and their old copies kept; the stamp is not written, so
+        the next run tries again.
+    """
+    if _refreshed_by(home) == cli_version:
+        return None
+    stale = [
+        name
+        for name in CONFIG_FILES
+        if not (home / name).is_file() or (home / name).read_bytes() != _bundled(name)
+    ]
+    replaced_dir = None
+    present = [name for name in stale if (home / name).is_file()]
+    if present:
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        replaced_dir = home / REPLACED_DIR / f"{stamp}-{uuid.uuid4().hex[:8]}"
+        replaced_dir.mkdir(parents=True)
+        for name in present:
+            shutil.copy2(home / name, replaced_dir / name)
+    for name in stale:
+        _replace_bytes(home / name, _bundled(name))
+    (home / REFRESH_STAMP).parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        str(home / REFRESH_STAMP),
+        {
+            "cli_version": cli_version,
+            "refreshed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(
+                timespec="seconds"
+            ),
+        },
+        indent=2,
+    )
+    return Refresh(written=stale, replaced_dir=replaced_dir) if stale else None
 
 
 def create_secret(path: Path) -> None:

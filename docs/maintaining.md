@@ -78,9 +78,8 @@ that is less than its window.
 
 **Version** compares the tag the containers are actually running against the
 one this deployment would deploy right now (the `MASCOPE_VERSION` pin, else the
-release tag checked out, else on a wheel install the release recorded in
-`.runtime/deployed-release.json`, else `latest`). A mismatch is reported as
-drift:
+release tag checked out, else on a wheel install the release its CLI was cut
+with, else `latest`). A mismatch is reported as drift:
 
 ```
 Version  backend latest · frontend latest  DRIFT (this deployment deploys vX.Y.Z)
@@ -92,8 +91,11 @@ the two into line: `git checkout <tag>` for the release the server should run,
 then reinstall the CLI from that checkout, then `mascope prod update` - in that
 order, see [Rolling out a release across several
 servers](#rolling-out-a-release-across-several-servers) for why the CLI has to
-move before the stack does. On a wheel install, `mascope prod update --version
-<tag>` deploys the release and records it in one step.
+move before the stack does. On a wheel install the CLI is the release: after
+`uv tool install mascope-cli==<calver>`, drift lasts until the next
+`mascope prod up` deploys the new CLI's release (the
+[CLI's README](https://github.com/ultra-trace-systems/mascope/blob/develop/tooling/cli/README.md#the-deployed-release)
+has the steps).
 
 ## The settings a deployment overrides
 
@@ -277,9 +279,9 @@ mascope prod update --version v1.3.0 # deploy a specific pinned release
 
 `mascope prod update` on its own follows the rolling **`latest`** master build,
 whose version shows in the UI as a date+hash build id (e.g.
-`2026.07.08-ab12cd34`) - *not* the newest `vX.Y.Z` release. On a wheel install
-with a release recorded in `.runtime/deployed-release.json`, it redeploys that
-release instead; `--version latest` clears the record and follows `latest`. To run a pinned
+`2026.07.08-ab12cd34`) - *not* the newest `vX.Y.Z` release. A wheel install
+deploys only the release its CLI was cut with, and refuses any other
+`--version`, `latest` included, naming the CLI to install for it. To run a pinned
 release, pass `--version vX.Y.Z` - a successful update then also moves the
 deployment checkout to that tag, so the server keeps tracking (and
 reporting) that release across restarts and future updates. Checking the
@@ -2668,7 +2670,10 @@ warning whenever it cannot resolve a version and falls back:
 it is enabled; `journalctl -u mascope-update.service` for the reason. Exit 2 is
 usually a stack that is down (the DB revision is read from the running Postgres)
 or no network to reach the releases API. Exit 30 is *not* a failure - it means a
-migration update is pending.
+migration update is pending. Exit 40 is a wheel install's: an update is due
+that only the newest release's CLI can apply, so install the CLI named in
+`.runtime/update/cli-to-install` (`uv tool install mascope-cli==<calver>`) and
+run `mascope prod update --auto` again.
 
 **A migration update won't apply.** It waits for the maintenance window, the
 grace period, or a confirm, and never applies while snoozed. Run
