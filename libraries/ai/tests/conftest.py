@@ -130,6 +130,10 @@ class FakeAPI:
         *params* given warns that *count* peaks were left out, or with
         *count* None answers as a server up to 1.10.1 does when it left out
         every peak, set through :meth:`leave_out`.
+    :ivar no_series: Sample ID -> the IDs of its peaks with no time series,
+        set through :meth:`drop_series`: a time-ranged peak read leaves them
+        out and warns how many, and a time-series request computes one. A
+        peak read with an m/z range keeps the peaks within it.
     :ivar datasets: Dataset ID -> ``[name, workspace ID]``.
     :ivar batches: Batch ID -> ``(dataset ID, name)``.
     :ivar samples: Sample ID -> ``(batch ID, name)``.
@@ -147,6 +151,7 @@ class FakeAPI:
         self.failures: list[tuple[str, re.Pattern, dict[str, Any], int]] = []
         self.peak_copies = 1
         self.left_out: list[tuple[dict[str, Any], int | None]] = []
+        self.no_series: dict[str, set[str]] = {}
         self.datasets = {d: [name, "ws1"] for d, name in DATASETS.items()}
         self.batches = dict(BATCHES)
         self.samples = dict(SAMPLES)
@@ -178,6 +183,19 @@ class FakeAPI:
         computed time series were left out of them; *count* None, answer
         with no peak and no warnings list at all, as an older server does."""
         self.left_out.append((dict(params or {}), count))
+
+    def drop_series(self, sample_id: str, below_mz: float | None = None) -> set[str]:
+        """Leave the peaks of *sample_id* (those under m/z *below_mz*, when
+        given) without a time series, as on a sample never matched; their
+        IDs."""
+        data = self._peaks(sample_id)["data"]
+        dropped = {
+            peak_id
+            for peak_id, mz in zip(data["peak_id"], data["mz"])
+            if below_mz is None or mz < below_mz
+        }
+        self.no_series[sample_id] = set(dropped)
+        return dropped
 
     def writes(self) -> list[tuple]:
         """Every request that was not a GET."""
@@ -281,6 +299,7 @@ class FakeAPI:
             return 200, _envelope(self._sample(parts[1]))
         if re.fullmatch(r"samples/\w+/peaks", path):
             peaks = self._peaks(parts[1])
+            self._narrow(peaks, parts[1], params)
             for left_params, count in self.left_out:
                 if not left_params.items() <= params.items():
                     continue
@@ -438,6 +457,29 @@ class FakeAPI:
             data[key] = copies
         return {**RECORDED["peaks"], "results": len(data["peak_id"]), "data": data}
 
+    def _narrow(self, peaks: dict[str, Any], sample_id: str, params) -> None:
+        """Keep in a peak read *peaks* those within its m/z range, and in a
+        time-ranged one those with a time series (:attr:`no_series`)."""
+        data = peaks["data"]
+        low = float(params.get("mz_min", float("-inf")))
+        high = float(params.get("mz_max", float("inf")))
+        dropped = self.no_series.get(sample_id, set()) if "t_min" in params else set()
+        in_range = [i for i, mz in enumerate(data["mz"]) if low <= mz <= high]
+        keep = [i for i in in_range if data["peak_id"][i] not in dropped]
+        if len(keep) == len(data["peak_id"]):
+            return
+        for key, value in data.items():
+            if isinstance(value, list):
+                data[key] = [value[i] for i in keep]
+        peaks["results"] = len(keep)
+        left = len(in_range) - len(keep)
+        if left:
+            peaks["warnings"] = [
+                *peaks["warnings"],
+                f"{left} peak(s) were excluded because their timeseries have "
+                "not been computed yet.",
+            ]
+
     def _match(self, sample_id: str, body: dict[str, Any]) -> tuple[int, Any]:
         if sample_id not in self.samples:
             return 403, {"error": "Forbidden"}
@@ -470,6 +512,7 @@ class FakeAPI:
         return 200, {**RECORDED["match_compounds"], "data": data}
 
     def _timeseries(self, sample_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        self.no_series.get(sample_id, set()).discard(body.get("peak_id"))
         return {
             **RECORDED["timeseries"],
             "data": {**RECORDED["timeseries"]["data"], "peak_id": body["peak_id"]},

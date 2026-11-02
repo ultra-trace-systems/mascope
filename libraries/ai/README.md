@@ -59,6 +59,7 @@ global collections).
 | `load_timeseries(compound= / ion= / isotope=, dataset=, batches=, samples=, max_rows=)` | `Frame` |
 | `load_spectrum(sample, mz_range=, t_range=, max_rows=)` | `Frame` |
 | `load_peaks_by_stage(sample, stages, max_rows=)` | `Frame` |
+| `compute_timeseries(sample, mz_range=None, max_peaks=)` | a small dict: the peaks in range, how many had a time series, how many were computed |
 | `query_by_mz(mz, mechanisms, tolerance_ppm=5.0, formula_ranges=, limit=20, isotopologues=True, known_only=False)` | `Candidates`: Mascope's formulas for an m/z, the closest first |
 | `match_compounds(sample, formulas, params=None, suggested=, mechanisms=)` | `MatchResult`: one verdict per candidate, the tree as a `Frame` |
 | `derive(df, inputs, code=)` | `Frame` of a table computed from Frames, their sources kept |
@@ -80,11 +81,26 @@ as the rows read pass the cap, raising `RowCapExceeded` with the rows
 reached and the samples left. A Frame above the cap is never made. Loads
 never prompt.
 
+**Computing time series.** `compute_timeseries` is one request per peak,
+in which the server reads the sample's data file back, so it is capped:
+it counts the peaks without a series first, and refuses with
+`InvalidRequest`, before it computes any, when they are more than
+`max_peaks`. Narrow `mz_range` and compute a range at a time. The cap is
+500 by default (`DEFAULT_MAX_PEAKS`), and that is also the most a call may
+ask for: `Toolkit(max_peaks=...)` sets the ceiling when the toolkit is
+built. Peaks that have a series are not asked for, so a call that stopped
+goes on where it stopped. The server stores what it computes, a derived
+cache of the sample's data under the same guest access `load_timeseries`
+fills it with, so the call is treated as a read: no object changes, and no
+plan is needed.
+
 **Completeness.** Every Frame says whether it is the whole answer:
 `complete` is False when some read failed, and `failures` names each one.
 A stage of `load_peaks_by_stage` is incomplete too when the server left
 peaks out of it because their time series was not computed yet: its
 failure (`TimeseriesNotComputed`) says how many (`excluded_peaks`).
+`compute_timeseries(sample)` has the server compute those series, so that
+the stage loaded again is whole.
 `warnings` carries what the server warned about the reads, and
 `provenance` the server's provenance block.
 
@@ -258,6 +274,7 @@ variant.
 | `find` | refs, best first, with the total; `dataset` / `batch` search within one |
 | `describe` | the small dict `describe()` gives |
 | `load_peaks`, `load_timeseries`, `load_spectrum`, `load_peaks_by_stage` | a Frame's handle |
+| `compute_timeseries` | the peaks in range, how many had a time series, how many were computed |
 | `query_by_mz` | Mascope's candidates for an m/z |
 | `match_compounds` | one condensed verdict per candidate, the unscored apart, the tree's handle |
 | `answer` | closes an answer in the manifest |

@@ -19,7 +19,14 @@ import os
 
 import pytest
 
-from mascope_ai import AmbiguousName, Frame, RowCapExceeded, Session, Toolkit
+from mascope_ai import (
+    AmbiguousName,
+    Frame,
+    InvalidRequest,
+    RowCapExceeded,
+    Session,
+    Toolkit,
+)
 
 
 BASE_URL = os.environ.get("MASCOPE_SDK_TEST_URL", "http://127.0.0.1:8080")
@@ -186,6 +193,34 @@ class TestLoaders:
         ), frame.failures
         assert frame.complete == (not left_out)
         assert staged + sum(left_out) == listed.nunique()
+
+    def test_computing_the_series_a_stage_left_out(self, kit, peaks):
+        sample_id = peaks.df["sample_item_id"].iloc[0]
+        stage = [(0, 1e6, "all")]
+        before = kit.load_peaks_by_stage(sample_id, stage, matches=False)
+        staged = set(before.df["peak_id"]) if before.n_rows else set()
+        listed = peaks.df[peaks.df["sample_item_id"] == sample_id].drop_duplicates(
+            "peak_id"
+        )
+        left = listed[~listed["peak_id"].isin(staged)]
+        if len(left) < 2:
+            pytest.skip("the sample's peaks have their time series already")
+
+        # Over the cap: refused, and nothing computed
+        with pytest.raises(InvalidRequest, match=f"{len(left)} peak"):
+            kit.compute_timeseries(sample_id, max_peaks=len(left) - 1)
+        again = kit.load_peaks_by_stage(sample_id, stage, matches=False)
+        assert again.n_rows == len(staged)
+
+        # One left-out peak's narrow window, then that peak is in the stage
+        mz = float(left["mz"].iloc[0])
+        out = kit.compute_timeseries(sample_id, (mz - 1e-4, mz + 1e-4), max_peaks=20)
+
+        assert out["computed"] >= 1
+        assert out["peaks"] == out["had_timeseries"] + out["computed"]
+        after = kit.load_peaks_by_stage(sample_id, stage, matches=False)
+        assert left["peak_id"].iloc[0] in set(after.df["peak_id"])
+        assert after.n_rows == len(staged) + out["computed"]
 
     def test_timeseries_of_a_matched_compound(self, kit, peaks):
         df = peaks.df

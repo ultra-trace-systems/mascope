@@ -85,6 +85,12 @@ DEFAULT_MAX_ROWS = 500_000
 #: running count during the load is what holds the cap.
 ROWS_PER_SAMPLE_ESTIMATE = 100
 
+#: The most time series one :meth:`Toolkit.compute_timeseries` call computes,
+#: unless the toolkit is built with another ceiling. Each is a request, and on
+#: a sample never matched the server reads its data file back for each: a
+#: whole-acquisition stage of a demo sample leaves out 229 to 364 peaks.
+DEFAULT_MAX_PEAKS = 500
+
 #: The order ``find`` lists kinds in, among matches ranked alike.
 _KIND_ORDER = {kind: index for index, kind in enumerate(KINDS)}
 
@@ -472,6 +478,7 @@ class Toolkit:
         max_workers: int = 8,
         approver: Approver | None = None,
         plan_ttl: timedelta = PLAN_TTL,
+        max_peaks: int = DEFAULT_MAX_PEAKS,
     ):
         """Open the toolkit over a client.
 
@@ -488,6 +495,9 @@ class Toolkit:
             which mints the confirm tokens :meth:`apply` takes when a person
             approves a plan; a new one, of this toolkit alone, when None.
         :param plan_ttl: How long a plan stays appliable.
+        :param max_peaks: The most time series one
+            :meth:`compute_timeseries` call computes: its default, and a
+            ceiling a call can go under but not over.
         """
         self.client = client or MascopeClient(
             workspace=workspace, service_name=service_name
@@ -497,6 +507,7 @@ class Toolkit:
         self.max_workers = max_workers
         self.approver = approver if approver is not None else Approver()
         self.plan_ttl = plan_ttl
+        self.max_peaks = _check_cap(max_peaks, "max_peaks")
         self._recording = False
         self._opened = False
 
@@ -1528,12 +1539,101 @@ class Toolkit:
                         else "No peak came back, and this server does not say "
                         "whether their time series were missing."
                     )
-                    + " load_peaks reads the whole peak list.",
+                    + " compute_timeseries computes them; load_peaks reads the "
+                    "whole peak list.",
                 }
                 for stage, left_out in sorted(excluded.items())
             ]
             df.attrs["complete"] = False
         return df, [sample]
+
+    @_recorded("compute_timeseries")
+    def compute_timeseries(
+        self,
+        sample: "Ref | str",
+        mz_range: "tuple[float, float] | None" = None,
+        *,
+        max_peaks: int | None = None,
+    ) -> dict[str, Any]:
+        """Have the server compute the time series a stage load left out.
+
+        A stage of :meth:`load_peaks_by_stage` leaves out every peak whose
+        per-scan time series the server has not computed yet - typically
+        the peaks no target matched. This computes the series of each peak
+        of *sample* (within *mz_range*) that has none, so that the stage
+        loaded again includes them. Peaks that have one are not asked for:
+        a call that stopped part way goes on where it stopped when made
+        again.
+
+        The server stores what it computes, but only as a derived cache of
+        the sample's data, under the same guest access ``load_timeseries``
+        fills it with: no object of the user's changes. Its cost is the
+        bound: one request per peak, in which the server reads the data
+        file back. So the peaks to compute are counted first, and a call
+        that would compute more than *max_peaks* is refused before it
+        computes any.
+
+        :param mz_range: ``(mz_min, mz_max)``; every peak of the sample when
+            None.
+        :param max_peaks: The most series to compute; the toolkit's
+            ceiling (:attr:`max_peaks`, :data:`DEFAULT_MAX_PEAKS` unless
+            it was built with another) when None, and never more.
+        :return: ``ref`` (the sample), ``mz_range``, ``peaks`` (the peaks
+            in range), ``had_timeseries`` (those that had one already) and
+            ``computed`` (the series computed now).
+        :raises InvalidRequest: When more peaks lack a series than
+            *max_peaks*, with their count; narrow *mz_range*.
+        """
+        if max_peaks is None:
+            max_peaks = self.max_peaks
+        max_peaks = _check_cap(max_peaks, "max_peaks")
+        if max_peaks > self.max_peaks:
+            raise InvalidRequest(
+                f"max_peaks is at most {self.max_peaks} on this toolkit, not "
+                f"{max_peaks}. Narrow mz_range to compute fewer at a time."
+            )
+        if mz_range is not None:
+            if (
+                not isinstance(mz_range, (list, tuple))
+                or len(mz_range) != 2
+                or not all(
+                    isinstance(mz, (int, float)) and not isinstance(mz, bool)
+                    for mz in mz_range
+                )
+                or mz_range[0] >= mz_range[1]
+            ):
+                raise InvalidRequest(
+                    f"mz_range is (mz_min, mz_max), the lower first, not {mz_range!r}"
+                )
+            mz_range = (float(mz_range[0]), float(mz_range[1]))
+        sample = self.resolve(sample, "sample")
+        mz_min, mz_max = mz_range or (None, None)
+        samples = self.client.samples
+        with self._errors("list the peaks of", sample):
+            # Counted before anything is computed: a refusal costs two reads
+            wanted = samples._peak_ids(
+                sample.id, with_timeseries=False, mz_min=mz_min, mz_max=mz_max
+            )
+            have = set(samples._peak_ids(sample.id, with_timeseries=True))
+        missing = [peak_id for peak_id in wanted if peak_id not in have]
+        if len(missing) > max_peaks:
+            raise InvalidRequest(
+                f"{len(missing)} peak(s) of {sample}"
+                f"{f' in m/z {mz_min:g}-{mz_max:g}' if mz_range else ''} have no "
+                f"time series, more than max_peaks ({max_peaks}): each is a "
+                "request in which the server reads the data file back. Nothing "
+                "was computed. Narrow mz_range, and compute the rest a range "
+                "at a time."
+            )
+        with self._errors("compute the time series of", sample):
+            computed = samples.compute_peak_timeseries(sample.id, missing)
+        return {
+            "ref": sample.to_dict(),
+            "mz_range": list(mz_range) if mz_range is not None else None,
+            "peaks": len(wanted),
+            "had_timeseries": len(wanted) - len(missing),
+            "computed": computed,
+        }
 
     # --- the oracle ----------------------------------------------------------
 

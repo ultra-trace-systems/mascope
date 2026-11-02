@@ -43,7 +43,7 @@ from .oracle import (
 from .plans import PLAN_TTL, Approver, Change, Move, Plan, Receipt
 from .refs import KINDS, Kind, Ref
 from .session import Session
-from .toolkit import DEFAULT_MAX_ROWS, Found, Toolkit
+from .toolkit import DEFAULT_MAX_PEAKS, DEFAULT_MAX_ROWS, Found, Toolkit
 
 
 __version__ = version("mascope_ai")
@@ -52,6 +52,7 @@ __all__ = [
     "Toolkit",
     "Found",
     "DEFAULT_MAX_ROWS",
+    "DEFAULT_MAX_PEAKS",
     "Ref",
     "Kind",
     "KINDS",

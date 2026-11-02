@@ -34,7 +34,10 @@ numbers the answer needs are printed. Never print a whole DataFrame.
   sample's mode and mechanisms.
 - **Analysis** - a number computed from the data: load the Frame with a
   tool (`load_peaks`, `load_timeseries`, `load_spectrum`,
-  `load_peaks_by_stage`), then compute in Python (below). A batch's time
+  `load_peaks_by_stage`), then compute in Python (below). A stage that
+  says it left peaks out (`TimeseriesNotComputed`) is made whole by
+  `compute_timeseries` on its sample, then loaded again; over its cap it
+  refuses, and a narrower `mz_range` goes through. A batch's time
   series, as Mascope draws it, is one point per sample: the sample's
   averaged peak, from `load_peaks`. `load_timeseries` gives the scans within
   each sample, for what happens inside one.

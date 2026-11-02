@@ -47,7 +47,7 @@ from .manifest import package_version
 from .oracle import Candidate, MatchResult, formula_key
 from .refs import KINDS, Ref
 from .session import Session
-from .toolkit import DEFAULT_MAX_ROWS, Toolkit
+from .toolkit import DEFAULT_MAX_PEAKS, DEFAULT_MAX_ROWS, Toolkit
 
 
 #: The protocol revisions the server speaks, oldest first: those reached
@@ -566,6 +566,37 @@ TOOLS: tuple[Tool, ...] = (
         required=("sample", "stages"),
     ),
     Tool(
+        "compute_timeseries",
+        "Have the server compute the time series of a sample's peaks that have "
+        "none, so that load_peaks_by_stage, called again, includes the peaks a "
+        "stage left out. Peaks with a series are not asked for, so a call that "
+        "stopped goes on when made again. The server keeps what it computes, "
+        "a cache of the sample's own data: no object changes. Each peak is a "
+        "request that reads the data file back, so a call over max_peaks is "
+        "refused before it computes any; narrow mz_range then. Returns the "
+        "peaks in range, how many had a series and how many were computed.",
+        {
+            "sample": _SAMPLE,
+            "mz_range": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "[mz_min, mz_max]; every peak of the sample "
+                "when left out.",
+            },
+            "max_peaks": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The most series to compute: at most the "
+                f"server's ceiling ({DEFAULT_MAX_PEAKS:,} unless it was "
+                "started with another), which is also the default.",
+            },
+        },
+        "_compute_timeseries",
+        required=("sample",),
+    ),
+    Tool(
         "query_by_mz",
         "The formulas Mascope's mass query proposes for an m/z, the closest "
         "first: candidates, not verdicts. Score them in a sample with "
@@ -932,6 +963,15 @@ class Server:
                 max_rows=args.int("max_rows", DEFAULT_MAX_ROWS),
             )
         )
+
+    def _compute_timeseries(self, args: _Args) -> dict[str, Any]:
+        out = self.kit.compute_timeseries(
+            args.str("sample"),
+            args.pair("mz_range"),
+            max_peaks=args.int("max_peaks", self.kit.max_peaks),
+        )
+        out["ref"] = _ref(Ref.from_dict(out["ref"]))
+        return out
 
     def _query_by_mz(self, args: _Args) -> dict[str, Any]:
         mz = args.number("mz")

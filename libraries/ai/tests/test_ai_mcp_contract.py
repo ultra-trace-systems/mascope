@@ -129,6 +129,14 @@ def test_the_other_loaders(server, sample):
     assert stage["rows"] > 0
 
 
+def test_compute_timeseries_counts_before_it_computes(server, sample):
+    sample_id = sample["ref"]["id"]
+    # A window of no peak: nothing to compute, nothing refused
+    out = ok(server, "compute_timeseries", sample=sample_id, mz_range=[1.0, 1.0001])
+    assert out == {**out, "peaks": 0, "had_timeseries": 0, "computed": 0}
+    assert out["ref"]["id"] == sample_id
+
+
 def test_the_oracle(server, sample):
     mechanisms = sample["describe"]["ionization_mechanisms"]
     proposed = ok(server, "query_by_mz", mz=sample["mz"], mechanisms=mechanisms)
