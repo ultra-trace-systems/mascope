@@ -4,11 +4,13 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 import xarray as xr
+from fastapi import HTTPException, status
 from sqlalchemy import (
     and_,
     delete,
     func,
     select,
+    update,
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
@@ -680,6 +682,155 @@ async def update_sample_batch(
         "status": "success",
         "message": f"Sample batch '{batch.sample_batch_name}' was updated"
         + (" and flagged for rematch" if needs_rematch else ""),
+        "data": batch_data,
+    }
+
+
+@api_controller()
+async def move_sample_batch(
+    sample_batch_id: str,
+    source_dataset_id: str,
+    dataset_id: str,
+    independent_transaction: bool = False,
+) -> dict:
+    """
+    Move a sample batch into another dataset by reassigning its dataset_id.
+
+    No child rows are modified: samples, their matches and the batch's peaks
+    reference the batch, and the batch's target collections stay associated
+    with it, so the batch keeps its ID and everything it holds. Workspace ACL
+    resolves batch -> dataset -> workspace at query time, so the batch's access
+    follows its new dataset on this single foreign-key write.
+
+    The batch is read with a row lock, and moved only if it is still in
+    *source_dataset_id*, the dataset the route authorised: a move made in
+    between would otherwise let this one act on a batch the caller's role was
+    never checked for.
+
+    The rules follow the dataset move (``move_dataset``):
+
+    - An ACQUISITION batch is refused: the ingest files each day's samples
+      into it by (dataset, name, polarity), and would make it anew in its
+      instrument's dataset.
+    - An ACQUISITION destination is refused for the same reason: only the
+      ingest fills those datasets.
+    - A move into the dataset the batch is in already is refused.
+    - A collection of the batch scoped to another workspace than the
+      destination's is refused (409), as batch create and update refuse it.
+
+    A batch name may repeat within a dataset (``create_sample_batch`` takes
+    any name), so a name the destination already holds is no reason to
+    refuse.
+
+    :param sample_batch_id: The unique identifier of the sample batch to move.
+    :type sample_batch_id: str
+    :param source_dataset_id: The dataset the batch must still be in
+                              (verified inside the move transaction).
+    :type source_dataset_id: str
+    :param dataset_id: The dataset to move the batch into.
+    :type dataset_id: str
+    :param independent_transaction: Emit socket events when standalone,
+                                    defaults to False.
+    :type independent_transaction: bool, optional
+    :raises NotFoundException: If the batch is missing or no longer in the
+                               source dataset, or the destination dataset is
+                               missing.
+    :raises HTTPException: 400 for an ACQUISITION batch or destination, or a
+                           no-op move.
+    :raises ApiException: 409 if a collection of the batch is scoped to another
+                          workspace than the destination's.
+    :return: The moved batch's details.
+    :rtype: dict
+    """
+    async with async_session() as session:
+        # --- Fetch the batch, held against a concurrent move or update ---
+        batch = (
+            await session.execute(
+                select(SampleBatch)
+                .where(SampleBatch.sample_batch_id == sample_batch_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if batch is None or batch.dataset_id != source_dataset_id:
+            raise NotFoundException(
+                f"Sample batch with ID '{sample_batch_id}' not found"
+            )
+
+        # --- Acquisition batches are auto-managed - never relocate ---
+        if batch.sample_batch_type == "ACQUISITION":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Acquisition batches cannot be moved between datasets.",
+            )
+
+        # --- Reject no-op move explicitly (client error, not silent pass) ---
+        if dataset_id == source_dataset_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Sample batch is already in the target dataset.",
+            )
+
+        # --- Validate the destination dataset ---
+        target = await session.get(Dataset, dataset_id)
+        if target is None:
+            raise NotFoundException(f"Dataset with ID '{dataset_id}' not found")
+        if target.dataset_type == "ACQUISITION":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Sample batches cannot be moved into an acquisition dataset.",
+            )
+        # Held in a local: the commit below expires the instance's attributes
+        target_name = target.dataset_name
+
+        # --- The batch's collections must be allowed in the destination ---
+        collection_ids = (
+            (
+                await session.execute(
+                    select(TargetCollectionInSampleBatch.target_collection_id).where(
+                        TargetCollectionInSampleBatch.sample_batch_id == sample_batch_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        await validate_collections_scope_for_batch(
+            target_collection_ids=list(collection_ids),
+            dataset_id=dataset_id,
+        )
+
+        # --- Reassign the dataset; both datasets were modified ---
+        # The SampleBatch listeners bump the batch's and the new dataset's
+        # timestamps; the dataset it leaves is bumped here.
+        batch.dataset_id = dataset_id
+        await session.execute(
+            update(Dataset)
+            .where(Dataset.dataset_id == source_dataset_id)
+            .values(dataset_utc_modified=datetime.now(timezone.utc))
+        )
+        await session.commit()
+        await session.refresh(batch)
+
+    # --- The batch leaves one dataset's room and arrives in the other's ---
+    batch_data = SampleBatchRead.model_validate(batch).model_dump()
+    if independent_transaction:
+        await emit_record_deleted(
+            record_type="batch",
+            record_id=sample_batch_id,
+            room=source_dataset_id,
+        )
+        await emit_record_created(
+            record_type="batch",
+            record_id=sample_batch_id,
+            record=batch_data,
+            room=dataset_id,
+        )
+
+    return {
+        "message": (
+            f"Sample batch '{batch.sample_batch_name}' moved to dataset "
+            f"'{target_name}'."
+        ),
         "data": batch_data,
     }
 
