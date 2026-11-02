@@ -984,7 +984,9 @@ warns when the archive is not ready to deposit as it stands:
   repository asks for the first three, and a package of no samples describes
   no measurement. The user fills them in on the dataset in the app, and the
   package is built again. A deployed release from before this check reports
-  no gaps: the command says so, and **Prepare for publication** shows them.
+  no gaps, and has no **Prepare for publication** either: the command says
+  so, and the operator checks the dataset's licence, authors, description and
+  samples by hand.
 - **Sample files with no raw file.** The filestore keeps only the data
   converted from them, so the package describes them without the file.
 - **Raw files changed since upload.** Their SHA-256 is not the one recorded
