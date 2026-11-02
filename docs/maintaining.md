@@ -1481,19 +1481,62 @@ application's own limits, which the edge must not undercut for one client, are
   above 10 with a period up to 60 s lets the application's own 429 answer one
   client first. Leave `/api/auth/pairing/` and `/api/auth/mfa/` out: their own
   limits allow more (30 polls per 60 s, 60 verifies per 300 s).
-- [ ] **Challenge on the sign-in POST only.** A Managed Challenge on `POST` to
-  `/api/auth/login`. Leave everything else challenge-free: SDK and agent calls
-  with a bearer token, `/api/sample/files/upload` and its `tus` route,
-  `/api/auth/pairing/`, and `/socket.io/`. A challenge cannot be solved by a
-  script, so any of those would stop. The web app signs in with `fetch`, and
-  Cloudflare cannot show a challenge to a `fetch` request: check sign-in from a
-  fresh private window on staging before going on. If it fails with a 403
-  carrying `cf-mitigated: challenge`, take the rule off again.
+- [ ] **Turnstile on the sign-in form**, not a challenge rule (below). Put no
+  Managed Challenge on `/api/auth/login`: the web app signs in with `fetch`, and
+  Cloudflare cannot show a challenge to a `fetch` request, so the sign-in gets
+  a 403 carrying `cf-mitigated: challenge` that the page never shows. Leave
+  everything else challenge-free too: SDK and agent calls with a bearer token,
+  `/api/sample/files/upload` and its `tus` route, `/api/auth/pairing/`, and
+  `/socket.io/`. A challenge cannot be solved by a script, so any of those
+  would stop.
 - [ ] **Skip rule for the security suite.** The rule from GitHub #1889, so the
-  suite's own runs pass the managed rules, the rate limit and the challenge.
+  suite's own runs pass the managed rules and the rate limit.
   Until it is built, the suite runs from its origin vantage only.
 - [ ] **Authenticated origin pulls**, with this zone's own certificate (below),
   turned on **before** the switch at the origin.
+
+### Turning Turnstile on
+
+With Turnstile on, the sign-in form shows Cloudflare's human check under the
+password, and **Login** stays greyed out until it is solved. The backend has
+Cloudflare confirm the check's token before it looks at the password, and
+refuses the sign-in without it. Only the password step is checked: the
+two-factor code, SDK and agent calls with a token, pairing and uploads never
+see it. It is off unless the site turns it on.
+
+1. In the Cloudflare dashboard, under **Turnstile**, add a widget for the
+   site: its hostname, mode **Managed**. Cloudflare gives it a **site key**,
+   which is public, and a **secret key**, which is not.
+2. On the server, put the secret key where the backend reads it, and the site
+   key in `/etc/environment`:
+
+   ```sh
+   umask 077
+   printf '%s\n' '<secret key>' > "$(mascope path)/.runtime/secrets/turnstile_secret_key.txt"
+   echo MASCOPE_TURNSTILE_SITE_KEY=<site key> | sudo tee -a /etc/environment
+   export MASCOPE_TURNSTILE_SITE_KEY=<site key>
+   mascope prod up --detach
+   ```
+
+   The CLI creates `turnstile_secret_key.txt` empty on every server, readable
+   by its owner alone, so compose starts without it; writing into it keeps
+   that mode. With the site key set and the file still empty, the backend
+   refuses every sign-in with a 503 and logs why.
+
+   A reinstall drops `MASCOPE_TURNSTILE_SITE_KEY` from `/etc/environment`
+   without a word, as it does `MASCOPE_ORIGIN_PULL` (below), and the sign-in
+   form loses its check. After a reinstall, add the line again.
+3. Check it from a fresh private window: the sign-in page shows the check, and
+   signing in works once it is solved. `GET /api/auth/login/options` answers
+   with the site key. The app's Content-Security-Policy allows
+   `challenges.cloudflare.com` on every site, so nginx needs no change.
+
+The security suite signs in with a password and cannot solve the check, so on
+a site with Turnstile on its signed-in checks cannot sign in.
+
+**Turning it off.** Remove `MASCOPE_TURNSTILE_SITE_KEY` from
+`/etc/environment`, unset it, and bring the stack up again. The secret file can
+stay.
 
 ### Turning origin pulls on
 
@@ -2572,7 +2615,7 @@ start, so a change takes a stack restart.
 | `/etc/environment` | `MASCOPE_PATH`, `LD_PRELOAD` (read by the systemd units) |
 | `/etc/mascope/update.env` | update window / grace / repo, update disk floor (chmod 600) |
 | `/etc/mascope/disk-check.env` | disk-monitor thresholds + alert URL (chmod 600) |
-| `$MASCOPE_PATH/.runtime/secrets/` | `postgres_password.txt`, `jwt_secret_key.txt`, `server_owner_secret_key.txt`, `mfa_encryption_key.txt`, TLS cert/key, `backup.env` |
+| `$MASCOPE_PATH/.runtime/secrets/` | `postgres_password.txt`, `jwt_secret_key.txt`, `server_owner_secret_key.txt`, `mfa_encryption_key.txt`, TLS cert/key, `origin_pull_ca.pem`, `turnstile_secret_key.txt`, `backup.env` |
 | `$MASCOPE_PATH/.runtime/database/backups/prod/` | database dumps (incl. pre-migration) |
 | `$MASCOPE_PATH/.runtime/update/` | `state.json` (pending update), `status.log` |
 | the env's filestore, `deployment.json` | the generated [deployment id](#deployment-identity), unless `[backend] deployment_id` is set |

@@ -65,7 +65,16 @@ AUTO_PROVISIONED_SECRETS = ("mfa_encryption_key.txt",)
 #   origin_pull_ca.pem - the CA of the CDN's origin-pull certificate for the
 #                        zone, read with MASCOPE_ORIGIN_PULL=on
 #                        (docs/maintaining.md, "The edge").
-PLACEHOLDER_SECRETS = ("origin_pull_ca.pem",)
+#   turnstile_secret_key.txt - the secret key of the site's Turnstile widget,
+#                        read with MASCOPE_TURNSTILE_SITE_KEY set; the backend
+#                        refuses every sign-in with the key set and this empty.
+PLACEHOLDER_SECRETS = ("origin_pull_ca.pem", "turnstile_secret_key.txt")
+
+# The placeholders that hold a secret once the operator fills them in. They are
+# created owner-only (0600), as create_secret writes the generated ones: the
+# operator writes into the file, which keeps its mode. The CA holds nothing
+# secret and is left at the umask.
+PRIVATE_PLACEHOLDER_SECRETS = ("turnstile_secret_key.txt",)
 
 # Directories the containers bind-mount from the home. Docker creates missing
 # mount sources as root, so pre-create them owned by the invoking user.
@@ -110,6 +119,24 @@ def create_secret(path: Path) -> None:
         fh.write(_secrets.token_urlsafe(48) + "\n")
 
 
+def create_placeholder(path: Path) -> None:
+    """
+    Create an operator-supplied secret file empty, unless it exists.
+
+    Owner-only (0600) for a placeholder in ``PRIVATE_PLACEHOLDER_SECRETS``, so
+    the secret the operator writes into it later is never readable by others;
+    at the umask otherwise.
+
+    :param path: The placeholder file. An existing file is left as it is.
+    """
+    if path.exists():
+        return
+    if path.name in PRIVATE_PLACEHOLDER_SECRETS:
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    else:
+        path.touch()
+
+
 def _write_secrets(home: Path) -> list[str]:
     """Generate missing app secrets; existing secrets are never touched."""
     written = []
@@ -121,9 +148,7 @@ def _write_secrets(home: Path) -> list[str]:
         create_secret(target)
         written.append(name)
     for name in PLACEHOLDER_SECRETS:
-        target = secrets_dir / name
-        if not target.exists():
-            target.touch()
+        create_placeholder(secrets_dir / name)
     return written
 
 

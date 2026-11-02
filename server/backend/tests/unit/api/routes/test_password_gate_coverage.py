@@ -107,6 +107,9 @@ KNOWN_UNGATED_ROUTES = {
     # account reaches it before the password screen exists for them, and the
     # gate then applies to the session it returns.
     ("POST", "/mfa/verify"),
+    # What the sign-in form needs before anyone signs in: the site's public
+    # Turnstile key, which every page rendering the widget carries anyway.
+    ("GET", "/login/options"),
     ("POST", "/pairing/start"),
     ("POST", "/pairing/poll"),
     ("GET", "/api/users/first-owner/status"),

@@ -193,6 +193,50 @@ def test_up_never_overwrites_the_operator_supplied_ca(compose_env, secrets_dir):
     assert ca.read_bytes() == b"-----BEGIN CERTIFICATE-----\n"
 
 
+# The placeholder that holds a secret once the operator fills it in.
+TURNSTILE_SECRET = "turnstile_secret_key.txt"
+
+
+@pytest.mark.parametrize("args", UP_SHAPES, ids=lambda a: " ".join(a))
+def test_every_up_shape_creates_the_turnstile_secret_empty(
+    compose_env, secrets_dir, args
+):
+    # A deployment from before Turnstile has no such file, and compose would
+    # refuse to recreate the backend without it.
+    compose_env(0)
+
+    prod_main._run_compose(args)
+
+    secret = secrets_dir / TURNSTILE_SECRET
+    assert secret.is_file(), f"'{' '.join(args)}' did not create {TURNSTILE_SECRET}"
+    assert secret.read_bytes() == b""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no owner-only file mode")
+def test_up_creates_the_turnstile_secret_owner_only(
+    compose_env, secrets_dir, open_umask
+):
+    compose_env(0)
+
+    prod_main._run_compose(["up", "--detach"])
+
+    mode = stat.S_IMODE((secrets_dir / TURNSTILE_SECRET).stat().st_mode)
+    assert mode == 0o600, f"{TURNSTILE_SECRET} is mode {oct(mode)}"
+
+
+def test_up_never_overwrites_the_operator_supplied_turnstile_secret(
+    compose_env, secrets_dir
+):
+    compose_env(0)
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+    secret = secrets_dir / TURNSTILE_SECRET
+    secret.write_bytes(b"0x4AAA-the-operators-key\n")
+
+    prod_main._run_compose(["up", "--detach"])
+
+    assert secret.read_bytes() == b"0x4AAA-the-operators-key\n"
+
+
 @pytest.mark.parametrize("args", [["build"], ["down"], ["ps"], ["pull"]])
 def test_only_an_up_creates_the_placeholder(compose_env, secrets_dir, args):
     compose_env(0)

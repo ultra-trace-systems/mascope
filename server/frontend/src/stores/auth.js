@@ -100,11 +100,41 @@ export const useAuth = defineStore('app.auth', () => {
   // nothing about it is tracked here beyond which screen to show.
   const mfaPending = ref(false)
 
-  const login = async ({ email, password }) => {
+  // The site's Turnstile site key, when it has the human check on the sign-in
+  // form; null when it has not, and until the options are read.
+  const turnstileSiteKey = ref(null)
+
+  /**
+   * Read what the sign-in form needs before anyone has signed in.
+   *
+   * A failed read leaves the form without the widget. On a site with
+   * Turnstile on, the server then refuses the sign-in and says why, which is
+   * better than a form that cannot be submitted at all.
+   */
+  const loadLoginOptions = async () => {
+    const options = await api.http
+      .get('/auth/login/options', { type: 'login_options', use: 'read', errors: 'inline' })
+      .catch(() => null)
+    turnstileSiteKey.value = options?.turnstile_site_key ?? null
+  }
+
+  /**
+   * Sign in with a password.
+   *
+   * @param {object} credentials
+   * @param {string} credentials.email
+   * @param {string} credentials.password
+   * @param {string} [credentials.turnstileToken] The Turnstile widget's token,
+   * sent under the field name Cloudflare's widget gives its own input.
+   */
+  const login = async ({ email, password, turnstileToken }) => {
     const params = new URLSearchParams()
     params.append('grant_type', 'password')
     params.append('username', email)
     params.append('password', password)
+    if (turnstileToken) {
+      params.append('cf-turnstile-response', turnstileToken)
+    }
 
     const result = await api.http.post('/auth/login', params, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -301,6 +331,8 @@ export const useAuth = defineStore('app.auth', () => {
     requirePasswordChange,
     requireMfaEnrollment,
     login,
+    turnstileSiteKey,
+    loadLoginOptions,
     mfaPending,
     verifyMfa,
     cancelMfa,
