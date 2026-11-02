@@ -434,6 +434,21 @@ answered (`security/pentest/README.md`, "The CDN vantage").
    would be assessing the WAF. The job then fails rather than reporting
    refusals as controls that held.
 
+**Which controls may run where.** Every control's marker says whether it is
+mutating (`security/pentest/README.md`, "Mutating and non-mutating
+controls"). Non-mutating means it signs in to no account, spends no budget,
+writes nothing, and stays harmless on the day the control it checks is
+broken. Only those run against production. A control with no classification
+fails the run at collection, so a new one cannot reach production by default.
+
+| Class | Runs against | Controls |
+| --- | --- | --- |
+| Non-mutating (`--non-mutating`) | staging and production | `RECON-01`, `RECON-02`, `RECON-03`, `HDR-01`, `HDR-02`, `HDR-03`, `HDR-04`, `HDR-05`, `HDR-06`, `AUTHN-01`, `TOKEN-01`, `INFO-02`, `TLS-01`, `TLS-02`, `CORS-01`, `CORS-02` |
+| Mutating | staging only | every other control: they sign in, provision accounts, workspaces, devices or uploads, burst a rate limit, spend a login or pairing budget, or send a write that a missing gate would perform |
+
+`selftest/test_classification.py` pins the first row against the markers, so
+a control moved into it changes this table in the same pull request.
+
 **Exit codes.** Normally the suite's, so the heartbeat reflects the assessment
 rather than the plumbing. With both vantages, either one failing fails the
 job, and the origin's code wins when both fail. A disagreement between them
