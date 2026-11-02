@@ -28,8 +28,8 @@ any other formula with nothing; the mass query answers with its
 recorded candidates whatever is asked.
 
 The world is the fake's own (:attr:`FakeAPI.datasets` and the rest), so the
-write routes the plans apply through change it: a dataset or sample move (a
-moved sample is made anew under another ID, as the server makes it), a
+write routes the plans apply through change it: a dataset, batch or sample
+move (a moved sample is made anew under another ID, as the server makes it), a
 collection's create and its batches-only update, and the matching runs and
 saves. Nothing is locked unless a test puts its ID in
 :attr:`FakeAPI.locked`, and the user's role in each workspace is
@@ -136,6 +136,8 @@ class FakeAPI:
     :ivar collections: Collection ID -> ``(workspace ID, name, batch IDs)``.
     :ivar roles: Workspace ID -> the user's role there (``my_role``).
     :ivar locked: The IDs of the datasets, batches and samples locked.
+    :ivar types: Dataset or batch ID -> its type, where it is not the
+        recorded row's (``ACQUISITION``).
     :ivar before_write: Called with ``(method, path, body)`` before a write
         route changes anything: a test changes the world underneath there.
     :ivar write_headers: The headers of each request sent through
@@ -156,6 +158,7 @@ class FakeAPI:
         }
         self.roles = {"ws1": "editor", "ws2": "guest"}
         self.locked: set[str] = set()
+        self.types: dict[str, str] = {}
         self.before_write = None
         self.write_headers: list[dict[str, str]] = []
 
@@ -261,6 +264,9 @@ class FakeAPI:
                     "sample_batch_name": name,
                     "dataset_id": d,
                     "locked": int(b in self.locked),
+                    "sample_batch_type": self.types.get(
+                        b, RECORDED["batch_row"]["sample_batch_type"]
+                    ),
                 }
                 for b, (d, name) in self.batches.items()
                 if d == params.get("dataset_id")
@@ -336,6 +342,7 @@ class FakeAPI:
 
     _WRITES = (
         r"workspaces/\w+/datasets/\w+/move",
+        r"sample/batches/\w+/move",
         r"sample/items/move",
         r"target/collections",
         r"match/aggregate/(sample|batch)/\w+/(save|resave)",
@@ -352,6 +359,12 @@ class FakeAPI:
                 return 404, {"error": "Dataset not found"}
             dataset[1] = body["target_workspace_id"]
             return 200, _envelope(self._dataset(parts[3]))
+        if method == "POST" and re.fullmatch(r"sample/batches/\w+/move", path):
+            # As the server moves a batch: in place, under its own ID
+            if parts[2] not in self.batches:
+                return 404, {"error": "Sample batch not found"}
+            self.batches[parts[2]] = (body["dataset_id"], self.batches[parts[2]][1])
+            return 200, _envelope({"sample_batch_id": parts[2], **body})
         if method == "POST" and path == "sample/items/move":
             # As the server moves a sample: anew in the batch, under a new ID
             for sample_id in body["sample_item_ids"]:
@@ -405,6 +418,9 @@ class FakeAPI:
             "dataset_name": name,
             "workspace_id": workspace,
             "locked": int(dataset_id in self.locked),
+            "dataset_type": self.types.get(
+                dataset_id, RECORDED["dataset_row"]["dataset_type"]
+            ),
         }
 
     def _sample(self, sample_id: str) -> dict[str, Any]:

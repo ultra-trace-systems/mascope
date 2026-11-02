@@ -250,7 +250,7 @@ Consequences:
 
 - **The organisation routes the SDK's write wrappers need are token-reachable
   since phase 3** (2026-10-20): dataset create, update, move and delete; batch
-  update, copy and delete; sample update, move and copy; collection create,
+  update, copy and delete (and move, MAS-552); sample update, move and copy; collection create,
   update and delete; compound add, update and remove; and aggregate `/save`
   and `/resave`, each opened after reading its ACL and side effects
   (appendix). The rest of the organisation surface (dataset-level and
@@ -742,9 +742,15 @@ planning time, not approval time.
 **As built (MAS-138).** `mascope_ai.plans` and `mascope_ai.writes`; the
 library's README has the usage. What the sketch above did not know:
 
-- **No batch moves.** No route moves a batch into another dataset (the
-  appendix lists update, copy and delete only), so `plan_organize` moves
-  datasets into workspaces and samples into batches, and refuses a batch.
+- **No batch moves, at first.** No route moved a batch into another dataset
+  (the appendix listed update, copy and delete only), so `plan_organize`
+  moved datasets into workspaces and samples into batches, and refused a
+  batch. MAS-552 added `POST /api/sample/batches/{id}/move`, which
+  reassigns the batch's dataset in one transaction (it keeps its ID,
+  samples and collections), `batches.move` in the SDK, and a
+  `Move(batch, dataset)` arm: within the client's workspace, refusing at
+  planning an ACQUISITION batch or destination and a locked destination,
+  and asking for the global admin role for a locked batch or source dataset.
 - **A moved sample is a new sample.** The server's sample move creates
   each item anew in the destination batch and deletes the old one, so the
   receipt names the batch, not the samples, and the plan says so.
@@ -869,7 +875,7 @@ a token.
 | Capability | Endpoints | ACL | Token |
 |---|---|---|---|
 | Datasets ([dataset_routes.py](../../server/backend/src/mascope_backend/api/routes/dataset/dataset_routes.py)) | `POST /api/workspaces/{ws}/datasets`, `PATCH/DELETE .../{id}`, `POST .../{id}/move` | workspace editor (move: editor on both workspaces); a locked dataset needs global admin to update, delete or move | **yes** (phase 3): all four |
-| Batches ([sample_batches_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/sample_batches_routes.py)) | `POST /api/sample/batches`, `PATCH /{id}`, `PATCH /status`, `POST /{id}/import`, `POST /{id}/copy`, `DELETE /{id}`; background jobs `POST /{id}/peaks` (batch-peak aggregation), `POST /{id}/export_peaks` and `POST /{id}/export/spreadsheet` ([batches/export/routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/export/routes.py), included in this router) | dataset editor to create; batch editor otherwise, the background jobs included (status: editor on every listed batch; copy: also editor on the destination dataset); locked: update needs global admin, delete needs owner, import into it and copy into a locked dataset are refused | **yes** (phase 3): update, copy, delete |
+| Batches ([sample_batches_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/sample_batches_routes.py)) | `POST /api/sample/batches`, `PATCH /{id}`, `PATCH /status`, `POST /{id}/import`, `POST /{id}/copy`, `POST /{id}/move`, `DELETE /{id}`; background jobs `POST /{id}/peaks` (batch-peak aggregation), `POST /{id}/export_peaks` and `POST /{id}/export/spreadsheet` ([batches/export/routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/export/routes.py), included in this router) | dataset editor to create; batch editor otherwise, the background jobs included (status: editor on every listed batch; copy and move: also editor on the destination dataset); locked: update and move need global admin (a move also for a locked source dataset), delete needs owner, import into it and copy or move into a locked dataset are refused; a move refuses ACQUISITION batches and datasets | **yes** (phase 3): update, copy, delete; move (MAS-552) |
 | Samples ([sample_items_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/items/sample_items_routes.py)) | `POST /api/sample/items`, `PATCH /{id}`, `POST /move`, `/copy`, `/delete`, `/process`, `/{id}/export_peak_data`, `DELETE /{id}` | editor (copy: **guest** on source, editor on destination batch; move: editor on both); locked: update and delete need owner, move refuses a locked source item or destination, copy a locked destination | **yes** (phase 3): update, move, copy |
 | Target collections ([target_collections_routes.py](../../server/backend/src/mascope_backend/api/routes/target/collections/target_collections_routes.py)) | `POST/PATCH/DELETE /api/target/collections[/{id}]`; association via the `sample_batch_ids` payload field | workspace editor (global collection: global admin or superuser); batches-only update: guest on collection + editor on changed batches | **yes** (phase 3): all three |
 | Target compounds ([target_compounds_routes.py](../../server/backend/src/mascope_backend/api/routes/target/compounds/target_compounds_routes.py)) | `POST/PATCH /api/target/compounds`, `DELETE /{id}` | **global editor only — no workspace ACL** | **yes** (phase 3): all three |

@@ -228,6 +228,35 @@ def test_a_dataset_move_applies_once(scratch):
         kit.apply(plan.id, _approve(kit, plan))
 
 
+def test_a_batch_move_keeps_the_batch_and_its_id(scratch):
+    kit = scratch.kit
+    dest = _api(
+        scratch.session,
+        "POST",
+        f"workspaces/{scratch.home}/datasets",
+        json={"dataset_name": "batch moved into"},
+    )["dataset_id"]
+    batch = _api(
+        scratch.session,
+        "POST",
+        "sample/batches",
+        json={
+            "dataset_id": scratch.dataset_id,
+            "sample_batch_name": "to move",
+            "target_collection_ids": [],
+        },
+    )["sample_batch_id"]
+    plan = kit.plan_organize([Move(batch, dest, kind="batch")])
+
+    receipt = kit.apply(plan.id, _approve(kit, plan))
+
+    assert receipt.complete
+    assert [(r.id, r.parent) for r in receipt.results] == [(batch, dest)]
+    scratch.client.clear_cache()
+    moved = scratch.client.batches._list_by_id(dest)
+    assert moved["sample_batch_id"].tolist() == [batch]
+
+
 def test_a_sample_move_whose_sample_moved_meanwhile_is_refused(scratch):
     kit = scratch.kit
     first, second = _samples(scratch, scratch.copy_id)[:2]

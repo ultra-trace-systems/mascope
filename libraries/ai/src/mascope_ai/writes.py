@@ -76,6 +76,7 @@ IDENTITY_FIELDS = frozenset({"cas_number", "inchikey", "inchi", "smiles"})
 #: The SDK write methods a plan's steps may name: nothing else is sent.
 WRITES: dict[str, Callable[..., Any]] = {
     "datasets.move": lambda client, **args: client.datasets.move(**args),
+    "batches.move": lambda client, **args: client.batches.move(**args),
     "samples.move": lambda client, **args: client.samples.move(**args),
     "collections.create": lambda client, **args: client.collections.create(**args),
     "collections.associate": lambda client, **args: client.collections.associate(
@@ -305,7 +306,7 @@ def plan_organize(kit: "Toolkit", moves: Sequence[Any]) -> Plan:
     needs: list[str] = []
     into_batch: dict[str, tuple[Ref, list[tuple[Ref, int]]]] = {}
     seen: set[tuple[str, str]] = set()
-    batches: dict[str, Ref] | None = None  # listed at the first sample move
+    batches: dict[str, Ref] | None = None  # listed at the first batch or sample move
 
     for move in moves:
         if isinstance(move, (tuple, list)) and len(move) in (2, 3):
@@ -318,15 +319,9 @@ def plan_organize(kit: "Toolkit", moves: Sequence[Any]) -> Plan:
                 f"Move of {move.item!r}: a name or ID needs its kind "
                 "(Move(item, to, kind='dataset'))"
             )
-        if kind == "batch":
+        if kind not in ("dataset", "batch", "sample"):
             raise InvalidRequest(
-                "Mascope has no route that moves a batch into another dataset, "
-                "so the toolkit plans none. Move its samples into a batch of "
-                "that dataset instead (Move(sample, batch))."
-            )
-        if kind not in ("dataset", "sample"):
-            raise InvalidRequest(
-                f"plan_organize moves datasets and samples, not {kind}s"
+                f"plan_organize moves datasets, batches and samples, not {kind}s"
             )
 
         if kind == "dataset":
@@ -384,6 +379,104 @@ def plan_organize(kit: "Toolkit", moves: Sequence[Any]) -> Plan:
                 f"editor in workspace {home.name!r} and in workspace {to.name!r}"
             )
             affected += [dataset, home, to]
+            continue
+
+        if kind == "batch":
+            batch = kit.resolve(move.item, "batch")
+            to = kit.resolve(move.to, "dataset")
+            if (batch.kind, batch.id) in seen:
+                raise InvalidRequest(f"{batch} is moved twice in one plan")
+            seen.add((batch.kind, batch.id))
+            if batches is None:
+                batches = _home_batches(kit)
+            # Re-read from the listing: a Ref passed in may name a stale dataset
+            batch = _at_home(batches, batch.id, home, batch)
+            source_id = str(batch.parent)
+            with kit._errors("read", to):
+                datasets = kit.client.datasets.list()
+            source_row = _row(datasets, "dataset_id", source_id)
+            target_row = _row(datasets, "dataset_id", to.id)
+            if not target_row:
+                # The toolkit checks the role in its client's workspace alone
+                raise InvalidRequest(
+                    f"{to} is not in workspace {home.name!r}, the client's: the "
+                    "toolkit plans writes in its client's workspace alone. Move "
+                    "the batch into a dataset of this workspace, then the "
+                    "dataset into the other workspace (Move(dataset, workspace))."
+                )
+            if to.id == source_id:
+                raise InvalidRequest(f"{batch} is in dataset {to.name!r} already")
+            for dataset_id, dataset_row in (
+                (source_id, source_row),
+                (to.id, target_row),
+            ):
+                # The listings are the plan's before: a dataset an earlier move
+                # takes to another workspace would take the batch across too
+                if ("dataset", dataset_id) in seen:
+                    name = dataset_row.get("dataset_name") or dataset_id
+                    raise InvalidRequest(
+                        f"Move of {batch}: an earlier move of this plan takes "
+                        f"dataset {name!r} to another workspace, so the batch "
+                        "would move across workspaces. Put the batch move "
+                        "before the dataset move."
+                    )
+            with kit._errors("read", batch):
+                row = _row(
+                    kit.client.batches.list(source_id), "sample_batch_id", batch.id
+                )
+            if row.get("sample_batch_type") == "ACQUISITION":
+                raise InvalidRequest(
+                    f"{batch} is an acquisition batch, which Mascope files the "
+                    "day's samples into: it moves none. Copy it instead, or move "
+                    "its samples into a batch of that dataset."
+                )
+            if target_row.get("dataset_type") == "ACQUISITION":
+                raise InvalidRequest(
+                    f"Dataset {to.name!r} is an acquisition dataset: Mascope "
+                    "moves no batch into one."
+                )
+            if _locked(target_row.get("locked")):
+                raise InvalidRequest(
+                    f"Dataset {to.name!r} is locked: Mascope moves no batch into "
+                    "a locked dataset, whatever the role."
+                )
+            source_name = str(source_row.get("dataset_name") or source_id)
+            operation = f"move into dataset {to.name!r}"
+            _need(roles, home, "editor", operation, batch)
+            for what, locked in (
+                (f"batch {batch.name!r}", row.get("locked")),
+                (f"dataset {source_name!r}", source_row.get("locked")),
+            ):
+                if _locked(locked):
+                    warnings.append(
+                        f"The {what} is locked: moving the batch needs the "
+                        "global admin role, which the toolkit cannot see."
+                    )
+                    needs.append(f"the global admin role for locked {what}")
+            index = len(changes)
+            changes.append(
+                Change(
+                    batch,
+                    "dataset",
+                    source_id,
+                    to.id,
+                    f"Move batch {batch.name!r}, with its samples and "
+                    f"collections, from dataset {source_name!r} into dataset "
+                    f"{to.name!r}",
+                )
+            )
+            steps.append(
+                _step(
+                    "batches.move",
+                    {"batch_id": batch.id, "dataset_id": to.id},
+                    [index],
+                    [_moved(batch, to.id)],
+                )
+            )
+            needs.append(
+                f"editor in workspace {home.name!r} (the batch and its new dataset)"
+            )
+            affected += [batch, to]
             continue
 
         sample = kit.resolve(move.item, "sample")
@@ -447,12 +540,14 @@ def plan_organize(kit: "Toolkit", moves: Sequence[Any]) -> Plan:
             "Mascope moves samples in the background, and a moved sample gets "
             "a new ID: find it by name in its new batch once the move is done."
         )
-    n_datasets = sum(1 for c in changes if c.ref.kind == "dataset")
-    n_samples = len(changes) - n_datasets
     said = [
-        f"{n} {what}(s)"
-        for n, what in ((n_datasets, "dataset"), (n_samples, "sample"))
-        if n
+        f"{n} {what}"
+        for kind, what in (
+            ("dataset", "dataset(s)"),
+            ("batch", "batch(es)"),
+            ("sample", "sample(s)"),
+        )
+        if (n := sum(1 for c in changes if c.ref.kind == kind))
     ]
     return _plan(
         kit,
@@ -831,6 +926,9 @@ def _current(kit: "Toolkit", change: Change) -> Any:
                 if _row(rows, "dataset_id", ref.id)
                 else None
             )
+        if (ref.kind, field) == ("batch", "dataset"):
+            batch = _home_batches(kit).get(ref.id)
+            return str(batch.parent) if batch is not None else None
         if (ref.kind, field) == ("sample", "batch"):
             return str(_sample_record(kit, ref).get("sample_batch_id"))
         if (ref.kind, field) == ("collection", "batches"):
