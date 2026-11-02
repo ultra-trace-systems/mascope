@@ -25,6 +25,7 @@ import pytest
 from loguru import logger
 
 from mascope_sdk import MascopeClient, ServerError, _loaders
+from mascope_sdk.exceptions import ValidationError
 from mascope_sdk.resources._base import _api_warnings
 from mascope_sdk.resources.samples import (
     _COMPUTE_HINT,
@@ -119,6 +120,12 @@ class FakeServer:
             )
         if path != f"samples/{SAMPLE_ID}/peaks":
             raise AssertionError(f"unexpected GET {path!r}")
+        if params.get("areas") == "false" and params.get("heights") == "false":
+            # As the route's query model refuses it (GetSamplePeaksQueryParams)
+            raise ValidationError(
+                "[HTTP 400] You need to request either peak areas, peak "
+                "heights, or both."
+            )
 
         ranged = "t_min" in params or "t_max" in params
         in_range = [
@@ -462,13 +469,14 @@ class TestComputePeakTimeseries:
 
     def test_it_learns_which_from_two_reads_of_the_ids_alone(self, samples, server):
         """Every peak, and the peaks a time-ranged read lists - which are the
-        ones with a time series. Areas, heights and averaging each cost the
-        server a read it does not need to answer with the ids."""
+        ones with a time series. Areas, averaging and matches each cost the
+        server work it does not need to answer with the ids; the server
+        refuses a read of neither areas nor heights, so heights it is."""
         samples.compute_peak_timeseries(SAMPLE_ID)
 
         ids_only = {
             "areas": "false",
-            "heights": "false",
+            "heights": "true",
             "average": "false",
             "matches": "false",
         }

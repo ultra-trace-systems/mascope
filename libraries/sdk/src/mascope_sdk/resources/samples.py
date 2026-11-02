@@ -735,7 +735,8 @@ class SamplesResource(BaseResource):
 
         Read off the envelope rather than through :meth:`get_peaks`: the
         warning such a read carries is the one its caller is there to answer,
-        not news to log again.
+        not news to log again. It asks for heights, which it does not use,
+        because the route refuses a read of neither areas nor heights.
 
         :param sample_id: The ID of the sample.
         :param with_timeseries: List only the peaks whose time series is
@@ -746,7 +747,7 @@ class SamplesResource(BaseResource):
         """
         params: dict[str, Any] = {
             "areas": "false",
-            "heights": "false",
+            "heights": "true",
             "average": "false",
             "matches": "false",
         }
