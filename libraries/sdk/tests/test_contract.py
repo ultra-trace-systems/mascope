@@ -1535,6 +1535,21 @@ class TestWriteContract:
             ),
         )
 
+    def test_batch_move(self, scratch):
+        batches = scratch.client.batches
+        _skip_unless_attr(batches, "move")
+        batch_id = _scratch_batch(scratch, "moved batch")
+        dest = scratch.client.datasets.create(f"move into {scratch.tag}")["dataset_id"]
+        try:
+            moved = batches.move(batch_id, dest)
+            # One write, not a background task: the batch is there, under its ID
+            assert moved["sample_batch_id"] == batch_id
+            assert moved["dataset_id"] == dest
+            assert batch_id not in _batch_ids(scratch)
+            assert batch_id in batches._list_by_id(dest)["sample_batch_id"].tolist()
+        finally:
+            scratch.client.datasets.delete(dest)
+
     def test_sample_copy_update_move(self, mascope, scratch):
         samples = scratch.client.samples
         _skip_unless_attr(samples, "copy")
