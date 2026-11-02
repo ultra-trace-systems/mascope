@@ -8,7 +8,7 @@ import Toast from 'primevue/toast'
 import { useToast } from 'primevue/usetoast'
 
 import { api } from '@/api'
-import { runtime } from '@/lib/runtime.js'
+import { downloadTempFile } from '@/lib/tempDownload'
 import { toastFor } from '@/lib/toastTitles'
 import { BaseBrandLogo, BaseLegalFooter } from '@/lib/base'
 import BaseUpdateBanner from '@/lib/base/BaseUpdateBanner.vue'
@@ -46,10 +46,7 @@ app.ui.notification.on('*', (notification) => {
     const download = data?.download ?? error?.detail?.data?.download
 
     if ((status === 'success' || status === 'warning') && download) {
-      const link = document.createElement('a')
-      link.download = download
-      link.href = `${runtime.api_path}/api/temp/${link.download}`
-      link.click()
+      downloadTempFile(download)
     }
   }
 })
