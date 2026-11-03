@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Mascope disk-space monitor regularly
+
+[Timer]
+# Every 15 minutes: a runaway upload can fill a disk fast, and the check is
+# cheap and deletes nothing (it writes only its own free-space history).
+OnBootSec=5min
+OnUnitActiveSec=15min
+# Catch up one run if the machine was off at the scheduled time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -178,8 +178,34 @@ git clone git@github.com:ultra-trace-systems/mascope.git && cd mascope
 
 `ubuntu.sh` installs system dependencies (Docker, uv, Node, restic, jemalloc,
 ...), builds the `mascope` binary, writes `MASCOPE_PATH` to `/etc/environment`,
-and installs the systemd units (below). Re-run with `reinstall` after pulling
-new tooling, or `uninstall` to remove the binary and units.
+and installs the systemd units (below) by running `mascope prod units install`.
+Re-run with `reinstall` after pulling new tooling, or `uninstall` to remove the
+binary and units.
+
+### The systemd units without the script
+
+`mascope prod units install` puts the units in place on its own, on a
+checkout install or a wheel install (`pip install mascope-cli` or
+`uv tool install mascope-cli`, then `mascope init`). Run it as the deploy
+user. It runs the privileged steps through `sudo`, and refuses to run as root
+or off Linux.
+
+```sh
+mascope prod units install --dry-run   # print every file and command, change nothing
+mascope prod units install
+mascope prod units remove              # stop, disable and delete them; /etc/mascope stays
+```
+
+- It fills in the deploy user, the runtime home and the `mascope` executable
+  that runs the command (`--bin` names another).
+- It writes the units to `/etc/systemd/system`, seeds the settings files in
+  `/etc/mascope` once, and enables the boot service, the disk check and the
+  assignment-run retention. The update timer stays off until you enable it.
+- The units read `MASCOPE_PATH` from `/etc/environment`. It adds the line
+  there when it is missing, and refuses when the file names another home.
+- A checkout's units come from its `tooling/systemd`. A wheel install's come
+  from the copies in the CLI, which are the same files. Re-run it after a
+  release that changes the units: an update does not rewrite them.
 
 > The provisioning user is the deploy user. `mascope.service` and
 > `mascope-update.service` run as that user, from the deployment checkout
@@ -2807,9 +2833,13 @@ it is enabled; `journalctl -u mascope-update.service` for the reason. Exit 2 is
 usually a stack that is down (the DB revision is read from the running Postgres)
 or no network to reach the releases API. Exit 30 is *not* a failure - it means a
 migration update is pending. Exit 40 is a wheel install's: an update is due
-that only the newest release's CLI can apply, so install the CLI named in
-`.runtime/update/cli-to-install` (`uv tool install mascope-cli==<calver>`) and
-run `mascope prod update --auto` again.
+that only the newest release's CLI can apply. The unit handles it: it installs
+the CLI named in `.runtime/update/cli-to-install` (`uv tool install
+mascope-cli==<calver>`) and runs `mascope prod update --auto` again as a new
+process. If that hand-over fails, the unit fails with exit 2 and the journal
+says why; do the same two steps by hand. The second run asking for the same
+CLI again means the unit's `mascope` is not a `uv tool install` of
+`mascope-cli`.
 
 **A migration update won't apply.** It waits for the maintenance window, the
 grace period, or a confirm, and never applies while snoozed. Run

@@ -1,0 +1,21 @@
+[Unit]
+Description=Mascope disk-space monitor
+Documentation=https://github.com/ultra-trace-systems/mascope
+# Only meaningful once the machine (and its filesystems) are up.
+After=local-fs.target
+
+[Service]
+Type=oneshot
+# The deploy user and the resolved script path below are filled in by
+# tooling/ubuntu.sh. MASCOPE_PATH comes from /etc/environment; thresholds and
+# the optional healthchecks.io URL live in /etc/mascope/disk-check.env (the
+# leading '-' means the unit still starts when that file is absent).
+User=@@USER@@
+EnvironmentFile=/etc/environment
+EnvironmentFile=-/etc/mascope/disk-check.env
+ExecStart=/bin/bash @@DISK_CHECK@@
+
+# Exit 1 means "a filesystem is low, or filling toward its floor" - the alert
+# has already been sent and the journal recorded it, so do not spam systemd's
+# failed state for a condition the operator is now handling.
+SuccessExitStatus=0 1

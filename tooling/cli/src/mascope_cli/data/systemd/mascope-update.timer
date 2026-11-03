@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the Mascope unattended update check nightly
+
+[Timer]
+# Fire nightly; the service itself decides whether it is inside the configured
+# maintenance window before applying anything.
+OnCalendar=*-*-* 02:30:00
+# Catch up if the machine was off at the scheduled time.
+Persistent=true
+# Spread load across a fleet so releases are not all pulled at the same instant.
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target
