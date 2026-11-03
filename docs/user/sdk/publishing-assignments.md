@@ -159,9 +159,9 @@ is the one record in `data[0]`: `peak_assignment_run_id`, `run_status`
 run's state from `data[0].run_status`: the envelope's own `status` is the
 literal `"success"` on every accepted request.
 
-**Retries are safe by construction, and have to be**, because the SDK retries
-a POST on a timeout and a timeout is exactly the case where the body was
-delivered. Re-sending the chunk that produced the current row count is an
+**Retries are safe by construction, and have to be**, because a client
+retries a POST on a timeout and a timeout is exactly the case where the body
+was delivered. Re-sending the chunk that produced the current row count is an
 idempotent no-op that reports that count again; an index ahead of the count, or
 inside an applied chunk, is a 409, and the client resynchronises from the last
 `rows` it saw. A retried create is byte-identical to the original, which is why

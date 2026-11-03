@@ -526,7 +526,10 @@ class BatchPeaksResource(BaseResource):
             "mz_tolerance_ppm": mz_tolerance_ppm,
             "rows": list(rows),
         }
-        data = self._post(f"batch-peaks/batch/{sample_batch_id}/runs/import", body)
+        # Sent once: a second send after a lost answer lands a second run.
+        data = self._post(
+            f"batch-peaks/batch/{sample_batch_id}/runs/import", body, idempotent=False
+        )
         run = data[0] if data else None
         if run is None or not wait:
             return run

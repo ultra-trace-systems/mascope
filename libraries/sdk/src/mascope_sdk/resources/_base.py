@@ -224,13 +224,21 @@ class BaseResource:
         self,
         path: str,
         data: dict[str, Any],
+        idempotent: bool = True,
     ) -> Any:
         """Make a POST request to the API.
+
+        Most of what is sent this way is a read with a body, retried as a GET
+        is. A POST that makes something says ``idempotent=False`` and is sent
+        once, as :meth:`_write` sends a write.
 
         :param path: API path (without /api/ prefix).
         :type path: str
         :param data: Request body data.
         :type data: dict[str, Any]
+        :param idempotent: Sending it twice does what sending it once does:
+            send it again on a transient failure.
+        :type idempotent: bool, optional
         :return: Parsed JSON response data.
         :rtype: Any
         """
@@ -242,6 +250,7 @@ class BaseResource:
             timeout=self._client._timeout,
             verify_ssl=self._client._verify_ssl,
             service_name=self._client._service_name,
+            max_attempts=None if idempotent else 1,
         )
         return response.json().get("data")
 
@@ -252,7 +261,7 @@ class BaseResource:
         needs: Needs,
         data: Any = None,
         params: dict[str, Any] | None = None,
-        max_attempts: int | None = None,
+        idempotent: bool = False,
     ) -> Any:
         """Send a write and return what the route answers with.
 
@@ -261,9 +270,14 @@ class BaseResource:
         naming what *needs* says. A write can change what a listing shows, so
         the client's metadata cache is cleared after one succeeds.
 
-        A write is sent again on a transient failure, as a read is, unless
-        *max_attempts* says otherwise: 1 for a write the server would carry
-        out a second time, so that a lost answer raises instead.
+        A write is sent once. A timeout, a lost connection or a 502 to 504
+        can come after the server has acted on it. Sent again, a create would
+        make a second object and a save would run twice; a move or a delete
+        would answer with a 404 for what the first send did. So the failure
+        is raised, and the caller reads back what is there before trying
+        again. A write the server answers the same however often it comes (a
+        read sent as a POST, a PATCH that sets fields to given values) says
+        *idempotent* and is retried as a read is.
 
         :param method: ``"POST"``, ``"PATCH"`` or ``"DELETE"``.
         :type method: str
@@ -275,9 +289,9 @@ class BaseResource:
         :type data: Any, optional
         :param params: Query parameters, if any.
         :type params: dict[str, Any], optional
-        :param max_attempts: How many times to send it on a transient
-            failure; the HTTP layer's default when None.
-        :type max_attempts: int, optional
+        :param idempotent: Sending it twice does what sending it once does
+            and answers the same: send it again on a transient failure.
+        :type idempotent: bool, optional
         :return: The route's ``data``. A route that answers without one (a
             delete, a save, or a copy or move that runs in the background)
             returns its whole answer instead, ``{"message": ...}`` and what
@@ -296,7 +310,7 @@ class BaseResource:
                 timeout=self._client._timeout,
                 verify_ssl=self._client._verify_ssl,
                 service_name=self._client._service_name,
-                max_attempts=max_attempts,
+                max_attempts=None if idempotent else 1,
             )
         except PermissionDeniedError as e:
             raise PermissionDeniedError(
