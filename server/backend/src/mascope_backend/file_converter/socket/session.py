@@ -38,8 +38,9 @@ class FileContextManager:
 
     def __init__(self, on_clear: Optional[Callable[[str], None]] = None):
         """
-        :param on_clear: Called with a file's normalized name each time its
-            context is cleared, so state kept per file elsewhere can go with it
+        :param on_clear: Called with a file's normalized name each time
+            ``clear_context`` is called for it, whether or not a context was
+            registered, so state kept per file elsewhere can go with it
         """
         self._file_contexts: Dict[str, FileContext] = {}
         self._on_clear = on_clear
