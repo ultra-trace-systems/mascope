@@ -710,7 +710,6 @@ class PeakAssignmentsResource(BaseResource):
                 f"peak-assignments/sample/{sample_id}/assign",
                 Needs("run peak assignment on", "sample", sample_id, _EDITOR),
                 data=body,
-                max_attempts=1,
             )
         except ConflictError as e:
             raise AssignmentInFlightError(
@@ -895,7 +894,6 @@ class PeakAssignmentsResource(BaseResource):
                 f"peak-assignments/sample/{sample_id}/verify",
                 Needs("verify an assignment of", "sample", sample_id, _EDITOR),
                 data=body,
-                max_attempts=1,
             )
         except (MascopeConnectionError, ServerError) as e:
             raise _answer_lost(
@@ -993,6 +991,8 @@ class PeakAssignmentsResource(BaseResource):
                 "assigned_formula": formula,
                 "ionization_mechanism_id": ionization_mechanism_id,
             },
+            # Scores and saves nothing: a read with a body.
+            idempotent=True,
         )
 
     def verifications_for_batch(
@@ -1356,7 +1356,7 @@ class PeakAssignmentsResource(BaseResource):
                 f"peak-assignments/sample/{sample_id}/runs/import",
                 Needs("import an assignment run into", "sample", sample_id, _EDITOR),
                 data=body,
-                max_attempts=1 if once else None,
+                idempotent=not once,
             )
 
         try:
@@ -1513,7 +1513,6 @@ class PeakAssignmentsResource(BaseResource):
                 "DELETE",
                 f"peak-assignments/sample/{sample_id}/runs/{run_id}",
                 Needs("abandon an import into", "sample", sample_id, _EDITOR),
-                max_attempts=1,
             )
         except (MascopeConnectionError, ServerError) as e:
             raise _answer_lost(

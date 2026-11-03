@@ -168,6 +168,8 @@ class MatchingResource(BaseResource):
             f"match/aggregate/sample/{sample_id}",
             Needs("run matching on", "sample", sample_id, "guest on the sample"),
             data=_aggregate_body(target_ion_id, match_params),
+            # Saves nothing: a read with a body.
+            idempotent=True,
         )
 
     def aggregate_batch(
@@ -197,6 +199,8 @@ class MatchingResource(BaseResource):
             f"match/aggregate/batch/{batch_id}",
             Needs("run matching on", "batch", batch_id, "guest on the batch"),
             data=_aggregate_body(target_ion_id, match_params),
+            # Saves nothing: a read with a body.
+            idempotent=True,
         )
 
     def save_sample(

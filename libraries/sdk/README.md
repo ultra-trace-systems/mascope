@@ -742,11 +742,12 @@ fit = mascope.peak_assignments.fit_aggregate(
   checked line by line: `match_ions` holds the ion and its `match_score`,
   `match_isotopes` one record per isotope line with the peak it matched.
 
-`assign` and `verify` are sent once. Every other request is sent again when
-the server does not answer, but these two would be carried out twice: a
-second verdict counts twice in the calibration refit, and a second launch is
-refused as already in flight. If the answer is lost on the way back, the call
-raises `MascopeConnectionError`, `MascopeTimeoutError` or a `ServerError`
+`assign` and `verify` are sent once, as every write is (see
+[Changing Data](#changing-data)): sent again, they would be carried out
+twice. A second verdict counts twice in the calibration refit, and a second
+launch is refused as already in flight. The reads, `fit_aggregate` among
+them, are sent again when the server does not answer. If the answer to
+`assign` or `verify` is lost on the way back, the call raises `MascopeConnectionError`, `MascopeTimeoutError` or a `ServerError`
 (502 to 504) that says the server may have done it: look at `list_runs` or
 `list_verifications` before sending it again.
 
@@ -942,6 +943,17 @@ mascope.matching.save_batch(batch_id)
   both with the formula.
 - A write clears the client's cache (see [Caching](#caching)), so the next
   listing shows the change.
+- **A write is sent once.** A timeout, a lost connection or a 502 to 504 can
+  come after the server has acted on it, so the SDK does not send it again:
+  a second create would make a second collection, a second save would run
+  the matching twice. The call raises `MascopeTimeoutError`,
+  `MascopeConnectionError` or a `ServerError`; look at what is there before
+  you call it again. The writes that come out the same however often they are
+  sent are retried as reads are: `matching.aggregate_sample` and
+  `aggregate_batch`, which save nothing, and the updates that set fields to
+  the values given (`datasets.update`, `batches.update`, `samples.update`,
+  `collections.associate`, and `collections.update` when it creates no
+  compounds).
 - Deleting a dataset, a batch, a collection or a compound and
   `matching.resave_batch` cannot be undone.
 

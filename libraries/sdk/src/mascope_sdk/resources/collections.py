@@ -239,6 +239,8 @@ class CollectionsResource(BaseResource):
             f"target/collections/{collection_id}",
             Needs("update", "target collection", collection_id, _EDITOR),
             data=body,
+            # Compounds to create would be created again, under new IDs.
+            idempotent=compounds is None,
         )
 
     def associate(self, collection_id: str, batch_ids: Sequence[str]) -> dict[str, Any]:
@@ -272,6 +274,8 @@ class CollectionsResource(BaseResource):
                 "guest on the collection and editor on each batch added or removed",
             ),
             data={"sample_batch_ids": list(batch_ids)},
+            # The whole list after the call: a second send changes nothing.
+            idempotent=True,
         )
 
     def delete(

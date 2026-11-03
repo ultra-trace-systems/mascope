@@ -1187,6 +1187,8 @@ class SamplesResource(BaseResource):
                 "editor on the sample (a locked sample: the owner role)",
             ),
             data={"sample_item": sample_item},
+            # Sets the whole sample to what is sent.
+            idempotent=True,
         )
 
     def move(self, sample_ids: Sequence[str], batch_id: str) -> dict[str, Any]:

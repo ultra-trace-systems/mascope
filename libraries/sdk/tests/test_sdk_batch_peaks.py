@@ -339,7 +339,7 @@ class TestImportRun:
 
         polls = {"n": 0}
 
-        def fake_post(url, path, access_token, data, timeout, verify_ssl, service_name):
+        def fake_post(url, path, access_token, data, **kwargs):
             server.import_calls.append((path, data))
             record = {
                 "batch_peak_run_id": "run-3",
@@ -426,6 +426,50 @@ class TestImportRun:
         )
         assert run["status"] == "running"
         assert posting["n"] == 0
+
+
+class TestAttempts:
+    """The import makes a run: a lost answer is raised after one send, where
+    a second would land a second run. The series is a read with a body, sent
+    again as a GET is."""
+
+    @pytest.fixture()
+    def timing_out(self, monkeypatch):
+        import requests
+
+        from mascope_sdk import _http
+
+        sent: list[str] = []
+
+        def fake(url, **kwargs):
+            sent.append(url.removeprefix("http://testserver/api/"))
+            raise requests.exceptions.Timeout("slow")
+
+        monkeypatch.setattr(_http.requests, "post", fake)
+        monkeypatch.setattr(_http.time, "sleep", lambda s: None)
+        return sent
+
+    def test_an_import_is_sent_once(self, resource, timing_out):
+        from mascope_sdk.exceptions import MascopeTimeoutError
+
+        with pytest.raises(MascopeTimeoutError):
+            resource.import_run(
+                BATCH_ID,
+                [{"mz": 181.0707, "formula": "C6H12O6"}],
+                engine="peaky",
+                engine_version="0.7.0",
+            )
+
+        assert timing_out == [f"batch-peaks/batch/{BATCH_ID}/runs/import"]
+
+    def test_the_series_is_sent_again(self, resource, timing_out):
+        from mascope_sdk import _http
+        from mascope_sdk.exceptions import MascopeTimeoutError
+
+        with pytest.raises(MascopeTimeoutError):
+            resource.series(BATCH_ID)
+
+        assert timing_out == ["batch-peaks/records/series"] * _http.RETRY_MAX_ATTEMPTS
 
 
 #: The series route's answer: per batch peak, the consensus once and the

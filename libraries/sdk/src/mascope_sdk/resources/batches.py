@@ -295,6 +295,8 @@ class BatchesResource(BaseResource):
                 "editor on the batch (a locked batch: the global admin role)",
             ),
             data=body,
+            # Sets the fields and the collections to what is sent.
+            idempotent=True,
         )
 
     def copy(

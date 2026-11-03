@@ -158,6 +158,8 @@ class DatasetsResource(BaseResource):
             f"workspaces/{self._workspace(workspace_id)}/datasets/{dataset_id}",
             Needs("update", "dataset", dataset_id, _EDITOR),
             data=body,
+            # Sets the fields to what is sent; a second send changes nothing.
+            idempotent=True,
         )
 
     def move(
