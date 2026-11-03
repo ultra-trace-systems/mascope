@@ -134,6 +134,14 @@ bundle from Zenodo, restores `snapshot/mascope_demo.dump` + the filestore into
 the demo env, launches `backend`/`frontend`/`file-converter`, seeds the fixed
 demo credentials, and prints the URL, login, and SDK token.
 
+It also lists the MS2 groups of the files that have an MS2 store, as
+`tooling/demo-init.sh` does for the containerized stack. The group inventory
+(`ms2_group`) is written when a file's store is, so a snapshot taken before the
+inventory existed restores stores it does not list, and the samples list, the
+batch MS2 groups and the sample detail would show no MS2. Both run
+`backfill_ms2_store` in run mode on every start: it reads the stores, opens no
+raw file, and finds nothing to do once the groups are listed.
+
 The seeded demo user + token are the real unlock for a low threshold: they
 remove the owner-registration and token-generation steps, and make the SDK
 (`pip install mascope_sdk`) work against the local demo out of the box.

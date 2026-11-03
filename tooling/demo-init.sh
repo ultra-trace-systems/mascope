@@ -10,10 +10,11 @@
 #   - fetches + checksum-verifies the demo bundle from Zenodo (CLI registry),
 #   - restores the snapshot database + filestore,
 #   - upgrades the schema to head (in case the image is newer than the bundle),
-#   - seeds the fixed demo credentials.
+#   - seeds the fixed demo credentials,
+#   - lists the MS2 groups of the files that have an MS2 store.
 #
 # Idempotent: a second `up` with the data already present skips the fetch +
-# restore and only re-seeds (which is itself idempotent).
+# restore and only re-seeds and re-lists (both themselves idempotent).
 #
 # Rebuild mode (MASCOPE_DEMO_REBUILD=1): restores the bundle's reference *seed*
 # dump (ionization modes, instrument config, calibration/diagnostic collections)
@@ -201,5 +202,18 @@ log_info "Applying any pending migrations..."
 # --- Seed the fixed demo credentials (idempotent) ----------------------------
 log_info "Seeding demo credentials..."
 "$PYTHON" -m mascope_backend.db.scripts.seed_demo
+
+# --- List the MS2 groups of the files that have an MS2 store -----------------
+# The group inventory (ms2_group) is written when a file's MS2 store is, so a
+# snapshot taken before the table existed restores stores the inventory does
+# not list, and the samples list, the batch MS2 groups and the sample detail
+# show no MS2. The backfill lists them from the stores: the bundle's MS2 files
+# carry theirs, so it opens no raw file. A second run, or a snapshot that
+# has the rows, finds nothing to do, so it runs on every start and a demo
+# volume an older image loaded is listed too. Best effort: the MS2 summaries
+# read the stores either way.
+log_info "Listing the MS2 groups of the demo files..."
+MS2_STORE_PAUSE=0 "$PYTHON" -m mascope_backend.db.scripts.backfill_ms2_store --run \
+    || log_warn "The MS2 group backfill failed; the demo lists no MS2 groups"
 
 log_info "✅ Demo database ready"
