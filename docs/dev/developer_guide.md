@@ -1632,8 +1632,13 @@ code is a verdict on the token (`SOCKET_UNAUTHENTICATED`, `SOCKET_FORBIDDEN`), i
 further events for that file with that token: the backend would drop them too. A fresh token
 for the file, from a new upload context or a new peak detection request, is sent as usual.
 The other codes say nothing about the next event, so only the rejected one is lost and the
-file's later events, its result included, are still sent. What the converter does with the
-file itself is unchanged.
+file's later events, its result included, are still sent. The converter carries on with the
+file itself, on purpose: it is converted as usual, and the uploader is not told the outcome,
+since every notification needs the rejected token. What was rejected for a file is forgotten
+when the converter clears the file's context, once the file is converted or moved aside. At
+most `MAX_REJECTED_FILES` files are remembered at once, oldest dropped first, for the files
+that have no context to clear (a peak detection request) and an acknowledgement that comes
+back after the clear.
 
 **Axis fingerprint** — for every raw Orbitrap file the converter computes its axis
 fingerprint (`mascope_thermo.axis_fingerprint`): the m/z offset the file's mass calibration
