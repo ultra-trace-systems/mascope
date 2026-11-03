@@ -159,8 +159,9 @@ def check_raw_coverage(
     Check that the demo database covers the bundle's whole raw set.
 
     A rebuild can silently ingest fewer files than the bundle contains (an
-    upload that raced the file-converter's socket auth is quarantined, and both
-    sample batches still finish ``ready``), and the goldens captured from such a
+    upload the server refused while no file-converter was connected, or one a
+    second converter on the same directory quarantined, and both sample batches
+    still finish ``ready``), and the goldens captured from such a
     run then freeze an incomplete expectation - which is how bundle v1.0.0 was
     published with 152 of its 161 files. This is the authoring-time check that
     refuses to write those goldens.
@@ -731,10 +732,10 @@ def export_goldens(
             "cover the bundle's raw set, so the goldens would freeze an "
             "incomplete expectation.\n"
             + "\n".join(f"  - {p}" for p in problems)
-            + "\nRe-run 'mascope demo --rebuild' (uploads that raced the "
-            "file-converter's startup are quarantined in "
-            "<env>/filestreams/failed_files and are retried automatically), "
-            "confirm the file count, then re-run --update."
+            + "\nRe-run 'mascope demo --rebuild' (an upload the server "
+            "refused while no file-converter was connected is re-posted by the "
+            "rebuild's later passes, and its log names any file that never "
+            "reached the server), confirm the file count, then re-run --update."
         )
 
     if not rows:

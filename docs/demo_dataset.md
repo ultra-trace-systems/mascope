@@ -203,18 +203,19 @@ of the bundle's own files in the `filestreams/` root (from a run killed
 mid-ingestion) or in `failed_files/` would otherwise be ingested a second time
 or re-fed as duplicates. Files with other names are left alone.
 
-**Two converters on one directory fail the same way, and the guard above does
+**Two converters on one directory quarantine files, and the guard above does
 not catch it.** A second stack that mounts this env's runtime home into its own
 file-converter puts two converters on one `filestreams/` directory. Whichever
 picks a file up first claims it, and when that is the other stack's converter
-the file was never registered with it, so it fails with the same "not
-registered in file converter service" and lands in `failed_files/`. The
-presence-key guard passes throughout, because a converter *has* connected; it
-is simply not the only one. A rebuild then stalls part-way with a large
-quarantine while the symptom points at the race above, which sends you reading
-the uploader's presence-key logic for a fault that is not there.
+the file was never registered with it, so it fails with "not registered in file
+converter service" and lands in `failed_files/`. The presence-key guard passes
+throughout, because a converter *has* connected; it is simply not the only one.
+A rebuild then stalls part-way with a large quarantine. It is not the startup
+gate: a converter that was not up yet gets the upload refused with 503, which
+leaves nothing in `failed_files/`, so do not look in the uploader's
+presence-key logic for it.
 
-The two are told apart by whether another converter is running at all, so check
+A quarantine like this means another converter is running, so check
 before starting a rebuild rather than diagnosing afterwards. Nothing should be
 printed:
 
