@@ -87,7 +87,8 @@ layers are that release's. So the CLI deploys that release and no other.
   maintenance window, or a migration update past its grace or confirmed - and
   its CLI is newer, it exits with code **40** and writes the requirement to
   install (`mascope-cli==<calver>`) to `.runtime/update/cli-to-install`. Install
-  that, then run `--auto` again as a new process, which applies it.
+  that, then run `--auto` again as a new process, which applies it. The
+  update unit (below) does both.
 - **What ran last** is kept in `.runtime/deployed-release.json`, written once
   the stack is up healthy on a release (`prod update`, `--auto`, and
   `prod up --detach`, which deploys the CLI's release).
@@ -96,15 +97,41 @@ layers are that release's. So the CLI deploys that release and no other.
 - **On a checkout install** the checked-out tag says which release runs, and
   none of this applies.
 
+## Boot and maintenance units (Linux)
+
+`mascope prod units install` installs the systemd units a server needs. Run
+it as the account that runs the deployment; it uses `sudo` for the privileged
+steps.
+
+```sh
+mascope prod units install --dry-run   # print what it would write and run
+mascope prod units install
+sudo systemctl enable --now mascope-update.timer   # opt in to unattended updates
+```
+
+- **`mascope.service`** starts the stack at boot. It is enabled.
+- **`mascope-update.service` and `.timer`** run the unattended update nightly.
+  On exit 40 the unit installs the CLI named in
+  `.runtime/update/cli-to-install` with `uv tool install`, then runs `--auto`
+  again. The timer stays off until you enable it.
+- **The disk check and the assignment-run retention** run on timers that are
+  enabled.
+
+The units run the `mascope` executable that installed them, on this runtime
+home, as this account. The update needs that executable to be a
+`uv tool install mascope-cli`. Their settings files are seeded once into
+`/etc/mascope`, and `MASCOPE_PATH` is added to `/etc/environment` when it is
+missing. Re-run the command after a CLI upgrade that changes the units;
+`mascope prod units remove` takes them out again. The full story is in
+[docs/maintaining.md](https://github.com/ultra-trace-systems/mascope/blob/develop/docs/maintaining.md).
+
 ## Limits of a wheel install
 
 A wheel install starts a stack and moves it across releases with its CLI, but
-lacks what a server's source checkout gets from `tooling/ubuntu.sh`:
+lacks some of what a server's source checkout gets from `tooling/ubuntu.sh`:
 
-- **There are no boot or update units.** Nothing starts the stack at boot or
-  runs the unattended update, backup retention or disk check, nor installs
-  the CLI an `--auto` exit 40 names. A checkout install gets these as systemd
-  units from `tooling/ubuntu.sh`.
+- **The system packages are yours to install.** Docker, and uv for the
+  unattended update. `tooling/ubuntu.sh` installs them on a checkout.
 - **Only a release cut with a CLI can be deployed.** A pre-release built
   without a CLI of its own, or the rolling `latest`, needs a checkout.
 
