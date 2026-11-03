@@ -475,19 +475,28 @@ def test_a_release_tag_moved_or_deleted_upstream_is_followed(tmp_path, fleet, up
 # -- dependency updates marked [security] ------------------------------------
 
 
-def _uv_lock(packages: dict, root: list, dev: list = ()) -> str:
+def _uv_lock(packages: dict, root: list, dev: list = (), docs: list = ()) -> str:
     """A ``uv.lock`` in uv's own layout.
 
     ``packages`` maps a name to ``(version, dependencies, extras)``, a
-    dependency written ``"name"`` or ``"name[extra]"``; ``root`` and ``dev``
-    are the root project's dependencies and its dev group.
+    dependency written ``"name"``, ``"name[extra]"`` or ``"name==1.0[extra]"``
+    (the entry uv writes for a package with several versions in the lock,
+    its ``source`` table before the extra); ``root``, ``dev`` and ``docs``
+    are the root project's dependencies and two of its groups.
     """
 
     def entries(deps):
         lines = []
         for dep in deps:
             name, _, extra = dep.partition("[")
-            if extra:
+            name, _, pinned = name.partition("==")
+            if pinned:
+                lines.append(
+                    f'    {{ name = "{name}", version = "{pinned}", source = {{ '
+                    'registry = "https://pypi.org/simple" }, '
+                    f'extra = ["{extra[:-1]}"], marker = "sys_platform == \'linux\'" }},'
+                )
+            elif extra:
                 lines.append(f'    {{ name = "{name}", extra = ["{extra[:-1]}"] }},')
             else:
                 lines.append(
@@ -500,7 +509,7 @@ def _uv_lock(packages: dict, root: list, dev: list = ()) -> str:
     out += ["[[package]]", 'name = "mascope"', 'version = "0.0.0"']
     out += ['source = { editable = "." }', "dependencies = ["]
     out += entries(root) + ["]", "", "[package.dev-dependencies]", "dev = ["]
-    out += entries(dev) + ["]", ""]
+    out += entries(dev) + ["]", "docs = ["] + entries(docs) + ["]", ""]
     for name, (version, deps, extras) in sorted(packages.items()):
         out += ["[[package]]", f'name = "{name}"', f'version = "{version}"']
         out += ['source = { registry = "https://pypi.org/simple" }']
@@ -517,18 +526,25 @@ def _uv_lock(packages: dict, root: list, dev: list = ()) -> str:
     return "\n".join(out)
 
 
-#: The root ships fastapi, which pulls starlette, and uvicorn with its
-#: ``standard`` extra; the dev group alone reaches pytest and its pluggy.
+#: The root ships fastapi, which pulls starlette, uvicorn with its
+#: ``standard`` extra, and gunicorn through a forked entry with its ``gevent``
+#: extra; the docs group ships mkdocs-material and its pymdown-extensions; the
+#: dev group alone reaches pytest and its pluggy.
 UV_PACKAGES = {
     "fastapi": ("1.0", ["starlette"], {}),
     "starlette": ("1.0", [], {}),
     "uvicorn": ("1.0", [], {"standard": ["httptools"], "unused": ["watchfiles"]}),
     "httptools": ("1.0", [], {}),
     "watchfiles": ("1.0", [], {}),
+    "gunicorn": ("1.0", [], {"gevent": ["gevent"]}),
+    "gevent": ("1.0", [], {}),
+    "mkdocs-material": ("1.0", ["pymdown-extensions"], {}),
+    "pymdown-extensions": ("1.0", [], {}),
     "pytest": ("1.0", ["pluggy"], {}),
     "pluggy": ("1.0", [], {}),
 }
-UV_ROOT = ["fastapi", "uvicorn[standard]"]
+UV_ROOT = ["fastapi", "uvicorn[standard]", "gunicorn==1.0[gevent]"]
+UV_DOCS = ["mkdocs-material"]
 
 
 def _uv_bump(upstream, message, path="uv.lock", **versions):
@@ -536,7 +552,8 @@ def _uv_bump(upstream, message, path="uv.lock", **versions):
         name: (versions.get(name, version), deps, extras)
         for name, (version, deps, extras) in UV_PACKAGES.items()
     }
-    return upstream.commit(message, {path: _uv_lock(packages, UV_ROOT, dev=["pytest"])})
+    lock = _uv_lock(packages, UV_ROOT, dev=["pytest"], docs=UV_DOCS)
+    return upstream.commit(message, {path: lock})
 
 
 def _npm_lock(packages: dict) -> str:
@@ -595,10 +612,14 @@ def test_a_security_update_of_a_shipped_python_dependency_reports(
 @pytest.mark.parametrize(
     "package",
     [
-        # Reached through fastapi's dependencies, and through the extra the
-        # root asks uvicorn for.
+        # Reached through fastapi's dependencies, through the extra the root
+        # asks uvicorn for, through the extra of a forked entry, and through
+        # the docs group the frontend image builds and serves.
         "starlette",
         "httptools",
+        "gevent",
+        "mkdocs-material",
+        "pymdown-extensions",
     ],
 )
 def test_a_dependency_the_root_reaches_ships(tmp_path, fleet, locked, package):
@@ -726,6 +747,22 @@ def test_a_bump_without_the_security_mark_is_no_fix(tmp_path, fleet, locked):
     assert _fixes(fleet) == 0
 
 
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "docs: explain the [security] mark",
+        "chore(deps): update fastapi [security] and pin it",
+    ],
+)
+def test_a_security_mark_not_at_the_end_is_no_fix(tmp_path, fleet, locked, subject):
+    _uv_bump(locked, subject, fastapi="1.1")
+
+    result = _run(tmp_path, fleet, locked, {"server-a": "v1.0.0"})
+
+    assert result.returncode == 0, result.stdout
+    assert _fixes(fleet) == 0
+
+
 def test_a_lockfile_no_deployment_ships_is_not_read(tmp_path, fleet, locked):
     _uv_bump(
         locked,
@@ -774,7 +811,7 @@ def test_a_fragment_and_a_security_mark_on_one_commit_are_one_fix(
     locked.commit(
         "fix(deps): fastapi 1.1 [security]",
         {
-            "uv.lock": _uv_lock(packages, UV_ROOT, dev=["pytest"]),
+            "uv.lock": _uv_lock(packages, UV_ROOT, dev=["pytest"], docs=UV_DOCS),
             "changelog.d/mas-9-fastapi.security.md": "- **Fastapi.**\n",
         },
     )
