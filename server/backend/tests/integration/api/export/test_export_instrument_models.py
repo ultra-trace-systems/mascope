@@ -1,11 +1,10 @@
 """
 Tests: where the exports take a sample file's instrument model from.
 
-The model is the one the file's ``Instrument`` row records, which ingest fills
-from the reader, so a file whose raw file is gone still has one. A row with no
-model yet - an instrument no file has registered since the table was made -
-leaves an Orbitrap file to its raw file's header, as before the table; a TOF
-file is never opened.
+Each file states its own: the model its props name, else its kept raw file's
+header (Orbitrap only; a TOF file is never opened), and only then its
+``Instrument`` row, which holds one model per name - the last registered
+file's - so a file whose props and raw file are gone still has one.
 """
 
 from datetime import datetime, timezone
@@ -82,7 +81,21 @@ async def files(async_session_factory):
 
 
 @pytest.fixture
-def reader(monkeypatch):
+def props(monkeypatch):
+    """No file has props, until a test gives one some: by filename."""
+    stored = {}
+
+    def read_props(filename):
+        if filename not in stored:
+            raise FileNotFoundError(filename)
+        return stored[filename]
+
+    monkeypatch.setattr(service.m_io, "read_props", read_props)
+    return stored
+
+
+@pytest.fixture
+def reader(monkeypatch, props):
     """A raw file reader that names a model for every file it is asked about,
     and records which files those were."""
     opened = []
@@ -97,16 +110,20 @@ def reader(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_rows_model_comes_first_and_the_header_fills_in(files, reader):
+async def test_the_raw_header_comes_before_the_rows_model(files, reader):
     models = await service.instrument_models_of(files.files)
     assert models == {
-        files.modelled: "Q Exactive",
+        files.modelled: "Orbitrap Exploris 120",
         files.bare: "Orbitrap Exploris 120",
         files.unlinked: "Orbitrap Exploris 120",
         files.tof: None,
     }
     assert sorted(reader) == sorted(
-        [f"models_{files.bare}.raw", f"models_{files.unlinked}.raw"]
+        [
+            f"models_{files.modelled}.raw",
+            f"models_{files.bare}.raw",
+            f"models_{files.unlinked}.raw",
+        ]
     )
 
 
@@ -125,3 +142,60 @@ async def test_a_file_whose_raw_file_is_gone_keeps_its_rows_model(
 async def test_no_files_names_no_model(reader):
     assert await service.instrument_models_of({}) == {}
     assert reader == []
+
+
+@pytest.mark.asyncio
+async def test_two_files_of_one_instrument_keep_their_own_models(
+    files, props, reader, async_session_factory
+):
+    """The owner's case: one instrument name, two files whose props name
+    different models. Each keeps its own, not the row's."""
+    older = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            SampleFile(
+                sample_file_id=older,
+                filename=f"models_{older}.raw",
+                instrument="instrument-x",
+                instrument_id=files.modelled_row,
+                instrument_type="orbi",
+                datetime=datetime(2025, 1, 1, 12, 0, 0),
+                datetime_utc=datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                length=60.0,
+                range=[50.0, 750.0],
+                polarity="+",
+            )
+        )
+        await session.commit()
+    props[f"models_{files.modelled}.raw"] = {
+        "instrument_model": "Orbitrap Exploris 240"
+    }
+    props[f"models_{older}.raw"] = {
+        "axis_fingerprint": {"source": {"instrument_model": "Q Exactive Plus"}}
+    }
+    models = await service.instrument_models_of(
+        {
+            files.modelled: (f"models_{files.modelled}.raw", "orbi"),
+            older: (f"models_{older}.raw", "orbi"),
+        }
+    )
+    assert models == {
+        files.modelled: "Orbitrap Exploris 240",
+        older: "Q Exactive Plus",
+    }
+    assert reader == []
+
+
+@pytest.mark.asyncio
+async def test_a_tof_files_props_name_its_model(files, props, reader):
+    props[f"models_{files.tof}.raw"] = {"instrument_model": "TOF model Y"}
+    models = await service.instrument_models_of(files.files)
+    assert models[files.tof] == "TOF model Y"
+    assert f"models_{files.tof}.raw" not in reader
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_props_name_none_reads_its_header(files, props, reader):
+    props[f"models_{files.modelled}.raw"] = {"instrument_model": None}
+    models = await service.instrument_models_of(files.files)
+    assert models[files.modelled] == "Orbitrap Exploris 120"

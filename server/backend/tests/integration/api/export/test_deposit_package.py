@@ -766,6 +766,43 @@ async def test_a_file_the_filestore_no_longer_keeps_has_its_instruments_model(
 
 
 @pytest.mark.asyncio
+async def test_a_file_states_the_model_its_own_props_name(
+    dataset, out, async_session_factory
+):
+    """A file's props come before its raw file's header and its instrument's
+    row: the row holds the model the last registered file of the name
+    reported, which an older file of other hardware does not share."""
+    instrument_id = gen_id(16)
+    async with async_session_factory() as session:
+        session.add(
+            Instrument(
+                instrument_id=instrument_id,
+                name=f"deposit-{instrument_id}",
+                instrument_type="orbi",
+                model="Orbitrap Exploris 240",
+            )
+        )
+        await session.flush()
+        orbi = await session.get(SampleFile, dataset.ids.orbi_file)
+        orbi.instrument_id = instrument_id
+        await session.commit()
+    props = os.path.join(parse_path_from_item_filename(dataset.names.orbi), ".props")
+    with open(props, "w") as f:
+        json.dump({"instrument_model": "Q Exactive Plus"}, f)
+
+    summary = await build_package(dataset.ids.dataset, str(out))
+    with zipfile.ZipFile(summary["archive"]) as archive:
+        manifest = json.loads(archive.read(f"{summary['package']}/manifest.json"))
+    entry = next(
+        entry
+        for entry in manifest["raw"]
+        if entry["sample_file_id"] == dataset.ids.orbi_file
+    )
+    assert entry["instrument_model"] == "Q Exactive Plus"
+    assert entry["cv_terms"]["instrument_model"]["name"] == "Q Exactive Plus"
+
+
+@pytest.mark.asyncio
 async def test_the_acquisition_record_lies_beside_its_raw_file(package, dataset):
     """The record the control program sent is written back as the sidecar
     it was, ``<raw file>.mascope.json``, but for the computer it names, and

@@ -21,6 +21,7 @@ from typing import IO, Any
 import pandas as pd
 from sqlalchemy import select
 
+import mascope_file.io as m_io
 import mascope_signal.metadata as m_metadata
 from mascope_backend import vocabulary
 from mascope_backend.api.controllers.calibration.calibration_controller import (
@@ -36,6 +37,7 @@ from mascope_backend.api.controllers.sample.batches.export.util import (
 from mascope_backend.api.lib.api_features import (
     api_controller_background_task,
 )
+from mascope_backend.api.new.instruments.registry import model_in_props
 from mascope_backend.api.new.match.records.collection.service import (
     get_match_collection_records,
 )
@@ -425,39 +427,69 @@ async def instrument_models_of(
     """
     The instrument model of each sample file, by sample file id.
 
-    The model is the one the file's ``Instrument`` row records, which ingest
-    fills from the reader, so a file whose raw file is no longer kept still
-    has one. A row that has none yet - its instrument has registered no file
-    since the table was made - leaves an Orbitrap file to its raw file's
-    header, which opens in about a millisecond. A TOF file names no model the
-    vocabulary has a term for, and is not opened.
+    Each file states its own model, taken from the first of these that names
+    one:
+
+    1. its props: ``instrument_model``, written at conversion from what the
+       reader reported, else the axis fingerprint's
+       ``source.instrument_model``;
+    2. for an Orbitrap file, its kept raw file's header, which opens in about
+       a millisecond;
+    3. its ``Instrument`` row, which still has a model when the raw file and
+       the props are gone.
+
+    The row comes last because it holds one model per instrument name, the
+    one the last registered file reported: an instrument that kept its name
+    across a hardware change, or an older file registered after newer ones,
+    would give every file of the name the same model. A TOF file names no
+    model the vocabulary has a term for, and its raw file is not opened.
 
     :param files: The sample files, by id: their name and their instrument
         class (``"orbi"`` or ``"tof"``).
-    :return: The model by sample file id, None where neither the row nor a
-        raw file names one. An export is not refused for one file.
+    :return: The model by sample file id, None where nothing names one. An
+        export is not refused for one file.
     :rtype: dict[str, str | None]
     """
     if not files:
         return {}
-    async with async_session() as session:
-        rows = await session.execute(
-            select(SampleFile.sample_file_id, Instrument.model)
-            .join(Instrument, Instrument.instrument_id == SampleFile.instrument_id)
-            .where(SampleFile.sample_file_id.in_(files))
-        )
-        recorded = {file_id: model for file_id, model in rows.all() if model}
-    unread = {
-        file_id: filename
-        for file_id, (filename, instrument_type) in files.items()
-        if file_id not in recorded and instrument_type == "orbi"
-    }
-    read = await asyncio.to_thread(
-        lambda: {
-            file_id: _instrument_model(filename) for file_id, filename in unread.items()
-        }
-    )
-    return {file_id: recorded.get(file_id) or read.get(file_id) for file_id in files}
+
+    def own_models() -> dict[str, str]:
+        found = {}
+        for file_id, (filename, instrument_type) in files.items():
+            model = model_in_props(_props(filename))
+            if not model and instrument_type == "orbi":
+                model = _instrument_model(filename)
+            if model:
+                found[file_id] = model
+        return found
+
+    own = await asyncio.to_thread(own_models)
+    unnamed = [file_id for file_id in files if file_id not in own]
+    recorded = {}
+    if unnamed:
+        async with async_session() as session:
+            rows = await session.execute(
+                select(SampleFile.sample_file_id, Instrument.model)
+                .join(Instrument, Instrument.instrument_id == SampleFile.instrument_id)
+                .where(SampleFile.sample_file_id.in_(unnamed))
+            )
+            recorded = {file_id: model for file_id, model in rows.all() if model}
+    return {file_id: own.get(file_id) or recorded.get(file_id) for file_id in files}
+
+
+def _props(filename: str) -> dict | None:
+    """
+    One sample file's props, or None when there are none to read.
+
+    Blocking; run it in a thread.
+
+    :param filename: The sample file's name.
+    :rtype: dict | None
+    """
+    try:
+        return m_io.read_props(filename)
+    except Exception:  # noqa: BLE001 - a file without props falls through
+        return None
 
 
 def _instrument_model(filename: str) -> str | None:
