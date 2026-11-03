@@ -582,6 +582,26 @@ When every deployment runs every fix, it says nothing.
   commit that added it still marks the fix. A security fix filed under
   `fixed` is one the check never sees. Fixes released before the fragments
   existed are in `CHANGELOG.md` alone and are not checked.
+- **A security update of a dependency a deployment runs** is a fix too.
+  Renovate's vulnerability updates add no fragment. Their subject ends in
+  `[security]`, and the check counts such a commit when it changes the
+  version of a package that ships:
+  - in `uv.lock`, a package the root project reaches through its
+    `dependencies`, and the extras those ask for. That is what the backend
+    image installs (`uv tool install .`). A package only a dependency group
+    (`dev`, `docs`, `lint`) reaches does not ship.
+  - in `server/frontend/package-lock.json`, a package the lock does not mark
+    `"dev": true`. npm marks the ones only `devDependencies` reach, and the
+    frontend image bundles the rest.
+
+  The check reads both locks as the commit and its first parent have them.
+  A package counts when it ships after the commit, or when the commit took
+  it out and it shipped before. Markers are not weighed: a package only
+  Windows installs still counts. A lock it cannot read counts as a fix, so
+  an unknown format never hides one. Other lockfiles, such as the File
+  Agent's `agents/file/uv.lock`, ship to no deployment and are not read. The
+  fix is named after the package, `deps-pillow`, or `deps-axios-and-2-more`
+  when the bump moved packages it pulls in too.
 - **What a deployment runs** is the release its backend reports on the
   anonymous `/api/version/public` route, read from this box through the
   deployment's public URL. It is the running backend answering, never a
@@ -645,6 +665,7 @@ and the heartbeat service is a third party. One line per finding:
 ```text
 behind: server-a runs v1.15.0, missing 1a2b3c4d5 mas-123-session-expiry (merged 2026-10-28, not released)
 behind: server-b runs v1.14.0, missing 5e6f7a8b9 mas-120-secret-file-modes (merged 2026-10-20, released in v1.15.0)
+behind: server-b runs v1.14.0, missing 0c1d2e3f4 deps-pillow (merged 2026-10-25, released in v1.15.0)
 unreadable: server-c runs 'latest', which names no release
 ```
 

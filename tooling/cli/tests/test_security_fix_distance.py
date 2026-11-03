@@ -472,6 +472,323 @@ def test_a_release_tag_moved_or_deleted_upstream_is_followed(tmp_path, fleet, up
     ]
 
 
+# -- dependency updates marked [security] ------------------------------------
+
+
+def _uv_lock(packages: dict, root: list, dev: list = ()) -> str:
+    """A ``uv.lock`` in uv's own layout.
+
+    ``packages`` maps a name to ``(version, dependencies, extras)``, a
+    dependency written ``"name"`` or ``"name[extra]"``; ``root`` and ``dev``
+    are the root project's dependencies and its dev group.
+    """
+
+    def entries(deps):
+        lines = []
+        for dep in deps:
+            name, _, extra = dep.partition("[")
+            if extra:
+                lines.append(f'    {{ name = "{name}", extra = ["{extra[:-1]}"] }},')
+            else:
+                lines.append(
+                    f'    {{ name = "{name}", marker = "sys_platform != \'win32\'" }},'
+                )
+        return lines
+
+    out = ["version = 1", "revision = 3", 'requires-python = "==3.12.*"', ""]
+    out += ["[manifest]", 'members = ["mascope"]', ""]
+    out += ["[[package]]", 'name = "mascope"', 'version = "0.0.0"']
+    out += ['source = { editable = "." }', "dependencies = ["]
+    out += entries(root) + ["]", "", "[package.dev-dependencies]", "dev = ["]
+    out += entries(dev) + ["]", ""]
+    for name, (version, deps, extras) in sorted(packages.items()):
+        out += ["[[package]]", f'name = "{name}"', f'version = "{version}"']
+        out += ['source = { registry = "https://pypi.org/simple" }']
+        if deps:
+            out += ["dependencies = ["] + entries(deps) + ["]"]
+        out += ["wheels = [", f'    {{ url = "https://example.invalid/{name}.whl" }},']
+        out += ["]", ""]
+        if extras:
+            out += ["[package.optional-dependencies]"]
+            for extra, extra_deps in extras.items():
+                out += [f"{extra} = ["] + entries(extra_deps) + ["]"]
+            out += [""]
+        out += ["[package.metadata]", f'requires-dist = [{{ name = "{name}" }}]', ""]
+    return "\n".join(out)
+
+
+#: The root ships fastapi, which pulls starlette, and uvicorn with its
+#: ``standard`` extra; the dev group alone reaches pytest and its pluggy.
+UV_PACKAGES = {
+    "fastapi": ("1.0", ["starlette"], {}),
+    "starlette": ("1.0", [], {}),
+    "uvicorn": ("1.0", [], {"standard": ["httptools"], "unused": ["watchfiles"]}),
+    "httptools": ("1.0", [], {}),
+    "watchfiles": ("1.0", [], {}),
+    "pytest": ("1.0", ["pluggy"], {}),
+    "pluggy": ("1.0", [], {}),
+}
+UV_ROOT = ["fastapi", "uvicorn[standard]"]
+
+
+def _uv_bump(upstream, message, path="uv.lock", **versions):
+    packages = {
+        name: (versions.get(name, version), deps, extras)
+        for name, (version, deps, extras) in UV_PACKAGES.items()
+    }
+    return upstream.commit(message, {path: _uv_lock(packages, UV_ROOT, dev=["pytest"])})
+
+
+def _npm_lock(packages: dict) -> str:
+    """A ``package-lock.json``, v3: ``packages`` maps a name to (version, dev)."""
+    entries = {"": {"name": "mascope", "version": "2.0"}}
+    for name, (version, dev) in packages.items():
+        entries[f"node_modules/{name}"] = {
+            "version": version,
+            **({"dev": True} if dev else {}),
+        }
+    return json.dumps({"name": "mascope", "lockfileVersion": 3, "packages": entries})
+
+
+NPM = "server/frontend/package-lock.json"
+
+
+@pytest.fixture
+def locked(upstream):
+    """Upstream with both lockfiles, released as v1.0.0."""
+    _uv_bump(upstream, "chore: lock")
+    upstream.commit(
+        "chore: npm lock",
+        {NPM: _npm_lock({"axios": ("1.0", False), "vite": ("1.0", True)})},
+    )
+    upstream.release("v1.0.0")
+    return upstream
+
+
+def _fixes(fleet):
+    """The ``fixes=`` count of the run's last ping."""
+    return int(_final_ping(fleet)[1].split()[0].removeprefix("fixes="))
+
+
+def test_a_security_update_of_a_shipped_python_dependency_reports(
+    tmp_path, fleet, locked
+):
+    fix = _uv_bump(
+        locked,
+        "chore(deps): update dependency fastapi to v1.1 [security]",
+        fastapi="1.1",
+    )
+
+    result = _run(tmp_path, fleet, locked, {"server-a": "v1.0.0"})
+
+    assert result.returncode == 1, result.stderr
+    assert result.stdout.splitlines() == [
+        f"behind: server-a runs v1.0.0, missing {fix[:9]} deps-fastapi"
+        " (merged 2026-10-05, not released)"
+    ]
+    assert _final_ping(fleet) == (
+        "/ping/fail",
+        "fixes=1 unreleased=1 deployments=1 behind=1 unreadable=0",
+    )
+
+
+@pytest.mark.parametrize(
+    "package",
+    [
+        # Reached through fastapi's dependencies, and through the extra the
+        # root asks uvicorn for.
+        "starlette",
+        "httptools",
+    ],
+)
+def test_a_dependency_the_root_reaches_ships(tmp_path, fleet, locked, package):
+    _uv_bump(
+        locked,
+        f"chore(deps): update dependency {package} [security]",
+        **{package: "2.0"},
+    )
+
+    result = _run(tmp_path, fleet, locked, {"server-a": "v1.0.0"})
+
+    assert result.returncode == 1
+    assert f"deps-{package} (merged" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "package",
+    [
+        # The dev group's own dependency, the one it pulls in, and an extra no
+        # shipped package asks for.
+        "pytest",
+        "pluggy",
+        "watchfiles",
+    ],
+)
+def test_a_security_update_of_development_tooling_alone_is_quiet(
+    tmp_path, fleet, locked, package
+):
+    _uv_bump(
+        locked,
+        f"chore(deps): update dependency {package} [security]",
+        **{package: "2.0"},
+    )
+
+    result = _run(tmp_path, fleet, locked, {"server-a": "v1.0.0"})
+
+    assert result.returncode == 0, result.stdout
+    assert _fixes(fleet) == 0
+
+
+def test_a_security_update_of_a_production_npm_package_reports(tmp_path, fleet, locked):
+    locked.commit(
+        "chore(deps): update dependency axios to v1.1 [security]",
+        {
+            NPM: _npm_lock(
+                {
+                    "axios": ("1.1", False),
+                    "@agent/base": ("1.0", False),
+                    "vite": ("1.0", True),
+                }
+            )
+        },
+    )
+
+    result = _run(tmp_path, fleet, locked, {"server-a": "v1.0.0"})
+
+    assert result.returncode == 1
+    # Named after the package the subject names, not the first in order.
+    assert "deps-axios-and-1-more (merged" in result.stdout
+
+
+def test_a_version_1_npm_lock_keeps_its_dev_marks(tmp_path, fleet, upstream):
+    # A lock of version 1 nests a package under the one that needs it.
+    def v1(redirects, esbuild):
+        return json.dumps(
+            {
+                "lockfileVersion": 1,
+                "dependencies": {
+                    "axios": {
+                        "version": "1.0",
+                        "dependencies": {"follow-redirects": {"version": redirects}},
+                    },
+                    "vite": {
+                        "version": "1.0",
+                        "dev": True,
+                        "dependencies": {"esbuild": {"version": esbuild, "dev": True}},
+                    },
+                },
+            }
+        )
+
+    upstream.commit("chore: npm lock", {NPM: v1("1.0", "1.0")})
+    upstream.release("v1.0.0")
+    upstream.commit("chore(deps): update esbuild [security]", {NPM: v1("1.0", "1.1")})
+    upstream.commit(
+        "chore(deps): update follow-redirects [security]", {NPM: v1("1.1", "1.1")}
+    )
+
+    result = _run(tmp_path, fleet, upstream, {"server-a": "v1.0.0"})
+
+    assert "deps-follow-redirects (merged" in result.stdout
+    assert _fixes(fleet) == 1
+
+
+def test_a_security_update_of_an_npm_dev_dependency_is_quiet(tmp_path, fleet, locked):
+    locked.commit(
+        "chore(deps): update dependency vite to v1.1 [security]",
+        {NPM: _npm_lock({"axios": ("1.0", False), "vite": ("1.1", True)})},
+    )
+
+    result = _run(tmp_path, fleet, locked, {"server-a": "v1.0.0"})
+
+    assert result.returncode == 0, result.stdout
+    assert _fixes(fleet) == 0
+
+
+def test_a_shipped_package_a_security_update_takes_out_reports(tmp_path, fleet, locked):
+    locked.commit(
+        "chore(deps): drop the vulnerable proxy [security]",
+        {NPM: _npm_lock({"vite": ("1.0", True)})},
+    )
+
+    result = _run(tmp_path, fleet, locked, {"server-a": "v1.0.0"})
+
+    assert result.returncode == 1
+    assert "deps-axios (merged" in result.stdout
+
+
+def test_a_bump_without_the_security_mark_is_no_fix(tmp_path, fleet, locked):
+    _uv_bump(locked, "chore(deps): update dependency fastapi to v1.1", fastapi="1.1")
+
+    result = _run(tmp_path, fleet, locked, {"server-a": "v1.0.0"})
+
+    assert result.returncode == 0, result.stdout
+    assert _fixes(fleet) == 0
+
+
+def test_a_lockfile_no_deployment_ships_is_not_read(tmp_path, fleet, locked):
+    _uv_bump(
+        locked,
+        "chore(deps): update dependency fastapi to v1.1 [security]",
+        path="agents/file/uv.lock",
+        fastapi="1.1",
+    )
+
+    result = _run(tmp_path, fleet, locked, {"server-a": "v1.0.0"})
+
+    assert result.returncode == 0, result.stdout
+    assert _fixes(fleet) == 0
+
+
+def test_a_lockfile_it_cannot_read_counts_as_a_fix(tmp_path, fleet, locked):
+    locked.commit("chore(deps): update everything [SECURITY]", {"uv.lock": "garbled\n"})
+
+    result = _run(tmp_path, fleet, locked, {"server-a": "v1.0.0"})
+
+    assert result.returncode == 1
+    assert "deps-unreadable-uv.lock (merged" in result.stdout
+
+
+def test_a_security_update_released_is_quiet_on_the_release(tmp_path, fleet, locked):
+    _uv_bump(
+        locked, "chore(deps): update dependency fastapi [security] (#12)", fastapi="1.1"
+    )
+    locked.release("v1.1.0")
+
+    result = _run(tmp_path, fleet, locked, {"server-a": "v1.1.0", "server-b": "v1.0.0"})
+
+    assert result.returncode == 1
+    lines = result.stdout.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("behind: server-b runs v1.0.0, missing ")
+    assert lines[0].endswith("deps-fastapi (merged 2026-10-05, released in v1.1.0)")
+
+
+def test_a_fragment_and_a_security_mark_on_one_commit_are_one_fix(
+    tmp_path, fleet, locked
+):
+    packages = {
+        n: (("1.1" if n == "fastapi" else v), d, e)
+        for n, (v, d, e) in UV_PACKAGES.items()
+    }
+    locked.commit(
+        "fix(deps): fastapi 1.1 [security]",
+        {
+            "uv.lock": _uv_lock(packages, UV_ROOT, dev=["pytest"]),
+            "changelog.d/mas-9-fastapi.security.md": "- **Fastapi.**\n",
+        },
+    )
+    locked.fix("mas-10-cookie-scope")
+
+    result = _run(tmp_path, fleet, locked, {"server-a": "v1.0.0"})
+
+    assert result.returncode == 1
+    assert "mas-9-fastapi (merged" in result.stdout
+    assert "mas-10-cookie-scope (merged" in result.stdout
+    assert "deps-" not in result.stdout
+    assert _fixes(fleet) == 2
+
+
 # -- a version it cannot place is a finding ----------------------------------
 
 

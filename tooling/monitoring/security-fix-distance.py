@@ -13,6 +13,15 @@ fix it is missing, and says nothing at all when every deployment has them all.
   so the check sees a fix from the moment it is on develop, not only once a
   release compiles it into ``CHANGELOG.md``. It reads the fragments from a
   clone of its own, fetched every run, so it needs no token and no API.
+* **A security update of a shipped dependency is one too.** Renovate's
+  vulnerability updates add no fragment; their subject ends in
+  ``[security]``. Such a commit counts when it changes the version of a
+  package a deployment runs: in ``uv.lock``, one the root project reaches
+  through its dependencies (what the backend image installs, never a
+  dependency group); in ``server/frontend/package-lock.json``, one the lock
+  does not mark ``dev``. A bump of development tooling alone asks nothing of
+  the fleet. A lockfile it cannot read counts, so a format it does not know
+  is never a fix it skips.
 * **What a deployment runs.** The release its backend reports on the anonymous
   ``/api/version/public`` route: the running backend answering, never a
   record of what was deployed. A deployment has a fix when that release's tag
@@ -79,6 +88,16 @@ REF_NAMESPACE = "refs/fix-distance"
 
 FRAGMENTS = "changelog.d/*.security.md"
 
+#: The lockfiles of what a deployment runs: the backend image installs the
+#: root project from ``uv.lock``, and the frontend image bundles the
+#: production dependencies of ``package-lock.json``. The File Agent's lock and
+#: the dependency groups ship to no deployment.
+UV_LOCK = "uv.lock"
+NPM_LOCK = "server/frontend/package-lock.json"
+#: Renovate's mark on a vulnerability update, at the end of the subject (a
+#: squash merge may append the PR number after it).
+SECURITY_SUBJECT = re.compile(r"\[security\](\s*\(#\d+\))?\s*$", re.IGNORECASE)
+
 # Keep this in step with RELEASE_TAG_PATTERN in mascope_runtime and with
 # release_tag in run-assessment.sh. Copied rather than imported: this runs on
 # the monitoring host's own python3, which does not install the runtime.
@@ -106,6 +125,10 @@ class ConfigError(Exception):
 
 class FetchError(Exception):
     """The repository could not be brought up to date."""
+
+
+class LockError(Exception):
+    """A lockfile cannot be read, so what it ships is unknown."""
 
 
 @dataclass
@@ -291,6 +314,206 @@ def marked_fixes(config: Config) -> list[Fix]:
     return fixes
 
 
+def dependency_fixes(config: Config, known: set[str]) -> list[Fix]:
+    """Every ``[security]`` commit that changes a dependency a deployment runs.
+
+    ``known`` are the commits a fragment already marks: one fix each, however
+    it is marked.
+    """
+    refs = [f"{REF_NAMESPACE}/{b}" for b in config.branches]
+    out = git(
+        config.repository,
+        "log",
+        "--full-history",
+        "--format=commit %H %cs %P%x00%s",
+        "--name-only",
+        *refs,
+        "--",
+        UV_LOCK,
+        NPM_LOCK,
+    )
+    commits: list[tuple[str, str, str | None, str, list[str]]] = []
+    commit = ""
+    for line in out.splitlines():
+        if line.startswith("commit "):
+            head, _, subject = line.partition("\0")
+            commit, merged, *parents = head.split()[1:]
+            touched: list[str] = []
+            if SECURITY_SUBJECT.search(subject) and commit not in known:
+                parent = parents[0] if parents else None
+                commits.append((commit, merged, parent, subject, touched))
+            continue
+        if line and commits and commits[-1][0] == commit:
+            commits[-1][4].append(line)
+
+    fixes: list[Fix] = []
+    for commit, merged, parent, subject, touched in commits:
+        shipped: set[str] = set()
+        for path in touched:
+            shipped |= shipped_changes(config.repository, path, commit, parent)
+        if shipped:
+            name = deps_name(shipped, subject)
+            fixes.append(Fix(commit=commit, merged=merged, name=name))
+    return fixes
+
+
+def deps_name(packages: set[str], subject: str) -> str:
+    """``deps-<package>``, the one the subject names first if it names one."""
+    words = set(subject.lower().split())
+    first, *rest = sorted(packages, key=lambda p: (p.lower() not in words, p))
+    name = "deps-" + re.sub(r"[^A-Za-z0-9._-]+", "-", first).strip("-")
+    if rest:
+        name += f"-and-{len(rest)}-more"
+    return name if NAME_SHAPE.fullmatch(name) else "(dependency name withheld)"
+
+
+def shipped_changes(
+    repository: Path, path: str, commit: str, parent: str | None
+) -> set[str]:
+    """The shipped packages whose version the commit changes in one lockfile.
+
+    A package counts when it ships in the lock after the commit, or, if the
+    commit took it out, in the lock before. A lock that cannot be read counts
+    as a change of its own.
+    """
+    read = read_uv_lock if path == UV_LOCK else read_npm_lock
+    try:
+        after = read(show(repository, commit, path))
+        before = read(show(repository, parent, path)) if parent else ({}, set())
+    except LockError:
+        return {f"unreadable {Path(path).name}"}
+    versions_after, shipped_after = after
+    versions_before, shipped_before = before
+    changed = {
+        name
+        for name in versions_after.keys() | versions_before.keys()
+        if versions_after.get(name) != versions_before.get(name)
+    }
+    return {
+        name
+        for name in changed
+        if name in shipped_after
+        or (name not in versions_after and name in shipped_before)
+    }
+
+
+def show(repository: Path, commit: str, path: str) -> str | None:
+    """A file as a commit has it, or None when the commit has none."""
+    try:
+        return git(repository, "show", f"{commit}:{path}")
+    except subprocess.CalledProcessError:
+        return None
+
+
+Lock = tuple[dict[str, frozenset[str]], set[str]]
+
+_UV_TABLE = re.compile(r"^\[\[?([A-Za-z0-9_.-]+)\]\]?\s*$")
+_UV_KEY = re.compile(r'^("[^"]+"|[A-Za-z0-9_-]+) = (.*)$')
+_UV_ENTRY = re.compile(r'\{\s*name = "([^"]+)"([^}]*)\}')
+_UV_EXTRAS = re.compile(r"extra = \[([^\]]*)\]")
+
+
+def read_uv_lock(text: str | None) -> Lock:
+    """The versions in a ``uv.lock`` and the packages the root project ships.
+
+    The host's python3 may predate ``tomllib``, so this reads the layout uv
+    writes: a ``[[package]]`` table per package, its ``dependencies`` and each
+    ``[package.optional-dependencies]`` extra an array with one ``{ name =
+    ... }`` per line. What ships is what the root project (the one at ``.``)
+    reaches through ``dependencies`` and the extras an edge asks for, never
+    through ``[package.dev-dependencies]``. Markers are not weighed: a package
+    only one platform installs ships as far as this check knows.
+    """
+    if text is None:
+        return {}, set()
+    versions: dict[str, set[str]] = {}
+    # (package, extra or "") -> the (package, extra) edges it has.
+    edges: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    root = None
+    name = table = key = ""
+    for line in text.splitlines():
+        header = _UV_TABLE.match(line)
+        if header:
+            table, key = header[1], ""
+            if line.startswith("[[package]]"):
+                name = ""
+            continue
+        pair = _UV_KEY.match(line)
+        if pair:
+            key, value = pair[1].strip('"'), pair[2]
+            if table == "package" and key in ("name", "version", "source"):
+                literal = value.strip().strip('"')
+                if key == "name":
+                    name = literal
+                    edges.setdefault((name, ""), set())
+                elif key == "version":
+                    versions.setdefault(name, set()).add(literal)
+                elif re.fullmatch(r'\{ (editable|virtual) = "\." \}', value.strip()):
+                    root = name
+        if not name:
+            continue
+        if table == "package" and key == "dependencies":
+            extra = ""
+        elif table == "package.optional-dependencies" and key:
+            extra = key
+        else:
+            continue
+        for entry in _UV_ENTRY.finditer(line):
+            wanted = _UV_EXTRAS.search(entry[2])
+            target = edges.setdefault((name, extra), set())
+            target.add((entry[1], ""))
+            for asked in re.findall(r'"([^"]+)"', wanted[1]) if wanted else ():
+                target.add((entry[1], asked))
+    if root is None or not versions:
+        raise LockError("no root project")
+    shipped: set[str] = set()
+    todo = [(root, "")]
+    seen: set[tuple[str, str]] = set()
+    while todo:
+        node = todo.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        shipped.add(node[0])
+        todo.extend(edges.get(node, ()))
+    return {n: frozenset(v) for n, v in versions.items()}, shipped
+
+
+def read_npm_lock(text: str | None) -> Lock:
+    """The versions in a ``package-lock.json`` and the packages it ships.
+
+    Every package the lock does not mark ``dev`` ships: npm marks the ones
+    only ``devDependencies`` reach. A lock of version 1, with no ``packages``
+    map, nests the same marks under ``dependencies``.
+    """
+    if text is None:
+        return {}, set()
+    try:
+        lock = json.loads(text)
+        entries = lock.get("packages")
+        if entries is None:
+            entries = dict(_npm_v1(lock.get("dependencies") or {}, ""))
+        versions: dict[str, set[str]] = {}
+        shipped: set[str] = set()
+        for path, entry in entries.items():
+            if not path:
+                continue
+            name = path.rpartition("node_modules/")[2]
+            versions.setdefault(name, set()).add(str(entry.get("version")))
+            if not entry.get("dev"):
+                shipped.add(name)
+    except (ValueError, AttributeError, TypeError, RecursionError) as exc:
+        raise LockError(str(exc)) from exc
+    return {n: frozenset(v) for n, v in versions.items()}, shipped
+
+
+def _npm_v1(dependencies: dict, prefix: str):
+    for name, entry in dependencies.items():
+        path = f"{prefix}node_modules/{name}"
+        yield path, entry
+        yield from _npm_v1(entry.get("dependencies") or {}, path + "/")
+
+
 def deployed_version(url: str, timeout: float) -> tuple[str | None, str]:
     """The release a deployment reports, or None and why it names none."""
     try:
@@ -332,6 +555,11 @@ def deployed_version(url: str, timeout: float) -> tuple[str | None, str]:
 def check(config: Config) -> tuple[list[str], dict[str, int]]:
     """The findings, one line each, and the counts for the heartbeat."""
     fix_list = marked_fixes(config)
+    deps = dependency_fixes(config, {f.commit for f in fix_list})
+    for fix in deps:
+        tags = git(config.repository, "tag", "--contains", fix.commit).split()
+        fix.releases = {t for t in tags if RELEASE_TAG.fullmatch(t)}
+    fix_list += deps
     findings: list[str] = []
     behind = unreadable = 0
     for alias, url in config.deployments.items():
