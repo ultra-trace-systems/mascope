@@ -36,15 +36,14 @@ TRANSIENT_REDIS_ERRORS = (
     TimeoutError,
 )
 
-#: Seconds a pooled connection may sit idle before it is pinged on next use,
-#: so a connection Redis or a proxy dropped is replaced instead of failing the
-#: first command sent over it.
-HEALTH_CHECK_INTERVAL = 30
+#: Retries of a command that failed with a connection error or a timeout. One
+#: is enough to replace a pooled connection Redis or a proxy closed while it
+#: sat idle. Every command the socket storage sends is safe to send again
+#: (SET, EXPIRE, DEL, SADD, SREM, a check-and-delete script).
+COMMAND_RETRIES = 1
 
-#: Retries of a command that failed with a connection error or a timeout.
-#: Every command the socket storage sends is safe to send again (SET, EXPIRE,
-#: DEL, SADD, SREM, a check-and-delete script).
-COMMAND_RETRIES = 2
+#: Seconds one attempt waits to connect, or for a reply, before it fails.
+SOCKET_TIMEOUT = 5
 
 
 def log_storage_failure(message: str, error: BaseException) -> None:
@@ -103,18 +102,20 @@ class RedisStorageClient:
 
         try:
             # This client is consulted inline by API requests (e.g. the
-            # converter-availability gate before uploads and peak detection).
-            # No blocking Redis commands are used on it, so the timeouts bound
-            # how long a hung Redis connection can stall a request mid-await:
-            # with the retries, at most (COMMAND_RETRIES + 1) attempts of 5 s.
-            # The retries and the health check let a short blip (a restart,
-            # a dropped idle connection) heal without failing the call.
+            # converter-availability gate before uploads, the login rate
+            # limiter). No blocking Redis commands are used on it, so the
+            # timeouts bound how long a hung Redis can stall a request: at
+            # most (COMMAND_RETRIES + 1) attempts of SOCKET_TIMEOUT, 10 s,
+            # plus a backoff under 0.2 s. The retry replaces a connection
+            # Redis dropped while it sat idle, so that call does not fail.
+            # No health_check_interval: redis-py runs the same Retry around
+            # its health-check PING inside each command attempt, so a Redis
+            # that accepts and never answers cost (retries + 1) ** 2 attempts.
             self._client = from_url(
                 redis_url,
                 decode_responses=True,
-                socket_timeout=5,
-                socket_connect_timeout=5,
-                health_check_interval=HEALTH_CHECK_INTERVAL,
+                socket_timeout=SOCKET_TIMEOUT,
+                socket_connect_timeout=SOCKET_TIMEOUT,
                 retry=Retry(
                     ExponentialWithJitterBackoff(cap=1.0, base=0.1),
                     COMMAND_RETRIES,
