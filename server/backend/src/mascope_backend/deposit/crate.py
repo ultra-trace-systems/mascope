@@ -83,7 +83,8 @@ _DIRECTORIES = {
     ),
     "batches/": (
         "Batch spreadsheets",
-        "Each batch's spreadsheet, as the app's spreadsheet export writes it.",
+        "Each batch's spreadsheet, as the app's spreadsheet export writes it, "
+        "without the reviewers' notes and ids on its verdicts.",
     ),
     "target_collections/": (
         "Target collections",

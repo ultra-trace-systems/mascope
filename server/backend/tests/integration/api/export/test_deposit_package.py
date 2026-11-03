@@ -991,6 +991,50 @@ async def test_each_batch_is_its_spreadsheet_and_its_samples(package, dataset):
 
 
 @pytest.mark.asyncio
+async def test_a_packaged_verifications_sheet_has_no_note_and_no_user(
+    dataset, out, monkeypatch
+):
+    """The package's Verifications sheet leaves out each verdict's note and
+    who judged it; the app's own export of the batch keeps both."""
+    ids = dataset.ids
+
+    async def verdicts(sample_batch_id):
+        if sample_batch_id != ids.first_batch:
+            return []
+        return [
+            {
+                "sample_item_id": ids.orbi_item,
+                "sample_peak_id": "peak-1",
+                "assigned_formula": "C6H5O-",
+                "verdict": "confirmed",
+                "evidence_level": "reference_standard",
+                "note": "checked against the standard",
+                "verified_by": 42,
+                "borrowed": False,
+            }
+        ]
+
+    monkeypatch.setattr(service, "get_scope_verifications", verdicts)
+    summary = await build_package(ids.dataset, str(out))
+    with zipfile.ZipFile(summary["archive"]) as archive:
+        manifest = json.loads(archive.read(f"{summary['package']}/manifest.json"))
+        path = manifest["batches"][0]["spreadsheet"]["path"]
+        packaged = archive.read(f"{summary['package']}/{path}")
+    with pd.ExcelFile(io.BytesIO(packaged)) as book:
+        sheet = pd.read_excel(book, "Verifications")
+    assert "note" not in sheet.columns
+    assert "verified_by" not in sheet.columns
+    assert sheet[["sample_item_id", "verdict", "evidence_level"]].values.tolist() == [
+        [ids.orbi_item, "confirmed", "reference_standard"]
+    ]
+
+    exported = (await service.build_batch_sheets(ids.first_batch)).verifications
+    assert exported[["note", "verified_by"]].values.tolist() == [
+        ["checked against the standard", 42]
+    ]
+
+
+@pytest.mark.asyncio
 async def test_collections_carry_compound_identity_and_their_ions(package, dataset):
     """Both the collection a batch was matched against and the one its
     ionization mode calibrates with are packed, each saying which it is."""
