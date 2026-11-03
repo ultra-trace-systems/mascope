@@ -1466,7 +1466,10 @@ def get_tic_per_scan(
                 # Concatenate TIC values from each group
                 tic_per_scan = np.concatenate(group_tic_per_scan, axis=0)
 
-            # Correct TIC values by total TIC value if available
+            # Correct TIC values by total TIC value if available. The props'
+            # "tic" is the file's total, the sum of its scans' TIC (the
+            # converters that wrote it summed them), so each scan keeps a
+            # value per scan in the total's unit.
             try:
                 total_tic = m_io.read_props(base_filename)["tic"]
                 tic_per_scan = tic_per_scan / tic_per_scan.sum() * total_tic

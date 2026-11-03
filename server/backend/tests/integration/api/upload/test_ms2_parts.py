@@ -280,7 +280,7 @@ async def test_the_parts_tic_and_window_are_its_fragment_scans(
     await _file_ms2(sample_file, setup)
 
     (item,) = await _items(async_session_factory, sample_file.sample_file_id)
-    assert item.tic == 9.0
+    assert item.tic == 4.5
     assert (item.t0, item.t1) == (_FIRST_FRAGMENT_SCAN, _LAST_FRAGMENT_SCAN)
 
 
@@ -432,4 +432,4 @@ async def test_a_bound_items_window_reaches_the_fragment_scans_after_its_ms1_blo
     (item,) = await _items(async_session_factory, sample_file.sample_file_id)
     assert (item.t0, item.t1) == (_MS1_FIRST, _LAST_FRAGMENT_SCAN)
     assert item.t1 > _MS1_LAST
-    assert item.tic == 30.0
+    assert item.tic == 15.0
