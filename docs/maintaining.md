@@ -1497,7 +1497,7 @@ curl -sk -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/
 Settings in the Cloudflare dashboard for the site's zone, one checkbox each. The
 application's own limits, which the edge must not undercut for one client, are
 10 sign-in attempts per 60 s per address and 15 per 300 s per account
-(`api/lib/rate_limit.py`). The plan the zones are on shapes two of the items:
+(`api/new/auth/routes.py` and `api/new/auth/login.py`). The plan the zones are on shapes two of the items:
 the WAF ships with a small managed ruleset only, and rate limiting is one rule
 with a fixed 10-second window.
 
@@ -1539,6 +1539,11 @@ Cloudflare confirm the check's token before it looks at the password, and
 refuses the sign-in without it. Only the password step is checked: the
 two-factor code, SDK and agent calls with a token, pairing and uploads never
 see it. It is off unless the site turns it on.
+
+A sign-in the check refuses still counts against the address's 10 attempts,
+but not against the account's 15: someone who solves no check cannot lock an
+account out by sending its address with no token. Wrong passwords sent with a
+solved check count against both, as they do without Turnstile.
 
 1. In the Cloudflare dashboard, under **Turnstile**, add a widget for the
    site: its hostname, mode **Managed**. Cloudflare gives it a **site key**,
