@@ -32,6 +32,7 @@ Everything below assumes an Ubuntu host provisioned with
 | What the method bindings would route, and where a file name disagrees | `mascope prod db script run report_method_binding_disagreements` |
 | Write the MS2 stores of files converted before them, and list their groups (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
 | List the files whose peak store lacks a scan they read, to re-process them | `mascope prod db script run report_stale_peak_stores` |
+| Flag the Orbitrap peaks under a local floor weak in stores written before the floor (dry run first) | `DRY_RUN=1 mascope prod db script run reflag_orbitrap_weak_peaks`, then without `DRY_RUN` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | Fill the model of instruments registered before it was read (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run backfill_instrument_model`, then without `DRY_RUN` |
 | Recompute every sample's TIC as the mean per scan (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run fix_sample_item_tic`, then without `DRY_RUN` |
@@ -2240,6 +2241,43 @@ mascope prod db script run report_stale_peak_stores
   re-processing. *Detect peaks* on that file rebuilds its store and matches
   its samples again, keeping the calibration it had.
 - Run the report again afterwards: it should list nothing.
+
+### Orbitrap peaks under a local floor
+
+A raw Orbitrap peak is weak when its signal-to-noise is under 3, or when it
+sits under the floor of a dense stretch of its own spectrum
+(`docs/user/how-it-works/peak-detection.md`, *Local Floor*). The flag is set
+when a file's peaks are detected, so a store written before the floor keeps
+the signal-to-noise flag alone. Around the reagent ions of a file averaged
+over many microscans, that leaves tens of thousands of noise peaks in the
+peak list, the calibration and the matches. Flag them in place after
+updating:
+
+```sh
+DRY_RUN=1 mascope prod db script run reflag_orbitrap_weak_peaks
+mascope prod db script run reflag_orbitrap_weak_peaks
+```
+
+- It reads each raw Orbitrap file's peak store, and nothing else: no raw
+  file, no new detection. It computes the flag as a detection does and
+  writes it only where it differs. A stitched store's `stitch_overlaps` are
+  read again among the peaks the new flag keeps.
+- **The dry run writes nothing.** It lists each file whose flag would
+  change, with how many peaks would turn weak and how many batches would be
+  set to rematch, and totals per instrument. Most files change nothing: the
+  floor is reached at reagent clusters and in long files with a dense comb.
+- Every batch holding a sample of a changed file is set to **rematch**
+  before the store is written. Its matches were made on the old peak list;
+  rematch the batches once the run is done.
+- Each file read is recorded in its `.props`, so a later run moves past it.
+  `REFLAG_LIMIT=<n>` caps the files one run reads: run it again until it
+  reports nothing left to do. A file it could not read is recorded too, and
+  `REFLAG_RETRY=1` reads those again.
+- A file a detection or a calibration was writing at the same time is
+  counted as changed while read and left for the next run.
+- The `pg_dump` taken before it covers the batch statuses only; the flags
+  are in the filestore. The flag before the floor was the signal-to-noise
+  cutoff alone, which the store still holds.
 
 ### Auditing a TOF instrument's mass calibration
 

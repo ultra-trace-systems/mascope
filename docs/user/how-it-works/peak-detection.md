@@ -126,6 +126,8 @@ The window is wide so that the comb of side lobes a few hundred ppm either side 
 An ion standing five times out of the floor is kept; a real ion weaker than that is flagged weak with the floor.
 Where the window holds fewer peaks, the stretch says nothing of a floor, and its peaks are judged by their $\text{SNR}$ alone.
 
+An Orbitrap file detected before this rule keeps its earlier flags until it is reprocessed, or until an operator flags its stored peaks again in place.
+
 ### Satellite Peak Identification
 Fourier-transform and Orbitrap mass spectrometers can generate electronic ringing artifacts, apodization side lobes, or high-intensity harmonic shoulders flanking major ionic signals.
 These are formally classified as satellite peaks and must be flagged to prevent redundant compound assignment.
