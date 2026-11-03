@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 from test_utils import captured_logs
 
+from mascope_backend.file_converter.socket import client as client_module
 from mascope_backend.file_converter.socket.client import FileConverterSocketClient
 from mascope_backend.file_converter.socket.session import FileContext
 from mascope_runtime.logging import SENTRY_FINGERPRINT
@@ -231,3 +232,60 @@ def test_the_peak_guards_warning_goes_through_emit(client):
     assert payload["access_token"] == "token-1"
     assert payload["user_id"] == 7
     assert payload["message"] == "already running"
+
+
+def test_clearing_the_files_context_forgets_its_rejections(client):
+    """The converter carries on with a file whose token was rejected (MAS-534);
+    what was rejected goes when the file is done with, not at the end of the
+    process."""
+    client.context_manager.register_file(_context("sample.raw", "token-1"))
+    client.context_manager.register_file(_context("other.raw", "token-1"))
+    client.emit("file_processing_progress", {"filename": "sample", "progress": 10})
+    _acknowledge(client, REJECTED)
+    client.emit("file_processing_progress", {"filename": "other", "progress": 10})
+    _acknowledge(client, REJECTED)
+
+    # As the processor does once the file is converted or moved aside
+    client.context_manager.clear_context("sample_+")
+
+    assert list(client._rejections) == ["other"]
+    # A peak request for it later, with the same token, is sent again, and
+    # its rejection logged again
+    auth = {"access_token": "token-1", "user_id": 7}
+    client.emit("peak_detection_progress", {"filename": "sample"}, auth)
+    with captured_logs("WARNING") as records:
+        _acknowledge(client, REJECTED)
+    assert len(_rejection_warnings(records)) == 1
+    assert [payload["filename"] for _, payload in _sent(client)] == [
+        "sample",
+        "other",
+        "sample",
+    ]
+    # The file whose context stays still holds its events back
+    client.emit("file_processing_success", {"filename": "other"})
+    assert len(_sent(client)) == 3
+
+
+def test_a_rejection_not_about_the_token_is_forgotten_too(client):
+    client.context_manager.register_file(_context("sample.raw", "token-1"))
+    client.emit("file_processing_progress", {"filename": "sample", "progress": 10})
+    _acknowledge(client, {"error": "SOCKET_AUTH_UNAVAILABLE"})
+
+    client.context_manager.clear_context("sample")
+
+    assert client._rejections == {}
+
+
+def test_the_rejections_kept_are_capped(client, monkeypatch):
+    """A peak request has no context to clear, and an acknowledgement can come
+    back after the file's context was cleared: the oldest files go first."""
+    monkeypatch.setattr(client_module, "MAX_REJECTED_FILES", 2)
+    auth = {"access_token": "token-1", "user_id": 7}
+    for name in ("first", "second", "third"):
+        client.emit("peak_detection_progress", {"filename": name}, dict(auth))
+        _acknowledge(client, REJECTED)
+
+    assert list(client._rejections) == ["second", "third"]
+    for name in ("first", "second", "third"):
+        client.emit("peak_detection_complete", {"filename": name}, dict(auth))
+    assert [payload["filename"] for _, payload in _sent(client)][3:] == ["first"]
