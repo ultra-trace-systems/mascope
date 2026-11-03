@@ -542,7 +542,8 @@ async def update_ionization_mode(
     # Flag affected batches so stale results are reprocessed. A calibration
     # collection change requires a re-fit of m/z calibration to take effect
     # (which itself ends in a rematch), so it gets the stronger "recalibrate"
-    # signal. Mechanism or diagnostic collection changes only need a rematch.
+    # signal. Mechanism or diagnostic collection changes only need a rematch,
+    # which leaves a batch an earlier edit flagged "recalibrate" as it is.
     if affected_batch_ids:
         if calibration_changed:
             await update_sample_batch_status(
@@ -555,6 +556,7 @@ async def update_ionization_mode(
                 sample_batch_ids=affected_batch_ids,
                 status="rematch",
                 independent_transaction=True,
+                never_lower=True,
             )
 
     (record,) = await listed([current])

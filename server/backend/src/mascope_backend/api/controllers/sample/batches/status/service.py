@@ -4,7 +4,7 @@ Service to handle the status of sample batches.
 
 from datetime import datetime, timezone
 
-from sqlalchemy import case, exists, select, update
+from sqlalchemy import case, exists, or_, select, update
 
 from mascope_backend.api.lib.api_features import (
     api_controller,
@@ -15,11 +15,17 @@ from mascope_backend.runtime import runtime
 from mascope_backend.socket.records import emit_record_updated
 
 
+# The pending statuses from weakest to strongest. A stronger one covers a
+# weaker: a recalibration ends in a rematch.
+PENDING_STATUS_RANK = ["rematch", "recalibrate"]
+
+
 @api_controller()
 async def update_sample_batch_status(
     sample_batch_ids: list[str],
     status: str,
     independent_transaction: bool = False,
+    never_lower: bool = False,
 ) -> dict:
     """
     Updates the status of multiple sample batches and emits targeted partial updates.
@@ -30,6 +36,11 @@ async def update_sample_batch_status(
     :type status: str
     :param independent_transaction: Flag indicating if operation is independent transaction
     :type independent_transaction: bool
+    :param never_lower: Leave a batch with samples alone when it already waits
+        on a stronger pending status (``PENDING_STATUS_RANK``), so a
+        ``rematch`` request keeps a pending ``recalibrate``. For flaggers that
+        ask for work; a re-process that clears the flag leaves it off.
+    :type never_lower: bool
     :raises NotFoundException: When batches are not found
     :raises ValueError: When status is invalid
     :return: Update results with count of affected batches
@@ -40,31 +51,31 @@ async def update_sample_batch_status(
             f"Invalid status '{status}'. Must be one of: {', '.join(sample_batch_config.SAMPLE_BATCH_STATUSES)}"
         )
 
+    has_samples = exists().where(
+        SampleItem.sample_batch_id == SampleBatch.sample_batch_id
+    )
+    guards = []
+    if never_lower and status in PENDING_STATUS_RANK:
+        stronger = PENDING_STATUS_RANK[PENDING_STATUS_RANK.index(status) + 1 :]
+        if stronger:
+            guards.append(or_(SampleBatch.status.not_in(stronger), ~has_samples))
+
     async with async_session() as session:
         result = await session.execute(
             update(SampleBatch)
             .where(
                 SampleBatch.sample_batch_id.in_(sample_batch_ids),
+                *guards,
                 # update if current status would change
                 SampleBatch.status
                 != case(
-                    (
-                        exists().where(
-                            SampleItem.sample_batch_id == SampleBatch.sample_batch_id
-                        ),
-                        status,
-                    ),
+                    (has_samples, status),
                     else_="ready",
                 ),
             )
             .values(
                 status=case(
-                    (
-                        exists().where(
-                            SampleItem.sample_batch_id == SampleBatch.sample_batch_id
-                        ),
-                        status,  # has samples: use requested status
-                    ),
+                    (has_samples, status),  # has samples: use requested status
                     else_="ready",  # no samples: always set to "ready"
                 ),
                 sample_batch_utc_modified=datetime.now(timezone.utc),
@@ -74,23 +85,26 @@ async def update_sample_batch_status(
         updated_count = result.rowcount
         await session.commit()
 
-        # Get affected datasets for room targeting
+        # Get affected datasets for room targeting, and the status each batch
+        # holds now: a guarded or sample-less batch did not take ``status``
         batches = (
             await session.execute(
-                select(SampleBatch.sample_batch_id, SampleBatch.dataset_id).where(
-                    SampleBatch.sample_batch_id.in_(sample_batch_ids)
-                )
+                select(
+                    SampleBatch.sample_batch_id,
+                    SampleBatch.dataset_id,
+                    SampleBatch.status,
+                ).where(SampleBatch.sample_batch_id.in_(sample_batch_ids))
             )
         ).all()
 
         # Emit targeted partial (status field) update events for each batch
         if independent_transaction:
-            for batch_id, dataset_id in batches:
+            for batch_id, dataset_id, batch_status in batches:
                 await emit_record_updated(
                     record_type="batch",
                     record_id=batch_id,
                     record={
-                        "status": status,
+                        "status": batch_status,
                     },  # Partial record - only changed field
                     room=dataset_id,
                     changed_fields=["status"],  # Signals frontend to merge
