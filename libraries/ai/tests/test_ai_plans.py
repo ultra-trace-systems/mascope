@@ -572,6 +572,24 @@ def test_a_plan_that_fails_part_way_says_what_it_applied(kit, api, ws2_editor):
     assert len(changed(api)) == writes
 
 
+@pytest.mark.parametrize("status", [504, 429])
+def test_a_transient_failure_of_a_write_says_to_look_before_trying_again(
+    kit, api, status
+):
+    plan = kit.plan_organize([Move("s21", "Blank (A)", kind="sample")])
+    api.fail("POST", r"sample/items/move", status)
+
+    with pytest.raises(PartiallyApplied) as stopped:
+        kit.apply(plan.id, approve(kit, plan))
+
+    failure = stopped.value.receipt.failure
+    assert failure["error"] == "unavailable"
+    assert "may have carried out the write" in failure["message"]
+    assert "already retried" not in failure["message"]
+    # Sent once: a second send could move the samples again
+    assert len(api.requests_to(r"sample/items/move", "POST")) == 1
+
+
 def test_a_failed_reread_writes_nothing_and_leaves_the_plan_pending(kit, api):
     plan = kit.plan_organize([Move("s21", "Blank (A)", kind="sample")])
     token = approve(kit, plan)

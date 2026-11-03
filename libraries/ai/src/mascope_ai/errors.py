@@ -8,9 +8,11 @@ a transport to hand back in place of a stack trace. Long lists (candidates,
 the samples a load left) are cut to :data:`LISTED` entries there, with the
 full count beside them.
 
-The SDK's exceptions are mapped onto these by :func:`sdk_errors`. Transient
-failures were already retried by the SDK (four attempts, exponential
-backoff); the toolkit adds no retry of its own.
+The SDK's exceptions are mapped onto these by :func:`sdk_errors`. A read's
+transient failures were already retried by the SDK (four attempts,
+exponential backoff). A write the SDK sends once, unless sending it again
+changes nothing, so a failed write may still have been carried out. The
+toolkit adds no retry of its own.
 """
 
 from collections.abc import Iterator, Sequence
@@ -272,10 +274,12 @@ class InvalidRequest(ToolkitError):
 
 
 class Unavailable(ToolkitError):
-    """The server could not be reached or failed, after the SDK's retries.
+    """The server could not be reached or failed.
 
-    Transient by nature: the same call may succeed later. The toolkit does
-    not retry it again.
+    Transient by nature: the same call may succeed later. A read failed
+    after the SDK's retries; a write the SDK may have sent once only, and
+    the server may have carried it out before the failure. The toolkit does
+    not retry either.
     """
 
     code = "unavailable"
@@ -288,6 +292,7 @@ def sdk_errors(
     *,
     required_role: str = "guest",
     current_role: Any = None,
+    write: bool = False,
 ) -> Iterator[None]:
     """Raise the SDK's exceptions inside as :class:`ToolkitError`.
 
@@ -300,6 +305,9 @@ def sdk_errors(
     :param required_role: The role the operation needs; a read needs guest.
     :param current_role: Called on a 403 for ``(role, workspace name)``, the
         user's role where the object lives, when the caller can tell.
+    :param write: Whether the calls inside change data. A write that fails
+        on the way is not sent again by the SDK (unless a second send
+        changes nothing), so its message says to look before trying again.
     """
     try:
         yield
@@ -329,10 +337,20 @@ def sdk_errors(
         ) from e
     except (ServerError, MascopeAPIError, MascopeConnectionError) as e:
         # What is left of MascopeAPIError here is a 408 or a 429 the SDK
-        # retried as transient
+        # treats as transient: retried for a read, not for most writes
+        if write:
+            advice = (
+                "The server may have carried out the write before it failed: "
+                "look at what is there now, or plan again, before trying it "
+                "again, or ask whoever runs the server."
+            )
+        else:
+            advice = (
+                "The SDK already retried; try again later, or ask whoever "
+                "runs the server."
+            )
         raise Unavailable(
-            f"Could not {operation} {target or 'it'}: {e}. The SDK already "
-            "retried; try again later, or ask whoever runs the server."
+            f"Could not {operation} {target or 'it'}: {e}. {advice}"
         ) from e
 
 
