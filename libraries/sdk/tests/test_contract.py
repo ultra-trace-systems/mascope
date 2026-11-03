@@ -1317,46 +1317,7 @@ class TestSeriesContract:
         _, batches = _first_dataset_and_batches(mascope)
 
         for batch_id in batches["sample_batch_id"]:
-            series = mascope.batch_peaks.series(batch_id, min_n_present=1)
-
-            assert {
-                "sample_item_id",
-                "batch_peak_id",
-                "sample_peak_id",
-                "batch_mz",
-                "consensus_formula",
-                "consensus_ion_formula",
-                "consensus_tier",
-                "intensity",
-                "tier",
-            } <= set(series.columns)
-            key = ["sample_item_id", "batch_peak_id"]
-            assert not series.duplicated(key).any()
-            runs = mascope.batch_peaks.runs(batch_id)
-            current = (
-                None
-                if runs is None
-                else runs.loc[runs["current"], "batch_peak_run_id"].iloc[0]
-            )
-            assert series.attrs["run_id"] == current
-            assert series.attrs["provenance"]["deployment_id"]
-
-            # Every point joins to its sample, with no loss.
-            samples = mascope.samples.list(batch_id)
-            joined = series.merge(
-                samples[["sample_item_id", "datetime_utc"]],
-                on="sample_item_id",
-                validate="many_to_one",
-            )
-            assert len(joined) == len(series)
-
-            # And the points are the members, as the paged ledger read has them.
-            members = mascope.batch_peaks.members(batch_id)
-            if members is None:
-                assert series.empty
-                continue
-            expected = members.set_index(key)["intensity"].sort_index()
-            assert series.set_index(key)["intensity"].sort_index().equals(expected)
+            _assert_series_are_the_members(mascope, batch_id)
 
     def test_the_files_listing_is_the_files_the_batches_hold(self, mascope):
         _skip_unless_attr(mascope.sample_files, "list")
@@ -1806,22 +1767,16 @@ def launched_run(scratch, scratch_matched):
 
 
 @pytest.fixture(scope="module")
-def judged_copy(scratch, scratch_matched):
-    """The scratch copy of a demo batch, assigned and judged.
+def assigned_copy(scratch, scratch_matched):
+    """The scratch copy of a demo batch with its first six samples assigned.
 
-    Stage A runs on its first six samples, each launch taking seconds. The
-    first batch peak that three of them assign the consensus formula is
-    judged: the first sample's peak confirmed and then rejected (the
-    first verdict superseded), the second's rejected, and the batch peak
-    confirmed at the batch level, which the third borrows. Launching and
-    judging need the server's peak assignment switch: a stack without it
-    answers 403 and the tests using this skip. Recorded over the session,
-    since the SDK has no verdict writes of its own here; removed with the
-    scratch workspace.
+    ``(batch ID, {sample ID: the finished run's ledger})``. Stage A runs on
+    each, taking seconds, and each completed run folds into the batch's
+    ledger: the one batch on the stack that has one, since the demo bundle
+    ships none. Launching needs the server's peak assignment switch: a
+    stack without it answers 403 and the tests using this skip. Launched
+    over the session; removed with the scratch workspace.
     """
-    from types import SimpleNamespace
-
-    _skip_unless_attr(scratch.client.peak_assignments, "verifications_for_batch")
     batch_id, _ = scratch_matched
     session = scratch.session
     samples = list(scratch.client.samples._list_by_id(batch_id)["sample_item_id"])[:6]
@@ -1846,6 +1801,34 @@ def judged_copy(scratch, scratch_matched):
         if isinstance(ledger, dict) or ledger is None:
             continue
         ledgers[sample_id] = ledger
+    # A run reads completed before it has folded into the batch peaks, so
+    # wait for the fold too: until every assigned sample has its members.
+    if ledgers:
+        _eventually(
+            scratch.client,
+            lambda: _folded(scratch.client, batch_id) >= set(ledgers),
+            timeout=600,
+        )
+    return batch_id, ledgers
+
+
+@pytest.fixture(scope="module")
+def judged_copy(scratch, assigned_copy):
+    """The assigned scratch copy (``assigned_copy``), judged.
+
+    The first batch peak that three of its samples assign the consensus
+    formula is judged: the first sample's peak confirmed and then rejected
+    (the first verdict superseded), the second's rejected, and the batch
+    peak confirmed at the batch level, which the third borrows. Judging
+    needs the server's peak assignment switch, as launching does. Recorded
+    over the session, since the SDK has no verdict writes of its own here;
+    removed with the scratch workspace.
+    """
+    from types import SimpleNamespace
+
+    _skip_unless_attr(scratch.client.peak_assignments, "verifications_for_batch")
+    batch_id, ledgers = assigned_copy
+    session = scratch.session
 
     members = scratch.client.batch_peaks.members(batch_id)
     if members is None:
@@ -1903,6 +1886,12 @@ def judged_copy(scratch, scratch_matched):
         current=current,
         batch_verdict=batch_verdict,
     )
+
+
+def _folded(client, batch_id: str) -> set:
+    """The samples a batch's ledger has members of."""
+    members = client.batch_peaks.members(batch_id)
+    return set() if members is None else set(members["sample_item_id"])
 
 
 def _settled_ledger(scratch, sample_id):
@@ -2092,6 +2081,57 @@ class TestScopeVerificationsContract:
 
 
 @requires_stack
+class TestBatchLedgerContract:
+    """The batch-ledger reads (`/api/batch-peaks/*`) on the assigned scratch
+    copy, the one batch on the stack whose ledger is not empty: the demo
+    batches' reads in ``TestSeriesContract`` only see empty frames.
+    """
+
+    def test_the_ledger_lists_the_batch_peaks_its_members_fold(
+        self, scratch, assigned_copy
+    ):
+        batch_peaks = scratch.client.batch_peaks
+        batch_id, ledgers = assigned_copy
+        if not ledgers:
+            pytest.skip("no sample of the demo batch could be assigned")
+
+        listed = batch_peaks.list(batch_id)
+        members = batch_peaks.members(batch_id)
+
+        assert listed is not None and not listed.empty
+        assert {
+            "batch_peak_id",
+            "mz",
+            "consensus_formula",
+            "consensus_tier",
+            "n_present",
+        } <= set(listed.columns)
+        assert listed["batch_peak_id"].is_unique
+        assert members is not None and not members.empty
+        assert {
+            "batch_peak_id",
+            "sample_item_id",
+            "sample_peak_id",
+            "assigned_formula",
+            "intensity",
+        } <= set(members.columns)
+        # Every member belongs to a listed batch peak and an assigned sample.
+        assert set(members["batch_peak_id"]) <= set(listed["batch_peak_id"])
+        assert set(members["sample_item_id"]) <= set(ledgers)
+
+    def test_batch_peak_series_are_the_ledgers_members(self, scratch, assigned_copy):
+        _skip_unless_attr(scratch.client.batch_peaks, "series")
+        batch_id, ledgers = assigned_copy
+        if not ledgers:
+            pytest.skip("no sample of the demo batch could be assigned")
+
+        series = _assert_series_are_the_members(scratch.client, batch_id)
+
+        assert not series.empty
+        assert set(series["sample_item_id"]) <= set(ledgers)
+
+
+@requires_stack
 class TestPeakAssignmentImportContract:
     """An external engine's run published with ``import_run`` and read back,
     on the scratch copy. Skips on a stack whose peak assignment is off, as
@@ -2264,6 +2304,55 @@ def _eventually(client, probe, timeout: float = 120):
         if time.monotonic() > deadline:
             raise AssertionError(f"still waiting after {timeout} s")
         time.sleep(1)
+
+
+def _assert_series_are_the_members(client, batch_id: str):
+    """Check a batch's batch-peak series against its ledger's members.
+
+    The demo batches carry no ledger, so there both reads are empty; the
+    scratch copy's ledger (``TestBatchLedgerContract``) is what fills them.
+
+    :return: The series.
+    """
+    series = client.batch_peaks.series(batch_id, min_n_present=1)
+
+    assert {
+        "sample_item_id",
+        "batch_peak_id",
+        "sample_peak_id",
+        "batch_mz",
+        "consensus_formula",
+        "consensus_ion_formula",
+        "consensus_tier",
+        "intensity",
+        "tier",
+    } <= set(series.columns)
+    key = ["sample_item_id", "batch_peak_id"]
+    assert not series.duplicated(key).any()
+    runs = client.batch_peaks.runs(batch_id)
+    current = (
+        None if runs is None else runs.loc[runs["current"], "batch_peak_run_id"].iloc[0]
+    )
+    assert series.attrs["run_id"] == current
+    assert series.attrs["provenance"]["deployment_id"]
+
+    # Every point joins to its sample, with no loss.
+    samples = client.samples.list(batch_id)
+    joined = series.merge(
+        samples[["sample_item_id", "datetime_utc"]],
+        on="sample_item_id",
+        validate="many_to_one",
+    )
+    assert len(joined) == len(series)
+
+    # And the points are the members, as the paged ledger read has them.
+    members = client.batch_peaks.members(batch_id)
+    if members is None:
+        assert series.empty
+        return series
+    expected = members.set_index(key)["intensity"].sort_index()
+    assert series.set_index(key)["intensity"].sort_index().equals(expected)
+    return series
 
 
 def _skip_unless_attr(obj, name: str) -> None:

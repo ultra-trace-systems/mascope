@@ -20,9 +20,29 @@
 # path, so this entry replaces the demo_cache mount rather than adding a
 # second one.
 #
+# It also switches peak assignment on in the backend and the file converter
+# (MASCOPE_PEAK_ASSIGNMENT, which wins over `peak_assignment` under [meta]).
+# The demo itself ships with it off, so without this the assignment write
+# routes answer 403 and the SDK contract tests that launch runs, record
+# verdicts and read the batch ledger they build skip in CI. With it on, a
+# sample ingested on this stack is also assigned as it arrives, as on a
+# deployment that has opted in. The frontend reads `peak_assignment` under
+# [meta] from its own runtime, not this variable, so the UI the e2e specs
+# drive is the demo's, without the assignment views.
+# Every workflow that starts the stack with this file gets the switch.
+#
 # Not for end users: docker-compose.demo.yaml on its own is the demo, and its
 # named volume already keeps the bundle between one `up` and the next.
 services:
   demo_init:
     volumes:
       - ./.runtime/demo:/app/.runtime/demo
+
+  # Environment maps merge by key, so these add to the demo's own.
+  backend:
+    environment:
+      MASCOPE_PEAK_ASSIGNMENT: "1"
+
+  file_converter:
+    environment:
+      MASCOPE_PEAK_ASSIGNMENT: "1"

@@ -265,7 +265,12 @@ docker compose -f docker-compose.demo.yaml -f .github/docker-compose.demo.ci.yam
 ```
 
 `docker-compose.demo.yaml` on its own is unchanged and remains the demo; the
-second file is for CI.
+second file is for CI. It also switches peak assignment on in the backend and
+the file converter (`MASCOPE_PEAK_ASSIGNMENT=1`), which the demo ships with
+off. The SDK contract tests that launch assignment runs, record verdicts and
+read the batch ledger those runs build then run in CI instead of skipping. A
+sample ingested on that stack is assigned as it arrives. The UI stays the
+demo's: the frontend reads `peak_assignment` under `[meta]`, not the variable.
 
 **The fetch has the last word, not the cache.** `demo_init` runs the same fetch
 either way. It uses a copy that is already there only when every checksum in
