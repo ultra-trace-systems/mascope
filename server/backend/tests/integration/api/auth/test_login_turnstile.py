@@ -123,7 +123,9 @@ class _CountingRedis:
         self.counts[key] = self.counts.get(key, 0) + 1
         return self.counts[key]
 
-    async def expire(self, key: str, seconds: int) -> bool:
+    async def expire(self, key: str, seconds: int, nx: bool = False) -> bool:
+        if nx and key in self.expiries:
+            return False
         self.expiries[key] = seconds
         return True
 

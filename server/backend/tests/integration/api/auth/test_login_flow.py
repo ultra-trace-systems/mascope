@@ -233,7 +233,7 @@ class _InMemoryRedis:
         self.values[key] = int(self.values.get(key, 0)) - 1
         return self.values[key]
 
-    async def expire(self, key: str, seconds: int) -> bool:
+    async def expire(self, key: str, seconds: int, nx: bool = False) -> bool:
         return True
 
     async def ttl(self, key: str) -> int:
