@@ -169,6 +169,60 @@ class TestSdkErrors:
         assert caught.value.current_role is None
         assert "You have no role that allows it" in str(caught.value)
 
+    @pytest.mark.parametrize(
+        "error, raised, start",
+        [
+            (
+                "validation",
+                InvalidRequest,
+                "The server refused to list the workspaces: bad",
+            ),
+            ("connection", Unavailable, "Could not list the workspaces: down."),
+        ],
+    )
+    def test_an_operation_without_a_target_ends_the_phrase(self, error, raised, start):
+        from mascope_ai.errors import sdk_errors
+        from mascope_sdk import MascopeConnectionError, ValidationError
+
+        sdk = {
+            "validation": ValidationError("bad", status_code=422),
+            "connection": MascopeConnectionError("down"),
+        }[error]
+        with pytest.raises(raised) as caught:
+            with sdk_errors("list the workspaces"):
+                raise sdk
+
+        assert str(caught.value).startswith(start)
+
+    @pytest.mark.parametrize(
+        "error, raised, start",
+        [
+            (
+                "validation",
+                InvalidRequest,
+                "The server refused to list the batches of dataset 'D' (d1): bad",
+            ),
+            (
+                "connection",
+                Unavailable,
+                "Could not list the batches of dataset 'D' (d1): down.",
+            ),
+        ],
+    )
+    def test_an_operation_with_a_target_names_it(self, error, raised, start):
+        from mascope_ai.errors import sdk_errors
+        from mascope_sdk import MascopeConnectionError, ValidationError
+
+        sdk = {
+            "validation": ValidationError("bad", status_code=422),
+            "connection": MascopeConnectionError("down"),
+        }[error]
+        with pytest.raises(raised) as caught:
+            with sdk_errors("list the batches of", Ref("d1", "dataset", "D")):
+                raise sdk
+
+        assert str(caught.value).startswith(start)
+
 
 class TestToDict:
     def test_long_lists_are_cut_with_the_count_beside_them(self):

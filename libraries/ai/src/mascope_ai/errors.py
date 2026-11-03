@@ -285,6 +285,15 @@ class Unavailable(ToolkitError):
     code = "unavailable"
 
 
+def _acting(operation: str, target: Ref | None) -> str:
+    """The operation with its object, when it has one.
+
+    An operation without a target is a whole phrase already (``"connect to
+    Mascope"``, ``"list the workspaces"``): nothing goes after it.
+    """
+    return f"{operation} {target}" if target else operation
+
+
 @contextmanager
 def sdk_errors(
     operation: str,
@@ -333,7 +342,7 @@ def sdk_errors(
         ) from e
     except ValidationError as e:
         raise InvalidRequest(
-            f"The server refused to {operation} {target or 'it'}: {e.message}"
+            f"The server refused to {_acting(operation, target)}: {e.message}"
         ) from e
     except (ServerError, MascopeAPIError, MascopeConnectionError) as e:
         # What is left of MascopeAPIError here is a 408 or a 429 the SDK
@@ -350,7 +359,7 @@ def sdk_errors(
                 "runs the server."
             )
         raise Unavailable(
-            f"Could not {operation} {target or 'it'}: {e}. {advice}"
+            f"Could not {_acting(operation, target)}: {e}. {advice}"
         ) from e
 
 
