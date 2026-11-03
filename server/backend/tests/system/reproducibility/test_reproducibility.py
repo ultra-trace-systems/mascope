@@ -285,7 +285,9 @@ def _upload_raws(raws: list) -> None:
     """
     import requests
 
-    url = f"{APP_URL}/api/{_rebuild._UPLOAD_PATH}"
+    # The legacy multipart route; `mascope demo --rebuild` itself uploads
+    # resumably now, so the path is no longer one it shares.
+    url = f"{APP_URL}/api/sample/files/upload"
     headers = {
         "Authorization": f"Bearer {_rebuild._UPLOAD_TOKEN}",
         "X-Service-Name": _rebuild._UPLOAD_SERVICE,

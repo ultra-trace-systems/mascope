@@ -3,8 +3,9 @@ Rebuild path: ingest the bundle's raw files through the real upload pipeline.
 
 Instead of dropping files into the file-converter's watch directory (which has
 no auth/context and never registers a file context), this uploads each raw file
-to the real ``/api/sample/files/upload`` endpoint - exactly what the File Agent
-does. The endpoint registers the file context (auth) and writes the file to
+through the resumable (TUS) upload endpoint with
+:func:`mascope_sdk.api_post_file_tus` - exactly what the File Agent does. The
+endpoint registers the file context (auth) and writes the file to
 ``filestreams``, where the file-converter ingests it and runs the full
 ``RawProcessor`` -> peak detection -> matching pipeline.
 
@@ -14,12 +15,11 @@ file-converter's socket to connect, then uploads, then keeps sweeping the
 converter's quarantine folder so a file that failed anyway is re-uploaded rather
 than silently dropped from the rebuild.
 
-The wait matters: the upload endpoint pushes each file's context (uploader
-identity + access token) over the ``/file-converter`` socket at upload time. A
-converter that has not connected yet never receives it, and the file fails deep
-in processing with "not registered in file converter service" and is quarantined
-- which is how a rebuild ends up with fewer sample files than the bundle has raw
-files while both sample batches still finish ``ready``.
+The wait matters: the server refuses an upload with 503 while no file-converter
+is connected, before a byte is transferred. Such a file reaches neither
+``filestreams`` nor its quarantine folder, so nothing downstream would retry it:
+the uploader has to hold its uploads, and its retries, until a converter is
+connected.
 """
 
 import subprocess
@@ -27,8 +27,8 @@ import threading
 import time
 from pathlib import Path
 
-from mascope_cli.cmd.demo import bundles
-from mascope_cli.cmd.demo._seed import DEMO_ENV, env_dir  # noqa: F401 - re-export
+from mascope_cli.cmd.demo import build_bundle, bundles
+from mascope_cli.cmd.demo._seed import _MODE, DEMO_ENV, env_dir  # noqa: F401 - re-export
 from mascope_cli.runtime import runtime
 
 
@@ -37,7 +37,6 @@ from mascope_cli.runtime import runtime
 # replicates the File Agent's exact upload request.
 _UPLOAD_TOKEN = "mascope_demo_file_agent_token"
 _UPLOAD_SERVICE = "file-agent"
-_UPLOAD_PATH = "sample/files/upload"
 
 # Redis key the backend writes when the file-converter's socket connects, and
 # clears when it disconnects (mirrors
@@ -57,10 +56,13 @@ _CONVERTER_POLL_S = 2.0
 # through the dev container). Blind, but better than uploading immediately.
 _CONVERTER_BLIND_WAIT_S = 60.0
 
-# Upload passes over the raw set. The SDK gives each POST a fixed 60 s, which a
-# server busy converting earlier files can exceed, so a failed upload is re-posted
-# rather than dropped - it would otherwise never reach filestreams and so never
-# show up in the quarantine sweep either.
+# Upload passes over the raw set. The resumable upload already resumes a dropped
+# chunk from the server's offset, so a failure that reaches this code is one the
+# SDK gave up on: a refusal (no converter connected) or a server that stayed
+# unreachable. Such a file is re-posted in a later pass rather than dropped - it
+# would otherwise never reach filestreams and so never show up in the quarantine
+# sweep either. The pause also lets a completion the client stopped waiting for
+# finish on the server before the file is looked for there.
 _UPLOAD_MAX_PASSES = 3
 _UPLOAD_RETRY_PAUSE_S = 30.0
 
@@ -192,9 +194,9 @@ def _wait_for_converter(baseline: str | None) -> bool:
     if baseline is None:
         runtime.logger.warning(
             "Cannot read the file-converter's socket presence; waiting "
-            f"{_CONVERTER_BLIND_WAIT_S:.0f}s before uploading instead. Files "
-            "uploaded before the converter connects are quarantined (they are "
-            "retried later, but the rebuild takes longer)."
+            f"{_CONVERTER_BLIND_WAIT_S:.0f}s before uploading instead. The "
+            "server refuses uploads until the converter connects; refused files "
+            "are re-posted in later passes."
         )
         time.sleep(_CONVERTER_BLIND_WAIT_S)
         return False
@@ -210,64 +212,135 @@ def _wait_for_converter(baseline: str | None) -> bool:
 
     runtime.logger.warning(
         f"File-converter did not connect within {_CONVERTER_WAIT_S:.0f}s; "
-        "uploading anyway. Files it never registered are quarantined and "
-        "retried once it comes up."
+        "uploading anyway. The server refuses uploads until a converter "
+        "connects; refused files are re-posted in later passes, each held until "
+        "one has."
     )
     return False
 
 
-def _body_error(response) -> str | None:
+def _await_connected_converter() -> None:
     """
-    The per-file failure the upload endpoint reports inside a 2xx response.
+    Hold a retry pass until some file-converter is connected.
 
-    ``upload_sample_files`` collects per-file errors and still answers 201, with
-    ``status`` set to ``error``/``partial`` and the reasons under
-    ``data.failed_uploads``. A file it could not store therefore looks like a
-    successful request to the SDK, which only raises on the status code, so the
-    body is the only place that failure is visible.
-
-    :param response: The upload endpoint's response.
-    :return: The reported failure, or ``None`` when the body reports success (or
-             is not the shape this endpoint documents).
+    Unlike :func:`_wait_for_converter` this does not need a *fresh* connect: it
+    stands in for the server's own 503 gate, which asks only whether a converter
+    is connected now. A converter that crashed and came back, or one that
+    connected only after the startup wait gave up, lets the retries through; one
+    that never connects costs each pass this wait and no more. When the presence
+    key cannot be read the pass goes ahead unheld.
     """
-    try:
-        body = response.json()
-    except (AttributeError, ValueError):
-        return None
-    if not isinstance(body, dict) or body.get("status") not in ("error", "partial"):
-        return None
-
-    failures = (body.get("data") or {}).get("failed_uploads") or []
-    detail = "; ".join(
-        str(f.get("error") or f.get("message") or "") for f in failures
-    ).strip("; ")
-    return detail or str(body.get("message") or "the server rejected the upload")
+    deadline = time.monotonic() + _CONVERTER_WAIT_S
+    announced = False
+    while time.monotonic() < deadline:
+        current = converter_presence()
+        if current is None or current:
+            return
+        if not announced:
+            announced = True
+            runtime.logger.warning(
+                "No file-converter is connected; holding the retry until one is"
+            )
+        time.sleep(_CONVERTER_POLL_S)
+    runtime.logger.warning(
+        f"No file-converter connected within {_CONVERTER_WAIT_S:.0f}s; retrying anyway"
+    )
 
 
 def _post_raw(url: str, raw: Path) -> str | None:
     """
-    Upload one raw file to the sample-file upload endpoint.
+    Upload one raw file through the resumable (TUS) upload endpoint.
 
     :param url: Backend base URL.
     :param raw: Raw file to upload.
     :return: ``None`` on success, or the failure description.
     """
     import mascope_sdk
-    from mascope_sdk import api_post_file
+    from mascope_sdk import api_post_file_tus
     from mascope_sdk.exceptions import MascopeError
 
     # Match the File Agent's service header for the upload request.
     mascope_sdk.SERVICE_NAME = _UPLOAD_SERVICE
     try:
-        response = api_post_file(
-            url=url,
-            path=_UPLOAD_PATH,
-            access_token=_UPLOAD_TOKEN,
-            filepath=str(raw),
-        )
+        api_post_file_tus(url=url, access_token=_UPLOAD_TOKEN, filepath=str(raw))
     except MascopeError as e:
         return str(e)
-    return _body_error(response)
+    return None
+
+
+def _ingested_keys() -> set[str] | None:
+    """
+    The acquisition keys of every sample file in the demo database.
+
+    The database stores the name the converter rebuilds from a file's own
+    metadata, not the uploaded one, so both sides are keyed on the acquisition
+    stamp they share (:func:`build_bundle._acquisition_key`, the key the
+    authoring guard ``check_raw_coverage`` compares on). Read through the dev
+    Postgres container, like :func:`_redis_get` reads Redis.
+
+    :return: The keys, or ``None`` when the database could not be queried.
+    """
+    db_cfg = runtime.full_config.backend.database
+    try:
+        res = subprocess.run(
+            [
+                "docker",
+                "exec",
+                db_cfg.get_postgres_container_name(mode=_MODE),
+                "psql",
+                "-U",
+                db_cfg.user,
+                "-d",
+                db_cfg.get_postgres_database_name(DEMO_ENV),
+                "-tA",
+                "-c",
+                "SELECT filename FROM sample_file",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    return {
+        build_bundle._acquisition_key(line)
+        for line in res.stdout.splitlines()
+        if line.strip()
+    }
+
+
+def _landed(name: str) -> bool:
+    """
+    Whether the server holds a file, whatever the client saw of its upload.
+
+    Looked up fresh on every call, never from a listing taken earlier: the
+    converter deletes a stream file once it has ingested it, so a file that was
+    pending a moment ago may now be a database row instead. The folders are
+    read first and the database last, and that order is what makes the answer
+    safe while the converter works: a stream file leaves ``filestreams`` only
+    after its row is committed (or by moving to its quarantine folder), so a
+    file absent from both folders and from the database had not arrived.
+
+    A quarantined file has arrived too: the quarantine sweep re-posts it, and
+    posting it again here as well would only race that.
+
+    :param name: The raw file's name, as uploaded.
+    :return: ``True`` if the file is pending, quarantined, or ingested.
+    """
+    streams = _filestreams_dir()
+    if name in _list_files(streams) or name in _list_files(streams / "failed_files"):
+        return True
+    ingested = _ingested_keys()
+    if ingested is None:
+        runtime.logger.warning(
+            f"Cannot read the demo database to check whether {name} was "
+            "ingested; checked the filestreams folders only"
+        )
+        return False
+    return build_bundle._acquisition_key(name) in ingested
 
 
 def upload_raw(
@@ -286,11 +359,13 @@ def upload_raw(
     ``X-Service-Name: file-agent``) so the server registers context, stores the
     file, and the converter ingests it.
 
-    Uploads run while the converter is already crunching earlier files, so a
-    request can be slow enough to trip the SDK's 60 s timeout on a saturated
-    server. Files that failed are re-posted in later passes rather than dropped;
-    a file already waiting in ``filestreams`` is skipped, since a timeout that
-    fired after the server stored it would otherwise ingest it twice.
+    Files that failed are re-posted in later passes rather than dropped. After
+    every pass, the last included, each failed file is looked up on the server
+    (:func:`_landed`): one the server holds anyway - pending, quarantined or
+    already a sample file in the database - counts as uploaded and is not
+    re-posted, since the converter would quarantine the duplicate and the run
+    would report a file it did ingest as missing. Each retry pass first waits
+    for a connected converter, which the server requires of every upload.
 
     :param version: Bundle version tag. Defaults to the registry default.
     :param source_dir: Local bundle directory override (see module docstring).
@@ -311,30 +386,17 @@ def upload_raw(
         _wait_for_converter(converter_baseline)
 
     total = len(raw_files)
-    runtime.logger.info(f"Uploading {total} raw file(s) to {url}/api/{_UPLOAD_PATH}")
+    runtime.logger.info(f"Uploading {total} raw file(s) to {url} (resumable)")
 
     outstanding = list(raw_files)
     uploaded = 0
     for attempt in range(1, max_passes + 1):
         if attempt > 1:
             runtime.logger.warning(
-                f"Retrying {len(outstanding)} failed upload(s) in "
-                f"{retry_pause:.0f}s (pass {attempt}/{max_passes})"
+                f"Retrying {len(outstanding)} failed upload(s) "
+                f"(pass {attempt}/{max_passes})"
             )
-            time.sleep(retry_pause)
-            # A file already queued in filestreams did arrive, whatever the
-            # client saw; re-posting it would have the converter ingest it a
-            # second time and quarantine the duplicate. It counts as uploaded,
-            # or the progress line ends below the total the summary reports.
-            arrived = set(_list_files(_filestreams_dir()))
-            landed = [raw for raw in outstanding if raw.name in arrived]
-            if landed:
-                uploaded += len(landed)
-                runtime.logger.info(
-                    f"  {len(landed)} file(s) reached the server despite the "
-                    "error; not re-posting"
-                )
-            outstanding = [raw for raw in outstanding if raw.name not in arrived]
+            _await_connected_converter()
 
         failed: list[Path] = []
         for i, raw in enumerate(outstanding, 1):
@@ -346,8 +408,25 @@ def upload_raw(
                 runtime.logger.error(f"Upload of {raw.name} failed: {error}")
             if i % 25 == 0 or i == len(outstanding):
                 runtime.logger.info(f"  uploaded {uploaded}/{total}")
+        if not failed:
+            outstanding = []
+            break
 
-        outstanding = failed
+        # A failed file may have reached the server anyway. Give a completion
+        # the client stopped waiting for time to finish, then look each file
+        # up - after the last pass too, or a file that landed on it would be
+        # reported as never reaching the server. One that landed counts as
+        # uploaded, or the progress line ends below the total the summary
+        # reports.
+        time.sleep(retry_pause)
+        landed = [raw for raw in failed if _landed(raw.name)]
+        if landed:
+            uploaded += len(landed)
+            runtime.logger.info(
+                f"  {len(landed)} file(s) reached the server despite the error; "
+                "not re-posting"
+            )
+        outstanding = [raw for raw in failed if raw not in landed]
         if not outstanding:
             break
 
@@ -362,37 +441,48 @@ def upload_raw(
     return missing
 
 
-def clear_stale_quarantine(
+def clear_stale_streams(
     version: str | None = None, source_dir: "Path | None" = None
 ) -> list[str]:
     """
-    Drop quarantined copies of this bundle's files left behind by an earlier run.
+    Drop copies of this bundle's files an earlier run left in ``filestreams``.
 
-    Nothing empties ``filestreams/failed_files``, so a rebuild that dropped files
-    leaves them there for the next one to find. :func:`sweep_failed_uploads`
-    would re-upload those stale copies into a run that is ingesting the same
-    files from the bundle anyway, and the converter would quarantine the
-    duplicates (``FileExistsError`` on the filestore directory) - ending a
-    complete rebuild with a list of files it wrongly reports as never ingested.
+    Two folders keep them. Nothing empties ``filestreams/failed_files``, so a
+    rebuild that dropped files leaves them there for the next one to find, and
+    :func:`sweep_failed_uploads` would re-upload those stale copies into a run
+    that is ingesting the same files from the bundle anyway. A run killed
+    mid-ingestion leaves the files it had not reached yet pending in the
+    ``filestreams`` root, where the converter would ingest them a second time
+    beside this run's uploads, and where :func:`_landed` would take them for
+    this run's. Either way the converter quarantines the duplicates
+    (``FileExistsError`` on the filestore directory), ending a complete rebuild
+    with a list of files it wrongly reports as never ingested.
 
-    Only the bundle's own names are removed, and only before uploading starts:
-    the bundle still holds every one of them as source, and a quarantined copy
+    Only the bundle's own names are removed, and only before the stack starts:
+    the bundle still holds every one of them as source, and a stale copy
     carries nothing the run is about to upload again.
 
     :param version: Bundle version tag. Defaults to the registry default.
     :param source_dir: Local bundle directory override.
-    :return: Names of the stale copies that were removed.
+    :return: Names of the stale copies that were removed; a name stale in both
+             folders is listed twice.
     """
-    quarantine = _filestreams_dir() / "failed_files"
+    streams = _filestreams_dir()
     by_name = {p.name for p in _raw_files(version, source_dir)}
-    stale = sorted(name for name in _list_files(quarantine) if name in by_name)
-    for name in stale:
-        (quarantine / name).unlink(missing_ok=True)
-    if stale:
-        runtime.logger.warning(
-            f"Cleared {len(stale)} file(s) quarantined by an earlier rebuild "
-            f"before uploading: {', '.join(stale)}"
-        )
+    stale: list[str] = []
+    for folder, what in (
+        (streams, "left pending"),
+        (streams / "failed_files", "quarantined"),
+    ):
+        names = sorted(name for name in _list_files(folder) if name in by_name)
+        for name in names:
+            (folder / name).unlink(missing_ok=True)
+        if names:
+            runtime.logger.warning(
+                f"Cleared {len(names)} file(s) {what} by an earlier rebuild "
+                f"before uploading: {', '.join(names)}"
+            )
+        stale.extend(names)
     return stale
 
 
@@ -413,7 +503,9 @@ def sweep_failed_uploads(
     folders describe the whole run: work still queued or in progress, and work
     that fell out. This sweeps the second back through the uploader - a file that
     failed only because its context never arrived succeeds on a second pass, once
-    the converter is connected.
+    the converter is connected. A quarantined file the database already holds is
+    a duplicate of one that was ingested: its copy is dropped, not re-posted, and
+    it is not reported as missing.
 
     Ends when the converter has consumed everything: nothing left pending and
     nothing quarantined that is still worth retrying. ``deadline`` is only a
@@ -450,6 +542,18 @@ def sweep_failed_uploads(
                     f"Quarantined file {name} is not part of this bundle; "
                     "leaving it alone"
                 )
+
+        ours = sorted(name for name in stuck if name in by_name)
+        if ours:
+            ingested = _ingested_keys() or set()
+            for name in ours:
+                if build_bundle._acquisition_key(name) in ingested:
+                    runtime.logger.info(
+                        f"Quarantined file {name} is a duplicate of one already "
+                        "ingested; dropping it"
+                    )
+                    (quarantine / name).unlink(missing_ok=True)
+                    stuck.remove(name)
 
         retryable = [
             name
@@ -516,17 +620,26 @@ def upload_raw_deferred(
 
     The app is launched in the foreground, so this defers the uploads to a
     thread that first waits for the backend HTTP server and the file-converter's
-    socket, clears any quarantine an earlier rebuild left behind, uploads, then
-    sweeps the converter's quarantine folder for the rest of the run.
+    socket, uploads, then sweeps the converter's quarantine folder for the rest
+    of the run.
 
-    The converter's socket presence is sampled *here*, synchronously, because
-    this runs before the stack is launched: whatever the key holds now cannot be
-    this run's converter, which is exactly what makes it a usable baseline.
+    Two things happen *here*, synchronously, because this runs before the stack
+    is launched. The converter's socket presence is sampled: whatever the key
+    holds now cannot be this run's converter, which is exactly what makes it a
+    usable baseline. And the copies an earlier rebuild left in ``filestreams``
+    are cleared (:func:`clear_stale_streams`) while no converter is running
+    that could start ingesting them.
 
     :param version: Bundle version tag. Defaults to the registry default.
     :param source_dir: Local bundle directory override.
     """
     baseline = converter_presence()
+    try:
+        clear_stale_streams(version, source_dir=source_dir)
+    except OSError as e:
+        # The worker meets the same problem and reports it; clearing is not
+        # worth stopping the launch for.
+        runtime.logger.error(f"Could not clear stale stream files: {e}")
 
     def _worker() -> None:
         url = f"http://localhost:{runtime.meta.api_port}"
@@ -537,7 +650,6 @@ def upload_raw_deferred(
             )
             return
         try:
-            clear_stale_quarantine(version, source_dir=source_dir)
             missing = upload_raw(
                 version,
                 source_dir=source_dir,
