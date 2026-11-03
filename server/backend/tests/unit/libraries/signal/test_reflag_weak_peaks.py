@@ -232,13 +232,11 @@ def test_the_overlaps_place_each_streams_peaks_by_its_own_factor(
 
 
 def test_a_file_recorded_is_current_under_the_rule(pooled):
-    _age()
-    script._record(SAMPLE_FILENAME, script.CHANGED, script.read(SAMPLE_FILENAME))
+    script._record(SAMPLE_FILENAME, script.UNREADABLE)
 
     props = m_io.read_props(SAMPLE_FILENAME)
     assert script.is_current(props)
-    assert props[script.RECORD_FIELD]["turned_weak"] == _floor().size
-    assert props[script.RECORD_FIELD]["result"] == script.CHANGED
+    assert props[script.RECORD_FIELD]["result"] == script.UNREADABLE
 
 
 def test_a_peak_under_the_signal_to_noise_cutoff_stays_weak(pooled):
@@ -270,3 +268,186 @@ def test_the_overlaps_leave_out_the_satellites(composite):
 
     shared = {tuple(r["streams"]): r["shared"] for r in reflag.overlaps}
     assert shared[(0, low)] == 0
+
+
+def test_a_store_written_while_its_floor_is_computed_is_not_written(
+    pooled, monkeypatch
+):
+    """The guard compares against the arrays the flag came from, read once
+    before the floor: a lazy store read again after it would hold the write
+    that landed in between."""
+    _age()
+    floor = m_peak.below_local_floor
+
+    def landing(mz, heights, spectrum):
+        m_io.write_peak_variable(SAMPLE_FILENAME, "sum_peak_heights", heights * 2)
+        return floor(mz, heights, spectrum)
+
+    monkeypatch.setattr(m_peak, "below_local_floor", landing)
+    reflag = script.read(SAMPLE_FILENAME)
+
+    with pytest.raises(script.Moved):
+        script.write(SAMPLE_FILENAME, reflag)
+
+    assert not _store().is_weak.values.astype(bool).any()
+
+
+@pytest.mark.parametrize("name", ["mz", "polarity", "is_weak", "signal_to_noise"])
+def test_each_input_of_the_flag_is_guarded(pooled, name):
+    _age()
+    reflag = script.read(SAMPLE_FILENAME)
+    values = _store()[name].values.copy()
+    if name == "polarity":
+        values[values == "+"] = "-"
+    elif name == "is_weak":
+        values = ~values.astype(bool)
+    else:
+        values = values * 1.5
+    m_io.write_peak_variable(SAMPLE_FILENAME, name, values)
+
+    with pytest.raises(script.Moved):
+        script.write(SAMPLE_FILENAME, reflag)
+
+
+def test_a_calibration_applied_since_the_read_is_not_written_over(composite):
+    """The overlaps place each stream's peaks by the calibration the props
+    record: one applied in between would leave them placed by the old."""
+    reflag = script.read(SAMPLE_FILENAME)
+    m_io.update_props(
+        SAMPLE_FILENAME, {"mz_calibration": {"par": {"calibration_factor": 1.0}}}
+    )
+
+    with pytest.raises(script.Moved):
+        script.write(SAMPLE_FILENAME, reflag)
+
+
+def _age_composite():
+    """The composite aged as in the overlaps test: its in-low ion weak, the
+    overlaps read among the peaks that kept. Returns the detection's flag
+    and overlaps."""
+    store = _store()
+    detected_overlaps = store.attrs[m_stitch.STITCH_OVERLAPS_ATTR]
+    stream = store.stream.values
+    low = KEYS.index(f"{LOW_RANGE} R=120000")
+    in_low = (stream == low) & np.isclose(store.mz.values, IN_LOW, rtol=1e-6)
+    aged = store.is_weak.values.astype(bool) | in_low
+    detected = _age(aged)
+    _set_overlaps(
+        m_stitch.overlap_readings(
+            _streams(),
+            store.mz.values,
+            stream,
+            store.sum_peak_heights.values,
+            ~(aged | store.is_satellite.values.astype(bool)),
+            np.bincount(store.scan_stream.values, minlength=len(KEYS)),
+        )
+    )
+    return detected, detected_overlaps
+
+
+def test_a_write_that_stops_at_the_overlaps_is_finished_by_the_next_run(
+    composite, monkeypatch
+):
+    """The flag is written last, so it is what tells a run the file is done:
+    one that stopped after the flag would leave the overlaps stale for good."""
+    detected, detected_overlaps = _age_composite()
+
+    def broken(filename, overlaps):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(script, "_write_overlaps", broken)
+        with pytest.raises(OSError):
+            script.write(SAMPLE_FILENAME, script.read(SAMPLE_FILENAME))
+    assert not script.is_current(m_io.read_props(SAMPLE_FILENAME))
+
+    again = script.read(SAMPLE_FILENAME)
+    assert again.changed
+    script.write(SAMPLE_FILENAME, again)
+
+    store = _store()
+    assert np.array_equal(store.is_weak.values.astype(bool), detected)
+    assert store.attrs[m_stitch.STITCH_OVERLAPS_ATTR] == detected_overlaps
+    assert script.is_current(m_io.read_props(SAMPLE_FILENAME))
+
+
+def test_a_changed_file_is_recorded_by_its_write(pooled):
+    _age()
+    script.write(SAMPLE_FILENAME, script.read(SAMPLE_FILENAME))
+
+    record = m_io.read_props(SAMPLE_FILENAME)[script.RECORD_FIELD]
+    assert record["result"] == script.CHANGED
+    assert record["turned_weak"] == _floor().size
+
+
+def test_a_per_stream_store_without_overlaps_gets_none(streamed):
+    """Overlaps are read again only on a store that records them."""
+    path = m_name.filename_to_zarr_path(SAMPLE_FILENAME, "peak_timeseries")
+    group = m_io.open_zarr_store(path, mode="r+")
+    group.attrs.pop(m_stitch.STITCH_OVERLAPS_ATTR, None)
+    zarr.consolidate_metadata(path)
+    _age()
+
+    reflag = script.read(SAMPLE_FILENAME)
+    script.write(SAMPLE_FILENAME, reflag)
+
+    assert reflag.changed
+    assert reflag.overlaps is None
+    assert m_stitch.STITCH_OVERLAPS_ATTR not in _store().attrs
+
+
+def test_a_record_waits_for_the_files_detection_lock(pooled):
+    """A calibration writes the props under it; an unlocked read-modify-
+    write beside it could drop the fit."""
+    import threading
+
+    lock = m_io.peak_detection_lock_path(SAMPLE_FILENAME)
+    with m_io.zarr_write_lock(lock):
+        recording = threading.Thread(
+            target=script._record, args=(SAMPLE_FILENAME, script.CURRENT)
+        )
+        recording.start()
+        recording.join(0.5)
+        assert recording.is_alive()
+        assert script.RECORD_FIELD not in m_io.read_props(SAMPLE_FILENAME)
+    recording.join(5)
+
+    assert m_io.read_props(SAMPLE_FILENAME)[script.RECORD_FIELD]["result"] == (
+        script.CURRENT
+    )
+
+
+def test_a_file_is_raw_only_where_its_raw_file_is_kept(sample_file_path):
+    """An Orbitrap file kept as zarr is detected on another path, which flags
+    no peak weak: it is not re-flagged."""
+    assert not script._is_raw(SAMPLE_FILENAME)
+
+    with open(f"{sample_file_path}/data.raw", "wb"):
+        pass
+
+    assert script._is_raw(SAMPLE_FILENAME)
+
+
+def test_a_store_holding_a_nan_is_written(pooled):
+    """A NaN equals no NaN: compared without that, a store holding one would
+    count as moved on every run, and never be flagged."""
+    detected = _age()
+    snr = _store().signal_to_noise.values.copy()
+    snr[0] = np.nan
+    m_io.write_peak_variable(SAMPLE_FILENAME, "signal_to_noise", snr)
+
+    reflag = script.read(SAMPLE_FILENAME)
+    script.write(SAMPLE_FILENAME, reflag)
+
+    assert np.array_equal(_store().is_weak.values.astype(bool)[1:], detected[1:])
+
+
+def test_a_file_has_a_store_once_its_peaks_are_detected(
+    sample_file_path, acquire, instrument_functions
+):
+    assert not script.has_store(SAMPLE_FILENAME)
+
+    acquire([(NEG, 1, {ION: FLOOR_HEIGHT})])
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+
+    assert script.has_store(SAMPLE_FILENAME)

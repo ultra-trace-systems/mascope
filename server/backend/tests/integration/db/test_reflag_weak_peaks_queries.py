@@ -2,19 +2,22 @@
 Tests: the database side of ``reflag_orbitrap_weak_peaks``.
 
 The rest of the script is decided in memory and on stores in a temporary
-filestore, and tested hermetically. Three things only a database can show:
-that it offers Orbitrap files and no others, newest first; which batches
-hold a sample of a file; and that those batches are set to ``rematch``.
+filestore, and tested hermetically. What only a database can show: that it
+offers Orbitrap files and no others, newest first; which samples a file has
+and which batches hold them; that those batches are set to ``rematch``; and
+that those samples' matches are removed.
 """
 
 from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 from mascope_backend.db import (
     Dataset,
+    MatchSample,
+    Sample,
     SampleBatch,
     SampleFile,
     SampleItem,
@@ -25,9 +28,18 @@ from mascope_backend.db.scripts import reflag_orbitrap_weak_peaks as script
 
 
 @pytest_asyncio.fixture
+async def sample_view(async_engine):
+    """The ``sample_view`` VIEW the match removal reads samples through,
+    which ``create_all`` does not make (``tests/integration/api/match``)."""
+    async with async_engine.begin() as conn:
+        await conn.execute(text(Sample.drop_view()))
+        await conn.execute(text(Sample.create_view()))
+
+
+@pytest_asyncio.fixture
 async def world(async_session_factory):
     """Adds sample files and batches holding their samples, and cleans up."""
-    made: dict[str, list] = {"files": [], "workspaces": []}
+    made: dict[str, list] = {"files": [], "workspaces": [], "items": {}}
     workspace = Workspace(
         workspace_id=gen_id(), workspace_name=f"Reflag weak peaks {gen_id(6)}"
     )
@@ -73,20 +85,32 @@ async def world(async_session_factory):
             session.add(sample_file)
             await session.commit()
         made["files"].append(sample_file.sample_file_id)
+        items = made["items"].setdefault(sample_file.sample_file_id, [])
         for sample_batch_id in batches:
             # Two samples of the file in each batch: the batch is named once
             for _ in range(2):
+                item = SampleItem(
+                    sample_item_id=gen_id(),
+                    sample_batch_id=sample_batch_id,
+                    sample_file_id=sample_file.sample_file_id,
+                    sample_item_name=f"Item {gen_id(6)}",
+                    sample_item_type="ANALYSIS",
+                )
                 async with async_session_factory() as session:
+                    session.add(item)
+                    await session.flush()
+                    # A sample-level match, as a matching leaves one
                     session.add(
-                        SampleItem(
-                            sample_item_id=gen_id(),
-                            sample_batch_id=sample_batch_id,
-                            sample_file_id=sample_file.sample_file_id,
-                            sample_item_name=f"Item {gen_id(6)}",
-                            sample_item_type="ANALYSIS",
+                        MatchSample(
+                            match_sample_id=gen_id(),
+                            sample_item_id=item.sample_item_id,
+                            match_score=0.5,
+                            match_category=1,
+                            sample_peak_intensity_sum=1.0,
                         )
                     )
                     await session.commit()
+                items.append(item.sample_item_id)
         return sample_file
 
     async def status(sample_batch_id: str) -> str:
@@ -99,6 +123,21 @@ async def world(async_session_factory):
                 )
             ).scalar_one()
 
+    async def matched(sample_item_ids) -> int:
+        async with async_session_factory() as session:
+            return len(
+                (
+                    await session.execute(
+                        select(MatchSample.match_sample_id).where(
+                            MatchSample.sample_item_id.in_(sample_item_ids)
+                        )
+                    )
+                ).all()
+            )
+
+    # What a file made, and how many of its samples are matched
+    file.items = made["items"]
+    file.matched = matched
     yield file, batch, status
 
     async with async_session_factory() as session:
@@ -138,10 +177,31 @@ async def test_the_batches_of_a_files_samples_are_set_to_rematch(world):
     touched = await file(batches=(first, second))
     await file(batches=(elsewhere,))
 
-    batches = await script._batches_of(touched.sample_file_id)
+    samples, batches = await script._samples_of(touched.sample_file_id)
     await script._queue_rematch(batches)
 
+    assert sorted(samples) == sorted(file.items[touched.sample_file_id])
     assert sorted(batches) == sorted([first, second])
     assert await status(first) == "rematch"
     assert await status(second) == "rematch"
     assert await status(elsewhere) == "ready"
+
+
+@pytest.mark.asyncio
+async def test_a_changed_files_samples_have_no_matches_left(world, sample_view):
+    """Removed in full, as a calibration apply removes them: the rematch a
+    batch in ``rematch`` runs computes only the matches a sample lacks."""
+    file, batch, _status = world
+    shared = await batch()
+    touched = await file(batches=(shared, await batch()))
+    other = await file(batches=(shared,))
+    touched_items = file.items[touched.sample_file_id]
+    other_items = file.items[other.sample_file_id]
+    assert await file.matched(touched_items) == 4
+
+    samples, _batches = await script._samples_of(touched.sample_file_id)
+    await script._remove_matches(samples)
+
+    assert await file.matched(touched_items) == 0
+    # A sample of another file in the same batch keeps its matches
+    assert await file.matched(other_items) == 2
