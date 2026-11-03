@@ -84,9 +84,11 @@ async def _over_fixed_window(key: str, times: int, seconds: int) -> int | None:
     """
     client = redis_storage_client.client
     count = await client.incr(key)
-    if count == 1:
-        # First hit in this window: start the expiry countdown.
-        await client.expire(key, seconds)
+    # Start the window's countdown unless it runs already. On every hit, not
+    # only when the count is 1: the client retries a command whose reply was
+    # lost (socket/storage/client.py), so a first INCR can return 2, and a
+    # counter left with no expiry would refuse its IP or account for good.
+    await client.expire(key, seconds, nx=True)
     if count > times:
         retry_after = await client.ttl(key)
         # ttl can be -1 (no expiry set due to a race); fall back to the full

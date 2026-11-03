@@ -118,10 +118,11 @@ async def register_failed_attempt(jti: str) -> None:
     """
     try:
         attempts = await redis_storage_client.client.incr(_attempt_key(jti))
-        if attempts == 1:
-            await redis_storage_client.client.expire(
-                _attempt_key(jti), mfa_settings.PENDING_TOKEN_LIFETIME_SECONDS
-            )
+        # Unless it has one already, on every attempt: a retried INCR can
+        # skip the count of 1 (see rate_limit._over_fixed_window).
+        await redis_storage_client.client.expire(
+            _attempt_key(jti), mfa_settings.PENDING_TOKEN_LIFETIME_SECONDS, nx=True
+        )
         if attempts >= mfa_settings.PENDING_TOKEN_MAX_ATTEMPTS:
             await burn_pending_token(jti)
     except Exception:

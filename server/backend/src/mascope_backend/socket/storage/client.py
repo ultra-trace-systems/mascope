@@ -14,9 +14,24 @@ Redis key namespaces:
 """
 
 from redis.asyncio import Redis, from_url
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialWithJitterBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage.config import storage_config
+
+
+#: Seconds a pooled connection may sit idle before it is pinged on next use,
+#: so a connection Redis or a proxy dropped is replaced instead of failing the
+#: first command sent over it.
+HEALTH_CHECK_INTERVAL = 30
+
+#: Retries of a command that failed with a connection error or a timeout.
+#: Every command the socket storage sends is safe to send again (SET, EXPIRE,
+#: DEL, SADD, SREM, a check-and-delete script).
+COMMAND_RETRIES = 2
 
 
 class RedisStorageClient:
@@ -53,12 +68,21 @@ class RedisStorageClient:
             # This client is consulted inline by API requests (e.g. the
             # converter-availability gate before uploads and peak detection).
             # No blocking Redis commands are used on it, so the timeouts bound
-            # how long a hung Redis connection can stall a request mid-await.
+            # how long a hung Redis connection can stall a request mid-await:
+            # with the retries, at most (COMMAND_RETRIES + 1) attempts of 5 s.
+            # The retries and the health check let a short blip (a restart,
+            # a dropped idle connection) heal without failing the call.
             self._client = from_url(
                 redis_url,
                 decode_responses=True,
                 socket_timeout=5,
                 socket_connect_timeout=5,
+                health_check_interval=HEALTH_CHECK_INTERVAL,
+                retry=Retry(
+                    ExponentialWithJitterBackoff(cap=1.0, base=0.1),
+                    COMMAND_RETRIES,
+                ),
+                retry_on_error=[RedisConnectionError, RedisTimeoutError],
             )
             # Test connection
             await self._client.ping()

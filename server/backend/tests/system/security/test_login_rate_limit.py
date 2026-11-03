@@ -21,6 +21,7 @@ class FakeRedis:
 
     def __init__(self, *, fail: bool = False):
         self.counts: dict[str, int] = {}
+        self.expiries: dict[str, int] = {}
         self.fail = fail
 
     async def incr(self, key: str) -> int:
@@ -29,7 +30,10 @@ class FakeRedis:
         self.counts[key] = self.counts.get(key, 0) + 1
         return self.counts[key]
 
-    async def expire(self, key: str, seconds: int) -> bool:
+    async def expire(self, key: str, seconds: int, nx: bool = False) -> bool:
+        if nx and key in self.expiries:
+            return False
+        self.expiries[key] = seconds
         return True
 
     async def ttl(self, key: str) -> int:
@@ -148,3 +152,35 @@ async def test_fails_open_on_redis_error(monkeypatch):
     monkeypatch.setattr(rl.redis_storage_client, "_client", FakeRedis(fail=True))
     # Redis unavailable must not lock users out.
     assert await _call_n("victim@test.com", 5, times=1) is None
+
+
+@pytest.mark.asyncio
+async def test_a_retried_first_hit_still_starts_the_window(fake_redis):
+    """
+    A first INCR whose reply was lost and retried counts 2: the window must
+    still get its expiry, or the counter would refuse the account for good.
+    """
+    retried = fake_redis.incr
+
+    async def _incr_twice(key: str) -> int:
+        await retried(key)
+        return await retried(key)
+
+    fake_redis.incr = _incr_twice
+    await _call_n("victim@test.com", 1, times=5)
+
+    (key,) = fake_redis.counts.keys()
+    assert fake_redis.counts[key] == 2
+    assert fake_redis.expiries == {key: 60}
+
+
+@pytest.mark.asyncio
+async def test_later_hits_do_not_move_the_window(fake_redis):
+    """The expiry is set once per window: NX keeps a running countdown."""
+    await _call_n("victim@test.com", 1, times=5)
+    (key,) = fake_redis.expiries.keys()
+    fake_redis.expiries[key] = 7  # the countdown has run on
+
+    await _call_n("victim@test.com", 1, times=5)
+
+    assert fake_redis.expiries == {key: 7}
