@@ -31,7 +31,7 @@ from typing import Any, Optional
 from mascope_backend.db import User
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage.client import (
-    TRANSIENT_REDIS_ERRORS,
+    is_transient_redis_error,
     log_storage_failure,
     redis_storage_client,
 )
@@ -165,7 +165,7 @@ async def _unindex_session(session_key: str, sid: str) -> None:
             await forget_user_socket(json.loads(data)["user_id"], sid)
     except Exception as e:
         message = f"Redis session storage client: could not unindex session {sid}: {e}"
-        if isinstance(e, TRANSIENT_REDIS_ERRORS):
+        if is_transient_redis_error(e):
             log_storage_failure(message, e)
         else:
             runtime.logger.warning(message)

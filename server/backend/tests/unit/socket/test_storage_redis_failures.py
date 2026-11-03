@@ -13,7 +13,9 @@ What must hold:
 - a Redis ``ConnectionError`` or ``TimeoutError`` is a warning with no stack,
   kept out of monitoring, and attributed to the storage function that failed;
 - any other exception is still an ERROR with its stack, and reaches
-  monitoring;
+  monitoring, redis-py's ``AuthenticationError`` and ``AuthorizationError``
+  included: they subclass its ``ConnectionError``, but a wrong password is a
+  misconfiguration no wait heals;
 - callers that raise ``SocketSessionError`` still raise it.
 
 The functions are driven directly against a Redis stub whose every command
@@ -26,6 +28,8 @@ from types import SimpleNamespace
 
 import pytest
 import sentry_sdk
+from redis.exceptions import AuthenticationError as RedisAuthenticationError
+from redis.exceptions import AuthorizationError as RedisAuthorizationError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 from test_utils import captured_logs
@@ -189,12 +193,19 @@ async def test_a_redis_outage_is_a_warning_kept_out_of_monitoring(
     assert monitoring == []
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(RuntimeError("not a connection problem"), id="runtime"),
+        pytest.param(RedisAuthenticationError("invalid password"), id="auth"),
+        pytest.param(RedisAuthorizationError("NOPERM"), id="authz"),
+    ],
+)
 @pytest.mark.parametrize("function, call, raises", _SITE_PARAMS)
 @pytest.mark.asyncio
 async def test_any_other_failure_keeps_its_stack_and_reaches_monitoring(
-    monkeypatch, failing_redis, monitoring, function, call, raises
+    monkeypatch, failing_redis, monitoring, error, function, call, raises
 ):
-    error = RuntimeError("not a connection problem")
     failing_redis(error)
 
     records = await _call(call, monkeypatch, error, raises)
