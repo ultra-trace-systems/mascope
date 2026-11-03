@@ -135,7 +135,9 @@ These are formally classified as satellite peaks and must be flagged to prevent 
 The algorithm targets artifacts generated exclusively around dominant ionic signals.
 Potential parent components (base peaks) are isolated using an intensity criterion.
 Peaks are classified as base candidates if their intensities meet or exceed a percentile threshold of $99\%$.
-If the total count of candidates exceeds $20$, the array is trimmed to keep only the top $20$ most intense parent profiles across the dataset.
+If the total count of candidates exceeds $20$, the array is trimmed to keep only the top $20$ most intense parent profiles of the spectrum.
+A raw Orbitrap file is judged one spectrum at a time: each polarity on its own, or each scan stream when its peaks are detected per stream.
+A peak is only ever a satellite of a strong peak of its own spectrum, and one spectrum's strong peaks do not take the bases of another.
 
 For each validated base peak with coordinates $(m/z_{\text{parent}}, I_{\text{parent}})$, a localized search range is established.
 A bounding mass tolerance $\Delta m/z_{\text{win}}$ is computed:

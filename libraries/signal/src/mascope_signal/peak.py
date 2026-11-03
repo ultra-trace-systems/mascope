@@ -732,23 +732,22 @@ class OrbiPeakDetector(BasePeakDetector):
                 "intensity": self.peak_timeseries.sum_peak_heights.values,
             }
         )
-        if not self._streams:
-            peaks_df = flag_satellite_peaks(peaks_df)
-            is_satellite = peaks_df["is_satellite_peak"].values
-        else:
-            # A satellite is a sidelobe of a strong peak of its own spectrum,
-            # and a per-stream store's axis holds one spectrum per stream:
-            # judged together, a real peak of one stream would be read as the
-            # sidelobe of a strong peak of another.
-            is_satellite = np.zeros(len(peaks_df), dtype=bool)
-            peak_stream = self.peak_timeseries.stream.values
-            for index in range(len(self._streams)):
-                in_stream = peak_stream == index
-                if in_stream.any():
-                    flagged = flag_satellite_peaks(
-                        peaks_df[in_stream].reset_index(drop=True)
-                    )
-                    is_satellite[in_stream] = flagged["is_satellite_peak"].values
+        # A satellite is a sidelobe of a strong peak of its own spectrum, and
+        # the store's axis holds one spectrum per stream for a file detected
+        # per stream, else one per polarity: judged together, a real peak of
+        # one spectrum would be read as the sidelobe of a strong peak of
+        # another, and one spectrum's strong peaks would crowd the other's
+        # out of the bases.
+        spectrum = (
+            self.peak_timeseries.stream.values
+            if self._streams
+            else self.peak_timeseries.polarity.values
+        )
+        is_satellite = np.zeros(len(peaks_df), dtype=bool)
+        for label in np.unique(spectrum):
+            in_spectrum = spectrum == label
+            flagged = flag_satellite_peaks(peaks_df[in_spectrum].reset_index(drop=True))
+            is_satellite[in_spectrum] = flagged["is_satellite_peak"].values
         is_satellite = is_satellite | self.peak_timeseries[EXCEPTION_PEAK].values
         self._peak_timeseries = self.peak_timeseries.drop_vars(EXCEPTION_PEAK).assign(
             {"is_satellite": (("mz"), is_satellite)}
