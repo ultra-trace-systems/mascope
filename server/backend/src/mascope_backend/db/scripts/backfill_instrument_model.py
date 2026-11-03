@@ -8,8 +8,10 @@ file's ``instrument_details()["Model"]``, recorded in the props as
 ``instrument_model``) and ``cv_term`` from the PSI-MS term of that model
 (``api.new.instruments.registry.record_instrument_seen``). The migration that
 made the table knew no model, so an instrument that has registered no file
-since keeps ``model`` NULL, and the instrument list, the export and the
-deposit package show none for it.
+since keeps ``model`` NULL, and the instrument list shows none for it. The
+export and the deposit package take each file's own model first, so they show
+none only for a file whose props name no model and whose raw file is no longer
+kept.
 
 The model is still on record for most of them. This looks, for each such
 instrument, through its Orbitrap files newest first, and takes the first

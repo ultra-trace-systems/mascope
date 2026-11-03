@@ -526,8 +526,8 @@ def _vocabulary_columns(
     of it ("Orbitrap XL" reads "LTQ Orbitrap XL"). A value the vocabulary
     cannot map, such as a family name, leaves both cells empty.
 
-    :param model: The instrument model of the sample's instrument, None if
-        unknown.
+    :param model: The instrument model of the sample's file, as
+        ``instrument_models_of`` gives it, None if unknown.
     :param instrument_type: ``"orbi"`` or ``"tof"``.
     :param polarity: The sample's polarity, ``"+"`` or ``"-"``.
     :return: The columns, in their order.

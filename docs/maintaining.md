@@ -2314,8 +2314,9 @@ names. The upgrade that made the table knew no model, so an instrument whose
 files were all registered before it has none until a new file arrives, and
 the instrument list shows none for it. The batch export and a deposit package
 take each file's own model first (its props, then its kept raw file) and the
-row's only for a file that names none, so there the gap shows only for files
-whose props and raw file are both gone. Once, after that upgrade, fill them from the files already there:
+row's only for a file that names none, so there the gap shows only for a
+file whose props name no model and whose raw file is no longer kept. Once,
+after that upgrade, fill them from the files already there:
 
 ```sh
 DRY_RUN=1 mascope prod db script run backfill_instrument_model   # what it would fill
