@@ -1000,7 +1000,7 @@ def _execute(kit: "Toolkit", plan: Plan) -> Receipt:
     responses: list[dict[str, Any]] = []
     for index, step in enumerate(plan.steps):
         try:
-            with kit._errors(f"apply plan {plan.id}: {step['op']}"):
+            with kit._errors(f"apply plan {plan.id}: {step['op']}", write=True):
                 answer = WRITES[step["op"]](kit.client, **step["args"])
         except Exception as e:
             failure = {"step": index, "op": step["op"], "changes": step["changes"]}

@@ -540,8 +540,8 @@ class Toolkit:
         except Exception:
             return None, self.client.workspace_name
 
-    def _errors(self, operation: str, target: Ref | None = None):
-        return sdk_errors(operation, target, current_role=self._role)
+    def _errors(self, operation: str, target: Ref | None = None, *, write=False):
+        return sdk_errors(operation, target, current_role=self._role, write=write)
 
     # --- listings ------------------------------------------------------------
 

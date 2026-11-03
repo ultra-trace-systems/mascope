@@ -108,8 +108,10 @@ the stage loaded again is whole.
 to do next and a `to_dict()` for a transport: `AmbiguousName`, `NotFound`,
 `RowCapExceeded`, `AccessDenied` (a 403, naming the object, the role it
 needs and the role the user has), `NotAuthenticated`, `InvalidRequest`,
-`Unavailable`, `StaleFrame`. Transient failures were already retried by the SDK; the
-toolkit adds no retry.
+`Unavailable`, `StaleFrame`. A read's transient failures were already retried by the
+SDK. A write the SDK sends once unless a second send changes nothing, so a write
+that fails as `Unavailable` may still have been carried out: look before trying
+again. The toolkit adds no retry.
 
 ## The oracle
 
