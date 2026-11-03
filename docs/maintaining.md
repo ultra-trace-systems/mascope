@@ -1087,14 +1087,16 @@ journalctl -u mascope-disk-check.service          # what it found
 Every download the app writes - a spreadsheet, a CSV, the raw-file bundle, a
 dataset's [deposit package](#packaging-a-dataset-for-deposit) - goes into the
 user's own directory under the env's `temp/`, from which the browser fetches
-it. The bundle and the package copy raw files, so they can be as large as a
-dataset. A download stays for **24 hours** after it was written: each new
-export removes every user's downloads older than that. So `temp/` holds about
-one day of downloads. While no one exports, the older ones wait for the next
-export. A restart empties `temp/` as a whole. A user who comes back after a
-day exports again. The uploads in flight under `temp/tus/` and the package
-builds under `temp/packages/` are not downloads; uploads have a sweep of their
-own ([Upload disk floor](#upload-disk-floor)).
+it. The bundle zips raw files and the package copies them, so either can be
+as large as a dataset. The bundle is one zip, written straight from the stored
+raw files, with no folder of copies beside it. A download stays for
+**24 hours** after it was written: each new export removes every user's
+downloads older than that. So `temp/` holds about one day of downloads. While
+no one exports, the older ones wait for the next export. A restart empties
+`temp/` as a whole. A user who comes back after a day exports again. The
+uploads in flight under `temp/tus/` and the package builds under
+`temp/packages/` are not downloads; uploads have a sweep of their own
+([Upload disk floor](#upload-disk-floor)).
 
 ### The update disk guard
 

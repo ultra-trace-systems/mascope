@@ -3,6 +3,7 @@ import datetime
 import os
 import shutil
 import tempfile
+import zipfile
 
 from sqlalchemy import select
 
@@ -26,6 +27,18 @@ from mascope_thermo.mzml import CvParam, InstrumentConfiguration, write_mzml
 from mascope_thermo.thermo import NoScansFoundError
 
 
+def _zip_files(zipfile_path: str, members: list[tuple[str, str]]) -> None:
+    """
+    Write files into a new zip, each under the name it is given.
+
+    :param zipfile_path: Path of the zip to write.
+    :param members: ``(path, name in the zip)`` of each file.
+    """
+    with zipfile.ZipFile(zipfile_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for from_path, arcname in members:
+            archive.write(from_path, arcname)
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     error_notification_rooms=["user_id"],
@@ -42,10 +55,10 @@ async def download_files(
 
     Steps:
     1. Fetch all sample files from the database using the provided IDs
-    2. For multiple files, create a temporary directory and copy files there
+    2. For multiple files, write the files found into one zip in the user's
+       temp directory
     3. For a single file, copy it directly to the temp directory
-    4. Create a zip archive for multiple files
-    5. Return information about found and not found files
+    4. Return information about found and not found files
 
     :param sample_file_ids: List of IDs of the sample files to download
     :type sample_file_ids: list[str]
@@ -80,32 +93,36 @@ async def download_files(
     found = []
     download = None
     if len(sample_files) > 1:
-        # create a download folder using a datetime stamp, scoped to the user
-        datetime_stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        dirname = f"sample_files_{datetime_stamp}"
-        download_dir = user_temp_path(user_id, dirname)
-        os.mkdir(download_dir)
-        # copy available files to the folder
+        # The raw files are written straight into the zip, from where they are
+        # stored: a folder of copies beside it would take their size twice.
+        members: list[tuple[str, str]] = []
         for sample_file in sample_files:
             # derive sample file path
             file_path = parse_path_from_item_filename(sample_file.filename)
             instrument_type = get_instrument_type(sample_file.filename)
             extension = "raw" if instrument_type == "orbi" else "h5"
             from_path = os.path.join(file_path, f"data.{extension}")
-            # copy the sample file to the download folder
             if os.path.exists(from_path):
-                to_path = os.path.join(
-                    download_dir, f"{sample_file.filename}.{extension}"
-                )
-                shutil.copy(from_path, to_path)
+                members.append((from_path, f"{sample_file.filename}.{extension}"))
                 found.append(sample_file.to_dict())
             else:
                 not_found.append(sample_file.to_dict())
-        # zip the folder and set the zip as the download path
-        if len(found) > 0:
-            download = f"{dirname}.zip"
-            zipfile_path = user_temp_path(user_id, dirname)
-            shutil.make_archive(zipfile_path, "zip", download_dir)
+        if members:
+            # The zip's name is made unique, not only stamped: two downloads
+            # started within one second would otherwise write into one file.
+            datetime_stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            fd, zipfile_path = tempfile.mkstemp(
+                prefix=f"sample_files_{datetime_stamp}_",
+                suffix=".zip",
+                dir=os.path.dirname(user_temp_path(user_id, "sample_files")),
+            )
+            os.close(fd)
+            try:
+                await asyncio.to_thread(_zip_files, zipfile_path, members)
+            except BaseException:
+                os.remove(zipfile_path)
+                raise
+            download = os.path.basename(zipfile_path)
     else:
         # derive sample file path
         sample_file = sample_files[0]
