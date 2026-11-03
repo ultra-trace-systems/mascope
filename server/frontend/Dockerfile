@@ -19,7 +19,18 @@ RUN echo "MASCOPE_RUNTIME='${MASCOPE_RUNTIME}'" >> .env.production
 # build frontend
 COPY NOTICE LICENSE /src/
 COPY server/frontend/ ./
-RUN npm install
+# Install exactly what package-lock.json names, as CI's frontend jobs do. npm
+# still drops an optional dependency it fails to fetch without a word, and
+# rolldown (vite's bundler) needs its platform's native binding, which is one:
+# without it `npm run build` fails with "Cannot find native binding". Loading
+# rolldown checks the binding is there; when it is not, install once more, and
+# fail here, naming the cause, if it is still missing.
+RUN npm ci --no-audit --no-fund && \
+    if ! node -e "require('rolldown')" 2>/dev/null; then \
+        echo "rolldown's native binding is missing after npm ci; installing again" >&2 && \
+        npm ci --no-audit --no-fund && \
+        node -e "require('rolldown')"; \
+    fi
 RUN npm run build
 
 # DOCS BUILDER
