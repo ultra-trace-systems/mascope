@@ -1,7 +1,7 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
 - **Status:** building
-- **As of:** 2026-10-27
+- **As of:** 2026-11-03
 - **Tracked in:** [Automatic ingest: routing and splitting](https://linear.app/ultra-trace/project/automatic-ingest-routing-and-splitting-68acd9575fa9) (Linear) and GitHub #2098
 - **Supersedes:** `ionization_method_config.md` (retired 2026-10-22; its target model is in phase 8 of section 10)
 - **What:** Automatic ingest: binding a file's chemistry by evidence and splitting it into streams, segments and windows.
@@ -21,7 +21,8 @@ Linear project, and of its target model the `Instrument` row and the
 versioned ionization setup are built (MAS-300, 2026-10-27), the rest
 unbuilt (MAS-312, MAS-313, MAS-337, MAS-344);
 detection is built as an audit: it reads each file's chemistry off its
-reagent ions and binds nothing** (2026-10-27). Written for issue #2098 ("Split files into
+reagent ions and binds nothing, and its first production read fails
+the rung's gate at one site** (2026-11-03). Written for issue #2098 ("Split files into
 samples by scan attributes"), which carries the checklist of pull
 requests. Decisions 1 to 5, 7, 9, 11 to 16, 18 and 19 in section 12 are
 settled; 6, 8 and 10 are open; 17 was decided on 2026-10-10 (a layout
@@ -105,7 +106,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
 | 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the item TIC and the per-scan export read the scans the store holds, an item made by hand reads the row the pipeline's item reads, and a spectrum that meets a stale store asks for its rebuild (#2329); the spectrum and the peak listing name each segment, and the sample's views draw the scan ranges apart (#2330); each segment is calibrated by a factor of its own, fitted on the calibrants it holds or taken from a neighbour (#2332), and the calibration dialog and the sample's badge say which (#2333); a stitched file's processing detail says what its ranges read where they overlap and which have no fit of their own (#2334); each segment is fitted an instrument function of its own, which its peaks are read under and the detail states (4.3); **phase 8 run** on the two sites that acquire composites (2026-10-15 and 16): one site's 7,312 pooled files from before its switch re-processed and stitched in ten hours, 2.5 s a file inside batches of 25 paced against the live ingest, leaving 45 files parked without a chemistry and one single-stream file; the other site's 889 files, stitched on arrival under 1.11.0, re-processed in 81 minutes at 3.0 s a file for their calibration per range; the ingest, the pipeline and error tracking undisturbed throughout - the operator's steps are in [maintaining.md](../maintaining.md#the-composite-cut) |
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is built with the composite cut (#2332) and shown with it (#2333), and so is its instrument function per segment; follows 3 on the same track; no rebuild script (4.5, 9.1) |
-| 5 | Chemistry detection: audit first, then provisional binding | **audit built** (MAS-92, #2649): the detector reads each bound or parked file's MS1 polarities off the reagent libraries and stores its call beside the rung that bound them (`sample_file.binding_evidence`); on the labelled corpus 92 calls, none wrong, 53% no call, in-sample (5.4). The rung waits for a release in audit and a production shadow read per site |
+| 5 | Chemistry detection: audit first, then provisional binding | **audit built** (MAS-92, #2649): the detector reads each bound or parked file's MS1 polarities off the reagent libraries and stores its call beside the rung that bound them (`sample_file.binding_evidence`); on the labelled corpus 92 calls, none wrong, 53% no call, in-sample (5.4). **Production read** (MAS-501, 2026-11-03): 3 wrong of 12,880 calls, but 2.0% at one TOF site, nitrate called on ambient-ion spectra, so the rung waits for a rules version 2 (#2846) |
 | 6 | Recipes: time and trace windows, preview and apply | open |
 | 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open; its first declaration channel is built: a record of the whole file that the control program writes and the File Agent sends, which binds the file at rung 0 ([acquisition_sidecar.md](acquisition_sidecar.md)); MS2 parts: first cut built (4.2) - a file with no MS1 scans is stored and, where nothing binds it, filed as an MS2 part; centroid-only scans built (#1241): scans that stored their centroids alone are summed as their centroids, and their peaks are the instrument's |
 
@@ -2439,17 +2440,74 @@ and routing are bit-identical to develop's (`corpus compare`), and its
   bindings were learned from those files. On the corpus the detector ties
   method binding's precision; it does not beat it.
 
+**Read on production** (MAS-501, 2026-11-03): a read-only job over every
+site's `binding_evidence`, aggregates only, under release 1.15.0. Rules
+version 1 throughout. The evidence covers one to six days of processing,
+2026-10-28 to 2026-11-03.
+
+| Site | Class | Days | Polarities | Calls | Wrong | Wrong calls | Gate (1%) |
+|---|---|---|---|---|---|---|---|
+| A | TOF | 6 | 574 | 149 | 3 | 2.0% | **fails** |
+| B | TOF | 1 | 4 | 4 | 0 | 0% | too few calls to say |
+| C | Orbitrap | 2 | 114 | 31 | 0 | 0% | too few: 0 of 31 bounds the rate at 9.2% |
+| D | Orbitrap | 6 | 13,044 | 12,696 | 0 | 0% | holds: 0 of 12,696 bounds it at 0.024% |
+| E | TOF | 2 | 23 | 0 | - | - | nothing to judge |
+| F, G | - | 0 | 0 | 0 | - | - | no file processed since the audit shipped |
+| H | - | - | - | - | - | - | not read: the job did not run there |
+
+The bounds are one-sided 95% (for none wrong of *n*, 1 - 0.05^(1/*n*), about
+3/*n*). Every polarity read was bound by a higher rung: none was parked, so
+on these days rung 5 would have had nothing to bind. No ambient-ion mode
+agreed with a call, so counting those as wrong changes no rate.
+
+- **Site A's three wrong calls are one confusion**: nitrate called on
+  spectra its token bound to an ambient-ion negative mode, on a TOF that
+  also runs bromide and nitrate modes. The binding is right and the
+  detector wrong: nitrate is the air's own negative ion, and the 15N line
+  stands at natural abundance. No rule of version 1 holds it off. The
+  spectra hold 100 to 300 peaks, past the size rule; nitrate takes 31%,
+  41% and 63% of their intensity, past the bar; its brightest ion ranks
+  first; no other fingerprint comes within a tenth of it. Two of the
+  three clear rung 5's 0.4, so the bar's footing below - 0.17, the highest
+  score of a spectrum without a reagent - does not hold on production. A
+  nitrate bar of its own would not do either: 20 of the same instrument's
+  22 correct nitrate calls score 0.36 to 0.5. The guard version 2 needs is
+  one that tells the air's nitrate from a nitrate source's (#2846).
+- **The same TOF is barely read.** 425 of its 450 polarities called
+  nothing, nearly all scoring under 0.1, among them 182 bound to bromide
+  and 178 to nitrate; another TOF at the site called all 122 of its nitrate
+  polarities at 0.95. Its wrong calls found their anchors 100 to over 200
+  ppm out, at the edge of the TOF window: most likely its axis as acquired
+  sits there or beyond, and a bromide spectrum of another TOF, shifted by
+  hand, loses its call at 200 to 250 ppm. Not a wrong call but lost
+  coverage: that instrument's part of the site's rate rests on 25 calls,
+  not 450 polarities (#2847).
+- **Nothing else disagreed.** Site D's 12,696 calls, uronium on its positive
+  polarity and bromide on its negative, all agree; the EASY-IC beam was
+  called six times, all agreeing. Site C's calls on three Orbitraps and site
+  B's four on one TOF agree. On site C, 50 polarities were bound with no
+  rung recorded on their sample; their calls agree too.
+
+**Verdict.** The production gate fails at site A, and the rules need a
+version 2 before rung 5 binds there or at any site whose TOFs run ambient-ion
+modes (#2846). It holds at site D. The other sites are too thin to say: a
+read after some weeks of processing, of the version 2 rules as well, is what
+decides them.
+
 **Authority.**
 
 - Detection stays **audit-only**, for at least one release and until both
   gates hold: wrong calls at or below 1% of calls on the labelled corpus,
   and on a production shadow read per site - the stored evidence of every
   file bound while the audit ran, read where `agrees` is false (MAS-501).
+  The first read, above, fails at site A under version 1.
 - Then **rung 5 binds** a polarity no higher rung binds, where the call is
   a profile under the rules version measured and its score is at least
   **0.4**. That is twice the call bar, and more than twice the highest score
   any spectrum without a reagent reached on the corpus once it held 30
   peaks: 0.17, the ambient TOF one. 84 of the 92 corpus calls clear it.
+  On production an ambient TOF spectrum reached 0.63 (the read above), so
+  the bar alone does not keep ambient spectra out.
   The binding is provisional and raises a review item (5.5) (MAS-502).
 - **Later evidence** for the many methods that exclude their reagent ions:
   - adduct-pair consistency, i.e. the same neutral seen through two channels
@@ -3641,7 +3699,9 @@ Polarity always comes from the file, never from the filename.
   on the labelled corpus: 92 calls, none wrong, 53% no call (5.4).
 - **Remaining:**
   - a release in audit mode, and a production shadow read per site over
-    the stored evidence (MAS-501);
+    the stored evidence (MAS-501): read on 2026-11-03, it fails at site A
+    (2.0%) and holds at site D, the other sites too thin (5.4);
+  - rules version 2, which holds nitrate off ambient-ion spectra (#2846);
   - the rung: a provisional binding where no higher rung binds and the score
     reaches 0.4, with its review item (5.5) (MAS-502, blocked by MAS-501).
 - **Gates:**
