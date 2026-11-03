@@ -1137,6 +1137,10 @@ class TofCalibrationHandler(BaseCalibrationHandler):
           refine window, below the match score - never reached the fit and
           is not listed, and neither is the second reading of a peak.
         - ``span``: the exact m/z of the lowest and the highest line kept.
+        - ``n_lines``: how many distinct lines the collection offered above
+          the abundance floor, matched or not, which the quality bar holds
+          the lines kept against (``TOF_MIN_KEPT_LINE_SHARE``). A line
+          offered by two ions, or one ion through two mechanisms, is one.
         - ``collection``: the calibration collection, and a hash of the
           isotopes it offered (:func:`calibration_isotopes_sha256`), which
           tells one version of it from another.
@@ -1175,6 +1179,14 @@ class TofCalibrationHandler(BaseCalibrationHandler):
                 _finite_or_none(retained["mz"].min()),
                 _finite_or_none(retained["mz"].max()),
             ],
+            "n_lines": int(
+                isotopes.loc[
+                    isotopes.relative_abundance >= self.params.isotope_abundance_min,
+                    "mz",
+                ]
+                .round(6)
+                .nunique()
+            ),
             "collection": {
                 "id": self.params.calibration_collection_id,
                 "isotopes_sha256": calibration_isotopes_sha256(isotopes),
@@ -2097,12 +2109,13 @@ def _quality_block_issues(
     The bar (``calibration_config``) is the fit's mean post-fit residual
     against an instrument-class bound; for a fit on one point, or on two
     isotopes of one ion, how far it moved the axis; for one on three or more,
-    how many ions the points came from; and, where a bound is set, the
+    how many ions the points came from; for a TOF fit, the share of its
+    collection's lines it kept; and, where a bound is set, the
     calibrants' share of the TIC. A fit with no quality
     block cannot be judged and is reported as such rather than let through.
 
-    A value the block does not carry (``n_ions`` on records written before it
-    was added) is not held against the fit.
+    A value the block does not carry (``n_ions`` or ``n_lines`` on records
+    written before it was added) is not held against the fit.
 
     :param quality: The fit's ``quality`` block (see :func:`fit_quality`).
     :param filename: Sample filename, selects the instrument-class bounds.
@@ -2206,6 +2219,30 @@ def _quality_block_issues(
                 "message": (
                     f"All calibration points come from {n_ions} ion"
                     f"{'' if n_ions == 1 else 's'} (at least {min_ions} needed)."
+                ),
+            }
+        )
+
+    # A TOF fit kept on a few of its collection's lines is likelier fitted
+    # on neighbours of them than on the calibrants: see
+    # TOF_MIN_KEPT_LINE_SHARE
+    n_lines = quality.get("n_lines")
+    min_line_share = calibration_config.TOF_MIN_KEPT_LINE_SHARE
+    if (
+        tof
+        and min_line_share is not None
+        and n_points > 0
+        and n_lines
+        and n_points / n_lines < min_line_share
+    ):
+        issues.append(
+            {
+                "code": "lines",
+                "message": (
+                    f"Fitted on {n_points} of the {n_lines} lines of the "
+                    f"calibration collection (at least {min_line_share:.0%} "
+                    "needed): a fit on so few of them may be on peaks "
+                    "beside the calibrants."
                 ),
             }
         )
