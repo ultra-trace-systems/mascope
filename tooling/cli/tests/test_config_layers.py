@@ -172,6 +172,19 @@ def test_an_unknown_key_departs_whichever_layer_writes_it(report):
     assert section in config_layers.select(report)
 
 
+@pytest.mark.parametrize("mode", ["dev", "prod"])
+def test_the_shipped_layers_set_no_key_the_loader_ignores(mode):
+    # A key the model lacks reads as a setting and does nothing, and the
+    # report lists it on every deployment.
+    data = Path(config_layers.__file__).parent / "data"
+    report = config_layers.collect(config_layers.layer_paths(str(data), "none", mode))
+
+    unknown = [
+        (row["section"], row["key"]) for row in report["rows"] if not row["known"]
+    ]
+    assert unknown == []
+
+
 def test_a_setting_in_its_old_section_is_credited_where_it_now_lives(report):
     rows = _rows(report)
 
