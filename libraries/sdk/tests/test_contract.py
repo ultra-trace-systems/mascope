@@ -1425,7 +1425,7 @@ def scratch_matched(mascope, scratch):
     for each sample, so the copy is done when it holds as many of those rows
     as the demo batch does.
     """
-    demo_batch_id = _first_batches(mascope).iloc[0]["sample_batch_id"]
+    demo_batch_id = _batch_to_copy(mascope)
     demo_matches = len(_stored_match_samples(scratch, demo_batch_id))
     assert demo_matches, "the demo batch carries its matches"
     scratch.session.post(
@@ -2436,6 +2436,25 @@ def _first_dataset_and_batches(mascope):
 def _first_batches(mascope):
     """Batches of the first demo dataset that has any."""
     return _first_dataset_and_batches(mascope)[1]
+
+
+def _batch_to_copy(mascope) -> str:
+    """The demo batch ``scratch_matched`` copies: the first with three samples.
+
+    ``judged_copy`` needs a batch peak that three samples assign alike, and
+    the first batch of the demo can hold fewer (bundle 1.4's 2026 dataset
+    has batches of one and two). The first batch, when none has three.
+    """
+    first = None
+    for _, dataset in mascope.datasets.list().iterrows():
+        batches = mascope.batches.list(dataset["dataset_id"])
+        for batch_id in [] if batches is None else batches["sample_batch_id"]:
+            first = first or batch_id
+            if len(mascope.samples._list_by_id(batch_id)) >= 3:
+                return batch_id
+    if first is None:
+        raise AssertionError("demo stack has no dataset with batches")
+    return first
 
 
 def _first_sample_id(mascope) -> str:
