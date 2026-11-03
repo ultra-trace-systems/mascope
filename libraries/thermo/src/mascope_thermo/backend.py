@@ -1252,6 +1252,9 @@ _AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS = (
 )
 # min per-scan S:N on each side; below it a real ion's label often misses a scan
 _AVG_CENTROID_EXCLUSIVE_MIN_SN = 10.0
+# cap on a label's resolution, times its scan's median at that m/z
+# (_bound_label_resolutions)
+_AVG_CENTROID_RESOLUTION_MAX_RATIO = 2.0
 _ZEROFILL_GAP_FACTOR = 4.0  # relative step > this * the median one: a cluster boundary
 _ZEROFILL_EDGE_PPM = 2.0  # place baseline zeros this far outside each cluster edge
 
@@ -1348,6 +1351,43 @@ def _ppm_bin(
         binned_extras.append(np.where(nonzero, we, plain_e))
 
     return binned_mz, isum, binned_extras, counts.astype(np.float64), members
+
+
+def _bound_label_resolutions(mz: np.ndarray, resolution: np.ndarray) -> np.ndarray:
+    """One Orbitrap scan's label resolutions, capped at what the scan gives.
+
+    An Orbitrap's resolution falls as one over the square root of m/z, so
+    ``resolution * sqrt(mz)`` is about the same for every label of a scan.
+    The labels the instrument flags Exception, its side lobes, can carry a
+    resolution far above that: on the published demo raws 1.7 % of the MS1
+    labels sit more than twice above their scan's median, almost all of them
+    flagged, and single ones read up to 8e8 at m/z 229. Averaged into a peak,
+    one such label made its resolution millions (GitHub #2780), so its width,
+    its area and its Exception-flag window shrank to nothing. The Thermo
+    backend re-centroids the averaged profile and measures the real width.
+
+    Each label is capped at ``_AVG_CENTROID_RESOLUTION_MAX_RATIO`` times the
+    scan's median at its m/z, the median taken over the labels that have a
+    resolution. Labels below the cap are kept as written: a broad peak is
+    real. Capping rather than replacing keeps a peak the scan
+    resolves better than its median, which Thermo's re-centroid also reads
+    narrow: on the demo raws no averaged peak then reads more than three times
+    Thermo's resolution, against 187 before, and none falls further below it.
+
+    :param mz: The scan's label m/z.
+    :param resolution: Their resolutions, finite.
+    :return: The resolutions, capped.
+    """
+    valid = resolution > 0
+    if not valid.any():
+        return resolution
+    root = np.sqrt(mz)
+    cap = (
+        _AVG_CENTROID_RESOLUTION_MAX_RATIO
+        * np.median(resolution[valid] * root[valid])
+        / root
+    )
+    return np.minimum(resolution, cap)
 
 
 def _raise_if_unfinished(datafile_path: str, cause: BaseException) -> None:
@@ -2611,6 +2651,10 @@ class OpenTFRawBackend:
         if ppm <= 0:
             raise ValueError(f"Invalid ppm value: {ppm}. ppm must be > 0.")
 
+        # A scan with the Orbitrap's B/C has its label resolutions capped at
+        # what the scan gives before they are averaged
+        # (_bound_label_resolutions).
+        params = [self._profile_conversion_params(int(n)) for n in scan_indices]
         mz_parts, int_parts, res_parts, sn_parts, scan_parts = [], [], [], [], []
         for ordinal, scan_number in enumerate(scan_indices):
             labels = self._raw.centroid_labels(int(scan_number))
@@ -2619,9 +2663,12 @@ class OpenTFRawBackend:
             resolution = np.asarray(labels["resolution"], dtype=np.float64)
             signal_to_noise = np.asarray(labels["signal_to_noise"], dtype=np.float64)
             keep = np.isfinite(resolution) & np.isfinite(signal_to_noise)
-            mz_parts.append(mz[keep])
+            mz, resolution = mz[keep], resolution[keep]
+            if params[ordinal][0] is not None:
+                resolution = _bound_label_resolutions(mz, resolution)
+            mz_parts.append(mz)
             int_parts.append(intensity[keep])
-            res_parts.append(resolution[keep])
+            res_parts.append(resolution)
             sn_parts.append(signal_to_noise[keep])
             scan_parts.append(np.full(int(keep.sum()), ordinal, dtype=np.intp))
 
@@ -2642,7 +2689,7 @@ class OpenTFRawBackend:
         # always reported. Labels bin as written when a scan carries no B/C.
         # Each bin also remembers which scans its centroids came from, for the
         # scan-exclusive merge below.
-        key_parts = self._labels_on_one_calibration(scan_indices, mz_parts)
+        key_parts = self._labels_on_one_calibration(params, mz_parts)
         if key_parts is None:
             masses, summed, (resolutions, signal_to_noise), present, members = _ppm_bin(
                 mz_all, int_all, [res_all, sn_all], ppm, groups=scan_all
@@ -2704,7 +2751,9 @@ class OpenTFRawBackend:
         return masses, intensities, resolutions, signal_to_noise
 
     def _labels_on_one_calibration(
-        self, scan_indices: list[int], mz_parts: list[np.ndarray]
+        self,
+        params: list[tuple[float | None, float | None]],
+        mz_parts: list[np.ndarray],
     ) -> list[np.ndarray] | None:
         """Re-express each scan's centroid m/z on one scan's calibration.
 
@@ -2724,11 +2773,12 @@ class OpenTFRawBackend:
         ``_frequency_grid_to_mz`` -- so the bin groups a peak's centroids by
         physical frequency.
 
+        ``params`` holds each selected scan's B/C, as
+        ``_profile_conversion_params`` reads them, aligned with ``mz_parts``.
         Returns one array per scan, aligned with ``mz_parts``, or None when a
         selected scan carries no B/C (non-FTMS data), in which case the caller
         bins the labels as written.
         """
-        params = [self._profile_conversion_params(int(n)) for n in scan_indices]
         if not params or any(b is None for b, _ in params):
             return None
         # The reference only fixes the key's scale, so any scan serves: the

@@ -216,6 +216,9 @@ For each peak, the centroids that the averaged scans recorded within half the pe
 $$s = \frac{N_{\text{Exception}}}{N_{\text{centroids}}}, \qquad |m/z_{\text{centroid}} - m/z_{\text{peak}}| \le \frac{m/z_{\text{peak}}}{2R}$$
 
 where $R$ is the peak's resolution.
+Where Mascope averages the scans' centroids itself rather than through the vendor library, $R$ is the intensity-weighted mean of the centroids' own resolutions.
+Each of them counts at most twice what its scan resolves at that m/z, an Orbitrap's resolution falling as $1/\sqrt{m/z}$ ([Makarov, 2000](#mak00)).
+The instrument can write a lobe's centroid at hundreds of times its real resolution, and one such centroid would otherwise shrink the window to nothing and leave the peak with no share at all.
 A peak with $s > 0.5$ is the instrument's side lobe, and is flagged as a satellite like those above.
 The share is nearly all or nothing: of the peaks with any marked centroid, 85 % have $s > 0.8$.
 These lobes sit about 30 ppm from their parent, at well under a percent of its height.
@@ -246,6 +249,9 @@ The summed spectrum itself does not change: it still holds every centroid the in
 - <a id="thermo-rfr"></a>Thermo Fisher Scientific. *RawFileReader*, the `PeakOptions`
   of a centroid (Reference, Exception, Merged, Fragmented).
   [link](https://github.com/thermofisherlsms/RawFileReader)
+- <a id="mak00"></a>Makarov, A. *Electrostatic axially harmonic orbital trapping: a
+  high-performance technique of mass analysis.* Analytical Chemistry 2000,
+  72(6):1156–1162. [link](https://doi.org/10.1021/ac991131p)
 - <a id="mo09"></a>Mathur, R.; O'Connor, P. B. *Artifacts in Fourier transform mass
   spectrometry.* Rapid Communications in Mass Spectrometry 2009, 23(4):523–529.
   [link](https://doi.org/10.1002/rcm.3904)

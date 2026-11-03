@@ -770,6 +770,19 @@ def _nearest_ppm(reference: np.ndarray, mz: np.ndarray) -> np.ndarray:
     return np.minimum(np.abs(below - mz), np.abs(above - mz)) / mz * 1e6
 
 
+def _nearest_value(
+    reference: np.ndarray, values: np.ndarray, mz: np.ndarray
+) -> np.ndarray:
+    """``values`` of the nearest of ``reference`` to each of ``mz``."""
+    order = np.argsort(reference)
+    reference, values = reference[order], values[order]
+    pos = np.searchsorted(reference, mz)
+    below = np.clip(pos - 1, 0, reference.size - 1)
+    above = np.clip(pos, 0, reference.size - 1)
+    nearer_below = np.abs(reference[below] - mz) <= np.abs(reference[above] - mz)
+    return values[np.where(nearer_below, below, above)]
+
+
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_centroids_average_matches_thermo(monkeypatch, path):
     """Approximate parity for averaged centroids.
@@ -777,16 +790,17 @@ def test_centroids_average_matches_thermo(monkeypatch, path):
     Thermo's AverageScans re-centroids the averaged profile, so this NumPy
     ppm-binning of per-scan centroids cannot match it exactly: m/z agrees to
     sub-ppm and the summed intensity to a few percent, while resolution is
-    coarser and not asserted (it does not feed the instrument fit). S:N *is*
-    asserted at the weak-peak threshold (it feeds peak detection's weak-peak
-    filter): the count of peaks above the threshold must track Thermo, which the
+    coarser and asserted only against an outlier: it sets the peak's width in
+    peak detection and the Exception-flag share. S:N *is* asserted at the
+    weak-peak threshold (it feeds peak detection's weak-peak filter): the
+    count of peaks above the threshold must track Thermo, which the
     n/sqrt(N) averaged-S:N scaling restores. Guards against gross regressions.
     Bounded to a small scan window for speed.
     """
     path = str(path)
     t_min, t_max = _bounded_window(monkeypatch, path)
 
-    tm, ti, _, tsn = _run_under(
+    tm, ti, tr, tsn = _run_under(
         monkeypatch, "thermo", m_thermo.get_centroids, path, t_min=t_min, t_max=t_max
     )
     om, oi, orr, osn = _run_under(
@@ -807,6 +821,7 @@ def test_centroids_average_matches_thermo(monkeypatch, path):
     # Each OpenTFRaw peak's nearest Thermo peak (robust to which single peak
     # happens to be tallest, unlike a base-peak check).
     dev_ppm = _nearest_ppm(tm, om)
+    nearest_res = _nearest_value(tm, tr, om)
     # (1) High match fraction within 1 ppm. What does not pair is mostly what
     # peak detection sets aside: of the unpaired on the 165 demo raws and on
     # 11,116 short customer Orbitrap files, 69-74 % are weak (under S:N 3 or
@@ -852,6 +867,16 @@ def test_centroids_average_matches_thermo(monkeypatch, path):
     assert float(np.percentile(md, 90)) <= 0.4, (
         f"p90 matched-peak m/z deviation {np.percentile(md, 90):.3f} ppm (> 0.4)"
     )
+    # (4) No matched peak's resolution far above Thermo's. One label with an
+    # outlier resolution, a side lobe's, made an averaged peak's millions
+    # (GitHub #2780) and its width next to nothing. Capped at twice what the
+    # scan gives, the largest ratio on the 165 demo raws is 2.8, against
+    # 1,261 before.
+    ratio = orr[matched] / nearest_res[matched]
+    ratio = ratio[np.isfinite(ratio) & (ratio > 0)]
+    assert ratio.size == 0 or float(ratio.max()) <= 4.0, (
+        f"an averaged centroid's resolution is {ratio.max():.1f} times Thermo's"
+    )
 
     # Averaged S:N must track Thermo well enough that peak detection's weak-peak
     # filter (S:N >= 3) keeps/drops the same peaks. Thermo reads S:N off the
@@ -880,16 +905,18 @@ def test_centroid_flag_shares_match_thermo(monkeypatch, path):
     window counted in: a median of 1.2 times, 2.9 at the 99th percentile. So
     one backend's window can take in a centroid the other's leaves out, and
     where that centroid decides, a share of half meets one over it. Where
-    OpenTFRaw's averaged resolution is an outlier (GitHub #2780), its window
-    holds no centroid and the peak has no share. On the 165 demo raws and 88
-    customer Orbitrap files of three instruments, 22 of the 25,761 matched
-    peaks either backend put over half were over half under one only: 18
-    with a share of exactly half on the other, 3 with no share under
-    OpenTFRaw, one at 0.6 against 0.33. That is at most 2 a file and at most
-    2.9 % of a file's peaks over half, so the bound allows 3 a file or 2 %
-    of its peaks over half, whichever is more. It pins the verdicts, not the
-    window, which hardly moves them (a Thermo window twice as wide turns 78
-    peaks, at most 3 a file): ``test_centroid_flag_shares.py`` pins that.
+    OpenTFRaw's averaged resolution was an outlier, before its label
+    resolutions were capped (GitHub #2780), its window held no centroid and
+    the peak had no share; the counts below were taken then. On the 165 demo
+    raws and 88 customer Orbitrap files of three instruments, 22 of the
+    25,761 matched peaks either backend put over half were over half under
+    one only: 18 with a share of exactly half on the other, 3 with no share
+    under OpenTFRaw, one at 0.6 against 0.33. That is at most 2 a file and
+    at most 2.9 % of a file's peaks over half, so the bound allows 3 a file
+    or 2 % of its peaks over half, whichever is more. It pins the verdicts,
+    not the window, which hardly moves them (a Thermo window twice as wide
+    turns 78 peaks, at most 3 a file): ``test_centroid_flag_shares.py`` pins
+    that.
     """
     path = str(path)
     t_min, t_max = _bounded_window(monkeypatch, path)

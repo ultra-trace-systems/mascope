@@ -15,7 +15,7 @@ scans carry such a step or jitter.
 import numpy as np
 import pytest
 
-from mascope_thermo.backend import OpenTFRawBackend
+from mascope_thermo.backend import OpenTFRawBackend, _bound_label_resolutions
 
 
 # A real Orbitrap calibration (m/z = B/f^2 + C/f^4) and a resolution at which
@@ -235,7 +235,10 @@ def test_labels_on_one_calibration_agree_across_scans():
     scans = _stepped_scans([42.0086, 100.0])
     parts = [scans[n]["labels"]["mz"] for n in SCANS]
 
-    keys = _backend(scans)._labels_on_one_calibration(SCANS, parts)
+    backend = _backend(scans)
+    params = [backend._profile_conversion_params(n) for n in SCANS]
+
+    keys = backend._labels_on_one_calibration(params, parts)
 
     assert keys is not None and len(keys) == len(parts)
     # The same ion keys to the same value from every scan, whatever the scan's
@@ -251,7 +254,10 @@ def test_labels_on_one_calibration_needs_every_scan_to_carry_parameters():
     scans[5]["params"] = {}
     parts = [scans[n]["labels"]["mz"] for n in SCANS]
 
-    assert _backend(scans)._labels_on_one_calibration(SCANS, parts) is None
+    backend = _backend(scans)
+    params = [backend._profile_conversion_params(n) for n in SCANS]
+
+    assert backend._labels_on_one_calibration(params, parts) is None
 
 
 def test_a_peak_that_jitters_between_scans_is_one_centroid():
@@ -619,3 +625,128 @@ def test_a_side_s_n_is_weighted_by_intensity():
 
     assert masses.size == 1
     assert intensities[0] == pytest.approx(8e5)
+
+
+# An outlier label resolution (GitHub #2780): the instrument writes a side
+# lobe's label with a resolution far above what the scan gives at its m/z. A
+# scan's labels resolve as R0 * sqrt(200 / m/z), an Orbitrap's law.
+LOBE_MZ = 238.7592
+LOBE_RESOLUTION = 1.34e8
+BACKGROUND_MZ = (150.0, 200.0, 300.0, 400.0, 500.0)
+R0 = 240_000.0
+
+
+def _orbitrap_resolution(mz) -> np.ndarray:
+    return R0 * np.sqrt(200.0 / np.asarray(mz, dtype=float))
+
+
+def _lobe_scans(lobe: dict[int, list[float]], with_params: bool = True) -> dict:
+    """Four scans of five background ions, each scan also holding the lobe
+    labels ``lobe[n]`` gives it: one resolution per label, at ``LOBE_MZ`` and
+    then 1.1 ppm further up for a second label in the same scan."""
+    params = (
+        {"Conversion Parameter B:": B_REF, "Conversion Parameter C:": C_REF}
+        if with_params
+        else {}
+    )
+    scans = {}
+    for n in range(1, 5):
+        resolutions = lobe.get(n, [])
+        mz = list(BACKGROUND_MZ) + [
+            LOBE_MZ * (1 + 1.1e-6 * k) for k in range(len(resolutions))
+        ]
+        labels = _labels(mz)
+        labels["resolution"] = np.concatenate(
+            [_orbitrap_resolution(BACKGROUND_MZ), resolutions]
+        )
+        scans[n] = {"labels": labels, "params": params}
+    return scans
+
+
+def _at(masses: np.ndarray, mz: float) -> int:
+    k = int(np.argmin(np.abs(masses - mz)))
+    assert abs(masses[k] - mz) / mz * 1e6 < 1.0
+    return k
+
+
+def test_bound_label_resolutions_caps_at_twice_the_scan():
+    mz = np.array([150.0, 200.0, 300.0, 400.0, 500.0, LOBE_MZ, 250.0, 350.0, 450.0])
+    resolution = _orbitrap_resolution(mz)
+    resolution[5] = LOBE_RESOLUTION  # a lobe
+    resolution[6] *= 0.3  # a broad peak
+    resolution[7] *= 1.9  # a sharp one, under the cap
+    resolution[8] = 0.0  # no resolution written
+
+    bounded = _bound_label_resolutions(mz, resolution)
+
+    expected = _orbitrap_resolution(mz)
+    assert bounded[5] == pytest.approx(2 * expected[5])
+    np.testing.assert_array_equal(
+        bounded[[0, 1, 2, 3, 4, 6, 7, 8]], resolution[[0, 1, 2, 3, 4, 6, 7, 8]]
+    )
+
+
+def test_bound_label_resolutions_reads_the_scan_off_labels_with_a_resolution():
+    # Most labels carry no resolution: the cap comes from the three that do.
+    mz = np.array([150.0, 200.0, 300.0, 400.0, 500.0, 250.0, 350.0, LOBE_MZ])
+    resolution = np.concatenate([np.zeros(5), _orbitrap_resolution(mz[5:])])
+    resolution[-1] = LOBE_RESOLUTION
+
+    bounded = _bound_label_resolutions(mz, resolution)
+
+    np.testing.assert_array_equal(bounded[:7], resolution[:7])
+    assert bounded[-1] == pytest.approx(2 * _orbitrap_resolution(LOBE_MZ))
+    # And a scan with none at all is left as it is.
+    none = np.zeros(mz.size)
+    np.testing.assert_array_equal(_bound_label_resolutions(mz, none), none)
+
+
+def test_an_outlier_label_resolution_does_not_inflate_the_averaged_peak():
+    # The lobe's labels in four scans read 8.5e5, 5.1e5, 1.34e8 and 8.7e5,
+    # as one did on a demo raw: the weighted mean made the peak 3.4e7.
+    scans = _lobe_scans({1: [8.5e5], 2: [5.1e5], 3: [LOBE_RESOLUTION], 4: [8.7e5]})
+
+    masses, _, resolutions, _ = _backend(scans).average_centroids([1, 2, 3, 4], ppm=1)
+
+    lobe = _at(masses, LOBE_MZ)
+    # Every label is capped at twice what its scan gives there.
+    assert resolutions[lobe] == pytest.approx(2 * _orbitrap_resolution(LOBE_MZ))
+    background = [_at(masses, mz) for mz in BACKGROUND_MZ]
+    np.testing.assert_allclose(
+        resolutions[background], _orbitrap_resolution(BACKGROUND_MZ)
+    )
+
+
+def test_without_conversion_parameters_label_resolutions_are_kept():
+    # A scan without B/C may be no Orbitrap's, so the square-root law that
+    # sets the cap is not assumed.
+    scans = _lobe_scans(
+        {1: [8.5e5], 2: [5.1e5], 3: [LOBE_RESOLUTION], 4: [8.7e5]}, with_params=False
+    )
+
+    masses, _, resolutions, _ = _backend(scans).average_centroids([1, 2, 3, 4], ppm=1)
+
+    assert resolutions[_at(masses, LOBE_MZ)] == pytest.approx(
+        np.mean([8.5e5, 5.1e5, LOBE_RESOLUTION, 8.7e5])
+    )
+
+
+def test_a_split_lobe_merges_on_its_capped_width():
+    # One lobe whose labels land in two bins 1.1 ppm apart, the upper one only
+    # in scans 2 and 4. Capped at 4.4e5, the FWHM there is 2.3 ppm, so the split
+    # is under half a FWHM and merges; read at 1.34e8, the FWHM would be
+    # 0.007 ppm and the halves would stay two peaks.
+    scans = _lobe_scans(
+        {
+            1: [LOBE_RESOLUTION],
+            2: [LOBE_RESOLUTION, LOBE_RESOLUTION],
+            3: [LOBE_RESOLUTION],
+            4: [LOBE_RESOLUTION, LOBE_RESOLUTION],
+        }
+    )
+
+    masses, intensities, _, _ = _backend(scans).average_centroids([1, 2, 3, 4], ppm=1)
+
+    near = np.abs(masses - LOBE_MZ) / LOBE_MZ * 1e6 < 5
+    assert near.sum() == 1
+    assert intensities[near][0] == pytest.approx(6e5)
