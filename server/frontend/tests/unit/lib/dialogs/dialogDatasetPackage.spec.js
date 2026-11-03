@@ -47,7 +47,10 @@ const preview = (extra = {}) => ({
   target_collections: [
     { target_collection_id: 'c1', target_collection_name: 'Targets', used_as: ['matched'] }
   ],
-  ionization_modes: [{ ionization_mode_id: 'm1', ionization_mode_name: 'Bromide' }],
+  ionization_modes: [
+    { ionization_mode_id: 'm1', ionization_mode_name: 'Bromide', version: 1 },
+    { ionization_mode_id: 'm2', ionization_mode_name: 'Bromide', version: 2 }
+  ],
   gaps: [],
   ...extra
 })
@@ -159,7 +162,7 @@ describe('DialogDatasetPackage', () => {
     expect(text).toContain('2 of 3 files, 27.9 kB')
     expect(text).toContain('file-c')
     expect(text).toContain('Targets (matched)')
-    expect(text).toContain('Bromide')
+    expect(text).toContain('Bromide, Bromide (version 2)')
     expect(text).toContain('mascope-package_ds-1_Winter_run.zip, 12 files')
     // Nothing missing: said so, and nothing to edit.
     expect(wrapper.find('.message.success').exists()).toBe(true)

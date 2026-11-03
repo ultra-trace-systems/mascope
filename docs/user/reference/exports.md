@@ -202,7 +202,7 @@ is `mascope-package/1`, and its keys are a contract in the way the
 | `raw` | One entry per sample file: `name`, `sha256` and `bytes` of its raw file; its acquisition context, m/z calibration verdict and PSI-MS terms; the SHA-256 recorded when it was uploaded; and its acquisition record's identifiers |
 | `batches` | One entry per batch: its samples, with their time windows and ionization modes, its target collections and its spreadsheet |
 | `target_collections` | One entry per collection: what it was used as (`matched`, `calibration`, `diagnostic`), its counts and its file |
-| `ionization_modes` | The modes the samples were processed under, with their ionization mechanisms and collections |
+| `ionization_modes` | The modes the samples were processed under, with their ionization mechanisms and collections. Each entry is one version of a setup: its `version`, the id of the version it replaced (`supersedes_id`, `null` on a first version) and the labelled reagent's isotopic purity it ran at (`label_purity`). Samples on two versions of one mode give two entries of one name |
 
 Every record carries its id. On a deployment with an id, the dataset, its
 batches, samples and sample files, and the collections with their compounds

@@ -1044,6 +1044,9 @@ async def test_the_ionization_setup_and_instrument_functions_are_packed(
         {
             "ionization_mode_id": ids.mode,
             "ionization_mode_name": "Bromide package test",
+            "version": 1,
+            "supersedes_id": None,
+            "label_purity": 0.98,
             "ionization_mode_token": f"Br-{ids.mode}",
             "instrument": None,
             "ionization_mode_polarity": "-",
@@ -1077,6 +1080,75 @@ async def test_the_ionization_setup_and_instrument_functions_are_packed(
             }
         ]
     }
+
+
+@pytest.mark.asyncio
+async def test_two_versions_of_one_mode_are_told_apart(
+    dataset, out, async_session_factory, editor_client, members
+):
+    """An edit of the setup, then a re-process of one sample: the samples
+    sit on two versions of one mode, and the package lists both, in version
+    order, each with the version it replaced and the purity it ran at."""
+    ids = dataset.ids
+    # An id that sorts before the first version's: the entries come in
+    # version order, not by id.
+    second = "0000" + gen_id()[:12]
+    assert second < ids.mode
+    async with async_session_factory() as session:
+        first = await session.get(IonizationMode, ids.mode)
+        first.is_active = False
+        session.add(
+            IonizationMode(
+                ionization_mode_id=second,
+                ionization_mode_name=first.ionization_mode_name,
+                ionization_mode_token=first.ionization_mode_token,
+                ionization_mode_polarity="-",
+                ionization_mechanism_ids=[ids.mechanism],
+                version=2,
+                supersedes_id=ids.mode,
+                label_purity=0.95,
+            )
+        )
+        await session.flush()
+        item = await session.get(SampleItem, ids.orbi_again_item)
+        item.ionization_mode_id = second
+        await session.commit()
+    summary = await build_package(ids.dataset, str(out / "versions.zip"))
+    with zipfile.ZipFile(summary["archive"]) as archive:
+        manifest = json.loads(archive.read(f"{summary['package']}/manifest.json"))
+        readme = archive.read(f"{summary['package']}/README.md").decode()
+    assert "- Ionization mode **Bromide package test**, polarity -" in readme
+    assert (
+        "- Ionization mode **Bromide package test**, version 2, polarity -, "
+        f"ions formed as \\[M+Br\\]- {ids.mechanism}."
+    ) in readme
+    assert [
+        (
+            mode["ionization_mode_id"],
+            mode["ionization_mode_name"],
+            mode["version"],
+            mode["supersedes_id"],
+            mode["label_purity"],
+        )
+        for mode in manifest["ionization_modes"]
+    ] == [
+        (ids.mode, "Bromide package test", 1, None, 0.98),
+        (second, "Bromide package test", 2, ids.mode, 0.95),
+    ]
+    resp = await editor_client.get(_preview_path(ids.workspace, ids.dataset))
+    assert resp.status_code == 200
+    assert resp.json()["data"]["ionization_modes"] == [
+        {
+            "ionization_mode_id": ids.mode,
+            "ionization_mode_name": "Bromide package test",
+            "version": 1,
+        },
+        {
+            "ionization_mode_id": second,
+            "ionization_mode_name": "Bromide package test",
+            "version": 2,
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -1310,7 +1382,11 @@ async def test_the_preview_shows_what_the_package_will_hold(
         },
     ]
     assert preview["ionization_modes"] == [
-        {"ionization_mode_id": ids.mode, "ionization_mode_name": "Bromide package test"}
+        {
+            "ionization_mode_id": ids.mode,
+            "ionization_mode_name": "Bromide package test",
+            "version": 1,
+        }
     ]
     assert preview["gaps"] == []
     # Nothing is written to preview a package.

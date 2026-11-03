@@ -83,6 +83,7 @@ async def preview_package(dataset_id: str) -> dict:
             {
                 "ionization_mode_id": mode["ionization_mode_id"],
                 "ionization_mode_name": mode["ionization_mode_name"],
+                "version": mode["version"],
             }
             for mode in manifest["ionization_modes"]
         ],

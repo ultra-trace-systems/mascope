@@ -14,6 +14,7 @@ import {
   exportPackage,
   gapEditable,
   loadPackagePreview,
+  modeLabel,
   notKeptLabel,
   rawFilesLabel,
   samplesLabel
@@ -170,7 +171,7 @@ async function build() {
         <dd>{{ preview.target_collections.map(collectionLabel).join('; ') || 'None' }}</dd>
         <dt>Ionization modes</dt>
         <dd>
-          {{ preview.ionization_modes.map((m) => m.ionization_mode_name).join(', ') || 'None' }}
+          {{ preview.ionization_modes.map(modeLabel).join(', ') || 'None' }}
         </dd>
         <dt>Archive</dt>
         <dd class="id">{{ preview.archive }}, {{ preview.files }} files</dd>

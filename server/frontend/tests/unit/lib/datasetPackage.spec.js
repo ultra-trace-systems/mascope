@@ -12,6 +12,7 @@ import {
   exportPackage,
   gapEditable,
   loadPackagePreview,
+  modeLabel,
   notKeptLabel,
   rawFilesLabel,
   sizeLabel
@@ -85,6 +86,11 @@ describe('datasetPackage labels', () => {
     expect(
       collectionLabel({ target_collection_name: 'Targets', used_as: ['matched', 'diagnostic'] })
     ).toBe('Targets (matched, diagnostic)')
+  })
+
+  it('names an edited mode with its version, a first version by its name alone', () => {
+    expect(modeLabel({ ionization_mode_name: 'Bromide', version: 1 })).toBe('Bromide')
+    expect(modeLabel({ ionization_mode_name: 'Bromide', version: 2 })).toBe('Bromide (version 2)')
   })
 
   it('sends the metadata gaps to the dataset dialog, not a dataset of no samples', () => {

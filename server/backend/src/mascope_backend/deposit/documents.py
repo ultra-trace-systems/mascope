@@ -182,10 +182,12 @@ def _processed(manifest: dict) -> list[str]:
             mechanism["ionization_mechanism"] or mechanism["ionization_mechanism_id"]
             for mechanism in mode["ionization_mechanisms"]
         ]
-        text = (
-            f"- Ionization mode **{_inline(mode['ionization_mode_name'])}**, "
-            f"polarity {mode['ionization_mode_polarity']}"
-        )
+        text = f"- Ionization mode **{_inline(mode['ionization_mode_name'])}**"
+        # A setup edited since it was made: the version tells it apart from
+        # the earlier one another sample may still sit on.
+        if mode["version"] > 1:
+            text += f", version {mode['version']}"
+        text += f", polarity {mode['ionization_mode_polarity']}"
         if mechanisms:
             text += f", ions formed as {_list(mechanisms)}"
         calibration = collections.get(mode["calibration_collection_id"])
