@@ -1495,16 +1495,26 @@ curl -sk -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/
 Settings in the Cloudflare dashboard for the site's zone, one checkbox each. The
 application's own limits, which the edge must not undercut for one client, are
 10 sign-in attempts per 60 s per address and 15 per 300 s per account
-(`api/lib/rate_limit.py`).
+(`api/lib/rate_limit.py`). The plan the zones are on shapes two of the items:
+the WAF ships with a small managed ruleset only, and rate limiting is one rule
+with a fixed 10-second window.
 
-- [ ] **Managed rules.** The Cloudflare managed ruleset deployed on the zone,
-  with its default actions.
-- [ ] **Rate limit on sign-in and tokens.** One rule: `POST` to
+- [ ] **Managed rules.** The managed ruleset the plan provides is on by itself
+  and has no deploy step: check under WAF > Managed rules that it is still
+  enabled. It carries a few high-severity rules only; the full Cloudflare
+  Managed Ruleset and the OWASP core rules are not on this plan, so nothing
+  below relies on them.
+- [ ] **Rate limit on sign-in and tokens.** The plan's one rule: `POST` to
   `/api/auth/login` or `/api/auth/access_token/regenerate`, counted per IP,
-  **20 requests** in a period of **60 s or less**, action Block. Any threshold
-  above 10 with a period up to 60 s lets the application's own 429 answer one
-  client first. Leave `/api/auth/pairing/` and `/api/auth/mfa/` out: their own
-  limits allow more (30 polls per 60 s, 60 verifies per 300 s).
+  **15 requests per 10 s**, action Block. The window is fixed at 10 s, so the
+  threshold has to be read against the application's limit over that window:
+  a client may send all of its 10 attempts per 60 s inside one 10-second
+  window, and any threshold above 10 lets the application's own 429 answer
+  that client first. A lower one, such as 5 per 10 s, blocks at the edge
+  first, where the attempt is never logged by the application and the user
+  sees a Cloudflare block page instead of the sign-in form's message. Leave
+  `/api/auth/pairing/` and `/api/auth/mfa/` out: their own limits allow more
+  (30 polls per 60 s, 60 verifies per 300 s).
 - [ ] **Turnstile on the sign-in form**, not a challenge rule (below). Put no
   Managed Challenge on `/api/auth/login`: the web app signs in with `fetch`, and
   Cloudflare cannot show a challenge to a `fetch` request, so the sign-in gets
