@@ -50,11 +50,23 @@ class TestIsCurrent:
         assert script.is_current(_record(script.CHANGED), retry=True)
 
 
-def _survey(props_of, raw=lambda name: True, limit=None, retry=False, n=5):
+def _survey(
+    props_of,
+    raw=lambda name: True,
+    store=lambda name: True,
+    limit=None,
+    retry=False,
+    n=5,
+):
     candidates = [_candidate(i) for i in range(n)]
     return asyncio.run(
         script.survey(
-            candidates, lambda name: props_of(name), raw, limit=limit, retry=retry
+            candidates,
+            lambda name: props_of(name),
+            raw,
+            store,
+            limit=limit,
+            retry=retry,
         )
     )
 
@@ -70,6 +82,25 @@ class TestSurvey:
         assert counts["no_props"] == 1
         assert counts["not_raw"] == 1
         assert counts["surveyed"] == 5
+
+    def test_a_raw_file_with_no_store_is_counted_apart_and_not_offered(self):
+        """It gets the rule when its peaks are detected; offered, it would
+        be offered on every run, and none would say nothing is left."""
+        pending, counts = _survey(lambda name: {}, store=lambda name: name != "f2")
+
+        assert [c["filename"] for c in pending] == ["f0", "f1", "f3", "f4"]
+        assert counts["no_store"] == 1
+        assert counts["pending"] == 4
+
+    def test_a_survey_with_nothing_to_read_offers_nothing(self):
+        pending, counts = _survey(
+            lambda name: _record() if name != "f0" else {},
+            store=lambda name: name != "f0",
+        )
+
+        assert pending == []
+        assert counts["no_store"] == 1
+        assert counts["current"] == 4
 
     def test_the_cap_leaves_the_rest_for_a_later_run(self):
         pending, counts = _survey(lambda name: {}, limit=2)
@@ -113,16 +144,17 @@ def _reflag(turned_weak=3, turned_kept=0, overlaps=None):
         turned_weak=turned_weak,
         turned_kept=turned_kept,
         overlaps=overlaps,
-        inputs=(),
+        inputs={},
     )
 
 
 class Recorder:
     """Stand-ins for every writer, in one log of what was done in order."""
 
-    def __init__(self, stores, batches=None, write_raises=None):
+    def __init__(self, stores, batches=None, samples=None, write_raises=None):
         self.stores = stores
         self.batches = batches or {}
+        self.samples = samples or {}
         self.write_raises = write_raises or {}
         self.log = []
 
@@ -137,19 +169,27 @@ class Recorder:
             raise self.write_raises[filename]
         self.log.append(("write", filename))
 
-    def record(self, filename, result, reflag=None):
+    def record(self, filename, result):
         self.log.append(("record", filename, result))
 
-    async def batches_of(self, sample_file_id):
-        return self.batches.get(sample_file_id, [])
+    async def samples_of(self, sample_file_id):
+        return (
+            self.samples.get(sample_file_id, []),
+            self.batches.get(sample_file_id, []),
+        )
 
     async def queue(self, batch_ids):
         self.log.append(("rematch", tuple(batch_ids)))
 
+    async def remove(self, sample_item_ids):
+        self.log.append(("remove", tuple(sample_item_ids)))
+
     def run(self, pending, dry_run=False):
         if dry_run:
             return asyncio.run(
-                script.reflag(pending, self.read, None, None, self.batches_of, None)
+                script.reflag(
+                    pending, self.read, None, None, self.samples_of, None, None
+                )
             )
         return asyncio.run(
             script.reflag(
@@ -157,39 +197,49 @@ class Recorder:
                 self.read,
                 self.write,
                 self.record,
-                self.batches_of,
+                self.samples_of,
                 self.queue,
+                self.remove,
             )
         )
 
 
-def test_a_changed_file_has_its_batches_queued_then_its_store_then_its_record():
-    """In that order: a run that stops after the queue leaves a batch marked
-    for a rematch on the same peaks, and the file is read again; one that
-    stopped after the write and before the queue would leave the batch
-    matched on the old list with nothing to show for it."""
-    recorder = Recorder({"f0": _reflag()}, batches={"sf-0": ["b1", "b2"]})
+def test_a_changed_file_has_its_batches_queued_its_matches_removed_then_its_store():
+    """In that order: a run that stops before the write leaves a batch
+    marked for a rematch on the same peaks, and the file is read again; one
+    that stopped after the write and before the removal would leave the
+    matches on the old list, with the file recorded as done. The write
+    records the file itself (``write``)."""
+    recorder = Recorder(
+        {"f0": _reflag()},
+        batches={"sf-0": ["b1", "b2"]},
+        samples={"sf-0": ["s1", "s2", "s3"]},
+    )
 
     outcome = recorder.run([_candidate(0)])
 
     assert recorder.log == [
         ("rematch", ("b1", "b2")),
+        ("remove", ("s1", "s2", "s3")),
         ("write", "f0"),
-        ("record", "f0", script.CHANGED),
     ]
     assert outcome.batches == {"b1", "b2"}
+    assert outcome.samples == {"s1", "s2", "s3"}
     assert outcome.counts["changed"] == 1
     assert outcome.counts["turned_weak"] == 3
     assert outcome.instruments["Orbi A"] == [1, 3, 0]
 
 
 def test_a_file_already_flagged_by_the_rule_is_recorded_and_not_written():
-    recorder = Recorder({"f0": _reflag(0, 0)}, batches={"sf-0": ["b1"]})
+    recorder = Recorder(
+        {"f0": _reflag(0, 0)}, batches={"sf-0": ["b1"]}, samples={"sf-0": ["s1"]}
+    )
 
     outcome = recorder.run([_candidate(0)])
 
     assert recorder.log == [("record", "f0", script.CURRENT)]
     assert outcome.batches == set()
+    assert outcome.samples == set()
     assert outcome.counts["current"] == 1
 
 
@@ -210,6 +260,7 @@ def test_an_unreadable_store_is_recorded_so_the_next_run_moves_past_it():
 
     assert ("record", "f0", script.UNREADABLE) in recorder.log
     assert ("write", "f1") in recorder.log
+    assert ("record", "f1", script.CHANGED) not in recorder.log
     assert outcome.counts["unreadable"] == 1
 
 
@@ -222,7 +273,7 @@ def test_a_store_not_written_is_not_recorded_and_is_read_again(error, count):
 
     outcome = recorder.run([_candidate(0)])
 
-    assert not [entry for entry in recorder.log if entry[0] == "record"]
+    assert not [entry for entry in recorder.log if entry[0] in ("record", "write")]
     assert outcome.counts[count] == 1
     assert outcome.counts["changed"] == 0
 
@@ -231,6 +282,7 @@ def test_a_dry_run_writes_nothing_and_counts_what_it_would_do():
     recorder = Recorder(
         {"f0": _reflag(5, 1, overlaps=[]), "f1": _reflag(0, 0)},
         batches={"sf-0": ["b1"]},
+        samples={"sf-0": ["s1", "s2"]},
     )
 
     outcome = recorder.run([_candidate(0), _candidate(1, "Orbi B")], dry_run=True)
@@ -241,4 +293,5 @@ def test_a_dry_run_writes_nothing_and_counts_what_it_would_do():
     assert outcome.counts["turned_kept"] == 1
     assert outcome.counts["overlaps"] == 1
     assert outcome.batches == {"b1"}
+    assert outcome.samples == {"s1", "s2"}
     assert dict(outcome.instruments) == {"Orbi A": [1, 5, 1]}

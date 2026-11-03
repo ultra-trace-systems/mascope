@@ -2251,7 +2251,8 @@ when a file's peaks are detected, so a store written before the floor keeps
 the signal-to-noise flag alone. Around the reagent ions of a file averaged
 over many microscans, that leaves tens of thousands of noise peaks in the
 peak list, the calibration and the matches. Flag them in place after
-updating:
+updating; this clears the matches made on them, but leaves each file's
+calibration as it was fit:
 
 ```sh
 DRY_RUN=1 mascope prod db script run reflag_orbitrap_weak_peaks
@@ -2263,21 +2264,28 @@ mascope prod db script run reflag_orbitrap_weak_peaks
   writes it only where it differs. A stitched store's `stitch_overlaps` are
   read again among the peaks the new flag keeps.
 - **The dry run writes nothing.** It lists each file whose flag would
-  change, with how many peaks would turn weak and how many batches would be
-  set to rematch, and totals per instrument. Most files change nothing: the
-  floor is reached at reagent clusters and in long files with a dense comb.
-- Every batch holding a sample of a changed file is set to **rematch**
-  before the store is written. Its matches were made on the old peak list;
-  rematch the batches once the run is done.
+  change, with how many peaks would turn weak, how many samples would lose
+  their matches and how many batches would be set to rematch, and totals
+  per instrument. Most files change nothing: the floor is reached at
+  reagent clusters and in long files with a dense comb.
+- Before a changed file's store is written, every batch holding one of its
+  samples is set to **rematch**, and every match of those samples is
+  removed, as applying a calibration does. Once the run is done, rematch
+  those batches: their status icon or **Refresh matches** matches the
+  samples again on the new peak list.
+- **The calibration is not refit.** Each file keeps the fit it had, made
+  on the peaks it had then. To fit a batch's files again on the new peak
+  list, use **Recalibrate** in the batch's context menu.
 - Each file read is recorded in its `.props`, so a later run moves past it.
   `REFLAG_LIMIT=<n>` caps the files one run reads: run it again until it
   reports nothing left to do. A file it could not read is recorded too, and
-  `REFLAG_RETRY=1` reads those again.
+  `REFLAG_RETRY=1` reads those again. A raw file with no peak store yet is
+  counted apart and not read: it gets the rule when its peaks are detected.
 - A file a detection or a calibration was writing at the same time is
   counted as changed while read and left for the next run.
-- The `pg_dump` taken before it covers the batch statuses only; the flags
-  are in the filestore. The flag before the floor was the signal-to-noise
-  cutoff alone, which the store still holds.
+- The `pg_dump` taken before it covers the batch statuses and the matches;
+  the flags are in the filestore. The flag before the floor was the
+  signal-to-noise cutoff alone, which the store still holds.
 
 ### Auditing a TOF instrument's mass calibration
 
