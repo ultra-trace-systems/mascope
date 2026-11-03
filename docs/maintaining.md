@@ -34,6 +34,7 @@ Everything below assumes an Ubuntu host provisioned with
 | List the files whose peak store lacks a scan they read, to re-process them | `mascope prod db script run report_stale_peak_stores` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | Fill the model of instruments registered before it was read (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run backfill_instrument_model`, then without `DRY_RUN` |
+| Recompute every sample's TIC as the mean per scan (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run fix_sample_item_tic`, then without `DRY_RUN` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` (fill rate and projection on each line) |
 | Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
@@ -2329,6 +2330,32 @@ term for. A row that already has a model is never touched, so a file
 registered during the run wins and running it again changes nothing. A TOF
 instrument has no model to find, since a TofDaq file names its digitizer and
 not the instrument, and is only counted.
+
+### Sample TIC as the mean per scan
+
+A sample's TIC is the mean TIC per scan of its MS1 scans, in the unit of
+its averaged spectrum: counts for an Orbitrap, ions/s for a TOF. Before
+this, it was the sum over the scans, so it grew with the sample's length.
+A new sample gets the mean, but a stored TIC is never computed again, and a
+copied sample carries the stored value. Once, after the upgrade, rewrite
+them all:
+
+```sh
+DRY_RUN=1 mascope prod db script run fix_sample_item_tic   # what it would write
+mascope prod db script run fix_sample_item_tic
+```
+
+It reads each file once per polarity, with the rule a new sample gets, and
+writes the result to every sample of that file and polarity, copies in other
+workspaces included. A sample with no TIC is left for ingestion to fill. A
+file it cannot read is skipped and counted in a warning at the end; its
+samples keep the old sum. Each file is written as it is read, so a run that
+stops keeps what it wrote, and running it again writes the same values.
+
+Every TIC changes by this: the TIC trace of the batch charts, the batch
+export's TIC column and `samples.list()` in the SDK. A notebook that divides
+a peak by the TIC gets a different number afterwards, now on the spectrum's
+own scale.
 
 ### Loading reference chemistry data
 

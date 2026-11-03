@@ -47,7 +47,7 @@ One row per sample.
 
 | Column | Content |
 |---|---|
-| Sample name, Filename, Datetime, Sample type, TIC, Filter ID | The sample as the sample browser shows it. *Datetime* is the acquisition's start in the instrument's local time |
+| Sample name, Filename, Datetime, Sample type, TIC, Filter ID | The sample as the sample browser shows it. *Datetime* is the acquisition's start in the instrument's local time. *TIC* is the mean total ion current per MS1 scan, in the unit of the sample's averaged spectrum: counts for an Orbitrap, ions/s for a TOF |
 | Total peak intensity (cps), Match score | The sample's match summary, empty for a sample with no match |
 | Sample item ID, Sample file ID | The sample's id, and the id of the raw file it was cut from |
 | Datetime UTC | The acquisition's start in UTC, written without a zone (Excel stores none) |
@@ -134,7 +134,7 @@ window, so a sample file of many scans gives many rows per peak.
 | Column | Content |
 |---|---|
 | `mz`, `intensity`, `unit` | The peak. The unit is `counts` for an Orbitrap and `ions` for a TOF; the batch export sums an Orbitrap peak's height and a TOF peak's area |
-| `datetime`, `datetime_utc`, `tic` | In the sample export, the scan's time in the instrument's local zone and in UTC, and the scan's total ion current; in the batch export, the sample's acquisition start and its TIC |
+| `datetime`, `datetime_utc`, `tic` | In the sample export, the scan's time in the instrument's local zone and in UTC, and the scan's total ion current; in the batch export, the sample's acquisition start and its TIC, the mean per MS1 scan as on the *Samples* sheet |
 | `sample_batch_name`, `sample_item_name`, `filename`, `filter_id`, `sample_item_type`, `instrument` | The sample |
 | `sample_file_id`, `sample_item_id`, `sample_batch_id`, `dataset_id` | The records behind the row |
 

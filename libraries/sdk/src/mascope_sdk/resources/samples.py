@@ -268,6 +268,9 @@ class SamplesResource(BaseResource):
                  when the listing of some batch failed, and
                  ``attrs["failures"]`` names each such batch and its error
                  (an empty frame carries them when every listing failed).
+                 Its ``tic`` column is each sample's mean total ion current
+                 per MS1 scan, in the unit of its averaged spectrum: counts
+                 for an Orbitrap, ions/s for a TOF.
         :param drop_columns: Optional list of columns to drop from the final DataFrame.
             If None, a default set of less relevant columns will be dropped.
         :type drop_columns: list[str], optional
