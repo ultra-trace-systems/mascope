@@ -28,6 +28,7 @@ from fastapi_users.authentication import Strategy
 from fastapi_users.router.common import ErrorCode
 
 from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
+from mascope_backend.api.lib.rate_limit import enforce_login_rate_limit
 from mascope_backend.api.new.auth import (
     auth_backend_jwt,
     fastapi_users,
@@ -44,6 +45,11 @@ from mascope_backend.socket.eviction import sign_out_session
 
 
 login_router = APIRouter()
+
+# Sign-in attempts one account may spend in a window, from any number of
+# addresses (the per-address limit is the router's, api/new/auth/routes.py).
+LOGIN_ACCOUNT_TIMES = 15
+LOGIN_ACCOUNT_SECONDS = 300
 
 # Credentials are chosen by get_enabled_backends, as on every other
 # authenticated route. Without it fastapi-users tries each backend in turn, so a
@@ -74,13 +80,22 @@ async def login_route(
     :raises HTTPException: 400 when the credentials are wrong or the account is
         inactive - the same response the library gives, so a caller cannot tell
         the two apart. 400 or 503 when the site's Turnstile check stops the
-        sign-in, which it does before the password is looked at.
+        sign-in, which it does before the password is looked at. 429 when
+        the account has spent its sign-in attempts.
     :return: The transport's session response, or a 200 marking that a code is
         still owed.
     """
     # Before authenticate(): a sign-in without a solved challenge must not get
     # as far as a password guess.
     await verify_turnstile(request, turnstile_token)
+
+    # After the check: a request it refused must not spend the account's
+    # attempts, or a client solving no challenge could lock the account out.
+    await enforce_login_rate_limit(
+        credentials.username,
+        times=LOGIN_ACCOUNT_TIMES,
+        seconds=LOGIN_ACCOUNT_SECONDS,
+    )
 
     user = await user_manager.authenticate(credentials)
 

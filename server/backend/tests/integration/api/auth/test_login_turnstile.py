@@ -15,10 +15,11 @@ from fastapi_users.password import PasswordHelper
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
 
-from mascope_backend.api.new.auth import turnstile
+from mascope_backend.api.new.auth import login, turnstile
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken, User
+from mascope_backend.socket.storage import redis_storage_client
 
 
 EMAIL = "login-turnstile@test.com"
@@ -105,6 +106,54 @@ def turnstile_on(monkeypatch, tmp_path):
 @pytest.fixture
 def turnstile_off(monkeypatch):
     monkeypatch.delenv("MASCOPE_TURNSTILE_SITE_KEY", raising=False)
+
+
+class _CountingRedis:
+    """The rate limiter's Redis commands over a dict, so its budgets count.
+
+    Elsewhere in the ASGI tests Redis is never connected and every limiter
+    fails open. ``expiries`` holds the window each counter was started with.
+    """
+
+    def __init__(self):
+        self.counts: dict[str, int] = {}
+        self.expiries: dict[str, int] = {}
+
+    async def incr(self, key: str) -> int:
+        self.counts[key] = self.counts.get(key, 0) + 1
+        return self.counts[key]
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        self.expiries[key] = seconds
+        return True
+
+    async def ttl(self, key: str) -> int:
+        return 60
+
+    async def delete(self, *keys: str) -> int:
+        for key in keys:
+            self.counts.pop(key, None)
+        return len(keys)
+
+
+@pytest.fixture
+def counting_limiter(monkeypatch):
+    stub = _CountingRedis()
+    monkeypatch.setattr(redis_storage_client, "_client", stub)
+    return stub
+
+
+def _account_keys(limiter: _CountingRedis) -> dict[str, int]:
+    return {
+        key: count
+        for key, count in limiter.counts.items()
+        if key.startswith("mascope:ratelimit:auth-login-account:")
+    }
+
+
+def _from(n: int) -> dict:
+    """A request from its own address, so the per-address limit stays out."""
+    return {"X-Real-IP": f"198.51.100.{n + 1}"}
 
 
 async def _login(form: dict, headers: dict | None = None) -> httpx.Response:
@@ -318,3 +367,71 @@ async def test_on_refuses_when_siteverify_answers_an_error(
     resp = await _login(_form())
     assert resp.status_code == 503
     assert SESSION_COOKIE not in resp.cookies
+
+
+# --- The account's sign-in attempts ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_refused_tokens_do_not_spend_the_account_budget(
+    turnstile_on, login_user, siteverify, counting_limiter
+):
+    """A client that solves no challenge cannot lock the account out.
+
+    More refused sign-ins than the account's budget, from rotating addresses,
+    with no token and with tokens Cloudflare rejects; then the real user, with
+    a solved check, still signs in.
+    """
+    for n in range(login.LOGIN_ACCOUNT_TIMES):
+        resp = await _login(_form(token=None), headers=_from(n))
+        assert _code(resp) == turnstile.LOGIN_CHALLENGE_FAILED
+    siteverify.outcome = {"success": False}
+    for n in range(login.LOGIN_ACCOUNT_TIMES):
+        resp = await _login(_form(), headers=_from(n))
+        assert _code(resp) == turnstile.LOGIN_CHALLENGE_FAILED
+    assert _account_keys(counting_limiter) == {}
+
+    siteverify.outcome = {"success": True, "action": turnstile.TURNSTILE_ACTION}
+    assert _signed_in(await _login(_form(), headers=_from(99)))
+
+
+@pytest.mark.asyncio
+async def test_on_wrong_passwords_with_good_tokens_spend_the_account_budget(
+    turnstile_on, login_user, siteverify, counting_limiter
+):
+    for n in range(login.LOGIN_ACCOUNT_TIMES):
+        resp = await _login(_form(password="wrong-password"), headers=_from(n))
+        assert resp.status_code == 400
+    (key,) = _account_keys(counting_limiter)
+    assert counting_limiter.expiries[key] == login.LOGIN_ACCOUNT_SECONDS == 300
+
+    resp = await _login(_form(), headers=_from(99))
+    assert resp.status_code == 429
+    assert SESSION_COOKIE not in resp.cookies
+
+
+@pytest.mark.asyncio
+async def test_off_wrong_passwords_spend_the_account_budget(
+    turnstile_off, login_user, siteverify, counting_limiter
+):
+    """Without Turnstile the account's budget is spent as it always was."""
+    assert login.LOGIN_ACCOUNT_TIMES == 15
+    for n in range(login.LOGIN_ACCOUNT_TIMES):
+        resp = await _login(_form(token=None, password="x"), headers=_from(n))
+        assert resp.status_code == 400
+    resp = await _login(_form(token=None), headers=_from(99))
+    assert resp.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_on_a_refused_token_still_spends_the_address_budget(
+    turnstile_on, login_user, siteverify, counting_limiter
+):
+    """The per-address limit stays ahead of the check, so siteverify is not
+    asked more often than it allows."""
+    siteverify.outcome = {"success": False}
+    for _ in range(10):
+        assert (await _login(_form())).status_code == 400
+    resp = await _login(_form())
+    assert resp.status_code == 429
+    assert len(siteverify.calls) == 10
