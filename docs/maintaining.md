@@ -2365,8 +2365,10 @@ Each instrument is a row of its own, with its class, vendor, model and the
 model's PSI-MS term. Registering a file fills the model from what the file
 names. The upgrade that made the table knew no model, so an instrument whose
 files were all registered before it has none until a new file arrives, and
-the instrument list, the batch export and a deposit package show none for
-it. Once, after that upgrade, fill them from the files already there:
+the instrument list shows none for it. The batch export and a deposit package
+take each file's own model first (its props, then its kept raw file) and the
+row's only for a file that names none, so there the gap shows only for files
+whose props and raw file are both gone. Once, after that upgrade, fill them from the files already there:
 
 ```sh
 DRY_RUN=1 mascope prod db script run backfill_instrument_model   # what it would fill

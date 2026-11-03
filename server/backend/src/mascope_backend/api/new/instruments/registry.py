@@ -40,6 +40,27 @@ def _named(name: str | None) -> bool:
     return bool(name and name.strip())
 
 
+def model_in_props(props: dict | None) -> str | None:
+    """The instrument model a file's props name, or None.
+
+    :param props: A sample file's ``.props``, None when there are none.
+    :return: ``instrument_model``, else the axis fingerprint's
+        ``source.instrument_model``; None when neither names one.
+    :rtype: str | None
+    """
+    if not isinstance(props, dict):
+        return None
+    model = props.get("instrument_model")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    document = props.get("axis_fingerprint")
+    source = document.get("source") if isinstance(document, dict) else None
+    model = source.get("instrument_model") if isinstance(source, dict) else None
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return None
+
+
 async def instrument_id_for(session: AsyncSession, name: str | None) -> str | None:
     """The id of the instrument row named ``name``, made if there is none.
 

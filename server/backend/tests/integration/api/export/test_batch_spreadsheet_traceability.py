@@ -370,10 +370,10 @@ async def batch(async_session_factory):
 async def workbook(batch, tmp_path, monkeypatch, test_users):
     """Export the batch and read every sheet back.
 
-    The test filestore holds no raw files, so the reader the export would
-    fall back to for an Orbitrap file's model is stood in for, and records
-    what it opened. It names another model than the instrument's row, so a
-    cell shows which of the two it came from.
+    The test filestore holds no raw files, so the reader the export takes an
+    Orbitrap file's model from, when its props name none, is stood in for,
+    and records what it opened. It names another model than the instrument's
+    row, so a cell shows which of the two it came from.
     """
     # The directory, not user_temp_path: that helper is what keeps a file
     # name inside the user's directory, and the export's naming goes with it.
@@ -523,8 +523,9 @@ async def test_a_sample_row_names_its_acquisition_and_its_files_hash(workbook, b
 @pytest.mark.asyncio
 async def test_a_sample_row_names_its_acquisition_in_psi_ms_terms(workbook, batch):
     """The instrument and polarity as PSI-MS terms, appended after every
-    column an earlier export had: the model the instrument's row records,
-    the rest from the instrument class and the sample's polarity."""
+    column an earlier export had: the model the file's own raw file names,
+    not the instrument row's, the rest from the instrument class and the
+    sample's polarity."""
     samples = workbook.samples
     assert list(samples.columns[-len(PSI_MS_SAMPLE_COLUMNS) :]) == (
         PSI_MS_SAMPLE_COLUMNS
@@ -535,8 +536,8 @@ async def test_a_sample_row_names_its_acquisition_in_psi_ms_terms(workbook, batc
 
     rows = samples.set_index("Sample item ID")
     orbitrap = rows.loc[batch.matched_item]
-    assert orbitrap["Instrument model"] == "Orbitrap Exploris 240"
-    assert orbitrap["Instrument model accession"] == "MS:1003094"
+    assert orbitrap["Instrument model"] == "Orbitrap Exploris 120"
+    assert orbitrap["Instrument model accession"] == "MS:1003095"
     assert orbitrap["Ion source accession"] == "MS:1000071"
     assert orbitrap["Mass analyser"] == "orbitrap"
     assert orbitrap["Mass analyser accession"] == "MS:1000484"
@@ -544,8 +545,8 @@ async def test_a_sample_row_names_its_acquisition_in_psi_ms_terms(workbook, batc
     assert orbitrap["Scan polarity"] == "negative scan"
     assert orbitrap["Scan polarity accession"] == "MS:1000129"
 
-    # Neither file is opened: the Orbitrap's row has its model, and the
-    # ontology has no Tofwerk model to name
+    # Only the Orbitrap's raw file is opened: the ontology has no Tofwerk
+    # model to name
     tof = rows.loc[batch.bare_item]
     assert pd.isna(tof["Instrument model"])
     assert pd.isna(tof["Instrument model accession"])
@@ -553,35 +554,31 @@ async def test_a_sample_row_names_its_acquisition_in_psi_ms_terms(workbook, batc
     assert tof["Mass analyser accession"] == "MS:1000084"
     assert tof["Detector accession"] == "MS:1000114"
     assert tof["Scan polarity accession"] == "MS:1000129"
-    assert workbook.raw_files_opened == []
+    assert workbook.raw_files_opened == [f"instrument-x_{batch.calibrated_file}.raw"]
 
 
 @pytest.mark.asyncio
-async def test_an_instrument_without_a_model_leaves_it_to_the_raw_file(
-    batch, async_session_factory, monkeypatch
+async def test_a_file_whose_raw_file_is_gone_states_its_instruments_model(
+    batch, monkeypatch
 ):
-    """An instrument no file has registered since its row was made has no
-    model yet: the Orbitrap sample's raw file names it, as before the row."""
-    async with async_session_factory() as session:
-        row = await session.get(Instrument, batch.instrument)
-        row.model = None
-        await session.commit()
+    """A file whose props and raw file name no model falls back to the model
+    its instrument's row records, which the last registered file reported."""
     opened = []
 
     def metadata_factory(filename):
         opened.append(filename)
         return SimpleNamespace(instrument_details={"Model": "Orbitrap Exploris 120"})
 
-    monkeypatch.setattr(service, "get_sample_file_type", lambda filename: "orbi_raw")
+    monkeypatch.setattr(service, "get_sample_file_type", lambda filename: None)
     monkeypatch.setattr(service.m_metadata, "metadata_factory", metadata_factory)
 
     sheets = await service.build_batch_sheets(batch.batch)
 
     rows = sheets.samples.set_index("Sample item ID")
-    assert rows.loc[batch.matched_item, "Instrument model"] == "Orbitrap Exploris 120"
-    assert rows.loc[batch.matched_item, "Instrument model accession"] == "MS:1003095"
+    assert rows.loc[batch.matched_item, "Instrument model"] == "Orbitrap Exploris 240"
+    assert rows.loc[batch.matched_item, "Instrument model accession"] == "MS:1003094"
     assert pd.isna(rows.loc[batch.bare_item, "Instrument model"])
-    assert opened == [f"instrument-x_{batch.calibrated_file}.raw"]
+    assert opened == []
 
 
 @pytest.mark.asyncio

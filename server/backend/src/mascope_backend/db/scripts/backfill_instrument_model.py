@@ -51,6 +51,7 @@ from sqlalchemy import text
 import mascope_file.io as m_io
 import mascope_signal.metadata as m_metadata
 from mascope_backend import vocabulary
+from mascope_backend.api.new.instruments.registry import model_in_props
 from mascope_backend.db import async_session, configure_database_engine
 from mascope_backend.runtime import runtime
 from mascope_file.name import get_sample_file_type
@@ -95,27 +96,6 @@ _UPDATE_SQL = """
     SET model = :model, cv_term = :cv_term
     WHERE instrument_id = :instrument_id AND model IS NULL
 """
-
-
-def model_in_props(props: dict | None) -> str | None:
-    """The instrument model a file's props name, or None.
-
-    :param props: A sample file's ``.props``, None when there are none.
-    :return: ``instrument_model``, else the axis fingerprint's
-        ``source.instrument_model``; None when neither names one.
-    :rtype: str | None
-    """
-    if not isinstance(props, dict):
-        return None
-    model = props.get("instrument_model")
-    if isinstance(model, str) and model.strip():
-        return model.strip()
-    document = props.get("axis_fingerprint")
-    source = document.get("source") if isinstance(document, dict) else None
-    model = source.get("instrument_model") if isinstance(source, dict) else None
-    if isinstance(model, str) and model.strip():
-        return model.strip()
-    return None
 
 
 def _read_props(filename: str) -> dict | None:
