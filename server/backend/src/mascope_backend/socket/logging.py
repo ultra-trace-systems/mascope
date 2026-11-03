@@ -35,7 +35,34 @@ class SocketLoggingHandler(logging.Handler):
         )
 
 
+#: The stdlib logger python-socketio writes to, its Redis manager included.
+SOCKET_LOGGER_NAME = "sio_logger"
+
+
+def _keep_out_of_sentry_logging(name: str) -> None:
+    """
+    Stop Sentry's stdlib logging integration from reporting a logger itself.
+
+    ``sentry_sdk.init`` turns that integration on by default, and it reports
+    every stdlib ERROR record as an event before any handler sees it - so the
+    clamp in :class:`SocketLoggingHandler` never applied to it. python-socketio's
+    Redis manager logs "Cannot receive from redis... retrying in N secs" at
+    ERROR on every reconnect attempt, one monitoring issue per delay. Ignored
+    there, the logger's records reach monitoring only through the handler and
+    loguru, at the level the handler gives them: an exception keeps its level
+    and stack, a plain line is INFO. A no-op without the optional sentry-sdk.
+
+    :param name: The stdlib logger's name.
+    """
+    try:
+        from sentry_sdk.integrations.logging import ignore_logger
+    except ImportError:
+        return
+    ignore_logger(name)
+
+
 def get_socket_logger():
-    wrapped_logger = logging.Logger("sio_logger", level=0)
+    wrapped_logger = logging.Logger(SOCKET_LOGGER_NAME, level=0)
     wrapped_logger.addHandler(SocketLoggingHandler())
+    _keep_out_of_sentry_logging(SOCKET_LOGGER_NAME)
     return wrapped_logger

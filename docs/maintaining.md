@@ -1700,7 +1700,8 @@ or a Redis host name that does not resolve yet while the stack comes up is
 logged in the backend's log files as a warning ending in
 `(Redis out of reach)`, with no stack, and kept out of GlitchTip: the socket
 storage rides it out by retrying, refusing the call, or letting a key lapse.
-The same holds for a Redis that stays down: these paths report it to
+python-socketio's own "Cannot receive from redis... retrying" line is logged at
+`INFO`. The same holds for a Redis that stays down: these paths report it to
 GlitchTip no more than a blip, so read it in the log files, as a run of those
 warnings. Any other failure of the socket storage is still an `ERROR` with
 its stack.
