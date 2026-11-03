@@ -45,6 +45,8 @@ async def _centroids(groups: dict, **query) -> tuple[dict, AsyncMock]:
     compute = AsyncMock(return_value=groups)
     with (
         patch(f"{_SERVICE}.fetch_sample", AsyncMock(return_value=SAMPLE)),
+        # A raw Orbitrap file, as far as the route asks
+        patch(f"{_SERVICE}._reads_raw_ms2", lambda filename: True),
         patch(f"{_SERVICE}.m_compute.get_orbi_ms2_centroids_by_parent", compute),
     ):
         result = await ms2_service.get_ms2_averaged_centroids("si-1", **query)
