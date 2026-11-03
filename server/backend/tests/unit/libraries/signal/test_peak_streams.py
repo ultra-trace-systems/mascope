@@ -530,6 +530,52 @@ def test_satellites_are_judged_within_a_stream(
     assert judged == [[62.0, 125.0, 188.0]]
 
 
+# A reagent ion, and two weak peaks 33 ppm either side of where it lies, a
+# thousandth of it: what the ratio test reads as a mirror pair of its lobes
+REAGENT = 158.153
+MIRROR_PAIR = {REAGENT * (1 - 33e-6): 1e3, REAGENT * (1 + 33e-6): 1e3}
+
+
+def _satellites_by_polarity(store):
+    """``{(polarity, m/z rounded): is_satellite}`` of every peak of the store."""
+    return {
+        (polarity, round(float(mz), 4)): bool(flag)
+        for polarity, mz, flag in zip(
+            store.polarity.values, store.mz.values, store.is_satellite.values
+        )
+    }
+
+
+def test_satellites_are_judged_within_a_polarity(acquire, instrument_functions):
+    """A file detected whole holds one spectrum per polarity. Judged over the
+    whole axis, the positive pair would be read as lobes of the negative
+    reagent ion, which no positive scan saw."""
+    acquire([(NEG, 1, {REAGENT: 1e6}), (POS, 2, MIRROR_PAIR)] * 2)
+
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+
+    store = _store()
+    assert store.polarity.values.tolist() == ["+", "-", "+"]
+    assert not store.is_satellite.values.any()
+
+
+def test_one_polaritys_strong_peaks_leave_the_others_their_bases(
+    acquire, instrument_functions
+):
+    """The ratio test takes the strongest peaks of a spectrum as its bases.
+    Judged over the whole axis, twenty negative ions stronger than the
+    positive reagent ion would leave it none, and its lobes would be kept."""
+    negative = {300.0 + 10.0 * index: 1e7 for index in range(20)}
+    acquire([(NEG, 1, negative), (POS, 2, {REAGENT: 1e6, **MIRROR_PAIR})] * 2)
+
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+
+    flagged = _satellites_by_polarity(_store())
+    assert {key for key, satellite in flagged.items() if satellite} == {
+        ("+", round(mz, 4)) for mz in MIRROR_PAIR
+    }
+
+
 # -- what a rebuild of the store goes by -------------------------------------------
 
 DECIDED_PER_STREAM = {"mz_calibration": None, "peaks_per_stream": True}
