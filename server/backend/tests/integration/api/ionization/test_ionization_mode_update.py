@@ -9,7 +9,9 @@ Covers the editable-ionization-mode changes:
   cleared back to null.
 - Affected batches (those containing samples using the mode) are flagged:
   ``recalibrate`` when the calibration collection changes, otherwise
-  ``rematch`` when mechanisms or the diagnostic collection change.
+  ``rematch`` when mechanisms or the diagnostic collection change. A
+  ``rematch`` edit leaves a batch an earlier edit flagged ``recalibrate`` as
+  it is.
 - A named collection must be readable by the caller, but only when the request
   *changes* it: the client echoes the mode's current bindings on every save,
   so checking those by value would make a mode bound to a workspace-scoped
@@ -414,6 +416,46 @@ async def test_admin_change_mechanisms_flags_rematch(
     )
     assert resp.status_code == 200
     assert await _batch_status(async_session_factory, mode_ctx["batch_id"]) == "rematch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "second_edit",
+    ["mechanisms", "diagnostic"],
+)
+async def test_rematch_edit_keeps_a_pending_recalibrate(
+    admin_client, async_session_factory, mode_ctx, second_edit
+):
+    """A rematch edit after a calibration edit leaves the batch at 'recalibrate'.
+
+    The recalibration the first edit asked for ends in a rematch, so it covers
+    the second edit; lowering the flag would drop the m/z re-fit.
+    """
+    resp = await admin_client.patch(
+        f"/api/ionization/modes/{mode_ctx['mode_id']}",
+        json=_body(mode_ctx, calibration_collection_id=mode_ctx["cal_b"]),
+    )
+    assert resp.status_code == 200
+    assert await _batch_status(async_session_factory, mode_ctx["batch_id"]) == (
+        "recalibrate"
+    )
+
+    # The calibration change minted a new version: edit that one.
+    current = resp.json()["data"]
+    ctx = {**mode_ctx, "cal_a": mode_ctx["cal_b"]}
+    overrides = (
+        {"ionization_mechanism_ids": [ctx["mech_a"], ctx["mech_b"]]}
+        if second_edit == "mechanisms"
+        else {"diagnostic_collection_id": ctx["diag_b"]}
+    )
+    resp = await admin_client.patch(
+        f"/api/ionization/modes/{current['ionization_mode_id']}",
+        json=_body(ctx, **overrides),
+    )
+    assert resp.status_code == 200
+    assert await _batch_status(async_session_factory, mode_ctx["batch_id"]) == (
+        "recalibrate"
+    )
 
 
 @pytest.mark.asyncio

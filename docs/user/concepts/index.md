@@ -136,8 +136,10 @@ Two related concepts describe how neutral molecules become the ions you measure:
 
 Because an ionization mode names its calibrant and diagnostic collections,
 changing a mode's collections flags the affected batches for **re-calibration**
-or **re-matching**. Ionization modes are shared reference data; editors and above
-can manage them.
+or **re-matching**. A batch already flagged for re-calibration keeps that flag
+when a later edit of the mode or of a target collection asks only for a
+re-match: the re-calibration ends in a re-match, so it covers both. Ionization
+modes are shared reference data; editors and above can manage them.
 
 An ionization mode is **versioned**. Changing what it computes from - its
 polarity, its mechanisms, either collection, or the isotopic purity of its

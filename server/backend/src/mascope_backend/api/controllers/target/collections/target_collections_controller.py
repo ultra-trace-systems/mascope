@@ -370,6 +370,7 @@ async def create_target_collection(
             sample_batch_ids=sample_batch_ids,
             status="rematch",
             independent_transaction=True,
+            never_lower=True,
         )
 
     # Step 7: Emit reload events
@@ -641,6 +642,7 @@ async def update_target_collection(
             sample_batch_ids=list(affected_sample_batch_ids),
             status="rematch",
             independent_transaction=True,  # batches reloads to show rematch status
+            never_lower=True,
         )
 
     # Step 8: Emit reload events based on change types
@@ -799,6 +801,7 @@ async def delete_target_collection(
             sample_batch_ids=list(affected_sample_batch_ids),
             status="rematch",
             independent_transaction=True,
+            never_lower=True,
         )
 
     # -- Delete orphan compounds if requested --
