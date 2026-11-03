@@ -122,8 +122,16 @@ async def query_peak_matches(
         return [[] for _ in peak_ids]
 
     # Sort by score descending so "first" in the aggregation and the
-    # per-peak list order both reflect the best-scoring match.
-    match_df = match_df.sort_values("match_score", ascending=False)
+    # per-peak list order both reflect the best-scoring match. The ids break
+    # ties: the query has no ORDER BY, so without them matches of equal
+    # score, and the collections of one match, would come back in whatever
+    # order Postgres returned the rows, which can change from one read to the
+    # next. The lists are split per peak below, so the peak needs no key.
+    match_df = match_df.sort_values(
+        ["match_score", "target_isotope_id", "target_collection_id"],
+        ascending=[False, True, True],
+        kind="stable",
+    )
 
     agg = (
         match_df.groupby(["sample_peak_id", "target_isotope_id"], sort=False)
