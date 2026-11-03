@@ -94,7 +94,9 @@ one row per judged peak, as each sample's assignment ledger shows them.
 Written only when something in the batch was judged. The sheet is the table
 `GET /api/peak-assignments/batch/{sample_batch_id}/verifications` answers and
 the SDK's `peak_assignments.verifications_for_batch` reads, row for row and
-under the same column names, so a script reads the sheet and the frame alike.
+under the same column names, so a script reads the sheet and the frame alike. A
+[deposit package](#the-deposit-package) writes the sheet without `note` and
+`verified_by`.
 
 A row is either the sample's own verdict, or a batch-level verdict that
 reaches the sample, with `borrowed` true. A batch-level verdict reaches a
@@ -182,7 +184,7 @@ Unzipped, it is one folder, `mascope-package_<dataset id>_<dataset name>`:
 | `DATA_LICENSE` | The dataset's licence, with a link for a Creative Commons one. A dataset without a licence says so: nobody but its authors may reuse it |
 | `raw/` | Each sample file's raw file, `.raw` or `.h5`, as it was uploaded. Its header is unchanged, and may name the instrument and the computer that acquired it |
 | `raw/<file>.mascope.json` | Beside a raw file, the [acquisition record](../instruments/acquisition-records.md) the instrument's control program sent with it, where it sent one. Its `machine`, the computer's host name and Windows machine GUID, is left out; Mascope keeps the record whole |
-| `batches/` | Each batch's [batch data spreadsheet](#the-batch-data-spreadsheet), the same file *Download > Batch data* gives |
+| `batches/` | Each batch's [batch data spreadsheet](#the-batch-data-spreadsheet), the file *Download > Batch data* gives, but for two columns of its [Verifications](#verifications) sheet. Each verdict's `note`, free text written for colleagues, and `verified_by`, the id of the user who judged it, are left out; the verdicts and their evidence levels stay |
 | `target_collections/` | Each collection a batch was matched against, or an ionization mode calibrates with: its compounds with their CAS number, InChIKey, InChI and SMILES where recorded, and the ions formed from them |
 | `instrument_functions.json` | The peak shape and resolution each raw file was processed with |
 | `manifest.json` | All of the above for a program, below |

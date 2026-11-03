@@ -27,7 +27,8 @@ dataset (``mascope-package_<dataset id>_<dataset name>``)::
                                    control program sent with it, if it sent
                                    one, without its ``machine``
     batches/<batch>.xlsx           each batch's spreadsheet, the one the app's
-                                   "Export spreadsheet" writes
+                                   "Export spreadsheet" writes, without its
+                                   verdicts' ``note`` and ``verified_by``
     target_collections/<c>.json    each collection a batch was matched against
                                    or an ionization mode calibrates with: its
                                    compounds with their identity, and their ions

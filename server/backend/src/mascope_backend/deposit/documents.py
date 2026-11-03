@@ -292,8 +292,9 @@ def _files(manifest: dict) -> list[str]:
             (
                 "`batches/`",
                 "Each batch's spreadsheet: its samples, their acquisition "
-                "context, the compounds and ions matched in them, and the "
-                "provenance of the export.",
+                "context, the compounds and ions matched in them, the "
+                "verdicts on their assignments without the reviewers' notes "
+                "or ids, and the provenance of the export.",
             )
         )
     if manifest["target_collections"]:

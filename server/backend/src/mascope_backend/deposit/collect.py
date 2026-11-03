@@ -17,7 +17,7 @@ import json
 import re
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from importlib import metadata
 from typing import Any
@@ -589,9 +589,24 @@ def _batch(
     return entry, spreadsheet
 
 
+#: The Verifications sheet's columns a deposit leaves out: a verdict's
+#: free-text note, written for colleagues rather than a public record, and the
+#: id of the user who judged it, which means nothing off the server it came from.
+_UNPUBLISHED_VERIFICATION_COLUMNS = ("note", "verified_by")
+
+
 async def _spreadsheet(sample_batch_id: str) -> bytes:
-    """A batch's spreadsheet, as the app's export writes it."""
+    """
+    A batch's spreadsheet, as the app's export writes it, but for the
+    Verifications sheet's :data:`_UNPUBLISHED_VERIFICATION_COLUMNS`.
+    """
     sheets = await export.build_batch_sheets(sample_batch_id)
+    sheets = replace(
+        sheets,
+        verifications=sheets.verifications.drop(
+            columns=list(_UNPUBLISHED_VERIFICATION_COLUMNS), errors="ignore"
+        ),
+    )
     workbook = io.BytesIO()
     await asyncio.to_thread(export.write_batch_workbook, workbook, sheets)
     return workbook.getvalue()
