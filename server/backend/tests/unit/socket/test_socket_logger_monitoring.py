@@ -1,12 +1,13 @@
 """
-python-socketio's own log lines reach monitoring only through our handler.
+python-socketio's Redis retry lines file no monitoring event.
 
 ``sentry_sdk.init`` turns on its stdlib logging integration by default, which
-files every stdlib ERROR record as an event before any handler sees it. The
-Redis manager python-socketio runs logs "Cannot receive from redis...
-retrying in N secs" at ERROR on each reconnect attempt, so every Redis restart
-filed one monitoring issue per retry delay, even though
-``SocketLoggingHandler`` clamps such a line to INFO.
+files every stdlib ERROR record as an event whatever the logger's handlers do
+with it. The Redis manager python-socketio runs logs "Cannot receive from
+redis... retrying in N secs" at ERROR on each reconnect attempt, so every
+Redis restart filed one monitoring issue per retry delay, even though
+``SocketLoggingHandler`` clamps such a line to INFO. Its other ERROR lines
+mean cross-worker events were lost, and must still be filed.
 
 These run a real SDK client with a transport that records what it would send,
 so they check the integration itself, not a stand-in for it.
@@ -48,29 +49,38 @@ def _messages(events: list[dict]) -> list[str]:
     return [(event.get("logentry") or {}).get("message", "") for event in events]
 
 
-def test_the_redis_retry_line_files_no_event(sent_events):
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Cannot receive from redis... retrying in 1 secs",
+        "Cannot receive from redis... retrying in 8 secs",
+        "Cannot publish to redis... retrying",
+    ],
+)
+def test_a_redis_retry_line_files_no_event(sent_events, message):
     logger = get_socket_logger()
 
     with captured_logs(level="DEBUG") as records:
-        logger.error(
-            "Cannot receive from redis... retrying in 1 secs",
-            extra={"redis_exception": "Connection closed by server."},
-        )
+        logger.error(message, extra={"redis_exception": "Connection closed by server."})
     sentry_sdk.flush()
 
-    assert not any("Cannot receive" in m for m in _messages(sent_events))
-    # Still in the logs, at the level the socket handler gives it.
-    assert [r["level"].name for r in records if "Cannot receive" in r["message"]] == [
-        "INFO"
-    ]
+    assert message not in _messages(sent_events)
+    # Still in the logs, at INFO.
+    assert [r["level"].name for r in records if r["message"] == message] == ["INFO"]
 
 
-def test_another_stdlib_logger_is_still_reported(sent_events):
-    """The ignore is for the socket logger alone, not stdlib logging at large."""
-    get_socket_logger()
-    import logging
+@pytest.mark.parametrize(
+    "message",
+    [
+        "pubsub listen() exited unexpectedly",
+        "Cannot publish to redis... giving up",
+    ],
+)
+def test_a_socketio_line_that_lost_events_is_still_reported(sent_events, message):
+    """Only the retry lines are downgraded, not the socket logger at large."""
+    logger = get_socket_logger()
 
-    logging.getLogger("some.library").error("a library fault")
+    logger.error(message, extra={"redis_exception": "Connection closed by server."})
     sentry_sdk.flush()
 
-    assert "a library fault" in _messages(sent_events)
+    assert message in _messages(sent_events)
