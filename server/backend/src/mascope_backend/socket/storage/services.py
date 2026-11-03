@@ -17,7 +17,10 @@ import asyncio
 import os
 
 from mascope_backend.runtime import runtime
-from mascope_backend.socket.storage.client import redis_storage_client
+from mascope_backend.socket.storage.client import (
+    log_storage_failure,
+    redis_storage_client,
+)
 from mascope_backend.socket.storage.config import storage_config
 
 
@@ -34,8 +37,9 @@ async def _write_presence_key(service_name: str, sid: str) -> bool:
         await redis_storage_client.client.set(key, sid, ex=storage_config.service_ttl)
         return True
     except Exception as e:
-        runtime.logger.exception(
-            f"Failed to write presence for '{service_name}': {e} [Worker {os.getpid()}]"
+        log_storage_failure(
+            f"Failed to write presence for '{service_name}': {e} [Worker {os.getpid()}]",
+            e,
         )
         return False
 
@@ -163,8 +167,9 @@ async def unregister_service(service_name: str, sid: str) -> None:
                 f"(disconnecting={sid}) [Worker {worker_pid}]"
             )
     except Exception as e:
-        runtime.logger.exception(
-            f"Failed to unregister service '{service_name}': {e} [Worker {worker_pid}]"
+        log_storage_failure(
+            f"Failed to unregister service '{service_name}': {e} [Worker {worker_pid}]",
+            e,
         )
 
 
@@ -185,7 +190,8 @@ async def is_service_connected(service_name: str) -> bool:
     try:
         return bool(await redis_storage_client.client.exists(key))
     except Exception as e:
-        runtime.logger.exception(
-            f"Failed to check service '{service_name}' presence: {e}"
+        log_storage_failure(
+            f"Failed to check service '{service_name}' presence: {e}",
+            e,
         )
         return False

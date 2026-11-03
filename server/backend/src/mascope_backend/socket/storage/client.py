@@ -21,7 +21,20 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage.config import storage_config
+from mascope_runtime.logging import SENTRY_SKIP
 
+
+#: Failures of the connection to Redis rather than of the code using it: a
+#: Redis restart, an idle connection the server closed, a host name that does
+#: not resolve yet while the stack restarts, a stall past the socket timeout.
+#: redis-py raises its own classes for these; the built-in ones are listed for
+#: a socket error it lets through unwrapped.
+TRANSIENT_REDIS_ERRORS = (
+    RedisConnectionError,
+    RedisTimeoutError,
+    ConnectionError,
+    TimeoutError,
+)
 
 #: Seconds a pooled connection may sit idle before it is pinged on next use,
 #: so a connection Redis or a proxy dropped is replaced instead of failing the
@@ -32,6 +45,30 @@ HEALTH_CHECK_INTERVAL = 30
 #: Every command the socket storage sends is safe to send again (SET, EXPIRE,
 #: DEL, SADD, SREM, a check-and-delete script).
 COMMAND_RETRIES = 2
+
+
+def log_storage_failure(message: str, error: BaseException) -> None:
+    """
+    Log a failed socket storage call, from inside its ``except`` block.
+
+    A :data:`TRANSIENT_REDIS_ERRORS` failure is Redis being briefly out of
+    reach, which every caller already rides out (a refused call, a retry on the
+    next tick, a key that lapses on its own). It is logged as a warning with no
+    stack, and kept out of error monitoring. Any other exception is a fault and
+    is logged with its stack, as before.
+
+    The record is attributed to the caller, so the log line and the monitoring
+    group name the storage function that failed, not this helper.
+
+    :param message: What failed, naming the socket or service.
+    :param error: The exception being handled.
+    """
+    if isinstance(error, TRANSIENT_REDIS_ERRORS):
+        runtime.logger.bind(**{SENTRY_SKIP: True}).opt(depth=1).warning(
+            f"{message} (Redis out of reach)"
+        )
+    else:
+        runtime.logger.opt(depth=1, exception=True).error(message)
 
 
 class RedisStorageClient:
