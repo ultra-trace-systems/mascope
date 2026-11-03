@@ -335,10 +335,11 @@ def test_a_refresh_that_exports_no_ions_of_a_bundle_with_ion_goldens_is_refused(
     backend_goldens.peaks = [_peak(_db_name(MS1))]
     backend_goldens.ingested = [_db_name(MS1)]
 
-    with pytest.raises(RuntimeError, match="would drop the ion goldens") as info:
+    with pytest.raises(RuntimeError, match="would drop ion goldens") as info:
         build_bundle.export_goldens(tmp_path, _raw_entries(MS1), prior)
 
-    assert "expected/ions.parquet" in str(info.value)
+    assert "1 raw file(s) the prior ion goldens covered" in str(info.value)
+    assert _db_name(MS1) in str(info.value)
     assert (tmp_path / "expected" / "ions.parquet").read_bytes() == before
     assert not (tmp_path / "expected" / "peaks.parquet").exists()
 
@@ -358,6 +359,100 @@ def test_a_refresh_that_exports_ions_again_writes_them(
     assert pd.read_parquet(ions_path).to_dict("records") == backend_goldens.ions
     assert expected["ions_sha256"] == bundles.sha256_file(ions_path)
     assert warnings == []
+
+
+MS1_B = "Orbion_pos_Ur_NoRI_20250811150000.raw"
+
+
+def test_a_refresh_that_loses_the_ions_of_one_of_two_files_is_refused(
+    backend_goldens, tmp_path
+):
+    """Both files still export peaks and one still exports ions, so neither
+    the coverage check nor an all-or-nothing guard would notice the other's
+    ions going: the per-file check names it, and nothing is written."""
+    prior = _prior_ions(tmp_path, [_ion(_db_name(MS1)), _ion(_db_name(MS1_B))])
+    before = (tmp_path / "expected" / "ions.parquet").read_bytes()
+    backend_goldens.peaks = [_peak(_db_name(MS1)), _peak(_db_name(MS1_B))]
+    backend_goldens.ions = [_ion(_db_name(MS1))]
+    backend_goldens.ingested = [_db_name(MS1), _db_name(MS1_B)]
+
+    with pytest.raises(RuntimeError, match="would drop ion goldens") as info:
+        build_bundle.export_goldens(tmp_path, _raw_entries(MS1, MS1_B), prior)
+
+    assert "1 raw file(s) the prior ion goldens covered" in str(info.value)
+    assert _db_name(MS1_B) in str(info.value)
+    assert _db_name(MS1) not in str(info.value)
+    assert (tmp_path / "expected" / "ions.parquet").read_bytes() == before
+    assert not (tmp_path / "expected" / "peaks.parquet").exists()
+
+
+def test_a_prior_ion_file_that_left_the_raw_set_is_dropped_with_a_warning(
+    backend_goldens, tmp_path, warnings
+):
+    """A `--raw` refresh that replaces every file the ion goldens covered with
+    files that score no ions is a deliberate change: the bundle is written
+    without ion goldens, and the log says so."""
+    prior = _prior_ions(tmp_path, [_ion(_db_name(MS1))])
+    backend_goldens.peaks = [_peak(_db_name(MS1_B))]
+    backend_goldens.ingested = [_db_name(MS1_B)]
+
+    expected = build_bundle.export_goldens(tmp_path, _raw_entries(MS1_B), prior)
+
+    assert expected is not None
+    assert "ions" not in expected
+    assert any(
+        "Dropping the ion goldens of 1 file(s)" in w and _db_name(MS1) in w
+        for w in warnings
+    )
+    assert any("ion goldens and is written without them" in w for w in warnings)
+
+
+def test_a_prior_ion_file_that_left_the_raw_set_beside_new_ions_is_logged(
+    backend_goldens, tmp_path, warnings
+):
+    """The new files score ions of their own: they are written, and the file
+    that left the raw set is logged as dropped."""
+    prior = _prior_ions(tmp_path, [_ion(_db_name(MS1))])
+    backend_goldens.peaks = [_peak(_db_name(MS1_B))]
+    backend_goldens.ions = [_ion(_db_name(MS1_B))]
+    backend_goldens.ingested = [_db_name(MS1_B)]
+
+    expected = build_bundle.export_goldens(tmp_path, _raw_entries(MS1_B), prior)
+
+    assert expected["ions"] == "expected/ions.parquet"
+    ions_path = tmp_path / "expected" / "ions.parquet"
+    assert pd.read_parquet(ions_path).to_dict("records") == backend_goldens.ions
+    assert any("Dropping the ion goldens of 1 file(s)" in w for w in warnings)
+    assert not any("is written without them" in w for w in warnings)
+
+
+def test_a_refresh_with_an_unreadable_prior_ion_golden_and_no_ions_is_refused(
+    backend_goldens, tmp_path, warnings
+):
+    """The prior manifest names an ion golden that cannot be read, so its files
+    are unknown: a run that exports no ions at all is still refused."""
+    prior = {"peaks": "expected/peaks.parquet", "ions": "expected/ions.parquet"}
+    backend_goldens.peaks = [_peak(_db_name(MS1))]
+    backend_goldens.ingested = [_db_name(MS1)]
+
+    with pytest.raises(RuntimeError, match="its ions file could not be read"):
+        build_bundle.export_goldens(tmp_path, _raw_entries(MS1), prior)
+
+    assert any("Cannot read the prior ion golden" in w for w in warnings)
+
+
+def test_a_refresh_with_an_unreadable_prior_ion_golden_that_exports_ions_writes_them(
+    backend_goldens, tmp_path, warnings
+):
+    prior = {"peaks": "expected/peaks.parquet", "ions": "expected/ions.parquet"}
+    backend_goldens.peaks = [_peak(_db_name(MS1))]
+    backend_goldens.ions = [_ion(_db_name(MS1))]
+    backend_goldens.ingested = [_db_name(MS1)]
+
+    expected = build_bundle.export_goldens(tmp_path, _raw_entries(MS1), prior)
+
+    assert expected["ions"] == "expected/ions.parquet"
+    assert [w for w in warnings if "Cannot read" not in w] == []
 
 
 @pytest.mark.parametrize(
@@ -400,7 +495,7 @@ def test_snapshot_update_refuses_to_drop_the_prior_manifests_ion_goldens(
 
     monkeypatch.setattr(build_bundle, "export_snapshot", _no_snapshot)
 
-    with pytest.raises(RuntimeError, match="would drop the ion goldens"):
+    with pytest.raises(RuntimeError, match="would drop ion goldens"):
         build_bundle.build(tmp_path, update=True)
 
     assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest

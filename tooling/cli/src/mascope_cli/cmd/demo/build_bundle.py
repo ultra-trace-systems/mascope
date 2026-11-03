@@ -232,79 +232,95 @@ def check_raw_coverage(
     return problems
 
 
-def check_ms2_kept(
-    prior_ms2_files: list[str] | None,
+# The golden blocks a refresh must keep file by file: the ``expected`` key of
+# each, the name of its goldens and what one of its files exports.
+_GOLDEN_BLOCKS = {
+    "ms2": ("MS2", "MS2 spectra"),
+    "ions": ("ion", "golden ions"),
+}
+
+
+def check_goldens_kept(
+    block: str,
+    prior_files: list[str] | None,
     raw_entries: list[dict],
-    ms2_filenames: "set[str] | list[str]",
+    filenames: "set[str] | list[str]",
 ) -> tuple[list[str], list[str]]:
     """
-    Check that a refresh keeps the MS2 goldens the prior manifest recorded.
+    Check that a refresh keeps the goldens of one block the prior manifest
+    recorded, file by file.
 
-    The export writes an ``ms2`` block only when it reads spectra, and a
+    The export writes a golden block only when it has rows for it, and a
     refresh replaces the whole ``expected`` block. So a rebuild whose MS2 file
-    lost its scan census (no fragmentation polarity, so no spectrum read) would
-    write a manifest without MS2 goldens, while the file stays covered through
-    its MS1 peaks; ``mascope demo verify`` and the reproducibility test then
-    skip the MS2 comparison without a word. This refuses that, file by file,
-    keyed as :func:`check_raw_coverage` keys them.
+    lost its scan census (no fragmentation polarity, so no spectrum read), or
+    whose ions of one file got no match score above zero, would write a
+    manifest without those goldens, while the file stays covered through its
+    MS1 peaks; ``mascope demo verify`` and the reproducibility test then skip
+    the comparison without a word. This refuses that, file by file, keyed as
+    :func:`check_raw_coverage` keys them.
 
-    A file the prior MS2 goldens covered that is no longer in the bundle's raw
-    set is not a loss but a deliberate change of the raw set: it is returned
+    A file the prior goldens covered that is no longer in the bundle's raw set
+    is not a loss but a deliberate change of the raw set: it is returned
     apart, for the caller to log.
 
-    :param prior_ms2_files: The distinct filenames of the prior ``ms2`` golden,
-                            ``[]`` when the prior manifest records an ``ms2``
-                            block whose file cannot be read, or ``None`` when
-                            it records none.
+    :param block: The ``expected`` key of the goldens: ``ms2`` or ``ions``.
+    :param prior_files: The distinct filenames of the prior golden, ``[]``
+                        when the prior manifest records the block but its file
+                        cannot be read, or ``None`` when it records none.
     :param raw_entries: The manifest ``raw`` block of this run.
-    :param ms2_filenames: The distinct filenames this run exported spectra of.
+    :param filenames: The distinct filenames this run exported goldens of.
     :return: ``(problems, dropped)``: human-readable problem descriptions
-             (empty means the MS2 goldens are kept), and the prior MS2 files
-             that left the raw set.
+             (empty means the goldens are kept), and the prior files that
+             left the raw set.
     """
-    if prior_ms2_files is None:
+    if prior_files is None:
         return [], []
+    golden, product = _GOLDEN_BLOCKS[block]
     in_raw = {_acquisition_key(entry["name"]) for entry in raw_entries}
-    now = {_acquisition_key(name) for name in ms2_filenames}
+    now = {_acquisition_key(name) for name in filenames}
     lost = [
         n
-        for n in prior_ms2_files
+        for n in prior_files
         if _acquisition_key(n) in in_raw and _acquisition_key(n) not in now
     ]
-    dropped = [n for n in prior_ms2_files if _acquisition_key(n) not in in_raw]
+    dropped = [n for n in prior_files if _acquisition_key(n) not in in_raw]
 
     problems = []
     if lost:
         problems.append(
-            f"{len(lost)} raw file(s) the prior MS2 goldens covered produced no "
-            f"MS2 spectra in this run: {_sample(lost)}"
+            f"{len(lost)} raw file(s) the prior {golden} goldens covered produced "
+            f"no {product} in this run: {_sample(lost)}"
         )
-    elif not prior_ms2_files and not now:
+    elif not prior_files and not now:
         problems.append(
-            "the prior manifest records MS2 goldens (its ms2 file could not be "
-            "read) and this run exported no MS2 spectra"
+            f"the prior manifest records {golden} goldens (its {block} file "
+            f"could not be read) and this run exported no {product}"
         )
     return problems, dropped
 
 
-def _prior_ms2_files(out_dir: Path, prior_expected: dict | None) -> list[str] | None:
+def _prior_golden_files(
+    out_dir: Path, prior_expected: dict | None, block: str
+) -> list[str] | None:
     """
-    The distinct filenames of the prior manifest's ``ms2`` golden.
+    The distinct filenames of one golden block of the prior manifest.
 
     :param out_dir: Bundle output directory, which holds the prior goldens.
     :param prior_expected: The prior manifest's ``expected`` block, if any.
-    :return: ``None`` when it records no ``ms2`` block, ``[]`` when the block's
+    :param block: The ``expected`` key of the goldens: ``ms2`` or ``ions``.
+    :return: ``None`` when it records no such block, ``[]`` when the block's
              file is missing or unreadable, else the filenames, sorted.
     """
     import pandas as pd
 
-    if not prior_expected or not prior_expected.get("ms2"):
+    if not prior_expected or not prior_expected.get(block):
         return None
     try:
-        frame = pd.read_parquet(out_dir / prior_expected["ms2"], columns=["filename"])
+        frame = pd.read_parquet(out_dir / prior_expected[block], columns=["filename"])
     except Exception as exc:  # noqa: BLE001 - any unreadable file is "unknown"
+        golden, _ = _GOLDEN_BLOCKS[block]
         runtime.logger.warning(
-            f"Cannot read the prior MS2 golden {prior_expected['ms2']}: {exc}"
+            f"Cannot read the prior {golden} golden {prior_expected[block]}: {exc}"
         )
         return []
     return sorted(set(frame["filename"]))
@@ -691,16 +707,14 @@ def export_goldens(
     :param prior_expected: The prior manifest's ``expected`` block on a
                            refresh. When it records MS2 goldens, this run must
                            export spectra for every file they covered that is
-                           still in ``raw_entries`` (:func:`check_ms2_kept`).
-                           When it records ion goldens, this run must export
-                           golden ions too.
+                           still in ``raw_entries`` (:func:`check_goldens_kept`).
+                           Its ion goldens are kept the same way.
     :return: The manifest ``expected`` block, or ``None`` if no peaks have been
              matched yet (logged as a warning so ``--update`` still records the
              snapshot rather than aborting).
     :raises RuntimeError: If the demo database does not cover ``raw_entries``,
-                          if this run would drop MS2 goldens of a file still
-                          in the raw set, or if it would drop the prior ion
-                          goldens.
+                          or if this run would drop MS2 or ion goldens of
+                          a file still in the raw set.
     """
     import pandas as pd
 
@@ -747,8 +761,9 @@ def export_goldens(
     # A refresh replaces the whole `expected` block, so MS2 goldens this run
     # did not read would vanish from the manifest with nothing to say so.
     # Checked before anything is written, so the prior goldens stay in place.
-    ms2_problems, ms2_dropped = check_ms2_kept(
-        _prior_ms2_files(out_dir, prior_expected),
+    ms2_problems, ms2_dropped = check_goldens_kept(
+        "ms2",
+        _prior_golden_files(out_dir, prior_expected, "ms2"),
         raw_entries,
         {row["filename"] for row in ms2_rows},
     )
@@ -768,17 +783,28 @@ def export_goldens(
         )
 
     # The per-ion goldens have the same shape: their block is written only when
-    # the export returns rows, so an empty ion export would drop the prior ones.
+    # the export returns rows, and an ion is exported only when its match score
+    # is above zero, so a file whose ions all scored zero would drop out.
     ion_rows = get_golden_ions()
-    if prior_expected and prior_expected.get("ions") and not ion_rows:
+    ion_problems, ion_dropped = check_goldens_kept(
+        "ions",
+        _prior_golden_files(out_dir, prior_expected, "ions"),
+        raw_entries,
+        {row["filename"] for row in ion_rows},
+    )
+    if ion_problems:
         raise RuntimeError(
-            "Refusing to write expected/ goldens: this run would drop the ion "
+            "Refusing to write expected/ goldens: this run would drop ion "
             "goldens the bundle had.\n"
-            f"  - the prior manifest records {prior_expected['ions']} and this "
-            f"run exported no golden ions beside its {len(rows)} golden peak(s)"
-            "\nCheck that the rebuild wrote per-ion match scores (an ion is "
+            + "\n".join(f"  - {p}" for p in ion_problems)
+            + "\nCheck that the rebuild wrote per-ion match scores (an ion is "
             "exported when its match score is above zero), then re-run "
             "--update."
+        )
+    if ion_dropped:
+        runtime.logger.warning(
+            f"Dropping the ion goldens of {len(ion_dropped)} file(s) no longer "
+            f"in the raw set: {_sample(ion_dropped)}"
         )
 
     dest_dir = out_dir / "expected"
@@ -822,6 +848,11 @@ def export_goldens(
         runtime.logger.success(f"Exported {len(ion_rows)} golden ion(s) to {ions_path}")
         expected["ions"] = "expected/ions.parquet"
         expected["ions_sha256"] = bundles.sha256_file(ions_path)
+    elif ion_dropped:
+        runtime.logger.warning(
+            "The bundle had ion goldens and is written without them: none of "
+            "the files they covered is in the raw set any more."
+        )
 
     return expected
 
@@ -869,10 +900,9 @@ def build(
         omitted and the bundle has no raw set to reuse.
     :raises RuntimeError: If ``update`` is set and the demo database does not
         cover the bundle's raw set (see :func:`check_raw_coverage`), or if it
-        would drop MS2 goldens the prior manifest had for a file still in the
-        raw set (see :func:`check_ms2_kept`), or the prior manifest's ion
-        goldens (see :func:`export_goldens`); neither the goldens nor the
-        snapshot are written in that case.
+        would drop MS2 or ion goldens the prior manifest had for a file still
+        in the raw set (see :func:`check_goldens_kept`); neither the goldens
+        nor the snapshot are written in that case.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     alias_map = {**INSTRUMENT_ALIASES, **(aliases or {})}
