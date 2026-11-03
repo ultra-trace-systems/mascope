@@ -241,6 +241,55 @@ class TestQualityIssues:
         )
 
 
+class TestKeptLineShare:
+    """A TOF fit kept on too few of its collection's lines fails the bar:
+    on an axis read further off than the refine window, the lines that find
+    a peak are the ones among dense peaks, and three neighbours fit."""
+
+    def test_three_lines_of_eleven_are_caught(self):
+        quality = {**GOOD, "n_points": 3, "n_lines": 11}
+
+        assert _codes(quality, TOF_FILE) == ["lines"]
+        (issue,) = calibration_quality_issues(quality, TOF_FILE)
+        assert issue["message"].startswith(
+            "Fitted on 3 of the 11 lines of the calibration collection "
+            "(at least 40% needed)"
+        )
+
+    @pytest.mark.parametrize(
+        ("n_points", "n_lines", "codes"),
+        [
+            pytest.param(4, 11, ["lines"], id="4 of 11"),
+            pytest.param(5, 11, [], id="5 of 11"),
+            pytest.param(4, 10, [], id="the share itself passes"),
+            pytest.param(3, 8, ["lines"], id="3 of 8"),
+            pytest.param(3, 7, [], id="3 of 7"),
+            pytest.param(3, 3, [], id="a collection of three"),
+        ],
+    )
+    def test_the_bar_is_a_share_of_the_lines(self, n_points, n_lines, codes):
+        quality = {**GOOD, "n_points": n_points, "n_lines": n_lines}
+
+        assert _codes(quality, TOF_FILE) == codes
+
+    def test_it_judges_tof_fits_only(self):
+        # Orbitrap fits on one line of a large collection are the norm for
+        # narrow-range modes, and their records carry no line count
+        assert _codes({**GOOD, "n_points": 1, "n_lines": 11}) == []
+
+    def test_a_record_without_the_count_is_not_held_against_it(self):
+        assert _codes({**GOOD, "n_points": 3}, TOF_FILE) == []
+        assert _codes({**GOOD, "n_points": 3, "n_lines": None}, TOF_FILE) == []
+
+    def test_a_fit_on_no_points_is_caught_once(self):
+        assert _codes({**GOOD, "n_points": 0, "n_lines": 11}, TOF_FILE) == ["points"]
+
+    def test_the_check_can_be_switched_off(self, monkeypatch):
+        monkeypatch.setattr(calibration_config, "TOF_MIN_KEPT_LINE_SHARE", None)
+
+        assert _codes({**GOOD, "n_points": 3, "n_lines": 11}, TOF_FILE) == []
+
+
 class TestFitQualityCountsIons:
     def test_distinct_ions_are_counted(self):
         stats = [

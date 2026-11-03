@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
+import pandas as pd
 import pytest
 import tof_audit_support as support
 
@@ -43,10 +44,14 @@ from mascope_backend.api.models.calibration.calibration_pydantic_model import (
 NODE = "mascope_backend.api.controllers.calibration.lib.calibration_mz_fit"
 
 #: The keys a TOF fit adds to its quality block.
-NEW_KEYS = {"points", "span", "collection", "model", "node_version"}
+NEW_KEYS = {"points", "span", "n_lines", "collection", "model", "node_version"}
 
 #: Each line's S/N, by its exact m/z rounded to whole Th: every peak its own.
 SNR = {62: 310.0, 79: 95.0, 81: 90.0, 97: 140.0, 125: 64.0, 188: 21.0, 195: 33.0}
+
+#: Sample ions a collection could add to the reagent lines, each one line:
+#: C3H3O4- at 103 Th, C5H7O4- at 131, C7H9O4- at 157 and C8H11O4- at 171.
+SAMPLE_IONS = ["C3H3O4", "C5H7O4", "C7H9O4", "C8H11O4"]
 
 
 @pytest.fixture
@@ -460,3 +465,87 @@ async def test_a_record_with_or_without_the_keys_applies(filestore, named):
     assert stored["verified"] is True
     assert stored["quality"] == json.loads(json.dumps(quality))
     assert (NEW_KEYS <= stored["quality"].keys()) is named
+
+
+# --- The share of the collection's lines kept ---
+
+
+@pytest.mark.asyncio
+async def test_the_record_counts_each_line_the_collection_offers_once(filestore):
+    """Five lines above the abundance floor: NO3-, NO3-.HNO3, NO3-.(HNO3)2
+    and both bromide lines. NO3- offered a second time, as an ion through
+    another mechanism would, at an m/z computed a float step apart, is still
+    one line; one below the floor is none."""
+    filename = _write(filestore)
+    isotopes = support.isotopes()
+    first = isotopes.iloc[[0]]
+    twice = pd.concat(
+        [isotopes, first.assign(target_ion_id="another-ion", mz=first.mz + 1e-9)],
+        ignore_index=True,
+    )
+    assert (isotopes.relative_abundance < 0.15).any()
+
+    handler = await _node_fit(filename, twice)
+
+    assert handler.fitted_on["n_lines"] == 5
+
+
+def _crowded_file(filestore, axis_off_ppm: float) -> str:
+    """Reagent lines and sample ions, three of the sample ions with a weaker
+    peak 50 ppm above their line, as a sample ion among dense peaks has.
+
+    :param axis_off_ppm: How far off the file's acquisition axis reads every
+        line's own peak, ppm; the neighbours stay where they are.
+    """
+    peaks = support.calibrant_peaks(support.CALIBRANTS + SAMPLE_IONS)
+    for peak in peaks:
+        peak["ppm"] = axis_off_ppm
+    neighbours = [
+        {"mz": peak["mz"], "ppm": 50.0, "area": 30.0}
+        for peak in peaks
+        if round(peak["mz"]) in (131, 157, 171)
+    ]
+    return support.write_file(filestore, peaks + neighbours)
+
+
+@pytest.mark.asyncio
+async def test_an_axis_off_past_the_refine_window_fitted_on_neighbours_fails(
+    filestore,
+):
+    """The acquisition axis reads 170 ppm off, past the 100 ppm refine
+    window: no line's own peak is near where the axis puts it, three sample
+    ions each find their neighbour, and the three fit each other. The fit
+    is kept on 3 of the collection's 9 lines, and does not verify."""
+    filename = _crowded_file(filestore, axis_off_ppm=-170.0)
+    isotopes = support.isotopes(support.CALIBRANTS + SAMPLE_IONS)
+
+    fit, _ = await _fit_answer(filename, isotopes)
+
+    quality = fit["quality"]
+    assert quality["n_points"] == 3
+    assert quality["n_lines"] == 9
+    # Every other criterion of the bar is met: the three agree
+    assert abs(quality["post_fit_mz_error_ppm"]) < 1.0
+    assert [issue["code"] for issue in fit["quality_issues"]] == ["lines"]
+    stored = await _apply(filename, json.loads(json.dumps(fit)))
+    assert stored["verified"] is False
+    assert [issue["code"] for issue in stored["quality_issues"]] == ["lines"]
+
+
+@pytest.mark.asyncio
+async def test_the_same_collection_on_a_right_axis_verifies_on_every_line(filestore):
+    """The same file with its axis right: each line's own peak outweighs
+    its neighbour, the fit keeps all nine lines and verifies."""
+    filename = _crowded_file(filestore, axis_off_ppm=0.0)
+    isotopes = support.isotopes(support.CALIBRANTS + SAMPLE_IONS)
+
+    fit, _ = await _fit_answer(filename, isotopes)
+
+    quality = fit["quality"]
+    lines = sorted(isotopes[isotopes.relative_abundance >= 0.15].mz)
+    assert [point["target_mz"] for point in quality["points"]] == lines
+    assert all(point["retained"] for point in quality["points"])
+    assert (quality["n_points"], quality["n_lines"]) == (9, 9)
+    assert fit["quality_issues"] == []
+    stored = await _apply(filename, json.loads(json.dumps(fit)))
+    assert stored["verified"] is True

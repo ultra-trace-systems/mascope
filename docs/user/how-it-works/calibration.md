@@ -114,6 +114,7 @@ Beside its parameters and the counts and mean errors of its quality block, a TOF
 
 - **Points**: every calibrant line the fit chose from, the ones it left out included. Each has its ion, its exact and observed m/z, its residual under the fit in ppm, the signal-to-noise ratio of its peak, and whether the fit kept it. The residual is the fit's m/z at the peak's time-of-flight index against the exact m/z, as the TOF calibration audit reads it. A line the matching turned down never reached the fit and is not listed.
 - **Span**: the exact m/z of the lowest and the highest line kept. Peaks outside it are on an extrapolated axis.
+- **Lines**: how many distinct lines the collection offered above the abundance floor, matched or not. A line two ions share counts once.
 - **Collection**: the calibration collection, and a hash of the isotopes it offered under the mode's ionization mechanisms: their formulas, exact m/z and abundances. Editing the collection's compounds changes the hash, so files fitted on different versions of one collection can be told apart. The hash is the same on every server.
 - **Model**: the model fitted, the square-root model above, which Tofwerk numbers mode 0. The record keeps that number and the model's equation in Tofwerk's names, `i = p1*sqrt(m) + p2`: `i` is the time-of-flight index, and `p1` and `p2` are $p_0$ and $p_1$ above.
 - **Node version**: the version of the calibration step that made the fit.
@@ -171,11 +172,21 @@ Matching and peak assignment trust a calibrated file's mass axis, so after a fit
 | Mean post-calibration $\lvert m/z \rvert$ error | at most 1 ppm | at most 10 ppm |
 | Correction made by a fit nothing corroborates (one point, or two isotopes of one ion) | at most 10 ppm | at most 10 ppm |
 | Distinct calibrant ions, for a fit on 3 or more points | at least 2 | at least 2 |
+| Share of the collection's lines the fit kept | not checked | at least 40% |
 
 One or two calibration points are common for narrow mass ranges and EasyIC.
 Two points from different ions check each other, so such a fit is judged on its error alone.
 A single point (or two isotopes of one ion) cannot, so it is trusted only while the correction it makes is small: a single calibrant that moves the axis tens of ppm has most likely been matched to the wrong peak.
 The correction is measured from the axis the instrument wrote, so recalibrating a file an earlier fit moved does not hide it.
+
+A TOF fit must also keep at least 40% of the lines its calibration collection offers.
+When the axis the instrument wrote is further off than the refine window, a calibrant's own peak is not where matching looks for it.
+A line of a sample ion among dense peaks then finds a neighbouring peak instead, and three such neighbours fit the model with a small error.
+Kept on a few of many lines, such a fit can sit hundreds of ppm from the right axis.
+Most right fits keep most of their collection's lines: on production TOFs, three in four keep 60% or more.
+So a right fit on few of a long collection's lines can also be flagged.
+A collection of 7 lines or fewer is never caught by this check, since a TOF fit needs 3 points.
+A record written before fits counted their collection's lines is not judged on it.
 
 A file stitched from several scan ranges is calibrated range by range, and each range fitted on calibrants of its own is checked against the bar on them, as well as the file as a whole.
 A range fitted on a single calibrant (or on two isotopes of one ion) is corroborated by another range of the same file when that range is fitted on calibrants of two or more ions, clears the bar itself, and makes a correction within 2 ppm of the first range's.

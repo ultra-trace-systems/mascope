@@ -70,6 +70,20 @@ class CalibrationConfig(BaseModel):
     # from this many ions, or it is one ion's isotopes agreeing with each
     # other.
     MIN_VERIFIED_CALIBRATION_IONS: int = 2
+    # A TOF fit must keep at least this share of the distinct lines its
+    # calibration collection offers above the abundance floor, None
+    # disabling the check. A TOF axis read further off than the refine
+    # window leaves the reagent lines without a peak near them, while lines
+    # of sample ions among dense peaks each find a neighbour; three such
+    # neighbours fit the two-parameter model with a small residual. On a
+    # 60-day production replay a collection of 11 lines fitted that way kept
+    # 3 or 4 of them (27-36 %), 230 ppm from the right fit, while the right
+    # fits' lower quartile per instrument and mode kept 60-100 % of the
+    # collection's lines. The replay recorded no per-file minimum, so a right
+    # fit on few of a long collection's lines can fall below the bar too. A
+    # collection of 7 lines or fewer cannot fall below it on the 3 points a
+    # TOF fit needs. Conservative until the TOF thresholds are tuned.
+    TOF_MIN_KEPT_LINE_SHARE: float | None = 0.4
     # Summed calibrant intensity as a fraction of the mean TIC per scan, None
     # disabling the check. Off for both: in production it only ever flagged
     # fits that were otherwise healthy, down to 3e-5 on Orbitrap and 5e-7 on
