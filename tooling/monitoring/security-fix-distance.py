@@ -17,9 +17,10 @@ fix it is missing, and says nothing at all when every deployment has them all.
   vulnerability updates add no fragment; their subject ends in
   ``[security]``. Such a commit counts when it changes the version of a
   package a deployment runs: in ``uv.lock``, one the root project reaches
-  through its dependencies (what the backend image installs, never a
-  dependency group); in ``server/frontend/package-lock.json``, one the lock
-  does not mark ``dev``. A bump of development tooling alone asks nothing of
+  through its dependencies (what the backend image installs) or its ``docs``
+  group (the frontend image builds the user docs with it and serves the
+  theme's scripts), never through another group; in
+  ``server/frontend/package-lock.json``, one the lock does not mark ``dev``. A bump of development tooling alone asks nothing of
   the fleet. A lockfile it cannot read counts, so a format it does not know
   is never a fix it skips.
 * **What a deployment runs.** The release its backend reports on the anonymous
@@ -91,8 +92,11 @@ FRAGMENTS = "changelog.d/*.security.md"
 #: The lockfiles of what a deployment runs: the backend image installs the
 #: root project from ``uv.lock``, and the frontend image bundles the
 #: production dependencies of ``package-lock.json``. The File Agent's lock and
-#: the dependency groups ship to no deployment.
+#: the dependency groups but ``docs`` ship to no deployment.
 UV_LOCK = "uv.lock"
+#: The root project's dependency groups a deployment runs: the frontend image
+#: builds the user docs with ``docs`` and serves the theme's JavaScript and CSS.
+UV_SHIPPED_GROUPS = ("docs",)
 NPM_LOCK = "server/frontend/package-lock.json"
 #: Renovate's mark on a vulnerability update, at the end of the subject (a
 #: squash merge may append the PR number after it).
@@ -133,7 +137,7 @@ class LockError(Exception):
 
 @dataclass
 class Fix:
-    """A merged security fix: the commit that added its fragment."""
+    """A merged security fix: the commit that marks it."""
 
     commit: str
     merged: str
@@ -409,7 +413,10 @@ Lock = tuple[dict[str, frozenset[str]], set[str]]
 
 _UV_TABLE = re.compile(r"^\[\[?([A-Za-z0-9_.-]+)\]\]?\s*$")
 _UV_KEY = re.compile(r'^("[^"]+"|[A-Za-z0-9_-]+) = (.*)$')
-_UV_ENTRY = re.compile(r'\{\s*name = "([^"]+)"([^}]*)\}')
+#: One ``{ name = ... }`` entry, and the inline tables nested in it: a package
+#: with several versions in the lock is written ``{ name, version, source = {
+#: ... }, extra = [...] }``, and the extras after the ``source`` still count.
+_UV_ENTRY = re.compile(r'\{\s*name = "([^"]+)"((?:[^{}]|\{[^{}]*\})*)\}')
 _UV_EXTRAS = re.compile(r"extra = \[([^\]]*)\]")
 
 
@@ -420,14 +427,16 @@ def read_uv_lock(text: str | None) -> Lock:
     writes: a ``[[package]]`` table per package, its ``dependencies`` and each
     ``[package.optional-dependencies]`` extra an array with one ``{ name =
     ... }`` per line. What ships is what the root project (the one at ``.``)
-    reaches through ``dependencies`` and the extras an edge asks for, never
-    through ``[package.dev-dependencies]``. Markers are not weighed: a package
+    reaches through ``dependencies``, the extras an edge asks for and the
+    groups of ``UV_SHIPPED_GROUPS``, never through another group of
+    ``[package.dev-dependencies]``. Markers are not weighed: a package
     only one platform installs ships as far as this check knows.
     """
     if text is None:
         return {}, set()
     versions: dict[str, set[str]] = {}
-    # (package, extra or "") -> the (package, extra) edges it has.
+    # (package, extra or "" or "group:<name>") -> the (package, extra) edges
+    # it has.
     edges: dict[tuple[str, str], set[tuple[str, str]]] = {}
     root = None
     name = table = key = ""
@@ -456,6 +465,8 @@ def read_uv_lock(text: str | None) -> Lock:
             extra = ""
         elif table == "package.optional-dependencies" and key:
             extra = key
+        elif table == "package.dev-dependencies" and key in UV_SHIPPED_GROUPS:
+            extra = f"group:{key}"
         else:
             continue
         for entry in _UV_ENTRY.finditer(line):
@@ -467,7 +478,7 @@ def read_uv_lock(text: str | None) -> Lock:
     if root is None or not versions:
         raise LockError("no root project")
     shipped: set[str] = set()
-    todo = [(root, "")]
+    todo = [(root, "")] + [(root, f"group:{group}") for group in UV_SHIPPED_GROUPS]
     seen: set[tuple[str, str]] = set()
     while todo:
         node = todo.pop()

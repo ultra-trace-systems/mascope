@@ -588,8 +588,10 @@ When every deployment runs every fix, it says nothing.
   version of a package that ships:
   - in `uv.lock`, a package the root project reaches through its
     `dependencies`, and the extras those ask for. That is what the backend
-    image installs (`uv tool install .`). A package only a dependency group
-    (`dev`, `docs`, `lint`) reaches does not ship.
+    image installs (`uv tool install .`). The root's `docs` group ships too:
+    the frontend image builds the user docs with it and serves them at
+    `/docs/`, the theme's JavaScript and CSS included. A package only the
+    `dev` or `lint` group reaches does not ship.
   - in `server/frontend/package-lock.json`, a package the lock does not mark
     `"dev": true`. npm marks the ones only `devDependencies` reach, and the
     frontend image bundles the rest.
