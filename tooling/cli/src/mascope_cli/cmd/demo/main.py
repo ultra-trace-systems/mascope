@@ -272,6 +272,7 @@ def _run(
 
     _seed_credentials()
     _seed_reference_demo()
+    _list_ms2_groups()
     _print_access()
 
     if no_launch:
@@ -395,6 +396,39 @@ def _seed_reference_demo() -> None:
         seed_reference_demo()
     except Exception as e:  # noqa: BLE001 - reference seed is optional for the demo
         runtime.logger.warning(f"Skipped demo reference seed: {e}")
+
+
+def _list_ms2_groups() -> None:
+    """List the MS2 groups of the demo files that have an MS2 store.
+
+    The group inventory (``ms2_group``) is written when a file's store is, so
+    a snapshot taken before the table existed restores stores it does not
+    list, and the demo shows no MS2 groups. ``backfill_ms2_store`` lists them
+    from the stores, as ``tooling/demo-init.sh`` does for the demo stack, and
+    finds nothing to do on a second run. Run as a process of its own, as
+    ``mascope dev db script run`` runs it, with no pause between files: the
+    demo serves nothing yet. Best effort: the MS2 summaries read the stores
+    either way.
+    """
+    import subprocess
+    import sys
+
+    runtime.logger.info("Listing the MS2 groups of the demo files...")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "mascope_backend.db.scripts.backfill_ms2_store",
+            "--run",
+        ],
+        env={**os.environ, "MS2_STORE_PAUSE": "0"},
+        check=False,
+    )
+    if result.returncode != 0:
+        runtime.logger.warning(
+            f"The MS2 group backfill exited with code {result.returncode}; "
+            "the demo lists no MS2 groups."
+        )
 
 
 def _print_access() -> None:
