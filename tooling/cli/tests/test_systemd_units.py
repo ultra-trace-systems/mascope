@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from loguru import logger
 from typer.testing import CliRunner
 
 from mascope_cli.cmd.prod import units
@@ -219,6 +220,15 @@ def host(monkeypatch, tmp_path, mascope_home):
     return {"steps": steps, "environment": environment, "etc": etc}
 
 
+@pytest.fixture
+def logs():
+    """The messages the command logs, joined."""
+    messages: list[str] = []
+    sink = logger.add(messages.append, level="DEBUG", format="{message}")
+    yield lambda: "".join(messages)
+    logger.remove(sink)
+
+
 def _argvs(steps):
     return [" ".join(step.argv) for step in steps]
 
@@ -283,15 +293,74 @@ def test_install_dry_run_prints_and_does_nothing(host, mascope_home):
     assert "sudo systemctl enable mascope.service" in result.output
 
 
-def test_install_runs_the_named_binary(host):
-    runner.invoke(units.units_app, ["install", "--bin", "/opt/mascope/bin/mascope"])
-    boot = next(s for s in host["steps"] if s.argv[-1].endswith("/mascope.service"))
-    assert "ExecStart=/opt/mascope/bin/mascope prod up --detach\n" in boot.stdin
+def _executable(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    return path
+
+
+def _boot_unit(steps):
+    return next(s for s in steps if s.argv[-1].endswith("/mascope.service")).stdin
+
+
+def test_install_runs_the_named_binary(host, tmp_path):
+    named = _executable(tmp_path / "opt" / "bin" / "mascope")
+    result = runner.invoke(units.units_app, ["install", "--bin", str(named)])
+    assert result.exit_code == 0, result.output
+    assert f"ExecStart={named} prod up --detach\n" in _boot_unit(host["steps"])
+
+
+def test_install_makes_a_relative_binary_absolute(host, tmp_path, monkeypatch):
+    named = _executable(tmp_path / "venv" / "bin" / "mascope")
+    monkeypatch.chdir(tmp_path)
+    relative = os.path.join("venv", "bin", "mascope")
+    result = runner.invoke(units.units_app, ["install", "--bin", relative])
+    assert result.exit_code == 0, result.output
+    assert f"ExecStart={named} prod up --detach\n" in _boot_unit(host["steps"])
+
+
+@pytest.mark.parametrize("kind", ["missing", "not executable", "directory"])
+def test_install_refuses_a_binary_that_is_not_an_executable_file(
+    host, tmp_path, kind, logs
+):
+    named = tmp_path / "bin" / "mascope"
+    if kind == "not executable":
+        named.parent.mkdir()
+        named.write_text("#!/bin/sh\n")
+        named.chmod(0o644)
+    elif kind == "directory":
+        named.mkdir(parents=True)
+    result = runner.invoke(units.units_app, ["install", "--bin", str(named)])
+    assert result.exit_code == 1
+    assert host["steps"] == []
+    assert f"--bin {named} is not an executable file" in logs()
+
+
+def test_named_executable_looks_a_bare_name_up_on_path(monkeypatch, tmp_path):
+    named = _executable(tmp_path / "bin" / "mascope")
+    monkeypatch.setenv("PATH", str(named.parent))
+    monkeypatch.chdir(tmp_path)
+    assert units.named_executable("mascope") == str(named)
+    assert units.named_executable("not-mascope") is None
+
+
+def test_install_tells_how_to_get_alerted(host, logs):
+    result = runner.invoke(units.units_app, ["install"])
+    assert result.exit_code == 0, result.output
+    assert f"Set HEALTHCHECK_URL in {host['etc']}/mascope/disk-check.env" in logs()
 
 
 def test_install_is_refused_off_linux(host, monkeypatch):
     monkeypatch.setattr(units.platform, "system", lambda: "Windows")
     result = runner.invoke(units.units_app, ["install", "--dry-run"])
+    assert result.exit_code == 1
+    assert host["steps"] == []
+
+
+def test_remove_is_refused_off_linux(host, monkeypatch):
+    monkeypatch.setattr(units.platform, "system", lambda: "Windows")
+    result = runner.invoke(units.units_app, ["remove", "--dry-run"])
     assert result.exit_code == 1
     assert host["steps"] == []
 

@@ -173,6 +173,26 @@ def running_executable() -> Optional[str]:
     return str(Path(found).absolute()) if found else None
 
 
+def named_executable(value: str) -> Optional[str]:
+    """
+    An executable named with ``--bin``, as an absolute path, or None.
+
+    A bare name is looked up on PATH. Not resolved through symlinks, as
+    :func:`running_executable`. None when the path is not an executable file:
+    systemd refuses a relative ``ExecStart``, and a typo would only show at the
+    next boot.
+    """
+    if os.sep not in value and not value.startswith("~"):
+        found = shutil.which(value)
+        if found is None:
+            return None
+        value = found
+    path = Path(value).expanduser()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        return None
+    return str(path.absolute())
+
+
 def environment_mascope_path(path: Optional[Path] = None) -> Optional[str]:
     """``MASCOPE_PATH`` as ``/etc/environment`` sets it, or None."""
     path = path or ENVIRONMENT_FILE
@@ -374,7 +394,16 @@ def install(
             "privileged steps go through sudo."
         )
         raise typer.Exit(1)
-    executable = mascope_bin or running_executable()
+    if mascope_bin is not None:
+        executable = named_executable(mascope_bin)
+        if executable is None:
+            runtime.logger.error(
+                f"--bin {mascope_bin} is not an executable file: name the "
+                "mascope executable the units should run."
+            )
+            raise typer.Exit(1)
+    else:
+        executable = running_executable()
     if not executable:
         runtime.logger.error(
             "Cannot tell which mascope executable the units should run: name "
@@ -418,8 +447,13 @@ def install(
         return
     runtime.logger.success(
         f"mascope.service enabled for user '{user}' (bin: {executable}). The disk "
-        "check (every 15 min) and the assignment-run retention (nightly) are "
-        "enabled; tune them in /etc/mascope/disk-check.env and prune.env."
+        "check (every 15 min) and the assignment-run retention (nightly; keeps "
+        "the newest 2 completed runs per sample) are enabled; tune them in "
+        f"{CONFIG_DIR}/disk-check.env and prune.env."
+    )
+    runtime.logger.info(
+        f"Set HEALTHCHECK_URL in {CONFIG_DIR}/disk-check.env to get alerted: "
+        "until then the disk check alerts nobody. See docs/maintaining.md."
     )
     runtime.logger.info(
         "Auto-updates are INSTALLED but DISABLED. To turn them on: "
