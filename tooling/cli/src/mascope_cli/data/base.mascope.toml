@@ -133,7 +133,6 @@ dump_compression = "0"
 
 [backend.redis]
 port = 6379
-image = "redis:7-alpine"
 
 [file-converter]
 tags = ['server', 'tof', 'orbi', 'file', 'all']
