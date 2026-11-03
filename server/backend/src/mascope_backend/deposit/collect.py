@@ -302,6 +302,7 @@ async def _read_records(session, dataset: Dataset) -> _Records:
                 .where(IonizationMode.ionization_mode_id.in_(sorted(mode_ids)))
                 .order_by(
                     IonizationMode.ionization_mode_name,
+                    IonizationMode.version,
                     IonizationMode.ionization_mode_id,
                 )
             )
@@ -671,10 +672,17 @@ def _mechanism(mechanism_id: str, mechanism: IonizationMechanism | None) -> dict
 def _ionization_mode(
     mode: IonizationMode, mechanisms: dict[str, IonizationMechanism]
 ) -> dict:
-    """An ionization mode the dataset's samples were processed under."""
+    """
+    An ionization mode the dataset's samples were processed under: one
+    version of a setup, with the version it replaced and the labelled
+    reagent's purity a run read its envelopes at.
+    """
     return {
         "ionization_mode_id": mode.ionization_mode_id,
         "ionization_mode_name": mode.ionization_mode_name,
+        "version": mode.version,
+        "supersedes_id": mode.supersedes_id,
+        "label_purity": mode.label_purity,
         "ionization_mode_token": mode.ionization_mode_token,
         "instrument": mode.instrument,
         "ionization_mode_polarity": mode.ionization_mode_polarity,

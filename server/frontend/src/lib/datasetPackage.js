@@ -130,3 +130,15 @@ export function notKeptLabel(names, shown = 3) {
  */
 export const collectionLabel = (collection) =>
   `${collection.target_collection_name} (${collection.used_as.join(', ')})`
+
+/**
+ * An ionization mode, with its version once the setup has been edited, so two
+ * versions of one mode the dataset's samples sit on read apart.
+ *
+ * @param {{ionization_mode_name: string, version: number}} mode
+ * @returns {string}
+ */
+export const modeLabel = (mode) =>
+  mode.version > 1
+    ? `${mode.ionization_mode_name} (version ${mode.version})`
+    : mode.ionization_mode_name
