@@ -187,10 +187,13 @@ class FileConverterSocketClient:
         The backend acknowledges an event it rejects for auth with
         ``{"error": <code>}`` and drops it (``file_converter_socket_auth``); an
         accepted event's acknowledgement is its handler's return, today
-        nothing. A rejection is logged once per file, token and code. A
-        rejection of the token itself (``TOKEN_REJECTIONS``) also remembers
-        the token, so ``emit`` stops sending that file's events with it;
-        any other code drops that one event only, since the next may pass.
+        nothing. A rejection is logged once per file, token and code while
+        the file's entry is kept; after its context is cleared or the entry
+        is evicted (``MAX_REJECTED_FILES``), the same rejection is logged
+        again. A rejection of the token itself (``TOKEN_REJECTIONS``) also
+        remembers the token, so ``emit`` stops sending that file's events
+        with it; any other code drops that one event only, since the next
+        may pass.
         Events already sent before the first acknowledgement came back are
         dropped by the backend too, and logged no further. An event sent
         with no token is never held back: ``emit`` compares only a token it
