@@ -1,10 +1,13 @@
 """
 The TIC a new sample item is given, and the scans it is taken over.
 
-A sample's TIC is that of the MS1 scans of its polarity, as the sample reads
-them. An acquisition of fragmentation scans alone records no MS1 scan, so
-asking for that TIC finds nothing - the reader raises rather than hand back an
-empty selection - and the item could not be created at all: every MS2 route is
+A sample's TIC is the mean TIC per scan of the MS1 scans of its polarity, as
+the sample reads them: its spectrum is averaged over the same scans, so the
+two are on one scale, and a longer item of the same signal gets the same TIC.
+
+An acquisition of fragmentation scans alone records no MS1 scan, so asking
+for that TIC finds nothing - the reader raises rather than hand back an empty
+selection - and the item could not be created at all: every MS2 route is
 keyed on a sample item, so the file's data had nothing to be read through.
 Such an item now takes the TIC of the scans its polarity does have.
 
@@ -68,11 +71,20 @@ async def _tic(answers):
 
 @pytest.mark.asyncio
 async def test_it_is_the_tic_of_the_ms1_scans():
-    tic, reads = await _tic({"Ms": [1.0, 2.0, 3.0], None: [100.0]})
+    tic, reads = await _tic({"Ms": [1.0, 2.0, 6.0], None: [100.0]})
 
-    assert tic == 6.0
+    assert tic == 3.0
     # One read: a file with MS1 scans never pays for a second.
     assert reads == [("instrument-A_file", "+", "Ms")]
+
+
+@pytest.mark.asyncio
+async def test_it_does_not_grow_with_the_number_of_scans():
+    """Two items of the same signal, one twice as long: the same TIC."""
+    short, _ = await _tic({"Ms": [4.0, 8.0], None: [100.0]})
+    long, _ = await _tic({"Ms": [4.0, 8.0] * 2, None: [100.0]})
+
+    assert short == long == 6.0
 
 
 @pytest.mark.asyncio
@@ -81,7 +93,7 @@ async def test_a_polarity_with_no_ms1_scans_takes_the_scans_it_has():
         {"Ms": NoScansFoundError("no MS1 scans"), None: [10.0, 20.0]}
     )
 
-    assert tic == 30.0
+    assert tic == 15.0
     assert [scan_type for _, _, scan_type in reads] == ["Ms", None]
 
 

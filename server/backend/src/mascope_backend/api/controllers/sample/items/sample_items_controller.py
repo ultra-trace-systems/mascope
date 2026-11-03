@@ -81,7 +81,12 @@ from mascope_thermo.thermo import NoScansFoundError
 
 
 async def _sample_item_tic(filename: str, polarity: str | None) -> float:
-    """The summed TIC of the scans a new sample item's signal is made of.
+    """The mean TIC per scan of the scans a new sample item's signal is made of.
+
+    A mean, not a sum: the item's spectrum is averaged over the same scans,
+    so its TIC is in the units of that spectrum - the intensity unit of the
+    file's reader per scan, ions/s for a TOF file - and an item twice as long
+    does not get twice the TIC.
 
     Those are the MS1 scans of its polarity, as its sample reads them
     (:func:`_polarity_tic_per_scan`). A polarity that recorded none - an
@@ -97,7 +102,7 @@ async def _sample_item_tic(filename: str, polarity: str | None) -> float:
 
     :param filename: The sample file's stored name.
     :param polarity: The item's polarity.
-    :return: The summed TIC.
+    :return: The mean TIC per scan.
     """
     try:
         _, tic_values = await asyncio.to_thread(
@@ -110,7 +115,7 @@ async def _sample_item_tic(filename: str, polarity: str | None) -> float:
             polarity=polarity,
             scan_type=None,
         )
-    return float(np.sum(tic_values))
+    return float(np.mean(tic_values))
 
 
 @api_controller()
