@@ -137,7 +137,7 @@ describe('the empty batch list', () => {
     const note = mountTable().get('.empty-state .note').text()
 
     expect(note).toMatch(/right-click here to paste/)
-    expect(note).toMatch(/a copied batch, or copied or cut samples/)
+    expect(note).toMatch(/a copied or cut batch, or copied or cut samples/)
   })
 
   it('says the search hid the rows when there are batches', () => {
