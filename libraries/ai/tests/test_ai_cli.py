@@ -236,7 +236,7 @@ class TestList:
         monkeypatch.setattr(_http.requests, "get", unreachable)
         code, out, err = run(capsys, "list", "datasets")
         assert code == 1
-        assert "Could not connect to Mascope" in err
+        assert "Could not connect to Mascope: " in err
         assert "Traceback" not in err
 
     def test_an_ambiguous_batch_says_so(self, env, capsys):
