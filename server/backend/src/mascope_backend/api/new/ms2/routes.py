@@ -74,6 +74,10 @@ async def get_ms1_averaged_centroids_route(
 ):
     """Retrieve averaged MS1 centroids for a sample.
 
+    ``reason`` is ``"unsupported"`` for a sample of a file that is not a raw
+    Orbitrap file, such as a TOF sample, which answers empty arrays; it is
+    null for a sample that is read.
+
     :param sample_item_id: The unique identifier of the sample.
     :param query_params: Query parameters for MS1 centroid retrieval.
     :param user: The current authenticated user. Requires workspace guest role.
@@ -101,6 +105,11 @@ async def get_ms2_averaged_centroids_route(
     With ``by_activation``, one spectrum per (parent peak, activation) group
     instead, so a stepped-energy acquisition keeps its steps apart.
 
+    ``reason`` is ``"unsupported"`` for a sample of a file whose MS2 scans
+    are not read, which is any but a raw Orbitrap file (a TOF sample): it
+    answers no spectrum and ``source`` null. It is null for a sample that is
+    read.
+
     :param sample_item_id: The unique identifier of the sample.
     :param query_params: Query parameters for MS2 centroid retrieval.
     :param user: The current authenticated user. Requires workspace guest role.
@@ -124,6 +133,11 @@ async def get_ms2_timeseries_route(
     membership=Depends(require_sample_role("guest")),
 ):
     """Retrieve fragment timeseries for a single parent peak.
+
+    ``reason`` is ``"unsupported"`` for a sample of a file whose MS2 scans
+    are not read, which is any but a raw Orbitrap file (a TOF sample): it
+    answers empty arrays and ``source`` null. It is null for a sample that
+    is read.
 
     :param sample_item_id: The unique identifier of the sample.
     :param query_params: Query parameters for MS2 timeseries retrieval.
@@ -153,6 +167,12 @@ async def get_ms2_scans_route(
     (``137.0960@hcd25.00``). Each scan carries the reader's record of it - its
     time, precursor, activation, energies, isolation width, scan range,
     injection time and TIC, and where each was read - and its centroids.
+
+    ``reason`` is ``"unsupported"`` for a sample of a file whose MS2 scans
+    are not read, which is any but a raw Orbitrap file (a TOF sample): it
+    answers the group with no scan and ``source`` null, where a sample that
+    is read and holds no scan of the group answers 404. It is null for a
+    sample that is read.
 
     :param sample_item_id: The unique identifier of the sample.
     :param query_params: Query parameters naming the group.

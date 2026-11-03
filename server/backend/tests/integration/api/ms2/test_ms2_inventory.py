@@ -30,7 +30,8 @@ parts of it:
 Over HTTP, as a client reads them: the summary of each sample lists the
 groups the samples listing counts, the batch's groups are one query whatever
 the batch's size, the sample record carries its groups, a TOF sample's
-summary says it is not read, and an MS1 batch lists nothing.
+summary and its other MS2 reads say it is not read, and an MS1 batch lists
+nothing.
 
 The routes read the ``sample_view`` database VIEW, which
 ``Base.metadata.create_all`` does not create, so it is created here as the
@@ -693,12 +694,9 @@ async def test_the_sample_record_carries_its_groups(registered, guest_client):
         ]
 
 
-@pytest.mark.asyncio
-async def test_a_tof_sample_is_said_not_to_be_read(
-    stored, dataset, async_session_factory, guest_client
-):
-    """Its summary answers, with the reason, and lists no group; it used
-    to fail with a 500."""
+@pytest_asyncio.fixture
+async def tof(stored, dataset, async_session_factory):
+    """A batch with one TOF sample, ``tof``, of a file beside the stored one."""
     tof = stored.filename.replace("-17h43m57s_", "-17h45m57s_")
     sample_dir = parse_path_from_item_filename(tof)
     os.makedirs(sample_dir)
@@ -722,19 +720,35 @@ async def test_a_tof_sample_is_said_not_to_be_read(
     ids = await _batch(
         async_session_factory, dataset, {"tof": (sample_file_id, "+", 0.0, 60.0)}
     )
-    try:
-        summary = await _summary(guest_client, ids["tof"])
-        listing = await _listing(guest_client, ids["batch"])
-        body = await _batch_groups(guest_client, ids["batch"])
-    finally:
-        async with async_session_factory() as session:
-            await session.execute(
-                delete(SampleBatch).where(SampleBatch.sample_batch_id == ids["batch"])
-            )
-            await session.execute(
-                delete(SampleFile).where(SampleFile.sample_file_id == sample_file_id)
-            )
-            await session.commit()
+    yield ids
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleBatch).where(SampleBatch.sample_batch_id == ids["batch"])
+        )
+        await session.execute(
+            delete(SampleFile).where(SampleFile.sample_file_id == sample_file_id)
+        )
+        await session.commit()
+
+
+async def _tof_read(client, sample_item_id: str, route: str) -> dict:
+    """A TOF sample's answer from one of the MS2 routes, which used to fail
+    with a 500; nothing of its file is read."""
+    response = await client.get(f"/api/samples/{sample_item_id}/ms2/{route}")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reason"] == "unsupported"
+    assert "not of a raw Orbitrap file" in body["message"]
+    return body
+
+
+@pytest.mark.asyncio
+async def test_a_tof_sample_is_said_not_to_be_read(tof, guest_client):
+    """Its summary answers, with the reason, and lists no group; it used
+    to fail with a 500."""
+    summary = await _summary(guest_client, tof["tof"])
+    listing = await _listing(guest_client, tof["batch"])
+    body = await _batch_groups(guest_client, tof["batch"])
 
     assert summary["source"] == "inventory"
     assert summary["data"]["reason"] == "unsupported"
@@ -743,6 +757,58 @@ async def test_a_tof_sample_is_said_not_to_be_read(
     assert summary["data"]["ms2_scan_count"] == 0
     assert listing["tof"]["ms2_group_count"] == 0
     assert body == {"message": body["message"], "results": 0, "data": []}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["", "?by_activation=true"])
+async def test_a_tof_samples_ms2_centroids_are_none(tof, guest_client, query):
+    body = await _tof_read(guest_client, tof["tof"], f"centroids{query}")
+
+    assert body["source"] is None
+    assert body["parent_peak_tolerance"] == 0.001
+    assert (body["results"], body["data"]) == (0, {})
+
+
+@pytest.mark.asyncio
+async def test_a_tof_samples_fragment_timeseries_is_empty(tof, guest_client):
+    body = await _tof_read(
+        guest_client,
+        tof["tof"],
+        "timeseries?parent_peak_mz=137.096&parent_peak_tolerance=0.002",
+    )
+
+    assert body["source"] is None
+    assert body["parent_peak_tolerance"] == 0.002
+    assert body["data"] == {"mz_values": [], "time": [], "values": []}
+
+
+@pytest.mark.asyncio
+async def test_a_tof_samples_group_has_no_scan(tof, guest_client):
+    """The group asked of it is answered with none of its scans, where an
+    Orbitrap sample that holds no scan of it answers 404."""
+    body = await _tof_read(guest_client, tof["tof"], "scans?group=137.096@hcd25.00")
+
+    assert body["source"] is None
+    assert body["parent_peak_tolerance"] == 0.001
+    assert body["data"] == {
+        "group": ms2_store.group_key(137.096, "hcd25.00"),
+        "polarity": "+",
+        "parent_peak_mz": 137.096,
+        "activation": "hcd25.00",
+        "scans": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_tof_samples_ms1_centroids_are_empty(tof, guest_client):
+    body = await _tof_read(guest_client, tof["tof"], "ms1_centroids")
+
+    assert body["data"] == {
+        "mz": [],
+        "intensity": [],
+        "resolution": [],
+        "signal_to_noise": [],
+    }
 
 
 # --- one query for a batch -------------------------------------------------------------

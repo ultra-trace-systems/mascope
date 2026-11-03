@@ -291,6 +291,9 @@ class TestTheStoreIsReadAlone:
         for response in (summary, spectra, timeseries, scans):
             assert response["source"] == "store"
             assert response["parent_peak_tolerance"] == 0.001
+        # Read, so not refused as a file of no raw Orbitrap read
+        for response in (spectra, timeseries, scans):
+            assert response["reason"] is None
         assert summary["data"]["parent_peak_tolerance"] == 0.001
         assert (
             summary["data"]
@@ -399,6 +402,7 @@ class TestAFileWithoutAStore:
         ]
 
         assert [response["source"] for response in responses] == ["raw"] * 4
+        assert [response["reason"] for response in responses[1:]] == [None] * 3
         assert responses[3]["data"]["scans"]
 
 
