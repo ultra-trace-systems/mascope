@@ -88,8 +88,8 @@ const onStatusAction = (batch) => {
         <p>Click on a batch to open it and see the samples within.</p>
 
         <p>Right click on a batch to perform actions. Right click on empty
-        space to paste a copied batch into this dataset, or copied or cut
-        samples into a new batch.</p>
+        space to paste a copied or cut batch into this dataset, or copied or
+        cut samples into a new batch.</p>
       `,
         { doc: app.ui.help.docUrl('concepts/#the-data-hierarchy') }
       )
@@ -165,7 +165,7 @@ const onStatusAction = (batch) => {
           icon="pi pi-folder-open"
           title="No batches yet"
           hint="A batch holds the samples you analyse and compare together."
-          note="Or right-click here to paste a copied batch, or copied or cut samples."
+          note="Or right-click here to paste a copied or cut batch, or copied or cut samples."
         >
           <template #actions>
             <Button

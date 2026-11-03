@@ -6,7 +6,8 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useApp } from '@/stores'
 import { useBatchDeleteDialog } from '@/lib/dialogs'
 import { generateCopyName } from '@/api/utils'
-import { batchInstruments, canCalibrateInstruments } from '@/lib/permissions'
+import { batchInstruments, canCalibrateInstruments, canEditWorkspace } from '@/lib/permissions'
+import { ROLES } from '@/lib/roles'
 
 import { useSampleContextMenu } from './sampleContextMenu.js'
 import { useCustomizerPopover } from './customizerPopover.js'
@@ -44,7 +45,7 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
 
     await clipboard.read()
     row.value = targetBatch
-    if (row.value || clipboard.batch !== null || pasteSamplesNewValid.value) {
+    if (row.value || pasteBatchValid.value || pasteSamplesNewValid.value) {
       show(event)
     } else {
       hide()
@@ -78,6 +79,38 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
   // offered a new batch to go into.
   const pasteSamplesNewValid = computed(() => row.value === null && pasteIntoNew.batchValid)
 
+  // Moving a batch takes the editor role on both datasets' workspaces. A locked
+  // batch, or one in a locked dataset, moves only for a global admin; nothing
+  // moves into a locked dataset, and an ACQUISITION batch or dataset - filled
+  // by the ingest - never takes part. As for the other checks here, an account
+  // still loading counts as allowed and the backend decides.
+  const canEdit = computed(() => canEditWorkspace(app.data.workspace.focused, app.auth.user))
+  const isAdmin = computed(() => !app.auth.user || (app.auth.user.role_id ?? 0) >= ROLES.admin)
+  const cutValid = computed(
+    () =>
+      row.value != null &&
+      row.value.sample_batch_type !== 'ACQUISITION' &&
+      canEdit.value &&
+      (isAdmin.value || (!row.value.locked && !app.data.dataset.focused?.locked))
+  )
+  const pasteCutValid = computed(
+    () =>
+      row.value === null &&
+      clipboard.op === 'cut' &&
+      clipboard.batch !== null &&
+      app.data.dataset.focusedId != null &&
+      clipboard.batch.dataset_id !== app.data.dataset.focusedId &&
+      app.data.dataset.focused?.dataset_type !== 'ACQUISITION' &&
+      !app.data.dataset.focused?.locked &&
+      !app.data.workspace.focused?.is_system &&
+      canEdit.value
+  )
+  const pasteBatchValid = computed(
+    () =>
+      (row.value === null && clipboard.batch !== null && clipboard.op === 'copy') ||
+      pasteCutValid.value
+  )
+
   // The backend checks every instrument the batch draws on, so this does too.
   // The instruments come from the samples currently loaded for the batch; when
   // none are, the list is empty and the helper leaves the entry enabled rather
@@ -96,7 +129,7 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
       label: 'Paste batch',
       icon: 'pi pi-clipboard',
       command: async () => {
-        if (clipboard.batch) {
+        if (pasteBatchValid.value) {
           if (clipboard.op === 'copy') {
             await app.data.batch.copy({
               sample_batch_id: clipboard.batch.sample_batch_id,
@@ -104,10 +137,16 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
               sample_batch_name: generateCopyName(clipboard.batch.sample_batch_name),
               sample_batch_description: clipboard.batch.sample_batch_description
             })
+          } else if (clipboard.op === 'cut') {
+            await app.data.batch.move({
+              sample_batch_id: clipboard.batch.sample_batch_id,
+              dataset_id: app.data.dataset.focusedId
+            })
+            clipboard.clear()
           }
         }
       },
-      visible: clipboard.batch !== null && row.value === null
+      visible: pasteBatchValid.value
     },
     {
       label: `Paste sample${clipboard.samples?.length > 1 ? 's' : ''}`,
@@ -155,6 +194,14 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
         dialog.op = 'update_targets'
       },
       visible: row.value !== null
+    },
+    {
+      label: 'Cut batch',
+      icon: 'pi ph ph-scissors',
+      command: () => {
+        clipboard.cut(row.value)
+      },
+      visible: cutValid.value
     },
     {
       label: 'Copy batch',

@@ -66,6 +66,18 @@ export const useBatch = defineStore('app.data.batch', () => {
           type: 'copy_batch'
         }
       ),
+    // Moves the batch whole into another dataset: same ID, samples, matches
+    // and collections. One request, answered with the moved batch rather than
+    // run as a background task.
+    move: ({ sample_batch_id, dataset_id }) =>
+      api.http.post(
+        `/sample/batches/${sample_batch_id}/move`,
+        { dataset_id },
+        {
+          use: 'update',
+          type: 'move_batch'
+        }
+      ),
     importSamples: async ({ batch, sample_items }) => {
       return await api.http.post(
         `/sample/batches/${batch.sample_batch_id}/import`,
