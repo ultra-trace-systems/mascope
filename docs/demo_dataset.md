@@ -163,9 +163,9 @@ into a real deployment.
 Same as the seed path, but instead of restoring the snapshot it restores the
 **reference seed** (so the pipeline has the ionization modes, instrument config,
 and calibration/diagnostic collections), launches the app, then a background
-thread uploads each `raw/` file to the real `POST /api/sample/files/upload`
-endpoint — as the File Agent does (bearer `file-agent` token +
-`X-Service-Name: file-agent`). The `file-converter` ingests them and runs the
+thread uploads each `raw/` file through the real resumable (TUS) upload
+endpoint, `/api/sample/files/upload/tus` — as the File Agent does (the SDK's
+`api_post_file_tus`, bearer `file-agent` token + `X-Service-Name: file-agent`). The `file-converter` ingests them and runs the
 real `RawProcessor` -> peak detection -> matching pipeline.
 
 Direct drops into `filestreams/` cannot work: the file context (uploader
@@ -173,19 +173,35 @@ identity + token) is registered only by the upload endpoint, so a dropped file
 is "not registered" and fails. This path runs the real pipeline, so it is what
 the reproducibility test drives.
 
-**Uploading is gated on the converter, not just the backend.** The upload
-endpoint emits each file's context over the `/file-converter` socket at upload
-time, so a file uploaded before the converter has connected has its context
-emitted into the void and fails deep in processing with "not registered in file
-converter service" — quarantined into `<env>/filestreams/failed_files/` while
-both sample batches still finish `ready`, which is exactly how a rebuild ends up
-short without saying so. The uploader therefore samples the backend's
-`mascope:service:file-converter` presence key *before* the stack starts and
-holds the first upload until a converter has connected since (waiting for the
-key to merely exist would be satisfied by a stale key from a killed run, or by
-another worktree's converter — the key is not env-scoped). It then keeps
-sweeping `failed_files/` for the rest of the run, re-uploading the bundle's own
-files up to twice each and reporting by name any that still never made it.
+**Uploading is gated on the converter, not just the backend.** The server
+refuses an upload with 503 while no file-converter is connected, before any
+bytes move, so a refused file reaches neither `<env>/filestreams/` nor its
+`failed_files/` quarantine and nothing downstream would retry it. The uploader
+therefore samples the backend's `mascope:service:file-converter` presence key
+*before* the stack starts and holds the first upload until a converter has
+connected since (waiting for the key to merely exist would be satisfied by a
+stale key from a killed run, or by another worktree's converter — the key is
+not env-scoped). If none connects within five minutes it uploads anyway, and
+re-posts the refused files in up to two more passes, each held until a
+converter is connected.
+
+**A failed upload is looked up before it is re-posted.** After each pass, the
+last included, the uploader checks every file that failed: one pending in
+`filestreams/`, quarantined in `failed_files/`, or already a sample file in the
+demo database reached the server despite the error, and is not posted again.
+A second copy would be quarantined as a duplicate (`FileExistsError`) and
+reported as never ingested. The database is matched on the 14-digit acquisition
+stamp, since it stores the name the converter rebuilds from the file's metadata.
+
+The uploader then keeps sweeping `failed_files/` for the rest of the run,
+re-uploading the bundle's own files up to twice each, dropping a quarantined
+copy of a file the database already holds, and reporting by name any that
+still never made it.
+
+**Leftovers of an earlier rebuild are cleared before the stack starts.** Copies
+of the bundle's own files in the `filestreams/` root (from a run killed
+mid-ingestion) or in `failed_files/` would otherwise be ingested a second time
+or re-fed as duplicates. Files with other names are left alone.
 
 **Two converters on one directory fail the same way, and the guard above does
 not catch it.** A second stack that mounts this env's runtime home into its own
