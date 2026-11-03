@@ -1695,6 +1695,16 @@ inherits the DSN in the container: a prod job or an operator's
 terminal instead of filing them as the server's. Run a script by its path when
 its errors should reach GlitchTip.
 
+A short Redis outage files nothing. A Redis restart, a dropped idle connection
+or a Redis host name that does not resolve yet while the stack comes up is
+logged in the backend's log files as a warning ending in
+`(Redis out of reach)`, with no stack, and kept out of GlitchTip: the socket
+storage rides it out by retrying, refusing the call, or letting a key lapse.
+The same holds for a Redis that stays down: these paths report it to
+GlitchTip no more than a blip, so read it in the log files, as a run of those
+warnings. Any other failure of the socket storage is still an `ERROR` with
+its stack.
+
 Backend images ship `sentry-sdk` (the runtime's `[sentry]` extra) since
 2026-07, so there is nothing to install per server; the DSN alone toggles
 reporting. The event `environment` is the runtime mode and `release` follows

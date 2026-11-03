@@ -30,7 +30,11 @@ from typing import Any, Optional
 
 from mascope_backend.db import User
 from mascope_backend.runtime import runtime
-from mascope_backend.socket.storage.client import redis_storage_client
+from mascope_backend.socket.storage.client import (
+    TRANSIENT_REDIS_ERRORS,
+    log_storage_failure,
+    redis_storage_client,
+)
 from mascope_backend.socket.storage.config import storage_config
 from mascope_backend.socket.storage.exceptions import SocketSessionError
 from mascope_backend.socket.storage.workers import renew_socket_claim
@@ -101,9 +105,10 @@ async def save_user_session(
         )
 
     except Exception as e:
-        runtime.logger.exception(
+        log_storage_failure(
             f"Redis session storage client: failed to save session for SID '{sid}': {str(e)} "
-            f"[Worker {worker_pid}]"
+            f"[Worker {worker_pid}]",
+            e,
         )
         raise SocketSessionError("Failed to save session") from e
 
@@ -138,8 +143,9 @@ async def clear_user_session(sid: str, namespace: str = "/") -> None:
             )
 
     except Exception as e:
-        runtime.logger.exception(
-            f"Redis session storage client: failed to clear session for {sid}: {e} [Worker {worker_pid}]"
+        log_storage_failure(
+            f"Redis session storage client: failed to clear session for {sid}: {e} [Worker {worker_pid}]",
+            e,
         )
 
 
@@ -158,9 +164,11 @@ async def _unindex_session(session_key: str, sid: str) -> None:
         if data := await redis_storage_client.client.get(session_key):
             await forget_user_socket(json.loads(data)["user_id"], sid)
     except Exception as e:
-        runtime.logger.warning(
-            f"Redis session storage client: could not unindex session {sid}: {e}"
-        )
+        message = f"Redis session storage client: could not unindex session {sid}: {e}"
+        if isinstance(e, TRANSIENT_REDIS_ERRORS):
+            log_storage_failure(message, e)
+        else:
+            runtime.logger.warning(message)
 
 
 async def get_session_user(sid: str, namespace: str = "/") -> dict[str, Any]:
@@ -232,8 +240,9 @@ async def get_session_user(sid: str, namespace: str = "/") -> dict[str, Any]:
     except SocketSessionError:
         raise
     except Exception as e:
-        runtime.logger.exception(
-            f"Redis session storage client: session error for {sid}: {e} [Worker {worker_pid}]"
+        log_storage_failure(
+            f"Redis session storage client: session error for {sid}: {e} [Worker {worker_pid}]",
+            e,
         )
         raise SocketSessionError(f"Session error: {e}") from e
 

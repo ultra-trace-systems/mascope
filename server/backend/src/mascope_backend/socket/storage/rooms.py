@@ -21,7 +21,10 @@ worker's socket leave its rooms, something has to say which rooms those are.
 import os
 
 from mascope_backend.runtime import runtime
-from mascope_backend.socket.storage.client import redis_storage_client
+from mascope_backend.socket.storage.client import (
+    log_storage_failure,
+    redis_storage_client,
+)
 from mascope_backend.socket.storage.config import storage_config
 from mascope_backend.socket.storage.workers import socket_is_held
 
@@ -68,9 +71,10 @@ class RoomTracker:
             )
 
         except Exception as e:
-            runtime.logger.exception(
+            log_storage_failure(
                 f"Room tracker: failed to join room '{room_id}' for user {user_id}: {e} "
-                f"[Worker {worker_pid}]"
+                f"[Worker {worker_pid}]",
+                e,
             )
             raise
 
@@ -99,9 +103,10 @@ class RoomTracker:
             )
 
         except Exception as e:
-            runtime.logger.exception(
+            log_storage_failure(
                 f"Room tracker: failed to leave room '{room_id}' for user {user_id}: {e} "
-                f"[Worker {worker_pid}]"
+                f"[Worker {worker_pid}]",
+                e,
             )
 
     @staticmethod
@@ -128,9 +133,10 @@ class RoomTracker:
             )
 
         except Exception as e:
-            runtime.logger.exception(
+            log_storage_failure(
                 f"Room tracker: failed to check membership for user {user_id} "
-                f"in room '{room_id}': {e}"
+                f"in room '{room_id}': {e}",
+                e,
             )
             # Fail open - assume not in room to use user room fallback
             return False
@@ -173,9 +179,10 @@ class RoomTracker:
             )
 
         except Exception as e:
-            runtime.logger.exception(
+            log_storage_failure(
                 f"Room tracker: failed to clean up rooms for user {user_id}: {e} "
-                f"[Worker {worker_pid}]"
+                f"[Worker {worker_pid}]",
+                e,
             )
 
     @staticmethod
@@ -230,8 +237,9 @@ class RoomTracker:
         except Exception as e:
             # Leave anyway: a membership left behind would route the user's
             # notifications to a room nobody of theirs may be listening in.
-            runtime.logger.exception(
-                f"Room tracker: failed to read the other sockets of user {user_id}: {e}"
+            log_storage_failure(
+                f"Room tracker: failed to read the other sockets of user {user_id}: {e}",
+                e,
             )
             held = None
         if held is None or room_id not in held:
@@ -265,8 +273,9 @@ class RoomTracker:
             # Clean up as before the per-socket record: a membership left
             # behind would route the user's notifications to a room nobody of
             # theirs may be listening in.
-            runtime.logger.exception(
-                f"Room tracker: failed to read the sockets of user {user_id}: {e}"
+            log_storage_failure(
+                f"Room tracker: failed to read the sockets of user {user_id}: {e}",
+                e,
             )
             held = None
         if held is None:
@@ -334,8 +343,9 @@ class RoomTracker:
                 storage_config.socket_rooms_key(sid)
             )
         except Exception as e:
-            runtime.logger.exception(
-                f"Room tracker: failed to forget the rooms of socket {sid}: {e}"
+            log_storage_failure(
+                f"Room tracker: failed to forget the rooms of socket {sid}: {e}",
+                e,
             )
 
 
