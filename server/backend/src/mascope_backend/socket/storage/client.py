@@ -16,6 +16,8 @@ Redis key namespaces:
 from redis.asyncio import Redis, from_url
 from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialWithJitterBackoff
+from redis.exceptions import AuthenticationError as RedisAuthenticationError
+from redis.exceptions import AuthorizationError as RedisAuthorizationError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
@@ -36,6 +38,11 @@ TRANSIENT_REDIS_ERRORS = (
     TimeoutError,
 )
 
+#: redis-py's ``ConnectionError`` subclasses that no wait heals: a wrong or
+#: rotated password, an account the server refuses a command. They are a
+#: misconfiguration to report, not Redis out of reach.
+REDIS_CONFIGURATION_ERRORS = (RedisAuthenticationError, RedisAuthorizationError)
+
 #: Retries of a command that failed with a connection error or a timeout. One
 #: is enough to replace a pooled connection Redis or a proxy closed while it
 #: sat idle. Every command the socket storage sends is safe to send again
@@ -46,12 +53,25 @@ COMMAND_RETRIES = 1
 SOCKET_TIMEOUT = 5
 
 
+def is_transient_redis_error(error: BaseException) -> bool:
+    """
+    Whether a failed call met Redis briefly out of reach, not a fault.
+
+    :param error: The exception a Redis call raised.
+    :return: True for :data:`TRANSIENT_REDIS_ERRORS`, except the
+        :data:`REDIS_CONFIGURATION_ERRORS` that subclass them.
+    """
+    return isinstance(error, TRANSIENT_REDIS_ERRORS) and not isinstance(
+        error, REDIS_CONFIGURATION_ERRORS
+    )
+
+
 def log_storage_failure(message: str, error: BaseException) -> None:
     """
     Log a failed socket storage call, from inside its ``except`` block.
 
-    A :data:`TRANSIENT_REDIS_ERRORS` failure is Redis being briefly out of
-    reach, which every caller already rides out (a refused call, a retry on the
+    A transient failure (:func:`is_transient_redis_error`) is Redis being
+    briefly out of reach, which every caller already rides out (a refused call, a retry on the
     next tick, a key that lapses on its own). It is logged as a warning with no
     stack, and kept out of error monitoring. Any other exception is a fault and
     is logged with its stack, as before.
@@ -62,7 +82,7 @@ def log_storage_failure(message: str, error: BaseException) -> None:
     :param message: What failed, naming the socket or service.
     :param error: The exception being handled.
     """
-    if isinstance(error, TRANSIENT_REDIS_ERRORS):
+    if is_transient_redis_error(error):
         runtime.logger.bind(**{SENTRY_SKIP: True}).opt(depth=1).warning(
             f"{message} (Redis out of reach)"
         )

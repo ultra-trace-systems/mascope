@@ -58,8 +58,9 @@ def socket_auth(minimum_role: str, service_name: Optional[str] = None):
                 # SocketSessionError belongs here too: `connect` accepts
                 # unauthenticated sockets, so every event a client emits
                 # without a stored session lands on it. The genuine session
-                # faults (corrupt data, Redis down) are already reported at
-                # ERROR where they happen, in get_session_user.
+                # faults are already logged where they happen, in
+                # get_session_user: corrupt data at ERROR, Redis out of reach
+                # as a warning kept out of monitoring.
                 runtime.logger.info(f"Socket auth error for {sid}: {str(e)}")
 
             except Exception:
