@@ -300,9 +300,10 @@ def test_one_ions_height_from_a_few_runs_floors_only_the_empty_windows():
         spread = median_abs_deviation(signal[window & ~cores], scale="normal")
         assert snr[i] == pytest.approx(peak_heights[i] / spread, rel=1e-6)
     assert snr[2] >= 3
-    # The cluster's window is mostly empty, and its spread is wider than
-    # the eight-ion floor: its peak divides by the larger of the two
-    assert snr[3] < 1
+    # The cluster's window is mostly empty, so its peak keeps the floor:
+    # it divides by the larger of the window's spread (about one) and the
+    # eight-ion height the cluster gives
+    assert snr[3] == pytest.approx(1 / 8, rel=1e-6)
 
 
 @pytest.mark.parametrize(
