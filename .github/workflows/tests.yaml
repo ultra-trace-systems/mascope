@@ -541,6 +541,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Free disk space on the runner
+        run: |
+          # The upload spec needs headroom on the root disk, where Docker keeps
+          # the stack's volumes and so the backend's upload spool. The backend
+          # refuses a resumable upload with 507 when admitting it would leave
+          # less than tus_min_free_disk_gb (10 GB by default) free there, and
+          # on some ubuntu-24.04 runner images only about 5.5 GB is left by
+          # the time the spec runs: every upload is refused, and the spec
+          # times out waiting for a file that never arrives. Delete
+          # toolchains this job never touches instead of lowering the floor,
+          # so the stack keeps the default it ships with: Python comes from
+          # uv, Node from setup-node, and the app runs in its images.
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/local/.ghcup /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift
+          df -h /
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -670,7 +687,14 @@ jobs:
 
       - name: Dump stack logs on failure
         if: failure()
-        run: docker compose -f docker-compose.demo.yaml logs --tail 200
+        run: |
+          docker compose -f docker-compose.demo.yaml logs --tail 200
+          # Free space where the stack keeps its volumes. The backend's
+          # warning for an upload it refused for disk space (507) is often
+          # gone from the tail above by now - the SDK contract tests run after
+          # the e2e suite - and otherwise only the Playwright trace has it.
+          df -h /
+          docker system df
 
       - name: Upload Playwright report
         if: failure()
