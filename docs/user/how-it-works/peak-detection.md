@@ -76,6 +76,9 @@ Where the baseline is mostly empty, that deviation is zero, and the standard dev
 Such a spectrum is counting single ions, as an ambient-mode TOF's often is, and each ion is a short blip above zero.
 One ion's height is the median height of the blips in the empty stretches of the whole spectrum, leaving out any that reach into a fitted peak.
 No peak's noise is less than that height, whether its own baseline is empty or about half filled with stray ions: nothing stands less than one ion above its baseline.
+That holds once the height is read from at least 30 blips.
+Read from fewer, it floors only the peaks over an empty baseline: the median of a few blips can be a small cluster of several ions, too weak to be fitted, and as a floor under every peak it would cut the $\text{SNR}$ of the peaks over a dense baseline, calibrants included.
+Over the TOF files of the regression corpus and a set of production TOF files, the median of 30 blips drawn at random stays within 1.5 times that of all of them in 99 draws of 100, and every file whose dense baseline the floor reaches has more than 150.
 So over a sparse baseline a peak's $\text{SNR}$ is about the number of ions it holds, and a peak of a few stray ions stays below the gates that read the $\text{SNR}$.
 A spectrum with no mostly empty stretch has no single ion to measure, and its noise is the deviation alone.
 A peak with no baseline left in its window has no $\text{SNR}$, nor has one over a flat baseline in a spectrum with no single ion to measure.
