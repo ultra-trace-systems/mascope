@@ -248,11 +248,18 @@ async def get_ms2_averaged_centroids(
     a sample of the whole acquisition does - and, by parent peak, every
     activation of each one or one alone. A sample whose window cuts a group,
     or holds several activations of a parent peak and not all when they are
-    merged, is averaged from the raw file, over its own scans.
+    merged, is averaged from the raw file, over its own scans of each of the
+    store's groups: its spectra are keyed as its summary and its groups'
+    scans are, at the store's tolerance, even where a precursor's m/z drifts
+    and the window's scans alone would be grouped at another m/z.
 
     :param sample_item_id: Unique identifier for the sample.
     :param noise_threshold: Minimum signal-to-noise ratio threshold.
-    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks.
+    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks,
+        used only for a file with no MS2 store or a sample with no polarity,
+        which are grouped from the raw file at it. Otherwise the store's
+        groups answer, a window read raw included, and the response's
+        ``parent_peak_tolerance`` gives the tolerance they were made at.
     :param by_activation: Split each parent peak by activation.
     :param timeout: Maximum seconds to wait for the computation.
     :return: Dictionary with averaged MS2 centroids keyed by group,
@@ -277,6 +284,19 @@ async def get_ms2_averaged_centroids(
             spectra = await asyncio.to_thread(stored, store)
             if spectra is not None:
                 return spectra, SOURCE_STORE, store.parent_peak_tolerance
+            scans = await asyncio.to_thread(
+                store.window_scans,
+                sample.t0,
+                sample.t1,
+                sample.polarity,
+                by_activation=by_activation,
+            )
+            if scans is not None:
+                # The window's own scans, read raw, under the store's groups
+                spectra = await m_compute.get_orbi_ms2_centroids_of_scans(
+                    sample.filename, scans, ppm=store.ppm
+                )
+                return spectra, SOURCE_RAW, store.parent_peak_tolerance
         if await _unsupported(sample.filename):
             return None, None, parent_peak_tolerance
         spectra = await m_compute.get_orbi_ms2_centroids_by_parent(

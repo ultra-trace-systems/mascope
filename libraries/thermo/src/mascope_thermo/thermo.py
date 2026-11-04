@@ -1225,6 +1225,40 @@ def get_ms2_centroids_by_parent(
         }
 
 
+def get_ms2_centroids_of_scans(
+    datafile_path: str,
+    scans_by_group: dict[tuple[float, str], list[int]],
+    ppm: int = 1,
+    average: bool = True,
+) -> dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """Averaged MS2 centroids over scans grouped by the caller.
+
+    :func:`get_ms2_centroids_by_parent` without its grouping: each key's scans
+    are averaged as they are given, in one opening of the file. For a caller
+    whose groups are made elsewhere - the MS2 store's, over the whole file -
+    so its spectra keep those groups' keys whatever scans a window holds.
+
+    :param datafile_path: Path to the Thermo Fisher raw file (.raw).
+    :type datafile_path: str
+    :param scans_by_group: Mapping of (parent peak m/z, activation) to the
+                           scan numbers to average, in scan order.
+    :type scans_by_group: dict[tuple[float, str], list[int]]
+    :param ppm: Mass tolerance in ppm for centroid binning, defaults to 1.
+    :type ppm: int, optional
+    :param average: If True, return averaged intensities; if False,
+                    scale by scan count.
+    :type average: bool, optional
+    :return: Mapping of the same keys, in the same order, to
+             (masses, intensities, resolutions, signal_to_noise).
+    :rtype: dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+    """
+    with open_backend(datafile_path) as backend:
+        return {
+            key: backend.average_centroids(scan_indices, ppm=ppm, average=average)
+            for key, scan_indices in scans_by_group.items()
+        }
+
+
 def get_ms2_summary_metadata(
     datafile_path: str,
     t_min: float | None = None,

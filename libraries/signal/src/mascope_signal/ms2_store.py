@@ -44,8 +44,10 @@ group's every scan, and a parent peak's merged one over every scan of it, so
 the store answers a window that holds every scan of each group it touches;
 merged over the activations, the window also has to hold every group of each
 parent peak, or one alone. For any other window
-:meth:`Ms2Store.averaged_centroids` answers None and the caller reads the raw
-file.
+:meth:`Ms2Store.averaged_centroids` answers None and the caller averages the
+window's scans from the raw file, grouped as :meth:`Ms2Store.window_scans`
+groups them: by the store's groups, so the spectra are keyed as the summary's
+groups are.
 
 The file's props record the store (``ms2_store``): the layout, its version,
 the grouping tolerance, the averaging bin, the reader that wrote it, and each
@@ -849,6 +851,46 @@ class Ms2Store:
                 return None
             spectra[(parent_peak_mz, "")] = self._spectrum(spectrum)
         return spectra
+
+    @property
+    def ppm(self) -> int:
+        """The bin [ppm] the stored spectra were averaged in."""
+        return int(self.attrs["ppm"])
+
+    def window_scans(
+        self,
+        t_min: float | None,
+        t_max: float | None,
+        polarity: Literal["+", "-"] | None,
+        by_activation: bool = True,
+    ) -> dict[tuple[float, str], list[int]] | None:
+        """The scan numbers of each of the store's groups in a selection.
+
+        What a window's spectra are averaged over when no stored spectrum is
+        (:meth:`averaged_centroids` answers None): keyed by the store's
+        groups, made over the whole file, and not by grouping the window's
+        scans again, which can give a precursor whose m/z drifts from scan to
+        scan another parent m/z. So a window's spectra read raw are keyed as
+        its summary and its groups' scans are. With ``by_activation`` False,
+        one entry per parent peak over every scan of it in the window, keyed
+        with an empty activation.
+
+        :return: ``{(parent peak m/z, activation): scan numbers}``, in scan
+            order, ordered as :meth:`averaged_centroids` orders its spectra;
+            None for a selection with no polarity.
+        :raises NoScansFoundError: When the selection holds no MS2 scan.
+        """
+        if polarity not in _POLARITY_CODES:
+            return None
+        rows = self._fragment_rows(t_min, t_max, polarity)
+        scans: dict[tuple[float, str], list[int]] = {}
+        for _, group, own in self._groups_held(rows):
+            key = (
+                group["parent_peak_mz"],
+                group["activation"] if by_activation else "",
+            )
+            scans.setdefault(key, []).extend(int(n) for n in self._scan_numbers[own])
+        return {key: sorted(numbers) for key, numbers in scans.items()}
 
     def _scan_centroids(self, rows: np.ndarray) -> list[dict]:
         """The centroids of the scan-table ``rows``, as the reader gives them

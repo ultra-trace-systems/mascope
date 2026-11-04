@@ -732,6 +732,12 @@ The recommendations, confirmed by the plan owner on 2026-10-23 (MAS-380):
 1. **Store once, at conversion.** MS2 is written to a store beside the peak
    store and the routes read it; the raw file is read only for a file
    converted before the store existed, and the response says which.
+   One exception was kept on purpose (MAS-539): the averaged spectra of a
+   window that cuts a group, or, with activations merged, of a window that
+   holds several of a parent peak's activation groups whole but not all of
+   them, are averaged from the raw file, since the reader's averaging cannot
+   be redone from the stored centroids bit for bit. They are averaged over
+   the window's scans of each stored group, so they carry the store's keys.
 2. **The group key does not move.** `<parent m/z>@<activation>` stays. A
    group whose scans isolate at two widths reports every width it holds and
    its scan table says which scan used which (MAS-265).
