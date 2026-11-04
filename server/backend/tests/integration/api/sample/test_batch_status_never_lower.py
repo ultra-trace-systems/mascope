@@ -5,10 +5,13 @@ Tests: a ``rematch`` flag never lowers a pending ``recalibrate``.
 samples alone when it already waits on a stronger pending status: a
 recalibration ends in a rematch, so it covers one. The edit flaggers that ask
 for a rematch pass it - the ionization-mode edit
-(``tests/integration/api/ionization/test_ionization_mode_update.py``) and the
-target collection create, update and delete covered here through their
-routes. A batch without samples still goes to ``ready``, and the socket event
-carries the status each batch holds, not the one asked for.
+(``tests/integration/api/ionization/test_ionization_mode_update.py``), and,
+covered here through their routes, the target collection create, update and
+delete, a target ion edit, a compound formula change and deletion, a sample
+copy into another batch, and a change of a batch's collections. A rematch
+forced on a batch pending a recalibration that fails puts it back at
+``recalibrate``. A batch without samples still goes to ``ready``, and the
+socket event carries the status each batch holds, not the one asked for.
 """
 
 from datetime import datetime, timezone
@@ -16,10 +19,16 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import func, select, text
 
+from mascope_backend.api.controllers.match import match_controller
 from mascope_backend.api.controllers.sample.batches.status import service
+from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.db import (
     Dataset,
+    IonizationMechanism,
+    IonizationMode,
+    Sample,
     SampleBatch,
     SampleFile,
     SampleItem,
@@ -27,9 +36,11 @@ from mascope_backend.db import (
     TargetCollectionInSampleBatch,
     TargetCompound,
     TargetCompoundInTargetCollection,
+    TargetIon,
     Workspace,
 )
 from mascope_backend.db.id import gen_id
+from mascope_match.params import BaseMatchParams
 
 
 _NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -77,7 +88,9 @@ async def status_dataset(async_session_factory):
     return {"dataset_id": dataset_id, "file_id": file_id}
 
 
-async def _batch(async_session_factory, ctx, status, with_sample=True):
+async def _batch(
+    async_session_factory, ctx, status, with_sample=True, ionization_mode_id=None
+):
     """A batch at ``status``, with one sample item unless ``with_sample`` is off."""
     batch_id = gen_id()
     async with async_session_factory() as session:
@@ -96,8 +109,9 @@ async def _batch(async_session_factory, ctx, status, with_sample=True):
                     sample_item_id=gen_id(),
                     sample_batch_id=batch_id,
                     sample_file_id=ctx["file_id"],
+                    ionization_mode_id=ionization_mode_id,
                     sample_item_name="Status Item",
-                    sample_item_type="ANALYSIS",
+                    sample_item_type="SAMPLE",
                     sample_item_attributes={},
                     polarity="+",
                     tic=1000.0,
@@ -284,3 +298,258 @@ async def test_updating_a_collection_still_flags_a_ready_batch(
 
     assert resp.status_code == 200, resp.text
     assert await _status(async_session_factory, batch_id) == "rematch"
+
+
+# ============= The other edit flaggers =============
+
+
+async def _mode(async_session_factory):
+    """An ionization mechanism and a mode of it."""
+    mechanism_id = gen_id()
+    mode_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMechanism(
+                ionization_mechanism_id=mechanism_id,
+                ionization_mechanism_polarity="+",
+                ionization_mechanism=f"[M+H]+ {mechanism_id}",
+            )
+        )
+        session.add(
+            IonizationMode(
+                ionization_mode_id=mode_id,
+                ionization_mode_name=f"Status Mode {mode_id}",
+                ionization_mode_polarity="+",
+                ionization_mechanism_ids=[mechanism_id],
+            )
+        )
+        await session.commit()
+    return mechanism_id, mode_id
+
+
+async def _ion_chain(async_session_factory, ctx, status):
+    """A batch at ``status`` whose sample reads a mode with the ion's mechanism."""
+    mechanism_id, mode_id = await _mode(async_session_factory)
+    ion_id = gen_id()
+    batch_id = await _batch(
+        async_session_factory, ctx, status, ionization_mode_id=mode_id
+    )
+    _, compound_id = await _collection(async_session_factory, batch_id)
+    async with async_session_factory() as session:
+        session.add(
+            TargetIon(
+                target_ion_id=ion_id,
+                target_compound_id=compound_id,
+                ionization_mechanism_id=mechanism_id,
+                target_ion_formula="C6H13O6+",
+            )
+        )
+        await session.commit()
+    return batch_id, ion_id
+
+
+_ION_PARAMS = BaseMatchParams(
+    probable_match_threshold=0.8,
+    possible_match_threshold=0.7,
+    mz_tolerance=5,
+    isotope_ratio_tolerance=0.2,
+    peak_min_intensity=0,
+    isotope_abundance_threshold=1e-5,
+).model_dump()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "after"), [("recalibrate", "recalibrate"), ("ready", "rematch")]
+)
+async def test_editing_a_target_ion_keeps_recalibrate(
+    owner_client, async_session_factory, status_dataset, before, after
+):
+    """New match parameters on an ion flag its batches, a pending recalibrate kept."""
+    batch_id, ion_id = await _ion_chain(async_session_factory, status_dataset, before)
+
+    resp = await owner_client.patch(
+        f"/api/target/ions/{ion_id}",
+        json={"match_params": {"test-orbion": _ION_PARAMS}},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert await _status(async_session_factory, batch_id) == after
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "after"), [("recalibrate", "recalibrate"), ("ready", "rematch")]
+)
+async def test_changing_a_compound_formula_keeps_recalibrate(
+    owner_client, async_session_factory, status_dataset, before, after
+):
+    """A formula change flags the compound's batches, a pending recalibrate kept."""
+    batch_id = await _batch(async_session_factory, status_dataset, before)
+    _, compound_id = await _collection(async_session_factory, batch_id)
+
+    resp = await owner_client.patch(
+        "/api/target/compounds",
+        json=[
+            {
+                "target_compound_id": compound_id,
+                "target_compound_name": f"Status Compound {compound_id}",
+                "target_compound_formula": "C6H14O6",
+            }
+        ],
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["result"]["updated_compounds_results"] == 1, resp.text
+    assert await _status(async_session_factory, batch_id) == after
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "after"), [("recalibrate", "recalibrate"), ("ready", "rematch")]
+)
+async def test_deleting_a_compound_keeps_recalibrate(
+    owner_client, async_session_factory, status_dataset, before, after
+):
+    """Deleting a compound flags its batches, a pending recalibrate kept."""
+    batch_id = await _batch(async_session_factory, status_dataset, before)
+    _, compound_id = await _collection(async_session_factory, batch_id)
+
+    resp = await owner_client.delete(f"/api/target/compounds/{compound_id}")
+
+    assert resp.status_code == 200, resp.text
+    assert await _status(async_session_factory, batch_id) == after
+
+
+@pytest_asyncio.fixture(scope="module")
+async def sample_view(async_engine):
+    """``sample_view``, which ``Base.metadata.create_all`` does not create."""
+    async with async_engine.begin() as conn:
+        await conn.execute(text(Sample.drop_view()))
+        await conn.execute(text(Sample.create_view()))
+
+
+async def _first_item(async_session_factory, batch_id):
+    async with async_session_factory() as session:
+        return (
+            await session.execute(
+                select(SampleItem.sample_item_id).where(
+                    SampleItem.sample_batch_id == batch_id
+                )
+            )
+        ).scalar_one()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "after"), [("recalibrate", "recalibrate"), ("ready", "rematch")]
+)
+async def test_copying_samples_into_a_batch_keeps_recalibrate(
+    owner_client, async_session_factory, status_dataset, sample_view, before, after
+):
+    """A copy from another batch flags the target, a pending recalibrate kept."""
+    _, mode_id = await _mode(async_session_factory)
+    source_id = await _batch(
+        async_session_factory, status_dataset, "ready", ionization_mode_id=mode_id
+    )
+    target_id = await _batch(async_session_factory, status_dataset, before)
+    item_id = await _first_item(async_session_factory, source_id)
+
+    resp = await owner_client.post(
+        "/api/sample/items/copy",
+        json={"sample_batch_id": target_id, "sample_item_ids": [item_id]},
+    )
+
+    # The copy runs as a background task, which the test client awaits
+    assert resp.status_code == 202, resp.text
+    async with async_session_factory() as session:
+        copied = (
+            await session.execute(
+                select(func.count()).where(SampleItem.sample_batch_id == target_id)
+            )
+        ).scalar_one()
+    assert copied == 2
+    assert await _status(async_session_factory, target_id) == after
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "after"), [("recalibrate", "recalibrate"), ("ready", "rematch")]
+)
+async def test_changing_a_batch_collections_keeps_recalibrate(
+    owner_client, async_session_factory, status_dataset, before, after
+):
+    """A new collection set flags the batch, a pending recalibrate kept, and the
+    response carries the status the batch holds."""
+    batch_id = await _batch(async_session_factory, status_dataset, before)
+    collection_id, _ = await _collection(async_session_factory, batch_id)
+    other_id, _ = await _collection(async_session_factory)
+
+    resp = await owner_client.patch(
+        f"/api/sample/batches/{batch_id}",
+        json={"target_collection_ids": [collection_id, other_id]},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["status"] == after
+    assert await _status(async_session_factory, batch_id) == after
+
+
+# ============= A failed rematch =============
+
+
+def _failing_removal(async_session_factory, batch_id, flag=None):
+    """A removal step that fails, after setting the batch to ``flag`` if given:
+    an edit flagging it while the rematch runs."""
+
+    async def _remove(**_):
+        if flag is not None:
+            async with async_session_factory() as session:
+                (await session.get(SampleBatch, batch_id)).status = flag
+                await session.commit()
+        raise ApiException("Removal failed", "Removal failed", 500)
+
+    return _remove
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "after"), [("recalibrate", "recalibrate"), ("rematch", "rematch")]
+)
+async def test_a_failed_rematch_goes_back_to_its_pending_status(
+    owner_client, async_session_factory, status_dataset, monkeypatch, before, after
+):
+    """A rematch forced on a batch pending a recalibration that fails leaves
+    it pending the recalibration; one pending a rematch stays at rematch."""
+    batch_id = await _batch(async_session_factory, status_dataset, before)
+    monkeypatch.setattr(
+        match_controller,
+        "match_remove_batch",
+        _failing_removal(async_session_factory, batch_id),
+    )
+
+    resp = await owner_client.post(
+        f"/api/match/rematch/batch/{batch_id}", params={"force": True}
+    )
+
+    assert resp.status_code == 202, resp.text
+    assert await _status(async_session_factory, batch_id) == after
+
+
+@pytest.mark.asyncio
+async def test_a_failed_rematch_keeps_a_recalibrate_flagged_meanwhile(
+    owner_client, async_session_factory, status_dataset, monkeypatch
+):
+    """An edit that asked for a recalibration while the rematch ran keeps it
+    when the rematch fails."""
+    batch_id = await _batch(async_session_factory, status_dataset, "rematch")
+    monkeypatch.setattr(
+        match_controller,
+        "match_remove_batch",
+        _failing_removal(async_session_factory, batch_id, flag="recalibrate"),
+    )
+
+    resp = await owner_client.post(f"/api/match/rematch/batch/{batch_id}")
+
+    assert resp.status_code == 202, resp.text
+    assert await _status(async_session_factory, batch_id) == "recalibrate"

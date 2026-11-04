@@ -659,8 +659,12 @@ async def update_sample_batch(
             sample_batch_ids=[sample_batch_id],
             status="rematch",
             independent_transaction=True,  # TODO_reload fix when the reload is working properly
+            never_lower=True,
         )
-        batch.status = "rematch"  # update in-memory obj to reflect status change avoid extra db call
+        # Update the in-memory obj to reflect the status change, avoiding an
+        # extra db call; a pending recalibrate stays, as the guard keeps it
+        if batch.status != "recalibrate":
+            batch.status = "rematch"
 
     # Step 6: Emit update event
     batch_data = SampleBatchRead.model_validate(batch).model_dump()

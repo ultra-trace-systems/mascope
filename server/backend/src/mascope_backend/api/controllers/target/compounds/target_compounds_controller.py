@@ -699,7 +699,10 @@ async def update_target_compound(
         # batches pending rematch so the loss is visible and recomputable.
         if rematch_batch_ids:
             await update_sample_batch_status(
-                list(rematch_batch_ids), "rematch", independent_transaction=True
+                list(rematch_batch_ids),
+                "rematch",
+                independent_transaction=True,
+                never_lower=True,
             )
 
         # -- Emit reload events ---
@@ -806,7 +809,10 @@ async def delete_target_compound(
             # updates, collection deletion) set the flag themselves.
             if affected_batch_ids:
                 await update_sample_batch_status(
-                    affected_batch_ids, "rematch", independent_transaction=True
+                    affected_batch_ids,
+                    "rematch",
+                    independent_transaction=True,
+                    never_lower=True,
                 )
 
             # Emit reload events

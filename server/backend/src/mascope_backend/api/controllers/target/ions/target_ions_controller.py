@@ -455,7 +455,10 @@ async def update_target_ion(target_ion_id: str, target_ion_update: TargetIonUpda
         affected_batch_ids = {s.sample_batch_id for s in affected_samples}
         all_affected_batches.update(affected_batch_ids)
         await update_sample_batch_status(
-            list(affected_batch_ids), "rematch", independent_transaction=True
+            list(affected_batch_ids),
+            "rematch",
+            independent_transaction=True,
+            never_lower=True,
         )
 
     await emit_record_reload(
