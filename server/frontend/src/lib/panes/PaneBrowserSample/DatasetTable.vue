@@ -71,8 +71,8 @@ const hasDatasets = computed(() => (app.data.dataset.list?.length ?? 0) > 0)
 
         <p>Right click on a dataset to cut, edit or delete it, or to refresh
         the matches of every batch it holds. Right click on empty space to
-        paste a cut dataset into this workspace, or to paste a copied batch or
-        samples into a new dataset.</p>
+        paste a cut dataset into this workspace, or to paste a copied or cut batch,
+        or copied or cut samples, into a new dataset.</p>
       `,
         { doc: app.ui.help.docUrl('concepts/#the-data-hierarchy') }
       )

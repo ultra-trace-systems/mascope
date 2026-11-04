@@ -330,6 +330,14 @@ dataset, only a global admin can move. If the move is refused, for example
 because a target collection of the batch belongs to another workspace, the
 message says why and the batch stays where it was.
 
+To move a cut batch into a dataset that does not exist yet, right-click the
+empty space in the *Datasets* pane and choose **Paste batch into a new
+dataset**. Name the dataset and choose **Paste**: the dataset is created in
+the open workspace and the batch moves into it. The entry appears only in a
+workspace you may edit that is not an instrument workspace. If the move is
+refused after the dataset was created, the dialog stays open, and **Paste**
+again retries the move into that same dataset.
+
 To cherry-pick individual measurements instead, open the acquisition batch,
 select the samples you want (hold `Shift` or `Ctrl` to select several),
 right-click and choose **Copy samples**, then paste them into a batch of your
