@@ -2,7 +2,8 @@
 
 *Reference for `mascope_tools.composition.ms2.readings` (`read_fragments`,
 `ladder_gate` and the functions under them) and `.hygiene` (`flag_harmonics`,
-`flag_satellites`, `read_window`, `spectrum_counts`). The rules are peaky's
+`flag_satellites`, `read_window`, `spectrum_counts`), and for how the
+readings route serves them (section 11). The rules are peaky's
 (`peaky/ms2/subformula.py`, `peaky/ms2/readings.py` and the side-lobe rule of
 `peaky/ms2/attribute.py`, peaky PRs 78, 80 and 82), ported with peaky's known
 answers as tests (`libraries/tools/tests/test_ms2_readings.py`,
@@ -400,7 +401,7 @@ which are in `.hygiene`.
 |---|---|---|
 | `READING_TOLERANCE_PPM` | `5.0` ppm | relative half-width of the reading window |
 | `READING_TOLERANCE_MDA` | `0.3` mDa | absolute floor of the window (the low-mass offset) |
-| `CORE_VERSION` | `1` | the core's version: what a reading was made by, for a cache or a record of readings to name. Raised whenever a rule, a threshold, the library or the masses change a reading, a flag or a count; `test_ms2_hygiene` pins the readings of peaky's public fixtures to it |
+| `CORE_VERSION` | `1` | the core's version: what a reading was made by, and what the readings route caches it under (section 11). Raised whenever a rule, a threshold, the library or the masses change a reading, a flag or a count; `test_ms2_hygiene` pins the readings of peaky's public fixtures to it |
 | `K_MAX_DEFAULT` | `3` | most molecules a loss may split into |
 | `K_MAX_LIMIT` | `6` | `k_max` above this raises; 6 still reads NH3 + 5 H2O (H13NO5, DBE -5). The search holds only multisets that fit inside the loss and stops at the first size that reads: the tests' eight deep losses at 6 take 5 to 40 ms each, once (cached), and 20 to 60 times longer without the pruning |
 | `LADDER_K` | `4` | the piece count `ladder_gate` admits on a ladder |
@@ -552,6 +553,97 @@ return `{spectrum key: (PeakFlag or None, ...)}` (section 5);
 - **Where a window ion's precursor is a ghost**, peaky reads it as the ghost;
   so does `read_window` (no MS2 scan holds a line at four or nine times its
   window's m/z), while a lobe never takes a named precursor (section 5.2).
+
+## 11. The readings route
+
+`GET /api/samples/{id}/ms2/readings?group=<key>&ions=<formula>,...` serves
+the core's readings of one MS2 group, over ions its caller names
+(`mascope_backend.api.new.ms2.readings`; the design note
+`docs/dev/ms2_analysis.md`, section 2.5). It reads with this
+package and adds only what a server needs around it: which spectra make the
+window, which ions are read, the offset, the rows as JSON and a cache.
+
+```mermaid
+flowchart TD
+  A["group key + named ions"] --> B{"each ion in the window?"}
+  B -- no --> R1["422: the nearest key, the ion's offset from it"]
+  B -- yes --> C["aliases: the first named is read"]
+  C --> D{"one ion within max(10 ppm, 5 mDa) of the key?"}
+  D -- no --> R2["422: the nearest named ion's offset"]
+  D -- yes --> E{"located precursor within 10 ppm of the target?"}
+  E -- yes --> F["offset_ppm: mass_offset on it"]
+  E -- no --> G["offset 0, said"]
+  F --> H["read_window at k_max 4, then ladder_gate"]
+  G --> H
+  H --> I["per spectrum: counts and rows; cached in the MS2 store"]
+```
+
+1. **The window is the parent peak's.** A group is one (polarity, parent
+   peak, activation) group, but the rules of sections 4 and 5 read one
+   window's spectra together: a ghost or a lobe by its place across the
+   energies, a fourth piece on a ladder seen at any energy. So the readings of
+   a group are those of every group of its parent peak in the sample, one
+   averaged spectrum each, at or above the request's S/N floor
+   (`noise_threshold`, 10 by default), as `ms2/centroids?by_activation=true`
+   serves them, on the file's calibrated axis. Every group of a window answers
+   the same spectra; `group` says which was asked for.
+2. **In the window.** Each named ion's exact m/z must lie within
+   +/-(width / 2 + 5 mDa) of the key, at the widest width the group's scans
+   used (`MS2_WINDOW_PAD`, as `ms2/window` draws it). A group that stores no
+   width has no window to hold a co-isolate in, and holds its precursor
+   alone. Any other ion is refused (422) with the key nearest it among the
+   sample's groups and its offset from that key, in mDa and ppm: a typo or
+   another window's ion says where it belongs.
+3. **Aliases.** Two named ions within the reading window of each other
+   (`DEFAULT_TOLERANCE.window_da` at the larger m/z: the CHO / N[15N] pair is
+   0.44 mDa) read the same peaks, and the window cannot tell them apart. The
+   one named first is read; the other is listed in `left_out` with the ion it
+   is an alias of.
+4. **The target.** The key is the isolation centre the method typed, and one
+   of the ions read must lie within max(`KEY_MATCH_PPM`, `KEY_MATCH_MDA`) =
+   max(10 ppm, 5 mDa) of it, the precursor search window of
+   `mascope_thermo.thermo.locate_precursor`: a key typed with two decimals is
+   fine, a formula of another window is not. Of several, the target is the one
+   nearest the located precursor. With none, the request is refused with the
+   nearest named ion's offset from the key.
+5. **The offset.** Each window is recalibrated once (section 3, step 2), on
+   one anchor: the target and the precursor the MS2 store located for the
+   group's parent peak. Only when that peak lies within
+   max(`TARGET_MATCH_PPM`, `TARGET_MATCH_MDA`) = max(10 ppm, 0.3 mDa) of the
+   target's exact m/z, peaky's target match: a peak farther off is not the
+   target's, and an offset on it would move every reading by as much. Then,
+   and when no precursor was located, the window is read with no offset, and
+   `recalibration.note` says why and what offset would match.
+6. **The reading.** `read_window(spectra, ions, k_max=LADDER_K,
+   offset_ppm=...)` with the ions in the order read, the target first, then
+   `ladder_gate`, and `spectrum_counts`: the documented pipeline of
+   sections 4 and 5.3, as peaky's `ms2 analyze` runs it by default.
+
+**The rows.** Per spectrum, `group` and its counts (`tic`, `n_peaks`,
+`n_harmonic`, `harmonic_intensity`, `n_satellite`, `satellite_intensity`),
+and one row per `Reading`: `peak` (its place among the spectrum's peaks at the
+S/N floor, as the centroids route lists them), `mz`, `mz_cal`, `intensity`,
+`signal_to_noise`, `role`, `window_ion` (`parent_ion`), `formula`, `parity`,
+`dbe`, `ppm`, `loss`, `pieces`, `unnamed_pieces`, `radical_loss`, `rank`,
+`n_candidates`, `n_parents`, `ladder_support` and `note` (`flag_note`). JSON
+has no NaN, so an empty text and a NaN are `null`; `loss_pieces`,
+`loss_name` and `is_precursor` are `len(pieces)`, `' + '.join(pieces)` and
+`role == 'precursor'`. `ions_source` is `named`: the ledger's window ions
+(`ledger`) and the batch's targets (`targets`) come with the engine's MS2
+pass.
+
+**The cache.** The readings are kept in the file's MS2 store
+(`readings/<key>`, `Ms2Store.cached_readings` and `cache_readings`), keyed by
+a digest of everything they are made of: `CORE_VERSION`, the route's own
+`READINGS_FORMAT`, the group asked for, the ions named in their order, the
+window's width and located precursor, the S/N floor, and every value of the
+window's spectra. A recalibration of the file, a sample whose time window
+averages other scans and a new core each make another key, so a cached entry
+answers what reading again would; `cached` says which it was. A store keeps the newest
+`READINGS_CACHE_ENTRIES` (64) and is written under the store's lock, waiting
+at most `READINGS_CACHE_LOCK_TIMEOUT` (5 s); an entry counts once the cache's
+`order` lists it, so a write cut short is never served. A file with no store
+is read raw, and cached nowhere.
 
 ## References
 

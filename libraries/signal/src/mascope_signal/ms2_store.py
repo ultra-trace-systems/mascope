@@ -24,6 +24,9 @@ of that module read it, per polarity:
   table's ``centroid_offsets``.
 - ``averaged/``: each group's averaged centroids, and each parent peak's over
   every activation, at no S/N floor: the routes apply theirs on read.
+- ``readings/``: the readings route's cache (:meth:`Ms2Store.cached_readings`,
+  :meth:`Ms2Store.cache_readings`), written on request rather than at
+  conversion, and not part of the layout: a store without it is read alike.
 - the attributes: the layout and its version, the grouping tolerance, the
   averaging bin, the groups with their located precursor
   (:data:`PRECURSOR_FIELDS`) and the parent peaks, and the vocabularies the
@@ -97,6 +100,15 @@ PARENT_PEAK_TOLERANCE = 0.001
 #: averages them.
 PPM = 1
 
+#: The group the readings route caches its readings in (``readings/<key>``,
+#: each entry a response's bytes), and how many entries it keeps: the oldest
+#: is dropped past them. A store written again starts with none.
+READINGS_CACHE = "readings"
+READINGS_CACHE_ENTRIES = 64
+#: How long a cache write waits for another writer of the store [s] before it
+#: gives up and leaves the readings uncached: a store being written again is
+#: no place to cache them, and the request is not held up by it.
+READINGS_CACHE_LOCK_TIMEOUT = 5.0
 #: Where a store being written is staged, beside the one it is to replace.
 _STAGED_SUFFIX = ".staged"
 #: Where the store it replaces is moved while the staged one takes its name.
@@ -1126,3 +1138,56 @@ class Ms2Store:
             for name in ("polarity", "parent_peak_mz", "activation", "key")
         }
         return described, self._records(own), self._scan_centroids(own)
+
+    def cached_readings(self, key: str) -> bytes | None:
+        """The readings cached under ``key`` (:meth:`cache_readings`), or None.
+
+        An entry is read only once the cache's ``order`` lists it, which is
+        written after the entry: one whose write did not finish is not.
+
+        :param key: What the readings were cached under: a digest of
+            everything they were made of, which the caller makes.
+        """
+        try:
+            cache = self.root[READINGS_CACHE]
+            if key not in cache.attrs.get("order", []):
+                return None
+            entry = cache[key]
+        except KeyError:
+            return None
+        return np.asarray(entry[:], dtype=np.uint8).tobytes()
+
+    def cache_readings(self, key: str, payload: bytes) -> bool:
+        """Cache a group's readings in the store, under ``key``.
+
+        Under the store's write lock, as every writer of it is; past
+        :data:`READINGS_CACHE_ENTRIES` the oldest entry is dropped. Nothing is
+        written to a store removed since it was opened, or while another
+        writer holds it longer than :data:`READINGS_CACHE_LOCK_TIMEOUT`.
+
+        :param key: What to cache them under (:meth:`cached_readings`).
+        :param payload: The readings' bytes.
+        :return: Whether they are cached.
+        """
+        path = store_path(self.base_filename)
+        try:
+            with m_io.zarr_write_lock(path, timeout=READINGS_CACHE_LOCK_TIMEOUT):
+                if not os.path.isdir(path):
+                    return False
+                root = zarr.open_group(path, mode="r+", use_consolidated=False)
+                cache = root.require_group(READINGS_CACHE)
+                order = list(cache.attrs.get("order", []))
+                if key in order and key in cache:
+                    return True
+                if key in cache:
+                    # A write that did not finish
+                    del cache[key]
+                order = [cached for cached in order if cached != key]
+                _put(cache, key, np.frombuffer(payload, dtype=np.uint8))
+                order.append(key)
+                while len(order) > READINGS_CACHE_ENTRIES:
+                    del cache[order.pop(0)]
+                cache.attrs["order"] = order
+        except TimeoutError:
+            return False
+        return True
