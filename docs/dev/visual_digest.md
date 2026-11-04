@@ -3,7 +3,7 @@
 # Visual digests: charts, dashboards and reports over the SDK
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-11-04
 - **Tracked in:** [Visual digests](https://linear.app/ultra-trace/project/visual-digests-51cecff8f790) (Linear, MAS-217 to MAS-244)
 - **What:** Charts, dashboards and reports over the SDK for campaign-scale questions.
 
@@ -24,13 +24,14 @@ can drive, and the one place in which figure code over the SDK lives.
 
 It is an engineering design and phased plan, not a user guide.
 
-> **Status (2026-10-22).** Building. Reviewed by the owner on 2026-10-21: the
+> **Status (2026-11-04).** Building. Reviewed by the owner on 2026-10-21: the
 > design stands as written, with datashader added as an optional raster path on
 > top of the two renderers (section 2.4, decision 2). Phase 0 is done (MAS-217,
 > decisions 1 to 7; MAS-219, token auth on the series routes; MAS-220,
 > `batches.ion_series`, `batch_peaks.series` and `sample_files.list` in the SDK;
 > MAS-221, the synthetic campaign fixture in `libraries/viz/`), phase 1 has
-> started (MAS-222 waiting for merge; MAS-223 to MAS-225 open), phases 2 to 5
+> started (MAS-222, the scope, done; MAS-223, the campaign store, waiting for
+> merge, its month-long sync measured in section 5; MAS-224 and MAS-225 open), phases 2 to 5
 > (MAS-226 to MAS-244) are open, and decision 8 is MAS-218. Section 1 was
 > verified against `develop` at 5bd66b2d1 on 2026-10-20; file links are the
 > evidence. The plan is a Linear project (appendix B); this note stays the
@@ -701,10 +702,34 @@ notebooks and `mascope_ai` their figure library.
   therefore ask for the tiers or the peaks a digest draws rather than the
   whole ledger, and keep its pause; a measurement on a real 1,440-sample
   ledger replaces the extrapolation when one exists.
+- **A month's sync, measured.** The campaign store (MAS-223) synced two
+  months of real acquisition data from a copy of the testbed, served by the
+  store's branch on the agent host, at the default pause of 0.5 s
+  between batches; wall time at the client:
+
+  | Month | Batches | Samples | Ledger batches | Series rows (ion, batch peak) | First sync | Unchanged sync | Store |
+  |---|---|---|---|---|---|---|---|
+  | A | 43 of the dataset's 48 | 29,146 | 1 | 59,968; 2,278 | 53 s | 24 s | 5.1 MB |
+  | B | 50 of the dataset's 185 | 15,952 | 8, three engine versions | 213,593; 202,007 | 102-104 s | 60-63 s | 6.4 MB |
+
+  An unchanged sync fetches no series. Its time is the scope's resolution,
+  which lists the samples of every batch of the dataset, at about 0.33 s a
+  batch there ([#2918](https://github.com/ultra-trace-systems/mascope/issues/2918)),
+  plus one runs listing per batch (3 s for 43). The first sync adds the
+  pauses (21 s and 25 s) and the fetches and writes (8 s and 16-18 s; month B
+  was synced twice from empty). On disk month B is about 15 bytes a series
+  row, every table included, against the 75 to 90 bytes a point the series
+  route sends. Month B's status flags its batches as mixing runs, with three
+  changes of reading between ledger batches of one polarity; taken in time
+  order alone, its interleaved positive and negative batches made four.
+  Neither month has a dense ledger: the 2M-point batch the route cost above
+  extrapolates is still unmeasured.
 - **Identity drift.** An assigned formula can change between engine runs.
   The store records the run per batch, the scope summary lists the runs, and
   `assignment_health` marks the changes; the package never silently joins
-  two runs' readings as one series.
+  two runs' readings as one series. A run is a batch's own, so the store
+  compares readings rather than run IDs: the run's engine, its version and
+  its settings. Its rollups keep two readings apart within one bin.
 - **Normalisation is a scientific choice.** Reagent-ion normalisation is the
   physical quantity in a halide CIMS and wrong for a chemistry without a
   reagent series. The default is raw with the choice named in every title;
