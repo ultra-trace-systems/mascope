@@ -36,6 +36,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | Fill the model of instruments registered before it was read (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run backfill_instrument_model`, then without `DRY_RUN` |
 | Recompute every sample's TIC as the mean per scan (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run fix_sample_item_tic`, then without `DRY_RUN` |
+| Give the copies made before origin keys one, where their window was not edited (count first) | `DRY_RUN=1 mascope prod db script run backfill_origin_keys`, then without `DRY_RUN` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` (fill rate and projection on each line) |
 | Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
@@ -2567,6 +2568,38 @@ Every TIC changes by this: the TIC trace of the batch charts, the batch
 export's TIC column and `samples.list()` in the SDK. A notebook that divides
 a peak by the TIC gets a different number afterwards, now on the spectrum's
 own scale.
+
+### Origin keys of older copies
+
+A sample copied into a batch records which part of the acquisition record it
+was copied from: its raw file, its polarity and its time window. This is its
+origin key. A batch built from a filter will use the keys to tell which of
+the filter's samples it already holds, so that refreshing it adds only the
+new ones. A copy made before the key existed has none, and nothing on it
+points back at the sample it came from.
+
+The upgrade leaves those copies as they are. To give them keys, run:
+
+```sh
+DRY_RUN=1 mascope prod db script run backfill_origin_keys   # counts only
+mascope prod db script run backfill_origin_keys
+```
+
+A copy gets the key when its window is still the window of an acquisition
+sample of the same file and polarity. The run skips two kinds of copy, and
+the dry run counts both:
+
+- **Edited window.** Someone changed the copy's window, or cut it by hand.
+  The file can also have been re-processed under another window since.
+- **No acquisition sample.** Its file and polarity have no acquisition
+  sample at all.
+
+A copy without a key is what every copy was before, so a skipped copy loses
+nothing. A refresh counts its part as new and offers to add it again. A key
+is never changed once set, so running the script again only keys what is
+new. It writes in pages of 5,000 (`BATCH_SIZE=<n>` changes that), and a run
+that stops keeps what it wrote. Copies that the copy action makes after the
+upgrade get their key when they are made.
 
 ### Loading reference chemistry data
 
