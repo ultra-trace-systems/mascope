@@ -8,6 +8,857 @@ Changes merged since the newest release below are described in
 [`changelog.d/`](changelog.d/), one file per pull request, until the next
 release gathers them here.
 
+## [1.16.0] - 2026.11.04
+
+### Added
+
+- **Cloudflare Turnstile on the sign-in form, per site.** A site that sets
+  `MASCOPE_TURNSTILE_SITE_KEY` and puts the widget's secret key in the new
+  `turnstile_secret_key` compose secret gets Cloudflare's human check on the
+  sign-in form. The backend has Cloudflare confirm the check before it looks
+  at the password, and refuses the sign-in without it. The two-factor step,
+  token-authenticated SDK and agent calls, pairing and uploads are not
+  checked. Off by default; the CLI creates the secret file empty, readable by
+  its owner only. It replaces the runbook's Managed Challenge on the login
+  POST, which the web app could not solve (docs/maintaining.md, "Turning
+  Turnstile on").
+
+- **The deposit package is an RO-Crate.** `mascope export package` now also
+  writes `ro-crate-metadata.json`, an RO-Crate 1.2 description of the
+  package that data repositories and RO-Crate viewers read. It names the
+  dataset's licence, its authors by ORCID iD, funding, related identifiers
+  and PSI-MS terms, every file with its SHA-256, and the Mascope version that
+  wrote the package. `manifest.json` is unchanged beside it.
+
+- **Prepare a dataset for publication from the app.** Right-click a dataset
+  and choose *Prepare for publication* to see what its deposit package will
+  hold: the metadata record, the batches and samples, the raw files and their
+  size, the target collections and ionization modes. The dialog flags what a
+  repository such as Zenodo will ask for and the dataset lacks (a licence,
+  authors, a description, any samples), and *Edit dataset* opens the dataset
+  dialog to fill it in. *Build package* writes the archive in the background
+  and the browser downloads it, the same archive `mascope export package`
+  writes for the dataset. It takes the editor role in the dataset's workspace.
+
+- **Writes for AI agents, behind an approval.** `mascope_ai` plans a write
+  before it makes it: `plan_organize` (dataset and sample moves),
+  `plan_collection`, `plan_associate` and `plan_match` describe the change,
+  before and after, the role it needs and whether it can be undone, and
+  write nothing. `apply` makes a plan's writes only with a confirm token
+  from a person's approval of that plan, once, after checking that nothing
+  it planned on has changed. Global collections and shared compound
+  records are left alone unless asked for.
+
+- **Which samples of a batch have MS2 is one request.** Each file's MS2
+  groups (precursor, activation, energies, isolation widths, scans, time
+  span, scan range) are listed in a new `ms2_group` table when its MS2 store
+  is written. `GET /api/sample/batches/{id}/ms2/groups` (token access) gives
+  the groups of every sample of a batch in one query, keyed as
+  `ms2/scans?group=` takes them (`137.0960@hcd25.00`). The samples listing
+  gives each sample's `ms2_group_count`, and a sample's record its
+  `ms2_groups`. A sample's MS2 summary lists the same groups, read from the
+  table (`source: "inventory"`) where its window holds each whole, and says
+  why it lists none in `reason`: `none` for a raw Orbitrap file, and
+  `unsupported` for any other, such as a TOF sample, whose summary used to
+  fail with a server error. `backfill_ms2_store` lists the groups of stores
+  written before this release, from the store alone: run it after updating.
+
+- **An MCP server over `mascope_ai`, for coding agents.** `mascope-ai mcp`
+  gives a coding agent such as Claude Code Mascope's data through the
+  toolkit's tools: `find` and `describe`, the four loaders, the mass query and
+  the match scoring, and `answer` for the provenance manifest. It runs with
+  the user's own AI Agent token. A loader answers with a Frame's handle, and
+  the rows are read in Python on the same machine from the server's session
+  directory: the local-Python path for the heavy work. No tool result passes
+  4 KB, and every name Mascope returns comes back as quoted data with its
+  unprintable characters escaped. `mascope-ai setup` checks the install, the
+  configuration and the token, `mascope-ai list` shows what there is, and
+  `mascope-ai skill` prints the skill text for the agent. `chart` and
+  `table` are not served yet.
+
+- **An instrument is kept as a row of its own.** Deleting an instrument's
+  last file no longer removes everything known about it. The new
+  `instrument` table holds one row per instrument name, with its class,
+  vendor and, for an Orbitrap, the model its files report; a file's
+  registration fills it and moves its `last_seen_utc`. Every table that names
+  an instrument (sample files, datasets, ionization modes, method bindings,
+  instrument functions, paired devices, notifications, dataset tombstones)
+  links the row through a new `instrument_id` beside its `instrument`
+  column, and the upgrade makes a row for every name already in the
+  database. The name columns stay, and every read still uses them.
+
+- **An assignment run and a confidence curve say which ionization setup they
+  were made under.** A run's stored config, as `GET
+  /api/peak-assignments/sample/{id}/runs` returns it, now carries
+  `ionization_setup`: the version of the sample's ionization mode it
+  searched under (`ionization_mode_id` and `version`), or `null` for a
+  sample with no mode. A refitted curve records in `ionization_setups` the
+  versions its verified assignments were scored under. A run under a version
+  its instrument's curve was not fit under still uses that curve, but the
+  server log warns once per curve and version, and the run's calibration
+  record says so (`setup_mismatch`). The upgrade records version 1 on
+  existing in-app runs and, on existing curves, the versions of the
+  verifications their fit could have drawn on.
+
+- **An ionization mode carries its labelled reagent's isotopic purity.**
+  `label_purity` on a mode (0.98 by default, the figure every run used
+  until now) is what a run of its samples reads a labelled ion's envelope
+  at - the 15N of a 15N nitrate in the reagent pre-pass, the reference
+  lines, the untargeted search and the tiering - so a site whose reagent is
+  99% can say so. It is set through `POST` and `PATCH
+  /api/ionization/modes`, also on a mode Mascope ships, and changing it
+  makes the mode's next version. The target library's own isotopes are
+  still computed at the default.
+
+- **`mascope_tools` derives what a sample is scored at, and scores candidates
+  in bulk.** `mascope_tools.composition.pattern_scoring_for_sample` builds the
+  `PatternScoring` a sample is judged at from what Stage A measured of it, its
+  instrument class and its match parameters, in the order the assignment
+  engine applies them: the fitted width or the class's, the fitted offset or
+  the reagent lines', the match window, the envelope floor and the file's
+  resolving power. The engine now calls it, so an outside engine reading a
+  sample through the SDK computes the same object with the same function.
+  `SampleMassAccuracy` and `ReagentOffset`, its input, move into
+  `mascope_tools.composition.mass_accuracy` with the stand-in offset rule.
+  `score_candidates(candidates, peaks, scoring)` scores any number of
+  candidate ions against a peak list as the composition finder ranks them,
+  each distinct envelope predicted once and every line matched and scored on
+  arrays, and returns each candidate's fit score, matched lines and per-line
+  errors.
+
+- **The SDK runs peak assignment on a sample and records verdicts.**
+  `mascope.peak_assignments.assign(sample_id)` launches a run, waits for it
+  and returns its ledger; with `wait=False` it returns the run's id, and
+  `wait_for_run` waits for it later. A sample with a run already going raises
+  `AssignmentInFlightError` naming that run, and one that cannot be assigned
+  raises `SampleIneligibleError` with the reason, without waiting. A run that
+  fails or is cancelled raises `AssignmentRunError`; a wait that runs out
+  raises `AssignmentTimeoutError` with the run's id. `verify` records a
+  verdict on one assignment and `list_verifications` lists them;
+  `fit_aggregate` scores any formula and ionization mechanism against a
+  sample. `assign` and `verify` are sent once, never again on a lost answer,
+  so a verdict cannot be counted twice in the confidence calibration. Every
+  SDK error now keeps the server's answer (`body`, `detail` and `code`), and
+  a 409 raises `ConflictError`. The sample assign route names its refusals
+  with a code, `assignment_in_flight` or `sample_ineligible`. The SDK is
+  version 2026.10.28.1.
+
+- **The verification verdicts of a whole batch or dataset, in one read.**
+  `GET /api/peak-assignments/batch/{sample_batch_id}/verifications` and
+  `GET /api/peak-assignments/dataset/{dataset_id}/verifications` answer the
+  current verdicts over every sample, one row per judged peak, with the
+  sample's filename and acquisition time, the peak's m/z, the evidence level
+  and the score snapshot. A batch-level verdict that reaches a sample with
+  none of its own on that formula is listed as `borrowed`, as the assignment
+  ledger shows it. Filters: `verdict`, `evidence_level`, `since` and
+  `include_superseded`. The SDK reads them as
+  `peak_assignments.verifications_for_batch` and `verifications_for_dataset`,
+  and the batch data spreadsheet carries the same table as its new
+  *Verifications* sheet, before *Provenance*.
+
+- **The width an assignment run scored at, on the run.** The runs listing,
+  and the SDK's `list_runs`, give each run's `sigma_ppm` and `mu_ppm`, the
+  mass-error width and centre it judged a mass error against, with where
+  each came from (`sigma_source`, `mu_source`). An imported run gives what
+  its engine disclosed in the import's new optional `scoring_width` field.
+
+- **A sample's line width, with or without a run.** `GET /api/samples/{id}`,
+  and the SDK's `samples.get`, answer `line_width`: the class the engine
+  reads the file as (`orbi` or `tof`), and the resolving power and the line's
+  full width at half maximum at m/z 200, from the instrument functions
+  detection fitted to the file.
+
+- **A 409 from a sample's run import says when it applied nothing.** The
+  import route and its delete answer a request that met another one still
+  running on the sample with the code `assignment_claim_held` in `detail`:
+  the same request goes through once the other finishes, unlike a 409 over
+  the run's state.
+
+- **The SDK publishes an external engine's assignment run.**
+  `mascope.peak_assignments.import_run(sample_id, df, engine=...,
+  engine_version=..., tier_bands=..., calibration=...)` sends a DataFrame, one
+  row per peak, to the per-sample import route and returns the new run's id.
+  It checks the frame before anything is sent and raises
+  `ImportValidationError` naming the column and the rows: a missing required
+  column, a value outside a vocabulary, a peak twice, an owner that is not a
+  row, a NaN in `sample_peak_mz` or `sample_peak_intensity`, or a stated tier
+  the row's fit cannot reach. A NaN elsewhere goes as null, and an `adduct`
+  column fills in the mechanism id by exact notation. The rows go in as many
+  requests as the route's caps call for; the first and the last are sent
+  once, and any that another request on the sample holds up is sent again
+  once it finishes. A frame read with `get()` imports as it is, its
+  tier sent as the engine's. A refused import deletes its run, and so does a
+  chunk between that goes unanswered; `abandon_import` deletes a run a lost
+  answer left `importing`, and a frame well short of the sample's latest run
+  is warned about. The new tutorial notebook `11_assignment_round_trip.ipynb`
+  takes a sample's peaks out, publishes a small engine's run, and compares it
+  with Mascope's own. The SDK is version 2026.10.29.
+
+- **A batch's peak lists in one request, and a snapshot of them.**
+  `GET /api/batch-peaks/batch/{sample_batch_id}/peaks` answers every peak of
+  every sample of a batch as one Parquet table, each sample read as the
+  per-sample peaks route reads it. It is open to the guest role and to API
+  tokens. The SDK's `load_peaks` reads each batch this way: on the demo
+  batches one request instead of 80 or 81, in about half the time. It reads
+  a server older than the route one sample at a time, as before. The new
+  `batch_peaks.peak_lists` is the read itself, and can keep the satellite
+  peaks the per-sample read leaves out, flagged in `is_satellite`. With a
+  sample filter, `load_peaks` names the chosen samples in the request, and
+  the server reads only those. A batch of more than a hundred samples is
+  read a hundred at a time, two requests at once, so no request takes the
+  server long enough to pass the read timeout; a read that does time out is
+  not sent again.
+  `load_peaks(..., save_path=...)` writes the frame and its `attrs` as a
+  Parquet file that `pd.read_parquet` reads back without a server.
+
+- **`mascope prod config` shows which settings a deployment overrides.**
+  It lists every config setting whose value differs from the model's
+  default or from what the layers below it give, with the layer that set it: the release's `base.mascope.toml`,
+  `prod.mascope.toml`, or the env's own toml. It reads the layers inside the
+  backend container, so it shows the image's files, and warns when the host's
+  copies differ. A key the config does not know is flagged, credentials are
+  never printed, and `--all` prints the whole effective config.
+  `mascope dev config` does the same for a development env.
+
+- **The security report tells a throttled control from one not assessed for
+  another reason.** A control that skipped because a rate limit answered its
+  probe first is marked `throttled` under *Not assessed*, the summary counts
+  them, and the report and the console open with a notice that the run was
+  throttled. `AUTHN-05`, which follows the controls that spend the login
+  budget on purpose, now waits out that window once instead of skipping.
+
+- **The security assessment runs when a release reaches the assessed
+  deployment, not only on its weekly clock.** `run-assessment.sh
+  --on-deploy` (`tooling/monitoring/`), run every few minutes from cron on
+  the monitoring box, reads the release the deployment reports and assesses
+  each new one once, with the same records and retention as the periodic
+  run. Runs never overlap: a deploy run is deferred while another run is
+  going and for ten minutes after one ends (`MIN_INTERVAL`), and the
+  periodic run waits its turn, its heartbeat unchanged. Each summary ends in
+  `trigger=schedule` or `trigger=deploy` and counts the controls a rate limit
+  throttled (`throttled=N`).
+
+- **A wheel install records the release it runs.** A runtime home without a
+  source checkout records the release in `.runtime/deployed-release.json`
+  once an update, an unattended `--auto` run or a `prod up --detach`
+  brings the stack up healthy. A checkout install still goes by its
+  checked-out tag.
+
+- **The security report names the listener it measured.** `pentest-report.json`
+  records the target's port and whether it is the host's loopback listener,
+  `:8443`, which the origin vantage uses once authenticated origin pulls are
+  on. Against that listener the report, the console and the scheduled
+  runner's summary (`listener=loopback:8443 origin_pull=not_assessed`) say
+  that the origin-pull certificate refusal was not assessed, so an archived
+  run is no longer read as having verified it.
+
+- **`mascope-ai` on PyPI.** The AI layer's toolkit and its MCP server are
+  published with the SDK, so a coding agent needs no checkout of Mascope:
+  `pip install mascope-ai`, `mascope-ai setup`, then
+  `claude mcp add mascope -- mascope-ai mcp`. The first release is
+  `2026.10.30`, and it needs `mascope-sdk` 2026.10.29 or later.
+
+- **The Reference lists dialog shows a reference's note, with its link.** A
+  publication a list cites now shows its note under the citation, and a web
+  address in the note opens in a new tab. Two shipped monoterpene lists cite
+  a thesis by ISBN alone; their note links where it is open access, which the
+  dialog left out before.
+
+- **A sample batch moves into another dataset.**
+  `POST /api/sample/batches/{id}/move` takes the destination `dataset_id` and
+  moves the batch whole: it keeps its ID, its samples, their matches and its
+  target collections. It needs the editor role on the batch and on the
+  destination dataset, and the global admin role for a locked batch or a
+  batch leaving a locked dataset; a locked destination takes none.
+  ACQUISITION batches and datasets are refused, as is a collection of the
+  batch scoped to a workspace other than the destination's. The route
+  answers an SDK token, and `mascope.batches.move(batch_id, dataset_id)`
+  calls it.
+  The AI toolkit's `plan_organize` plans a batch's move too,
+  `Move(batch, dataset)`, into a dataset of the client's workspace.
+
+- **The monitoring host reports a merged security fix that a deployment does
+  not run yet.** `tooling/monitoring/security-fix-distance.py` runs hourly
+  beside the assessment runner. It reads the security fixes from the
+  `changelog.d/*.security.md` fragments they merge with, and each production
+  deployment's release from its `/api/version/public` route. It names every
+  deployment whose release lacks a fix, and every one whose release it cannot
+  read, and is silent when the fleet runs every fix. Its heartbeat fails
+  while anything is behind, and a check that stops running stops pinging,
+  which pages too. A security fix now files its changelog entry under
+  `security`, never `fixed`, so the check sees it.
+
+- **`mascope_ai` computes the time series a stage load left out.** A stage
+  of `load_peaks_by_stage` leaves out every peak whose time series the
+  server has not computed, and says so. The new `compute_timeseries(sample,
+  mz_range=None, max_peaks=)`, also an MCP tool, has the server compute
+  them, so the stage loaded again is whole. Each peak is one request, so it
+  counts first and refuses, before computing any, a call over `max_peaks`
+  (500 by default, and at most the ceiling `Toolkit(max_peaks=)` sets).
+  Filling this cache is treated as a read: no object changes.
+
+- **Every security control says whether it is safe against production.** Each
+  control's marker carries `mutating=True` or `mutating=False`, with no default:
+  a control without it fails the run at collection. A control is non-mutating
+  only if it signs in to no account, spends no budget, writes nothing, and
+  stays harmless on the day the control it checks is broken; 16 of the 53 are.
+  `pytest --non-mutating` runs only those and signs in nowhere, reading the
+  build from `GET /api/version/public`. Every report says which selection ran,
+  and every request the suite sends carries the user agent
+  `mascope-security-assessment/1`, so an assessment is identifiable in the
+  target's logs and error tracking.
+
+- **The scheduled assessment can watch production.**
+  `run-assessment.sh --production` runs the suite's non-mutating subset from
+  the monitoring box against every deployment in `PRODUCTION_TARGETS`, through the CDN with the
+  operator header and TLS verified, and with no account. Each deployment's
+  report has the format and the 400-day retention of a staging run's, as
+  `<ts>-prod-<NAME>.*`, and its own heartbeat, `PRODUCTION_HC_URL`. One
+  failing deployment fails the run and the rest are still assessed. A
+  deployment behind the current release is recorded, not failed. Each
+  deployment must run v1.14.0 or later, which serves the anonymous version
+  route the subset reads its build from.
+  `tooling/monitoring/README.md`, section 10, names the controls that may run
+  where.
+
+- **A script fills the model of instruments registered before it was read.**
+  An instrument whose files were all registered before the `instrument`
+  table existed has no model, and the instrument list, the batch export and
+  a deposit package show none for it. `mascope prod db script run
+  backfill_instrument_model` gives each such Orbitrap instrument the model
+  its newest file names, from the file's props or, where no props name one,
+  the kept raw file's header, with the model's PSI-MS term beside it. It
+  never overwrites a model already recorded, so running it again changes
+  nothing; `DRY_RUN=1` shows what it would fill.
+
+- **A dataset package tells the versions of an ionization mode apart.**
+  Each entry under `ionization_modes` in the package's manifest now carries
+  its `version`, the version it replaced (`supersedes_id`) and the labelled
+  reagent's purity it ran at (`label_purity`). The package's README and the
+  **Prepare for publication** dialog name an edited mode with its version, so
+  samples on two versions of one mode no longer show two identical entries.
+
+- **Orbitrap peak stores written before the local floor can be flagged by it
+  in place.** The maintenance script `reflag_orbitrap_weak_peaks` reads each
+  raw Orbitrap file's peak store and flags weak the peaks under the floor of
+  a dense stretch of their own spectrum, as a detection does now, with no raw
+  file read and no new detection. It writes only the stores whose flag
+  changes, reads a stitched store's overlaps again, removes the matches of
+  the changed files' samples and sets their batches to rematch. It leaves
+  each file's calibration as it was fit. Run it with `DRY_RUN=1`
+  first: it lists how many peaks each file would turn weak and writes
+  nothing. `docs/maintaining.md` has the details.
+
+- **Cut and paste a batch into another dataset.** The batch menu in the sample
+  browser has **Cut batch** beside **Copy batch**; **Paste batch** in another
+  dataset then moves it whole, with its samples, matches and collections,
+  instead of copying it. Paste is offered only in datasets you may edit that
+  are neither locked nor acquisition datasets, and a refused move says why.
+
+- **MS2 readings flag harmonic ghosts and side lobes.** Two kinds of MS2
+  centroid are no ions and read as sub-formulas of almost anything: an
+  Orbitrap harmonic ghost of a strong line, near m/z / 4 or m/z / 9 of it, and
+  a side lobe a few line widths beside a much brighter line.
+  `mascope_tools.composition.ms2` flags both, per peak, with `flag_harmonics`
+  and `flag_satellites`, and never deletes one. `read_window` reads one
+  isolation window's spectra and makes each flagged peak one row with no
+  formula, its `role` `harmonic` or `satellite`: in no fragment and no ladder
+  step, and kept out of the TIC and the peak count by `spectrum_counts`, which
+  counts it apart. Every reading row now carries its `role`. `keep=True` reads
+  every peak, for debugging. The rules are peaky's, ported with its known
+  answers as tests; `libraries/tools/docs/ms2.md` documents them.
+
+- **The MCP server plans and applies writes.** `mascope-ai mcp` serves
+  `plan_organize`, `plan_collection`, `plan_associate` and `plan_match`,
+  which write nothing and answer with the plan, and `apply`, which writes a
+  plan of that server once. Calling `apply` is the user's approval: Claude
+  Code's permission prompt shows the plans waiting for it, and the server
+  mints the confirm token only when the call runs, so the model never holds
+  one. Never allow `apply` always. A repeated call returns the same receipt;
+  an expired, consumed, drifted or part-way plan comes back as an error
+  result that says why.
+
+- **`mascope prod units install` puts the systemd units in place.** A wheel
+  install now gets the same boot, update, disk-check and retention units a
+  checkout gets from `tooling/ubuntu.sh`, which now calls the command itself.
+  `--dry-run` prints every file and command first, and `mascope prod units
+  remove` takes the units out again. On a wheel install, the update unit
+  completes the hand-over `--auto` asks for with exit 40: it installs the
+  newer CLI, then runs the update again as a new process. The scripts the
+  units run are copied to `/usr/local/lib/mascope`, so going back to an older
+  CLI leaves the update and the disk check working.
+
+- **An MS2 group's isolation window, and its located precursor.**
+  `GET /api/samples/{id}/ms2/window` lists, for each MS2 group of a sample,
+  the sample's MS1 centroids within half the isolation width plus 5 mDa of
+  the group's parent key. Each comes with its offset from the key, intensity,
+  share of the window, resolution, S/N and `is_parent`, the one that is the
+  precursor. `width` draws every window at one width; a group whose scans
+  store none lists its target alone and says so. A sample with no MS1 scans
+  answers empty windows with the reason `no_ms1_scans`.
+
+  Beside the window, each group carries its precursor as its MS2 spectra
+  locate it, by peaky's rule: once per parent peak, the peak nearest the key
+  among those holding at least 10 % of the strongest within max(10 ppm,
+  5 mDa), in the lowest-energy spectrum that holds one, then followed within
+  max(5 ppm, 0.5 mDa) across the energies, null where it is spent. A key
+  typed with two decimals still finds the precursor and not a satellite
+  nearer to it. The MS2 store records it when it is written, and the group
+  inventory lists it, so `GET /api/sample/batches/{id}/ms2/groups` serves it
+  too (`located_precursor_mz`, `located_precursor_intensity`,
+  `located_precursor_activation`, `precursor_mz`, `precursor_intensity`).
+
+  The MS2 store's version moves to 3. **After updating, run the MS2 store
+  backfill again** (`backfill_ms2_store`, count first, then
+  `MS2_STORE_MODE=run`): until a file's store is written again, its MS2
+  routes read its raw file and its groups list no precursor.
+
+- **A weekly guard checks that the security controls can fail.**
+  `tooling/monitoring/run-weakened-guard.sh` brings up a throwaway demo stack
+  on the monitoring host and weakens it by configuration, one edit at a time:
+  a security header stripped, the nginx version banner on, a wildcard CORS
+  header added. Each control the edit should trip must report a finding. The
+  guard measures every edit on the target before it judges a control, and
+  says inconclusive (exit 2) when one did not take, never that a control
+  passed or missed. It covers 8 controls, and lists every other control with
+  the reason it has no weakening. The selftests also sort every control by
+  whether it passes on silence, and hold each silence control to a positive
+  control or an allowlist with a reason, so a new control is sorted or the
+  build fails.
+
+### Changed
+
+- **Editing an ionization mode makes its next version.** A change to its
+  polarity, its mechanisms or either collection no longer rewrites the mode
+  in place: it adds version 2, 3 and so on, and the samples already processed
+  keep the version they were processed under, so their results still say
+  which adduct panel and collections produced them. The rematch or
+  re-calibration the edit flags their batches for moves them onto the new
+  version, as does an assignment run or reprocessing their file; until then
+  they read as before. A rename, a new filename token or a new instrument
+  scope changes no result and is still made in place. The ionization
+  settings show a mode's version once it has been edited, method bindings
+  follow the new version, and the batch ledger keeps one set of anchors per
+  mode across its versions. `GET /api/ionization/modes` lists the current
+  versions, each with the ids of its earlier ones in `superseded_ids`; an
+  earlier version is still read by its id, and cannot be edited or deleted
+  on its own, and a sample cannot be bound to it by hand: creating or editing
+  one names the current version. A mechanism or a target collection an edit
+  took off a mode can be deleted, and such a collection moved into a
+  workspace, once no sample is left on a version that uses it; until then,
+  the refusal names that version.
+
+- **The batch export takes the instrument model from the instrument.** The
+  Samples sheet's *Instrument model* columns, and a deposit package's model
+  terms, now read the model recorded on the sample's instrument, so a sample
+  whose raw file is no longer kept still gets its PSI-MS model term. An
+  instrument with no model recorded yet falls back to the raw file's header,
+  as before. Registering a file also fills the instrument's `cv_term` with
+  its model's PSI-MS accession, empty for a model the vocabulary has no term
+  for.
+
+- **Orbitrap peak lists leave out the side lobes the instrument marked.** An
+  Orbitrap marks each centroid it reads as a weak side lobe of a brighter
+  peak (Exception). Peak detection of a raw Orbitrap file now counts, for
+  every peak, how many of the per-scan centroids under it carry the mark, and
+  flags a peak where more than half do as a satellite, which a peak list
+  leaves out as before. A marked peak that sits on a 13C, 2H, 15N, 17O, 18O,
+  34S, 37Cl or 81Br line of an unmarked peak is kept, as the instrument also
+  marks real isotope lines where it expects a lobe. On the published demo
+  raws about 1.5 % of the peaks above the noise leave the list, nearly all of
+  them lobes the earlier satellite test missed. The summed spectrum and its
+  centroids are unchanged. Files are re-read this way when their peaks are
+  detected again.
+
+- **`base.mascope.toml` writes every feature setting out as its default.**
+  Each feature setting of `[meta]` and `[backend]` is now a live line holding
+  the model's default, with a short comment naming its section in
+  `docs/maintaining.md`, where the explanations moved. The settings that are
+  unset by default (`mfa_required_min_role`, `reference_licenses`,
+  `deployment_id`, `[frontend] acquisition_filter` and the File Agent's file
+  name prefix and suffix) appear only in a marked examples block at the end of
+  the file. No effective value changes, and a `tus_max_upload_gb` still under
+  `[backend]` in an env's toml keeps winning over the base default.
+
+- **A TOF peak below a signal-to-noise of 3 is now weak, as on Orbitrap.**
+  On a mostly empty TOF spectrum, typically an ambient-mode file with no
+  reagent ion, detection kept a peak of one or two stray ions at most unit
+  masses, and nothing flagged a TOF peak weak. Over such a baseline a
+  peak's signal-to-noise is about the ions it holds, so the Orbitrap's
+  cutoff now leaves these peaks out of the peak list, the spectrum's peak
+  marks, m/z calibration and assignment; they stay in the file's peak
+  store. Spectra whose baseline holds many counts, as most reagent-ion ones
+  do, keep nearly all their peaks; a sparse one loses most of its small
+  peaks too. A file keeps its old flags until its peaks are detected again.
+
+- **`load_peaks` reads no matches unless asked, from a server with the batch read.**
+  Its `matches` now defaults to off where each batch comes in one request,
+  and to on where an older server is read sample by sample, as before. Pass
+  `matches=True` for the match columns from either. The frame of the batch
+  read also carries `is_satellite`, False throughout. The SDK now requires
+  `pyarrow` and pandas 2.1 or newer.
+
+- **The axis fingerprint says what `fft_step_not_power_of_two` means.** The
+  schema's `flags` description and the calibration how-it-works page now say
+  that on such a mode, as on an Exploris MX, every absolute level is off the
+  file's stored m/z correction by one constant of a few ppm, while the steps
+  between bands hold. Documents are unchanged.
+
+- **A wheel install deploys the release its CLI was cut with.** Each CLI
+  version now names its Mascope release, and the release manifest names the
+  CLI cut with it (`cli_version`). Without a source checkout, `mascope prod up`
+  and `mascope prod update` deploy that release and refuse any other,
+  `latest` included, naming the CLI to install for it
+  (`uv tool install mascope-cli==<calver>`). Before, an unpinned wheel install
+  followed `latest` on the compose file of whatever CLI wrote its home. The
+  first `prod up` after a CLI upgrade writes the new release's config layers
+  and compose files over the home's, keeping a copy under
+  `.runtime/replaced/`; the env overlay and the secrets are never touched.
+  `prod update --auto` exits with code 40 when an update is due that only a
+  newer CLI can apply, and names it in `.runtime/update/cli-to-install`. A
+  checkout install is unchanged.
+
+- **The SDK sends a write once.** A timeout, a lost connection or a 502 to 504
+  on a create, a save, a copy, a move, a delete or a batch run import now
+  raises after one try instead of sending it again, since the server may
+  already have acted: `matching.resave_batch` no longer rebuilds a batch's
+  matches twice, and `collections.create` no longer makes a second collection.
+  Reads, the matching previews and the updates that set fields to given
+  values are still retried.
+
+- **A deposit package leaves out the reviewers' notes and ids on its verdicts.**
+  The Verifications sheet of each batch spreadsheet in the package has no
+  `note` and no `verified_by` column: a note is written for colleagues, and a
+  user id means nothing off its server. The verdicts and their evidence levels
+  stay, and *Download > Batch data* still writes both columns.
+
+- **The security-fix distance check counts dependency security updates.**
+  A commit whose subject ends in `[security]`, as Renovate's vulnerability
+  updates do, now counts as a security fix when it changes the version of a
+  package a deployment runs: one the root project or its `docs` group
+  reaches in `uv.lock`, or a production package of the frontend's
+  `package-lock.json`. A bump of
+  development tooling alone counts as none. The rule is in
+  `tooling/monitoring/README.md`, section 11.
+
+- **The demo dataset is now bundle v1.4.3**
+  ([10.5281/zenodo.23939336](https://doi.org/10.5281/zenodo.23939336)),
+  the raw files and reference data of 1.4.2 rebuilt with this release's peak
+  detection: the instrument's side-lobe flag and the Orbitrap local floor.
+  97 of its 165 files move. 237 golden peaks leave, 233 of them on peaks now
+  flagged satellite and one on the peak the local floor flags weak; 87
+  isotope lines match another peak and 171 new ones score, for 43,004 golden
+  peaks against 43,070. 58 probable-match ions whose monoisotopic peak is now
+  a satellite are gone, for 17,395 against 17,453. The MS2 spectra are
+  identical. 1.4.2 stays registered so a pinned run still resolves.
+
+- **`batches.update` in the SDK renames a batch without its collections.**
+  `target_collection_ids` is optional: left out, it is not sent and the batch
+  keeps its target collections, so `batches.update(batch_id, name=...)`
+  only renames it. A list still replaces them. An older server still
+  requires the list.
+
+### Removed
+
+- **`[backend.redis] image` is gone from `base.mascope.toml`.** Nothing read
+  it: the compose files pin the Redis image themselves. `dev config` and
+  `prod config` no longer list it as an unknown key on every deployment.
+
+### Performance
+
+- **The assignment engine scores its candidates in bulk.** Stage A's fit over
+  every matched ion, the seeded re-score of the batch search and the
+  inspector, and the composition finder's ranking of each peak's readings now
+  score all their envelopes in one pass instead of one call per ion. The
+  scores are the ones the one-at-a-time path gave, to the rounding of a sum.
+
+- **Sample lists no longer carry each TOF fit's calibration points.** A
+  batch's sample list, which is not paginated, put every calibrant line of
+  every TOF sample's fit in its rows. It now leaves `quality.points` out of
+  each sample's `mz_calibration`, about 0.9 KB of a TOF row's 1.6 KB; the
+  badge's counts, errors and span stay. `GET /api/calibration/mz_calibration`
+  still answers the whole record, which the calibration dialog reads.
+
+- **The composition search scores its candidates in one pass.** With peak
+  assignment on, the fit score of every candidate an m/z search finds is
+  computed in one call instead of one per candidate, as the assignment engine
+  already does; the scores are unchanged. The targeted match under
+  `MASCOPE_MATCH_SCORE_VERSION=2` scores its ions the same way.
+
+### Fixed
+
+- **An Orbitrap file averaged over many microscans no longer keeps the floor
+  around its reagent ion as peaks.** Around a dominant ion, such a spectrum
+  holds a floor of maxima, a centroid every few ppm over several Da, which
+  the instrument reads far above its own noise; a file could keep tens of
+  thousands of them. An Orbitrap peak is now also measured against the peaks
+  of its own spectrum within 3000 ppm: where they are dense (300 or more), a
+  peak under five times their median height is flagged weak. Files already
+  processed keep their peak lists until they are processed again.
+
+- **A few bright ions no longer calibrate a peak assignment run on themselves.**
+  A run measures a sample's mass offset and width from the lines of your
+  target library that it matched, and it counted lines alone. One ion's lines
+  all share that ion's own mass error, so a sample whose library matched a
+  few bright ions with many lines each was scored at their error and at how
+  well their lines agree, and so was the untargeted search. The offset and
+  width are now measured only from lines of at least eight different ions.
+  Below that, the sample is scored as one whose library matched too few
+  lines: at the instrument class's width, centred on the reagent ions where
+  they show an offset.
+
+- **Signing out in one tab now shows the sign-in screen in the browser's other
+  tabs.** Signing out ends the session of every tab of the browser, but the
+  other tabs were not told. Once the browser signed in again elsewhere, such a
+  tab kept showing data with no live updates until it was reloaded. The
+  server now tells each tab it signs out, and the tab opens a new connection
+  and checks its session: it shows the sign-in screen, or picks its live
+  updates back up when the browser has signed in again.
+
+- **A scheduled security report records whether its build lags the current
+  release.** The assessment runner looks the release up before the suite runs
+  and passes it to both vantages, so a report no longer says the lag is
+  `unknown` while the runner's summary knows it.
+
+- **The reference lists leave out spectral libraries.** `GET
+  /api/reference/sources`, the **Reference lists** settings page and the SDK's
+  `mascope.reference.sources()` listed an MS/MS library loaded with
+  `mascope reference` beside the compound lists, counting its spectra as
+  compounds, and its compounds read as an empty list. They now list compound
+  sources only, and the compounds of a spectral library answer 404.
+
+- **Exports named with `#` or `%` download again.** A batch spreadsheet, peak
+  data, a batch ledger or a deposit package whose name came from a batch,
+  sample or dataset name holding `#` or `%` was built but answered "not found"
+  when the browser fetched it. The app now encodes the file name in the
+  download link.
+
+- **`mascope demo snapshot --update` no longer drops a bundle's ion goldens
+  without a word.** A refresh whose ion export came back empty, while its
+  peaks exported as before, wrote a manifest without the per-ion goldens the
+  bundle had. It now refuses before writing anything, as it already does for
+  the MS2 goldens.
+
+- **A TOF peak of a few ions over a half-filled baseline no longer reads as
+  a strong peak.** The one-ion floor on a TOF peak's noise applied only
+  where its baseline was mostly empty. Where the baseline was about half
+  filled with stray ions, its spread was a small fraction of one ion, and
+  a peak of three or four ions scored from about 15 to over 200: past TOF
+  m/z calibration's gate of 10 and the weak cutoff of 3. One ion's height,
+  measured over the spectrum's empty stretches, now floors every peak's
+  noise, so such a peak scores about the ions it holds and is weak. A
+  spectrum with no empty stretch keeps its values. A file's stored peaks
+  keep the old values until its peaks are detected again.
+
+- **Downloads no longer pile up on the server until it restarts.** A
+  download the app writes - a spreadsheet, a CSV, the raw-file bundle, a
+  deposit package - is now kept for 24 hours, and each new export removes
+  the older ones. The raw-file bundle and the deposit package copy a
+  dataset's raw files, so on a long-running server they could fill the disk
+  (#2726).
+
+- **`mascope export package` warns of every gap Prepare for publication
+  flags.** It warned of a missing licence or authors only, so a dataset
+  with no description, or no samples, passed it silently. The build now
+  reports the app's own gaps, and the command prints each one.
+
+- **The SDK's `samples.compute_peak_timeseries` works against a server.**
+  It lists a sample's peaks before computing anything, and that listing
+  asked for neither areas nor heights. The server refuses such a read with
+  an HTTP 400, so the call failed before it computed a single time series.
+  It now asks for heights.
+
+- **Two processes writing one AI session no longer give two manifest
+  records the same `seq`.** `mascope_ai` counts and appends each record of
+  `manifest.jsonl` under a lock on `manifest.lock` beside it, so an
+  answer's `calls` always name one call each, also when the MCP server and a
+  `Toolkit(session=...)` in another Python write the session at once.
+
+- **An ambiguous batch name reads "2 batches", not "2 batchs".** The message
+  `mascope_ai` gives when a name matches several batches, which a model reads
+  through the toolkit, `mascope-ai mcp` and `mascope-ai list`, now spells the
+  plural right.
+
+- **A sample's TIC is the mean per scan, no longer the sum.** The TIC grew
+  with a sample's length, while its spectrum is averaged over the same
+  scans, so a long sample looked brighter than a short one of the same
+  signal. It is now the mean TIC per MS1 scan, in the unit of the
+  sample's spectrum: counts for an Orbitrap, ions/s for a TOF. New samples
+  get it at once. The stored TIC of every existing sample changes when the
+  operator runs `db script run fix_sample_item_tic` once after the upgrade
+  (`docs/maintaining.md`): the TIC trace of the batch charts, the batch
+  export's TIC column and `samples.list()` in the SDK all show the new value.
+
+- **A batch flagged for re-calibration keeps the flag after a later edit.**
+  Editing an ionization mode's mechanisms or diagnostic collection, or a
+  target collection, after its calibration collection changed used to lower
+  the batch's flag to a rematch, so the m/z re-fit was never offered. Such an
+  edit now leaves a pending re-calibration in place.
+
+- **A raw Orbitrap file that switches polarity keeps the real peaks beside the
+  other polarity's strong ions.** The satellite flag read both polarities of
+  such a file as one spectrum. A weak peak of one polarity near a strong ion
+  of the other could be taken as its side lobe and left out, and one
+  polarity's strong ions could crowd the other's out of the peaks whose side
+  lobes are looked for. Each polarity is now judged on its own, as each scan
+  stream already was. A file that records one polarity is unchanged.
+
+- **The frontend image no longer fails to build now and then with "Cannot
+  find native binding".** npm sometimes skipped a native binding the build
+  needs, of the bundler or of the CSS minifier, both optional packages,
+  without a warning, and the build step after it failed. The image now
+  installs exactly what the lockfile names, checks both bindings are there,
+  and installs once more if one is not. A build that still lacks one fails at
+  the install step and says which.
+
+- **`mascope demo --rebuild` no longer reports a complete rebuild as failed.**
+  The rebuild now uploads its raw files resumably, as the File Agent does. It
+  looks up a failed upload in the demo database and its folders before posting
+  it again, after the last pass too. It holds a retry until a file-converter is
+  connected, since the server refuses uploads without one. And it clears the
+  copies a killed earlier run left pending, not only the quarantined ones.
+  Before, any of these could end a complete rebuild with "do not capture
+  goldens". (#1855)
+
+- **`mascope-ai` no longer adds a stray "it" to an error without an object.**
+  When the server could not be reached, `mascope-ai setup`, `mascope-ai list`
+  and the MCP server said "Could not connect to Mascope it: ...", and a failed
+  listing read "Could not list the workspaces it: ...". The message now ends
+  the phrase where the operation does, and names the object only when there
+  is one.
+
+- **The demo lists the MS2 groups of its MS2 files.** The demo bundle's
+  snapshot predates the MS2 group inventory, so after it was restored the
+  samples list, the batch MS2 groups and the sample detail showed no MS2
+  groups. The demo stack's loader and `mascope demo` now list them from the
+  files' MS2 stores on every start, which opens no raw file and takes a few
+  seconds.
+
+- **A download of several raw files no longer takes their size twice on disk.**
+  The bundle copied every raw file into a folder in the user's temp directory,
+  zipped the folder beside it and left the folder there for a day. The files
+  are now written straight into the zip, so the zip is all a bundle leaves.
+  A second bundle started within the same second no longer fails.
+
+- **A scheduled assessment's record holds only its own report.** Each
+  `<ts>-<vantage>.tar.gz` and `<ts>-prod-<NAME>.tar.gz` that
+  `run-assessment.sh` keeps now archives `report/pentest-report.json` and
+  `report/pentest-report.md` alone. It used to archive the suite's whole
+  `report/` directory, history included, so every record repeated every
+  earlier run, a production record carried the other deployments' reports,
+  and each archive grew until the 20 MB cap could cut it short. The evidence
+  trail is the series of per-run archives on the monitoring box.
+
+- **A full security assessment no longer signs in to read the build.** On a
+  deployment that answers the anonymous version route (v1.14.0 and later) the
+  suite reads the version without a login, so it spends none of the
+  per-address login budget and leaves the admin account's failed-attempt
+  count alone before any control runs. An older deployment is still read
+  signed in.
+
+- **A TOF sample's MS2 reads answer instead of failing.** The MS2 centroids,
+  fragment timeseries, group scans and MS1 centroids routes of a TOF sample
+  used to fail with a server error. They now answer an empty result with
+  `reason: "unsupported"`, as the MS2 summary already does: only raw
+  Orbitrap files are read. The three MS2 reads also answer `source: null`.
+  Each of the four responses now carries `reason`, null for a sample that
+  is read.
+
+- **A peak's matches come back in the same order on every read.** Matches of
+  one peak with equal scores, and the collections listed for one match, came
+  back in whatever order the database returned them, which could change
+  between two reads with nothing changed in between. Ties are now broken by
+  the target isotope and collection ids, so two loads of the same sample or
+  batch compare equal row by row.
+
+- **Exports state each sample file's own instrument model.** The batch
+  spreadsheet's Samples sheet and a dataset's deposit package take the model
+  from the file's own props, then its kept raw file, and the instrument's
+  model only for a file that names none. An instrument that kept its name
+  across a hardware change, or an older file uploaded after newer ones, no
+  longer gives every sample of the name the same, latest model.
+
+- **`mascope demo snapshot --update` checks the ion goldens file by file.**
+  A refresh is refused when a file still in the raw set exports no golden
+  ions this time, even while other files still do; before, only a run with no
+  ions at all was refused, so one file's ions could vanish without a word. A
+  file that left the raw set drops its ion goldens with a warning instead of
+  refusing the refresh, as its MS2 goldens already did (#2814).
+
+- **A short Redis outage in the web socket storage no longer files errors
+  in GlitchTip.** A Redis restart, a dropped idle connection or a Redis host
+  name that does not resolve yet used to be logged with a stack by the web
+  socket session, room, presence and heartbeat storage, and by
+  python-socketio's own "retrying" lines, so each blip filed error events
+  from every server it touched. That storage now retries a command once
+  when Redis dropped its connection. What still fails is logged as a
+  warning ending in "(Redis out of reach)", with no stack, and kept out of
+  GlitchTip; python-socketio's retry lines are logged at INFO. A wrong
+  Redis password, and every other socket storage failure, is still an
+  error with its stack. Socket sign-in, the login rate limit and MFA still
+  report a Redis outage as an error.
+
+- **A sample cut inside an MS2 group names its spectra as its summary does.**
+  When a sample's time window holds only some of a precursor's fragment
+  scans, its averaged MS2 spectra are still read from the raw file, but now
+  over the window's scans of each group the MS2 store made of the whole
+  file. Before, the window's scans were grouped again, so a precursor whose
+  m/z drifts from scan to scan could get another parent m/z there than in
+  the summary, and asking for that group's scans answered 404.
+
+- **The security suite reports a site with Turnstile on instead of failing to
+  sign in there.** It reads the sign-in form's Turnstile setting at session
+  start, signs in nowhere when it is on, and marks every control that needs a
+  sign-in or the login's answer to a password as not assessed with the cause
+  `Turnstile`, counted in the report's summary and announced at its top. A
+  new control, `AUTHN-06`, checks that such a site refuses a sign-in that
+  carries no Turnstile token.
+
+- **Stopping the boot service no longer times out.** Stopping
+  `mascope.service` (a reboot, a shutdown, `mascope prod units remove`) took
+  exactly 90 s and ended in a timeout. The backend, Postgres and Redis were
+  then never stopped by it. The file converter ignored the stop signal: it
+  kept taking files until Docker killed it at the end of its grace period,
+  cutting off any conversion it was running. It now stops within a few
+  seconds when idle, and finishes a conversion in flight before it exits,
+  given up to its 90 s stop grace period; Docker still kills one that takes
+  longer. The
+  unit also waits up to 300 s for `prod down`, longer than the stack's stop
+  grace periods add up to. Re-run `mascope prod units install` (or
+  `tooling/ubuntu.sh install`) to pick up the new unit (#2903).
+
+- **Collection update schema says that the compound fields replace the list.**
+  On `PATCH /api/target/collections/{id}`, `target_compound_ids` and
+  `target_compounds_create` together become the collection's whole compound
+  list, and the schema and the operation description now say so instead of
+  "added": to add a compound, send the current ids too.
+
+- **Renaming a batch through the API no longer needs, or risks, its target
+  collections.** `PATCH /api/sample/batches/{id}` required
+  `target_collection_ids` and took it as the batch's whole set of
+  collections, so a request that only renamed a batch was refused, and a
+  client that answered the refusal with an empty list detached every
+  collection and flagged the batch for rematch. The field is optional now:
+  left out, or null, the batch keeps its collections and its status. A list
+  still replaces them, and an empty list still detaches them all. The web
+  app always sends the list and is unaffected.
+
+### Security
+
+- **A tab's live updates stop when its session expires.** A web session
+  lasts seven days, after which the tab is signed out on its next request.
+  Its realtime connection stayed signed in, though: a tab left open past
+  the seven days kept receiving the updates of what it had open, and could
+  open more. Signing out in another tab, after signing in again there, did
+  not reach it either. Now the server signs the connection out when its
+  session expires.
+
+- **A refused Turnstile check no longer spends the account's sign-in attempts.**
+  With Turnstile on, a sign-in without a solved check counted against the
+  account's 15 attempts per 5 minutes before it was refused, so anyone could
+  lock an account out without solving a check. The account's attempts are now
+  counted after the check; the per-address limit still counts every request.
+
 ## [1.15.0] - 2026.10.28
 
 ### Added
