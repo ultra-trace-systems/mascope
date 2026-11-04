@@ -73,6 +73,7 @@ ORIGIN_PYTHON_STUB = (
     WRITE_REPORT
     + """echo "suite output"
 echo "release=${MASCOPE_PENTEST_CURRENT_RELEASE-<unset>}" > "$STUB_ORIGIN_ENV"
+echo "baseline=${MASCOPE_PENTEST_BASELINE-<unset>}" >> "$STUB_ORIGIN_ENV"
 if flock -n "$STUB_LOCK" true; then echo free; else echo held; fi > "$STUB_LOCK_STATE"
 mkdir -p report
 [ -n "$STUB_ORIGIN_REPORT" ] && write_report "$STUB_ORIGIN_REPORT" origin
@@ -112,6 +113,7 @@ CDN_PYTHON_STUB = (
   echo "verify=$MASCOPE_PENTEST_VERIFY_TLS"
   echo "header=$MASCOPE_PENTEST_HEADER_NAME:$MASCOPE_PENTEST_HEADER_VALUE"
   echo "release=${MASCOPE_PENTEST_CURRENT_RELEASE-<unset>}"
+  echo "baseline=${MASCOPE_PENTEST_BASELINE-<unset>}"
   echo "args=$*"
 } > "$STUB_CDN_ENV"
 mkdir -p report
@@ -477,7 +479,7 @@ def test_the_current_release_goes_to_both_suites(tmp_path):
     assert "MASCOPE_PENTEST_CURRENT_RELEASE='v1.7.10'" in (
         (tmp_path / "ssh-args").read_text()
     )
-    assert (tmp_path / "origin-env").read_text().split() == ["release=v1.7.10"]
+    assert "release=v1.7.10" in (tmp_path / "origin-env").read_text().split()
     assert "release=v1.7.10" in (tmp_path / "cdn-env").read_text().splitlines()
 
 
@@ -501,7 +503,7 @@ def test_no_current_release_goes_to_the_suites_without_a_release_tag(tmp_path, r
     assert "MASCOPE_PENTEST_CURRENT_RELEASE" not in ssh_args
     assert "pwned" not in ssh_args
     assert not (tmp_path / "target" / "pwned").exists()
-    assert (tmp_path / "origin-env").read_text().split() == ["release=<unset>"]
+    assert "release=<unset>" in (tmp_path / "origin-env").read_text().split()
     # Set empty, not left unset, so nothing inherited can stand in for it.
     assert "release=" in (tmp_path / "cdn-env").read_text().splitlines()
 
@@ -517,6 +519,23 @@ def test_a_release_in_the_environment_does_not_stand_in_for_the_lookup(tmp_path)
     # origin's would not: ssh carries no environment, only the stub does.)
     assert rc == 0
     assert "release=" in (tmp_path / "cdn-env").read_text().splitlines()
+
+
+def test_both_staging_vantages_read_the_suites_own_baseline(tmp_path):
+    # Set, not inherited: a baseline exported in cron's environment, a
+    # production deployment's say, must not decide a staging run's verdict.
+    rc, _, _ = _run(
+        tmp_path,
+        report=_report(),
+        cdn=_report(),
+        extra_env={"MASCOPE_PENTEST_BASELINE": "/elsewhere/prod-a.json"},
+    )
+    assert rc == 0
+    assert "baseline=baseline.json" in (tmp_path / "origin-env").read_text().split()
+    assert "baseline=baseline.json" in (tmp_path / "cdn-env").read_text().splitlines()
+    assert "MASCOPE_PENTEST_BASELINE=baseline.json" in (
+        (tmp_path / "ssh-args").read_text()
+    )
 
 
 def test_a_failing_cdn_run_fails_the_run(tmp_path):
@@ -980,6 +999,7 @@ PRODUCTION_PYTHON_STUB = (
   echo "lowpriv=$MASCOPE_PENTEST_LOWPRIV_EMAIL:$MASCOPE_PENTEST_LOWPRIV_PASSWORD"
   echo "aggressive=$MASCOPE_PENTEST_AGGRESSIVE"
   echo "release=${MASCOPE_PENTEST_CURRENT_RELEASE-<unset>}"
+  echo "baseline=${MASCOPE_PENTEST_BASELINE-<unset>}"
   echo "args=$*"
   if flock -n "$STUB_LOCK" true; then echo lock=free; else echo lock=held; fi
 } >> "$STUB_PROD_ENV"
@@ -1069,6 +1089,7 @@ def _run_production(
         "STUB_SLEEPS": str(tmp_path / "sleeps"),
         "STUB_LOCK": str(records / ".run.lock"),
         "MIN_INTERVAL": "600",
+        "PRODUCTION_BASELINE_DIR": str(tmp_path / "baselines"),
     }
     if release is not None:
         env["STUB_RELEASE"] = release
@@ -1136,6 +1157,41 @@ def test_production_runs_the_non_mutating_subset_against_each_deployment(tmp_pat
     }
     # Nothing of it reaches the staging host.
     assert not (tmp_path / "ssh-args").exists()
+
+
+def test_each_deployment_reads_its_own_baseline_and_never_staging_s(tmp_path):
+    # Staging's baseline.json sits in the suite copy the production runs share;
+    # an acceptance made there for staging must not decide a deployment's run.
+    rc, _, _ = _run_production(
+        tmp_path,
+        {"a": (_report(), 0), "b": (_report(), 0)},
+        extra_env={"MASCOPE_PENTEST_BASELINE": "baseline.json"},
+    )
+    assert rc == 0
+    baselines = tmp_path / "baselines"
+    assert [run["baseline"] for run in _production_runs(tmp_path)] == [
+        str(baselines / "prod-a.json"),
+        str(baselines / "prod-b.json"),
+    ]
+
+
+def test_production_baselines_default_to_the_runner_s_own_directory(tmp_path):
+    rc, _, _ = _run_production(
+        tmp_path, {"a": (_report(), 0)}, extra_env={"PRODUCTION_BASELINE_DIR": ""}
+    )
+    assert rc == 0
+    [run] = _production_runs(tmp_path)
+    assert run["baseline"] == "/opt/pentest-runner/baselines/prod-a.json"
+
+
+def test_a_relative_production_baseline_dir_refuses_the_run(tmp_path):
+    # The suite would take it from its own directory, the copy each sync
+    # replaces, so the deployments' acceptances would go with the next sync.
+    rc, summaries, pings = _run_production(
+        tmp_path, {"a": (_report(), 0)}, extra_env={"PRODUCTION_BASELINE_DIR": "b"}
+    )
+    assert (rc, summaries, pings) == (2, {}, [])
+    assert not _production_runs(tmp_path)
 
 
 def test_each_deployment_archives_its_own_report_and_not_the_others(tmp_path):

@@ -503,7 +503,25 @@ the retention of a staging run's.
    check of its own: without it the production run pings nothing. It never
    falls back to `HC_URL`, whose weekly check its daily pings would keep green
    after the periodic run stopped.
-5. Cron it beside the others. It takes the same lock, so it never runs inside
+5. Accept a deployment's findings in a baseline of its own, never in
+   `baseline.json`. Each run reads the one the runner names in
+   `MASCOPE_PENTEST_BASELINE`:
+
+   | Run | Baseline |
+   | --- | --- |
+   | staging, origin vantage | `baseline.json` in `SUITE_DIR`, on the target |
+   | staging, CDN vantage | `baseline.json` in `CDN_SUITE_DIR` |
+   | production deployment `NAME` | `PRODUCTION_BASELINE_DIR/prod-NAME.json` |
+
+   `PRODUCTION_BASELINE_DIR` defaults to `/opt/pentest-runner/baselines` and
+   must be an absolute path, outside the suite copy each sync replaces; a
+   relative one refuses the run (exit 2). A missing file accepts nothing, so
+   a new deployment starts with every finding undecided. The files take the
+   format of `baseline.json` (`security/pentest/README.md`, "Accepted
+   findings"). Staging's acceptances are about staging: shared, an entry would
+   accept the same gap on every deployment, and turn stale on each one where
+   the control passes.
+6. Cron it beside the others. It takes the same lock, so it never runs inside
    a staging run, waiting up to `LOCK_WAIT` like the periodic run. It neither
    waits out `MIN_INTERVAL` nor moves it: it spends none of the staging
    target's login windows.
@@ -541,7 +559,7 @@ succeeded and the run still is not evidence:
 | `1` | the report was unusable (empty archive, unreadable JSON) |
 | `75` | a periodic or `--production` run waited `LOCK_WAIT` for another run and assessed nothing |
 | `90` | the target is **behind the current release** — honest, but about an artifact deployed nowhere. Never for `--production`, which records the lag only |
-| `2` | `--production` without `PRODUCTION_TARGETS`, with an entry that is not `NAME=https://URL`, or with a `NAME` given twice; nothing was sent |
+| `2` | `--production` without `PRODUCTION_TARGETS`, with an entry that is not `NAME=https://URL`, with a `NAME` given twice, or with a relative `PRODUCTION_BASELINE_DIR`; nothing was sent |
 
 The lag comparison happens **here, never on the target**: the suite executes on
 the box under test, so a release lookup performed there would be the deployment
