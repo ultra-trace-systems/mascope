@@ -704,6 +704,20 @@ class TestNarrowing:
         assert _ids(resolved.files, "sample_file_id") == ["f-s-b2-pos"]
         assert resolved.scope.polarity == "+"
 
+    def test_the_samples_are_those_the_batches_count(self, client):
+        resolved = resolve(
+            client,
+            Scope(dataset="Campaign 2026", start=DAYS[1], end=DAYS[3], polarity="-"),
+        )
+
+        assert list(resolved.samples["sample_item_id"]) == [
+            f"s-{batch}-{n}" for batch in ("b2", "b3") for n in range(3)
+        ]
+        assert len(resolved.samples) == resolved.batches["n_samples"].sum()
+        assert resolved.samples["datetime_utc"].is_monotonic_increasing
+        assert str(resolved.samples["datetime_utc"].dt.tz) == "UTC"
+        assert set(resolved.samples["polarity"]) == {"-"}
+
     @pytest.mark.parametrize("switching", ["+-", "-+"])
     @pytest.mark.parametrize("polarity", ["+", "-"])
     def test_a_polarity_switching_file_is_in_either_polarity(
