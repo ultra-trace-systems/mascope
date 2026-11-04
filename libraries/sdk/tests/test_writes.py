@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 import requests
+from urllib3.exceptions import MaxRetryError, NewConnectionError, ProtocolError
 
 from mascope_sdk import _http
 from mascope_sdk.exceptions import (
@@ -853,14 +854,32 @@ def test_every_retried_request_is_one_of_the_writes():
     assert all(entry in sent for entry in RETRIED)
 
 
+def _refused() -> requests.exceptions.ConnectionError:
+    """What ``requests`` raises when no connection could be made: nothing of
+    the request left the client."""
+    cause = NewConnectionError(None, "Failed to establish a new connection")
+    return requests.exceptions.ConnectionError(MaxRetryError(None, "/api/x", cause))
+
+
+def _dropped() -> requests.exceptions.ConnectionError:
+    """What ``requests`` raises when the server closes the connection after
+    it read the request: it may have acted on it."""
+    return requests.exceptions.ConnectionError(
+        ProtocolError("Connection aborted.", ConnectionResetError("reset"))
+    )
+
+
 @pytest.mark.parametrize(
     "failure",
     [
         requests.exceptions.Timeout("slow"),
+        requests.exceptions.ReadTimeout("read timed out"),
         requests.exceptions.ConnectionError("down"),
+        _dropped(),
         _response(504, {"error": "gateway timeout"}),
+        _response(408, {"error": "request timeout"}),
     ],
-    ids=["timeout", "connection", "504"],
+    ids=["timeout", "read-timeout", "connection", "dropped", "504", "408"],
 )
 @pytest.mark.parametrize(("call", "method", "path", "body", "params"), REQUESTS)
 def test_a_write_is_sent_once_unless_sending_it_again_is_safe(
@@ -925,6 +944,66 @@ def test_a_write_sent_once_raises_the_gateway_error(monkeypatch, client):
     with pytest.raises(ServerError):
         DatasetsResource(client).delete("ds-1")
     assert sent == ["DELETE"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        _response(429, {"error": "too many requests"}),
+        _response(425, {"error": "too early"}),
+        requests.exceptions.ConnectTimeout("connect timed out"),
+        _refused(),
+    ],
+    ids=["429", "425", "connect-timeout", "refused"],
+)
+@pytest.mark.parametrize(("call", "method", "path", "body", "params"), REQUESTS)
+def test_a_write_is_sent_again_when_the_server_did_not_act(
+    monkeypatch, client, call, method, path, body, params, failure
+):
+    """A rate limit, a "too early" and a connection never made all show the
+    server did not act on the write, so even one sent once goes again: the
+    second send is the first the server carries out."""
+    answers = [failure, _response(200, {"message": "ok", "data": {"id": "x"}})]
+    sent = []
+
+    def fake(method, url, **kwargs):
+        sent.append(method)
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(_http.requests, "request", fake)
+    monkeypatch.setattr(_http.time, "sleep", lambda seconds: None)
+
+    call(_resources(client))
+
+    assert sent == [method, method]
+
+
+def test_a_write_sent_once_gives_up_on_a_rate_limit_that_lasts(monkeypatch, client):
+    """A 429 that does not clear is raised after the reads' attempts, each
+    after the backoff."""
+    from mascope_sdk.exceptions import MascopeAPIError
+
+    sent = []
+    waits = []
+
+    def fake(method, url, **kwargs):
+        sent.append(method)
+        return _response(429, {"error": "too many requests"})
+
+    monkeypatch.setattr(_http.requests, "request", fake)
+    monkeypatch.setattr(_http.time, "sleep", waits.append)
+
+    with pytest.raises(MascopeAPIError) as caught:
+        CollectionsResource(client).create("c1")
+
+    assert caught.value.status_code == 429
+    assert len(sent) == _http.RETRY_MAX_ATTEMPTS
+    assert waits == [
+        _http.RETRY_BACKOFF_BASE**n for n in range(1, _http.RETRY_MAX_ATTEMPTS)
+    ]
 
 
 def test_a_refusal_message_keeps_the_url(wire, client):

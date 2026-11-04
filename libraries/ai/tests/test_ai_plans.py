@@ -572,7 +572,7 @@ def test_a_plan_that_fails_part_way_says_what_it_applied(kit, api, ws2_editor):
     assert len(changed(api)) == writes
 
 
-@pytest.mark.parametrize("status", [504, 429])
+@pytest.mark.parametrize("status", [504, 408])
 def test_a_transient_failure_of_a_write_says_to_look_before_trying_again(
     kit, api, status
 ):
@@ -588,6 +588,46 @@ def test_a_transient_failure_of_a_write_says_to_look_before_trying_again(
     assert "already retried" not in failure["message"]
     # Sent once: a second send could move the samples again
     assert len(api.requests_to(r"sample/items/move", "POST")) == 1
+
+
+@pytest.mark.parametrize("status", [429, 425])
+def test_a_write_refused_before_the_server_acted_is_sent_again(
+    kit, api, monkeypatch, status
+):
+    """A rate limit answers before the route runs: the SDK sends the write
+    again after its backoff, and the plan goes through with one move."""
+    from mascope_sdk import _http
+
+    monkeypatch.setattr(_http.time, "sleep", lambda seconds: None)
+    plan = kit.plan_organize([Move("s21", "Blank (A)", kind="sample")])
+    api.refuse("POST", r"sample/items/move", status, times=1)
+
+    assert kit.apply(plan.id, approve(kit, plan)).complete
+    assert len(api.requests_to(r"sample/items/move", "POST")) == 2
+    # Moved once: a sample moves anew, under a new ID
+    assert "s21" not in api.samples
+    assert api.samples["s21m"][0] == "b1"
+
+
+@pytest.mark.parametrize("status", [429, 425])
+def test_a_rate_limit_that_lasts_says_to_try_later(kit, api, monkeypatch, status):
+    """Every send was refused before the route ran, so nothing was moved."""
+    from mascope_sdk import _http
+
+    monkeypatch.setattr(_http.time, "sleep", lambda seconds: None)
+    plan = kit.plan_organize([Move("s21", "Blank (A)", kind="sample")])
+    api.refuse("POST", r"sample/items/move", status)
+
+    with pytest.raises(PartiallyApplied) as stopped:
+        kit.apply(plan.id, approve(kit, plan))
+
+    failure = stopped.value.receipt.failure
+    assert failure["error"] == "unavailable"
+    assert "already retried" in failure["message"]
+    assert "may have carried out the write" not in failure["message"]
+    sent = api.requests_to(r"sample/items/move", "POST")
+    assert len(sent) == _http.RETRY_MAX_ATTEMPTS
+    assert api.samples["s21"][0] == "b2"
 
 
 def test_a_failed_reread_writes_nothing_and_leaves_the_plan_pending(kit, api):

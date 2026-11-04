@@ -270,3 +270,91 @@ def test_such_a_read_still_retries_any_other_transient_failure(monkeypatch):
         _http.http_get("http://server", "x", "token", retry_timeouts=False)
 
     assert seen["gets"] == _http.RETRY_MAX_ATTEMPTS
+
+
+def _rate_limited_then_ok(monkeypatch, retry_after: str | None):
+    """Answer the first POST 429 with *retry_after*, the next 200; record the
+    POSTs and the waits."""
+    seen = {"posts": 0, "sleeps": []}
+
+    def fake_post(url, **kwargs):
+        seen["posts"] += 1
+        if seen["posts"] > 1:
+            return _response(200, b'{"data": null}')
+        response = _response(429)
+        if retry_after is not None:
+            response.headers["Retry-After"] = retry_after
+        return response
+
+    monkeypatch.setattr(_http.requests, "post", fake_post)
+    monkeypatch.setattr(_http.time, "sleep", seen["sleeps"].append)
+    return seen
+
+
+def test_a_retry_after_longer_than_the_backoff_is_waited_out(monkeypatch):
+    seen = _rate_limited_then_ok(monkeypatch, "30")
+
+    _http.http_post("http://server", "x", "token", {}, once=True)
+
+    assert seen["posts"] == 2
+    assert seen["sleeps"] == [30]
+
+
+def test_a_retry_after_shorter_than_the_backoff_waits_the_backoff(monkeypatch):
+    seen = _rate_limited_then_ok(monkeypatch, "1")
+
+    _http.http_post("http://server", "x", "token", {})
+
+    assert seen["sleeps"] == [_http.RETRY_BACKOFF_BASE]
+
+
+def test_a_retry_after_as_a_date_is_waited_out(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+
+    when = datetime.now(timezone.utc) + timedelta(seconds=40)
+    seen = _rate_limited_then_ok(monkeypatch, format_datetime(when, usegmt=True))
+
+    _http.http_post("http://server", "x", "token", {})
+
+    assert seen["posts"] == 2
+    assert 30 < seen["sleeps"][0] <= 40
+
+
+def test_a_retry_after_that_is_neither_is_ignored(monkeypatch):
+    seen = _rate_limited_then_ok(monkeypatch, "soon")
+
+    _http.http_post("http://server", "x", "token", {})
+
+    assert seen["sleeps"] == [_http.RETRY_BACKOFF_BASE]
+
+
+def test_a_retry_after_past_the_cap_is_raised_at_once(monkeypatch):
+    """The attempts left would not see the limit clear; a script should hear
+    of it now rather than hang on it."""
+    seen = _rate_limited_then_ok(monkeypatch, str(_http.RETRY_AFTER_MAX + 1))
+
+    with pytest.raises(MascopeAPIError) as caught:
+        _http.http_post("http://server", "x", "token", {})
+
+    assert caught.value.status_code == 429
+    assert seen["posts"] == 1
+    assert seen["sleeps"] == []
+
+
+def test_a_connection_dropped_after_the_send_was_maybe_acted_on():
+    """``requests`` raises one ConnectionError for both: the urllib3 cause is
+    what says whether the request left the client."""
+    from urllib3.exceptions import MaxRetryError, NewConnectionError, ProtocolError
+
+    refused = requests.exceptions.ConnectionError(
+        MaxRetryError(None, "/api/x", NewConnectionError(None, "refused"))
+    )
+    dropped = requests.exceptions.ConnectionError(
+        ProtocolError("Connection aborted.", ConnectionResetError("reset"))
+    )
+
+    assert _http._never_sent(refused)
+    assert _http._never_sent(requests.exceptions.ConnectTimeout("slow"))
+    assert not _http._never_sent(dropped)
+    assert not _http._never_sent(requests.exceptions.ConnectionError("down"))

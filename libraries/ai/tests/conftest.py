@@ -122,7 +122,11 @@ class FakeAPI:
 
     :ivar calls: Each request, as ``(method, path, params, body)``.
     :ivar failures: ``(method, path regex, params) -> HTTP status`` to
-        answer with instead, set through :meth:`fail`.
+        answer with instead, set through :meth:`fail`. The route runs first,
+        as when an answer is lost after the server acted.
+    :ivar refusals: ``[method, path regex, status, times left]``: answered
+        before the route runs, as a rate limit is, set through
+        :meth:`refuse`.
     :ivar peak_copies: How many copies of the recorded peak list each
         sample answers with (each copy's peaks with IDs of their own), to
         make loads as large as a test needs.
@@ -151,6 +155,7 @@ class FakeAPI:
     def __init__(self):
         self.calls: list[tuple[str, str, dict[str, Any], Any]] = []
         self.failures: list[tuple[str, re.Pattern, dict[str, Any], int]] = []
+        self.refusals: list[list[Any]] = []
         self.peak_copies = 1
         self.left_out: list[tuple[dict[str, Any], int | None]] = []
         self.no_series: dict[str, set[str]] = {}
@@ -177,6 +182,14 @@ class FakeAPI:
         """Answer requests whose path fully matches regex *path*, and whose
         query has the *params* given, with *status*."""
         self.failures.append((method, re.compile(path), dict(params or {}), status))
+
+    def refuse(
+        self, method: str, path: str, status: int, times: int | None = None
+    ) -> None:
+        """Answer requests whose path fully matches regex *path* with
+        *status* before the route runs, so nothing changes: the next *times*
+        of them, or every one when None."""
+        self.refusals.append([method, re.compile(path), status, times])
 
     def leave_out(
         self, count: int | None, params: dict[str, Any] | None = None
@@ -229,6 +242,14 @@ class FakeAPI:
         path = url.split("/api/", 1)[1]
         params = dict(params or {})
         self.calls.append((method, path, params, body))
+        for refusal in self.refusals:
+            refuse_method, pattern, refuse_status, times = refusal
+            if refuse_method == method and pattern.fullmatch(path) and times != 0:
+                if times is not None:
+                    refusal[3] = times - 1
+                return self._response(
+                    url, refuse_status, {"error": "refused by the test"}
+                )
         status, payload = self._route(method, path, params, body)
         for fail_method, pattern, fail_params, fail_status in self.failures:
             if (
@@ -237,6 +258,10 @@ class FakeAPI:
                 and fail_params.items() <= params.items()
             ):
                 status, payload = fail_status, {"error": "refused by the test"}
+        return self._response(url, status, payload)
+
+    @staticmethod
+    def _response(url: str, status: int, payload: Any) -> requests.Response:
         response = requests.Response()
         response.status_code = status
         response.url = url

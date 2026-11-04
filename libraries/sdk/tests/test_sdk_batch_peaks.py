@@ -462,6 +462,40 @@ class TestAttempts:
 
         assert timing_out == [f"batch-peaks/batch/{BATCH_ID}/runs/import"]
 
+    def test_an_import_rate_limited_is_sent_again(self, resource, monkeypatch):
+        """A 429 is refused before the route runs, so no run was made: the
+        import goes again after the backoff, as a read does."""
+        import requests
+
+        from mascope_sdk import _http
+        from mascope_sdk.exceptions import MascopeAPIError
+
+        sent: list[str] = []
+
+        def fake(url, **kwargs):
+            sent.append(url.removeprefix("http://testserver/api/"))
+            response = requests.Response()
+            response.status_code = 429
+            response._content = b'{"error": "too many requests"}'
+            return response
+
+        monkeypatch.setattr(_http.requests, "post", fake)
+        monkeypatch.setattr(_http.time, "sleep", lambda s: None)
+
+        with pytest.raises(MascopeAPIError) as caught:
+            resource.import_run(
+                BATCH_ID,
+                [{"mz": 181.0707, "formula": "C6H12O6"}],
+                engine="peaky",
+                engine_version="0.7.0",
+            )
+
+        assert caught.value.status_code == 429
+        assert (
+            sent
+            == [f"batch-peaks/batch/{BATCH_ID}/runs/import"] * _http.RETRY_MAX_ATTEMPTS
+        )
+
     def test_the_series_is_sent_again(self, resource, timing_out):
         from mascope_sdk import _http
         from mascope_sdk.exceptions import MascopeTimeoutError

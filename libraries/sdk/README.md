@@ -950,9 +950,14 @@ mascope.matching.save_batch(batch_id)
   a second create would make a second collection, a second save would run
   the matching twice. The call raises `MascopeTimeoutError`,
   `MascopeConnectionError` or a `ServerError`; look at what is there before
-  you call it again. The writes that come out the same however often they are
-  sent are retried as reads are: `matching.aggregate_sample` and
-  `aggregate_batch`, which save nothing, and the updates that set fields to
+  you call it again. A failure that shows the server did not act is still
+  retried: a connection that could not be made, and a 429 or 425, which the
+  server's rate limits answer before the write runs. A 408 is not, as a
+  proxy can send it after it read the request. Every retry, a read's too,
+  waits the backoff (2, 4, 8 s) or the answer's `Retry-After` when that is
+  longer; a `Retry-After` over a minute is raised at once. The writes that
+  come out the same however often they are sent are retried as reads are:
+  `matching.aggregate_sample` and `aggregate_batch`, which save nothing, and the updates that set fields to
   the values given (`datasets.update`, `batches.update`, `samples.update`,
   `collections.associate`, and `collections.update` when it creates no
   compounds).
