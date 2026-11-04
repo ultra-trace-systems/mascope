@@ -15,7 +15,9 @@
     "e50": "Per precursor of a shape that steps its energy: linear interpolation at the first downward crossing of survival 0.5, on NCE and on the volts the trailer records (docs/dev/ms2_analysis.md, survival and E50).",
     "unexplained": "A centroid no sub-formula of the precursor or the co-isolate explains.",
     "centroid_labels": "Every fragment scan of a step carries its spectrum's centroids exactly, with noise as the noise of each and resolution its scan's FT resolution times sqrt(200 / mz), rounded.",
-    "times": "Scan n is acquired at n times scan_interval_min minutes."
+    "times": "Scan n is acquired at n times scan_interval_min minutes.",
+    "survey": "Every survey scan carries the file's own centroids and these beside them, each precursor and its co-isolate, as centroid labels with noise as the noise of each and resolution survey_resolution times sqrt(200 / mz), rounded. The file's own scans hold no centroid within 1.5 of either precursor.",
+    "window_share": "A survey centroid's intensity over that of every survey centroid in its precursor's isolation window, which holds the two alone at every width a shape takes the precursor with."
   },
   "noise": 1.0,
   "ghost_ratio": 0.004,
@@ -50,6 +52,13 @@
       "unexplained": {"mz": 89.5501}
     }
   },
+  "survey_resolution": 120000,
+  "survey": [
+    {"mz": 163.075356, "intensity": 40000.0, "role": "co_isolate", "of": "B", "window_share": 0.25},
+    {"mz": 163.122975, "intensity": 120000.0, "role": "precursor", "of": "B", "window_share": 0.75},
+    {"mz": 195.065185, "intensity": 50000.0, "role": "co_isolate", "of": "A", "window_share": 0.2},
+    {"mz": 195.087652, "intensity": 200000.0, "role": "precursor", "of": "A", "window_share": 0.8}
+  ],
   "spectra": {
     "A@10": {
       "precursor": "A",
