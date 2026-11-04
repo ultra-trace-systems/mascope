@@ -43,10 +43,12 @@ class SocketStorageConfig(BaseModel):
     worker_ttl: int = 30  # Heartbeat key lifetime absent renewal
     worker_renewal_interval: int = 10  # How often a running worker refreshes it
     # A failed heartbeat is a warning kept out of monitoring, like any Redis
-    # blip the socket storage rides out. This many failed in a row report the
-    # outage to monitoring once, and the next beat that succeeds reports it
-    # over. At one beat per worker_renewal_interval, six span about a minute,
-    # where a Redis restart is answering again by the next beat or the one after.
+    # blip the socket storage rides out. This many timed beats failed in a row
+    # report the outage to monitoring once, and the next beat that succeeds
+    # reports it over; a web socket's connect beats too, but only its success
+    # counts. At one beat per worker_renewal_interval, six span about a minute
+    # (two when Redis hangs, as each beat then waits out its timeouts), where a
+    # Redis restart is answering again by the next beat or the one after.
     redis_outage_beats: int = 6
 
     # Redis key prefixes

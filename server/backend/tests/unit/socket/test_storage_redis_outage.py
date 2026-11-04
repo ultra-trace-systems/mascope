@@ -12,7 +12,9 @@ The heartbeat is what reports one that lasts. What must hold:
 - the first beat that succeeds after it files one more, under another
   fingerprint, and the beats after it nothing;
 - a blip that ends before the threshold starts the count again;
-- a failure that is not Redis out of reach does not count.
+- a failure that is not Redis out of reach does not count;
+- a web socket's connect beats too, but its failure does not count, and its
+  success ends the run.
 
 The heartbeat is driven against a Redis stub that fails until told otherwise,
 on a fake clock; the records go through the real monitoring sink with the
@@ -20,6 +22,7 @@ SDK's two capture calls recorded.
 """
 
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 import sentry_sdk
@@ -97,10 +100,40 @@ _OUTAGE = ("msg", [workers.OUTAGE_FINGERPRINT])
 _RECOVERY = ("msg", [workers.RECOVERY_FINGERPRINT])
 
 
+class _Stop(Exception):
+    pass
+
+
 async def _beats(count: int, clock: _Clock) -> None:
-    for _ in range(count):
-        await workers._beat()
-        clock.now += storage_config.worker_renewal_interval
+    """Run the heartbeat's own loop for ``count`` beats on the fake clock."""
+    slept = 0
+
+    async def _sleep(seconds: float) -> None:
+        nonlocal slept
+        if slept == count:
+            raise _Stop
+        slept += 1
+        clock.now += seconds
+
+    with mock.patch.object(workers, "asyncio", SimpleNamespace(sleep=_sleep)):
+        with pytest.raises(_Stop):
+            await workers._keep_beating()
+
+
+@pytest.fixture
+def connect(monkeypatch, clock):
+    """
+    A web socket connecting to this worker, its heartbeat already running.
+
+    :return: An async function connecting one socket, 0.3 s after the last.
+    """
+    monkeypatch.setattr(workers, "_heartbeat_running", lambda: True)
+
+    async def _connect(sid: str = "sid-1") -> None:
+        clock.now += 0.3
+        await workers.claim_socket(sid)
+
+    return _connect
 
 
 @pytest.mark.asyncio
@@ -173,3 +206,32 @@ async def test_a_failure_that_is_not_redis_out_of_reach_does_not_count(
 
     assert _OUTAGE not in monitoring
     assert all(kind == "exc" for kind, _ in monitoring), "each fault is its own"
+
+
+@pytest.mark.asyncio
+async def test_connects_during_a_blip_do_not_count_as_heartbeats(
+    redis, clock, monitoring, connect
+):
+    await _beats(1, clock)
+    for _ in range(_THRESHOLD * 3):
+        await connect()
+
+    assert monitoring == [], "page loads during a blip file nothing"
+
+    await _beats(_THRESHOLD - 2, clock)
+    assert monitoring == [], "only the timed beats make up the run"
+
+    await _beats(1, clock)
+    assert monitoring == [_OUTAGE]
+
+
+@pytest.mark.asyncio
+async def test_a_connect_that_reaches_redis_reports_the_outage_over(
+    redis, clock, monitoring, connect
+):
+    await _beats(_THRESHOLD, clock)
+    redis.error = None
+
+    await connect()
+
+    assert monitoring == [_OUTAGE, _RECOVERY]
