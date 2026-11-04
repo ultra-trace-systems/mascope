@@ -81,8 +81,48 @@ class TestMapping:
     def test_a_403_on_a_listing(self, kit, api):
         api.fail("GET", "target/collections", 403)
 
-        with pytest.raises(AccessDenied, match="list the target collections"):
+        with pytest.raises(AccessDenied) as caught:
             kit.find("x", kind="collection")
+
+        assert str(caught.value).startswith(
+            "Refused to list the target collections. You have"
+        )
+
+    @pytest.mark.parametrize(
+        "within, start",
+        [
+            (None, "Refused to list the samples of the workspace. You have"),
+            ("d1", "Refused to list the samples of dataset 'Campaign (2026)' (d1)."),
+        ],
+    )
+    def test_a_403_on_a_sample_listing_names_what_it_lists(
+        self, kit, api, within, start
+    ):
+        scope = kit.resolve(within, "dataset") if within else None
+        api.fail("GET", "sample/batches", 403)
+
+        with pytest.raises(AccessDenied) as caught:
+            kit.find("Sample", kind="sample", within=scope)
+
+        assert caught.value.target == scope
+        assert str(caught.value).startswith(start)
+
+    def test_a_load_with_every_read_refused_and_no_source_names_no_object(
+        self, kit, api, monkeypatch
+    ):
+        import pandas as pd
+
+        refused = pd.DataFrame()
+        refused.attrs["failures"] = [{"error_type": "PermissionDeniedError"}]
+        monkeypatch.setattr(kit, "_load_spectrum", lambda **_: (refused, []))
+
+        with pytest.raises(AccessDenied) as caught:
+            kit._load("load_spectrum", {})
+
+        assert caught.value.target is None
+        assert str(caught.value).startswith(
+            "Refused to read what the load asked for. You have editor"
+        )
 
     def test_a_401(self, kit, api):
         api.fail("GET", "target/collections", 401)
@@ -162,7 +202,7 @@ class TestSdkErrors:
         from mascope_sdk import PermissionDeniedError
 
         with pytest.raises(AccessDenied) as caught:
-            with sdk_errors("read", None):
+            with sdk_errors("read the sample", None):
                 raise PermissionDeniedError("no")
 
         assert caught.value.required_role == "guest"
@@ -172,6 +212,7 @@ class TestSdkErrors:
     @pytest.mark.parametrize(
         "error, raised, start",
         [
+            ("permission", AccessDenied, "Refused to list the workspaces. You have"),
             (
                 "validation",
                 InvalidRequest,
@@ -182,9 +223,14 @@ class TestSdkErrors:
     )
     def test_an_operation_without_a_target_ends_the_phrase(self, error, raised, start):
         from mascope_ai.errors import sdk_errors
-        from mascope_sdk import MascopeConnectionError, ValidationError
+        from mascope_sdk import (
+            MascopeConnectionError,
+            PermissionDeniedError,
+            ValidationError,
+        )
 
         sdk = {
+            "permission": PermissionDeniedError("no"),
             "validation": ValidationError("bad", status_code=422),
             "connection": MascopeConnectionError("down"),
         }[error]
@@ -197,6 +243,11 @@ class TestSdkErrors:
     @pytest.mark.parametrize(
         "error, raised, start",
         [
+            (
+                "permission",
+                AccessDenied,
+                "Refused to list the batches of dataset 'D' (d1). You have",
+            ),
             (
                 "validation",
                 InvalidRequest,
@@ -211,9 +262,14 @@ class TestSdkErrors:
     )
     def test_an_operation_with_a_target_names_it(self, error, raised, start):
         from mascope_ai.errors import sdk_errors
-        from mascope_sdk import MascopeConnectionError, ValidationError
+        from mascope_sdk import (
+            MascopeConnectionError,
+            PermissionDeniedError,
+            ValidationError,
+        )
 
         sdk = {
+            "permission": PermissionDeniedError("no"),
             "validation": ValidationError("bad", status_code=422),
             "connection": MascopeConnectionError("down"),
         }[error]
