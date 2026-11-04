@@ -44,6 +44,11 @@ as ``[15N]``. A labelled atom is its own element, in masses and in counts: a
 labelled-ammonium adduct loses H3[15N], 18.0236, which is neither H3N
 (17.0265) nor H2O (18.0106).
 
+Every peak given is read here. Harmonic ghosts and side lobes, centroids that
+are no ions, are :mod:`.hygiene`'s: its ``read_window`` reads a window's
+spectra with this module and makes each such peak one row with no formula
+(``role`` ``'harmonic'`` or ``'satellite'``).
+
 Pure: numpy and Mascope's formula layer only, no I/O. :mod:`.frame` builds a
 DataFrame from the readings.
 """
@@ -69,6 +74,7 @@ __all__ = [
     "CLOSED_SHELL_LOSSES",
     "DEFAULT_TOLERANCE",
     "ELEMENTS",
+    "FLAG_ROLES",
     "FRAGMENT_DBE_MIN_EVEN",
     "FRAGMENT_DBE_MIN_ODD",
     "FRAGMENT_SENIOR_MARGIN",
@@ -80,6 +86,12 @@ __all__ = [
     "RADICAL_LOSSES",
     "READING_TOLERANCE_MDA",
     "READING_TOLERANCE_PPM",
+    "ROLE_FRAGMENT",
+    "ROLE_HARMONIC",
+    "ROLE_PRECURSOR",
+    "ROLE_SATELLITE",
+    "ROLE_UNEXPLAINED",
+    "ROLES",
     "SENIOR_CAP_BASE",
     "SENIOR_CAP_PER_ATOM",
     "VALENCES",
@@ -982,21 +994,51 @@ def mass_offset(anchors: Iterable[tuple[float, str]]) -> MassOffset:
 # ---------------------------------------------------------------------------
 # A whole spectrum x the window ions -> readings
 # ---------------------------------------------------------------------------
+#: The role of a reading row (:attr:`Reading.role`): a window ion's precursor,
+#: a fragment, a peak no window ion reads, and the two peaks that are no ion at
+#: all (:mod:`.hygiene`): an Orbitrap harmonic ghost and a side lobe.
+ROLE_PRECURSOR = "precursor"
+ROLE_FRAGMENT = "fragment"
+ROLE_UNEXPLAINED = "unexplained"
+ROLE_HARMONIC = "harmonic"
+ROLE_SATELLITE = "satellite"
+ROLES: tuple[str, ...] = (
+    ROLE_PRECURSOR,
+    ROLE_FRAGMENT,
+    ROLE_UNEXPLAINED,
+    ROLE_HARMONIC,
+    ROLE_SATELLITE,
+)
+#: The roles of a flagged peak: one row with no formula (:mod:`.hygiene`).
+FLAG_ROLES: tuple[str, ...] = (ROLE_HARMONIC, ROLE_SATELLITE)
+
+
 @dataclass(frozen=True)
 class Reading:
     """One row of a spectrum's readings: one (peak, parent, candidate), or the
-    one row of a peak no parent explains.
+    one row of a peak no parent explains or that is no ion.
 
     ``spectrum`` is the caller's key for the spectrum (an energy of a window).
     ``peak`` is the 0-based position of the peak in the input. ``rank`` 1 is the
-    best within (spectrum, peak, parent), 0 an unexplained row;
+    best within (spectrum, peak, parent), 0 an unexplained or a flagged row;
     ``n_candidates`` counts the readings within (spectrum, peak, parent),
     ``n_parents`` the parents with at least one reading of the peak.
     ``ladder_support`` is the earlier step a four-piece reading stands on
     (:func:`ladder_gate`), ``''`` otherwise. An unexplained row carries ``''`` in
-    every text field, 0 in every count, False in both flags and NaN in ``dbe``
-    and ``ppm``, so a filter on a flag or a piece count never picks it up as a
-    reading.
+    every text field but ``role``, 0 in every count, False in both flags and NaN
+    in ``dbe`` and ``ppm``, so a filter on a flag or a piece count never picks it
+    up as a reading.
+
+    ``role`` is the row's: ``'precursor'`` for a precursor reading,
+    ``'fragment'`` for any other reading, ``'unexplained'`` for a peak no window
+    ion reads - all three follow from ``rank`` and ``is_precursor``, and are
+    always written so, whatever was given - and ``'harmonic'`` or
+    ``'satellite'`` for a peak :mod:`.hygiene` flags as no ion: one row laid out
+    as an unexplained one, whose ``flag_note`` says what it is (``''`` on every
+    other row).
+
+    :raises ValueError: For a role that is not one of :data:`ROLES`, a flag role
+        on a reading (rank above 0), or a ``flag_note`` on an unflagged row.
     """
 
     spectrum: str
@@ -1021,6 +1063,29 @@ class Reading:
     n_parents: int
     ladder_support: str = ""
     pieces: tuple[str, ...] = ()
+    role: str = ""
+    flag_note: str = ""
+
+    def __post_init__(self) -> None:
+        if self.rank > 0:
+            read = ROLE_PRECURSOR if self.is_precursor else ROLE_FRAGMENT
+        else:
+            read = ROLE_UNEXPLAINED
+        if self.role in FLAG_ROLES:
+            if self.rank != 0:
+                raise ValueError(
+                    f"a {self.role} row is no reading: rank 0, got {self.rank}"
+                )
+            return
+        if self.role and self.role not in ROLES:
+            raise ValueError(
+                f"role must be one of {', '.join(ROLES)}, got {self.role!r}"
+            )
+        if self.flag_note:
+            raise ValueError(f"a flag_note on a {read} row")
+        # written over what was given, so that dataclasses.replace of rank or
+        # is_precursor keeps the role true
+        object.__setattr__(self, "role", read)
 
 
 def _unexplained(
@@ -1220,7 +1285,8 @@ def read_fragments(
 
 def best_readings(readings: Iterable[Reading]) -> tuple[Reading, ...]:
     """The rank-1 reading of every (spectrum, peak, parent) plus the unexplained
-    rows: one row per peak and explaining parent, in the input order."""
+    and flagged rows: one row per peak and explaining parent, in the input
+    order."""
     return tuple(r for r in readings if r.rank == 1 or r.n_candidates == 0)
 
 
@@ -1374,11 +1440,13 @@ def ladder_gate(
     the decomposition's order, that is one and finds one; else the first such
     step). Readings above ``k`` pieces are dropped, every other reading is kept
     as it is, and the readings are re-ranked; a four-piece reading never
-    supports another.
+    supports another, and neither does a flagged peak (:mod:`.hygiene`), which
+    is no reading.
 
     The readings must hold ONE window, read at ``k_max`` >= ``k``
     (:func:`read_fragments` with ``k_max=LADDER_K``, once per spectrum, each
-    with its own ``spectrum`` key), in :func:`read_fragments`' row order. An
+    with its own ``spectrum`` key, or :func:`.hygiene.read_window`), in
+    :func:`read_fragments`' row order. An
     ammonium adduct of a polyol walks a chain - [M+NH4]+ loses NH3 and then
     water step by step - whose fourth step (NH3 + 3 H2O, DBE -3) needs four
     molecules in any library; the gate admits it only when its previous step is
