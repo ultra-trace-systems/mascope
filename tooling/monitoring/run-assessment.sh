@@ -98,7 +98,7 @@
 #                        HC_URL)
 #
 # Each vantage leaves three files in RECORDS: <ts>-<vantage>.log (the suite's
-# output), <ts>-<vantage>.tar.gz (the report), and <ts>-<vantage>.summary
+# output), <ts>-<vantage>.tar.gz (that run's report alone), and <ts>-<vantage>.summary
 # (this script's own verdict, so an archived run still states what it
 # concluded). The summary names the listener the suite measured, and says
 # origin_pull=not_assessed when that is the host's loopback listener, :8443,
@@ -267,6 +267,14 @@ fi
 ts="$(date -u +%Y-%m-%dT%H%M%SZ)"
 ping_hc "/start"
 
+# What a run archives: its own report and nothing else from report/. The
+# suite also keeps report/history/ there, an entry per run that nothing
+# prunes; archived along, it would put every earlier run (and, in a suite copy
+# two vantages or deployments share, theirs) in each record, and grow each
+# archive until MAX_BYTES cut it short. The trail is the series of per-run
+# archives in RECORDS.
+REPORT_FILES=(report/pentest-report.json report/pentest-report.md)
+
 # Runs the suite on the target and pulls its report back. $1 = log, $2 = archive.
 run_origin() {
     # The suite reads the deployed version from the target itself, so the
@@ -286,7 +294,7 @@ run_origin() {
     [ -n "$current_release" ] && \
         release_env="MASCOPE_PENTEST_CURRENT_RELEASE='${current_release}' "
     local remote_cmd="cd ${SUITE_DIR} && \
-  rm -f report/pentest-report.json report/pentest-report.md && \
+  rm -f ${REPORT_FILES[*]} && \
   MASCOPE_PENTEST_TARGET='${MASCOPE_PENTEST_TARGET}' \
   MASCOPE_PENTEST_EMAIL='${MASCOPE_PENTEST_EMAIL}' \
   MASCOPE_PENTEST_PASSWORD='${MASCOPE_PENTEST_PASSWORD}' \
@@ -302,7 +310,7 @@ run_origin() {
     # head -c bounds the stream before it lands: an unbounded "report" from a
     # compromised target must not be able to starve the backup volume.
     ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" \
-        "cd ${SUITE_DIR} && tar -cz report" 2>/dev/null | head -c "$MAX_BYTES" > "$2"
+        "cd ${SUITE_DIR} && tar -cz ${REPORT_FILES[*]}" 2>/dev/null | head -c "$MAX_BYTES" > "$2"
     return "$rc"
 }
 
@@ -318,7 +326,7 @@ run_cdn() {
         # As at the origin: an aborted run must leave no report to archive.
         # The release is set even when empty, so none inherited from cron's
         # environment can stand in for a lookup that failed.
-        rm -f report/pentest-report.json report/pentest-report.md
+        rm -f "${REPORT_FILES[@]}"
         MASCOPE_PENTEST_TARGET="$CDN_TARGET" \
         MASCOPE_PENTEST_EMAIL="${MASCOPE_PENTEST_EMAIL}" \
         MASCOPE_PENTEST_PASSWORD="${MASCOPE_PENTEST_PASSWORD}" \
@@ -334,7 +342,7 @@ run_cdn() {
     local rc=$?
     # The local copy is ours, but the report quotes what the deployment
     # answered: bounded the same way as the origin's.
-    tar -cz -C "$CDN_SUITE_DIR" report 2>/dev/null | head -c "$MAX_BYTES" > "$2"
+    tar -cz -C "$CDN_SUITE_DIR" "${REPORT_FILES[@]}" 2>/dev/null | head -c "$MAX_BYTES" > "$2"
     return "$rc"
 }
 
@@ -348,7 +356,7 @@ run_production() {
     # rather than inherited from whatever environment cron gives this script.
     (
         cd "$PRODUCTION_SUITE_DIR" || exit 2
-        rm -f report/pentest-report.json report/pentest-report.md
+        rm -f "${REPORT_FILES[@]}"
         MASCOPE_PENTEST_TARGET="$3" \
         MASCOPE_PENTEST_EMAIL= \
         MASCOPE_PENTEST_PASSWORD= \
@@ -363,7 +371,7 @@ run_production() {
         exec ./.venv/bin/python -m pytest -q --non-mutating
     ) > "$1" 2>&1
     local rc=$?
-    tar -cz -C "$PRODUCTION_SUITE_DIR" report 2>/dev/null | head -c "$MAX_BYTES" > "$2"
+    tar -cz -C "$PRODUCTION_SUITE_DIR" "${REPORT_FILES[@]}" 2>/dev/null | head -c "$MAX_BYTES" > "$2"
     return "$rc"
 }
 

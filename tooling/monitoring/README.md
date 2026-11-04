@@ -542,7 +542,11 @@ pull request rather than on the box.
 
 Each vantage leaves three files in `RECORDS`: `<ts>-<vantage>.log`,
 `<ts>-<vantage>.tar.gz` and `<ts>-<vantage>.summary`, where the vantage is
-`origin` or `cdn`. With both, `<ts>-vantage.md` and `<ts>-vantage.json` hold
+`origin` or `cdn`. The archive holds that run's report alone,
+`report/pentest-report.json` and `report/pentest-report.md`. The evidence
+trail is the series of these archives here, one per run. The suite's
+`report/history/` is not archived: for the origin that copy is on the target,
+which is no place for the record (section 10). With both, `<ts>-vantage.md` and `<ts>-vantage.json` hold
 the comparison. A production run leaves the same three files per deployment,
 `<ts>-prod-<NAME>.{log,tar.gz,summary}`, with `trigger=production` in the
 summary. Everything is pruned at 400 days, deploy runs, periodic and
