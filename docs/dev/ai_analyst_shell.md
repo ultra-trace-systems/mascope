@@ -4,8 +4,8 @@
 - **As of:** 2026-11-04
 - **Tracked in:** [AI analyst shell](https://linear.app/ultra-trace/project/ai-analyst-shell-2b0a6a7e8af8)
   (Linear, P-MAS-21, filed 2026-11-04: milestones 0 to 5 follow section 4;
-  the four decisions of section 5 are MAS-659 to MAS-662; step issues
-  follow them)
+  the five decisions of section 5 are MAS-659 to MAS-662 and MAS-665; step
+  issues follow them)
 - **What:** The shell a user drives Mascope through in natural language: any
   ACP agent runtime over the toolkit's MCP server, Goose by default, recipes
   that compute every number, and an evaluation matrix that admits cheaper
@@ -99,7 +99,8 @@ Two decisions already taken bound this note:
   milestone D). Organising data is the toolkit's; peaky stays the
   interactive analysis and reporting tool over either engine's ledgers, and
   its enduring capabilities are catalogued (D2) and kept through the
-  thinning.
+  thinning. Section 2.5 proposes the next step of that agreement: the
+  shell this note designs is Peaky, by name and by repository.
 - **The in-app agent is `ai_layer.md` phase 4** (MAS-139): a chat panel in
   the web app over a sandboxed transport, with per-session tokens, approval
   cards and cost attribution. Nothing of it has started.
@@ -153,20 +154,23 @@ over ACP natively or through adapters.
 ```
    a scientist
         |
-   shell: Goose Desktop (milestone 3) / a Mascope ACP client (milestone 4)
+   shell, "Peaky": Goose Desktop + the Peaky bundle (milestone 3),
+                   Peaky's ACP client (milestone 4)
         |  ACP: sessions, prompts, tool-call approval, custom methods
    agent runtime: Goose by default; any ACP agent in its place
         |  MCP                          |  model API
-   mascope-ai mcp  (+ skills, recipes)  Anthropic API / OpenAI-compatible
-        |                                local endpoint (air-gapped)
+   mascope-ai mcp                       Anthropic API / OpenAI-compatible
+     + Peaky's skills and recipes         local endpoint (air-gapped)
+        |
    mascope_ai  ->  mascope_sdk  ->  Mascope's API (the user's own rights)
 ```
 
-What Mascope owns and invests in is the bottom half: the MCP server, the
-skills, the recipes and the evaluation matrix. Every ACP runtime consumes
-them unchanged, so the runtime is a choice, not a dependency, and the
-choice can change when Goose's consolidation lands or another runtime
-proves better on the matrix. The design's invariants
+What Mascope owns and invests in is the bottom half: the toolkit, the MCP
+server, every recipe step's implementation and the evaluation matrix. The
+top half, the shell with its skills, recipe compositions and bundle, is
+Peaky's (2.5). Every ACP runtime consumes both unchanged, so the runtime is
+a choice, not a dependency, and the choice can change when Goose's
+consolidation lands or another runtime proves better on the matrix. The design's invariants
 (`ai_layer.md` section 3) are unchanged: handles not tables, the oracle as
 the only source of a mass or a score, approvals minted by the transport.
 The shell adds one: **a model writes prose and fills enumerated
@@ -183,7 +187,7 @@ for itself.
 | Surface | Who | What it is for | State |
 |---|---|---|---|
 | A coding agent (Claude Code, Goose CLI) with `mascope-ai mcp` and the skills | developers, power users | everything, including research passes peaky does and Mascope does not | ships |
-| The desktop analyst: Goose Desktop with the Mascope bundle, later a Mascope ACP client | scientists | analysis on request, reports and dashboards from recipes, data organisation behind approval | this note, milestones 3 and 4 |
+| Peaky, the desktop analyst: Goose Desktop with the Peaky bundle, later Peaky's ACP client | scientists | analysis on request, reports and dashboards from recipes, data organisation behind approval | this note, milestones 3 and 4 |
 | The in-app panel | every user | metadata questions, "what is this peak", organising data with plan/apply | `ai_layer.md` phase 4, narrowed: milestone 5 |
 
 The user's own assessment holds: a panel inside the web app covers simple
@@ -203,6 +207,63 @@ model is good enough for which task is the matrix's answer (section 3.4),
 not a guess, and a site that cannot run a model large enough for a task
 class loses that class, not the shell. [`isolated_deployment_plan.md`](isolated_deployment_plan.md)
 owns the server side of this.
+
+### 2.5 Peaky is the shell
+
+> **Proposed 2026-11-04, pending the peaky owner's agreement** (decision
+> 5.5, MAS-665). The split below is this note's position; the two Linear edits it
+> names are made at the owners' meeting, not before.
+
+Peaky's owner keeps peaky, and the two owners' idea is that the AI frontend
+is *called* Peaky while every computation and every reusable piece moves to
+Mascope. That is the boundary agreement of 2026-10-30 taken one step on,
+and it changes this note's names, packaging and ownership, not its
+architecture. The "Mascope bundle" of milestone 3 is Peaky. The end state
+of the thinning
+([`peaky_mascope_boundary.md`](peaky_mascope_boundary.md) section 8)
+gains a definition: when the register is empty, what remains in the peaky
+repository is the shell.
+
+Where each thing lives:
+
+| Thing | Home | Why |
+|---|---|---|
+| The toolkit, the MCP server, `Frame`, plan/apply | Mascope, `libraries/ai` (`mascope-ai` on PyPI) | computation and the API client, versioned with the server |
+| Recipe step implementations: normalisation, background, Van Krevelen, clustering, report rendering | Mascope (`mascope_ai`, `mascope_tools`, `mascope_viz`) | computations; every rule a result rests on is Mascope's |
+| Recipe compositions: which steps, which parameters, the narrative template | Peaky, as data files run by the toolkit's `run_recipe` | the product; a composition carries parameters, not rules; guarded by peaky's golden runs (PKY-33) |
+| The base skill that documents the tool surface (`mascope_ai/SKILL.md`) | Mascope, shipped in `mascope_ai` | it describes the tools and changes with them |
+| Domain skills: reagent chemistry, which recipe for which question, report style | Peaky | the science guidance its owner authors |
+| The Goose bundle: extension registration, provider presets, the admitted model per class, `peaky setup`, the installer | Peaky | the shell |
+| The golden fixture and the model matrix | Mascope, `libraries/ai/tests` | the admission test of the toolkit; a recipe's own questions join peaky's golden runs |
+| The ACP client (milestone 4) | the peaky repository | the shell |
+| The in-app panel (milestone 5) | Mascope's web app; its branding is the owners' call | a web-app component over the toolkit |
+| Chemistry as data; the mass-QC reference ions and rosters | Mascope (PKY-35); peaky (A12) | unchanged from the boundary note |
+| What a user meets of the shell | peaky's own docs; Mascope's `docs/user` says what Mascope serves and links to them | P-PKY-19 already says so |
+
+The rule behind the table: **a skill or a program that describes a tool
+ships with the tool; one that composes tools into an analysis, or guides
+the science, ships with Peaky.** The install line becomes `pip install
+peaky`, `peaky setup` checks Goose, the toolkit and the AI Agent token, and
+peaky pins `mascope-ai` the way it pins the SDK, under PKY-4's parity rule.
+
+Three things in the existing plan need an edit:
+
+1. **Decision 5.4 becomes a joint one.** Step implementations and every
+   rule stay in `mascope_ai`; the composition of steps into a recipe is
+   Peaky's data, run by the toolkit's runner so the manifest is kept.
+2. **PKY-14's wording.** It says peaky is "not a second natural-language
+   interface". The guard was against two competing interfaces; under this
+   framing there is one, and it is Peaky. `mascope-ai` is a library and a
+   server, not an interface.
+3. **Milestones 3 and 4 are Peaky-team deliverables.** The Peaky team
+   joins the project, as P-PKY-19 lists both teams, and their issues are
+   filed on PKY. Milestones 0 to 2 stay Mascope's; 0 is run jointly.
+
+Two risks. Users meet two names: Peaky's docs say in their first line that
+it is Mascope's AI analyst and computes nothing itself. And the framing is
+honest only under the "thinner is not less capable" rule: the owner keeps
+the product and its name, Mascope gets the computations, and no capability
+is lost because every one is reachable as a recipe.
 
 ---
 
@@ -293,9 +354,29 @@ A model is admitted to a task class when its right-answer rate on that
 class clears the threshold decision 5.3 sets, with no unsupported
 statement. The matrix is re-run whenever the surface changes (milestones 1
 and 2) and whenever a model is added, and its table lives in this note.
-The first three columns are a frontier model, a cheap hosted model and a
-local open-weight model on a GPU host; the fixture's rule stands: only the
-published demo dataset in a transcript, never a token.
+The first three columns are a frontier model, a cheap hosted model and an
+open-weight model a site could run itself; the fixture's rule stands: only
+the published demo dataset in a transcript, never a token.
+
+**The open-weight column may be hosted for the trial.** What defines the
+column is self-hostability, not where the trial runs: weights published on
+Hugging Face, a licence a customer may use commercially, and a size one GPU
+host serves (a dense model of about 30B parameters, or a mixture of experts
+with a few billion active). A hosted copy of such a model through an
+OpenAI-compatible provider Goose already knows (OpenRouter, Nebius Token
+Factory) is a fair proxy for milestone 0; OpenRouter's catalogue lists over
+a hundred tool-capable models with a Hugging Face repository behind them,
+among them the Qwen 3.x and Gemma 4 families at that size. The serving side
+differs from what a site runs, in precision, tool-call parser and chat
+template, and those are where small models break, so milestone 3 re-runs
+the admitted model on the self-hosted stack before it is written into a
+preset. The transcript's header records the provider, the model id, the
+weights it names and the precision served; on OpenRouter the provider is
+pinned in the request, since one model id routes across providers with
+different quantizations. The trial runs on the demo dataset, so a hosted
+provider is fine for it; a session over a site's own data never goes to a
+hosted provider without that site's agreement, which is the air-gap rule
+of 2.4 restated.
 
 ---
 
@@ -309,7 +390,8 @@ well-shaped surface before anything is built on it.
 
 - Register `mascope-ai mcp` as a Goose extension; run the golden prompts
   against the demo stack through Goose with a frontier model, a cheap
-  hosted model and a local model. Transcripts under
+  hosted model and an open-weight model, the last hosted through a
+  provider Goose knows and pinned as 3.4 says. Transcripts under
   `libraries/ai/tests/golden_transcripts/`, the matrix of section 3.4 in
   this note.
 - Wrap one golden question as a Goose recipe, to learn the format and its
@@ -331,30 +413,33 @@ well-shaped surface before anything is built on it.
 
 - The first recipes from peaky's catalogue (P-PKY-19, D2): the batch report
   first, then normalisation to a reagent ion, background subtraction, the
-  Van Krevelen, the time-series clustering. Each a deterministic program in
-  `mascope_ai` with a manifest and golden questions of its own; its Goose
+  Van Krevelen, the time-series clustering. Each step a deterministic
+  program in `mascope_ai` with a manifest; each composition Peaky's data
+  file with golden questions of its own (2.5, decision 5.4); its Goose
   YAML a thin wrapper.
 - Verify: each recipe's output is byte-identical across two runs and two
   models, prose excepted; its golden questions pass on the admitted models.
 
-### Milestone 3 - The desktop MVP: Goose Desktop and the Mascope bundle
+### Milestone 3 - The desktop MVP: Goose Desktop and the Peaky bundle
 
-- No UI code of ours: Goose Desktop plus a Mascope bundle, which is the
-  MCP server, the skills, the recipes, provider presets (Anthropic API; a
-  local endpoint) and a setup that checks the install and the AI Agent
-  token as `mascope-ai setup` does. The admitted model per task class is
-  written into the presets.
-- Docs: a user page in `docs/user` on what a user meets; `docs/maintaining.md`
-  on the local endpoint an operator runs.
+- No UI code of ours: Goose Desktop plus the Peaky bundle (2.5), which is
+  the MCP server, the skills, the recipes, provider presets (Anthropic API;
+  a local endpoint) and a `peaky setup` that checks Goose, the toolkit and
+  the AI Agent token as `mascope-ai setup` does. The admitted model per
+  task class, re-run self-hosted (3.4), is written into the presets.
+- Docs: peaky's own docs on what a user meets; Mascope's `docs/user` on
+  what it serves, linking to them; `docs/maintaining.md` on the local
+  endpoint an operator runs.
 - Verify: a scientist installs it from the docs alone and runs the batch
   report on the demo dataset on an admitted cheap model.
 
-### Milestone 4 - A Mascope ACP client
+### Milestone 4 - Peaky's ACP client
 
 - Only on a UX gap the MVP shows, and never on `goosed`: a Tauri client
-  speaking ACP, with approval cards that render a `Plan` and mint its token,
-  artifact panes for charts and reports, a session browser over the
-  manifest. Goose stays the default runtime behind it.
+  speaking ACP, in the peaky repository, with approval cards that render a
+  `Plan` and mint its token, artifact panes for charts and reports, a
+  session browser over the manifest. Goose stays the default runtime
+  behind it.
 - Gated on Goose's consolidated binary (`goose serve`) and a published ACP
   SDK (decision 5.1 says what to do if neither arrives).
 
@@ -395,16 +480,28 @@ its description.
    and interpretation, and one unsupported statement disqualifies.* The
    thresholds are the matrix's columns, so this decision is taken on
    milestone 0's data, not before it.
-4. **Where recipes live.** As deterministic programs in `mascope_ai` with a
-   thin Goose YAML wrapper, or as Goose recipes alone. *Leaning:
-   `mascope_ai`.* A program in the library is testable in pytest, runs from
-   any host and from the golden fixture, and carries the manifest; a Goose
-   recipe alone ties the deterministic core to one runtime's format.
+4. **Where recipes live** (a joint decision since 2.5). The step
+   implementations, and every rule a result rests on, in `mascope_ai`; the
+   composition of steps into a recipe, with its parameters and narrative
+   template, as Peaky's data, run by the toolkit's `run_recipe` so the
+   manifest is kept; a Goose recipe YAML only a thin wrapper naming the
+   composition. *Leaning: that split.* A step in the library is testable in
+   pytest, runs from any host and from the golden fixture, and carries the
+   manifest; a composition in Peaky is the product its owner shapes, and
+   peaky's golden runs guard it; a Goose recipe alone would tie the
+   deterministic core to one runtime's instruction text.
+5. **Peaky is the shell** (joint, 2.5). The AI frontend is called Peaky
+   and lives in the peaky repository and package; every computation and
+   reusable piece is Mascope's; milestones 3 and 4 are Peaky-team
+   deliverables. *Leaning: yes*, with the rule of 2.5 (a thing that
+   describes a tool ships with the tool; one that composes tools or guides
+   the science ships with Peaky) and the two Linear edits 2.5 names.
 
 Open questions the phases answer rather than decide now: which GPU host
-runs the local model for the matrix; whether Goose's ACP custom methods
-for recipes are stable enough to depend on; and whether the panel's backend
-is the desktop's runtime (milestone 5).
+runs the self-hosted re-run of milestone 3; whether Goose's ACP custom
+methods for recipes are stable enough to depend on; whether the in-app
+panel carries the Peaky name; and whether the panel's backend is the
+desktop's runtime (milestone 5).
 
 ---
 
