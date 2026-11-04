@@ -12,13 +12,15 @@ trustworthy: a reader change that moves one is caught here, and a fixture
 change that leaves one stale is too.
 """
 
+from unittest.mock import patch
+
 import numpy as np
 import opentfraw
 import pytest
 from thermo_test_support import ms2_fixture
 
 import mascope_thermo.thermo as m_thermo
-from mascope_thermo.backend import open_backend
+from mascope_thermo.backend import OpenTFRawBackend, open_backend
 from mascope_thermo.streams import scan_streams
 
 
@@ -481,3 +483,41 @@ class TestPresentingAShape:
 
     def test_the_support_module_hands_out_one_fixture(self):
         assert ms2_fixture() is fixture
+
+
+class TestTheSpectraOfScansGroupedElsewhere:
+    """``get_ms2_centroids_of_scans`` averages each key's scans as given, as
+    ``get_ms2_centroids_by_parent`` averages the groups it makes."""
+
+    @pytest.mark.parametrize("average", [True, False])
+    def test_each_group_given_whole_is_its_spectrum(self, shape, average):
+        path, definition = shape
+        groups = {
+            (g["parent_peak_mz"], g["activation"]): g["scans"]
+            for g in definition["answers"]["groups"]
+        }
+
+        given = m_thermo.get_ms2_centroids_of_scans(path, groups, average=average)
+        made = m_thermo.get_ms2_centroids_by_parent(path, average=average)
+
+        assert list(given) == list(groups)
+        for key, spectrum in given.items():
+            for ours, theirs in zip(spectrum, made[key], strict=True):
+                np.testing.assert_array_equal(ours, theirs)
+
+    def test_at_the_bin_asked(self, shape):
+        path, definition = shape
+        (group, *_) = definition["answers"]["groups"]
+        key = (group["parent_peak_mz"], group["activation"])
+        average = OpenTFRawBackend.average_centroids
+
+        with patch.object(
+            OpenTFRawBackend, "average_centroids", autospec=True, side_effect=average
+        ) as averaged:
+            m_thermo.get_ms2_centroids_of_scans(path, {key: group["scans"][:1]}, ppm=5)
+
+        ((_, scans), options) = averaged.call_args
+        assert (list(scans), options) == (
+            group["scans"][:1],
+            {"ppm": 5, "average": True},
+        )

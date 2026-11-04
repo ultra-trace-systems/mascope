@@ -1952,6 +1952,44 @@ async def get_orbi_ms2_centroids_by_parent(
             )
 
 
+async def get_orbi_ms2_centroids_of_scans(
+    base_filename: str,
+    scans_by_group: dict[tuple[float, str], list[int]],
+    ppm: int = 1,
+) -> dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """Averaged MS2 centroids over scans grouped by the caller, read raw.
+
+    :func:`mascope_thermo.thermo.get_ms2_centroids_of_scans`, on the file's
+    calibrated axis: the raw read of a window whose groups are the MS2
+    store's (:meth:`mascope_signal.ms2_store.Ms2Store.window_scans`).
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :param scans_by_group: Mapping of (parent peak m/z, activation) to the
+        scan numbers to average.
+    :type scans_by_group: dict[tuple[float, str], list[int]]
+    :param ppm: Mass tolerance in ppm for centroid binning, defaults to 1.
+    :type ppm: int, optional
+    :return: Mapping of the same keys to
+             (masses, intensities, resolutions, signal_to_noise).
+    :rtype: dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+    """
+    sample_type = m_name.get_sample_file_type(base_filename)
+    match sample_type:
+        case "orbi_raw":
+            mapped_ms2_centroids = await asyncio.to_thread(
+                m_thermo.get_ms2_centroids_of_scans,
+                m_name.filename_to_datafile_path(base_filename),
+                scans_by_group,
+                ppm=ppm,
+            )
+            return ms2_centroids_on_file_axis(base_filename, mapped_ms2_centroids)
+        case _:
+            raise NotImplementedError(
+                "MS2 centroid extraction is only implemented for Orbitrap raw files."
+            )
+
+
 def ms2_calibration_factor(base_filename: str) -> float | None:
     """The factor a file's MS2 m/z are put on its calibrated axis by.
 

@@ -11,7 +11,7 @@ raw file. Pinned here on each shape of the hermetic MS2 fixture
 - it answers without opening the raw file, at any grouping tolerance asked;
 - a file without a store answers as before, and says so;
 - a window that cuts a group is read from the store where it can be, and its
-  spectra from the raw file;
+  spectra from the raw file, keyed by the store's groups;
 - the calibration factor is applied on read.
 
 Neither needs a running stack or a site file.
@@ -403,6 +403,7 @@ class TestAFileWithoutAStore:
 
         assert [response["source"] for response in responses] == ["raw"] * 4
         assert [response["reason"] for response in responses[1:]] == [None] * 3
+        assert responses[1]["data"]
         assert responses[3]["data"]["scans"]
 
 
@@ -414,7 +415,10 @@ def _cutting_window(stored) -> tuple[float, float]:
 
 class TestAWindowThatCutsAGroup:
     @pytest.mark.asyncio
-    async def test_its_spectra_are_averaged_from_the_raw_file(self, stored):
+    @pytest.mark.parametrize("by_activation", [True, False])
+    async def test_its_spectra_are_averaged_from_the_raw_file(
+        self, stored, by_activation
+    ):
         """The store holds each group's average over all of its scans."""
         sample = _sample(stored, *_cutting_window(stored))
 
@@ -422,7 +426,7 @@ class TestAWindowThatCutsAGroup:
             stored,
             ms2_service.get_ms2_averaged_centroids,
             sample,
-            by_activation=True,
+            by_activation=by_activation,
         )
 
         assert (from_store["source"], from_raw["source"]) == ("raw", "raw")
@@ -453,6 +457,16 @@ class TestAWindowThatCutsAGroup:
         assert [s["scan_number"] for s in scans[0]["data"]["scans"]] == (
             first["scans"][:held]
         )
+
+    def test_merged_a_parent_peaks_scans_are_in_scan_order(self, stored):
+        """As the raw read merges a parent peak's activations: a stepped
+        method interleaves them."""
+        store = ms2_store.Ms2Store.open(stored.filename)
+
+        scans = store.window_scans(*_cutting_window(stored), "+", by_activation=False)
+
+        assert scans
+        assert all(numbers == sorted(numbers) for numbers in scans.values())
 
     @pytest.mark.asyncio
     async def test_a_window_whole_groups_fall_in_is_read_from_the_store(self, stored):
@@ -695,6 +709,27 @@ class TestTheCalibrationIsAppliedOnRead:
         after = _stored_mz(stored)
         assert all(np.array_equal(b, a) for b, a in zip(before, after, strict=True))
 
+    @pytest.mark.asyncio
+    async def test_so_do_a_cut_windows_spectra_read_raw(self, stored):
+        sample = _sample(stored, *_cutting_window(stored))
+        uncalibrated = await _read(
+            ms2_service.get_ms2_averaged_centroids, sample, by_activation=True
+        )
+        with _calibrated(stored, 1.000002):
+            calibrated, from_raw = await _both(
+                stored,
+                ms2_service.get_ms2_averaged_centroids,
+                sample,
+                by_activation=True,
+            )
+
+        assert calibrated["source"] == "raw"
+        assert calibrated["data"] == from_raw["data"]
+        for key, spectrum in calibrated["data"].items():
+            assert spectrum["mz"] == pytest.approx(
+                [mz * 1.000002 for mz in uncalibrated["data"][key]["mz"]], rel=1e-12
+            )
+
 
 #: In the stepped shape: a scan of the first step of precursor A whose
 #: trailer lacks its width, its energy and its injection time, and one of its
@@ -829,3 +864,131 @@ async def test_a_file_no_scan_of_which_stores_a_width_has_no_summary(no_width_st
     )
     assert spectra["source"] == "store"
     assert spectra["data"]
+
+
+#: The manual shape's one precursor as its filters give it, and how far its
+#: m/z moves from one fragment scan to the next: within the grouping
+#: tolerance, so every scan is one group, whose median the window's first
+#: scans alone do not share.
+DRIFTING_MZ, DRIFT_STEP = "195.0877", 0.0002
+
+
+@pytest.fixture
+def drifting(tmp_path_factory):
+    """The manual shape, its precursor's m/z drifting from scan to scan, as a
+    data-dependent run's may. For the test alone, as
+    :func:`trailers_that_differ`."""
+    shape = ANSWERS["shapes"]["manual"]
+    (group,) = shape["answers"]["groups"]
+    first = group["scans"][0]
+    scan_filter = Ms2Acquisition.scan_filter
+
+    def drifted(self, scan_number):
+        text = scan_filter(self, scan_number)
+        if int(scan_number) not in group["scans"]:
+            return text
+        mz = float(DRIFTING_MZ) + (int(scan_number) - first - 2.5) * DRIFT_STEP
+        return text.replace(DRIFTING_MZ, f"{mz:.4f}")
+
+    filestore = tmp_path_factory.mktemp("filestore_drifting")
+    with (
+        patch.object(Ms2Acquisition, "scan_filter", drifted),
+        converted("manual", filestore) as done,
+    ):
+        yield SimpleNamespace(
+            filename=done.props.filename,
+            sample_dir=done.sample_dir,
+            props=done.props,
+            shape=shape,
+            groups=shape["answers"]["groups"],
+        )
+
+
+class TestAPrecursorWhoseMzDrifts:
+    """A window that cuts its group is keyed as the store keys the group.
+
+    Grouped over the window's scans alone, as the raw read groups a file
+    with no store, its parent m/z is the median of those scans' and not the
+    group's; the summary and the group's scans would then say another key
+    than its spectra.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("by_activation", [True, False])
+    async def test_its_spectra_carry_the_stores_key(self, drifting, by_activation):
+        sample = _sample(drifting, *_cutting_window(drifting))
+
+        spectra, regrouped = await _both(
+            drifting,
+            ms2_service.get_ms2_averaged_centroids,
+            sample,
+            by_activation=by_activation,
+        )
+        summary = await _read(ms2_service.get_ms2_summary, sample)
+
+        (group,) = summary["data"]["groups"]
+        stored_key = ms2_service.ms2_group_key(
+            group["parent_peak_mz"], group["activation"] if by_activation else ""
+        )
+        assert summary["source"] == "store"
+        assert spectra["source"] == "raw"
+        assert list(spectra["data"]) == [stored_key]
+        # The fixture drifts: grouped over the window alone, it is keyed apart
+        assert list(regrouped["data"]) != [stored_key]
+        # And the spectrum is the same raw average over the same scans
+        ((_, ours),) = spectra["data"].items()
+        ((_, theirs),) = regrouped["data"].items()
+        assert {**ours, "parent_peak_mz": None} == {**theirs, "parent_peak_mz": None}
+        assert spectra["parent_peak_tolerance"] == ms2_store.PARENT_PEAK_TOLERANCE
+
+    @pytest.mark.asyncio
+    async def test_its_key_reads_the_groups_scans(self, drifting):
+        sample = _sample(drifting, *_cutting_window(drifting))
+        spectra = await _read(
+            ms2_service.get_ms2_averaged_centroids, sample, by_activation=True
+        )
+
+        (key,) = spectra["data"]
+        scans = await _read(ms2_service.get_ms2_scans, sample, group=key)
+
+        assert scans["source"] == "store"
+        held = [s["scan_number"] for s in scans["data"]["scans"]]
+        assert 0 < len(held) < drifting.groups[0]["scan_count"]
+
+    @pytest.mark.asyncio
+    async def test_at_any_tolerance_asked_it_is_the_stores_groups(self, drifting):
+        sample = _sample(drifting, *_cutting_window(drifting))
+        default = await _read(
+            ms2_service.get_ms2_averaged_centroids, sample, by_activation=True
+        )
+
+        asked = await _read(
+            ms2_service.get_ms2_averaged_centroids,
+            sample,
+            by_activation=True,
+            parent_peak_tolerance=0.005,
+        )
+
+        assert asked["parent_peak_tolerance"] == ms2_store.PARENT_PEAK_TOLERANCE
+        assert asked["data"] == default["data"]
+
+    @pytest.mark.asyncio
+    async def test_its_scans_are_averaged_in_the_stores_bin(self, drifting):
+        """The bin the stored spectra were averaged in, as the raw read of a
+        whole group would be."""
+        sample = _sample(drifting, *_cutting_window(drifting))
+        average = ms2_service.m_compute.get_orbi_ms2_centroids_of_scans
+        with (
+            patch.object(ms2_store.Ms2Store, "ppm", 3),
+            patch.object(
+                ms2_service.m_compute,
+                "get_orbi_ms2_centroids_of_scans",
+                AsyncMock(side_effect=average),
+            ) as averaged,
+        ):
+            await _read(ms2_service.get_ms2_averaged_centroids, sample)
+
+        ((filename, scans), options) = averaged.call_args
+        (held,) = scans.values()
+        assert (filename, options) == (drifting.filename, {"ppm": 3})
+        assert 0 < len(held) < drifting.groups[0]["scan_count"]
