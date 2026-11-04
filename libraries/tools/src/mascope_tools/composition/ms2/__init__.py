@@ -28,6 +28,7 @@ from mascope_tools.composition.ms2.hygiene import (
 )
 from mascope_tools.composition.ms2.readings import (
     CLOSED_SHELL_LOSSES,
+    CORE_VERSION,
     DEFAULT_TOLERANCE,
     ELEMENTS,
     FLAG_ROLES,
@@ -77,6 +78,7 @@ __all__ = [
     "apply_offset",
     "best_readings",
     "CLOSED_SHELL_LOSSES",
+    "CORE_VERSION",
     "decompose_loss",
     "DEFAULT_TOLERANCE",
     "ELEMENTS",

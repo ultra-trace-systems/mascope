@@ -16,6 +16,7 @@ exact-mass chemistry.
 """
 
 import dataclasses
+import hashlib
 import json
 import math
 import os
@@ -1146,6 +1147,55 @@ def test_the_same_input_gives_the_same_bytes_under_any_hash_seed(tmp_path):
         outs.append(p.stdout)
     assert outs[0] == outs[1]
     assert outs[0].count(b'"harmonic"') == 4 and b'"satellite"' in outs[0]
+
+
+# ------------------------------------------------------ the core's version ----
+#: What the core reads on peaky's public fixtures, by its version: a digest of
+#: every window read as the readings route reads one (``read_window`` at
+#: ``k_max`` ``LADDER_K``, then ``ladder_gate``) and of its counts. The readings
+#: route caches under the version, so a change to what any reading, flag or
+#: count says, read here, has to raise ``CORE_VERSION`` - with the digest it
+#: then reads added here - or a cached reading of the old rules would be served
+#: as the new rules' reading.
+_READINGS_BY_VERSION = {
+    1: "d1cd7fb8a3dc42b506d87fc9ae173dff8155929173079ffd1e23d17ba74a6fe7",
+}
+
+
+def _readings_digest() -> str:
+    """Every golden window's readings and counts, as text, digested; the ppm
+    to 1e-4, since a grid's masses are a matrix product whose last bits a
+    machine's BLAS may round otherwise."""
+    digest = hashlib.sha256()
+    for window in _GOLDEN["windows"]:
+        rows = M.ladder_gate(
+            M.read_window(
+                _spectra(window),
+                _ions(window),
+                k_max=M.LADDER_K,
+                offset_ppm=window["offset_ppm"],
+            )
+        )
+        for r in rows:
+            fields = dataclasses.asdict(r)
+            for name in ("mz", "mz_cal", "intensity"):
+                fields.pop(name)
+            fields["ppm"] = f"{r.ppm:.4f}"
+            digest.update(repr(sorted(fields.items())).encode())
+        for c in M.spectrum_counts(rows):
+            digest.update(repr(dataclasses.astuple(c)).encode())
+    return digest.hexdigest()
+
+
+def test_the_cores_version_is_raised_with_what_it_reads():
+    """CORE_VERSION names what the core reads: on peaky's public fixtures,
+    the readings this version pins. A failure here is a change to what the
+    core reads: raise CORE_VERSION, and add the digest this test reads now
+    under it."""
+    assert _READINGS_BY_VERSION.get(M.CORE_VERSION) == _readings_digest(), (
+        f"the readings changed: raise CORE_VERSION ({M.CORE_VERSION}) and pin "
+        f"{_readings_digest()} under it"
+    )
 
 
 # --------------------------------------------------------------- the doc ----
