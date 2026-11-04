@@ -92,6 +92,9 @@ LOCAL_FLOOR_MIN_NEIGHBOURS = 300
 #: How many times the median height of the window's peaks a peak of a dense
 #: stretch has to stand to be kept
 LOCAL_FLOOR_FACTOR = 5.0
+#: The TOF sample interval, in ns, a file whose props do not record one is
+#: taken to have: a TOF peak's area is its bins' sum times the interval.
+DEFAULT_SAMPLE_INTERVAL_NS = 0.25
 
 PEAK_ID_LENGTH = 20
 
@@ -816,7 +819,9 @@ class TofPeakDetector(BasePeakDetector):
         # Handle None progress callback by using a no-op function
         progress_callback = progress_callback or (lambda progress: None)
 
-        self._sample_interval = self._sample_file_props.get("sample_interval", 0.25)
+        self._sample_interval = self._sample_file_props.get(
+            "sample_interval", DEFAULT_SAMPLE_INTERVAL_NS
+        )
         specs_to_fit = self._segment_spectrum_for_fitting()
 
         loop = asyncio.get_event_loop()

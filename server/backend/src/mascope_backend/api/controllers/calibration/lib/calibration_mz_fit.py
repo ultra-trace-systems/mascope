@@ -88,7 +88,7 @@ from mascope_match.compute.isotopes import (
 from mascope_match.params import (
     UnmatchedIsotopeParams,
 )
-from mascope_signal.peak import rows_set_apart
+from mascope_signal.peak import DEFAULT_SAMPLE_INTERVAL_NS, rows_set_apart
 from mascope_thermo.scan_filter import parse_stream_key
 from mascope_tofwerk.calibration import mz_calibrate, tof_to_mass
 
@@ -1000,14 +1000,27 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         }
 
     def _total_ion_current(self) -> float:
-        """The file's total ion current, which calibrant shares are taken of.
+        """The ion current a calibrant's peak area is a share of.
+
+        A calibrant's area is the mean over the file's scans, so it is held
+        against the mean TIC per scan, not their sum, which grows with the
+        file's length. A TOF peak's area is its spectrum's ion rate summed
+        over its bins times the sample interval in ns (``calculate_peak_area``
+        in ``mascope_signal.fitting``), so the TIC takes the interval on too
+        and the share is a fraction of the ions.
 
         A method of its own so that a refit that only reads
         (``tof_calibration_audit``) can leave it out: on a Tofwerk file it
         reads every scan, and nothing in the fit depends on it.
         """
         _, tic_per_scan = m_compute.get_tic_per_scan(self.filename)
-        return np.sum(tic_per_scan)
+        # The interval the detector integrated the areas with. A file that
+        # records None had its areas integrated in m/z instead, which no
+        # interval turns into a sum over bins.
+        sample_interval = m_io.read_props(self.filename).get(
+            "sample_interval", DEFAULT_SAMPLE_INTERVAL_NS
+        )
+        return float(np.mean(tic_per_scan)) * (sample_interval or 1.0)
 
     @api_controller()
     async def fit(self):
@@ -1301,10 +1314,12 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
             self.warning = "No calibration peaks found"
             return
 
+        # A calibrant's height is the mean over the file's scans, so its
+        # share is of the mean TIC per scan, not their sum.
         _, tic_per_scan = await asyncio.to_thread(
             m_compute.get_tic_per_scan, self.filename
         )
-        tic = np.sum(tic_per_scan)
+        tic = np.mean(tic_per_scan)
         calibrant_signal_intensity = good_matches_df["sample_peak_intensity"]
         calibrant_to_tic = calibrant_signal_intensity / tic
 
@@ -1679,15 +1694,16 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
                 notes[index] = NO_CALIBRATION_PEAKS
                 continue
             # Against the ion current of the stream's own scans, which its
-            # calibrants' intensities are averaged over. Against the file's,
-            # a narrow window's calibrants would be measured by scans that
-            # are mostly other streams'.
+            # calibrants' intensities are averaged over: their mean, as the
+            # intensities are. Against the file's, a narrow window's
+            # calibrants would be measured by scans that are mostly other
+            # streams'.
             _, tic_per_scan = await asyncio.to_thread(
                 m_compute.get_tic_per_scan, self.filename, stream=key
             )
-            tic = float(np.sum(tic_per_scan))
+            tic_mean = float(np.mean(tic_per_scan))
             matches_df = good_matches_df.copy().assign(
-                calibrant_to_tic=good_matches_df["sample_peak_intensity"] / tic,
+                calibrant_to_tic=good_matches_df["sample_peak_intensity"] / tic_mean,
             )
             fit_result, calibration_df = self._fit_retained_matches(matches_df)
             if fit_result is None or calibration_df.empty:
@@ -1697,7 +1713,8 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
             fitted[index] = {
                 "factor": float(old_factor * fit_result["par"]["old_factor_scaling"]),
                 "old_factor": old_factor,
-                "tic": tic,
+                "tic_mean": tic_mean,
+                "tic_total": float(np.sum(tic_per_scan)),
                 "rows": calibration_df.assign(
                     segment=index, segment_label=segment_label(key, keys)
                 ),
@@ -1790,13 +1807,14 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         # several streams do not add up to a share of anything. The file's
         # is what its kept calibrants read over the ion current of the
         # streams they were kept in: each stream's share, weighed by the
-        # stream's ion current.
+        # stream's summed ion current, so a stream of more scans, or of more
+        # ions in each, counts for more.
         summary["calibrant_to_tic"] = float(
             sum(
-                fit["rows"]["calibrant_to_tic"].sum() * fit["tic"]
+                fit["rows"]["calibrant_to_tic"].sum() * fit["tic_total"]
                 for fit in fitted.values()
             )
-            / sum(fit["tic"] for fit in fitted.values())
+            / sum(fit["tic_total"] for fit in fitted.values())
         )
         self.stats.append(summary)
 
