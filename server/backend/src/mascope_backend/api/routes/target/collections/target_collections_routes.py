@@ -107,6 +107,9 @@ async def update_target_collection_route(
 ) -> dict:
     """Update an existing target collection.
 
+    `target_compound_ids` and `target_compounds_create` together replace the
+    collection's compound list: a compound the request does not name is removed.
+
     :param target_collection_id: The unique ID of the target collection to update.
     :type target_collection_id: str
     :param body: The data required to update the target collection.
