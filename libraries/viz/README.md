@@ -6,8 +6,8 @@ of batches, a time range) into charts, an interactive dashboard (HTML) and a
 report (PDF), for the long time series the app does not draw. The design is
 [`docs/dev/visual_digest.md`](../../docs/dev/visual_digest.md).
 
-The package is young: it has its first piece of the data layer, the scope,
-and its test backbone.
+The package is young: it has the first pieces of its data layer, the scope
+and the campaign store, and its test backbone.
 
 ## Scope
 
@@ -39,6 +39,61 @@ true, `resolved.candidates` lists them, and nothing past the ambiguity was
 read. One that matches nothing raises `mascope_viz.errors.NotFound`, which
 lists the names there are.
 
+## The campaign store
+
+`sync` keeps a scope's data in a local parquet cache, so a long time series
+is not rebuilt from per-sample calls each time. The first sync reads each
+batch with one call per series kind; a later one reads again only the
+batches that changed.
+
+```python
+from mascope_viz.data import Scope, sync
+
+report = sync(client, Scope(dataset="Spring campaign", start="2026-03-01"))
+store = report.store
+store.table("ion_series")  # one row per (sample, target ion), keyed ion:<target_ion_id>
+store.table("rollups")  # hourly and daily median, mean, p10, p90 and n per key
+status = store.status()
+status.batches  # each batch: when it was synced, its ledger run, failed or not
+status.mixed_runs  # whether the batches' formulas come from different engine runs
+```
+
+The tables are those of section 2.2 of the note, in UTC:
+
+| Table | One row per |
+|---|---|
+| `samples` | sample, with `t_mid_utc`, the middle of its acquisition window |
+| `files` | file acquired in the range; `in_batch` says whether a batch holds it |
+| `ion_series` | (sample, target ion) with a match record, keyed `ion:<target_ion_id>`; a record without a match is NaN |
+| `peak_series` | (sample, batch peak) with a consensus formula, keyed `formula:<formula>\|<mechanism>`, with the ledger run that read it |
+| `species` | series key: name, formula, ion formula, mechanism, class, m/z, element counts, O/C, H/C and OSc |
+| `rollups` | UTC hour or day, series key and reading: median, mean, 10th and 90th percentiles and count |
+
+A batch is fetched again when the server lists it modified since, its
+sample count or its ledger's current run changed, a batch run (a rebuild,
+a search, an import) started or ended on its ledger however it ended, its
+last fetch failed, or it holds a sample from the last day: the batch
+holding today, still filling. Batches are read one at a time, `pause=`
+seconds apart (half a second by default). A batch whose fetch fails is
+skipped and recorded; the store keeps what an earlier sync gave for it,
+`status()` marks it `failed` or `stale`, and the next sync tries it again.
+A batch whose runs listing fails keeps its tables, and `status()` calls it
+`unchecked` until a sync lists it again. A batch read while a batch run
+was rewriting its ledger is marked `run_in_flight`, and read again once
+the run ends. `status().complete` is False after a sync that was stopped.
+
+An isotopologue batch peak repeats its parent's formula, so only the parent
+carries the formula's series. A formula is read by the ledger run of each
+batch, and runs of different engine versions or settings can read the
+same peak as different formulas: `status().runs` lists the readings the
+batches carry, `run_changes` where they change, and a rollup never mixes
+two readings in one bin.
+
+A store lives under `$MASCOPE_VIZ_STORE`, else the user's cache directory
+(`~/.cache/mascope_viz/stores` on Linux), one directory per server,
+workspace and resolved scope key. It is a cache: `store.remove()` deletes it,
+and the next sync rebuilds it. Run one sync at a time per store.
+
 ## The synthetic campaign
 
 `tests/fixtures/campaign.py` generates a month of one instrument at one
@@ -67,6 +122,7 @@ bytes on every platform: the generator draws uniforms only and computes with
 uv run pytest libraries/viz/tests/ -v
 ```
 
-`tests/test_viz_scope_contract.py` runs `resolve` on a demo stack, with the SDK
-contract tests' switch and settings (`MASCOPE_SDK_CONTRACT=1`), and is
+`tests/test_viz_scope_contract.py` runs `resolve` on a demo stack, and
+`tests/test_viz_store_contract.py` syncs the demo dataset there, with the
+SDK contract tests' switch and settings (`MASCOPE_SDK_CONTRACT=1`); both are
 skipped without them.
