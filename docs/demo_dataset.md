@@ -506,9 +506,11 @@ repo); `<BUNDLE>` is the working bundle directory the tooling accumulates into.
    and the manifest as they were. A file that left the raw set takes its
    goldens with it: that is a deliberate change of the raw set, and the run
    logs a warning naming the files. When no file is left to cover, the run
-   writes no `ms2` or `ions` block and deletes `expected/ms2.parquet` or
-   `expected/ions.parquet`, so the zip published in D ships no golden that
-   the manifest does not name.
+   writes no `ms2` or `ions` block and, once the new manifest is written,
+   deletes `expected/ms2.parquet` or `expected/ions.parquet`, so the zip
+   published in D ships no golden that the manifest does not name. A run that
+   fails before the manifest is written, in the snapshot dump say, keeps the
+   file the old manifest still names, and re-running it is safe.
 
 5. **Publish** to Zenodo and register the bundle — see [D](#d-publish-to-zenodo-versioning).
    Confirm `<BUNDLE>.deid_report.md` before publishing.

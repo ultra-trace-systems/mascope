@@ -710,8 +710,10 @@ def export_goldens(
                            export spectra for every file they covered that is
                            still in ``raw_entries`` (:func:`check_goldens_kept`).
                            Its ion goldens are kept the same way. A block
-                           this run writes nothing for loses its parquet in
-                           ``expected/`` too, so no golden outlives its key.
+                           this run writes nothing for leaves its old parquet
+                           in place: :func:`build` removes it once the new
+                           manifest is written
+                           (:func:`remove_unnamed_goldens`).
     :return: The manifest ``expected`` block, or ``None`` if no peaks have been
              matched yet (logged as a warning so ``--update`` still records the
              snapshot rather than aborting).
@@ -823,12 +825,9 @@ def export_goldens(
 
     # MS2 spectra, when the bundle has an acquisition with fragmentation scans.
     # A bundle without one records no `ms2` block, and the comparison side
-    # skips it, so an MS1-only bundle is unchanged by this export. A block left
-    # out takes its file with it: the publish step zips the whole bundle
-    # directory, and a parquet no manifest key names or checksum covers would
-    # ship the dropped files' goldens with it.
-    ms2_path = dest_dir / "ms2.parquet"
+    # skips it, so an MS1-only bundle is unchanged by this export.
     if ms2_rows:
+        ms2_path = dest_dir / "ms2.parquet"
         pd.DataFrame(ms2_rows).to_parquet(ms2_path, index=False)
         groups = {
             (r["filename"], r["polarity"], r["parent_peak_mz"], r["activation"])
@@ -840,31 +839,55 @@ def export_goldens(
         )
         expected["ms2"] = "expected/ms2.parquet"
         expected["ms2_sha256"] = bundles.sha256_file(ms2_path)
-    else:
-        ms2_path.unlink(missing_ok=True)
-        if ms2_dropped:
-            runtime.logger.warning(
-                "The bundle had MS2 goldens and is written without them: none "
-                "of its files with MS2 spectra is in the raw set any more."
-            )
+    elif ms2_dropped:
+        runtime.logger.warning(
+            "The bundle had MS2 goldens and is written without them: none of "
+            "its files with MS2 spectra is in the raw set any more."
+        )
 
     # Per-ION scores: this is the level the consolidated v2 match score operates at
     # (the per-isotopologue peaks.parquet above is unchanged by it).
-    ions_path = dest_dir / "ions.parquet"
     if ion_rows:
+        ions_path = dest_dir / "ions.parquet"
         pd.DataFrame(ion_rows).to_parquet(ions_path, index=False)
         runtime.logger.success(f"Exported {len(ion_rows)} golden ion(s) to {ions_path}")
         expected["ions"] = "expected/ions.parquet"
         expected["ions_sha256"] = bundles.sha256_file(ions_path)
-    else:
-        ions_path.unlink(missing_ok=True)
-        if ion_dropped:
-            runtime.logger.warning(
-                "The bundle had ion goldens and is written without them: none "
-                "of the files they covered is in the raw set any more."
-            )
+    elif ion_dropped:
+        runtime.logger.warning(
+            "The bundle had ion goldens and is written without them: none of "
+            "the files they covered is in the raw set any more."
+        )
 
     return expected
+
+
+#: The optional golden files of ``expected/``, by their manifest key.
+OPTIONAL_GOLDENS = {"ms2": "ms2.parquet", "ions": "ions.parquet"}
+
+
+def remove_unnamed_goldens(out_dir: Path, expected: dict | None) -> None:
+    """Delete each optional golden file in ``expected/`` that ``expected``
+    does not name.
+
+    A refresh that drops the MS2 or ion goldens, because every file they
+    covered has left the raw set, writes a manifest without the block. The
+    publish step zips the whole bundle directory, so a parquet left behind
+    would ship the dropped files' goldens with no manifest key naming it and
+    no checksum covering it.
+
+    Called only after the manifest is written: until then the prior manifest
+    still names the file, and a run that fails in between (a snapshot dump
+    that raises) must leave the bundle as that manifest describes it.
+
+    :param out_dir: Bundle output directory.
+    :param expected: The ``expected`` block of the manifest just written, or
+                     ``None`` when it has none.
+    """
+    named = expected or {}
+    for key, name in OPTIONAL_GOLDENS.items():
+        if key not in named:
+            (out_dir / "expected" / name).unlink(missing_ok=True)
 
 
 def build(
@@ -991,5 +1014,6 @@ def build(
             manifest["expected"] = expected
 
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    remove_unnamed_goldens(out_dir, manifest.get("expected"))
     runtime.logger.success(f"Demo bundle built at {out_dir}")
     return out_dir
