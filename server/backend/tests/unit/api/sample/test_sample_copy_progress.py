@@ -54,6 +54,7 @@ def _source_sample(index: int) -> SimpleNamespace:
         ionization_mode_id="mode-0000000001",
         t0=0.0,
         t1=60.0,
+        origin_key=None,
         filename=f"instrumentX_file{index:05d}",
     )
 

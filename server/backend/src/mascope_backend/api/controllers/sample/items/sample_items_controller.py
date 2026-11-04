@@ -23,6 +23,7 @@ from mascope_backend.api.controllers.sample.files.process.streams import (
 from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data import (
     fetch_affected_sample_data,
 )
+from mascope_backend.api.controllers.sample.lib.origin_key import copy_origin_key
 from mascope_backend.api.controllers.sample.lib.sample_batches_fetch import (
     fetch_sample_batch,
 )
@@ -46,6 +47,7 @@ from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.lib.utils import generate_copy_name
 from mascope_backend.api.models.sample.items.config import sample_item_config
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
+    CopiedItemCreate,
     SampleItemBase,
     SampleItemCreate,
     SampleItemRead,
@@ -488,6 +490,9 @@ async def create_sample_items(
                     sample_item.polarity
                 ),
             )
+            # And for the origin key, which only a copy carries
+            # (CopiedItemCreate): any other item came from no part.
+            sample_item_dict.setdefault("origin_key", None)
 
             sample_items_data.append(sample_item_dict)
 
@@ -800,10 +805,12 @@ async def copy_sample_items(
     # Validate target batch
     target_batch = await fetch_sample_batch(sample_batch_id)
 
-    # Prepare sample items for creation
+    # Prepare sample items for creation. Each copy says which part of the
+    # acquisition record it came from, taken from its source now and never
+    # edited after (copy_origin_key).
     sample_items_to_create = []
     for source_sample in source_samples:
-        sample_item_create = StreamItemCreate(
+        sample_item_create = CopiedItemCreate(
             **SampleItemBase.model_validate(source_sample).model_dump(
                 exclude={
                     "sample_batch_id",
@@ -823,6 +830,7 @@ async def copy_sample_items(
                 else source_sample.sample_item_type
             ),
             stream_id=source_streams.get(source_sample.sample_item_id),
+            origin_key=copy_origin_key(source_sample),
         )
 
         sample_items_to_create.append(sample_item_create)

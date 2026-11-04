@@ -4,7 +4,8 @@ This module defines SQLAlchemy mappings for database views created via migration
 Views combine data from multiple tables for efficient read-only querying.
 
 Views defined here:
-    - sample_view: Combines sample_item and sample_file via FK relationship
+    - sample_view: Combines sample_item and sample_file via FK relationship,
+      with the m/z bounds of the stream the item reads (acquisition_stream)
 """
 
 from datetime import datetime as dt
@@ -64,6 +65,9 @@ sample_view_table = Table(
     # Plain columns: nothing joins the view to a binding.
     Column("bound_by", String(16)),
     Column("method_binding_id", String(16)),
+    # Which part of the acquisition record a copy came from
+    # (SampleItem.origin_key); NULL on every item the copy path did not make.
+    Column("origin_key", String(64)),
     # Sample file columns (joined via FK)
     Column("filename", String(256)),
     Column("instrument", String(64)),
@@ -77,6 +81,11 @@ sample_view_table = Table(
     Column("method_file", String(256)),
     Column("length", Float),
     Column("range", JSON),
+    # The m/z the sample reads: its stream's scan ranges where it reads a
+    # stream - a composite's are its segments' - else its file's range
+    # (SampleFile.mz_min, mz_max). See Sample.create_view.
+    Column("mz_min", Float),
+    Column("mz_max", Float),
     Column("mz_calibration", JSON),
     Column("datetime", TIMESTAMP),
     # An instant, as on sample_file: a bound compared with it binds as one.
@@ -126,6 +135,7 @@ class Sample:
     sample_item_utc_modified: Mapped[Optional[dt]]
     bound_by: Mapped[Optional[str]]
     method_binding_id: Mapped[Optional[str]]
+    origin_key: Mapped[Optional[str]]
 
     # Sample file columns (joined via FK)
     filename: Mapped[str]
@@ -133,6 +143,8 @@ class Sample:
     method_file: Mapped[Optional[str]]
     length: Mapped[float]
     range: Mapped[dict]
+    mz_min: Mapped[Optional[float]]
+    mz_max: Mapped[Optional[float]]
     mz_calibration: Mapped[Optional[dict]]
     datetime: Mapped[dt]
     datetime_utc: Mapped[dt]
@@ -143,6 +155,19 @@ class Sample:
         Generate raw SQL CREATE VIEW statement for sample_view.
 
         Returns plain SQL string (not wrapped in text()) for use with op.execute().
+
+        A sample's ``mz_min`` and ``mz_max`` are the m/z it reads. Where it
+        reads a stream (``sample_item.stream_id``), they are the outer ends
+        of that stream's scan ranges as its census gives them
+        (``acquisition_stream.signature``), and a composite, which has no
+        scans of its own, reads its segments'. Else, and for a stream whose
+        census states no range, they are its file's. The two are not the
+        same measure: a stream's ranges are what the method asked for
+        (``[50, 750]``), its file's the ends of the axis its sum signal holds,
+        which on an Orbitrap stop at the outermost signal and can sit tens of
+        m/z inside the scan range. Read off JSON so that a census of any
+        shape gives no error: a view every listing of samples reads cannot be
+        let fail on one row.
 
         Example:
             # In Alembic migration:
@@ -180,6 +205,7 @@ class Sample:
                 si.sample_item_utc_modified,
                 si.bound_by,
                 si.method_binding_id,
+                si.origin_key,
                 -- Sample file columns (joined via FK)
                 sf.filename,
                 sf.instrument,
@@ -193,11 +219,29 @@ class Sample:
                 sf.method_file,
                 sf.length,
                 sf.range,
+                COALESCE(stream_mz.mz_min, sf.mz_min) AS mz_min,
+                COALESCE(stream_mz.mz_max, sf.mz_max) AS mz_max,
                 sf.mz_calibration,
                 sf.datetime,
                 sf.datetime_utc
             FROM sample_item si
-            INNER JOIN sample_file sf ON si.sample_file_id = sf.sample_file_id;
+            INNER JOIN sample_file sf ON si.sample_file_id = sf.sample_file_id
+            LEFT JOIN LATERAL (
+                SELECT
+                    min((scan_range ->> 0)::float8) AS mz_min,
+                    max((scan_range ->> 1)::float8) AS mz_max
+                FROM acquisition_stream st
+                CROSS JOIN LATERAL json_array_elements(
+                    CASE
+                        WHEN json_typeof(st.signature -> 'scan_ranges') = 'array'
+                        THEN st.signature -> 'scan_ranges'
+                    END
+                ) AS scan_range
+                WHERE st.sample_file_id = si.sample_file_id
+                  AND si.stream_id IN (st.stream_id, st.composite_stream_id)
+                  AND json_typeof(scan_range -> 0) = 'number'
+                  AND json_typeof(scan_range -> 1) = 'number'
+            ) stream_mz ON true;
         """
 
     @classmethod

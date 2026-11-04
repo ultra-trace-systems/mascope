@@ -6,9 +6,11 @@ samples, targets, and analysis matches.
 """
 
 import hashlib
+import math
 from datetime import datetime as dt
 from datetime import timezone
 from functools import lru_cache
+from numbers import Real
 from typing import Optional
 
 from fastapi_users.db import (
@@ -40,7 +42,14 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import (
+    Mapped,
+    declarative_base,
+    mapped_column,
+    relationship,
+    validates,
+)
 from sqlalchemy.sql.schema import CheckConstraint
 
 from mascope_backend.api.models.dataset.config import dataset_config
@@ -830,6 +839,20 @@ class SampleBatch(Base):
     sample_batch_utc_modified: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True)
     )
+    # The recipe of a batch built from a filter: the filter it was built from
+    # (which carries its grammar version), who built it, when it was last
+    # refreshed, and the origin keys of the samples deleted from it, which a
+    # refresh does not bring back (``docs/dev/sample_filters_and_metadata.md``,
+    # section 4.3). NULL for a batch built by hand, which is a batch as it
+    # has always been. Written by the routes that build and refresh a batch
+    # from a filter; editing it changes what the next refresh adds and
+    # removes nothing.
+    #
+    # none_as_null: a batch given None by name stores SQL NULL, not the JSON
+    # value null, so "IS NULL" finds every batch without a recipe.
+    source_filter: Mapped[Optional[dict]] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
 
     # Relationships
     dataset = relationship("Dataset", back_populates="sample_batch")
@@ -969,6 +992,29 @@ class Instrument(Base):
 _DEFERRED_FILE_COLUMNS = frozenset({"acquisition", "binding_evidence"})
 
 
+def range_bounds(mz_range) -> tuple[float | None, float | None]:
+    """The low and high end of a sample file's m/z range, as numbers.
+
+    ``sample_file.range`` is stored as ``[low, high]``. Its first and last
+    element are read, as the batch export and ``fix_tofwerk_range`` read
+    them, so a row that still holds a whole mass axis (the TofWerk range bug)
+    gives the ends of that axis. The migration that made ``mz_min`` and
+    ``mz_max`` reads every row by the same rule in SQL.
+
+    :param mz_range: The range as stored or about to be.
+    :return: ``(low, high)``, or ``(None, None)`` where the range is not a
+        list of at least two finite numbers.
+    """
+    if isinstance(mz_range, (list, tuple)) and len(mz_range) >= 2:
+        low, high = mz_range[0], mz_range[-1]
+        if all(
+            isinstance(end, Real) and not isinstance(end, bool) and math.isfinite(end)
+            for end in (low, high)
+        ):
+            return float(low), float(high)
+    return None, None
+
+
 class SampleFile(Base):
     """
     Represents raw acquisition files.
@@ -1002,6 +1048,15 @@ class SampleFile(Base):
     datetime_utc: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))  # stored as UTC
     length: Mapped[float] = mapped_column(Float)
     range: Mapped[list] = mapped_column(JSON)
+    # The two ends of ``range`` as numbers, so that the m/z range is compared
+    # and indexed in SQL rather than cast out of JSON row by row
+    # (``docs/dev/sample_filters_and_metadata.md``, section 6). Set from
+    # ``range`` whenever it is assigned (``_range_bounds`` below): every
+    # writer of the row goes through the ORM but ``fix_tofwerk_range``, which
+    # writes the three in one statement. NULL where ``range`` holds no two
+    # numbers.
+    mz_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True, index=True)
+    mz_max: Mapped[Optional[float]] = mapped_column(Float, nullable=True, index=True)
     mz_calibration: Mapped[Optional[dict]] = mapped_column(JSON)
     polarity: Mapped[str] = mapped_column(String(4))
     # Attribution, recorded at creation. NULL on rows that predate these
@@ -1122,6 +1177,14 @@ class SampleFile(Base):
         ),
         Index("ix_sample_file_processing_updated_utc", processing_updated_utc),
     )
+
+    @validates("range")
+    def _range_bounds(self, _key, mz_range):
+        """Keep ``mz_min`` and ``mz_max`` in step with the range assigned:
+        at registration, through the file's update (the m/z calibration's
+        among them), and by anything else that sets it on a row."""
+        self.mz_min, self.mz_max = range_bounds(mz_range)
+        return mz_range
 
     def to_dict(self):
         """The row's columns, without a deferred one unless it was loaded -
@@ -1413,6 +1476,15 @@ class SampleItem(Base):
             ["sample_file_id", "stream_id"],
             ["acquisition_stream.sample_file_id", "acquisition_stream.stream_id"],
         ),
+        # The question a refresh asks: which parts does this batch already
+        # hold. Partial, since only a copy carries a key, and most items are
+        # the acquisition record's own.
+        Index(
+            "ix_sample_item_sample_batch_id_origin_key",
+            "sample_batch_id",
+            "origin_key",
+            postgresql_where=text("origin_key IS NOT NULL"),
+        ),
     )
 
     sample_item_id: Mapped[str] = mapped_column(String(16), primary_key=True)
@@ -1517,6 +1589,19 @@ class SampleItem(Base):
     )
     t0: Mapped[Optional[float]] = mapped_column(Float)
     t1: Mapped[Optional[float]] = mapped_column(Float)
+    # Which part of the acquisition record a copy was made from: a digest of
+    # the part's natural key (``api.controllers.sample.lib.origin_key``),
+    # taken from the source when the copy is made and never edited, so a
+    # refreshed batch can tell which of its recipe's samples it holds
+    # (``docs/dev/sample_filters_and_metadata.md``, section 4.3). The natural
+    # key rather than the source's id, because a file's acquisition samples
+    # are made again when it is re-processed; a column of its own rather
+    # than the copy's window, because the window is editable on a copy.
+    #
+    # NULL on every item the copy path did not make - the acquisition
+    # record's own items, and items made by hand - and on copies made before
+    # the column, until ``backfill_origin_keys`` is run.
+    origin_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     sample_item_utc_created: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True)
     )

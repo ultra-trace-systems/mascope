@@ -9,7 +9,8 @@ without anything failing:
 - the bulk create writes the stream for every row it inserts, refuses a
   stream of another file, and gives an item made through a route the row
   the pipeline's item of its file and polarity reads;
-- a copy carries the stream of the item it was copied from.
+- a copy carries the stream of the item it was copied from, and records
+  which part of the acquisition record it came from (its origin key).
 
 And two things that must not change: an item is named and cut as it always
 was - its window is its polarity's, and its TIC is its polarity's as its
@@ -33,9 +34,11 @@ from mascope_backend.api.controllers.sample.files.process.streams import (
     StreamRows,
 )
 from mascope_backend.api.controllers.sample.items import sample_items_controller
+from mascope_backend.api.controllers.sample.lib.origin_key import origin_key
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     AcquisitionItemCreate,
+    CopiedItemCreate,
     SampleItemCreate,
     StreamItemCreate,
 )
@@ -592,6 +595,25 @@ async def test_the_insert_names_the_stream_for_every_row():
 
 
 @pytest.mark.asyncio
+async def test_the_insert_names_the_origin_key_for_every_row():
+    """As for the stream: an item that came from no part is padded with no
+    key, so a copy after it keeps its own."""
+    plain = SampleItemCreate(sample_item_name="x", sample_item_type="UNKNOWN", **COMMON)
+    copied = CopiedItemCreate(
+        sample_item_name="y",
+        sample_item_type="UNKNOWN",
+        stream_id="st-0",
+        origin_key="k" * 64,
+        **COMMON,
+    )
+
+    made = await _created([plain, copied], [_stream_row()])
+
+    row = _inserted(made.session)
+    assert (row["origin_key_m0"], row["origin_key_m1"]) == (None, "k" * 64)
+
+
+@pytest.mark.asyncio
 async def test_a_stream_of_another_file_is_refused():
     item = AcquisitionItemCreate(
         sample_item_name="y", sample_item_type="ACQUISITION", stream_id="st-0", **COMMON
@@ -627,6 +649,29 @@ def test_a_request_cannot_name_a_stream():
         in StreamItemCreate(
             sample_item_name="x", sample_item_type="UNKNOWN", stream_id="st-0", **COMMON
         ).model_dump()
+    )
+
+
+def test_neither_a_request_nor_the_pipeline_can_name_an_origin_key():
+    """Only the copy path's model carries one: a key says which part a copy
+    came from, and a refresh trusts it."""
+    fields = {"sample_item_name": "x", "origin_key": "k" * 64, **COMMON}
+
+    assert (
+        "origin_key"
+        not in SampleItemCreate(sample_item_type="UNKNOWN", **fields).model_dump()
+    )
+    assert (
+        "origin_key"
+        not in AcquisitionItemCreate(
+            sample_item_type="ACQUISITION", **fields
+        ).model_dump()
+    )
+    assert (
+        CopiedItemCreate(sample_item_type="UNKNOWN", **fields).model_dump()[
+            "origin_key"
+        ]
+        == "k" * 64
     )
 
 
@@ -672,6 +717,7 @@ def _source(item_id, **overrides):
         "t0": 91.4,
         "t1": 120.0,
         "filename": FILENAME,
+        "origin_key": None,
     }
     return SimpleNamespace(**(fields | overrides))
 
@@ -715,3 +761,49 @@ async def test_a_copy_reads_the_stream_its_source_read():
     # the row it is built from shows its source's
     assert all(not hasattr(copy, "bound_by") for copy in copies)
     assert all(not hasattr(copy, "method_binding_id") for copy in copies)
+
+
+@pytest.mark.asyncio
+async def test_a_copy_records_the_part_its_source_came_from():
+    """An acquisition sample is the part itself; a copy already says which
+    part it came from, and its copy says the same though its window was
+    edited since."""
+    sources = [
+        _source("si-acquired"),
+        _source(
+            "si-copied",
+            sample_item_type="UNKNOWN",
+            origin_key="k" * 64,
+            t0=100.0,
+            t1=110.0,
+        ),
+    ]
+    created = {
+        "data": [
+            {"sample_item_id": "copy-1", "filename": FILENAME, "polarity": "-"},
+            {"sample_item_id": "copy-2", "filename": FILENAME, "polarity": "-"},
+        ]
+    }
+
+    with (
+        patch(f"{_ITEMS}.async_session", lambda: _CopySession(sources, [])),
+        patch(
+            f"{_ITEMS}.fetch_sample_batch",
+            AsyncMock(return_value=SimpleNamespace(sample_batch_name="Target")),
+        ),
+        patch(
+            f"{_ITEMS}.create_sample_items", AsyncMock(return_value=created)
+        ) as create,
+        patch(f"{_ITEMS}.update_sample_batch_status", AsyncMock()),
+    ):
+        await sample_items_controller.copy_sample_items.__wrapped__(
+            sample_item_ids=["si-acquired", "si-copied"],
+            sample_batch_id="sb-target",
+        )
+
+    copies = create.await_args.kwargs["sample_items"]
+    assert all(isinstance(copy, CopiedItemCreate) for copy in copies)
+    assert [copy.origin_key for copy in copies] == [
+        origin_key("sf-001", "-", 91.4, 120.0),
+        "k" * 64,
+    ]
