@@ -332,6 +332,43 @@ class TestAttempts:
         assert sent == ["post"]
         assert backoff == []
 
+    @pytest.mark.parametrize("method", ["post", "request"])
+    def test_a_write_sent_once_is_sent_again_on_a_rate_limit(self, monkeypatch, method):
+        """A 429 is answered before the server acts, so a write that must be
+        carried out once still waits and goes again."""
+        sent: list[str] = []
+        backoff: list[float] = []
+        answers = [_error(429, "Too many requests.", {}), _response(200, {})]
+        monkeypatch.setattr(
+            _http.requests,
+            method,
+            lambda *a, **k: sent.append(method) or answers.pop(0),
+        )
+        monkeypatch.setattr(_http.time, "sleep", backoff.append)
+
+        if method == "post":
+            _http.http_post("http://server", "x", "token", {}, once=True)
+        else:
+            _http.http_request("POST", "http://server", "x", "token", once=True)
+
+        assert sent == [method, method]
+        assert backoff == [_http.RETRY_BACKOFF_BASE]
+
+    @pytest.mark.parametrize("method", ["post", "request"])
+    def test_a_write_sent_once_is_not_sent_again_after_a_gateway_error(
+        self, monkeypatch, method
+    ):
+        sent, backoff = self._unavailable(monkeypatch, method)
+
+        with pytest.raises(ServerError):
+            if method == "post":
+                _http.http_post("http://server", "x", "token", {}, once=True)
+            else:
+                _http.http_request("POST", "http://server", "x", "token", once=True)
+
+        assert sent == [method]
+        assert backoff == []
+
     def test_a_request_sent_once_is_sent_once(self, monkeypatch):
         sent, backoff = self._unavailable(monkeypatch, "request")
 

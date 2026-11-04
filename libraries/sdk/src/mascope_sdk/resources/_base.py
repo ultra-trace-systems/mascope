@@ -230,7 +230,8 @@ class BaseResource:
 
         Most of what is sent this way is a read with a body, retried as a GET
         is. A POST that makes something says ``idempotent=False`` and is sent
-        once, as :meth:`_write` sends a write.
+        once, as :meth:`_write` sends a write: again only when the server
+        shows it did not act on it.
 
         :param path: API path (without /api/ prefix).
         :type path: str
@@ -250,7 +251,7 @@ class BaseResource:
             timeout=self._client._timeout,
             verify_ssl=self._client._verify_ssl,
             service_name=self._client._service_name,
-            max_attempts=None if idempotent else 1,
+            once=not idempotent,
         )
         return response.json().get("data")
 
@@ -275,7 +276,10 @@ class BaseResource:
         make a second object and a save would run twice; a move or a delete
         would answer with a 404 for what the first send did. So the failure
         is raised, and the caller reads back what is there before trying
-        again. A write the server answers the same however often it comes (a
+        again. It is still sent again, with the backoff, when the server shows
+        it did not act: a connection that could not be made, or a 429 or 425,
+        which nginx and the app's rate limits answer before a route runs. A
+        write the server answers the same however often it comes (a
         read sent as a POST, a PATCH that sets fields to given values) says
         *idempotent* and is retried as a read is.
 
@@ -310,7 +314,7 @@ class BaseResource:
                 timeout=self._client._timeout,
                 verify_ssl=self._client._verify_ssl,
                 service_name=self._client._service_name,
-                max_attempts=None if idempotent else 1,
+                once=not idempotent,
             )
         except PermissionDeniedError as e:
             raise PermissionDeniedError(

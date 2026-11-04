@@ -11,8 +11,9 @@ full count beside them.
 The SDK's exceptions are mapped onto these by :func:`sdk_errors`. A read's
 transient failures were already retried by the SDK (four attempts,
 exponential backoff). A write the SDK sends once, unless sending it again
-changes nothing, so a failed write may still have been carried out. The
-toolkit adds no retry of its own.
+changes nothing or the server refused it before acting (a 425 or a 429), so
+a failed write may still have been carried out. The toolkit adds no retry of
+its own.
 """
 
 from collections.abc import Iterator, Sequence
@@ -316,7 +317,8 @@ def sdk_errors(
         user's role where the object lives, when the caller can tell.
     :param write: Whether the calls inside change data. A write that fails
         on the way is not sent again by the SDK (unless a second send
-        changes nothing), so its message says to look before trying again.
+        changes nothing), so its message says to look before trying again;
+        one refused with a 425 or a 429 was retried and not carried out.
     """
     try:
         yield
@@ -345,9 +347,12 @@ def sdk_errors(
             f"The server refused to {_acting(operation, target)}: {e.message}"
         ) from e
     except (ServerError, MascopeAPIError, MascopeConnectionError) as e:
-        # What is left of MascopeAPIError here is a 408 or a 429 the SDK
-        # treats as transient: retried for a read, not for most writes
-        if write:
+        # What is left of MascopeAPIError here is a 408, 425 or 429 the SDK
+        # treats as transient: retried for a read, and for a write too when
+        # it is a 425 or a 429, which the server answers before it acts
+        if write and not (
+            isinstance(e, MascopeAPIError) and e.status_code in (425, 429)
+        ):
             advice = (
                 "The server may have carried out the write before it failed: "
                 "look at what is there now, or plan again, before trying it "

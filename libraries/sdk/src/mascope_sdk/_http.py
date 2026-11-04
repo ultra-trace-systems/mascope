@@ -7,12 +7,15 @@ These are internal implementation details and should not be used directly by SDK
 import json
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import requests
 from loguru import logger
 from requests.exceptions import ConnectionError as RequestsConnectionError
-from requests.exceptions import RequestException, Timeout
+from requests.exceptions import ConnectTimeout, RequestException, Timeout
+from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
 
 from .exceptions import (
     AuthenticationError,
@@ -50,9 +53,22 @@ _TRANSIENT_CLIENT_STATUS_CODES = {408, 409, 425, 429}
 #: request unchanged would just disagree again.
 _RETRYABLE_CLIENT_STATUS_CODES = _TRANSIENT_CLIENT_STATUS_CODES - {409}
 
+#: Of those, the ones that show the server did not act on the request, so a
+#: write that must be carried out at most once is still sent again on them.
+#: nginx answers 429 on /api/ before the request reaches the app, and the
+#: app's rate limit refuses before the route runs; 425 is the server declining
+#: to process a request it may see replayed. 408 is left out: a proxy can send
+#: it after it read the request, and then it is unclear whether it was acted on.
+_NOT_ACTED_ON_STATUS_CODES = {425, 429}
+
 #: Default retry settings.
 RETRY_MAX_ATTEMPTS = 4
 RETRY_BACKOFF_BASE = 2  # seconds; delays will be 2, 4, 8, ...
+
+#: The longest ``Retry-After`` the SDK waits out between two attempts, in
+#: seconds. A server asking for longer is raised at once: the few attempts left
+#: would not see the limit clear, and a script should not hang silently on it.
+RETRY_AFTER_MAX = 60
 
 
 def _extract_error_message(response: requests.Response) -> str:
@@ -207,14 +223,58 @@ def _is_retryable(exc: Exception) -> bool:
     return False
 
 
+def _never_sent(exc: RequestsConnectionError) -> bool:
+    """True if the connection failed before any of the request was sent.
+
+    ``requests`` raises the same ``ConnectionError`` for a refused or
+    unresolvable connection and for one dropped after the request went out, so
+    the urllib3 cause tells them apart: only a connect-phase failure (a new
+    connection that could not be made, or timed out while being made) proves
+    the server never saw the request.
+    """
+    if isinstance(exc, ConnectTimeout):
+        return True
+    cause = exc.args[0] if exc.args else None
+    reason = getattr(cause, "reason", cause)
+    return isinstance(reason, (NewConnectionError, ConnectTimeoutError))
+
+
+def _retry_after(response: requests.Response) -> float | None:
+    """The seconds an error answer's ``Retry-After`` asks to wait, if it says.
+
+    The header is either a number of seconds or an HTTP date; one that is
+    neither is ignored, and the backoff alone decides the wait.
+    """
+    if response.ok:
+        return None
+    value = response.headers.get("Retry-After")
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
 def _send_with_retries(
     method: str,
     full_url: str,
     send: Callable[[], requests.Response],
     attempts: int,
     retry_timeouts: bool = True,
+    once: bool = False,
 ) -> requests.Response:
     """Send a request, retrying what is transient, and map its status.
+
+    The wait between two attempts is the backoff, or the answer's
+    ``Retry-After`` when that is longer; one longer than
+    :data:`RETRY_AFTER_MAX` raises the answer at once.
 
     :param method: The HTTP method, for the log line of a retry.
     :type method: str
@@ -227,23 +287,35 @@ def _send_with_retries(
     :param retry_timeouts: Try a read that timed out again. False for a read
         the server takes minutes to answer, which would only start over.
     :type retry_timeouts: bool
+    :param once: The request must be carried out at most once. Only the
+        failures that show the server did not act on it are tried again: a
+        connection that could not be made, a 425 or a 429. A read timeout, a
+        connection lost after the send and a 5xx can come after the server
+        acted, and raise at the first.
+    :type once: bool
     :return: The response of the first attempt that succeeded.
     :rtype: requests.Response
     """
     for attempt in range(1, attempts + 1):
+        retry_after = None
         try:
             response = send()
+            retry_after = _retry_after(response)
             _raise_for_status(response, full_url)
             return response
 
         except Timeout as e:
-            if attempt == attempts or not retry_timeouts:
+            if (
+                attempt == attempts
+                or not retry_timeouts
+                or (once and not isinstance(e, ConnectTimeout))
+            ):
                 raise MascopeTimeoutError(
                     f"Request timed out: {e}", url=full_url
                 ) from e
             exc_for_log: Exception = e
         except RequestsConnectionError as e:
-            if attempt == attempts:
+            if attempt == attempts or (once and not _never_sent(e)):
                 raise MascopeConnectionError(
                     (
                         "Could not connect. "
@@ -261,9 +333,16 @@ def _send_with_retries(
         except Exception as e:
             if not _is_retryable(e) or attempt == attempts:
                 raise
+            if once and not (
+                isinstance(e, MascopeAPIError)
+                and e.status_code in _NOT_ACTED_ON_STATUS_CODES
+            ):
+                raise
+            if retry_after is not None and retry_after > RETRY_AFTER_MAX:
+                raise
             exc_for_log = e
 
-        delay = RETRY_BACKOFF_BASE**attempt
+        delay = max(RETRY_BACKOFF_BASE**attempt, retry_after or 0)
         # INFO: transient retry that usually succeeds; the final failure raises
         logger.info(
             "{} {} failed (attempt {}/{}), retrying in {}s: {}",
@@ -358,6 +437,7 @@ def http_post(
     service_name: str = "mascope_sdk",
     verify_ssl: bool = False,
     max_attempts: int | None = None,
+    once: bool = False,
 ) -> requests.Response:
     """Send a POST request to the specified API endpoint.
 
@@ -365,8 +445,9 @@ def http_post(
     a read is. That is safe only for a POST the server can take twice: a read
     sent as a POST, or a write that sending again cannot repeat. A write the
     server would carry out twice - a verdict appended, a run launched - is
-    sent with ``max_attempts=1``, so a lost answer raises instead of doing it
-    again.
+    sent with ``once=True``, so a lost answer raises instead of doing it
+    again. It is still sent again when the server shows it did not act: a
+    connection that could not be made, a 425 or a 429.
 
     :param url: The base URL of the server.
     :type url: str
@@ -383,9 +464,11 @@ def http_post(
     :param verify_ssl: Whether to verify SSL certificates.
     :type verify_ssl: bool, optional
     :param max_attempts: How many times to send it on a transient failure;
-        :data:`RETRY_MAX_ATTEMPTS` when None. 1 for a write that must not be
-        carried out twice.
+        :data:`RETRY_MAX_ATTEMPTS` when None.
     :type max_attempts: int, optional
+    :param once: A write that must not be carried out twice: sent again only
+        on a failure that shows the server did not act on it.
+    :type once: bool, optional
     :return: The response object.
     :rtype: requests.Response
     :raises AuthenticationError: If authentication fails (401/403).
@@ -414,6 +497,7 @@ def http_post(
             timeout=timeout,
         ),
         max_attempts or RETRY_MAX_ATTEMPTS,
+        once=once,
     )
 
 
@@ -428,11 +512,13 @@ def http_request(
     service_name: str = "mascope_sdk",
     verify_ssl: bool = False,
     max_attempts: int | None = None,
+    once: bool = False,
 ) -> requests.Response:
     """Send a request of any method, for the writes that are not a POST.
 
     A PATCH or a DELETE takes the same headers, the same status mapping and
-    the same retries as :func:`http_post`, and the same ``max_attempts``.
+    the same retries as :func:`http_post`, and the same ``max_attempts`` and
+    ``once``.
 
     :param method: The HTTP method, such as ``"PATCH"`` or ``"DELETE"``.
     :type method: str
@@ -455,6 +541,9 @@ def http_request(
     :param max_attempts: How many times to send it on a transient failure;
         :data:`RETRY_MAX_ATTEMPTS` when None.
     :type max_attempts: int, optional
+    :param once: A write that must not be carried out twice: sent again only
+        on a failure that shows the server did not act on it.
+    :type once: bool, optional
     :return: The response object.
     :rtype: requests.Response
     :raises PermissionDeniedError: If the token's user lacks the role (403).
@@ -483,6 +572,7 @@ def http_request(
             timeout=timeout,
         ),
         max_attempts or RETRY_MAX_ATTEMPTS,
+        once=once,
     )
 
 
