@@ -400,6 +400,22 @@ report opens with a notice (`security/pentest/README.md`, "Reading the
 results"). It does not change the exit code. A throttled control is not
 assessed, and not-assessed never fails a run.
 
+**Assess a deployment with Turnstile off.** The suite signs in with a
+password and cannot solve Cloudflare Turnstile's human check, so on a site
+with Turnstile on its sign-in form (`docs/maintaining.md`, "Turning Turnstile
+on") it signs in nowhere. It reads that from the site's login options at
+session start and reports every control that needs a sign-in, or the login's
+answer to a password, as not assessed: the site has Turnstile on. The run
+stays green, the summary's `not_assessed=N` grows by those controls, and the
+report counts them (`turnstile` in its summary) and opens with a notice. Its
+`AUTHN-06` then checks that the login refuses a sign-in with no token. Point
+the staging run at a deployment with Turnstile off, so the signed-in controls
+are assessed somewhere, and do not give it Cloudflare's test keys to get past
+the check: that turns the check off where it is assessed. A production run
+is non-mutating and signs in nowhere anyway, so Turnstile changes nothing
+there but the report's **Turnstile** line (`security/pentest/README.md`, "A
+site with Turnstile on").
+
 **The CDN vantage.** The origin run never crosses the edge, so it cannot see
 anything the edge answers itself: the HTTPS redirect (`TLS-02`), WAF
 behaviour, edge rate limits, headers the edge adds or strips. With

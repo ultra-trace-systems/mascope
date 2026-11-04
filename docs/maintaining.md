@@ -1576,7 +1576,10 @@ solved check count against both, as they do without Turnstile.
 
 The security suite and the release smoke test (`tooling/smoke-test.sh`) sign
 in with a password and cannot solve the check. On a site with Turnstile on, the
-security suite's signed-in checks cannot sign in, and the smoke test stops at
+security suite reads that from `GET /api/auth/login/options` and reports its
+signed-in checks as not assessed, with a check of its own that the login
+refuses a sign-in with no token (`tooling/monitoring/README.md`, section 10).
+The smoke test stops at
 `[smoke] FAIL: login rejected` on a healthy server. Read that failure as the
 check doing its job, not as a broken deployment.
 
