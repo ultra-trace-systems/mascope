@@ -256,21 +256,25 @@ class BatchesResource(BaseResource):
     def update(
         self,
         batch_id: str,
-        target_collection_ids: Sequence[str],
+        target_collection_ids: Sequence[str] | None = None,
         name: str | None = None,
         description: str | None = None,
     ) -> dict[str, Any]:
-        """Rename a batch, change its description, and set its collections.
+        """Rename a batch, change its description, or set its collections.
 
-        ``target_collection_ids`` is required, as the route requires it, and
-        *replaces* the batch's target collections: to only rename a batch,
-        send the collections it has now. An empty list detaches them all.
+        Left out, ``target_collection_ids`` is not sent and the batch keeps
+        its target collections, so ``update(batch_id, name=...)`` only
+        renames it. Given, the list *replaces* them: a collection it leaves
+        out is detached, an empty list detaches them all, and a change flags
+        the batch for rematch. An older server requires the list and refuses
+        a call without it (``ValidationError``): there, to only rename a
+        batch, send the collections it has now.
 
         :param batch_id: The batch.
         :type batch_id: str
-        :param target_collection_ids: The target collections the batch is to
-            have.
-        :type target_collection_ids: Sequence[str]
+        :param target_collection_ids: All the target collections the batch is
+            to have; ``None`` leaves them as they are.
+        :type target_collection_ids: Sequence[str], optional
         :param name: Its new name.
         :type name: str, optional
         :param description: Its new description.
@@ -280,7 +284,9 @@ class BatchesResource(BaseResource):
         :raises PermissionDeniedError: Without the editor role on the batch,
             or the global admin role for a locked batch.
         """
-        body: dict[str, Any] = {"target_collection_ids": list(target_collection_ids)}
+        body: dict[str, Any] = {}
+        if target_collection_ids is not None:
+            body["target_collection_ids"] = list(target_collection_ids)
         if name is not None:
             body["sample_batch_name"] = name
         if description is not None:

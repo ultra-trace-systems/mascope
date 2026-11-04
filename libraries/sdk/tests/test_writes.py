@@ -205,6 +205,21 @@ REQUESTS = [
         },
         None,
     ),
+    # Left out, the collections are not sent, and the batch keeps them.
+    (
+        lambda r: r["batches"].update("b-1", name="b2"),
+        "PATCH",
+        "sample/batches/b-1",
+        {"sample_batch_name": "b2"},
+        None,
+    ),
+    (
+        lambda r: r["batches"].update("b-1", description="about"),
+        "PATCH",
+        "sample/batches/b-1",
+        {"sample_batch_description": "about"},
+        None,
+    ),
     (
         lambda r: r["batches"].copy("b-1", "ds-2", "b2"),
         "POST",
@@ -806,6 +821,8 @@ RETRIED = [
             "sample_batch_description": "about",
         },
     ),
+    ("PATCH", "sample/batches/b-1", {"sample_batch_name": "b2"}),
+    ("PATCH", "sample/batches/b-1", {"sample_batch_description": "about"}),
     ("PATCH", "sample/items/s-1", {"sample_item": {"sample_item_name": "n"}}),
     ("PATCH", "target/collections/c-1", {"target_collection_name": "c2"}),
     ("PATCH", "target/collections/c-1", {"sample_batch_ids": ["b-1", "b-2"]}),

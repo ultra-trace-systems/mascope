@@ -928,9 +928,11 @@ mascope.matching.save_batch(batch_id)
 - `batches.move` and `datasets.move` are one write each and return the moved
   object. A moved batch keeps its ID, its samples and its target
   collections; a sample move makes each sample anew under a new ID.
-- Some updates replace rather than add. `batches.update` takes the batch's
-  target collections and sets them to that list, so to only rename a batch
-  send the collections it has now; `collections.associate` sets the batches a
+- Some updates replace rather than add. `batches.update` leaves the batch's
+  target collections as they are unless `target_collection_ids` is given;
+  given, it sets them to that list, and an empty list detaches them all. (An
+  older server requires the list: there, to only rename a batch, send the
+  collections it has now.) `collections.associate` sets the batches a
   collection is associated with, and an empty list detaches it from them all.
   `collections.update` sets a collection's compounds to the ones it creates
   (`compounds=`) and names (`compound_ids=`): to add compounds, send the
@@ -1026,7 +1028,7 @@ workspaces, not only the client's.
 | Method          | Description                         | Returns             |
 | --------------- | ----------------------------------- | ------------------- |
 | `list(dataset)` | List batches in a dataset (by name) | `pd.DataFrame│None` |
-| `update(batch_id, target_collection_ids, name=, description=)` | Rename it and set its target collections | `dict` |
+| `update(batch_id, target_collection_ids=, name=, description=)` | Rename it, change its description, or set its target collections (the whole list) | `dict` |
 | `copy(batch_id, dataset_id, name, description=)` | Copy it into a dataset, in the background | `dict` |
 | `delete(batch_id)` | Delete it and its samples, in the background | `dict` |
 | `ion_series(batch_id, collection=, ions=)` | Each sample's matched intensity of each target ion, one request per collection | `pd.DataFrame` |
