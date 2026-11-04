@@ -13,6 +13,7 @@ it found there, where it found it.
 """
 
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import IO, Any
@@ -20,6 +21,7 @@ from typing import IO, Any
 import pandas as pd
 from sqlalchemy import select
 
+import mascope_file.io as m_io
 import mascope_signal.metadata as m_metadata
 from mascope_backend import vocabulary
 from mascope_backend.api.controllers.calibration.calibration_controller import (
@@ -35,11 +37,14 @@ from mascope_backend.api.controllers.sample.batches.export.util import (
 from mascope_backend.api.lib.api_features import (
     api_controller_background_task,
 )
+from mascope_backend.api.new.instruments.registry import model_in_props
 from mascope_backend.api.new.match.records.collection.service import (
     get_match_collection_records,
 )
+from mascope_backend.api.new.peak_assignments.schemas import ScopeVerificationRecord
+from mascope_backend.api.new.peak_assignments.service import get_scope_verifications
 from mascope_backend.api.new.temp.storage import download_name, user_temp_path
-from mascope_backend.db import IonizationMode, async_session
+from mascope_backend.db import Instrument, IonizationMode, SampleFile, async_session
 from mascope_backend.provenance import build_provenance, flatten_provenance
 from mascope_backend.runtime import runtime
 from mascope_file.name import get_sample_file_type
@@ -61,6 +66,7 @@ class BatchSheets:
     compounds: pd.DataFrame
     ions: pd.DataFrame
     provenance: pd.DataFrame
+    verifications: pd.DataFrame
 
 
 @api_controller_background_task(
@@ -150,7 +156,16 @@ async def build_batch_sheets(sample_batch_id: str) -> BatchSheets:
     ionization_modes = await _ionization_mode_names(
         {sample.get("ionization_mode_id") for sample in data["samples"]}
     )
-    instrument_models = await asyncio.to_thread(_instrument_models, data["samples"])
+    instrument_models = await instrument_models_of(
+        {
+            sample["sample_file_id"]: (
+                sample["filename"],
+                sample.get("instrument_type"),
+            )
+            for sample in data["samples"]
+            if sample.get("sample_file_id")
+        }
+    )
 
     # --- Prepare lookup dictionaries ---
     samples_lookup = {sample["sample_item_id"]: sample for sample in data["samples"]}
@@ -306,6 +321,10 @@ async def build_batch_sheets(sample_batch_id: str) -> BatchSheets:
     )
     provenance_df = pd.DataFrame(flatten_provenance(provenance))
 
+    verifications_df = _verifications_sheet(
+        await get_scope_verifications(sample_batch_id=sample_batch_id)
+    )
+
     return BatchSheets(
         sample_batch_name=sample_batch_name,
         batch_info=batch_info_df,
@@ -313,6 +332,7 @@ async def build_batch_sheets(sample_batch_id: str) -> BatchSheets:
         compounds=compounds_df,
         ions=ions_df,
         provenance=provenance_df,
+        verifications=verifications_df,
     )
 
 
@@ -336,6 +356,10 @@ def write_batch_workbook(target: str | IO[bytes], sheets: BatchSheets) -> None:
             sheets.compounds.to_excel(writer, sheet_name="Match compounds", index=False)
         if not sheets.ions.empty:
             sheets.ions.to_excel(writer, sheet_name="Match ions", index=False)
+        if not sheets.verifications.empty:
+            sheets.verifications.to_excel(
+                writer, sheet_name="Verifications", index=False
+            )
         sheets.provenance.to_excel(
             writer, sheet_name="Provenance", index=False, header=False
         )
@@ -343,6 +367,38 @@ def write_batch_workbook(target: str | IO[bytes], sheets: BatchSheets) -> None:
         # Auto-adjust column widths for all sheets
         for worksheet in writer.sheets.values():
             auto_adjust_column_width(worksheet)
+
+
+def _verifications_sheet(rows: list[dict]) -> pd.DataFrame:
+    """
+    The batch's current verdicts, one row per judged peak, for the
+    Verifications sheet.
+
+    The rows and columns of ``GET /api/peak-assignments/batch/{id}/verifications``
+    and the SDK's ``peak_assignments.verifications_for_batch``, under the API's
+    field names, so the sheet and the frame read alike. Excel stores no zone and
+    no nested value, so the times are naive UTC and ``context`` is its JSON.
+
+    :param rows: The rows, from ``get_scope_verifications``.
+    :return: The sheet; empty when nothing in the batch was judged.
+    """
+    if not rows:
+        return pd.DataFrame()
+    columns = list(ScopeVerificationRecord.model_fields)
+    return pd.DataFrame(
+        [
+            {
+                column: (
+                    json.dumps(row.get(column), sort_keys=True)
+                    if column == "context" and row.get(column) is not None
+                    else _naive_utc(row.get(column))
+                )
+                for column in columns
+            }
+            for row in rows
+        ],
+        columns=columns,
+    )
 
 
 async def _ionization_mode_names(mode_ids: set[str | None]) -> dict[str, str]:
@@ -365,31 +421,82 @@ async def _ionization_mode_names(mode_ids: set[str | None]) -> dict[str, str]:
         return dict(rows.all())
 
 
-def _instrument_models(samples: list[dict]) -> dict[str, str | None]:
+async def instrument_models_of(
+    files: dict[str, tuple[str, str | None]],
+) -> dict[str, str | None]:
     """
-    The instrument model each sample's raw file names, by sample file id.
+    The instrument model of each sample file, by sample file id.
 
-    The model is not recorded in the database, only in the raw file, so it is
-    read from there: an Orbitrap file's header, which opens in about a
-    millisecond. A TOF file names no model the vocabulary has a term for, and
-    is not opened. Blocking; run it in a thread.
+    Each file states its own model, taken from the first of these that names
+    one:
 
-    :param samples: Sample dicts from ``get_batch_data``.
-    :return: The model by sample file id, None where there is no raw file to
-        read or it could not be read. An export is not refused for one file.
+    1. its props: ``instrument_model``, written at conversion from what the
+       reader reported, else the axis fingerprint's
+       ``source.instrument_model``;
+    2. for an Orbitrap file, its kept raw file's header, which opens in about
+       a millisecond;
+    3. its ``Instrument`` row, which still has a model when the raw file and
+       the props are gone.
+
+    The row comes last because it holds one model per instrument name, the
+    one the last registered file reported: an instrument that kept its name
+    across a hardware change, or an older file registered after newer ones,
+    would give every file of the name the same model. A TOF file names no
+    model the vocabulary has a term for, and its raw file is not opened.
+
+    :param files: The sample files, by id: their name and their instrument
+        class (``"orbi"`` or ``"tof"``).
+    :return: The model by sample file id, None where nothing names one. An
+        export is not refused for one file.
     :rtype: dict[str, str | None]
     """
-    files = {
-        sample["sample_file_id"]: sample["filename"]
-        for sample in samples
-        if sample.get("instrument_type") == "orbi" and sample.get("sample_file_id")
-    }
-    return {file_id: _instrument_model(filename) for file_id, filename in files.items()}
+    if not files:
+        return {}
+
+    def own_models() -> dict[str, str]:
+        found = {}
+        for file_id, (filename, instrument_type) in files.items():
+            model = model_in_props(_props(filename))
+            if not model and instrument_type == "orbi":
+                model = _instrument_model(filename)
+            if model:
+                found[file_id] = model
+        return found
+
+    own = await asyncio.to_thread(own_models)
+    unnamed = [file_id for file_id in files if file_id not in own]
+    recorded = {}
+    if unnamed:
+        async with async_session() as session:
+            rows = await session.execute(
+                select(SampleFile.sample_file_id, Instrument.model)
+                .join(Instrument, Instrument.instrument_id == SampleFile.instrument_id)
+                .where(SampleFile.sample_file_id.in_(unnamed))
+            )
+            recorded = {file_id: model for file_id, model in rows.all() if model}
+    return {file_id: own.get(file_id) or recorded.get(file_id) for file_id in files}
+
+
+def _props(filename: str) -> dict | None:
+    """
+    One sample file's props, or None when there are none to read.
+
+    Blocking; run it in a thread.
+
+    :param filename: The sample file's name.
+    :rtype: dict | None
+    """
+    try:
+        return m_io.read_props(filename)
+    except Exception:  # noqa: BLE001 - a file without props falls through
+        return None
 
 
 def _instrument_model(filename: str) -> str | None:
     """
     The instrument model one Orbitrap sample file's raw file names.
+
+    Blocking; run it in a thread.
 
     :param filename: The sample file's name.
     :return: The model, such as "Orbitrap Exploris 120"; None when the raw
@@ -419,7 +526,8 @@ def _vocabulary_columns(
     of it ("Orbitrap XL" reads "LTQ Orbitrap XL"). A value the vocabulary
     cannot map, such as a family name, leaves both cells empty.
 
-    :param model: The instrument model the raw file names, None if unknown.
+    :param model: The instrument model of the sample's file, as
+        ``instrument_models_of`` gives it, None if unknown.
     :param instrument_type: ``"orbi"`` or ``"tof"``.
     :param polarity: The sample's polarity, ``"+"`` or ``"-"``.
     :return: The columns, in their order.

@@ -11,6 +11,7 @@ hermetic.
 import importlib
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import typer
@@ -29,10 +30,19 @@ def test_free_gb_real_path_is_positive(tmp_path):
     assert free is not None and free > 0
 
 
-def test_free_gb_walks_up_to_existing_ancestor(tmp_path):
+def test_free_gb_walks_up_to_existing_ancestor(monkeypatch, tmp_path):
     # A path that does not exist yet resolves to its nearest existing parent.
+    # disk_usage is stubbed: two live readings of a busy disk can differ.
+    probed = []
+
+    def fake_disk_usage(path):
+        probed.append(path)
+        return SimpleNamespace(total=10 * 1024**3, used=7 * 1024**3, free=3 * 1024**3)
+
+    monkeypatch.setattr(au.shutil, "disk_usage", fake_disk_usage)
     missing = tmp_path / "does" / "not" / "exist"
-    assert au.free_gb(missing) == au.free_gb(tmp_path)
+    assert au.free_gb(missing) == 3.0
+    assert probed == [tmp_path]
 
 
 def test_min_free_gb_default(monkeypatch):

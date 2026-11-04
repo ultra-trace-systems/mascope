@@ -9,6 +9,7 @@ from mascope_backend.api.controllers.sample.batches.sample_batches_controller im
     get_sample_batch_peaks,
     get_sample_batches,
     import_sample_items,
+    move_sample_batch,
     sample_batch_export_peaks,
     update_sample_batch,
 )
@@ -22,6 +23,7 @@ from mascope_backend.api.models.sample.batches.sample_batch_pydantic_model impor
     SampleBatchCopyBody,
     SampleBatchCreate,
     SampleBatchImportSamplesBody,
+    SampleBatchMoveBody,
     SampleBatchUpdate,
     SampleBatchUpdateStatusBody,
 )
@@ -29,6 +31,7 @@ from mascope_backend.api.new.auth.access_rules import locked_access
 from mascope_backend.api.new.auth.dependencies import (
     current_active_user,
 )
+from mascope_backend.api.new.ms2.routes import ms2_batch_router
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access_bulk,
     check_dataset_access,
@@ -43,6 +46,7 @@ from mascope_backend.db.id import gen_id
 
 sample_batches_router = APIRouter(prefix="/api/sample/batches", tags=["Sample Batches"])
 sample_batches_router.include_router(sample_batches_export_router)
+sample_batches_router.include_router(ms2_batch_router)
 
 
 @sample_batches_router.get("")
@@ -320,6 +324,57 @@ async def copy_sample_batch_route(
         "message": f"Copying batch '{body.sample_batch_name}', please wait.",
         "process_id": process_id,
     }
+
+
+@sample_batches_router.post("/{sample_batch_id}/move")
+@api_route(token_access=True)
+async def move_sample_batch_route(
+    sample_batch_id: str,
+    body: SampleBatchMoveBody,
+    user=Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+):
+    """Move a sample batch, with everything in it, into another dataset.
+
+    The batch keeps its ID, its samples, their matches and its collections;
+    only the dataset it belongs to changes, in one transaction. Source
+    membership (editor) is enforced by require_batch_role, and again on the
+    dataset the batch is read in, which the controller re-verifies inside the
+    move transaction (closing the TOCTOU window between authorization and
+    mutation, as the dataset move does). Locked batches and
+    the datasets they leave require global admin, matching batch update and
+    dataset move. Target membership (editor) is checked explicitly since the
+    target comes from the body, and a locked target takes no batch, as for a
+    batch copy.
+
+    :param sample_batch_id: The unique identifier of the sample batch to move.
+    :type sample_batch_id: str
+    :param body: The move request carrying the target dataset ID.
+    :type body: SampleBatchMoveBody
+    :param user: The current authenticated user with editor permissions.
+    :type user: User
+    :return: A dictionary containing the moved sample batch's details.
+    :rtype: dict
+    """
+    # Locked batches: only global admins can move (consistent with update)
+    await locked_access(user, SampleBatch, sample_batch_id, min_role="admin")
+    # The dataset it leaves, read once and pinned: checked here, and the
+    # controller moves the batch only if it is still there (TOCTOU)
+    source_dataset_id = (await get_sample_batch(sample_batch_id))["data"]["dataset_id"]
+    await check_dataset_access(source_dataset_id, user, "editor")
+    # The dataset it leaves changes too: locked, only global admins
+    await locked_access(user, Dataset, source_dataset_id, min_role="admin")
+    # Target-side RBAC - body param, so checked explicitly not as a dependency
+    await check_dataset_access(body.dataset_id, user, "editor")
+    # Can't move into a locked dataset
+    await locked_access(user, Dataset, body.dataset_id)
+
+    return await move_sample_batch(
+        sample_batch_id=sample_batch_id,
+        source_dataset_id=source_dataset_id,
+        dataset_id=body.dataset_id,
+        independent_transaction=True,
+    )
 
 
 @sample_batches_router.post("/{sample_batch_id}/export_peaks")

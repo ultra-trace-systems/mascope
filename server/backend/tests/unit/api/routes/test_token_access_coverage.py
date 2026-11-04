@@ -77,9 +77,12 @@ TOOLKIT_READS = {
     ),
     # the four loaders, and the provenance block every Frame cites
     ("GET", "/api/samples/{sample_item_id}/peaks"): (
-        "load_peaks, load_peaks_by_stage, and load_timeseries resolving a formula"
+        "load_peaks, load_peaks_by_stage, load_timeseries resolving a formula, "
+        "and compute_timeseries counting the peaks without a series"
     ),
-    ("POST", "/api/samples/{sample_item_id}/peaks/timeseries"): "load_timeseries",
+    ("POST", "/api/samples/{sample_item_id}/peaks/timeseries"): (
+        "load_timeseries, and compute_timeseries filling the series cache"
+    ),
     ("GET", "/api/samples/{sample_item_id}/spectrum"): "load_spectrum",
     ("GET", "/api/provenance"): "the provenance record of every Frame",
     # the oracle
@@ -118,6 +121,7 @@ SDK_WRITES = {
     # batches
     ("PATCH", "/api/sample/batches/{sample_batch_id}"): "batches.update",
     ("POST", "/api/sample/batches/{sample_batch_id}/copy"): "batches.copy",
+    ("POST", "/api/sample/batches/{sample_batch_id}/move"): "batches.move",
     # samples
     ("PATCH", "/api/sample/items/{sample_item_id}"): "samples.update",
     ("POST", "/api/sample/items/move"): "samples.move",
@@ -149,9 +153,9 @@ SDK_WRITES = {
 
 #: Every other route that answers a token, by the client that needs it.
 OTHER_TOKEN_ROUTES = {
-    # The SDK, beyond the toolkit: MS2, centroids, several spectra, the
-    # single-compound match, files, their scans, source data and axis
-    # fingerprints, and the version probe.
+    # The SDK, beyond the toolkit: MS2 (a batch's groups too), centroids,
+    # several spectra, the single-compound match, files, their scans, source
+    # data and axis fingerprints, and the version probe.
     ("GET", "/api/samples/centroids"),
     ("GET", "/api/samples/spectra"),
     ("GET", "/api/samples/{sample_item_id}/axis_fingerprint"),
@@ -160,6 +164,8 @@ OTHER_TOKEN_ROUTES = {
     ("GET", "/api/samples/{sample_item_id}/ms2/scans"),
     ("GET", "/api/samples/{sample_item_id}/ms2/summary"),
     ("GET", "/api/samples/{sample_item_id}/ms2/timeseries"),
+    ("GET", "/api/samples/{sample_item_id}/ms2/window"),
+    ("GET", "/api/sample/batches/{sample_batch_id}/ms2/groups"),
     ("POST", "/api/match/aggregate/sample/{sample_item_id}/compound"),
     ("GET", "/api/sample/files"),
     ("GET", "/api/sample/files/{sample_file_id}/axis_fingerprint"),
@@ -188,7 +194,9 @@ OTHER_TOKEN_ROUTES = {
     ("POST", "/api/match/rematch/sample/{sample_item_id}"),
     # Peak assignment: the SDK's sample-level reads and the engine's writes.
     ("GET", "/api/peak-assignments/batch/{sample_batch_id}/profile-preview"),
+    ("GET", "/api/peak-assignments/batch/{sample_batch_id}/verifications"),
     ("POST", "/api/peak-assignments/calibration/{instrument}/recalibrate"),
+    ("GET", "/api/peak-assignments/dataset/{dataset_id}/verifications"),
     ("GET", "/api/peak-assignments/sample/{sample_item_id}"),
     ("POST", "/api/peak-assignments/sample/{sample_item_id}/assign"),
     (
@@ -222,6 +230,8 @@ OTHER_TOKEN_ROUTES = {
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/curate"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/export"),
     ("GET", "/api/batch-peaks/batch/{sample_batch_id}/members"),
+    # A batch's peak lists in one read: load_peaks and batch_peaks.peak_lists
+    ("GET", "/api/batch-peaks/batch/{sample_batch_id}/peaks"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/release-curation"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/retract"),
     ("GET", "/api/batch-peaks/batch/{sample_batch_id}/runs"),

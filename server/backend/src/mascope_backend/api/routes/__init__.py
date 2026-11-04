@@ -1,5 +1,6 @@
 from mascope_backend.api.new.auth.routes import auth_router
 from mascope_backend.api.new.cheminfo.routes import cheminfo_router
+from mascope_backend.api.new.dataset_package.routes import dataset_package_router
 from mascope_backend.api.new.dataset_tombstones.routes import (
     dataset_tombstones_router,
 )
@@ -115,6 +116,7 @@ routers = [
     dataset_router,
     acquisition_datasets_router,
     dataset_tombstones_router,
+    dataset_package_router,
     sample_batches_router,
     samples_router,
     sample_files_router,

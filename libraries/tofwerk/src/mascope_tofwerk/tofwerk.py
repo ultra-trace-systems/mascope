@@ -361,7 +361,11 @@ def get_tic_per_scan(
         sum_spec *= get_conversion_coefficient(h5_file)
         # Get total TIC
         total_tic = sum_spec.sum()
-        # Correct TIC per scan by total TIC
+        # Correct TIC per scan by total TIC. TofDaq writes SumSpectrum as the
+        # sum of every recorded buf, not their average (the two agree to the
+        # last digit on real files), so this converts each scan's TIC to
+        # ions/s - the unit of get_signal's spectra - and leaves it a value
+        # per scan: the file's total is what grows with its length.
         scan_tic = scan_tic / scan_tic.sum() * total_tic
 
         if timestamps is not None:

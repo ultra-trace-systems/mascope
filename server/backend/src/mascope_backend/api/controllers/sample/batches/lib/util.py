@@ -21,6 +21,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 from mascope_backend.api.new.instrument_configs.lib import (
     read_instrument_functions,
 )
+from mascope_backend.api.new.ionization.modes.versions import root_ids
 from mascope_backend.db import Sample, async_session
 from mascope_backend.runtime import runtime
 from mascope_tools.alignment.calibration import CentroidedSpectrum
@@ -46,8 +47,12 @@ def detect_update_batch_changes(existing_batch, sample_batch_update) -> dict[str
         tc.target_collection_id for tc in existing_batch.target_collection
     }
 
-    # Extract proposed new state using dot notation
-    new_collections = set(sample_batch_update.target_collection_ids)
+    # Collections left out of the update (or sent as null) stay as they are;
+    # a list, an empty one included, is the whole new set.
+    if sample_batch_update.target_collection_ids is None:
+        new_collections = current_collections
+    else:
+        new_collections = set(sample_batch_update.target_collection_ids)
 
     # Calculate collection changes
     collections_to_add = new_collections - current_collections
@@ -154,8 +159,14 @@ async def collect_spectra_per_ionization_mode(
         )
         resolution_functions[(sample.filename, sample.polarity)] = resolution_func
 
-    # Peaks will be grouped and aligned by ionization mode
-    ionization_modes = set([sample.ionization_mode_id for sample in samples])
+    # Peaks will be grouped and aligned by ionization mode: by setup, each
+    # keyed by its first version, so the samples of a batch bound under two
+    # versions of one mode are aligned together.
+    async with async_session() as session:
+        setup_of = await root_ids(
+            session, {sample.ionization_mode_id for sample in samples}
+        )
+    ionization_modes = set(setup_of.get(s.ionization_mode_id) for s in samples)
     spectra = {ionization_mode: [] for ionization_mode in ionization_modes}
 
     # Bound concurrency to avoid too many open files / blocking the loop
@@ -170,7 +181,7 @@ async def collect_spectra_per_ionization_mode(
         ]
     )
     for ionization_mode, spec in collected_specs:
-        spectra[ionization_mode].append(spec)
+        spectra[setup_of.get(ionization_mode)].append(spec)
 
     return spectra, intensity_variable
 

@@ -22,6 +22,7 @@ from mascope_backend.api.new.instrument_configs.schemas import (
     InstrumentFunctionData,
     PeakShape,
 )
+from mascope_backend.api.new.instruments.registry import instrument_id_for
 from mascope_backend.db import InstrumentFunction as InstrumentConfig
 from mascope_backend.db import SampleFile, async_session
 from mascope_backend.db.id import gen_id
@@ -221,6 +222,9 @@ async def create_instrument_config(
         new_instrument_config = InstrumentConfig(
             instrument_function_id=gen_id(32),
             **instrument_config.model_dump(),  # Unpack the Pydantic model's data
+            instrument_id=await instrument_id_for(
+                session, instrument_config.instrument
+            ),
         )
 
         session.add(new_instrument_config)

@@ -1,0 +1,30 @@
+[Unit]
+Description=Mascope unattended update check
+Documentation=https://github.com/ultra-trace-systems/mascope
+# An update only makes sense once Docker and the stack are up.
+After=docker.service mascope.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# The deploy user, working directory, mascope binary and script path below are
+# filled in by the units' installer, matching mascope.service. MASCOPE_PATH (and
+# LD_PRELOAD) come from /etc/environment; update-specific settings and the
+# release token live in the optional /etc/mascope/update.env (see
+# docs/maintaining.md). The leading '-' means the unit still starts when that
+# file is absent.
+User=@@USER@@
+# The deployment checkout; without it systemd runs the unit in "/", where the
+# CLI cannot read which release tag the deployment has checked out.
+WorkingDirectory=@@MASCOPE_PATH@@
+EnvironmentFile=/etc/environment
+EnvironmentFile=-/etc/mascope/update.env
+# The script runs `prod update --auto` and passes its exit code on, except a
+# wheel install's exit 40: only the newest release's own CLI can apply the
+# update, so it installs that CLI and runs --auto again as a new process.
+ExecStart=/bin/bash @@UPDATE_SCRIPT@@ @@MASCOPE_BIN@@ @@MASCOPE_PATH@@
+
+# Exit 30 means "a migration update is pending" - informational, not a failure,
+# so systemd must not mark the unit failed for it. 0 is a clean handled run.
+# Exit 40 never reaches systemd: the script completes the hand-over.
+SuccessExitStatus=0 30

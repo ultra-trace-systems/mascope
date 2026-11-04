@@ -1,9 +1,12 @@
 """
 Tests: the Samples sheet's PSI-MS columns, and where the model comes from.
 
-The instrument model is read from a sample's raw file, the one place it is
-recorded; a file that is not there or cannot be read leaves its cells empty
-and the export goes on. The columns end to end are covered by
+The instrument model is the one the sample's instrument row records; a row
+without one leaves an Orbitrap file to its raw file's header, read here, and a
+file that is not there or cannot be read leaves its cells empty while the
+export goes on. Which of the two a file's model comes from is covered by
+``tests/integration/api/export/test_export_instrument_models.py``, the
+columns end to end by
 ``tests/integration/api/export/test_batch_spreadsheet_traceability.py``.
 """
 
@@ -93,17 +96,6 @@ def reader(monkeypatch):
     monkeypatch.setattr(service, "get_sample_file_type", lambda filename: "orbi_raw")
     monkeypatch.setattr(service.m_metadata, "metadata_factory", metadata_factory)
     return opened
-
-
-def test_only_orbitrap_files_are_opened_once_each(reader):
-    samples = [
-        {"sample_file_id": "f1", "filename": "a.raw", "instrument_type": "orbi"},
-        # A second item of the same file
-        {"sample_file_id": "f1", "filename": "a.raw", "instrument_type": "orbi"},
-        {"sample_file_id": "f2", "filename": "b.h5", "instrument_type": "tof"},
-    ]
-    assert service._instrument_models(samples) == {"f1": "Orbitrap Exploris 120"}
-    assert reader == ["a.raw"]
 
 
 def test_a_file_without_its_raw_file_is_not_opened(reader, monkeypatch):

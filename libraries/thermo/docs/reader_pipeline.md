@@ -85,10 +85,30 @@ default: `GET /api/samples/centroids` and `centroids_meta` of
 `GET /api/sample/files/{id}/metadata` serve every stored centroid, and take the
 same `exclude` (`exclude=reference,exception`).
 
-The averaged centroids (section 4) and peak detection keep every centroid,
-Exception ones included: leaving them out would move the published goldens and
-the regression corpus. The vendor library blanks the exception peaks' profile
-chunks; the averaged profile (section 3) does not, yet.
+The averaged profile (section 3) and the averaged centroids (section 4) keep
+every centroid and its profile chunk, the flagged ones included, as the vendor
+library's `AverageScans` does on a file opened the way the reader opens one.
+`RawFileManager` sets `IncludeReferenceAndExceptionData`, so that the lock mass
+is read: it is a real ion and can be a file's base peak. With the switch off,
+the vendor's default, `AverageScans` blanks the profile chunk of each
+Exception centroid per scan, but it drops the Reference centroid, the lock
+mass, as well. No setting of the switch keeps Reference and leaves out
+Exception. Measured on a demo file opened with the switch on, 267 of its 308
+per-scan Exception centroids have an averaged centroid within 2 ppm; with it
+off, 46. On three lock-mass files the Reference peak went from every scan and
+from two of the three averages. OpenTFRaw stores one profile chunk per
+centroid (`profile_chunks`), and the switch-off blanking is exactly the
+Exception centroids' chunks.
+
+The flags are weighed by peak detection (section 7): a peak most of whose
+per-scan centroids carry Exception is a satellite, unless it sits on an
+isotopologue line of a peak that is not one. The instrument flags by position,
+and it also flags real lines where it expects a lobe of a brighter one: an
+ion's 2H line lies 2.92 mDa above its 13C line, about 2.4 widths at m/z
+150-230, and is flagged there. On the 161 MS1 demo raws, leaving every
+Exception centroid out of the averages would lose 595 of the goldens' 948
+matched 2H lines; so the averages keep them, and the peak list is where the
+flag is read.
 
 **Scan selection** is shared by every read: `_selector(...)` /
 `_selected(...)` filter scans by polarity (`+`/`-`), MS level (`Ms`/`Ms2`), a
@@ -107,6 +127,11 @@ whole file.
 profile data: the same grid and peak area, but each peak keeps its single-scan
 shape, which Thermo's widens (end of 3.1). A naive "put every scan on a common m/z grid and sum" is **wrong**,
 and understanding why is the crux of the whole pipeline.
+
+Every stored profile point of every selected scan goes into the average,
+the chunks of the centroids the instrument flagged included, as in the
+vendor's `AverageScans` on a file opened with
+`IncludeReferenceAndExceptionData` (section 2, "Centroid flags").
 
 ### 3.1 Why average in the frequency domain
 
@@ -474,7 +499,8 @@ intensities, resolutions, signal_to_noise)`. Thermo gets these by re-centroiding
 the averaged profile; OpenTFRaw reconstructs the same result from the per-scan
 labels:
 
-1. **Pool** the per-scan FT label peaks across the selected scans.
+1. **Pool** the per-scan FT label peaks across the selected scans, the
+   flagged ones included (section 2, "Centroid flags").
 2. **Key them by frequency** (`_labels_on_one_calibration`): each scan's label
    m/z is converted to frequency with that scan's Conversion Parameter B/C and
    back with one reference scan's. The profile averaging goes to frequency the
@@ -776,6 +802,16 @@ them, touching raw Orbitrap files only.
 - **Peak detection** uses the averaged-centroid S:N against a weak-peak
   threshold (S:N >= 3); this is why the `n/sqrt(N)` S:N scaling (section 4.5)
   matters -- it keeps/drops the same near-threshold peaks as Thermo.
+  It also reads the instrument's side-lobe flag. For each averaged peak,
+  `thermo.py:get_centroid_flag_shares` counts the centroids the averaged scans
+  store within half the peak's width (m/z over its resolution), one scan at a
+  time, and the share of them flagged Exception. A peak over half is marked a
+  satellite (`mascope_tools.alignment.utils.flag_exception_peaks`), unless it
+  sits within half its width of an isotopologue line (13C, 2H, 15N, 17O,
+  18O, 34S, 37Cl, 81Br) of a peak under half, at a height that line can have.
+  A load of the store leaves satellites out. Both backends count the same
+  centroids and flags, so they give the same shares
+  (`test_centroid_flag_shares_match_thermo`).
 - **Extracted-ion chromatogram** (`xic()`): for each target m/z, sum the
   centroid intensities in its ppm window per selected scan (vectorized per scan
   via a sorted prefix sum). The Thermo backend uses `GetChromatogramData`;
@@ -964,6 +1000,7 @@ a tolerance.
 | Labels keyed by frequency | `_labels_on_one_calibration` |
 | Averaged centroids | `average_centroids`, `_merge_split_centroids`, `_heights_from_profile_apex` |
 | XIC | `xic` |
+| Share of a peak's per-scan centroids carrying a flag | `thermo.py:get_centroid_flag_shares`, over `centroid_masses` and `centroid_flags` |
 | Sum signal (app) | `mascope_signal/compute.py:get_sum_signal`, `thermo.py:compute_sum_signal` |
 | Sum signal cache name | `averaged_profile_signature`, `mascope_signal/compute.py:sum_signal_suffix` |
 | Instrument fit | `mascope_signal/instrument_func/fit.py` |

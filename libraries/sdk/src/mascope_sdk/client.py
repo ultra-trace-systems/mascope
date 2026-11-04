@@ -290,6 +290,9 @@ class MascopeClient:
 
         # False once the server has answered that it has no provenance route
         self._server_has_provenance = True
+        # False once the server has answered that it reads no batch's peak
+        # lists in one request (load_peaks then reads each sample on its own)
+        self._server_has_batch_peak_lists = True
         # The first block received per deployment and build, which the loaders
         # stamp (see _stamp_for)
         self._stamps: dict[str, dict[str, Any]] = {}
@@ -590,12 +593,13 @@ class MascopeClient:
         *,
         samples: "str | re.Pattern | None" = None,
         exact: bool = False,
-        matches: bool = True,
+        matches: bool | None = None,
         areas: bool = True,
         heights: bool = True,
         average: bool = True,
         confirm_above: int | None = 100,
         max_workers: int = 8,
+        save_path: "str | os.PathLike[str] | None" = None,
     ) -> pd.DataFrame | None:
         """Load peaks for all samples across one or more batches.
 
@@ -604,8 +608,9 @@ class MascopeClient:
         and concatenating peak data into a single DataFrame enriched with batch and
         sample metadata.
 
-        Requests are made concurrently for better performance. A progress bar is
-        displayed during loading.
+        Each batch is read a hundred samples per request from a server that
+        offers it; from an older one, each sample is read on its own,
+        concurrently. A progress bar counts the requests.
 
         :param dataset: Dataset name or literal substring (or ID); pass a
                         compiled ``re.Pattern`` to match by regex.
@@ -625,8 +630,13 @@ class MascopeClient:
                       named batch. Not valid with a compiled pattern. Defaults to
                       False.
         :type exact: bool
-        :param matches: Include matched compounds/ions/isotopes. Defaults to True.
-        :type matches: bool
+        :param matches: Include matched compounds/ions/isotopes. By default
+                        they are left out where batches are read through
+                        the batch read, and included where an older server
+                        has each sample read on its own, as they always were.
+                        Pass True or False to have the same columns from
+                        either.
+        :type matches: bool | None
         :param areas: Include peak areas. Defaults to True.
         :type areas: bool
         :param heights: Include peak heights. Defaults to True.
@@ -641,7 +651,15 @@ class MascopeClient:
                               Defaults to 100.
         :type confirm_above: int | None
         :param max_workers: Maximum number of concurrent requests. Defaults to 8.
+                            Batch reads go at most two at a time, as the
+                            server reads several samples of each at once.
         :type max_workers: int
+        :param save_path: Also write the frame to this path as a Parquet
+                          file, ``attrs`` included: a snapshot of the load
+                          that ``pd.read_parquet`` reads back, with no server
+                          or credentials. Nothing is written when the load
+                          returns None.
+        :type save_path: str | os.PathLike, optional
         :return: A DataFrame containing all peaks enriched with columns:
 
             - ``sample_batch_name``: Name of the batch the sample belongs to
@@ -649,7 +667,9 @@ class MascopeClient:
             - ``datetime_utc``: Measurement start timestamp (UTC)
 
             Plus all columns from
-            :meth:`~mascope_sdk.resources.samples.SamplesResource.get_peaks`.
+            :meth:`~mascope_sdk.resources.samples.SamplesResource.get_peaks`,
+            and ``is_satellite`` (False throughout: satellite peaks are left
+            out) where batches were read through the batch read.
 
             When a peak matches multiple isotopes it is expanded
             into one row per match.  Use ``target_ion_id`` /
@@ -702,10 +722,20 @@ class MascopeClient:
                 dataset="My Dataset",
                 confirm_above=None,
             )
+
+            # Keep a snapshot to work on offline
+            peaks = mascope.load_peaks(
+                dataset="My Dataset",
+                batches="Uronium 2026-01",
+                exact=True,
+                save_path="uronium.parquet",
+            )
+            peaks = pd.read_parquet("uronium.parquet")  # later, anywhere
         """
         from ._loaders import load_peaks as _load_peaks
+        from ._loaders import save_snapshot
 
-        return self._with_provenance(
+        peaks = self._with_provenance(
             _load_peaks(
                 self,
                 dataset,
@@ -720,6 +750,9 @@ class MascopeClient:
                 max_workers=max_workers,
             )
         )
+        if save_path is not None and peaks is not None:
+            save_snapshot(peaks, save_path)
+        return peaks
 
     def load_peak_timeseries(
         self,

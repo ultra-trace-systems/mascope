@@ -7,6 +7,7 @@ temp file by name (cross-tenant export leak).
 """
 
 import os
+from urllib.parse import quote
 
 import pytest
 
@@ -31,6 +32,24 @@ async def test_download_own_temp_file(guest_client, test_users):
     )
     try:
         resp = await guest_client.get("/api/temp/guest_export.csv")
+        assert resp.status_code == 200
+        assert "intensity" in resp.text
+    finally:
+        os.remove(path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["20261027_Run_#3.xlsx", "20261027_100%41.xlsx"])
+async def test_download_encoded_name(guest_client, test_users, name):
+    """A name the app encodes as one path segment is served under that name.
+
+    Export names keep ``#`` and ``%`` (``download_name``), so the frontend puts
+    them into the URL with ``encodeURIComponent``; the route decodes the
+    segment back to the file's own name, not to another one.
+    """
+    path = _plant_temp_file(test_users["guest"].id, name, "mz;intensity\n")
+    try:
+        resp = await guest_client.get(f"/api/temp/{quote(name, safe='')}")
         assert resp.status_code == 200
         assert "intensity" in resp.text
     finally:

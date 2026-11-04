@@ -17,11 +17,11 @@ from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.dependencies import current_active_user
 from mascope_backend.api.new.auth.exceptions import ForbiddenAccessException
 from mascope_backend.api.new.workspaces.dependencies import (
-    accessible_workspace_ids_for_user,
     check_batch_access_bulk,
     check_collection_batch_change_access,
     check_target_collection_access,
     check_workspace_access,
+    workspace_scope_for_user,
 )
 
 
@@ -42,12 +42,9 @@ async def get_target_collections_route(
     :param user: The current authenticated user.
     :return: A dictionary containing the total count and list of target collections.
     """
-    ws_ids = (
-        None if user.is_superuser else await accessible_workspace_ids_for_user(user)
-    )
     return await get_target_collections(
         **query_params.model_dump(),
-        accessible_workspace_ids=ws_ids,
+        accessible_workspace_ids=await workspace_scope_for_user(user),
     )
 
 
@@ -109,6 +106,9 @@ async def update_target_collection_route(
     user=Depends(current_active_user),
 ) -> dict:
     """Update an existing target collection.
+
+    `target_compound_ids` and `target_compounds_create` together replace the
+    collection's compound list: a compound the request does not name is removed.
 
     :param target_collection_id: The unique ID of the target collection to update.
     :type target_collection_id: str

@@ -136,14 +136,14 @@ async def test_a_written_token_carries_its_issue_time():
 
 
 @pytest.mark.asyncio
-async def test_a_written_token_reads_back_with_its_issue_time():
+async def test_a_written_token_reads_back_with_its_issue_and_expiry_times():
     user = _user(sessions_revoked_at=CUTOFF)
     strategy = get_jwt_strategy()
     token = await strategy.write_token(user)
     read = await strategy.read_session(token, _UserManager(user))
-    assert read is not None
-    assert read[0] is user
-    assert read[1] == jwt.decode(token, options={"verify_signature": False})["iat"]
+    claims = jwt.decode(token, options={"verify_signature": False})
+    assert read == (user, claims["iat"], claims["exp"])
+    assert strategy.issued_at(token) == claims["iat"]
 
 
 @pytest.mark.asyncio

@@ -15,8 +15,8 @@ import pytest
 
 from mascope_backend.api.controllers.match.lib.match_score_v2 import (
     ion_score_v2,
+    ion_scores_v2,
     match_score_version,
-    sample_noise_floor,
 )
 from mascope_tools.composition.heuristic_filter import DEFAULT_CALIBRATION_V2
 
@@ -69,7 +69,7 @@ def test_absent_monoisotopic_scores_zero():
 def test_no_snr_column_scores_without_proxy():
     # No signal_to_noise column is the DB-read case: no-SNR mode, no proxy. For a clean
     # envelope that is the same answer a real SNR gives, to ~0.1%.
-    s = ion_score_v2(_ion(110.0), sigma_ppm=0.5, noise=5.0)
+    s = ion_score_v2(_ion(110.0), sigma_ppm=0.5)
     assert s == pytest.approx(0.9560, abs=1e-3)
 
 
@@ -78,9 +78,7 @@ def test_no_snr_column_matches_real_snr_for_a_clean_envelope():
     # exceeds the 5%-of-abundance floor below SNR ~20, so a normally-measured envelope
     # scores identically either way.
     real = ion_score_v2(_ion(110.0, snr=[500, 55]), sigma_ppm=0.5)
-    assert real == pytest.approx(
-        ion_score_v2(_ion(110.0), sigma_ppm=0.5, noise=5.0), abs=1e-3
-    )
+    assert real == pytest.approx(ion_score_v2(_ion(110.0), sigma_ppm=0.5), abs=1e-3)
 
 
 def test_per_row_nan_snr_does_not_inflate():
@@ -93,9 +91,9 @@ def test_per_row_nan_snr_does_not_inflate():
         abs=1e-3,
     )
     # ... and without the column at all, where the proxy used to score it 0.7391.
-    assert ion_score_v2(
-        _ion(880.0, me=(0.0, 0.0)), sigma_ppm=0.5, noise=5.0
-    ) == pytest.approx(0.2543, abs=1e-3)
+    assert ion_score_v2(_ion(880.0, me=(0.0, 0.0)), sigma_ppm=0.5) == pytest.approx(
+        0.2543, abs=1e-3
+    )
 
 
 def test_absent_isotopologue_penalised_without_snr_column():
@@ -103,7 +101,7 @@ def test_absent_isotopologue_penalised_without_snr_column():
     # M+1 predicted at 30% of base and entirely absent scored a perfect 1.0. The
     # abundance fallback restores the real-SNR answer exactly.
     absent = dict(rel=0.30, me=(0.0, 0.0))
-    no_column = ion_score_v2(_ion(0.0, **absent), sigma_ppm=0.5, noise=5.0)
+    no_column = ion_score_v2(_ion(0.0, **absent), sigma_ppm=0.5)
     assert no_column == pytest.approx(0.7574, abs=1e-3)
     assert no_column == pytest.approx(
         ion_score_v2(_ion(0.0, snr=[500, np.nan], **absent), sigma_ppm=0.5), abs=1e-3
@@ -135,15 +133,6 @@ def test_mixed_null_group_keeps_per_row_snr_concessions():
     assert ion_score_v2(noisy, sigma_ppm=0.5) > ion_score_v2(all_null, sigma_ppm=0.5)
 
 
-def test_noise_argument_does_not_change_the_score():
-    # `noise` is retained for the call sites that still pass a sample_noise_floor, and is
-    # inert: nothing about the score may depend on it any more.
-    scores = {
-        ion_score_v2(_ion(110.0), sigma_ppm=0.5, noise=n) for n in (1.0, 5.0, 1e6)
-    }
-    assert len(scores) == 1
-
-
 def test_raw_vs_calibrated():
     g = _ion(110.0, snr=[500, 55])
     raw = ion_score_v2(g, sigma_ppm=0.5, calibrate=False)
@@ -164,11 +153,6 @@ def test_calibrate_refuses_an_instrument_agnostic_curve():
         ion_score_v2(_ion(110.0, snr=[500, 55]), sigma_ppm=0.5, calibrate=True)
 
 
-def test_sample_noise_floor_positive():
-    df = pd.DataFrame({"sample_peak_intensity": [1.0, 10.0, 100.0, 1000.0]})
-    assert sample_noise_floor(df) > 0
-
-
 def test_satellite_matched_isotopologue_treated_as_absent():
     base = dict(_ion(110.0, snr=[500, 55]))
     normal = ion_score_v2(
@@ -187,7 +171,7 @@ def test_satellite_penalty_applies_without_snr_column():
     # instead of 0.8561). The no-SNR gate reproduces the real-SNR penalty exactly.
     base = dict(_ion(110.0))
     sat = ion_score_v2(
-        pd.DataFrame({**base, "is_satellite": [False, True]}), sigma_ppm=0.5, noise=5.0
+        pd.DataFrame({**base, "is_satellite": [False, True]}), sigma_ppm=0.5
     )
     assert sat == pytest.approx(0.8561, abs=1e-3)
     with_snr = dict(_ion(110.0, snr=[500, 55]))
@@ -227,3 +211,107 @@ def test_category_thresholds_are_score_version_aware(monkeypatch):
 
     assert cats(2) == [2, 1, 0]  # v2 0.8/0.5: 0.85>=0.8; 0.5<=0.5<0.8; 0.1<0.5
     assert cats(1) == [2, 0, 0]  # v1 0.8/0.7: 0.85>=0.8; 0.5<0.7; 0.1<0.7
+
+
+def _ions_frame(rng, ions=30):
+    """Stage A-shaped rows of many ions, shuffled, with the messy cases mixed in:
+    missing abundances, intensities, mass errors and SNR, absent lines,
+    satellites, a missing ion id, ties at an ion's top abundance, and ions with
+    no positive abundance at all."""
+    rows = []
+    for ion in range(ions):
+        lines = int(rng.integers(1, 20))
+        abundance = rng.uniform(0, 1, lines)
+        abundance[rng.integers(lines)] = 1.0
+        if rng.random() < 0.1:
+            abundance[rng.integers(lines)] = np.nan
+        if rng.random() < 0.2:
+            abundance[rng.integers(lines)] = 1.0
+        if ion == 1:
+            abundance[:] = 0.0  # no positive abundance: scores 0
+        if ion == 2:
+            abundance = -abundance  # nor does a negative one
+        ion_id = None if ion == 0 and rng.random() < 0.3 else f"ion-{ion}"
+        for line in range(lines):
+            rows.append(
+                {
+                    "target_ion_id": ion_id,
+                    "relative_abundance": abundance[line],
+                    "sample_peak_intensity": (
+                        rng.uniform(0, 1e6)
+                        if rng.random() < 0.7
+                        else (0.0 if rng.random() < 0.8 else np.nan)
+                    ),
+                    "match_mz_error": (
+                        rng.normal(0, 2) if rng.random() < 0.95 else np.nan
+                    ),
+                    "signal_to_noise": (
+                        rng.uniform(0.5, 500) if rng.random() < 0.8 else np.nan
+                    ),
+                    "is_satellite": rng.random() < 0.05 if rng.random() < 0.9 else None,
+                }
+            )
+    return pd.DataFrame(rows).sample(frac=1, random_state=0).reset_index(drop=True)
+
+
+@pytest.mark.parametrize("seed", range(8))
+@pytest.mark.parametrize("sigma, mu", [(None, None), (0.3, 0.0), (4.0, -0.7)])
+def test_every_ion_at_once_scores_as_each_does_alone(seed, sigma, mu):
+    """`ion_scores_v2` is the groupby over `ion_score_v2` that Stage A ran, ion by
+    ion, to the rounding of a sum: the order an ion's rows are read in, the
+    anchor a tie at the top resolves to, a missing ion id and a missing column."""
+    rng = np.random.default_rng(seed)
+    frame = _ions_frame(rng)
+    if seed % 3 == 1:
+        frame = frame.drop(columns=["signal_to_noise"])
+    if seed % 3 == 2:
+        frame = frame.drop(columns=["is_satellite"])
+
+    by_ion = frame.groupby("target_ion_id", sort=False, dropna=False).apply(
+        lambda g: ion_score_v2(g, sigma_ppm=sigma, mu=mu), include_groups=False
+    )
+    expected = frame["target_ion_id"].map(by_ion).astype(float)
+
+    scored = ion_scores_v2(frame, "target_ion_id", sigma_ppm=sigma, mu=mu)
+
+    assert list(scored.index) == list(frame.index)
+    np.testing.assert_allclose(scored, expected, rtol=0, atol=1e-12)
+
+
+def test_a_tie_at_the_top_reads_the_anchor_one_ion_alone_reads():
+    # Two lines at the top abundance, one of them absent: which is the anchor
+    # decides between a score and zero, so the tie is settled as the sort
+    # `ion_score_v2` runs settles it.
+    rng = np.random.default_rng(11)
+    for _ in range(50):
+        lines = int(rng.integers(2, 30))
+        abundance = rng.uniform(0, 0.9, lines)
+        top = rng.choice(lines, 2, replace=False)
+        abundance[top] = 1.0
+        intensity = rng.uniform(1e3, 1e6, lines)
+        intensity[top[0]] = 0.0
+        frame = pd.DataFrame(
+            {
+                "target_ion_id": "ion",
+                "relative_abundance": abundance,
+                "sample_peak_intensity": intensity,
+                "match_mz_error": rng.normal(0, 1, lines),
+            }
+        )
+
+        assert ion_scores_v2(frame, "target_ion_id", sigma_ppm=0.5).iloc[0] == (
+            pytest.approx(ion_score_v2(frame, sigma_ppm=0.5), abs=1e-12)
+        )
+
+
+def test_no_rows_scores_nothing():
+    frame = pd.DataFrame(
+        columns=[
+            "target_ion_id",
+            "relative_abundance",
+            "sample_peak_intensity",
+            "match_mz_error",
+        ]
+    )
+
+    assert ion_scores_v2(frame, "target_ion_id").empty

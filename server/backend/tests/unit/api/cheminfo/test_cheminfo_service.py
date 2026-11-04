@@ -2,12 +2,16 @@
 Unit tests for the cheminfo service functions.
 """
 
+import numpy as np
+import pandas as pd
 import pytest
 
+from mascope_backend.api.controllers.match.lib.match_score_v2 import ion_score_v2
 from mascope_backend.api.new.cheminfo import service as cheminfo_service
 from mascope_backend.api.new.cheminfo.service import (
     _annotate_assignment_scores,
     _annotate_with_reference,
+    _fit_scores,
     _instrument_sigma_ppm,
     _one_reading_per_ion,
     retrieve_compositions_by_mz,
@@ -143,6 +147,107 @@ def test_assignment_scores_skipped_without_instrument_sigma():
 
     assert "fit_score" not in results[0]
     assert "tier" not in results[0]
+
+
+def _search_candidates(seed: int) -> list[dict]:
+    """A search's candidates, as `match_compositions_by_mz` builds them: some
+    with real SNR, some without the column at all, absent lines, satellites,
+    and a tie at the top abundance."""
+    rng = np.random.default_rng(seed)
+    results = []
+    for index in range(40):
+        lines = int(rng.integers(1, 8))
+        abundance = np.r_[1.0, rng.uniform(0.01, 0.7, lines - 1)]
+        if index % 9 == 0 and lines > 1:
+            abundance[1] = 1.0
+        children = []
+        for line in range(lines):
+            child = {
+                "relative_abundance": abundance[line],
+                "match_mz_error": rng.normal(0, 3),
+                "sample_peak_intensity": (
+                    rng.uniform(1e2, 1e6) if rng.random() < 0.8 else 0.0
+                ),
+                "is_satellite": bool(rng.random() < 0.05),
+            }
+            if index % 4:
+                child["signal_to_noise"] = (
+                    rng.uniform(1, 500) if rng.random() < 0.8 else None
+                )
+            children.append(child)
+        results.append(
+            {"cheminfo": {"target_compound_formula": "C3H6O3"}, "children": children}
+        )
+    return results
+
+
+@pytest.mark.parametrize("seed", range(4))
+@pytest.mark.parametrize("sigma", [0.5, 5.0])
+def test_every_candidate_at_once_scores_as_each_does_alone(seed, sigma):
+    results = _search_candidates(seed)
+    # A candidate with no isotopes, and one whose isotopes lack a column the
+    # fit reads, have no fit; scored alone, the second raised.
+    results[5]["children"] = []
+    for child in results[7]["children"]:
+        del child["match_mz_error"]
+
+    fits = _fit_scores(results, sigma)
+
+    assert fits[5] is None and fits[7] is None
+    for index, entry in enumerate(results):
+        if index in (5, 7):
+            continue
+        alone = ion_score_v2(pd.DataFrame(entry["children"]), sigma_ppm=sigma)
+        assert fits[index] == pytest.approx(alone, abs=1e-12)
+
+
+def test_candidates_are_scored_in_one_call(monkeypatch):
+    calls = []
+    scores_v2 = cheminfo_service.ion_scores_v2
+
+    def counting(frame, by, **kwargs):
+        calls.append(frame[by].nunique())
+        return scores_v2(frame, by, **kwargs)
+
+    monkeypatch.setattr(cheminfo_service, "ion_scores_v2", counting)
+    monkeypatch.setattr(
+        cheminfo_service,
+        "ion_score_v2",
+        lambda *a, **k: pytest.fail("a candidate was scored alone"),
+    )
+
+    _fit_scores(_search_candidates(0), 0.5)
+
+    assert calls == [40]
+
+
+def test_a_failing_call_falls_back_to_each_candidate_alone(monkeypatch):
+    """Scoring never breaks the search: should the call over every candidate
+    fail, each is scored alone, and one that fails alone loses only its fit."""
+    results = _search_candidates(1)
+    expected = [
+        ion_score_v2(pd.DataFrame(entry["children"]), sigma_ppm=0.5)
+        for entry in results
+    ]
+
+    def broken(*args, **kwargs):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(cheminfo_service, "ion_scores_v2", broken)
+    score_alone = cheminfo_service.ion_score_v2
+    bad = results[3]["children"]
+
+    def alone(frame, **kwargs):
+        if frame.to_dict("records") == bad:
+            raise ValueError("bad candidate")
+        return score_alone(frame, **kwargs)
+
+    monkeypatch.setattr(cheminfo_service, "ion_score_v2", alone)
+
+    fits = _fit_scores(results, 0.5)
+
+    assert fits[3] is None
+    assert fits[:3] + fits[4:] == pytest.approx(expected[:3] + expected[4:], abs=1e-12)
 
 
 @pytest.mark.asyncio

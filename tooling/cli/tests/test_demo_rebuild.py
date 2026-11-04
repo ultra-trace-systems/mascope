@@ -1,13 +1,18 @@
 """
 Unit tests for the demo rebuild uploader's startup wait + quarantine sweep.
 
-No stack, no network: the upload seam (``_post_raw``), the presence probe
-(``converter_presence``) and the on-disk locations are all substituted. What is
-under test is the ordering logic that keeps a rebuild from silently ingesting
-fewer files than the bundle contains.
+No stack, no network: the upload seam (``_post_raw``, or the SDK's
+``api_post_file_tus`` behind it), the presence probe (``converter_presence``),
+the database probe (``_ingested_keys``) and the on-disk locations are all
+substituted. What is under test is the ordering logic that keeps a rebuild from
+silently ingesting fewer files than the bundle contains - or from reporting a
+file it did ingest as missing.
 """
 
+import subprocess
+
 import pytest
+from loguru import logger
 
 from mascope_cli.cmd.demo import _rebuild
 
@@ -34,7 +39,16 @@ def bundle(tmp_path, monkeypatch):
 
     monkeypatch.setattr(_rebuild, "_raw_files", lambda *a, **kw: raws)
     monkeypatch.setattr(_rebuild, "_filestreams_dir", lambda: streams)
+    # An empty demo database and a connected converter, unless a test says
+    # otherwise: neither probe may reach for docker.
+    monkeypatch.setattr(_rebuild, "_ingested_keys", lambda: set())
+    monkeypatch.setattr(_rebuild, "converter_presence", lambda: "fresh-sid")
     return streams, raws
+
+
+# The demo database stores the name the converter rebuilds from the file's own
+# metadata; the acquisition stamp is what it shares with the bundle's name.
+_NEG_INGESTED_AS = "Orbion_2025.08.11-14h23m50s_neg_Br_NoRI_20250811142350"
 
 
 # --- waiting for the file-converter ------------------------------------------
@@ -149,42 +163,285 @@ def test_upload_retry_skips_a_file_that_did_arrive(monkeypatch, bundle, no_sleep
     assert missing == []
 
 
-# --- reading the upload endpoint's answer -------------------------------------
+def test_upload_does_not_repost_a_file_the_converter_already_consumed(
+    monkeypatch, bundle
+):
+    """
+    Gone from filestreams by the time it is looked for, but in the database.
+
+    The file landed despite the client's error, and the converter ingested and
+    deleted it during the pause before the retry. A listing of filestreams no
+    longer shows it; re-posting it would have the duplicate quarantined and the
+    run report a file it ingested as missing.
+    """
+    _, raws = bundle
+    ingested: set[str] = set()
+    posted = []
+
+    def _lands_then_gets_consumed(url, raw):
+        posted.append(raw.name)
+        return "timeout"
+
+    def _pause(_):
+        # The converter works through the landed file while the uploader waits.
+        ingested.add(_rebuild.build_bundle._acquisition_key(_NEG_INGESTED_AS))
+
+    monkeypatch.setattr(_rebuild, "_post_raw", _lands_then_gets_consumed)
+    monkeypatch.setattr(_rebuild, "_ingested_keys", lambda: set(ingested))
+    monkeypatch.setattr(_rebuild.time, "sleep", _pause)
+
+    messages = []
+    sink = logger.add(messages.append, level="ERROR", format="{message}")
+    try:
+        missing = _rebuild.upload_raw()
+    finally:
+        logger.remove(sink)
+
+    # Only the file that never landed is re-posted, on every later pass.
+    assert posted == [raws[0].name, raws[1].name, raws[1].name, raws[1].name]
+    assert missing == [raws[1].name]
+    # The file that landed counts as uploaded in the summary.
+    assert messages[-1].startswith("Uploaded 1/2 raw file(s); 1 never reached")
 
 
-class _Response:
-    """Stand-in for the upload endpoint's response."""
+def test_upload_checks_the_last_pass_for_files_that_landed(
+    monkeypatch, bundle, no_sleep
+):
+    """A file that landed on the last pass is not reported as never arriving."""
+    _, raws = bundle
+    ingested: set[str] = set()
 
-    def __init__(self, payload):
-        self._payload = payload
+    def _times_out_but_is_ingested(url, raw):
+        ingested.add(_rebuild.build_bundle._acquisition_key(raw.name))
+        return "timeout"
 
-    def json(self):
-        if self._payload is None:
-            raise ValueError("not JSON")
-        return self._payload
+    monkeypatch.setattr(_rebuild, "_post_raw", _times_out_but_is_ingested)
+    monkeypatch.setattr(_rebuild, "_ingested_keys", lambda: set(ingested))
+
+    assert _rebuild.upload_raw(max_passes=1) == []
 
 
-def test_body_error_passes_a_clean_upload():
-    assert (
-        _rebuild._body_error(_Response({"status": "success", "message": "ok"})) is None
+def test_upload_holds_a_retry_until_a_converter_is_connected(
+    monkeypatch, bundle, no_sleep
+):
+    """
+    The server refuses every upload while no converter is connected (503).
+
+    Nothing of a refused file reaches filestreams, so nothing but the uploader
+    can retry it - and retrying before a converter is back is refused again.
+    """
+    events = []
+    presence = iter(["", "", "fresh-sid"])
+
+    def _probe():
+        value = next(presence)
+        events.append(f"probe:{value}")
+        return value
+
+    def _post(url, raw):
+        events.append(f"post:{raw.name}")
+        return None if any(e == "probe:fresh-sid" for e in events) else "HTTP 503"
+
+    monkeypatch.setattr(_rebuild, "converter_presence", _probe)
+    monkeypatch.setattr(_rebuild, "_post_raw", _post)
+
+    assert _rebuild.upload_raw() == []
+    first_retry = events.index("probe:fresh-sid") + 1
+    assert all(e.startswith("post:") for e in events[first_retry:])
+    assert events[:2] == [f"post:{raw.name}" for raw in bundle[1]]
+    assert events[2:5] == ["probe:", "probe:", "probe:fresh-sid"]
+
+
+def test_waiting_for_a_connected_converter_returns_at_once_when_one_is(
+    monkeypatch, no_sleep
+):
+    probes = []
+    monkeypatch.setattr(
+        _rebuild, "converter_presence", lambda: probes.append(1) or "old-sid"
     )
 
+    _rebuild._await_connected_converter()
 
-def test_body_error_catches_a_failure_reported_inside_a_2xx():
-    """The endpoint answers 201 even for a file it could not store."""
-    payload = {
-        "status": "partial",
-        "message": "Uploaded 0 of 1 files successfully",
-        "data": {"failed_uploads": [{"filename": "a.raw", "error": "No space left"}]},
-    }
-
-    assert _rebuild._body_error(_Response(payload)) == "No space left"
+    # Any connected converter will do: the server's gate asks no more.
+    assert probes == [1]
 
 
-def test_body_error_ignores_an_unreadable_body():
-    """A body that is not the documented shape is not evidence of failure."""
-    assert _rebuild._body_error(_Response(None)) is None
-    assert _rebuild._body_error(_Response(["unexpected"])) is None
+def test_waiting_for_a_connected_converter_gives_up(monkeypatch, no_sleep):
+    """A converter that never connects costs the wait, not the run."""
+    monkeypatch.setattr(_rebuild, "converter_presence", lambda: "")
+    monkeypatch.setattr(_rebuild, "_CONVERTER_WAIT_S", 0.01)
+
+    _rebuild._await_connected_converter()  # returns
+
+
+def test_waiting_for_a_connected_converter_skips_without_a_probe(monkeypatch):
+    monkeypatch.setattr(_rebuild, "converter_presence", lambda: None)
+    monkeypatch.setattr(
+        _rebuild.time, "sleep", lambda _: pytest.fail("should not wait blind")
+    )
+
+    _rebuild._await_connected_converter()
+
+
+# --- looking a file up on the server ------------------------------------------
+
+
+def test_landed_finds_a_pending_or_quarantined_file_without_the_database(
+    monkeypatch, bundle
+):
+    streams, raws = bundle
+    monkeypatch.setattr(
+        _rebuild, "_ingested_keys", lambda: pytest.fail("folders answer first")
+    )
+    (streams / raws[0].name).write_bytes(b"raw")
+    (streams / "failed_files" / raws[1].name).write_bytes(b"raw")
+
+    assert _rebuild._landed(raws[0].name)
+    assert _rebuild._landed(raws[1].name)
+
+
+def test_landed_matches_the_database_on_the_acquisition_stamp(monkeypatch, bundle):
+    """The row carries the converter's rebuilt name, not the uploaded one."""
+    _, raws = bundle
+    monkeypatch.setattr(
+        _rebuild,
+        "_ingested_keys",
+        lambda: {_rebuild.build_bundle._acquisition_key(_NEG_INGESTED_AS)},
+    )
+
+    assert _rebuild._landed(raws[0].name)
+    assert not _rebuild._landed(raws[1].name)
+
+
+def test_landed_without_a_database_says_no(monkeypatch, bundle):
+    """An unreadable database is no evidence of arrival; the file is re-posted."""
+    _, raws = bundle
+    monkeypatch.setattr(_rebuild, "_ingested_keys", lambda: None)
+
+    assert not _rebuild._landed(raws[0].name)
+
+
+class _Completed:
+    def __init__(self, returncode, stdout):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+class _DbConfig:
+    user = "mascope"
+
+    def get_postgres_container_name(self, mode):
+        return f"mascope_{mode}_postgres"
+
+    def get_postgres_database_name(self, env):
+        return f"mascope_{env}"
+
+
+@pytest.fixture
+def demo_db(monkeypatch):
+    """Stand-in for the dev Postgres container; records the psql it is given."""
+    calls = []
+    result = {"value": _Completed(0, "")}
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        return result["value"]
+
+    monkeypatch.setattr(
+        _rebuild.runtime,
+        "full_config",
+        type("C", (), {"backend": type("B", (), {"database": _DbConfig()})()})(),
+        raising=False,
+    )
+    monkeypatch.setattr(_rebuild.subprocess, "run", _run)
+    return calls, result
+
+
+def test_ingested_keys_reads_the_demo_database(demo_db):
+    calls, result = demo_db
+    result["value"] = _Completed(0, f"{_NEG_INGESTED_AS}\n\n")
+
+    assert _rebuild._ingested_keys() == {"20250811142350"}
+    cmd = calls[0]
+    assert cmd[:3] == ["docker", "exec", "mascope_dev_postgres"]
+    assert cmd[cmd.index("-d") + 1] == "mascope_demo"
+    assert cmd[-1] == "SELECT filename FROM sample_file"
+
+
+def test_ingested_keys_is_none_when_the_query_fails(demo_db):
+    _, result = demo_db
+    result["value"] = _Completed(1, "")
+
+    assert _rebuild._ingested_keys() is None
+
+
+def test_ingested_keys_is_none_without_docker(monkeypatch, demo_db):
+    def _missing(*a, **kw):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(_rebuild.subprocess, "run", _missing)
+
+    assert _rebuild._ingested_keys() is None
+
+
+def test_ingested_keys_gives_up_on_a_hung_container(monkeypatch, demo_db):
+    def _hangs(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+    monkeypatch.setattr(_rebuild.subprocess, "run", _hangs)
+
+    assert _rebuild._ingested_keys() is None
+
+
+# --- the upload itself -----------------------------------------------------------
+
+
+def test_post_raw_uploads_resumably_as_the_file_agent(monkeypatch, tmp_path):
+    """The File Agent's own path: TUS, its token, its service name."""
+    import mascope_sdk
+
+    raw = tmp_path / "Orbion_neg_Br_NoRI_20250811142350.raw"
+    raw.write_bytes(b"raw")
+    seen = []
+    monkeypatch.setattr(mascope_sdk, "SERVICE_NAME", "mascope_sdk")
+    monkeypatch.setattr(
+        mascope_sdk,
+        "api_post_file_tus",
+        lambda **kw: seen.append((kw, mascope_sdk.SERVICE_NAME)),
+    )
+    monkeypatch.setattr(
+        mascope_sdk,
+        "api_post_file",
+        lambda **kw: pytest.fail("the legacy multipart route is not used"),
+    )
+
+    assert _rebuild._post_raw("http://localhost:8090", raw) is None
+    assert seen == [
+        (
+            {
+                "url": "http://localhost:8090",
+                "access_token": _rebuild._UPLOAD_TOKEN,
+                "filepath": str(raw),
+            },
+            "file-agent",
+        )
+    ]
+
+
+def test_post_raw_reports_a_refusal(monkeypatch, tmp_path):
+    import mascope_sdk
+    from mascope_sdk.exceptions import ServerError
+
+    def _refuse(**kw):
+        raise ServerError(
+            "File converter service is not available or not running.",
+            status_code=503,
+        )
+
+    monkeypatch.setattr(mascope_sdk, "api_post_file_tus", _refuse)
+
+    error = _rebuild._post_raw("http://localhost:8090", tmp_path / "a.raw")
+    assert "File converter service is not available" in error
 
 
 # --- clearing a previous run's quarantine -------------------------------------
@@ -195,17 +452,51 @@ def test_stale_quarantine_is_cleared_before_uploading(bundle):
     streams, raws = bundle
     (streams / "failed_files" / raws[0].name).write_bytes(b"raw")
 
-    assert _rebuild.clear_stale_quarantine() == [raws[0].name]
+    assert _rebuild.clear_stale_streams() == [raws[0].name]
     assert not (streams / "failed_files" / raws[0].name).exists()
+
+
+def test_stale_pending_files_are_cleared_before_uploading(bundle):
+    """A killed run's unconsumed streams would be ingested a second time."""
+    streams, raws = bundle
+    (streams / raws[1].name).write_bytes(b"raw")
+
+    assert _rebuild.clear_stale_streams() == [raws[1].name]
+    assert not (streams / raws[1].name).exists()
 
 
 def test_clearing_leaves_files_from_another_bundle_alone(bundle):
     streams, _ = bundle
     foreign = streams / "failed_files" / "SomethingElse_20240101000000.raw"
     foreign.write_bytes(b"raw")
+    pending = streams / "SomethingElse_20240101000001.raw"
+    pending.write_bytes(b"raw")
 
-    assert _rebuild.clear_stale_quarantine() == []
+    assert _rebuild.clear_stale_streams() == []
     assert foreign.exists()
+    assert pending.exists()
+
+
+def test_deferred_upload_clears_stale_streams_before_the_stack_starts(
+    monkeypatch, bundle
+):
+    """Cleared synchronously, while no converter can be ingesting them."""
+    streams, raws = bundle
+    (streams / raws[0].name).write_bytes(b"raw")
+    started = []
+
+    class _Thread:
+        def __init__(self, target, name, daemon):
+            pass
+
+        def start(self):
+            started.append(not (streams / raws[0].name).exists())
+
+    monkeypatch.setattr(_rebuild.threading, "Thread", _Thread)
+
+    _rebuild.upload_raw_deferred()
+
+    assert started == [True]
 
 
 # --- sweeping the converter's quarantine folder -------------------------------
@@ -244,6 +535,25 @@ def test_sweep_gives_up_and_names_a_file_that_keeps_failing(
 
     assert attempts == [raws[0].name] * 2
     assert remaining == [raws[0].name]
+
+
+def test_sweep_drops_a_quarantined_duplicate_of_an_ingested_file(
+    bundle, monkeypatch, no_sleep
+):
+    """A second copy failed, but the first was ingested: nothing is missing."""
+    streams, raws = bundle
+    (streams / "failed_files" / raws[0].name).write_bytes(b"raw")
+    monkeypatch.setattr(
+        _rebuild,
+        "_ingested_keys",
+        lambda: {_rebuild.build_bundle._acquisition_key(_NEG_INGESTED_AS)},
+    )
+    monkeypatch.setattr(
+        _rebuild, "_post_raw", lambda url, raw: pytest.fail("should not re-post")
+    )
+
+    assert _rebuild.sweep_failed_uploads(poll=0) == []
+    assert not (streams / "failed_files" / raws[0].name).exists()
 
 
 def test_sweep_leaves_files_from_another_run_alone(bundle, monkeypatch, no_sleep):

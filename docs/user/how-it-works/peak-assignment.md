@@ -418,18 +418,20 @@ awareness. The full mathematical model is in the developer reference,
 `libraries/tools/docs/fit_score.md`.
 
 The Gaussian's width and centre are the sample's own where it can measure them, from
-the lines of your target library that it matched. Where fewer than eight matched, the
-width is the instrument class's, and the centre is the median mass error of the reagent
-ions the run claimed, if it claimed at least three and their offset exceeds that width;
-otherwise the sample is scored on its nominal masses. The reagent ions stand in only
-there: they sit at the low end of the mass range and need not agree with the offset
-your library measures. A formula measured on its own - a batch peak's *Use this*, the
-inspector's measured evidence and its alternatives - holds too few ions to measure
-either. A bright ion can match eight lines alone, but they all share its own mass
-error, so these are measured only from lines of at least eight different ions. Below
-that, the formula is scored at the instrument class's width and at the centre the sample's
-latest run in Mascope scored at, whether that was your library's offset or the reagent
-ions'. An imported run does not count. A sample with no such run is centred on its own reagent ions, as a run would be.
+the lines of your target library that it matched. That takes at least eight lines, of
+at least eight different ions. A bright ion can match many lines alone, but they all
+share its own mass error: counted as lines, a few such ions would put the sample's
+centre at their own error and its width at how well their lines agree. Below either
+count, the width is the instrument class's, and the centre is the median mass error of
+the reagent ions the run claimed, if it claimed at least three and their offset exceeds
+that width; otherwise the sample is scored on its nominal masses. The reagent ions
+stand in only there: they sit at the low end of the mass range and need not agree with the
+offset your library measures. A formula measured on its own - a batch peak's *Use
+this*, the inspector's measured evidence and its alternatives - is held to the same
+counts, and holds too few ions to measure either. It is scored at the instrument
+class's width and at the centre the sample's latest run in Mascope scored at, whether
+that was your library's offset or the reagent ions'. An imported run does not count. A
+sample with no such run is centred on its own reagent ions, as a run would be.
 
 A predicted line is a peak your instrument can resolve, not a single isotopologue. On a
 TOF, the peak one mass unit above a compound holds its 13C line and also its 15N, 2H and
@@ -888,6 +890,18 @@ consensus has since left stays on record, outlined as stale, until you judge the
 formula or retract it. Batch-level verdicts are kept apart from the labelled record that
 confidence calibration is fit on: one judgment fanned out over a batch would count as
 many correlated labels, so it counts as none.
+
+### The verdicts of a batch or dataset
+
+The verdicts leave the app as one table for a whole batch or dataset: the *Verifications*
+sheet of the batch data spreadsheet ([Export files](../reference/exports.md#verifications)),
+and the SDK's `peak_assignments.verifications_for_batch` and `verifications_for_dataset`.
+It has one row per judged peak, as each sample's assignment ledger shows it: the sample's
+own current verdict, or the batch-level verdict it borrows, marked so. The sample's own
+verdict wins before any filter applies, so asking for the confirmed verdicts never lists a
+borrowed confirmation on a peak the sample itself rejected. Each row names the sample's
+file and acquisition time, the peak's m/z, the evidence level and, on the sample's own
+verdict, the score it was given when it was judged.
 
 ## Assignment runs
 

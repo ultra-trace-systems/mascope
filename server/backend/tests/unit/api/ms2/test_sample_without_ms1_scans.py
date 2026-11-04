@@ -68,6 +68,8 @@ async def _ms1_centroids(centroids, ms2_only=True):
     """The MS1 centroid route's answer when the reader behaves as ``centroids``."""
     with (
         patch(f"{_MS2}.fetch_sample", AsyncMock(return_value=SAMPLE)),
+        # A raw Orbitrap file, as far as the route asks
+        patch(f"{_MS2}._reads_raw_ms2", lambda filename: True),
         patch(f"{_MS2}.m_compute.get_orbi_centroids", centroids),
         patch(f"{_MS2}.holds_only_fragmentation_scans", _census(ms2_only)),
     ):
@@ -155,6 +157,7 @@ async def test_its_ms1_centroids_are_empty():
         "signal_to_noise": [],
     }
     assert "no MS1 scans" in result["message"]
+    assert result["reason"] is None
 
 
 @pytest.mark.asyncio
@@ -182,6 +185,7 @@ async def test_a_sample_with_ms1_scans_keeps_its_centroids():
 
     assert result["data"]["mz"] == [137.096, 138.099]
     assert len(result["data"]["signal_to_noise"]) == 2
+    assert result["reason"] is None
 
 
 @pytest.mark.asyncio

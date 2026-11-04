@@ -23,6 +23,9 @@ Each fragment scan carries the centroids of its step's spectrum exactly: the
 precursor with a known survival, named fragments at the exact m/z of known
 sub-formulas, one co-isolate, one harmonic ghost and one unexplained
 centroid. So every later reading, breakdown and verdict has a known answer.
+Each survey scan carries, beside the file's own centroids, each precursor
+and its co-isolate (``survey``), so an isolation window's MS1 inventory has
+one too.
 
 **The answers are one file.** ``ms2_fixture.json`` beside this module holds
 the shapes, the spectra and what a reader must answer for each shape; this
@@ -96,6 +99,36 @@ def _filter(shape: dict, scan: dict) -> str:
         f"FTMS + c NSI{dependent} Full ms2 {precursor['isolation_mz']:.4f}"
         f"@hcd{scan['nce']:.2f} [{low:.4f}-{high:.4f}]"
     )
+
+
+def _with_survey_centroids(labels: dict) -> dict:
+    """A survey scan's centroid labels: the file's own, and the fixture's
+    survey centroids beside them, in m/z order.
+
+    A survey centroid's noise is the fixture's, its resolution the survey's
+    at its m/z, its baseline 0 and its flag word none.
+    """
+    fixture = _answers()
+    survey = fixture["survey"]
+    mz = np.array([c["mz"] for c in survey], dtype=np.float64)
+    intensity = np.array([c["intensity"] for c in survey], dtype=np.float64)
+    noise = np.full(mz.shape, float(fixture["noise"]))
+    added = {
+        "mz": mz,
+        "intensity": intensity,
+        "resolution": np.round(fixture["survey_resolution"] * np.sqrt(200.0 / mz)),
+        "noise": noise,
+        "baseline": np.zeros(mz.shape),
+        "signal_to_noise": intensity / noise,
+        "descriptor": np.zeros(mz.shape, dtype=np.uint32),
+    }
+    order = np.argsort(np.concatenate([labels["mz"], mz]), kind="stable")
+    return {
+        name: np.concatenate(
+            [np.asarray(values), added[name].astype(np.asarray(values).dtype)]
+        )[order]
+        for name, values in labels.items()
+    }
 
 
 class _Scan(SimpleNamespace):
@@ -212,9 +245,10 @@ class Ms2Acquisition:
     """An ``opentfraw.RawFile`` that reads as one shape of the fixture.
 
     Wraps the reader the OpenTFRaw backend opened. A survey scan reads as the
-    real scan it stands on, but for its number, its time and its method
-    event; a fragment scan reads as its step's spectrum. Everything else is
-    the wrapped file's.
+    real scan it stands on, but for its number, its time, its method event
+    and the survey centroids its labels carry beside the real scan's; a
+    fragment scan reads as its step's spectrum. Everything else is the
+    wrapped file's.
     """
 
     def __init__(self, raw, shape: str):
@@ -248,7 +282,7 @@ class Ms2Acquisition:
     def centroid_labels(self, scan_number) -> dict:
         scan = self._scan(scan_number)
         if scan.real is not None:
-            return self._raw.centroid_labels(scan.real)
+            return _with_survey_centroids(self._raw.centroid_labels(scan.real))
         return {name: values.copy() for name, values in scan.centroids.items()}
 
     def profile(self, scan_number):

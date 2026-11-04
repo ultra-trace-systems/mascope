@@ -55,6 +55,28 @@ class TestFileContextManager:
 
         assert manager.get_context("Orbion_pos_sample.raw") is None
 
+    def test_clear_context_tells_the_owner_the_normalized_name(self):
+        # The socket client drops the file's rejected tokens with it (MAS-534),
+        # under the name it keeps them by
+        cleared = []
+        manager = FileContextManager(on_clear=cleared.append)
+        manager.register_file(make_context("Orbion_pos_sample.raw"))
+
+        manager.clear_context("Orbion_pos_sample_+")
+
+        assert cleared == ["Orbion_pos_sample"]
+
+    def test_clear_context_tells_the_owner_even_with_no_context(self):
+        # A file can have rejections and no context, such as one whose events
+        # went out before any context was registered: clearing it still says
+        # the file is done with
+        cleared = []
+        manager = FileContextManager(on_clear=cleared.append)
+
+        manager.clear_context("Orbion_pos_sample_-.raw")
+
+        assert cleared == ["Orbion_pos_sample"]
+
     def test_context_carries_uploader_identity(self):
         manager = FileContextManager()
         manager.register_file(make_context("Orbion_pos_sample.raw"))

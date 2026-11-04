@@ -305,6 +305,9 @@ async def _created(
             new_callable=AsyncMock,
         ),
         patch(f"{_ITEMS}.read_item_streams", rows_read),
+        # The mode versions are the integration tests' to check: the fake
+        # session answers no query but the stream rows.
+        patch(f"{_ITEMS}.refuse_superseded_binding", new_callable=AsyncMock),
         patch.object(
             sample_items_controller.m_compute,
             "get_sample_tic_per_scan",
@@ -359,7 +362,7 @@ async def test_an_items_tic_is_its_polaritys_as_its_sample_reads_it():
     made.pooled_tic.assert_not_called()
     made.window.assert_called_once_with(base_filename=FILENAME, polarity="-")
     row = _inserted(made.session)
-    assert (row["tic_m0"], row["t0_m0"], row["t1_m0"]) == (3.0, 2.0, 5.0)
+    assert (row["tic_m0"], row["t0_m0"], row["t1_m0"]) == (1.5, 2.0, 5.0)
     assert row["stream_id_m0"] == "st-0"
 
 
@@ -375,7 +378,7 @@ async def test_a_stale_store_gives_an_item_its_polaritys_pooled_tic():
     made = await _created([item], sample_tic=StalePeakStoreError("stale"))
 
     made.pooled_tic.assert_called_once_with(FILENAME, polarity="-")
-    assert _inserted(made.session)["tic_m0"] == 9.0
+    assert _inserted(made.session)["tic_m0"] == 4.5
 
 
 @pytest.mark.asyncio
@@ -394,7 +397,7 @@ async def test_a_store_labelled_in_part_gives_an_item_its_polaritys_pooled_tic()
 
     made.pooled_tic.assert_called_once_with(FILENAME, polarity="-")
     inserted = _inserted(made.session)
-    assert (inserted["tic_m0"], inserted["stream_id_m0"]) == (9.0, None)
+    assert (inserted["tic_m0"], inserted["stream_id_m0"]) == (4.5, None)
 
 
 @pytest.mark.asyncio

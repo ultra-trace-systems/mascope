@@ -86,6 +86,34 @@ width a fit is judged at. It is here rather than in an engine because more than 
 engine scores these spectra: two implementations of the fit would make a comparison
 between them partly a comparison of how each measured its ruler.
 
+The whole object is derived in one place too, `composition.scoring.pattern_scoring_for_sample`
+(`mass_accuracy`, `instrument_type`, `match_params`, `resolution=None`): the width Stage A
+fitted or the instrument class's, the offset Stage A fitted or, where it fitted none, the
+reagent lines' when they put the axis beyond that width (`SampleMassAccuracy.scoring_mu_ppm`,
+with `SampleMassAccuracy` and `ReagentOffset` in `composition.mass_accuracy`), the window
+and the floor of the sample's match parameters (any object with `mz_tolerance` and
+`isotope_abundance_threshold`), and the file's resolving power. Mascope's engine calls it
+for every sample it searches, so an outside engine that reads the sample's numbers through
+the SDK and calls it gets the object the engine scored at, rather than a re-derivation that
+puts the rules in another order.
+
+`composition.scoring.score_candidates(candidates, peaks, scoring)` is the finder's ranking
+measurement for any number of candidates at once: a frame with each candidate's `ion`
+(`"C6H5O-"`) and, optionally, the `observed_mass` of the peak it explains, against a peak
+list with `mz`, `intensity` and, where there is one, `signal_to_noise`. Each candidate's
+envelope is predicted to the depth its own peak's noise allows, every distinct envelope
+once, every predicted line is matched to the nearest peak in the window with one
+`searchsorted` over the sorted peaks, and all envelopes are scored in one pass
+(`heuristic_filter.score_patterns_v2`, the many-envelope form of `score_pattern_v2`). It
+returns, on the candidates' index, `fit_score`, `pattern_has_required_lines`,
+`pattern_base_snr`, the `envelope_floor`, `matched_lines`, and per predicted line the
+`labels`, `predicted_mz`, `predicted_rel`, `observed_mz`, `mass_error_ppm` and
+`intensity_error` (zero where nothing matched). A score equals the one-at-a-time rule
+(`heuristic_filter.score_ion_envelope`) to the rounding of a sum: under 3e-16 over the
+90,490 candidates of `tooling/score_eval`'s pools on the demo dataset, with the same top-1
+and AUC. The finder itself scores each peak's readings this way. No
+candidate is elected, capped or ranked: that is the finder's policy, not the measurement.
+
 Two lines still have to be present for a reading to be evidence at all: the ion's own, and
 the one the prediction leads with. The fit *charges* an absent line rather than refusing on
 it, so that requirement is reported separately, as `pattern_has_required_lines` on each

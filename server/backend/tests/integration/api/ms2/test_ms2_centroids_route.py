@@ -154,6 +154,8 @@ async def _get_centroids(client, sample_item_id: str, query: str = ""):
     compute = AsyncMock(side_effect=_thermo_groups)
     with (
         patch(f"{_SERVICE}.fetch_sample", AsyncMock(return_value=sample)),
+        # A raw Orbitrap file, as far as the route asks
+        patch(f"{_SERVICE}._reads_raw_ms2", lambda filename: True),
         patch(f"{_SERVICE}.m_compute.get_orbi_ms2_centroids_by_parent", compute),
     ):
         response = await client.get(

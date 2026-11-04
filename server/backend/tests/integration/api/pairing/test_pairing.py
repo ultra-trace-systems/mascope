@@ -641,7 +641,7 @@ class _CountingRedis:
         self.counts[key] = self.counts.get(key, 0) + 1
         return self.counts[key]
 
-    async def expire(self, key, seconds):
+    async def expire(self, key, seconds, nx=False):
         return True
 
     async def ttl(self, key):

@@ -98,6 +98,23 @@ class PeakAssignmentRunRecord(BaseModel):
     #: folded back into each row's provenance by the assignment detail read.
     #: Null when the run was not calibrated, and for imported runs.
     confidence_calibration: dict | None = None
+    #: The width the run judged a mass error against, in ppm: for an in-app
+    #: run the sigma Stage B scored at, lifted from its ``pattern_scoring``
+    #: snapshot; for an imported run what its engine disclosed in
+    #: ``scoring_width``. Served so an external engine comparing itself to a
+    #: run reads the width that run scored at instead of measuring it again.
+    #: Null for a run that never reached scoring, an import that disclosed
+    #: none, and the batch-derived run.
+    sigma_ppm: float | None = None
+    #: Where ``sigma_ppm`` came from: ``fitted`` (the sample's own lines) or
+    #: ``instrument_class`` (too few lines, the class stood in) for an in-app
+    #: run; the engine's own word for an imported one.
+    sigma_source: str | None = None
+    #: The mass-error centre the run corrected by, in ppm, beside its width.
+    mu_ppm: float | None = None
+    #: Where ``mu_ppm`` came from: ``fitted``, ``reagent`` or ``none`` for an
+    #: in-app run; the engine's own word for an imported one.
+    mu_source: str | None = None
     error: str | None = None
     peak_assignment_run_utc_created: datetime | None = None
     peak_assignment_run_utc_completed: datetime | None = None
@@ -528,6 +545,41 @@ class TierBands(BaseModel):
         return self
 
 
+class ScoringWidth(BaseModel):
+    """The width an imported run's engine judged a mass error against.
+
+    The same four numbers an in-app run records in its ``pattern_scoring``
+    snapshot, so a reader compares two runs' widths without knowing which
+    engine made either. Disclosed beside ``calibration``, and like it read
+    only from the request that creates the run.
+    """
+
+    sigma_ppm: float = Field(
+        gt=0.0,
+        le=1e6,
+        description="The mass-error width the engine scored at [ppm].",
+    )
+    sigma_source: str = Field(
+        min_length=1,
+        max_length=64,
+        description=(
+            "Where the width came from, in the engine's own words: the "
+            "in-app engine says `fitted` or `instrument_class`."
+        ),
+    )
+    mu_ppm: float | None = Field(
+        None,
+        ge=-1e6,
+        le=1e6,
+        description="The mass-error centre the engine corrected by [ppm].",
+    )
+    mu_source: str | None = Field(
+        None,
+        max_length=64,
+        description="Where the centre came from, in the engine's own words.",
+    )
+
+
 class ImportChunk(BaseModel):
     """Assembly control for one request of a multi-request import.
 
@@ -726,6 +778,15 @@ class ImportRunBody(BaseModel):
             "says so here."
         ),
     )
+    scoring_width: ScoringWidth | None = Field(
+        None,
+        description=(
+            "Optional: the mass-error width the engine scored at, served on "
+            "the run as `sigma_ppm`, `sigma_source`, `mu_ppm` and `mu_source`. "
+            "Read from the request that creates the run. Omitted, the run "
+            "answers null for all four."
+        ),
+    )
     config: dict | None = Field(
         None,
         description=(
@@ -841,6 +902,84 @@ class AssignmentVerificationsResponse(BaseModel):
     message: str
     results: int
     data: list[AssignmentVerificationRecord]
+
+
+#: ``datetime`` under another name, for a model with a field of that name.
+Timestamp = datetime
+
+
+class ScopeVerificationQueryParams(BaseModel):
+    """Filters on the verdicts of a batch or dataset."""
+
+    verdict: Verdict | None = Field(None, description="Keep only this verdict.")
+    evidence_level: EvidenceLevel | None = Field(
+        None, description="Keep only verdicts recorded on this basis."
+    )
+    since: datetime | None = Field(
+        None,
+        description=(
+            "Keep only verdicts recorded at or after this moment; a time without a "
+            "zone is read as UTC."
+        ),
+    )
+    include_superseded: bool = Field(
+        False,
+        description=(
+            "Also list the per-sample verdicts a later one replaced. Batch-level "
+            "verdicts are listed live only: a replaced one reaches no sample."
+        ),
+    )
+
+
+class ScopeVerificationRecord(BaseModel):
+    """One verdict on one sample's peak, as the sample's assignment ledger shows it.
+
+    Either the sample's own verdict (``borrowed`` false, the
+    ``assignment_verification_id`` and score snapshot set) or a batch-level
+    verdict that reaches it (``borrowed`` true, ``batch_peak_verification_id``,
+    ``batch_peak_id`` and ``stale`` set, no score snapshot).
+    """
+
+    sample_item_id: str
+    sample_item_name: str | None = None
+    sample_batch_id: str | None = None
+    filename: str | None = None
+    datetime: Timestamp | None = None
+    datetime_utc: Timestamp | None = None
+    sample_peak_id: str
+    #: The observed peak's m/z; null when no ledger row or batch member records it.
+    sample_peak_mz: float | None = None
+    assigned_formula: str | None = None
+    ionization_mechanism_id: str | None = None
+    verdict: str
+    evidence_level: str | None = None
+    #: Score snapshot at verification time; null on a borrowed verdict.
+    fit_score: float | None = None
+    evidence: float | None = None
+    p_correct: float | None = None
+    note: str | None = None
+    context: dict | None = None
+    verified_by: int | None = None
+    verified_utc: Timestamp | None = None
+    superseded_utc: Timestamp | None = None
+    #: A batch-level verdict reaching this sample, not one recorded on it.
+    borrowed: bool
+    assignment_verification_id: str | None = None
+    peak_assignment_id: str | None = None
+    peak_assignment_run_id: str | None = None
+    batch_peak_verification_id: str | None = None
+    batch_peak_id: str | None = None
+    #: On a borrowed verdict: the batch peak's consensus has left the claim judged.
+    stale: bool | None = None
+
+
+class ScopeVerificationsResponse(BaseModel):
+    """The verdicts over every sample of a batch or dataset."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[ScopeVerificationRecord]
 
 
 class VerifyBatchPeakBody(BaseModel):

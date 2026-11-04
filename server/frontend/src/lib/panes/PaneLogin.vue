@@ -5,12 +5,20 @@ import Password from 'primevue/password'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 
+import TurnstileWidget from '@/lib/panes/TurnstileWidget.vue'
 import { useAuth } from '@/stores/auth'
 import { getApiErrorMessage } from '@/api/utils'
 
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 const auth = useAuth()
+
+// The site's human check, when it has one: the form cannot be sent until the
+// widget hands over a token, and every attempt spends it.
+const turnstile = ref(null)
+const turnstileToken = ref(null)
+
+onMounted(() => auth.loadLoginOptions())
 
 const input = reactive({
   email: null,
@@ -22,7 +30,32 @@ const invalid = computed(() => ({
   password: !(input.password?.length > 0)
 }))
 
-const disabled = computed(() => invalid.value.email || invalid.value.password)
+const signingIn = ref(false)
+
+const disabled = computed(
+  () =>
+    invalid.value.email ||
+    invalid.value.password ||
+    signingIn.value ||
+    (!!auth.turnstileSiteKey && !turnstileToken.value)
+)
+
+const submitLogin = async () => {
+  if (disabled.value) return
+  signingIn.value = true
+  try {
+    await auth.login({ ...input, turnstileToken: turnstileToken.value })
+  } catch {
+    // The server's refusal is already on screen as a notification.
+  } finally {
+    signingIn.value = false
+    // A token is good for one sign-in, accepted or not. Drop it here too: a
+    // sign-in that goes on to the code step unmounts the widget first, and the
+    // widget's own reset then never runs.
+    turnstileToken.value = null
+    turnstile.value?.reset()
+  }
+}
 
 // --- Verification code step ---
 
@@ -141,21 +174,23 @@ const submitCode = async () => {
         :invalid="input.password && invalid.password"
         fluid
         required
-        @keyup.enter="
-          () => {
-            if (!disabled) {
-              auth.login(input)
-            }
-          }
-        "
+        @keyup.enter="submitLogin"
       />
       <label for="login-password">Password</label>
     </FloatLabel>
+    <TurnstileWidget
+      v-if="auth.turnstileSiteKey"
+      ref="turnstile"
+      :site-key="auth.turnstileSiteKey"
+      style="margin-top: 1.5rem"
+      @token="turnstileToken = $event"
+    />
     <Button
-      @click="auth.login(input)"
+      @click="submitLogin"
       label="Login"
       icon="pi pi-sign-in"
       :disabled="disabled"
+      :loading="signingIn"
       style="margin-top: 2rem"
     />
   </div>

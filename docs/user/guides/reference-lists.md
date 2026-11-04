@@ -266,7 +266,9 @@ comes from (`references`), and `admitted`, which says whether the
 deployment's licence gate lets peak assignment match it.
 `GET /api/reference/sources/<name>/compounds` pages through what one source
 holds (`page`, `limit` up to 1000, and `version` for a load other than the
-active one). In the app, the same is under
+active one). Both list compound sources only: a spectral library loaded for
+MS/MS matching holds spectra, not compounds, so it is not listed, and its name
+answers 404 on the compounds route. In the app, the same is under
 [Reference lists](#see-the-loaded-lists-in-the-app).
 
 **License / attribution.** Set a per-record `license` column if the list carries
@@ -278,8 +280,6 @@ Put the paper's DOI in a `reference` column and it travels with each compound.
 Open the home menu, choose **Settings**, and press **Reference lists** under
 **Data**. Any signed-in user can open it: the lists belong to the deployment,
 not to a workspace, so everyone sees the same ones.
-
-![The Reference lists dialog on the demo dataset](images/reference-lists.png)
 
 Each row is one loaded list:
 
@@ -294,8 +294,9 @@ Each row is one loaded list:
 - **Species** and **Loaded**: how many compounds it holds, and when it was
   loaded.
 - **References**: the publications the list comes from, each with its DOI
-  linked to doi.org, or its ISBN. A list citing more than two shows the rest
-  behind a button. They are what the list's load recorded: a list file's own
+  linked to doi.org, or its ISBN. A reference's note shows under it, with
+  any web address in it as a link: a thesis cited by its ISBN notes where it
+  is open access. A list citing more than two shows the rest behind a button. They are what the list's load recorded: a list file's own
   references, or the publication a sync was given
   ([Citing the list's publication](#citing-the-lists-publication)). A list
   loaded with neither cites none.

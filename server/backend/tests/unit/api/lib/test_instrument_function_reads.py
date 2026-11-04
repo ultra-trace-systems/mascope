@@ -91,6 +91,40 @@ async def test_batch_alignment_reads_each_samples_widths_by_its_polarity():
     np.testing.assert_allclose(spectra["pos"][0].resolution, RESOLUTION["+"])
 
 
+@pytest.mark.asyncio
+async def test_batch_alignment_groups_two_versions_of_one_mode_together():
+    """A batch may hold samples bound under two versions of one mode, when the
+    mode was edited between its files; they are one setup, aligned as one."""
+    samples = [
+        SimpleNamespace(filename="a.raw", polarity="+", ionization_mode_id="pos-v1"),
+        SimpleNamespace(filename="b.raw", polarity="+", ionization_mode_id="pos-v2"),
+        SimpleNamespace(filename="c.raw", polarity="-", ionization_mode_id="neg"),
+    ]
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = samples
+    read, _ = _spy()
+
+    def load(filename, polarity, intensity_variable):
+        return np.array([100.0, 200.0]), np.ones(2), np.array(["a", "b"])
+
+    setups = AsyncMock(
+        return_value={"pos-v1": "pos-v1", "pos-v2": "pos-v1", "neg": "neg"}
+    )
+    with (
+        patch.object(batch_util, "async_session", _session_of(result)),
+        patch.object(batch_util, "root_ids", setups),
+        patch.object(batch_util, "read_instrument_functions", read),
+        patch.object(batch_util, "_sync_load_peak_data", load),
+        patch.object(batch_util.m_name, "get_instrument_type", return_value="orbi"),
+    ):
+        spectra, _ = await batch_util.collect_spectra_per_ionization_mode("batch-1")
+
+    assert {key: len(value) for key, value in spectra.items()} == {
+        "pos-v1": 2,
+        "neg": 1,
+    }
+
+
 class _Stop(Exception):
     """Ends the fold once its width has been read."""
 

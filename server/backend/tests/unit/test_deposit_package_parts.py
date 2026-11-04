@@ -1,7 +1,8 @@
 """
 Tests for the parts of a deposit package that need no database
-(``mascope_backend.deposit``): writing the archive, the README and the licence
-file rendered from a manifest, and the command line's outcome line.
+(``mascope_backend.deposit``): writing the archive, the README, the licence
+file and the RO-Crate rendered from a manifest, the gaps a deposit would
+have, and the command line's outcome line.
 
 The package as a whole, built from a dataset, is tested in
 ``tests/integration/api/export/test_deposit_package.py``.
@@ -22,9 +23,11 @@ from types import SimpleNamespace
 import pytest
 
 import mascope_backend.deposit.__main__ as deposit_main
-from mascope_backend.deposit import DatasetNotFound, collect
+from mascope_backend.api.new.dataset_package import service as dataset_package_service
+from mascope_backend.deposit import DatasetNotFound, collect, package_gaps
 from mascope_backend.deposit.archive import write_package
 from mascope_backend.deposit.collect import Package, PackageFile
+from mascope_backend.deposit.crate import render_crate
 from mascope_backend.deposit.documents import render_licence, render_readme
 from mascope_backend.runtime import runtime
 
@@ -151,7 +154,7 @@ async def test_the_same_package_writes_the_same_archive(raw_source, tmp_path):
     assert (tmp_path / "first.zip").read_bytes() == (
         tmp_path / "second.zip"
     ).read_bytes()
-    assert first["files"] == second["files"] == 7
+    assert first["files"] == second["files"] == 8
 
 
 @pytest.mark.asyncio
@@ -168,6 +171,7 @@ async def test_each_file_is_checksummed_as_it_is_written(raw_source, tmp_path):
             "batches/b.xlsx",
             "instrument_functions.json",
             "manifest.json",
+            "ro-crate-metadata.json",
             "SHA256SUMS",
         ]
         contents = {name: archive.read(f"{root}/{name}") for name in names}
@@ -314,6 +318,57 @@ def test_rendering_does_not_change_the_manifest():
     render_readme(manifest)
     render_licence(manifest)
     assert manifest == before
+
+
+def test_a_dataset_whose_record_is_whole_has_no_gap():
+    manifest = _manifest(
+        license="CC-BY-4.0",
+        authors=[{"name": "Author One", "orcid": None, "affiliation": None}],
+        dataset_description="Ambient air.",
+    )
+    assert package_gaps(manifest) == []
+
+
+def test_each_part_a_deposit_lacks_is_a_gap_in_the_order_to_fix_it():
+    manifest = _manifest(authors=[], dataset_description=None)
+    manifest["raw"] = []
+    gaps = package_gaps(manifest)
+    assert [gap["field"] for gap in gaps] == [
+        "license",
+        "authors",
+        "dataset_description",
+        "samples",
+    ]
+    assert all(gap["message"] for gap in gaps)
+
+
+def test_keywords_related_identifiers_and_funding_are_no_gap():
+    """A repository asks for none of them, and neither does a deposit."""
+    manifest = _manifest(
+        license="proprietary",
+        authors=[{"name": "Author One", "orcid": None, "affiliation": None}],
+        dataset_description="Ambient air.",
+        keywords=None,
+        related_identifiers=None,
+        funding=None,
+    )
+    assert package_gaps(manifest) == []
+
+
+@pytest.mark.parametrize(
+    ("size", "says"),
+    [
+        (0, "0 B"),
+        (999, "999 B"),
+        (1000, "1.0 kB"),
+        (27_900, "27.9 kB"),
+        (3_400_000, "3.4 MB"),
+        (1_200_000_000, "1.2 GB"),
+        (5_000_000_000_000, "5000.0 GB"),
+    ],
+)
+def test_the_notification_gives_an_archives_size_for_a_person(size, says):
+    assert dataset_package_service._size(size) == says
 
 
 def _outcome(capsys) -> dict:
@@ -538,3 +593,279 @@ def test_the_readme_names_the_commonest_term_first():
     assert (
         "- Polarities: positive scan (MS:1000130), negative scan (MS:1000129)."
     ) in readme
+
+
+def _crate(manifest: dict, written=None) -> dict:
+    """A manifest's crate, by ``@id``, with a raw file written."""
+    written = written or [("raw/file-a.raw", "a" * 64, 4)]
+    crate = render_crate(manifest, written, sums_size=100)
+    return {entity["@id"]: entity for entity in crate["@graph"]}
+
+
+@pytest.mark.parametrize(
+    "licence", ["CC-BY-4.0", "CC0-1.0", "CC-BY-NC-4.0", "CC-BY-SA-4.0"]
+)
+def test_a_licence_the_dialog_suggests_is_its_spdx_entry(licence):
+    crate = _crate(_manifest(license=licence))
+    entity = crate[crate["./"]["license"]["@id"]]
+    assert entity["@id"] == f"https://spdx.org/licenses/{licence}"
+    assert entity["identifier"] == licence
+    assert entity["url"].startswith("https://creativecommons.org/")
+
+
+@pytest.mark.parametrize(
+    "licence, name",
+    [(None, "No licence recorded"), ("proprietary", "proprietary"), ("MIT", "MIT")],
+)
+def test_any_other_licence_is_named_as_it_is_recorded(licence, name):
+    """RO-Crate requires a licence: one the crate cannot resolve, or none,
+    is a local entity saying what was recorded, not a guess at a URL."""
+    crate = _crate(_manifest(license=licence))
+    entity = crate[crate["./"]["license"]["@id"]]
+    assert entity["@id"] == "#license"
+    assert entity["name"] == name
+
+
+def test_authors_are_their_orcid_and_share_an_organization_with_funders():
+    crate = _crate(
+        _manifest(
+            authors=[
+                {"name": "One", "orcid": "0000-0002-1825-0097", "affiliation": "Lab"},
+                {"name": "Two", "orcid": None, "affiliation": "Lab"},
+            ],
+            funding=[{"funder": "Lab", "award": None}],
+        )
+    )
+    root = crate["./"]
+    assert [ref["@id"] for ref in root["author"]] == [
+        "https://orcid.org/0000-0002-1825-0097",
+        "#author-2",
+    ]
+    organizations = [e for e in crate.values() if e["@type"] == "Organization"]
+    assert organizations == [
+        {"@id": "#organization-1", "@type": "Organization", "name": "Lab"}
+    ]
+    grant = crate[root["funding"]["@id"]]
+    assert grant["name"] == "Funding from Lab"
+    assert "identifier" not in grant
+    assert grant["funder"] == root["funder"] == {"@id": "#organization-1"}
+    assert crate["#author-2"]["affiliation"] == {"@id": "#organization-1"}
+
+
+@pytest.mark.parametrize(
+    "entry, prop, entity_id",
+    [
+        (
+            {"identifier": "10.1/a", "relation": "IsSupplementTo"},
+            "citation",
+            "https://doi.org/10.1/a",
+        ),
+        (
+            {"identifier": "doi:10.1/a", "relation": "Cites"},
+            "citation",
+            "https://doi.org/10.1/a",
+        ),
+        (
+            {"identifier": "x", "relation": "isderivedfrom", "identifier_type": "DOI"},
+            "isBasedOn",
+            "https://doi.org/x",
+        ),
+        (
+            {"identifier": "https://e.org/a", "relation": "IsNewVersionOf"},
+            "isBasedOn",
+            "https://e.org/a",
+        ),
+        ({"identifier": "a", "relation": "IsVersionOf"}, "isBasedOn", "#related-1"),
+        ({"identifier": "ark:/1/a", "relation": "IsPartOf"}, "isPartOf", "#related-1"),
+        # The prefix in any case, and what an IRI cannot hold encoded: in a
+        # DOI, ``#`` and ``?`` are characters of its name too.
+        (
+            {"identifier": "DOI: 10.1/a", "relation": "Cites"},
+            "citation",
+            "https://doi.org/10.1/a",
+        ),
+        (
+            {
+                "identifier": "10.1002/(SICI)1097-4636(199706)35:4<456::AID-JBM6>3.0.CO;2-#",
+                "relation": "References",
+                "identifier_type": "DOI",
+            },
+            "citation",
+            "https://doi.org/10.1002/(SICI)1097-4636(199706)35:4%3C456::AID-JBM6%3E"
+            "3.0.CO;2-%23",
+        ),
+        (
+            {"identifier": "10.1/a b?c%d", "relation": "Cites"},
+            "citation",
+            "https://doi.org/10.1/a%20b%3Fc%25d",
+        ),
+        # A URL keeps its fragment, its query and its escapes, as typed.
+        (
+            {"identifier": "HTTPS://e.org/a b<c>?q=%41#f", "relation": "Cites"},
+            "citation",
+            "HTTPS://e.org/a%20b%3Cc%3E?q=%41#f",
+        ),
+    ],
+)
+def test_a_related_identifier_takes_the_closest_schema_org_property(
+    entry, prop, entity_id
+):
+    crate = _crate(_manifest(related_identifiers=[entry]))
+    assert crate["./"][prop] == {"@id": entity_id}
+    work = crate[entity_id]
+    assert work["identifier"] == entry["identifier"].strip()
+    assert f"as {entry['relation']} (DataCite)" in work["description"]
+
+
+def test_a_related_identifier_the_crate_has_an_entity_by_is_that_entity():
+    """Citing Mascope's repository cites the software, which keeps its
+    version; one paper under two relations is one work naming both, which
+    each property refers to once."""
+    mascope = "https://github.com/ultra-trace-systems/mascope"
+    crate = _crate(
+        _manifest(
+            related_identifiers=[
+                {"identifier": mascope, "relation": "References"},
+                {"identifier": "10.1/a", "relation": "IsSupplementTo"},
+                {"identifier": "doi:10.1/a", "relation": "Cites"},
+                {"identifier": "DOI:10.1/a", "relation": "IsDerivedFrom"},
+            ]
+        )
+    )
+    root = crate["./"]
+    software = crate[mascope]
+    assert (software["@type"], software["version"]) == ("SoftwareApplication", "v1.0.0")
+    assert crate["#package"]["instrument"][0] == {"@id": mascope}
+    assert root["citation"] == [{"@id": mascope}, {"@id": "https://doi.org/10.1/a"}]
+    assert root["isBasedOn"] == {"@id": "https://doi.org/10.1/a"}
+    assert crate["https://doi.org/10.1/a"]["description"] == (
+        "Related to the dataset as IsSupplementTo and Cites and IsDerivedFrom "
+        "(DataCite)."
+    )
+    assert [e["@id"] for e in crate.values() if e["@type"] == "CreativeWork"] == [
+        "ro-crate-metadata.json",
+        "#license",
+        "https://spdx.org/licenses/Apache-2.0",
+        "https://doi.org/10.1/a",
+    ]
+
+
+def test_a_work_cited_without_an_iri_is_one_the_dataset_mentions():
+    """RO-Crate cites by absolute URI alone: a work cited by an identifier
+    that is neither a URL nor a DOI is mentioned instead."""
+    crate = _crate(
+        _manifest(
+            related_identifiers=[
+                {"identifier": "PMID 1", "relation": "Cites"},
+                {"identifier": "isbn 2", "relation": "IsVersionOf"},
+            ]
+        )
+    )
+    root = crate["./"]
+    assert "citation" not in root
+    assert root["mentions"] == [{"@id": "#package"}, {"@id": "#related-1"}]
+    assert root["isBasedOn"] == {"@id": "#related-2"}
+    assert crate["#related-1"]["identifier"] == "PMID 1"
+
+
+def test_each_file_has_the_media_type_of_its_extension():
+    written = [
+        ("raw/a.raw", "a" * 64, 4),
+        ("raw/b.h5", "b" * 64, 4),
+        ("raw/a.raw.mascope.json", "c" * 64, 4),
+        ("batches/b.xlsx", "d" * 64, 4),
+        ("README.md", "e" * 64, 4),
+        ("DATA_LICENSE", "f" * 64, 4),
+    ]
+    crate = _crate(_manifest(), written=written)
+    assert {path: crate[path]["encodingFormat"] for path, _, _ in written} == {
+        "raw/a.raw": "application/octet-stream",
+        "raw/b.h5": "application/x-hdf5",
+        "raw/a.raw.mascope.json": "application/json",
+        "batches/b.xlsx": (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        "README.md": "text/markdown",
+        "DATA_LICENSE": "text/plain",
+    }
+    assert crate["SHA256SUMS"]["encodingFormat"] == "text/plain"
+
+
+def test_a_term_two_files_share_is_one_measurement_technique():
+    manifest = _manifest()
+    manifest["raw"].append(_raw_entry("file-b"))
+    crate = _crate(manifest)
+    assert crate["./"]["measurementTechnique"] == [
+        {"@id": "http://purl.obolibrary.org/obo/MS_1000071"},
+        {"@id": "http://purl.obolibrary.org/obo/MS_1000484"},
+    ]
+
+
+def test_two_grants_from_one_funder_name_it_once():
+    crate = _crate(
+        _manifest(
+            funding=[{"funder": "Fund", "award": "1"}, {"funder": "Fund", "award": "2"}]
+        )
+    )
+    root = crate["./"]
+    assert [crate[ref["@id"]]["name"] for ref in root["funding"]] == [
+        "Fund, 1",
+        "Fund, 2",
+    ]
+    assert root["funder"] == {"@id": "#organization-1"}
+
+
+def test_a_path_is_an_id_with_only_what_a_uri_cannot_hold_encoded():
+    """Spaces and ``#`` would break a relative URI; RO-Crate 1.2 keeps
+    characters outside ASCII as they are."""
+    manifest = _manifest()
+    manifest["raw"][0]["path"] = "raw/a b#ä%.raw"
+    crate = _crate(manifest, written=[("raw/a b#ä%.raw", "a" * 64, 4)])
+    assert crate["raw/"]["hasPart"] == {"@id": "raw/a%20b%23ä%25.raw"}
+    assert crate["raw/a%20b%23ä%25.raw"]["name"] == "file-a"
+
+
+def test_a_list_of_one_is_its_value_and_an_empty_one_is_left_out():
+    crate = _crate(_manifest(authors=[{"name": "One"}], keywords=None))
+    root = crate["./"]
+    assert root["author"] == {"@id": "#author-1"}
+    assert "keywords" not in root
+    assert "funding" not in root and "funder" not in root
+    assert root["description"] == "No description was recorded."
+
+
+def test_a_deployment_without_an_id_names_the_dataset_by_its_local_id():
+    manifest = _manifest(dataset_global_id=None)
+    manifest["provenance"] = {"deployment_id": None}
+    crate = _crate(manifest)
+    identifier = crate[crate["./"]["identifier"]["@id"]]
+    assert (identifier["propertyID"], identifier["value"]) == ("mascope-id", "ds1")
+    assert "deployment" not in crate["#package"]["description"]
+
+
+def test_without_the_raw_file_reader_mascope_alone_wrote_the_package():
+    manifest = _manifest()
+    manifest["produced_with"]["opentfraw_version"] = None
+    crate = _crate(manifest)
+    assert crate["#package"]["instrument"] == {
+        "@id": "https://github.com/ultra-trace-systems/mascope"
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_crate_gives_sha256sums_its_size_in_bytes(raw_source, tmp_path):
+    """The crate is written before ``SHA256SUMS``, which then checks it, and
+    knows that file's size already: in bytes, a path outside ASCII too."""
+    package = _package(raw_source)
+    package.manifest["raw"][0]["path"] = "raw/fïle-ä.raw"
+    package.files[0].path = "raw/fïle-ä.raw"
+    summary = await write_package(package, str(tmp_path / "p.zip"))
+    with zipfile.ZipFile(summary["archive"]) as archive:
+        sums = archive.read(f"{package.name}/SHA256SUMS")
+        crate = json.loads(archive.read(f"{package.name}/ro-crate-metadata.json"))
+    entities = {entity["@id"]: entity for entity in crate["@graph"]}
+    assert entities["SHA256SUMS"]["contentSize"] == str(len(sums))
+    assert "  ro-crate-metadata.json\n" in sums.decode()
+    assert entities["raw/fïle-ä.raw"]["sha256"] == (
+        hashlib.sha256(raw_source.read_bytes()).hexdigest()
+    )

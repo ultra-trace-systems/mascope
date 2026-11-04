@@ -3,14 +3,17 @@ Socket.IO session management with Redis storage.
 
 Stores authentication sessions in Redis for cross-worker access.
 Each session contains user_id, username, and role_id for RBAC checks, and for
-a web session the issued_at of the token it was authenticated with.
+a web session the issued_at and expires_at of the token it was authenticated
+with.
 
 Sessions persist for a configurable TTL (default 24 hours) as a safety net.
 Primary cleanup occurs on socket disconnect. TTL is refreshed on each
 access to keep active users authenticated indefinitely, and for a web socket
 also by a renewal task that lives exactly as long as the connection (started
 on connect, cancelled on disconnect), so a tab that only listens keeps its
-session and records too.
+session and records too. The renewal is also what signs a web socket out when
+its token expires: it wakes at the expiry and hands the socket to
+:func:`mascope_backend.socket.eviction.sign_out_expired_socket`.
 
 A web (default-namespace) session is also indexed by user, so every socket an
 account has open can be found from any worker - which is what ending its
@@ -22,11 +25,16 @@ without the index a socket on another worker could not be reached.
 import asyncio
 import json
 import os
+import time
 from typing import Any, Optional
 
 from mascope_backend.db import User
 from mascope_backend.runtime import runtime
-from mascope_backend.socket.storage.client import redis_storage_client
+from mascope_backend.socket.storage.client import (
+    is_transient_redis_error,
+    log_storage_failure,
+    redis_storage_client,
+)
 from mascope_backend.socket.storage.config import storage_config
 from mascope_backend.socket.storage.exceptions import SocketSessionError
 from mascope_backend.socket.storage.workers import renew_socket_claim
@@ -38,7 +46,11 @@ WEB_NAMESPACE = "/"
 
 
 async def save_user_session(
-    sid: str, user: User, namespace: str = "/", issued_at: Optional[int] = None
+    sid: str,
+    user: User,
+    namespace: str = "/",
+    issued_at: Optional[int] = None,
+    expires_at: Optional[int] = None,
 ) -> None:
     """
     Save authenticated user session to Redis.
@@ -59,6 +71,9 @@ async def save_user_session(
         subscribe. ``None`` for a service token or a web token minted before
         tokens carried one.
     :type issued_at: Optional[int]
+    :param expires_at: The ``exp`` of that token: the session is signed out
+        when it passes. ``None`` for a service token.
+    :type expires_at: Optional[int]
     :raises SocketSessionError: If session cannot be saved to Redis
     """
     try:
@@ -68,6 +83,7 @@ async def save_user_session(
             "username": user.username,
             "role_id": user.role_id,
             "issued_at": issued_at,
+            "expires_at": expires_at,
         }
 
         # Store in Redis with configured TTL
@@ -89,9 +105,10 @@ async def save_user_session(
         )
 
     except Exception as e:
-        runtime.logger.exception(
+        log_storage_failure(
             f"Redis session storage client: failed to save session for SID '{sid}': {str(e)} "
-            f"[Worker {worker_pid}]"
+            f"[Worker {worker_pid}]",
+            e,
         )
         raise SocketSessionError("Failed to save session") from e
 
@@ -126,8 +143,9 @@ async def clear_user_session(sid: str, namespace: str = "/") -> None:
             )
 
     except Exception as e:
-        runtime.logger.exception(
-            f"Redis session storage client: failed to clear session for {sid}: {e} [Worker {worker_pid}]"
+        log_storage_failure(
+            f"Redis session storage client: failed to clear session for {sid}: {e} [Worker {worker_pid}]",
+            e,
         )
 
 
@@ -146,9 +164,11 @@ async def _unindex_session(session_key: str, sid: str) -> None:
         if data := await redis_storage_client.client.get(session_key):
             await forget_user_socket(json.loads(data)["user_id"], sid)
     except Exception as e:
-        runtime.logger.warning(
-            f"Redis session storage client: could not unindex session {sid}: {e}"
-        )
+        message = f"Redis session storage client: could not unindex session {sid}: {e}"
+        if is_transient_redis_error(e):
+            log_storage_failure(message, e)
+        else:
+            runtime.logger.warning(message)
 
 
 async def get_session_user(sid: str, namespace: str = "/") -> dict[str, Any]:
@@ -220,8 +240,9 @@ async def get_session_user(sid: str, namespace: str = "/") -> dict[str, Any]:
     except SocketSessionError:
         raise
     except Exception as e:
-        runtime.logger.exception(
-            f"Redis session storage client: session error for {sid}: {e} [Worker {worker_pid}]"
+        log_storage_failure(
+            f"Redis session storage client: session error for {sid}: {e} [Worker {worker_pid}]",
+            e,
         )
         raise SocketSessionError(f"Session error: {e}") from e
 
@@ -304,42 +325,73 @@ async def forget_user_socket(user_id: int, sid: str) -> None:
 _renewal_tasks: dict[str, asyncio.Task] = {}
 
 
-async def _renew_session(sid: str) -> None:
+def _first_delay(expires_at: Optional[float]) -> float:
+    """The renewal's first sleep: an interval, or less if the token expires sooner."""
+    delay = storage_config.session_renewal_interval
+    if expires_at is None:
+        return delay
+    return min(delay, expires_at - time.time())
+
+
+async def _renew_session(sid: str, expires_at: Optional[float] = None) -> None:
     """
     Keep a web socket's records alive until cancelled.
 
     Each tick re-writes its worker record, session or not, and refreshes its
-    session, index entry and room record.
+    session, index entry and room record. A session whose token has expired is
+    signed out instead, and the tick before it is brought forward to the
+    expiry, so the socket goes when its token does, not up to an interval
+    later. ``expires_at``, the expiry of a token the socket authenticated
+    with at connect, brings the first tick forward the same way.
     """
+    delay = _first_delay(expires_at)
     while True:
-        await asyncio.sleep(storage_config.session_renewal_interval)
+        await asyncio.sleep(delay)
+        delay = storage_config.session_renewal_interval
         # Written, not refreshed: a socket signed out for longer than the
         # record's TTL has lost it, and must not read as a ghost once it signs
         # in. Only this worker, which holds the connection, may write it.
         await renew_socket_claim(sid)
         try:
             # Reading the session refreshes the other three.
-            await get_session_user(sid)
+            session = await get_session_user(sid)
         except SocketSessionError:
             # Logged inside; retried on the next tick. A session cleared under
             # a live socket has nothing to refresh until the socket is gone.
-            pass
+            continue
+        if (expires_at := session.get("expires_at")) is None:
+            # A service socket, or a session saved before sessions kept the
+            # token's expiry.
+            continue
+        remaining = expires_at - time.time()
+        if remaining <= 0:
+            # Imported lazily: eviction imports this package.
+            from mascope_backend.socket.eviction import sign_out_expired_socket
+
+            await sign_out_expired_socket(sid, session["user_id"])
+        else:
+            delay = min(delay, remaining)
 
 
-def start_session_renewal(sid: str) -> None:
+def start_session_renewal(sid: str, expires_at: Optional[float] = None) -> None:
     """
     Keep a web socket's session and records alive for the life of its connection.
 
     Call from the default namespace's connect handler for every connection,
     authenticated there or not: a socket may be authenticated later, at
     sign-in, by a request another worker serves. Idempotent per sid: a
-    lingering task is cancelled first.
+    lingering task is cancelled first, so the connect handler calls it again
+    with the expiry of the token it authenticated the socket with.
 
     :param sid: Socket.IO session ID
     :type sid: str
+    :param expires_at: The ``exp`` of the socket's token, if known: the first
+        tick is brought forward to it, so a socket that connects in its
+        token's last interval is still signed out when the token expires
+    :type expires_at: Optional[float]
     """
     _cancel_renewal_task(sid)
-    _renewal_tasks[sid] = asyncio.create_task(_renew_session(sid))
+    _renewal_tasks[sid] = asyncio.create_task(_renew_session(sid, expires_at))
 
 
 def _cancel_renewal_task(sid: str) -> asyncio.Task | None:

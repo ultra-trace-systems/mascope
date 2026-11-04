@@ -26,6 +26,14 @@ formula of the elements in :data:`UNREADABLE`, a numeric mass and bracket
 isotope notation as the server does (only the first by name), and answers
 any other formula with nothing; the mass query answers with its
 recorded candidates whatever is asked.
+
+The world is the fake's own (:attr:`FakeAPI.datasets` and the rest), so the
+write routes the plans apply through change it: a dataset, batch or sample
+move (a moved sample is made anew under another ID, as the server makes it), a
+collection's create and its batches-only update, and the matching runs and
+saves. Nothing is locked unless a test puts its ID in
+:attr:`FakeAPI.locked`, and the user's role in each workspace is
+:attr:`FakeAPI.roles`'.
 """
 
 import copy
@@ -122,6 +130,22 @@ class FakeAPI:
         *params* given warns that *count* peaks were left out, or with
         *count* None answers as a server up to 1.10.1 does when it left out
         every peak, set through :meth:`leave_out`.
+    :ivar no_series: Sample ID -> the IDs of its peaks with no time series,
+        set through :meth:`drop_series`: a time-ranged peak read leaves them
+        out and warns how many, and a time-series request computes one. A
+        peak read with an m/z range keeps the peaks within it.
+    :ivar datasets: Dataset ID -> ``[name, workspace ID]``.
+    :ivar batches: Batch ID -> ``(dataset ID, name)``.
+    :ivar samples: Sample ID -> ``(batch ID, name)``.
+    :ivar collections: Collection ID -> ``(workspace ID, name, batch IDs)``.
+    :ivar roles: Workspace ID -> the user's role there (``my_role``).
+    :ivar locked: The IDs of the datasets, batches and samples locked.
+    :ivar types: Dataset or batch ID -> its type, where it is not the
+        recorded row's (``ACQUISITION``).
+    :ivar before_write: Called with ``(method, path, body)`` before a write
+        route changes anything: a test changes the world underneath there.
+    :ivar write_headers: The headers of each request sent through
+        ``requests.request``, as the SDK sends its writes.
     """
 
     def __init__(self):
@@ -129,6 +153,19 @@ class FakeAPI:
         self.failures: list[tuple[str, re.Pattern, dict[str, Any], int]] = []
         self.peak_copies = 1
         self.left_out: list[tuple[dict[str, Any], int | None]] = []
+        self.no_series: dict[str, set[str]] = {}
+        self.datasets = {d: [name, "ws1"] for d, name in DATASETS.items()}
+        self.batches = dict(BATCHES)
+        self.samples = dict(SAMPLES)
+        self.collections = {
+            c: (ws, name, list(batches))
+            for c, (ws, name, batches) in COLLECTIONS.items()
+        }
+        self.roles = {"ws1": "editor", "ws2": "guest"}
+        self.locked: set[str] = set()
+        self.types: dict[str, str] = {}
+        self.before_write = None
+        self.write_headers: list[dict[str, str]] = []
 
     def fail(
         self,
@@ -150,6 +187,23 @@ class FakeAPI:
         with no peak and no warnings list at all, as an older server does."""
         self.left_out.append((dict(params or {}), count))
 
+    def drop_series(self, sample_id: str, below_mz: float | None = None) -> set[str]:
+        """Leave the peaks of *sample_id* (those under m/z *below_mz*, when
+        given) without a time series, as on a sample never matched; their
+        IDs."""
+        data = self._peaks(sample_id)["data"]
+        dropped = {
+            peak_id
+            for peak_id, mz in zip(data["peak_id"], data["mz"])
+            if below_mz is None or mz < below_mz
+        }
+        self.no_series[sample_id] = set(dropped)
+        return dropped
+
+    def writes(self) -> list[tuple]:
+        """Every request that was not a GET."""
+        return [call for call in self.calls if call[0] != "GET"]
+
     def requests_to(self, path: str, method: str = "GET") -> list[tuple]:
         return [
             call
@@ -164,6 +218,12 @@ class FakeAPI:
 
     def post(self, url: str, json=None, params=None, **kwargs) -> requests.Response:
         return self._answer("POST", url, params, json)
+
+    def request(
+        self, method: str, url: str, json=None, params=None, headers=None, **kwargs
+    ) -> requests.Response:
+        self.write_headers.append(dict(headers or {}))
+        return self._answer(method.upper(), url, params, json)
 
     def _answer(self, method, url, params, body) -> requests.Response:
         path = url.split("/api/", 1)[1]
@@ -188,7 +248,13 @@ class FakeAPI:
 
     def _route(self, method, path, params, body) -> tuple[int, Any]:
         parts = path.split("/")
+        if method in ("PATCH", "DELETE") or (method == "POST" and self._is_write(path)):
+            if self.before_write is not None:
+                self.before_write(method, path, body)
+            return self._write(method, path, body)
         if method == "POST":
+            if re.fullmatch(r"match/aggregate/(sample|batch)/\w+", path):
+                return 200, self._aggregate(parts[2], parts[3])
             if re.fullmatch(r"samples/\w+/peaks/timeseries", path):
                 return 200, self._timeseries(parts[1], body)
             if re.fullmatch(r"match/aggregate/sample/\w+/compounds", path):
@@ -197,16 +263,15 @@ class FakeAPI:
                 return 200, RECORDED["mz_query"]
             return 404, {"error": "no route"}
         if path == "workspaces":
-            return 200, RECORDED["workspaces"]
-        if path == "workspaces/ws1/datasets":
+            workspaces = copy.deepcopy(RECORDED["workspaces"])
+            for row in workspaces["data"]:
+                row["my_role"] = self.roles.get(row["workspace_id"])
+            return 200, workspaces
+        if re.fullmatch(r"workspaces/\w+/datasets", path):
             rows = [
-                {
-                    **RECORDED["dataset_row"],
-                    "dataset_id": d,
-                    "dataset_name": name,
-                    "workspace_id": "ws1",
-                }
-                for d, name in DATASETS.items()
+                self._dataset(d)
+                for d, (_, ws) in self.datasets.items()
+                if ws == parts[1]
             ]
             return 200, _envelope(rows, results=len(rows))
         if path == "sample/batches":
@@ -216,26 +281,31 @@ class FakeAPI:
                     "sample_batch_id": b,
                     "sample_batch_name": name,
                     "dataset_id": d,
+                    "locked": int(b in self.locked),
+                    "sample_batch_type": self.types.get(
+                        b, RECORDED["batch_row"]["sample_batch_type"]
+                    ),
                 }
-                for b, (d, name) in BATCHES.items()
+                for b, (d, name) in self.batches.items()
                 if d == params.get("dataset_id")
             ]
             return 200, _envelope(rows, results=len(rows))
         if path == "samples":
             rows = [
                 self._sample(s)
-                for s, (b, _) in SAMPLES.items()
+                for s, (b, _) in self.samples.items()
                 if b == params.get("sample_batch_id")
             ]
             return 200, _envelope(rows, results=len(rows))
         if re.fullmatch(r"samples/\w+", path):
-            if parts[1] not in SAMPLES:
+            if parts[1] not in self.samples:
                 # As the server answers anyone but a superuser: it cannot
                 # tell whose workspace a sample that does not exist is in
                 return 403, {"error": "Forbidden"}
             return 200, _envelope(self._sample(parts[1]))
         if re.fullmatch(r"samples/\w+/peaks", path):
             peaks = self._peaks(parts[1])
+            self._narrow(peaks, parts[1], params)
             for left_params, count in self.left_out:
                 if not left_params.items() <= params.items():
                     continue
@@ -269,7 +339,7 @@ class FakeAPI:
         if path == "target/collections":
             rows = [
                 self._collection(c)
-                for c, (ws, _, batches) in COLLECTIONS.items()
+                for c, (ws, _, batches) in self.collections.items()
                 if (
                     ws is None
                     or "workspace_id" not in params
@@ -282,16 +352,104 @@ class FakeAPI:
             ]
             return 200, _envelope(rows, results=len(rows))
         if re.fullmatch(r"target/collections/\w+", path):
+            if parts[2] not in self.collections:
+                return 404, {"error": "Target collection not found"}
             return 200, _envelope(self._collection(parts[2], full=True))
         return 404, {"error": "no route"}
 
+    # --- the writes ------------------------------------------------------------
+
+    _WRITES = (
+        r"workspaces/\w+/datasets/\w+/move",
+        r"sample/batches/\w+/move",
+        r"sample/items/move",
+        r"target/collections",
+        r"match/aggregate/(sample|batch)/\w+/(save|resave)",
+    )
+
+    def _is_write(self, path: str) -> bool:
+        return any(re.fullmatch(pattern, path) for pattern in self._WRITES)
+
+    def _write(self, method, path, body) -> tuple[int, Any]:
+        parts = path.split("/")
+        if method == "POST" and re.fullmatch(r"workspaces/\w+/datasets/\w+/move", path):
+            dataset = self.datasets.get(parts[3])
+            if dataset is None or dataset[1] != parts[1]:
+                return 404, {"error": "Dataset not found"}
+            dataset[1] = body["target_workspace_id"]
+            return 200, _envelope(self._dataset(parts[3]))
+        if method == "POST" and re.fullmatch(r"sample/batches/\w+/move", path):
+            # As the server moves a batch: in place, under its own ID
+            if parts[2] not in self.batches:
+                return 404, {"error": "Sample batch not found"}
+            self.batches[parts[2]] = (body["dataset_id"], self.batches[parts[2]][1])
+            return 200, _envelope({"sample_batch_id": parts[2], **body})
+        if method == "POST" and path == "sample/items/move":
+            # As the server moves a sample: anew in the batch, under a new ID
+            for sample_id in body["sample_item_ids"]:
+                _, name = self.samples.pop(sample_id)
+                self.samples[f"{sample_id}m"] = (body["sample_batch_id"], name)
+            return 200, {"message": "Moving samples", "process_id": "pr-move"}
+        if method == "POST" and path == "target/collections":
+            new = f"c{len(self.collections) + 1}"
+            self.collections[new] = (
+                body.get("workspace_id"),
+                body["target_collection_name"],
+                list(body.get("sample_batch_ids") or ()),
+            )
+            return 200, _envelope(self._collection(new))
+        if method == "PATCH" and re.fullmatch(r"target/collections/\w+", path):
+            workspace, name, _ = self.collections[parts[2]]
+            self.collections[parts[2]] = (
+                workspace,
+                name,
+                list(body["sample_batch_ids"]),
+            )
+            return 200, _envelope(self._collection(parts[2]))
+        if method == "POST" and re.fullmatch(
+            r"match/aggregate/(sample|batch)/\w+/(save|resave)", path
+        ):
+            return 200, {"status": "success", "message": f"Matches {parts[4]}d"}
+        return 404, {"error": "no route"}
+
+    def _aggregate(self, scope: str, scope_id: str) -> dict[str, Any]:
+        samples = (
+            [s for s, (b, _) in self.samples.items() if b == scope_id]
+            if scope == "batch"
+            else [scope_id]
+        )
+        return _envelope(
+            {
+                "match_ions": [
+                    {"sample_item_id": s} for s in samples for _ in range(3)
+                ],
+                "match_compounds": [{"sample_item_id": s} for s in samples],
+                "match_collections": [{"sample_item_id": s} for s in samples],
+                "match_samples": [{"sample_item_id": s} for s in samples],
+            }
+        )
+
+    def _dataset(self, dataset_id: str) -> dict[str, Any]:
+        name, workspace = self.datasets[dataset_id]
+        return {
+            **RECORDED["dataset_row"],
+            "dataset_id": dataset_id,
+            "dataset_name": name,
+            "workspace_id": workspace,
+            "locked": int(dataset_id in self.locked),
+            "dataset_type": self.types.get(
+                dataset_id, RECORDED["dataset_row"]["dataset_type"]
+            ),
+        }
+
     def _sample(self, sample_id: str) -> dict[str, Any]:
-        batch, name = SAMPLES[sample_id]
+        batch, name = self.samples[sample_id]
         record = {
             **copy.deepcopy(RECORDED["sample_row"]),
             "sample_item_id": sample_id,
             "sample_item_name": name,
             "sample_batch_id": batch,
+            "locked": int(sample_id in self.locked),
         }
         if sample_id in SAMPLE_MODES:
             record["ionization_mode_id"] = SAMPLE_MODES[sample_id]
@@ -315,8 +473,31 @@ class FakeAPI:
             data[key] = copies
         return {**RECORDED["peaks"], "results": len(data["peak_id"]), "data": data}
 
+    def _narrow(self, peaks: dict[str, Any], sample_id: str, params) -> None:
+        """Keep in a peak read *peaks* those within its m/z range, and in a
+        time-ranged one those with a time series (:attr:`no_series`)."""
+        data = peaks["data"]
+        low = float(params.get("mz_min", float("-inf")))
+        high = float(params.get("mz_max", float("inf")))
+        dropped = self.no_series.get(sample_id, set()) if "t_min" in params else set()
+        in_range = [i for i, mz in enumerate(data["mz"]) if low <= mz <= high]
+        keep = [i for i in in_range if data["peak_id"][i] not in dropped]
+        if len(keep) == len(data["peak_id"]):
+            return
+        for key, value in data.items():
+            if isinstance(value, list):
+                data[key] = [value[i] for i in keep]
+        peaks["results"] = len(keep)
+        left = len(in_range) - len(keep)
+        if left:
+            peaks["warnings"] = [
+                *peaks["warnings"],
+                f"{left} peak(s) were excluded because their timeseries have "
+                "not been computed yet.",
+            ]
+
     def _match(self, sample_id: str, body: dict[str, Any]) -> tuple[int, Any]:
-        if sample_id not in SAMPLES:
+        if sample_id not in self.samples:
             return 403, {"error": "Forbidden"}
         formulas = body["target_compound_formulas"]
         for formula in formulas:
@@ -347,13 +528,14 @@ class FakeAPI:
         return 200, {**RECORDED["match_compounds"], "data": data}
 
     def _timeseries(self, sample_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        self.no_series.get(sample_id, set()).discard(body.get("peak_id"))
         return {
             **RECORDED["timeseries"],
             "data": {**RECORDED["timeseries"]["data"], "peak_id": body["peak_id"]},
         }
 
     def _collection(self, collection_id: str, full: bool = False) -> dict[str, Any]:
-        workspace, name, batches = COLLECTIONS[collection_id]
+        workspace, name, batches = self.collections[collection_id]
         record: dict[str, Any] = {
             "target_collection_id": collection_id,
             "target_collection_name": name,
@@ -375,9 +557,9 @@ class FakeAPI:
                 target_compounds_count=len(compounds),
                 sample_batches=[
                     {
-                        "dataset_id": BATCHES[b][0],
+                        "dataset_id": self.batches[b][0],
                         "sample_batch_id": b,
-                        "sample_batch_name": BATCHES[b][1],
+                        "sample_batch_name": self.batches[b][1],
                     }
                     for b in batches
                 ],
@@ -393,6 +575,7 @@ def api(monkeypatch) -> FakeAPI:
     fake = FakeAPI()
     monkeypatch.setattr(_http.requests, "get", fake.get)
     monkeypatch.setattr(_http.requests, "post", fake.post)
+    monkeypatch.setattr(_http.requests, "request", fake.request)
     # The SDK backs off between attempts at a transient failure
     monkeypatch.setattr(_http.time, "sleep", lambda seconds: None)
     return fake

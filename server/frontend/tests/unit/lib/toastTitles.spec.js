@@ -21,7 +21,8 @@ describe('the heading of a toast', () => {
     ['calibration_mz_fit', 'Calibration fit'],
     ['rematch_batch', 'Match refresh'],
     ['sample_file_upload', 'Upload'],
-    ['file_processing', 'Processing']
+    ['file_processing', 'Processing'],
+    ['export_dataset_package', 'Deposit package']
   ])('names a %s by what it is to the reader', (type, title) => {
     expect(toastTitle(type, 'success')).toBe(title)
   })

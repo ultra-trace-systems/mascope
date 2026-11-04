@@ -350,15 +350,17 @@ deletes it.
 An `ms2_group` table, one row per (file, polarity, precursor key,
 activation): kind, NCE, volts, the widths it holds, scan count, time span,
 scan range, the located precursor. Written when the store is; filled by the
-backfill.
+backfill. A sample holds its file's groups of its polarity whose span meets
+its window; one its window cuts is listed with `whole` false, its counts
+being the file's, and the summary of such a sample is the store's.
 
 It answers in one query what costs a raw read per sample today:
-`GET /api/batches/{id}/ms2/groups` lists the groups of every sample of a
+`GET /api/sample/batches/{id}/ms2/groups` lists the groups of every sample of a
 batch; the samples listing carries `ms2_group_count`; the sample's own
 summary answers from the table. The sample finder
 ([sample_filters_and_metadata.md](sample_filters_and_metadata.md)) gains a
 typed field to filter on ("has MS2", "fragmented this precursor"), named in
-its schema and built there.
+its schema (the `ms2` clause of its section 4.1) and built there.
 
 ### 2.4 The fragment composition core
 
@@ -517,7 +519,7 @@ PRs and rest on definitions rather than tuned constants:
 
 These are served per (sample, precursor) by `GET .../ms2/breakdown`, cached
 in the store, drawn in the MS2 tab, and rolled up per batch by
-`GET /api/batches/{id}/ms2/e50` for the campaign question (did this ion's
+`GET /api/sample/batches/{id}/ms2/e50` for the campaign question (did this ion's
 E50 drift; which ions break early), which Visual digests can then draw.
 
 **Kept in peaky until a decision (MAS-401).** The binding class (every
@@ -589,13 +591,14 @@ guest, Orbitrap only (a TOF sample answers an empty inventory with the reason
 | `centroids` | exists; 0 | averaged spectrum per parent or per group, at the S/N floor asked | store, else raw |
 | `timeseries` | exists; 0 | per-scan fragment intensities of one parent | store, else raw |
 | `scans?group=` | 0 | the scan table and per-scan centroids of one group | store |
-| `/api/batches/{id}/ms2/groups` | 0 | every group of every sample of the batch | inventory table |
+| `/api/sample/batches/{id}/ms2/groups` | 0 | every group of every sample of the batch | inventory table |
 | `window[?width=]` | 1 | MS1 centroids per isolation window, shares, `is_parent`, the located precursor | MS1 centroids + store |
 | `readings?group=&ions=` | 1 (2: `ions` optional) | readings per spectrum, roles, offset, aliases | core; cached in the store |
 | `breakdown?precursor=&ions=` | 4 | F, F_lo, S, budget per ion and energy; E50 rows with flags; fragments with onsets, calls, weights | core; cached in the store |
-| `/api/batches/{id}/ms2/e50?ions=` | 4 | E50 rows per (sample, ion) | cached breakdowns, within a budget |
+| `/api/sample/batches/{id}/ms2/e50?ions=` | 4 | E50 rows per (sample, ion) | cached breakdowns, within a budget |
 
-Every response says `source` (`store` or `raw`) and, where cached, `cached`
+Every response says `source` (`store` or `raw`; the summary `inventory` when
+its groups are the inventory's) and, where cached, `cached`
 and the core's version. The group key `<parent m/z>@<activation>` does not
 move (decision 2).
 
@@ -729,6 +732,12 @@ The recommendations, confirmed by the plan owner on 2026-10-23 (MAS-380):
 1. **Store once, at conversion.** MS2 is written to a store beside the peak
    store and the routes read it; the raw file is read only for a file
    converted before the store existed, and the response says which.
+   One exception was kept on purpose (MAS-539): the averaged spectra of a
+   window that cuts a group, or, with activations merged, of a window that
+   holds several of a parent peak's activation groups whole but not all of
+   them, are averaged from the raw file, since the reader's averaging cannot
+   be redone from the stored centroids bit for bit. They are averaged over
+   the window's scans of each stored group, so they carry the store's keys.
 2. **The group key does not move.** `<parent m/z>@<activation>` stays. A
    group whose scans isolate at two widths reports every width it holds and
    its scan table says which scan used which (MAS-265).

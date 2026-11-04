@@ -34,7 +34,7 @@ sudo usermod -aG docker "$USER"      # log out/in for the group to take effect
 docker --version && docker compose version
 ```
 
-**Storage, if this box also receives the fleet's backups (§11).** Everything
+**Storage, if this box also receives the fleet's backups (§12).** Everything
 below assumes a redundant data volume mounted before any service starts —
 GlitchTip's Postgres, Kuma's SQLite, the restic repos and the assessment
 records all live on it. Use RAID or ZFS: a backup host whose own disk has no
@@ -304,12 +304,14 @@ filling disk does not stop a rollout (`tooling/fleet/README.md`).
 ## 10. Scheduled security assessment (`run-assessment.sh`)
 
 [`run-assessment.sh`](run-assessment.sh) runs the pen-test suite
-(`security/pentest/`) against a deployment on a schedule and keeps the reports
-here. Uptime Kuma tells you the site answers; nothing else tells you TLS is
-still enforced, the security headers are still set, or tenant isolation still
-holds. Because deployed images are pinned, what a periodic run actually detects
-between releases is **environment drift** — an edge rule, a firewall change, a
-certificate approaching expiry.
+(`security/pentest/`) against a staging deployment on a schedule and whenever
+a new release reaches it, runs the suite's non-mutating subset against each
+production deployment on a schedule of its own, and keeps the reports here. Uptime Kuma tells you the site
+answers; nothing else tells you TLS is still enforced, the security headers
+are still set, or tenant isolation still holds. Because deployed images are
+pinned, what a periodic run actually detects between releases is
+**environment drift** — an edge rule, a firewall change, a certificate
+approaching expiry. What a release changes, the deploy run (below) assesses.
 
 **It runs from the monitoring box, driving the suite over SSH on the target.**
 Two reasons, and neither is convenience: a report stored on the system under
@@ -341,9 +343,78 @@ Setup:
    edge"), set `MASCOPE_PENTEST_TARGET=https://127.0.0.1:8443`: its :443 then
    answers 403 to everything without Cloudflare's client certificate. That
    loopback listener differs from :443 only in asking for no client
-   certificate, so the refusal itself is outside this vantage; read the
-   report with that in mind.
-4. Cron it clear of the backup windows, e.g. `30 5 * * 0`.
+   certificate, so the refusal itself is outside this vantage. The report
+   says so: it records the listener it measured (`listener` in
+   `pentest-report.json`, a **Listener** line in the Markdown) and, against
+   the loopback listener, a notice that the origin-pull refusal was not
+   assessed. The summary then reads `listener=loopback:8443
+   origin_pull=not_assessed`. Check the refusal itself from the host with
+   the `:443` request in `docs/maintaining.md`, "Turning origin pulls on".
+4. Cron it clear of the backup windows, e.g. `30 5 * * 0`, and add the
+   deploy watch beside it (see "Two triggers"):
+
+   ```cron
+   30 5 * * 0  /opt/pentest-runner/run-assessment.sh 2>&1 | logger -t pentest
+   */5 * * * * /opt/pentest-runner/run-assessment.sh --on-deploy 2>&1 | logger -t pentest-watch
+   ```
+
+**Two triggers.** They answer different questions, so both run.
+
+- **The periodic run** (no arguments) asks whether the ground has shifted:
+  certificates, edge rules, base images, drift, none of which has a commit.
+  Its heartbeat (`HC_URL`) is the dead-man switch, so it always runs, on
+  every tick of its schedule, whatever ran before it.
+- **The deploy run** (`--on-deploy`) asks whether this build broke a control.
+  Each tick it reads the release the target reports on its anonymous
+  `/api/version/public` route, on the target as the suite runs there, and
+  assesses a release no run has started on yet. Otherwise it does nothing,
+  and pings nothing. Its heartbeat is `DEPLOY_HC_URL`, or `HC_URL` when that
+  is unset, so a deploy run that finds a broken control still pages.
+
+The watch reads the deployment instead of being told by it. Whatever
+promotes a release — the auto-update timer, an operator's `mascope prod
+update`, a fleet playbook, a rollback — changes what the target reports, so
+one watch covers every path. The target is treated as hostile and holds no
+credential for this host: all it can do is name a version, which is bounded
+and held to the shape of one before it is used. Each release is assessed
+once, whatever its run concluded. A red run pages, and repeating it each tick
+would only spend the target's rate limits. The watch needs a target that
+reports a pinned release (v1.14.0 or later, `MASCOPE_VERSION` set to a
+release, not `latest`). A target that answers nothing usable, `unknown` or
+`latest` included, leaves each tick logging `cannot read the
+deployed release`, and the periodic run's summary ends in
+`deployed=unreadable` until it is fixed.
+
+**Runs never overlap, and are spaced.** The suite verifies login rate limits
+whose windows are a minute (per address) and five minutes (per account), so
+two runs back to back throttle each other's controls, and two an hour apart do
+not. A lock in `RECORDS` is held for the whole of a run. The next run starts
+no sooner than `MIN_INTERVAL` seconds (default 600) after the last one ended.
+A deploy run that meets either is deferred, logging why, and the next tick
+looks again. A periodic run waits for both, up to `LOCK_WAIT` seconds
+(default 7200) for the lock, and starts its heartbeat only once it runs.
+
+A run whose controls were throttled anyway says so: the summary's
+`throttled=N` counts the controls a rate limit answered first, and the
+report opens with a notice (`security/pentest/README.md`, "Reading the
+results"). It does not change the exit code. A throttled control is not
+assessed, and not-assessed never fails a run.
+
+**Assess a deployment with Turnstile off.** The suite signs in with a
+password and cannot solve Cloudflare Turnstile's human check, so on a site
+with Turnstile on its sign-in form (`docs/maintaining.md`, "Turning Turnstile
+on") it signs in nowhere. It reads that from the site's login options at
+session start and reports every control that needs a sign-in, or the login's
+answer to a password, as not assessed: the site has Turnstile on. The run
+stays green, the summary's `not_assessed=N` grows by those controls, and the
+report counts them (`turnstile` in its summary) and opens with a notice. Its
+`AUTHN-06` then checks that the login refuses a sign-in with no token. Point
+the staging run at a deployment with Turnstile off, so the signed-in controls
+are assessed somewhere, and do not give it Cloudflare's test keys to get past
+the check: that turns the check off where it is assessed. A production run
+is non-mutating and signs in nowhere anyway, so Turnstile changes nothing
+there but the report's **Turnstile** line (`security/pentest/README.md`, "A
+site with Turnstile on").
 
 **The CDN vantage.** The origin run never crosses the edge, so it cannot see
 anything the edge answers itself: the HTTPS redirect (`TLS-02`), WAF
@@ -380,6 +451,80 @@ answered (`security/pentest/README.md`, "The CDN vantage").
    would be assessing the WAF. The job then fails rather than reporting
    refusals as controls that held.
 
+**Which controls may run where.** Every control's marker says whether it is
+mutating (`security/pentest/README.md`, "Mutating and non-mutating
+controls"). Non-mutating means it signs in to no account, spends no budget,
+writes nothing, and stays harmless on the day the control it checks is
+broken. Only those run against production. A control with no classification
+fails the run at collection, so a new one cannot reach production by default.
+
+| Class | Runs against | Controls |
+| --- | --- | --- |
+| Non-mutating (`--non-mutating`) | staging and production | `RECON-01`, `RECON-02`, `RECON-03`, `HDR-01`, `HDR-02`, `HDR-03`, `HDR-04`, `HDR-05`, `HDR-06`, `AUTHN-01`, `TOKEN-01`, `INFO-02`, `TLS-01`, `TLS-02`, `CORS-01`, `CORS-02` |
+| Mutating | staging only | every other control: they sign in, provision accounts, workspaces, devices or uploads, burst a rate limit, spend a login or pairing budget, or send a write that a missing gate would perform |
+
+`selftest/test_classification.py` pins the first row against the markers, so
+a control moved into it changes this table in the same pull request.
+
+**Production.** `run-assessment.sh --production` runs the non-mutating subset
+(`pytest --non-mutating`) against every deployment in `PRODUCTION_TARGETS`,
+here, through the CDN, as the CDN vantage runs: the operator header sent, TLS
+verified. No account goes along. Each deployment's report has the format and
+the retention of a staging run's.
+
+1. Check that every deployment runs v1.14.0 or later. The subset signs in
+   nowhere, so it learns the build only from the anonymous
+   `/api/version/public`, which v1.14.0 added. On an older deployment the
+   suite cannot say which build it assessed, so it aborts that deployment's
+   run with exit `4` and no report. Its summary reads `report unreadable
+   trigger=production`, and the heartbeat fails on every run until it is
+   upgraded or taken out of `PRODUCTION_TARGETS`.
+2. Use the CDN vantage's suite copy (`CDN_SUITE_DIR`), or set
+   `PRODUCTION_SUITE_DIR` to another, synced to the tag production runs.
+3. Give each deployment's hostname the same WAF skip rule as the staging one
+   (the CDN vantage, step 2), matching the same header and value.
+4. In `config.env`, list the deployments as `NAME=URL` pairs, the public
+   `https://` addresses. `NAME` (lower-case letters, digits, `-`) names the
+   records, so the records on this box never need the hostname to say which
+   deployment they are:
+
+   ```sh
+   PRODUCTION_TARGETS="site-a=https://a.example.com site-b=https://b.example.com"
+   PRODUCTION_HC_URL=https://hc-ping.com/...   # optional; no heartbeat without
+   ```
+
+   An entry that is not `NAME=https://...`, or a `NAME` given twice, refuses
+   the whole run (exit 2) before anything is sent. Give `PRODUCTION_HC_URL` a
+   check of its own: without it the production run pings nothing. It never
+   falls back to `HC_URL`, whose weekly check its daily pings would keep green
+   after the periodic run stopped.
+5. Cron it beside the others. It takes the same lock, so it never runs inside
+   a staging run, waiting up to `LOCK_WAIT` like the periodic run. It neither
+   waits out `MIN_INTERVAL` nor moves it: it spends none of the staging
+   target's login windows.
+
+   ```cron
+   15 6 * * *  /opt/pentest-runner/run-assessment.sh --production 2>&1 | logger -t pentest-prod
+   ```
+
+Every deployment is assessed even when one fails. The run's exit code is the
+first failing deployment's. A deployment behind the current release is
+recorded (`lag=behind`) and not turned into exit `90`: what production runs is
+the build users have, so the report is evidence about it. Its heartbeat is
+`PRODUCTION_HC_URL`, carrying each deployment's summary as
+`site-a: build=... | site-b: ...`.
+
+**Telling the assessment from an attack.** Every request the suite sends names
+it in its user agent, `mascope-security-assessment/1
+(+https://github.com/ultra-trace-systems/mascope/tree/develop/security/pentest)`.
+It is in each deployment's nginx access log. GlitchTip keeps it too, with the
+request of any event raised while handling one: error reporting runs with
+`send_default_pii=False`, which strips cookies, auth headers and client
+addresses but keeps the user agent. So an event the assessment provoked is
+traceable to it rather than read as an attack. Search for the string in
+GlitchTip and in the logs to tell an assessment's traffic from anything else.
+The same string at an hour no run is scheduled is someone else using it.
+
 **Exit codes.** Normally the suite's, so the heartbeat reflects the assessment
 rather than the plumbing. With both vantages, either one failing fails the
 job, and the origin's code wins when both fail. A disagreement between them
@@ -389,7 +534,9 @@ succeeded and the run still is not evidence:
 | Exit | Meaning |
 | --- | --- |
 | `1` | the report was unusable (empty archive, unreadable JSON) |
-| `90` | the target is **behind the current release** — honest, but about an artifact deployed nowhere |
+| `75` | a periodic or `--production` run waited `LOCK_WAIT` for another run and assessed nothing |
+| `90` | the target is **behind the current release** — honest, but about an artifact deployed nowhere. Never for `--production`, which records the lag only |
+| `2` | `--production` without `PRODUCTION_TARGETS`, with an entry that is not `NAME=https://URL`, or with a `NAME` given twice; nothing was sent |
 
 The lag comparison happens **here, never on the target**: the suite executes on
 the box under test, so a release lookup performed there would be the deployment
@@ -397,18 +544,40 @@ whose currency is in question answering the question about itself. A lookup that
 cannot resolve the current release records `lag=unknown` and changes nothing —
 an unreachable third party must never be able to redden an assessment.
 
+The release is looked up once, before either vantage runs, and passed to both
+suites as `MASCOPE_PENTEST_CURRENT_RELEASE`, so each report records the lag
+too. Only a release tag is passed: when the lookup fails or names anything
+else, the reports say `unknown`. The report's verdict is a record; the exit
+code is still this script's.
+
 `tooling/cli/tests/test_run_assessment.py` runs this script as it is, with
-`ssh` and `curl` stubbed, through the lag matrix and the exit-code overrides;
-CI runs it with the CLI tests. Deploy the script from a checkout, so what runs
+`ssh` and `curl` stubbed, through the lag matrix, the exit-code overrides and
+the two triggers; CI runs it with the CLI tests. Deploy the script from a checkout, so what runs
 here is what was reviewed (`sha256sum` it against the tag), and change it by a
 pull request rather than on the box.
 
 Each vantage leaves three files in `RECORDS`: `<ts>-<vantage>.log`,
 `<ts>-<vantage>.tar.gz` and `<ts>-<vantage>.summary`, where the vantage is
-`origin` or `cdn`. With both, `<ts>-vantage.md` and `<ts>-vantage.json` hold
-the comparison. Everything is pruned at 400 days. The heartbeat then carries
-both summaries and the comparison's counts
+`origin` or `cdn`. The archive holds that run's report alone,
+`report/pentest-report.json` and `report/pentest-report.md`. The evidence
+trail is the series of these archives here, one per run. The suite's
+`report/history/` is not archived: for the origin that copy is on the target,
+which is no place for the record (section 10). With both, `<ts>-vantage.md` and `<ts>-vantage.json` hold
+the comparison. A production run leaves the same three files per deployment,
+`<ts>-prod-<NAME>.{log,tar.gz,summary}`, with `trigger=production` in the
+summary. Everything is pruned at 400 days, deploy runs, periodic and
+production ones alike. A summary reads
+`build=... findings=N accepted=N stale=N verified=N not_assessed=N throttled=N listener=PORT lag=... trigger=schedule`,
+or `trigger=deploy` for a deploy run. `listener` is the port the suite
+measured, `loopback:PORT` on the host's own loopback, followed by
+`origin_pull=not_assessed` on the :8443 listener (setup, step 3), and `?`
+for a report from a suite that predates it. The heartbeat carries it, and with both
+vantages carries both summaries and the comparison's counts
 (`origin: ... | cdn: ... | vantages: agree=N disagree=N edge=N origin_only=N`).
+Three dotfiles beside them hold the triggers' state: `.run.lock`,
+`.last-run-end` and `.last-run-version`, the release the last run started on.
+Remove `.last-run-version` to have the next watch tick assess the deployed
+release again.
 
 **Do not "simplify" the report retrieval.** It is written defensively against
 the box it talks to: the report is pulled as one stream rather than a remote
@@ -418,7 +587,190 @@ size-bounded before it lands, the archive is never extracted, and only counts
 are sent to the heartbeat service — finding detail describes weaknesses in your
 own deployment and the heartbeat is a third party.
 
-## 11. Receiving the fleet's backups
+### The weakened-target guard (`run-weakened-guard.sh`)
+
+A green assessment is only evidence if its controls can fail.
+[`run-weakened-guard.sh`](run-weakened-guard.sh) checks that some of them can,
+weekly and unattended. It brings up a throwaway demo stack on this host and
+weakens it by configuration, one edit at a time. It strips a security header,
+turns the nginx version banner on, or adds a wildcard CORS header. Each control
+the edit should trip must then report a finding
+(`security/pentest/mutations/README.md`, "The weakened target"). It touches no
+deployment, and spends nothing of the staging target's rate limits.
+
+It needs Docker, which this host has (section 1). The stack's frontend is
+published on loopback only, under its own compose project, and taken down
+again however the run ends. Its volumes stay, so the next run reuses the
+downloaded demo bundle. Its containers use the demo's fixed names
+(`mascope_demo_*`), so no other demo stack may run on this host.
+
+1. Use the CDN vantage's suite copy (`CDN_SUITE_DIR`), or set
+   `WEAKENED_SUITE_DIR` to another copy of `security/pentest/` with its venv.
+2. Put `docker-compose.demo.yaml` from the same tag beside it, by default at
+   `/opt/pentest-runner/docker-compose.demo.yaml` (`WEAKENED_DEMO_COMPOSE`).
+   Set `MASCOPE_VERSION` in `config.env` to that tag; the default is
+   `latest`. The weakenings edit the nginx config the image ships, so the
+   images and the suite copy must come from one release.
+3. Optionally give it a heartbeat of its own, `WEAKENED_HC_URL`. It never
+   falls back to `HC_URL`, whose weekly check its pings would keep green.
+4. Cron it clear of the assessment, for example:
+
+   ```cron
+   30 3 * * 0  /opt/pentest-runner/run-weakened-guard.sh 2>&1 | logger -t pentest-weakened
+   ```
+
+The script header lists every variable. It sources the same `config.env`,
+but the staging credentials and the edge header in it do not reach the guard:
+the controls it runs sign in nowhere.
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | every expected control reported its weakening |
+| `1` | a control stayed green on a target known to be weakened: a control that cannot fail. Read the log before believing it; the mutation guard's README says how to triage |
+| `2` | nothing was established: an edit did not take, a witness did not see it, the suite did not run, or the stack never answered |
+| `75` | another run of this guard was in progress; nothing ran |
+
+Any non-zero pings `/fail`. An edit that cannot apply, say on an image whose
+nginx config no longer has the line, stops the frontend instead of serving a
+healthy stack, and the run says `2` rather than blaming a control. Each run
+leaves `<ts>-weakened.log` and `<ts>-weakened.summary` in `RECORDS`, pruned at
+400 days. The summary reads `detected N  missed N  unproven N version=TAG`.
+
+The guard covers 8 controls. The log's coverage line counts the others by
+reason, and `security/pentest/mutations/weakened.py` gives each one's:
+application code no configuration reaches, a missing test-only switch, a
+topology the demo does not have, or an edit not yet written.
+`tooling/cli/tests/test_run_weakened_guard.py` runs this script with `docker`,
+`curl` and the guard stubbed; CI runs it with the CLI tests.
+
+## 11. Security fixes not yet deployed (`security-fix-distance.py`)
+
+A fix on `develop` is not a fix in production.
+[`security-fix-distance.py`](security-fix-distance.py) asks one question, on a
+schedule: is there a merged security fix that a production deployment does
+not run? It names each deployment that is behind and the fix it is missing.
+When every deployment runs every fix, it says nothing.
+
+- **A security fix** is a commit that adds a changelog fragment in the
+  security section, `changelog.d/<branch>.security.md` (`CLAUDE.md`,
+  Conventions). The fragment lands with the fix, at merge, so the check sees
+  the fix from that moment. Cutting a release deletes the fragment, but the
+  commit that added it still marks the fix. A security fix filed under
+  `fixed` is one the check never sees. Fixes released before the fragments
+  existed are in `CHANGELOG.md` alone and are not checked.
+- **A security update of a dependency a deployment runs** is a fix too.
+  Renovate's vulnerability updates add no fragment. Their subject ends in
+  `[security]`, and the check counts such a commit when it changes the
+  version of a package that ships:
+  - in `uv.lock`, a package the root project reaches through its
+    `dependencies`, and the extras those ask for. That is what the backend
+    image installs (`uv tool install .`). The root's `docs` group ships too:
+    the frontend image builds the user docs with it and serves them at
+    `/docs/`, the theme's JavaScript and CSS included. A package only the
+    `dev` or `lint` group reaches does not ship.
+  - in `server/frontend/package-lock.json`, a package the lock does not mark
+    `"dev": true`. npm marks the ones only `devDependencies` reach, and the
+    frontend image bundles the rest.
+
+  The check reads both locks as the commit and its first parent have them.
+  A package counts when it ships after the commit, or when the commit took
+  it out and it shipped before. Markers are not weighed: a package only
+  Windows installs still counts. A lock it cannot read counts as a fix, so
+  an unknown format never hides one. Other lockfiles, such as the File
+  Agent's `agents/file/uv.lock`, ship to no deployment and are not read. The
+  fix is named after the package, `deps-pillow`, or `deps-axios-and-2-more`
+  when the bump moved packages it pulls in too.
+- **What a deployment runs** is the release its backend reports on the
+  anonymous `/api/version/public` route, read from this box through the
+  deployment's public URL. It is the running backend answering, never a
+  record of what was deployed.
+- **A deployment has a fix** when the release tag it runs contains the fix's
+  commit (`git tag --contains`). A release candidate has the fixes its own
+  tag holds, and no later ones.
+- **A version the check cannot place is a finding**, never a skip: no answer,
+  an HTTP error, `unknown`, `latest`, a dated build tag, or a release tag the
+  repository does not have. None of them shows the fix is there.
+
+The check keeps a bare clone of its own and fetches `develop`, `master` and
+the tags into it on every run. It needs no token: the repository is public.
+The first run fetches the whole history, about 100 MB; later runs fetch only
+what is new, in a second or two. A run that cannot fetch fails its
+heartbeat, rather than reading a stale clone.
+
+Setup:
+
+1. Copy the script from a checkout to `/opt/pentest-runner/`, and
+   `sha256sum` it against the tag, as for `run-assessment.sh`. It needs `git`
+   and the host's `python3`, 3.10 or later, and nothing else.
+2. Add a heartbeat check (healthchecks.io, or any service with the same
+   `/start` and `/fail` URLs) with a period of one hour and a grace of one
+   hour.
+3. Write `/opt/pentest-runner/fix-distance.ini` (`chmod 600`), with one line
+   per production deployment. The aliases are yours. They appear in the log,
+   never in the heartbeat.
+
+   ```ini
+   [check]
+   heartbeat = https://hc-ping.com/<uuid>
+   # Optional, with their defaults:
+   # repository = /opt/pentest-runner/fix-distance.git
+   # remote = https://github.com/ultra-trace-systems/mascope.git
+   # branches = develop master
+   # timeout = 10
+
+   [deployments]
+   server-a = https://a.example.com
+   server-b = https://b.example.com
+   ```
+
+4. Cron it, hourly:
+
+   ```cron
+   17 * * * * python3 -I /opt/pentest-runner/security-fix-distance.py 2>&1 | logger -t fix-distance
+   ```
+
+   `--config <path>` reads another file.
+
+Each run pings `/start`, then the heartbeat with
+`fixes=N unreleased=N deployments=N behind=N unreadable=N`: plain on success,
+on `/fail` when anything is behind or unreadable. A check that stops running
+stops pinging, and the heartbeat pages: that is the dead-man switch.
+
+Which deployment misses which fix stays on this box, in the log
+(`journalctl -t fix-distance`): it describes an open weakness of the fleet,
+and the heartbeat service is a third party. One line per finding:
+
+```text
+behind: server-a runs v1.15.0, missing 1a2b3c4d5 mas-123-session-expiry (merged 2026-10-28, not released)
+behind: server-b runs v1.14.0, missing 5e6f7a8b9 mas-120-secret-file-modes (merged 2026-10-20, released in v1.15.0)
+behind: server-b runs v1.14.0, missing 0c1d2e3f4 deps-pillow (merged 2026-10-25, released in v1.15.0)
+unreadable: server-c runs 'latest', which names no release
+```
+
+`not released` means no release holds the fix yet, so every deployment is
+behind until one is cut and rolled out. `released in vX.Y.Z` names the first
+release that holds it. There is no grace period: a fix reports from the run
+after it merges, and the heartbeat stays failed until it runs everywhere.
+
+The route is anonymous, but it is read through the edge. An edge rule that
+challenges scripts has to let this box's requests to `/api/version/public`
+through, or every deployment reads as unreadable. The check sends the
+User-Agent `mascope-fix-distance`.
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | every deployment runs every marked fix; nothing on stdout |
+| `1` | a deployment is behind, or its release cannot be read |
+| `2` | the configuration is unusable (missing, no heartbeat, no deployments) |
+| `3` | the repository could not be fetched: the check is blind |
+
+`tooling/cli/tests/test_security_fix_distance.py` runs the script as it is,
+against a real git repository and a local server standing in for the
+deployments and the heartbeat. It shows the check failing both ways: a marked
+fix no release holds reports, and a fleet that runs every fix is quiet. CI
+runs it with the CLI tests.
+
+## 12. Receiving the fleet's backups
 
 If this box is also the off-site restic target for your Mascope servers (the
 arrangement `tooling/backup-cron.sh` on each server expects), that side needs
@@ -449,7 +801,7 @@ Points that are easy to get wrong, each of which has bitten someone:
   sshd drop-in and the key directory are configuration, though: name them in
   `EXTRA_CONFIG_PATHS`, or a rebuilt box refuses every server.
 
-## 12. Restoring this host
+## 13. Restoring this host
 
 Worth reading before you need it, and worth drilling once. The backup from §5
 contains the monitoring data *and* the configuration that makes it meaningful —
@@ -470,7 +822,7 @@ named in `EXTRA_CONFIG_PATHS`.
    restic dump <id> glitchtip-db.sql \
      | docker compose -f /opt/glitchtip/compose.yaml exec -T postgres psql -U postgres
    ```
-6. Re-add the scheduled jobs (§5, §9, §10) — cron entries are not part of the
+6. Re-add the scheduled jobs (§5, §9, §10, §11) — cron entries are not part of the
    backup unless you put `/var/spool/cron` in `EXTRA_CONFIG_PATHS`.
 7. Verify rather than assume: monitors listed and green, a test event reaching
    GlitchTip, and a `restic check` on the restored repo.

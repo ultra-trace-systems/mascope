@@ -6,6 +6,7 @@ root::
     <root>/<session id>/frames/<frame id>.parquet   the rows
     <root>/<session id>/frames/<frame id>.json      the Frame without them
     <root>/<session id>/manifest.jsonl              what each answer rests on
+    <root>/<session id>/plans/<plan id>.json        a write, planned (plans.py)
 
 Nothing in it is a source of truth. A Frame's rows are a cache of what its
 recorded query returned: evict them and the next :attr:`Frame.df` loads them
@@ -33,6 +34,7 @@ from loguru import logger
 from .errors import StaleFrame
 from .frame import Frame
 from .manifest import Manifest
+from .plans import PlanStore
 
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -98,6 +100,11 @@ class Session:
     def manifest(self) -> Manifest:
         """The session's provenance manifest (:mod:`mascope_ai.manifest`)."""
         return Manifest(self.path / "manifest.jsonl")
+
+    @property
+    def plans(self) -> PlanStore:
+        """The session's pending and applied plans (:mod:`mascope_ai.plans`)."""
+        return PlanStore(self.path / "plans")
 
     def _file(self, frame_id: str, suffix: str) -> Path:
         if not _FRAME_ID.fullmatch(frame_id):

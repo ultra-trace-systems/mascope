@@ -42,6 +42,8 @@ from typing import NamedTuple
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from mascope_backend.api.new.instruments.registry import instrument_id_for
+from mascope_backend.api.new.ionization.modes.versions import current_versions
 from mascope_backend.binding_rungs import LEARNING_SOURCES
 from mascope_backend.db import IonizationMode, MethodBinding, SampleFile, async_session
 from mascope_backend.db.id import gen_id
@@ -285,6 +287,20 @@ async def resolve_modes_by_method_binding(
                     "rest will follow it.",
                 )
             binding, mode = found
+            if not mode.is_active:
+                # Learned under a version an edit has since replaced. The edit
+                # moves the bindings it finds on to the new version; one
+                # learned from a file processed while it ran is moved here.
+                mode = (await current_versions(session, [mode.ionization_mode_id])).get(
+                    mode.ionization_mode_id
+                )
+                if mode is None:
+                    return [], Declined(
+                        "its acquisition method has not been seen running a "
+                        "chemistry on this instrument",
+                        "Choose a chemistry for one file of this method and "
+                        "the rest will follow it.",
+                    )
             # Judged on the chemistries, not on `state`. The two say the same
             # thing today and would not once a person can confirm a binding.
             if len(binding.chemistry_keys or []) != 1:
@@ -403,6 +419,10 @@ async def learn_method_bindings(
         observations.sort(key=lambda observation: observation[0])
         written: list[str] = []
         async with async_session() as session:
+            # Before the first binding row is locked: a row made here holds its
+            # name until the commit, so taking it after one binding and before
+            # the next would order two ingests' locks differently.
+            instrument_id = await instrument_id_for(session, sample_file.instrument)
             for digest, signature, mode in observations:
                 if recorded is not None and digest in recorded:
                     counts["repeated"] += 1
@@ -411,6 +431,7 @@ async def learn_method_bindings(
                     session,
                     digest=digest,
                     instrument=sample_file.instrument,
+                    instrument_id=instrument_id,
                     key=key,
                     signature=signature,
                     mode=mode,
@@ -479,6 +500,7 @@ async def _observe(
     source: str,
     seen_at: datetime,
     sample_file_id: str,
+    instrument_id: str | None = None,
 ) -> str:
     """Fold one observation into its binding, creating the row if needed.
 
@@ -515,6 +537,7 @@ async def _observe(
                     method_binding_id=gen_id(),
                     binding_key=digest,
                     instrument=instrument,
+                    instrument_id=instrument_id,
                     method_key=clipped(key, METHOD_KEY_COLUMN),
                     signature_class=clipped(signature, SIGNATURE_CLASS_COLUMN),
                     ionization_mode_id=mode.ionization_mode_id,

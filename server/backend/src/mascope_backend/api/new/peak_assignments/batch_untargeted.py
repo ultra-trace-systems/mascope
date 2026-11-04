@@ -42,6 +42,7 @@ from sqlalchemy import select
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.cheminfo.utils import to_custom_element_format
+from mascope_backend.api.new.ionization.modes.versions import sample_label_purity
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
@@ -102,6 +103,7 @@ from mascope_backend.socket.notifications import (
     send_progress_user_notification,
 )
 from mascope_file.name import get_instrument_type
+from mascope_tools.composition.custom_elements import labelled_purity
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.reagents import secondary_channels
 
@@ -451,6 +453,16 @@ async def _unassigned_anchors_and_members(
 async def _search_sample(
     sample_item_id: str, target_peak_ids: set[str], config: PeakAssignmentConfig
 ) -> tuple[list[dict], int]:
+    """:func:`_search_sample_peaks` at the labelled-reagent purity the sample's
+    ionization setup carries, as a run of it reads (``custom_elements.labelled_purity``).
+    """
+    with labelled_purity(await sample_label_purity(sample_item_id)):
+        return await _search_sample_peaks(sample_item_id, target_peak_ids, config)
+
+
+async def _search_sample_peaks(
+    sample_item_id: str, target_peak_ids: set[str], config: PeakAssignmentConfig
+) -> tuple[list[dict], int]:
     """Stage B over one sample's representative peaks, in the context of its
     whole spectrum.
 
@@ -539,14 +551,15 @@ async def _search_sample(
     # while only the representatives are enumerated.
     match_params = await default_match_params(sample_item_id)
     # No Stage A ran on this path, so nothing has fitted this sample's mass
-    # width; the match tolerance stands in for it (see `pattern_scoring_for`).
-    # A batch search therefore judges a candidate a little more loosely than a
-    # run of the same sample would, which is the honest state of it: the width
-    # is a measurement, and this path has not made it.
+    # width; the instrument class's width stands in for it (see
+    # `pattern_scoring_for`). A batch search therefore judges a candidate at
+    # the class's typical accuracy rather than this sample's own, which is the
+    # honest state of it: the width is a measurement, and this path has not
+    # made it.
     scoring = pattern_scoring_for(
         match_params,
         SampleMassAccuracy(),
-        resolved_profile.fallback_sigma_ppm,
+        get_instrument_type(sample.filename),
         await _resolution_of(sample),
     )
     search_columns = [

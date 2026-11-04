@@ -21,7 +21,9 @@ export const useDatasetContextMenu = defineStore('browser.sample.datasetCtxMenu'
   const row = ref(null)
   const selection = ref(null)
   const dialog = reactive({
-    op: null
+    op: null,
+    // The dataset "Prepare for publication" is open for, if any.
+    publish: null
   })
 
   // paste is valid for a cut dataset originating from a different workspace
@@ -160,6 +162,16 @@ export const useDatasetContextMenu = defineStore('browser.sample.datasetCtxMenu'
           }
         }
       ]
+    },
+    {
+      label: 'Prepare for publication',
+      icon: 'pi ph ph-package',
+      visible: row.value !== null,
+      // What the dataset's deposit package will hold and what it still
+      // lacks, then the archive to upload to a repository such as Zenodo.
+      command: () => {
+        dialog.publish = row.value
+      }
     }
   ])
 

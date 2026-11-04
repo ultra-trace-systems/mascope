@@ -20,6 +20,7 @@ import zarr
 
 from mascope_signal.ms2_store import Ms2Store, _write
 from mascope_thermo.backend import MS2_SCAN_RECORD_SOURCES
+from mascope_thermo.thermo import locate_precursors
 
 
 STEPPED_MZ, OTHER_MZ = 137.096, 200.5
@@ -91,6 +92,9 @@ def _contents() -> dict:
                 ],
                 "groups": dict(SCANS),
                 "averaged": {key: _spectrum(mz) for key, mz in OWN_MZ.items()},
+                "precursors": locate_precursors(
+                    {key: _spectrum(mz) for key, mz in OWN_MZ.items()}
+                ),
                 # Only the precursor taken at several activations has one
                 "merged": {(STEPPED_MZ, ""): _spectrum(MERGED_MZ)},
             },
@@ -105,6 +109,9 @@ def _contents() -> dict:
                 ],
                 "groups": dict(NEGATIVE_SCANS),
                 "averaged": {key: _spectrum(NEGATIVE_MZ) for key in NEGATIVE_SCANS},
+                "precursors": locate_precursors(
+                    {key: _spectrum(NEGATIVE_MZ) for key in NEGATIVE_SCANS}
+                ),
                 "merged": {},
             },
         },
@@ -196,3 +203,38 @@ def test_each_polarity_merges_its_own_groups(store):
 )
 def test_any_other_window_is_left_to_the_raw_read(store, first_scan, last_scan):
     assert _merged(store, first_scan, last_scan) is None
+
+
+class TestTheScansAWindowLeftToTheRawReadAverages:
+    """What the raw read averages for a window no stored spectrum answers:
+    the window's scans of each stored group, under the store's keys."""
+
+    def _scans(self, store, first_scan, last_scan, by_activation, polarity="+"):
+        return store.window_scans(
+            float(first_scan), float(last_scan), polarity, by_activation=by_activation
+        )
+
+    def test_merged_two_whole_steps_of_three_are_one_spectrum(self, store):
+        assert self._scans(store, 2, 5, by_activation=False) == {
+            (STEPPED_MZ, ""): [2, 3, 4, 5]
+        }
+
+    def test_merged_a_step_cut_beside_another_precursor(self, store):
+        assert self._scans(store, 3, 9, by_activation=False) == {
+            (STEPPED_MZ, ""): [3, 4, 5, 6, 7],
+            (OTHER_MZ, ""): [8, 9],
+        }
+
+    def test_by_activation_each_step_is_its_own(self, store):
+        assert self._scans(store, 3, 5, by_activation=True) == {
+            (STEPPED_MZ, "hcd10.00"): [3],
+            (STEPPED_MZ, "hcd20.00"): [4, 5],
+        }
+
+    def test_each_polarity_takes_its_own_groups(self, store):
+        assert self._scans(store, 10, 12, by_activation=False, polarity="-") == {
+            (STEPPED_MZ, ""): [11, 12]
+        }
+
+    def test_none_for_a_selection_with_no_polarity(self, store):
+        assert store.window_scans(None, None, None) is None

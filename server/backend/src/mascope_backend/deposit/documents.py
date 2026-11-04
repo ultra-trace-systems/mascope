@@ -182,10 +182,12 @@ def _processed(manifest: dict) -> list[str]:
             mechanism["ionization_mechanism"] or mechanism["ionization_mechanism_id"]
             for mechanism in mode["ionization_mechanisms"]
         ]
-        text = (
-            f"- Ionization mode **{_inline(mode['ionization_mode_name'])}**, "
-            f"polarity {mode['ionization_mode_polarity']}"
-        )
+        text = f"- Ionization mode **{_inline(mode['ionization_mode_name'])}**"
+        # A setup edited since it was made: the version tells it apart from
+        # the earlier one another sample may still sit on.
+        if mode["version"] > 1:
+            text += f", version {mode['version']}"
+        text += f", polarity {mode['ionization_mode_polarity']}"
         if mechanisms:
             text += f", ions formed as {_list(mechanisms)}"
         calibration = collections.get(mode["calibration_collection_id"])
@@ -256,6 +258,12 @@ def _files(manifest: dict) -> list[str]:
             f"`{manifest['schema']}`.",
         ),
         (
+            "`ro-crate-metadata.json`",
+            "The same as an RO-Crate (https://w3id.org/ro/crate/1.2): "
+            "JSON-LD in schema.org terms, which data repositories and "
+            "generic RO-Crate viewers read.",
+        ),
+        (
             "`SHA256SUMS`",
             "The SHA-256 of every other file. In the package's directory, "
             "`sha256sum -c SHA256SUMS` checks them all.",
@@ -284,8 +292,9 @@ def _files(manifest: dict) -> list[str]:
             (
                 "`batches/`",
                 "Each batch's spreadsheet: its samples, their acquisition "
-                "context, the compounds and ions matched in them, and the "
-                "provenance of the export.",
+                "context, the compounds and ions matched in them, the "
+                "verdicts on their assignments without the reviewers' notes "
+                "or ids, and the provenance of the export.",
             )
         )
     if manifest["target_collections"]:

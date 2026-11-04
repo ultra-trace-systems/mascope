@@ -6,7 +6,8 @@ records to GlitchTip via ``sentry-sdk``. These tests inject a fake ``sentry_sdk`
 into ``sys.modules`` so they run without the optional ``sentry`` extra installed,
 and cover: the default-OFF gate, init wiring/idempotency, the WARNING+ capture
 paths (message vs exception), how each is grouped (call-site fingerprint, bound
-override, log entry beside an exception), the SDK-loop guard, never-raise
+override, log entry beside an exception), the SDK-loop guard, the bound
+opt-out, never-raise
 behavior, and the CLI and ad-hoc script exclusions in ``RuntimeLogging.configure``.
 One test drives a real loguru logger end to end.
 """
@@ -364,6 +365,25 @@ def test_sink_loop_guard_skips_sdk_records(fake_sentry, name):
     assert fake_sentry.captured == []
 
 
+@pytest.mark.parametrize("level", ["WARNING", "ERROR"])
+def test_sink_skips_a_record_bound_to_stay_out(fake_sentry, level):
+    """A record bound with SENTRY_SKIP reaches the logs but never monitoring."""
+    rl._sentry_sink(_msg(level=level, extra={rl.SENTRY_SKIP: True}))
+    rl._sentry_sink(
+        _msg(
+            level=level,
+            exc=_Exc(ValueError, ValueError(), None),
+            extra={rl.SENTRY_SKIP: True},
+        )
+    )
+    assert fake_sentry.captured == []
+
+
+def test_sink_reports_a_record_bound_false(fake_sentry):
+    rl._sentry_sink(_msg(level="WARNING", extra={rl.SENTRY_SKIP: False}))
+    assert [c[0] for c in fake_sentry.captured] == ["msg"]
+
+
 def test_sink_never_raises(fake_sentry):
     def _boom(*a, **k):
         raise RuntimeError("transport down")
@@ -516,6 +536,7 @@ def test_sink_via_real_loguru(fake_sentry):
             logger.exception("work failed")  # -> capture_exception (has traceback)
         logger.warning("plain warning")  # -> capture_message
         logger.info("ignored below threshold")  # -> nothing (INFO < WARNING)
+        logger.bind(**{rl.SENTRY_SKIP: True}).warning("kept out")  # -> nothing
     finally:
         logger.remove(sink_id)
 

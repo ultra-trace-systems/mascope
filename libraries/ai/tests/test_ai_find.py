@@ -151,12 +151,14 @@ class TestResolve:
         assert error.to_dict()["n_candidates"] == 2
         assert error.to_dict()["candidates"][0]["name"] == "Spring 2026"
         assert "Spring 2026 repeat" in str(error)
+        assert str(error).startswith("'spring' matches 2 batches: ")
 
     def test_two_whole_name_matches_are_candidates(self, kit):
         with pytest.raises(AmbiguousName) as caught:
             kit.resolve("Sample 1", "sample")
 
         assert [ref.id for ref in caught.value.candidates] == ["s21", "s31"]
+        assert str(caught.value).startswith("'Sample 1' matches 2 samples: ")
 
     def test_a_sample_id_is_read_directly(self, kit, api):
         ref = kit.resolve("s22", "sample")

@@ -128,3 +128,29 @@ class GetMs2ScansQueryParams(QueryParamsModel):
         gt=0,
         le=600,
     )
+
+
+class GetMs2WindowQueryParams(QueryParamsModel):
+    """Query parameters for retrieving the isolation windows of MS2 groups."""
+
+    width: float | None = Field(
+        None,
+        description=(
+            "The isolation width in Da to draw every group's window at. "
+            "Defaults to each group's own, the widest its scans used"
+        ),
+        gt=0,
+    )
+    parent_peak_tolerance: float = Field(
+        DEFAULT_PARENT_PEAK_TOLERANCE,
+        description=(
+            "Tolerance in Da for merging near-duplicate parent peaks, for a "
+            "file read raw; a file's MS2 store answers from its own grouping"
+        ),
+    )
+    timeout: float = Field(
+        DEFAULT_TIMEOUT,
+        description="Maximum seconds to wait for the computation before returning 504",
+        gt=0,
+        le=600,
+    )

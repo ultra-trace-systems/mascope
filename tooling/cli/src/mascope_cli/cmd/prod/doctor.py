@@ -87,7 +87,8 @@ class RunningImage:
 class VersionStatus:
     """What the deployment would deploy now versus what it is running."""
 
-    # The tag `mascope prod up` would select (pin, release tag at HEAD, latest)
+    # The tag `mascope prod up` would select (pin, release tag at HEAD, the
+    # release a wheel install recorded, latest)
     expected: Optional[str]
     running: list[RunningImage]
 
@@ -98,7 +99,8 @@ class VersionStatus:
         would deploy.
 
         This is what a silent channel switch looks like from the outside: the
-        checkout says one release, the containers run another, and the next
+        deployment says one release (its checkout, or the release a wheel
+        install recorded), the containers run another, and the next
         `up` (a reboot, a restart) moves the stack without anyone asking.
         """
         if not self.expected:
@@ -567,7 +569,7 @@ def _version_line(v: VersionStatus) -> str:
     if not v.drift:
         return expected
     running = " · ".join(f"{r.label} {r.tag}" for r in tagged)
-    return f"{running}  DRIFT (this checkout deploys {expected})"
+    return f"{running}  DRIFT (this deployment deploys {expected})"
 
 
 def _age_word(hours: Optional[float]) -> str:

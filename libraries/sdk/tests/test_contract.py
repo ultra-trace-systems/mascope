@@ -238,6 +238,18 @@ class TestClientContract:
         names = matched["target_collection_names"].explode().dropna()
         assert not names.empty, "matched peaks should name their collections"
 
+    def test_a_sample_says_its_class_and_line_width(self, mascope):
+        """Whether or not it has an assignment run: the demo has none."""
+        sample = mascope.samples.get(_first_sample_id(mascope))
+
+        width = sample["line_width"]
+        # The demo samples are cut from raw Orbitrap files.
+        assert width["instrument_class"] == "orbi"
+        assert width["reference_mz"] == 200.0
+        if width["resolution"] is not None:
+            assert width["resolution"] > 0
+            assert width["fwhm_ppm"] == pytest.approx(1e6 / width["resolution"])
+
     def test_get_single_sample(self, mascope):
         sample_id = _first_sample_id(mascope)
 
@@ -272,6 +284,16 @@ class TestPeakAssignmentContract:
         completed = runs[runs["status"] == "completed"]
         assert not completed.empty
         assert completed.iloc[0]["engine_version"]
+
+    def test_list_runs_serves_the_width_each_run_scored_at(self, mascope):
+        sample_id = _sample_with_completed_run(mascope)
+
+        runs = mascope.peak_assignments.list_runs(sample_id)
+
+        assert {"sigma_ppm", "sigma_source", "mu_ppm", "mu_source"} <= set(runs.columns)
+        scored = runs[runs["sigma_ppm"].notna()]
+        assert (scored["sigma_ppm"] > 0).all()
+        assert scored["sigma_source"].notna().all()
 
     def test_get_returns_one_row_per_peak_with_run_attrs(self, mascope):
         sample_id = _sample_with_completed_run(mascope)
@@ -797,6 +819,8 @@ class TestLoaderContract:
             batches=batch["sample_batch_name"],
             exact=True,
             confirm_above=None,
+            # Asked for: a batch read in one request leaves them out unasked
+            matches=True,
         )
 
         assert peaks is not None and not peaks.empty
@@ -812,6 +836,142 @@ class TestLoaderContract:
         assert (peaks["sample_batch_name"] == batch["sample_batch_name"]).all()
         batch_samples = mascope.samples.list(batch["sample_batch_id"])
         assert set(peaks["sample_item_id"]) <= set(batch_samples["sample_item_id"])
+
+    def test_load_peaks_reads_a_batch_in_one_request_as_its_samples_read(
+        self, mascope, monkeypatch
+    ):
+        from pandas.testing import assert_frame_equal
+
+        from mascope_sdk.resources import _base
+
+        _skip_unless_attr(mascope.batch_peaks, "peak_lists")
+        dataset, batches = _first_dataset_and_batches(mascope)
+        batch = batches.iloc[0]
+        real_get = _base.http_get
+        paths: list[str] = []
+
+        def counted(*args, **kwargs):
+            paths.append(kwargs.get("path", args[1] if len(args) > 1 else ""))
+            return real_get(*args, **kwargs)
+
+        def load():
+            paths.clear()
+            return mascope.load_peaks(
+                dataset=dataset["dataset_id"],
+                batches=batch["sample_batch_name"],
+                exact=True,
+                confirm_above=None,
+                matches=False,
+            )
+
+        monkeypatch.setattr(_base, "http_get", counted)
+        bulk = load()
+        bulk_reads = [p for p in paths if p.endswith("/peaks")]
+        # The same load as a server older than the batch read answers it
+        monkeypatch.setattr(mascope, "_server_has_batch_peak_lists", False)
+        fan_out = load()
+        sample_reads = [p for p in paths if p.endswith("/peaks")]
+
+        assert bulk_reads == [f"batch-peaks/batch/{batch['sample_batch_id']}/peaks"]
+        assert len(sample_reads) == fan_out["sample_item_id"].nunique() > 1
+        assert bulk.attrs["complete"] and fan_out.attrs["complete"]
+        key = ["sample_item_id", "peak_id"]
+        columns = [*key, "mz", "height", "area", "sample_item_name", "datetime_utc"]
+        assert_frame_equal(
+            bulk[columns].sort_values(key, ignore_index=True),
+            fan_out[columns].sort_values(key, ignore_index=True),
+        )
+        assert not bulk["is_satellite"].any()
+
+    def test_load_peaks_reads_a_large_batch_in_parts_as_in_one(
+        self, mascope, monkeypatch
+    ):
+        from pandas.testing import assert_frame_equal
+
+        from mascope_sdk import _loaders
+        from mascope_sdk.resources import _base
+
+        _skip_unless_attr(mascope.batch_peaks, "peak_lists")
+        # The SDK that reads a batch of over a hundred samples in parts
+        _skip_unless_attr(_loaders, "_CONCURRENT_BATCH_READS")
+        dataset, batches = _first_dataset_and_batches(mascope)
+        batch = batches.iloc[0]
+        real_get = _base.http_get
+        named: list[list[str] | None] = []
+
+        def counted(*args, **kwargs):
+            path = kwargs.get("path", args[1] if len(args) > 1 else "")
+            if path.startswith("batch-peaks/"):
+                named.append((kwargs.get("params") or {}).get("sample_item_id"))
+            return real_get(*args, **kwargs)
+
+        def load():
+            named.clear()
+            return mascope.load_peaks(
+                dataset=dataset["dataset_id"],
+                batches=batch["sample_batch_name"],
+                exact=True,
+                confirm_above=None,
+                matches=False,
+            )
+
+        monkeypatch.setattr(_base, "http_get", counted)
+        whole = load()
+        count = len(mascope.samples.list(batch["sample_batch_id"]))
+        assert count > 1 and named == [None]
+        # A demo batch fits in one read: cut it into two parts or more
+        monkeypatch.setattr(_loaders, "_SAMPLES_PER_READ", max(1, count // 3))
+        parts = load()
+
+        assert len(named) >= 2 and all(named)
+        assert sum(len(n) for n in named) == count
+        assert parts.attrs["complete"] and whole.attrs["complete"]
+        assert parts.attrs["segments"] == whole.attrs["segments"]
+        assert_frame_equal(parts, whole)
+
+    def test_peak_lists_of_named_samples_are_theirs_in_the_whole_batch(self, mascope):
+        from pandas.testing import assert_frame_equal
+
+        _skip_unless_attr(mascope.batch_peaks, "peak_lists")
+        _skip_unless_param(mascope.batch_peaks.peak_lists, "samples")
+        _, batches = _first_dataset_and_batches(mascope)
+        batch_id = batches.iloc[0]["sample_batch_id"]
+        whole = mascope.batch_peaks.peak_lists(batch_id)
+        chosen = whole["sample_item_id"].iloc[-1]
+
+        named = mascope.batch_peaks.peak_lists(
+            batch_id, samples=[chosen, "no-such-sample"]
+        )
+
+        assert [s["sample_item_id"] for s in named.attrs["samples"]] == [chosen]
+        assert [
+            (f["sample_item_id"], f["status_code"]) for f in named.attrs["failures"]
+        ] == [("no-such-sample", 404)]
+        assert_frame_equal(
+            named.reset_index(drop=True),
+            whole[whole["sample_item_id"] == chosen].reset_index(drop=True),
+        )
+
+    def test_load_peaks_saves_a_snapshot_that_reads_back_equal(self, mascope, tmp_path):
+        import pandas as pd
+        from pandas.testing import assert_frame_equal
+
+        _skip_unless_param(mascope.load_peaks, "save_path")
+        dataset, batches = _first_dataset_and_batches(mascope)
+        path = tmp_path / "batch.parquet"
+
+        peaks = mascope.load_peaks(
+            dataset=dataset["dataset_id"],
+            batches=batches.iloc[0]["sample_batch_name"],
+            exact=True,
+            confirm_above=None,
+            save_path=path,
+        )
+
+        again = pd.read_parquet(path)
+        assert_frame_equal(again, peaks)
+        assert again.attrs["provenance"] == peaks.attrs["provenance"]
+        assert again.attrs["segments"] == peaks.attrs["segments"]
 
     def test_load_peak_timeseries_for_a_matched_compound(self, mascope, matched_peaks):
         _skip_unless_param(mascope.load_peak_timeseries, "exact")
@@ -1081,6 +1241,7 @@ class TestSeriesContract:
             batches=batch["sample_batch_name"],
             exact=True,
             confirm_above=None,
+            matches=True,
         )
         heights = peaks.dropna(subset=["target_ion_id"]).groupby(key)["height"].sum()
         intensity = series.set_index(key)["intensity"]
@@ -1374,6 +1535,21 @@ class TestWriteContract:
             ),
         )
 
+    def test_batch_move(self, scratch):
+        batches = scratch.client.batches
+        _skip_unless_attr(batches, "move")
+        batch_id = _scratch_batch(scratch, "moved batch")
+        dest = scratch.client.datasets.create(f"move into {scratch.tag}")["dataset_id"]
+        try:
+            moved = batches.move(batch_id, dest)
+            # One write, not a background task: the batch is there, under its ID
+            assert moved["sample_batch_id"] == batch_id
+            assert moved["dataset_id"] == dest
+            assert batch_id not in _batch_ids(scratch)
+            assert batch_id in batches._list_by_id(dest)["sample_batch_id"].tolist()
+        finally:
+            scratch.client.datasets.delete(dest)
+
     def test_sample_copy_update_move(self, mascope, scratch):
         samples = scratch.client.samples
         _skip_unless_attr(samples, "copy")
@@ -1514,6 +1690,432 @@ class TestWriteContract:
         assert "global editor role" in refused.value.required_role
 
 
+@pytest.fixture(scope="module")
+def launched_run(scratch, scratch_matched):
+    """A run the SDK launched on a sample of the scratch copy, read back.
+
+    ``(sample ID, run ID, the refusal of a second launch sent at once, the
+    finished run's ledger)``. Launching needs the server's peak assignment
+    switch (``MASCOPE_PEAK_ASSIGNMENT=1``, or ``peak_assignment = true``
+    under ``[meta]``): a stack without it refuses with a 403, and the tests
+    using this skip. Only Stage A runs, which is what keeps the run short.
+    """
+    from types import SimpleNamespace
+
+    peak_assignments = scratch.client.peak_assignments
+    _skip_unless_attr(peak_assignments, "assign")
+    from mascope_sdk import (
+        AssignmentInFlightError,
+        PermissionDeniedError,
+        SampleIneligibleError,
+    )
+
+    batch_id, _ = scratch_matched
+    samples = scratch.client.samples._list_by_id(batch_id)
+    reasons = []
+    for sample_id in samples["sample_item_id"]:
+        try:
+            run_id = peak_assignments.assign(
+                sample_id, config={"run_untargeted": False}, wait=False
+            )
+        except PermissionDeniedError as e:
+            pytest.skip(f"peak assignment is switched off on the stack: {e.message}")
+        except SampleIneligibleError as e:
+            reasons.append(e.reason)
+            continue
+        break
+    else:
+        pytest.skip(f"no sample of the demo batch can be assigned: {reasons}")
+
+    # At once, while the first is still pending: the server names it.
+    try:
+        second = peak_assignments.assign(sample_id, wait=False)
+    except AssignmentInFlightError as e:
+        refusal = e
+    else:
+        refusal = None  # the first ended before the second arrived
+        peak_assignments.wait_for_run(sample_id, second, poll_interval=1)
+
+    ledger = peak_assignments.wait_for_run(
+        sample_id, run_id, poll_interval=1, timeout=600
+    )
+    return SimpleNamespace(
+        sample_id=sample_id, run_id=run_id, refusal=refusal, ledger=ledger
+    )
+
+
+@pytest.fixture(scope="module")
+def judged_copy(scratch, scratch_matched):
+    """The scratch copy of a demo batch, assigned and judged.
+
+    Stage A runs on its first six samples, each launch taking seconds. The
+    first batch peak that three of them assign the consensus formula is
+    judged: the first sample's peak confirmed and then rejected (the
+    first verdict superseded), the second's rejected, and the batch peak
+    confirmed at the batch level, which the third borrows. Launching and
+    judging need the server's peak assignment switch: a stack without it
+    answers 403 and the tests using this skip. Recorded over the session,
+    since the SDK has no verdict writes of its own here; removed with the
+    scratch workspace.
+    """
+    from types import SimpleNamespace
+
+    _skip_unless_attr(scratch.client.peak_assignments, "verifications_for_batch")
+    batch_id, _ = scratch_matched
+    session = scratch.session
+    samples = list(scratch.client.samples._list_by_id(batch_id)["sample_item_id"])[:6]
+    for sample_id in samples:
+        response = session.post(
+            f"{BASE_URL}/api/peak-assignments/sample/{sample_id}/assign",
+            json={"config": {"run_untargeted": False}},
+            timeout=60,
+        )
+        if response.status_code == 403:
+            pytest.skip("peak assignment is switched off on the stack")
+        if response.status_code == 422:
+            continue  # a sample the engine cannot read
+        response.raise_for_status()
+    ledgers = {}
+    for sample_id in samples:
+        ledger = _eventually(
+            scratch.client,
+            lambda sample_id=sample_id: _settled_ledger(scratch, sample_id),
+            timeout=600,
+        )
+        if isinstance(ledger, dict) or ledger is None:
+            continue
+        ledgers[sample_id] = ledger
+
+    members = scratch.client.batch_peaks.members(batch_id)
+    if members is None:
+        pytest.skip("the runs folded no batch peak")
+    agree = members[
+        members["consensus_formula"].notna()
+        & (members["assigned_formula"] == members["consensus_formula"])
+        & members["sample_item_id"].isin(list(ledgers))
+    ]
+    shared = agree.groupby("batch_peak_id")["sample_item_id"].nunique()
+    shared = shared[shared >= 3]
+    if shared.empty:
+        pytest.skip("no batch peak is assigned the same in three samples")
+    batch_peak_id = shared.index[0]
+    peak_members = agree[agree["batch_peak_id"] == batch_peak_id].sort_values(
+        "sample_item_id"
+    )
+    first, second, third = peak_members.head(3).itertuples(index=False)
+
+    def verify(member, verdict, evidence_level=None):
+        ledger = ledgers[member.sample_item_id]
+        row = ledger[ledger["sample_peak_id"] == member.sample_peak_id].iloc[0]
+        return _api(
+            session,
+            "POST",
+            f"peak-assignments/sample/{member.sample_item_id}/verify",
+            json={
+                "peak_assignment_id": row["peak_assignment_id"],
+                "verdict": verdict,
+                "evidence_level": evidence_level,
+            },
+        )[0]
+
+    replaced = verify(first, "confirmed", "visual")
+    current = verify(first, "rejected")
+    verify(second, "rejected")
+    batch_verdict = _api(
+        session,
+        "POST",
+        f"batch-peaks/batch/{batch_id}/verify",
+        json={
+            "batch_peak_id": batch_peak_id,
+            "verdict": "confirmed",
+            "evidence_level": "pattern",
+            "expected_formula": first.consensus_formula,
+        },
+    )[0]
+    return SimpleNamespace(
+        batch_id=batch_id,
+        batch_peak_id=batch_peak_id,
+        first=first,
+        second=second,
+        third=third,
+        replaced=replaced,
+        current=current,
+        batch_verdict=batch_verdict,
+    )
+
+
+def _settled_ledger(scratch, sample_id):
+    """A sample's ledger once its newest run has ended; ``{"failed": ...}``
+    when that run did not complete, so the wait ends either way."""
+    runs = scratch.client.peak_assignments.list_runs(sample_id)
+    if runs is None:
+        return {"failed": "no run"}
+    newest = runs.iloc[0]
+    if newest["status"] in ("pending", "running"):
+        return None
+    if newest["status"] != "completed":
+        return {"failed": newest["status"]}
+    return scratch.client.peak_assignments.get(
+        sample_id, run_id=newest["peak_assignment_run_id"]
+    )
+
+
+@requires_stack
+class TestPeakAssignmentWriteContract:
+    """The peak-assignment writes on the live stack, on the scratch copy.
+
+    Scoring a composition needs nothing switched on; launching a run and
+    recording a verdict skip on a stack whose peak assignment is off (see
+    ``launched_run``).
+    """
+
+    def test_fit_aggregate_scores_a_matched_compound(self, mascope, matched_peaks):
+        _skip_unless_attr(mascope.peak_assignments, "fit_aggregate")
+        sample_id, matched = matched_peaks
+        peak = matched.loc[matched["height"].idxmax()]
+        # get_peaks resolves mechanism ids to names, so map the name back.
+        mechanisms = mascope.ionization.list()
+        name_to_id = dict(
+            zip(
+                mechanisms["ionization_mechanism"],
+                mechanisms["ionization_mechanism_id"],
+            )
+        )
+
+        fit = mascope.peak_assignments.fit_aggregate(
+            sample_id,
+            peak["target_compound_formula"],
+            name_to_id[peak["ionization_mechanism"]],
+        )
+
+        assert set(fit) == {"matches", "match_ions", "match_isotopes"}
+        assert fit["match_isotopes"], "a matched compound's lines match again"
+        (ion,) = fit["match_ions"]
+        assert {"target_ion_formula", "ionization_mechanism", "match"} <= set(ion)
+        line = fit["match_isotopes"][0]
+        assert {"target_isotope_formula", "mz", "relative_abundance"} <= set(line)
+        assert {"sample_peak_mz", "match_mz_error", "match_score"} <= set(line["match"])
+
+    def test_assign_launches_a_run_and_reads_it_back(self, launched_run):
+        ledger = launched_run.ledger
+
+        assert ledger is not None and not ledger.empty
+        assert set(ledger["peak_assignment_run_id"]) == {launched_run.run_id}
+        run = ledger.attrs["run"]
+        assert run["status"] == "completed"
+        assert run["engine"] == "mascope"
+        assert run["config"]["run_untargeted"] is False
+
+    def test_a_second_launch_names_the_run_in_flight(self, launched_run):
+        if launched_run.refusal is None:
+            pytest.skip("the first run ended before the second launch arrived")
+
+        assert launched_run.refusal.status_code == 409
+        assert launched_run.refusal.code == "assignment_in_flight"
+        assert launched_run.refusal.peak_assignment_run_id == launched_run.run_id
+
+    def test_verify_records_a_verdict_listed_back(self, scratch, launched_run):
+        import pandas as pd
+
+        peak_assignments = scratch.client.peak_assignments
+        sample_id = launched_run.sample_id
+        assigned = launched_run.ledger[launched_run.ledger["assigned_formula"].notna()]
+        if assigned.empty:
+            pytest.skip("the run assigned no formula to verify")
+        row = assigned.iloc[0]
+
+        first = peak_assignments.verify(
+            sample_id,
+            row["peak_assignment_id"],
+            "confirmed",
+            evidence_level="visual",
+            note="contract test",
+        )
+        second = peak_assignments.verify(sample_id, row["peak_assignment_id"], "unsure")
+
+        assert first["verdict"] == "confirmed"
+        assert first["evidence_level"] == "visual"
+        assert first["peak_assignment_id"] == row["peak_assignment_id"]
+        assert first["assigned_formula"] == row["assigned_formula"]
+        verdicts = peak_assignments.list_verifications(sample_id)
+        by_id = verdicts.set_index("assignment_verification_id")
+        # Both kept; the later one is current and stamped the earlier.
+        assert pd.isna(
+            by_id.loc[second["assignment_verification_id"], "superseded_utc"]
+        )
+        assert pd.notna(
+            by_id.loc[first["assignment_verification_id"], "superseded_utc"]
+        )
+        assert {
+            "peak_assignment_run_id",
+            "sample_peak_id",
+            "fit_score",
+            "verified_utc",
+        } <= set(verdicts.columns)
+
+
+@requires_stack
+class TestScopeVerificationsContract:
+    """The verdicts of a batch or dataset in one read, on the scratch copy."""
+
+    def test_a_batch_reads_one_current_verdict_per_judged_peak(
+        self, scratch, judged_copy
+    ):
+        frame = scratch.client.peak_assignments.verifications_for_batch(
+            judged_copy.batch_id
+        )
+        # One current row per judged peak.
+        assert not frame.duplicated(["sample_item_id", "sample_peak_id"]).any()
+        rows = frame.set_index(["sample_item_id", "sample_peak_id"])
+
+        def row_of(member):
+            return rows.loc[(member.sample_item_id, member.sample_peak_id)]
+
+        first = row_of(judged_copy.first)
+        assert first["verdict"] == "rejected" and not first["borrowed"]
+        assert (
+            first["assignment_verification_id"]
+            == judged_copy.current["assignment_verification_id"]
+        )
+        second = row_of(judged_copy.second)
+        assert second["verdict"] == "rejected" and not second["borrowed"]
+        third = row_of(judged_copy.third)
+        assert third["verdict"] == "confirmed" and third["borrowed"]
+        assert third["batch_peak_id"] == judged_copy.batch_peak_id
+        assert third["evidence_level"] == "pattern"
+        assert {
+            "filename",
+            "datetime_utc",
+            "sample_peak_mz",
+            "evidence_level",
+            "fit_score",
+            "evidence",
+            "p_correct",
+            "borrowed",
+        } <= set(frame.columns)
+        assert frame["superseded_utc"].isna().all()
+
+    def test_the_superseded_verdict_only_on_request(self, scratch, judged_copy):
+        read = scratch.client.peak_assignments.verifications_for_batch
+        frame = read(judged_copy.batch_id, include_superseded=True)
+
+        replaced = frame[
+            frame["assignment_verification_id"]
+            == judged_copy.replaced["assignment_verification_id"]
+        ]
+        assert len(replaced) == 1
+        assert replaced["superseded_utc"].notna().all()
+        assert replaced["evidence_level"].tolist() == ["visual"]
+
+    def test_the_dataset_read_is_the_batch_read(self, scratch, judged_copy):
+        peak_assignments = scratch.client.peak_assignments
+        batch = peak_assignments.verifications_for_batch(judged_copy.batch_id)
+        dataset = peak_assignments.verifications_for_dataset(scratch.dataset_id)
+
+        # The scratch dataset's other batches carry no verdict.
+        assert dataset.reset_index(drop=True).equals(batch.reset_index(drop=True))
+
+    def test_filters_are_applied_on_the_server(self, scratch, judged_copy):
+        read = scratch.client.peak_assignments.verifications_for_batch
+        confirmed = read(judged_copy.batch_id, verdict="confirmed")
+
+        # The two judged samples keep their own rejections: the batch-level
+        # confirmation reaches only the third.
+        assert set(confirmed["sample_item_id"]) >= {judged_copy.third.sample_item_id}
+        assert (
+            not confirmed["sample_item_id"]
+            .isin([judged_copy.first.sample_item_id, judged_copy.second.sample_item_id])
+            .any()
+        )
+        assert confirmed["borrowed"].all()
+
+
+@requires_stack
+class TestPeakAssignmentImportContract:
+    """An external engine's run published with ``import_run`` and read back,
+    on the scratch copy. Skips on a stack whose peak assignment is off, as
+    the import is refused there with a 403.
+    """
+
+    def test_a_two_row_import_reads_back_with_its_engine_provenance(
+        self, scratch, scratch_matched
+    ):
+        import pandas as pd
+
+        peak_assignments = scratch.client.peak_assignments
+        _skip_unless_attr(peak_assignments, "import_run")
+        from mascope_sdk import PermissionDeniedError
+
+        batch_id, _ = scratch_matched
+        # The last sample: the launch tests take the first they can assign.
+        sample_id = scratch.client.samples._list_by_id(batch_id).iloc[-1][
+            "sample_item_id"
+        ]
+        sample = scratch.client.samples.get(sample_id)
+        intensity = "height" if sample["instrument_type"] == "orbi" else "area"
+        peaks = scratch.client.samples.get_peaks(sample_id, matches=False)
+        top, other = peaks.nlargest(2, intensity).to_dict("records")
+        frame = pd.DataFrame(
+            [
+                {
+                    "sample_peak_id": top["peak_id"],
+                    "sample_peak_mz": top["mz"],
+                    "sample_peak_intensity": top[intensity],
+                    "role": "M0",
+                    "assigned_formula": "C6H12O6",
+                    "source": "untargeted",
+                    "fit_score": 0.9,
+                    "engine_tier": "candidate",
+                    "provenance": {
+                        # Reserved: the server strips them.
+                        "p_correct": 0.99,
+                        "calibration": {"provisional": False},
+                        "corroboration": {"n_adducts": 3},
+                        "engine_provenance": {"p_correct": 0.42},
+                    },
+                },
+                {
+                    "sample_peak_id": other["peak_id"],
+                    "sample_peak_mz": other["mz"],
+                    "sample_peak_intensity": other[intensity],
+                    "role": "unassigned",
+                },
+            ]
+        )
+
+        try:
+            run_id = peak_assignments.import_run(
+                sample_id,
+                frame,
+                engine="sdk-contract",
+                engine_version="1.0",
+                tier_bands={"assigned": 0.75, "candidate": 0.45},
+                calibration={"method": "none"},
+                config={"purpose": "contract test"},
+            )
+        except PermissionDeniedError as e:
+            pytest.skip(f"peak assignment is switched off on the stack: {e.message}")
+
+        ledger = peak_assignments.get(sample_id, run_id=run_id)
+        assert sorted(ledger["sample_peak_id"]) == sorted(frame["sample_peak_id"])
+        run = ledger.attrs["run"]
+        assert run["status"] == "completed"
+        assert run["engine"] == "sdk-contract"
+        assert run["engine_version"] == "1.0"
+        assert run["calibration"] == {"method": "none"}
+        assert run["tier_bands"] == {"assigned": 0.75, "candidate": 0.45}
+        assert run["config"] == {"purpose": "contract test"}
+        row = ledger.set_index("sample_peak_id").loc[top["peak_id"]]
+        assert row["engine_tier"] == "candidate"
+        assert row["tier"] in ("assigned", "candidate", "below_assignability")
+        assert pd.isna(row["p_correct"])
+
+        full = peak_assignments.detail(sample_id, row["peak_assignment_id"])
+        provenance = full["provenance"]
+        assert provenance["engine_provenance"] == {"p_correct": 0.42}
+        assert not {"p_correct", "calibration", "corroboration"} & set(provenance)
+
+
 def _signed_in(email: str, password: str):
     """A session signed in as *email*, for what a token may not do."""
     import requests
@@ -1639,7 +2241,11 @@ def _reference_sources(mascope):
 
 
 def _largest_reference_source(mascope):
-    """The reference source with the most compounds, as a row of sources()."""
+    """The reference source with the most compounds, as a row of sources().
+
+    The server lists compound sources only, so a spectral library loaded on
+    the stack, whose ``record_count`` counts spectra, is never the one picked.
+    """
     sources = _reference_sources(mascope)
     return sources.loc[sources["record_count"].idxmax()]
 

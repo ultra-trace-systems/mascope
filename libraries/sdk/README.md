@@ -94,6 +94,7 @@ This creates a `tutorials/` folder with the following notebooks:
 | 8   | `08_correlation_analysis.ipynb`    | Find co-varying peaks via correlation and clustering    |
 | 9   | `09_batch_stages.ipynb`            | Split a batch into stages and compare per-stage averages |
 | 10  | `10_peak_assignment.ipynb`         | Read a server-side peak-assignment run: tiers, sources, Van Krevelen |
+| 11  | `11_assignment_round_trip.ipynb`   | Assign a sample's peaks yourself, publish the run, compare it with Mascope's |
 
 Open them in VS Code (or any Jupyter-compatible IDE) and run the cells. Each notebook is self-contained, just make sure your `.env` credentials are set up first (see [Configuration](#configuration)).
 
@@ -228,6 +229,8 @@ single batch by its full name, or a compiled `re.Pattern` for a regex.
 ```python
 import re
 
+import pandas as pd
+
 # All peaks from every batch whose name contains "Uronium"
 peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium")
 
@@ -245,9 +248,55 @@ peaks = mascope.load_peaks(dataset="My Dataset", samples="blank")
 # All peaks from every batch (skip confirmation prompt)
 peaks = mascope.load_peaks(dataset="My Dataset", confirm_above=None)
 
-# Without match data, areas only
-peaks = mascope.load_peaks(dataset="My Dataset", matches=False, heights=False)
+# With match data, areas only
+peaks = mascope.load_peaks(dataset="My Dataset", matches=True, heights=False)
+
+# Keep a snapshot of one batch to work on offline, without the server
+peaks = mascope.load_peaks(
+    dataset="My Dataset",
+    batches="Uronium 2026-01",
+    exact=True,
+    save_path="uronium.parquet",
+)
+peaks = pd.read_parquet("uronium.parquet")  # later, anywhere: attrs included
 ```
+
+Each batch comes a hundred samples per request: the server sends their peak
+lists as one table (`batch_peaks.peak_lists`), so a batch of up to a hundred
+samples is one request. A larger batch is read in parts, so that no request
+takes the server long enough to time out, two parts at a time. With
+`samples=`, the requests name the samples chosen, and the server reads no
+others. A server older than that read answers 404, and `load_peaks` then reads each sample on its own, eight at a
+time, as it always did. The frame is the same either way, with two
+differences:
+
+- **Match columns.** `matches` left out reads no matches where batches are
+  read a hundred samples per request, and reads them from an older server, as before.
+  Pass `matches=True` or `matches=False` to get the same columns from
+  either.
+- **`is_satellite`.** The batch read adds this column. It is False
+  throughout, because satellite peaks are left out, as `get_peaks` leaves
+  them out.
+
+The columns, one row per peak (per match with `matches=True`):
+
+- `sample_batch_name`, `sample_item_id`, `sample_item_name`, `datetime_utc`
+  (the sample's start, UTC).
+- `peak_id`, `mz`, `area`, `height` (averaged over the sample's scans;
+  summed with `average=False`), `sparsity`.
+- `signal_to_noise`, `NaN` where the file stores no estimate.
+- `segment`, only for a stitched sample.
+- `is_satellite`, as above.
+- With matches, the match columns of `get_peaks`: `target_isotope_id`,
+  `target_ion_id`, `target_compound_id` and their formulas and names,
+  `match_score_isotope`, `match_score_ion`, `match_score_compound`,
+  `relative_abundance`, `ionization_mechanism`, `target_collection_ids`,
+  `target_collection_names`.
+
+`save_path` writes the frame as a Parquet file, `attrs` included, and
+`pd.read_parquet` reads back the same frame: the rows, the provenance and
+the failures (see [Provenance](#provenance)). Nothing is written when the
+load finds nothing.
 
 ---
 
@@ -464,7 +513,7 @@ with open("peaks.provenance.json", "w", encoding="utf-8") as f:
     json.dump(peaks.attrs["provenance"], f, indent=2)
 ```
 
-Parquet keeps `attrs` inside the file - `peaks.to_parquet("peaks.parquet")`, and `pd.read_parquet` brings them back - as long as pandas is 2.1 or newer and `pyarrow` is installed, neither of which the SDK itself requires. A `load_batch_ledger` frame is the exception: its `attrs` also hold the species table, a DataFrame that Parquet cannot keep there, so `to_parquet` raises. Save the species table as a file of its own first:
+Parquet keeps `attrs` inside the file - `peaks.to_parquet("peaks.parquet")`, and `pd.read_parquet` brings them back. The SDK requires pandas 2.1 or newer and `pyarrow`, which this needs; `load_peaks(..., save_path=...)` does it for you. A `load_batch_ledger` frame is the exception: its `attrs` also hold the species table, a DataFrame that Parquet cannot keep there, so `to_parquet` raises. Save the species table as a file of its own first:
 
 ```python
 ledger = mascope.load_batch_ledger(dataset="My Dataset")
@@ -484,8 +533,9 @@ and files each assignment into a confidence tier (`assigned` | `candidate` |
 **evidence** — its `fit_score` weighted by the chemical plausibility of the
 assigned formula — under the run's `tier_bands`. `fit_score` is served
 alongside it, unchanged, as the pure fit measurement. Runs are launched from
-the Mascope app and persisted; the SDK reads the results (it does not trigger
-runs).
+the Mascope app, on ingest, or from the SDK
+([Running and verifying](#running-and-verifying)), and persisted; the SDK reads
+the results.
 
 The top tier used to be called `identified`. The API still accepts that
 spelling wherever a tier is sent and normalises it to `assigned`, so scripts
@@ -566,6 +616,27 @@ A run's ledger does not say who computed it — the run does. `list_runs` (and
 | `engine_version` | That engine's version string. |
 | `tier_bands` | The `assigned` / `candidate` evidence thresholds the run tiered with. |
 | `calibration` | What an external engine disclosed about its calibration at import. Null for `mascope` runs, whose calibration state is the sample's own. |
+| `sigma_ppm`, `sigma_source` | The mass-error width the run scored at [ppm], and where it came from. A `mascope` run says `fitted` (the sample's own lines) or `instrument_class` (too few lines, so the class stood in). An imported run gives what its engine disclosed. |
+| `mu_ppm`, `mu_source` | The mass-error centre the run corrected by [ppm], and where it came from: `fitted`, `reagent` or `none` for a `mascope` run. |
+
+The four width columns are null for a run that never reached scoring, an
+import that disclosed no width, and the `batch` run. Read the width a run
+scored at here instead of measuring it again from the spectrum.
+
+A sample without any run still says what width its lines have.
+`mascope.samples.get(sample_id)["line_width"]` holds:
+
+| Key | Meaning |
+| --- | --- |
+| `instrument_class` | `orbi` or `tof`: the class the assignment engine reads the file as. |
+| `reference_mz` | The m/z the width is quoted at, 200. |
+| `resolution` | The resolving power m/dm there, from the instrument functions detection fitted to the file. |
+| `fwhm_ppm` | The full width at half maximum of a line there [ppm], `1e6 / resolution`. |
+
+`resolution` and `fwhm_ppm` are null for a blank and for a file whose
+instrument functions were never fitted. The line width is not the run's
+`sigma_ppm`: one is how wide a peak is, the other how widely the measured
+masses scatter around the true ones.
 
 This matters because reads default to the **latest completed run whatever its
 engine**, so a published run is what you get unless you ask for another. It is
@@ -586,8 +657,243 @@ different confidence under different thresholds. An imported run's `p_correct`
 is always empty — that column is Mascope's own calibrated judgement and an
 import may not write it.
 
+### Running and verifying
+
+Three calls change or score a sample's assignments. The two that write need
+the editor role on the sample, and a server with peak assignment switched on
+(`peak_assignment = true` under `[meta]`); otherwise they raise
+`PermissionDeniedError`.
+
+```python
+from mascope_sdk import AssignmentInFlightError, SampleIneligibleError
+
+# Run the engine on a sample, wait for it, and read what it assigned
+assignments = mascope.peak_assignments.assign(sample_id)
+assignments = mascope.peak_assignments.assign(
+    sample_id, config={"run_untargeted": False, "assigned_threshold": 0.8}
+)
+
+# Or launch it and come back for it
+run_id = mascope.peak_assignments.assign(sample_id, wait=False)
+assignments = mascope.peak_assignments.wait_for_run(sample_id, run_id)
+
+try:
+    mascope.peak_assignments.assign(sample_id)
+except AssignmentInFlightError as e:
+    # One run per sample at a time: follow the one already going. Its id is
+    # None while the other launch is still creating it; list_runs shows it.
+    if e.peak_assignment_run_id is not None:
+        mascope.peak_assignments.wait_for_run(sample_id, e.peak_assignment_run_id)
+except SampleIneligibleError as e:
+    print(e.reason)  # "blank sample (no peaks)", "m/z calibration not verified"
+
+# Record a verdict on one assignment
+row = assignments.iloc[0]
+mascope.peak_assignments.verify(
+    sample_id, row["peak_assignment_id"], "confirmed", evidence_level="msms"
+)
+verdicts = mascope.peak_assignments.list_verifications(sample_id)
+current = verdicts[verdicts["superseded_utc"].isna()]
+
+# Score any composition against the sample: its isotope table
+fit = mascope.peak_assignments.fit_aggregate(
+    sample_id, row["assigned_formula"], row["ionization_mechanism_id"]
+)
+```
+
+- **`assign`** asks the server to run the engine on one sample. The server
+  decides before it answers: it creates the run and returns its id, or
+  refuses. A sample with a run already going raises `AssignmentInFlightError`,
+  naming that run in `peak_assignment_run_id`. The name is `None` while
+  another launch is still creating its run, and `wait_for_run` refuses a
+  `None` id with a `ValueError`: look at `list_runs` instead. A sample that
+  cannot be assigned, a blank or one whose m/z calibration is not verified,
+  raises `SampleIneligibleError` with its `reason`. Neither ever waits.
+- With `wait=True`, the default, `assign` looks at the run every
+  `poll_interval` seconds (5) and returns its ledger as `get(sample_id,
+  run_id=...)` does. A run that failed raises `AssignmentRunError` with the
+  run's `error`; so does a cancelled one, which wrote no rows. If the run is
+  still going after `timeout` seconds (1800; `None` waits as long as it
+  takes), `AssignmentTimeoutError` hands back its `peak_assignment_run_id`.
+  The run carries on, and `wait_for_run` waits again.
+- `config` takes the run's settings, any of them: `run_untargeted`, `profile`,
+  `context`, `mz_precision_ppm`, `formula_ranges`, `max_untargeted_peaks`,
+  `peak_intensity_threshold`, `max_alternatives`, `assigned_threshold` and
+  `candidate_threshold`. One left out takes the server's default. A run
+  records the settings it ran with under `config` in `list_runs`.
+- **`verify`** records a verdict: `confirmed`, `rejected` or `unsure`.
+  `confirmed` needs an `evidence_level`: `reference_standard`, `msms`,
+  `orthogonal`, `pattern` or `visual`. The server keeps every verdict and
+  snapshots the assignment's `fit_score`, `evidence` and `p_correct` beside
+  it. A later verdict on the same peak, formula and adduct replaces the
+  earlier one as the current answer and stamps its `superseded_utc`.
+- `confirmed` and `rejected` verdicts are the labels the instrument's
+  confidence calibration is refitted on. A verdict on an imported run's
+  assignment is recorded the same way but kept out of that refit, because
+  its scores are the external engine's.
+- **`list_verifications`** lists every verdict on the sample, newest first:
+  `assignment_verification_id`, `peak_assignment_id`, `peak_assignment_run_id`,
+  `sample_peak_id`, `assigned_formula`, `ionization_mechanism_id`, `verdict`,
+  `evidence_level`, `note`, `fit_score`, `evidence`, `p_correct`,
+  `verified_by`, `verified_utc` and `superseded_utc`.
+- **`fit_aggregate`** scores a neutral formula and an ionization mechanism
+  against the sample, as targeted matching scores a compound, and saves
+  nothing. It is how an untargeted assignment, which has no target ion, is
+  checked line by line: `match_ions` holds the ion and its `match_score`,
+  `match_isotopes` one record per isotope line with the peak it matched.
+
+`assign` and `verify` are sent once, as every write is (see
+[Changing Data](#changing-data)): sent again, they would be carried out
+twice. A second verdict counts twice in the calibration refit, and a second
+launch is refused as already in flight. The reads, `fit_aggregate` among
+them, are sent again when the server does not answer. If the answer to
+`assign` or `verify` is lost on the way back, the call raises `MascopeConnectionError`, `MascopeTimeoutError` or a `ServerError`
+(502 to 504) that says the server may have done it: look at `list_runs` or
+`list_verifications` before sending it again.
+
+### Verdicts of a batch or dataset
+
+The verification verdicts recorded in the app are the labelled record of what
+an assignment got right. `verifications_for_batch` and
+`verifications_for_dataset` read them for every sample of a batch or dataset
+in one request, one row per judged peak, as each sample's assignment ledger
+shows them:
+
+```python
+verdicts = mascope.peak_assignments.verifications_for_batch(batch_id)
+confirmed = mascope.peak_assignments.verifications_for_dataset(
+    dataset_id, verdict="confirmed", evidence_level="msms"
+)
+
+# Join to a run's ledger on the peak
+ledger = mascope.peak_assignments.get(sample_id)
+judged = ledger.merge(
+    verdicts[verdicts["sample_item_id"] == sample_id],
+    on="sample_peak_id",
+    suffixes=("", "_verdict"),
+)
+```
+
+A row is either the sample's own verdict or a batch-level verdict
+(`batch_peaks.verdicts`) that reaches it: the sample's peak folded into the
+judged batch peak and claims the formula and mechanism judged, and the sample
+has no current verdict of its own on that claim. The second kind has
+`borrowed` true. The sample's own verdict wins before the filters apply.
+Filters: `verdict`, `evidence_level`, `since` (recorded at or after; a time
+without a zone is UTC) and `include_superseded` (also the sample's own
+verdicts a later one replaced; batch-level verdicts are listed live only).
+
+| Column | Meaning |
+| --- | --- |
+| `sample_item_id`, `sample_item_name`, `sample_batch_id`, `filename`, `datetime`, `datetime_utc` | The sample |
+| `sample_peak_id`, `sample_peak_mz` | The judged peak |
+| `assigned_formula`, `ionization_mechanism_id` | The claim judged |
+| `verdict` | `confirmed`, `rejected` or `unsure` |
+| `evidence_level` | `reference_standard`, `msms`, `orthogonal`, `pattern` or `visual` |
+| `fit_score`, `evidence`, `p_correct` | The score snapshot taken when the sample's own verdict was recorded; null on a borrowed one |
+| `note`, `context`, `verified_by`, `verified_utc`, `superseded_utc` | The record |
+| `borrowed` | A batch-level verdict reaching the sample |
+| `assignment_verification_id`, `peak_assignment_id`, `peak_assignment_run_id` | On the sample's own verdict |
+| `batch_peak_verification_id`, `batch_peak_id`, `stale` | On a borrowed one; `stale` when the batch peak's consensus has since left the claim judged |
+
+The batch data spreadsheet carries the same table as its *Verifications*
+sheet.
+
+### Publishing a run of your own
+
+An engine outside Mascope can publish its result for a sample as a run of its
+own: the same ledger, run selector and batch fold-in as a run Mascope
+computed, stamped with the engine's name. `import_run` takes one row per peak
+and returns the new run's id.
+
+```python
+peaks = mascope.samples.get_peaks(sample_id)
+rows = my_engine(peaks)  # a DataFrame, one row per peak
+
+run_id = mascope.peak_assignments.import_run(
+    sample_id,
+    rows,
+    engine="my-engine",
+    engine_version="0.3.1",
+    tier_bands={"assigned": 0.75, "candidate": 0.45},
+    calibration={"method": "none"},
+    config={"window_ppm": 3},  # the engine's own settings, stored as they are
+)
+theirs = mascope.peak_assignments.get(sample_id, run_id=run_id)
+```
+
+The columns of a row:
+
+| Column | Meaning |
+| --- | --- |
+| `sample_peak_id` | The peak (`peak_id` of `get_peaks`). Required, one row per peak |
+| `sample_peak_mz`, `sample_peak_intensity` | The peak as the engine observed it. Required, and never NaN. The intensity is the peak **height** for an Orbitrap file and the peak **area** for a TOF file, the quantity Mascope's own engine uses |
+| `role` | Required: `M0`, `iso_child`, `reagent`, `artifact` or `unassigned` |
+| `sample_peak_tof` | The peak's time of flight, if the engine has it |
+| `assigned_formula`, `ion_formula`, `isotope_label`, `isotope_formula` | What the engine assigned |
+| `ionization_mechanism_id` | This server's mechanism id, if the engine has it |
+| `adduct` | The adduct's notation, `[M+H]+`; fills in `ionization_mechanism_id` where a row has none (below) |
+| `source` | `database`, `untargeted`, `manual`, `reagent` or `artifact` |
+| `fit_score`, `mz_error_ppm`, `abundance_error` | The engine's measurement; `fit_score` between 0 and 1 |
+| `tier` | Better left out: the server derives it (below) |
+| `engine_tier` | The tier the engine concluded by rules of its own; stored as it is |
+| `target_compound_id`, `target_ion_id` | For a `database` row, the library compound and ion |
+| `owner_sample_peak_id` | For an `iso_child` row, the `sample_peak_id` of the row it belongs to |
+| `alternatives`, `provenance` | The inspector's detail. Keep the engine's own numbers under `provenance["engine_provenance"]` |
+
+A frame read with `get()` imports as it is. The columns the server computes
+or looks up itself are left out. Its `owner_peak_assignment_id` links are sent
+as `owner_sample_peak_id` from `iso_child` rows; a reagent's isotope lines,
+which the in-app engine also links, go without the link. Its `tier` goes as
+`engine_tier`, where the frame has none, and the server derives `tier` again:
+the in-app engine settles some rows below what their evidence earns. Any
+other column is left out with a warning.
+
+- **The frame is checked before anything is sent**, and a fault raises
+  `ImportValidationError`, naming the `column` and the `rows`. It catches a
+  missing required column, a value outside a vocabulary, a peak twice, an
+  owner that is not a row of the frame or is itself an `iso_child`, a NaN in
+  `sample_peak_mz` or `sample_peak_intensity`, and a value no JSON can carry. A
+  NaN in any other column is sent as null.
+- **Leave `tier` out.** The server reads each row's tier off its evidence,
+  `fit_score` weighted by the chemical plausibility of `assigned_formula`,
+  under `tier_bands`. Where the frame has a `tier` column, a row stating a
+  tier its bare `fit_score` cannot reach is refused here, as evidence is never
+  above the fit. Any other disagreement is the server's 422 to raise. A row
+  with no fit or no formula is `unassigned` or `below_assignability`.
+- **An `adduct` is resolved by its exact notation**: the one mechanism of
+  `mascope.ionization.list()` written that way, and null when no single one
+  is. A null loses nothing but the join: the adduct is in `ion_formula`.
+- **The rows go in as many requests as the server's caps call for**, by row
+  count and by bytes. The first request and the last are sent once, like
+  `assign`: if an answer is lost, the error says where to look before sending
+  it again. The ones between are sent again, which is safe, as the server
+  applies each row offset once. Any request the server holds up behind
+  another one on the sample (409, code `assignment_claim_held`) waits for it
+  and goes again.
+- **A refused import leaves no run.** If the server refuses a request after
+  the run was created, or a request between goes unanswered on every try,
+  `import_run` deletes the run before raising.
+  `abandon_import(sample_id, run_id)` deletes any other run left `importing`,
+  which holds the sample until it ends.
+- **A frame well short of the sample's latest completed run** is published
+  with a warning: the batch ledger takes the sample's whole contribution from
+  its newest run, so the peaks the frame leaves out leave the batch overview.
+
+The rules the server holds an import to are on the page
+[Publishing an assignment run](https://github.com/ultra-trace-systems/mascope/blob/master/docs/user/sdk/publishing-assignments.md):
+the reserved provenance keys (`p_correct`, `calibration` and `corroboration`
+stripped, `evidence` and `plausibility` overwritten), the `import_id` that
+makes a repeated create return its run, the 1000-row and 5 MB caps on one
+request, and what an import replaces and keeps. `import_run` chooses the
+`import_id` and sizes the requests itself. The same page says why
+`calibration` is required: an import bypasses the sample's m/z verification,
+so what the engine calibrated against goes on the record instead.
+
 For cross-sample analysis use the [`load_assignments`](#load_assignments-peak-assignments-across-batches)
-loader; for a guided walk-through see tutorial notebook `10_peak_assignment.ipynb`.
+loader; for a guided walk-through see tutorial notebook `10_peak_assignment.ipynb`,
+and `11_assignment_round_trip.ipynb` for publishing a run and comparing it with
+Mascope's.
 
 ## Changing Data
 
@@ -616,12 +922,17 @@ mascope.matching.save_batch(batch_id)
 - A method returns the route's data: the dataset, batch, sample or collection
   as it now is. One whose route answers with a message alone returns that
   answer as a dict.
-- A **copy**, a **move** and a **batch delete** run in the background on the
-  server: the call returns once the work has started, with its `process_id`,
-  and the result shows in the listings when it is done.
-- Some updates replace rather than add. `batches.update` takes the batch's
-  target collections and sets them to that list, so to only rename a batch
-  send the collections it has now; `collections.associate` sets the batches a
+- A **copy**, a **sample move** and a **batch delete** run in the background
+  on the server: the call returns once the work has started, with its
+  `process_id`, and the result shows in the listings when it is done.
+- `batches.move` and `datasets.move` are one write each and return the moved
+  object. A moved batch keeps its ID, its samples and its target
+  collections; a sample move makes each sample anew under a new ID.
+- Some updates replace rather than add. `batches.update` leaves the batch's
+  target collections as they are unless `target_collection_ids` is given;
+  given, it sets them to that list, and an empty list detaches them all. (An
+  older server requires the list: there, to only rename a batch, send the
+  collections it has now.) `collections.associate` sets the batches a
   collection is associated with, and an empty list detaches it from them all.
   `collections.update` sets a collection's compounds to the ones it creates
   (`compounds=`) and names (`compound_ids=`): to add compounds, send the
@@ -634,6 +945,17 @@ mascope.matching.save_batch(batch_id)
   both with the formula.
 - A write clears the client's cache (see [Caching](#caching)), so the next
   listing shows the change.
+- **A write is sent once.** A timeout, a lost connection or a 502 to 504 can
+  come after the server has acted on it, so the SDK does not send it again:
+  a second create would make a second collection, a second save would run
+  the matching twice. The call raises `MascopeTimeoutError`,
+  `MascopeConnectionError` or a `ServerError`; look at what is there before
+  you call it again. The writes that come out the same however often they are
+  sent are retried as reads are: `matching.aggregate_sample` and
+  `aggregate_batch`, which save nothing, and the updates that set fields to
+  the values given (`datasets.update`, `batches.update`, `samples.update`,
+  `collections.associate`, and `collections.update` when it creates no
+  compounds).
 - Deleting a dataset, a batch, a collection or a compound and
   `matching.resave_batch` cannot be undone.
 
@@ -706,7 +1028,7 @@ workspaces, not only the client's.
 | Method          | Description                         | Returns             |
 | --------------- | ----------------------------------- | ------------------- |
 | `list(dataset)` | List batches in a dataset (by name) | `pd.DataFrame│None` |
-| `update(batch_id, target_collection_ids, name=, description=)` | Rename it and set its target collections | `dict` |
+| `update(batch_id, target_collection_ids=, name=, description=)` | Rename it, change its description, or set its target collections (the whole list) | `dict` |
 | `copy(batch_id, dataset_id, name, description=)` | Copy it into a dataset, in the background | `dict` |
 | `delete(batch_id)` | Delete it and its samples, in the background | `dict` |
 | `ion_series(batch_id, collection=, ions=)` | Each sample's matched intensity of each target ion, one request per collection | `pd.DataFrame` |
@@ -853,8 +1175,17 @@ The compound list is shared by every workspace, so `add`, `update` and `remove` 
 | `list_runs(sample_id)`              | List a sample's assignment runs, newest first                     | `pd.DataFrame│None` |
 | `get(sample_id, run_id=, tier=, role=, source=)` | Full run ledger, one row per peak; run metadata on `df.attrs["run"]` | `pd.DataFrame│None` |
 | `detail(sample_id, peak_assignment_id)` | One assignment in full (`alternatives`, `provenance`)          | `dict│None`         |
+| `assign(sample_id, config=, wait=, poll_interval=, timeout=)` | Run the engine on a sample; with `wait=True` its ledger, else its run id | `pd.DataFrame│str│None` |
+| `wait_for_run(sample_id, run_id, poll_interval=, timeout=)` | Wait for a run to end and return its ledger | `pd.DataFrame│None` |
+| `verify(sample_id, peak_assignment_id, verdict, evidence_level=, note=)` | Record a verdict on one assignment | `dict` |
+| `list_verifications(sample_id)` | Every verdict on a sample, newest first | `pd.DataFrame│None` |
+| `fit_aggregate(sample_id, formula, ionization_mechanism_id)` | Score a composition against a sample: its isotope table | `dict` |
+| `verifications_for_batch(batch_id, verdict=, evidence_level=, since=, include_superseded=)` | The current verdicts over every sample of a batch, one row per judged peak | `pd.DataFrame│None` |
+| `verifications_for_dataset(dataset_id, verdict=, evidence_level=, since=, include_superseded=)` | The same over every sample of a dataset, in one read | `pd.DataFrame│None` |
+| `import_run(sample_id, df, engine=, engine_version=, tier_bands=, calibration=, config=)` | Publish an external engine's run, one row per peak | `str` |
+| `abandon_import(sample_id, run_id)` | Delete an import left `importing`, with its rows | `dict` |
 
-`get` reads the latest completed run unless `run_id` is given, and pages through the API internally — the whole run comes back as one DataFrame. See [Peak Assignments](#peak-assignments).
+`get` reads the latest completed run unless `run_id` is given, and pages through the API internally — the whole run comes back as one DataFrame. See [Peak Assignments](#peak-assignments), [Running and verifying](#running-and-verifying) and [Publishing a run of your own](#publishing-a-run-of-your-own).
 
 #### `mascope.batch_peaks`
 
@@ -866,6 +1197,9 @@ The compound list is shared by every workspace, so `add`, `update` and `remove` 
 | `verdicts(batch_id)`                             | The batch-level verdicts on its species                        | `pd.DataFrame│None` |
 | `runs(batch_id)`                                 | The batch runs that rewrote its ledger, newest first           | `pd.DataFrame│None` |
 | `import_run(batch_id, rows, engine=, engine_version=)` | Land an external engine's batch-level result as a run    | `dict│None`         |
+| `peak_lists(batch_id, samples=None, matches=False, satellites=False, average=True)` | Every peak of every sample of the batch, or of the samples named, in one read | `pd.DataFrame` |
+
+`peak_lists` is the batch's peak lists, not its ledger: every sample read as `samples.get_peaks` reads it with no range, sent by the server as one Parquet table. It needs no ledger and is what `load_peaks` reads. Its columns are `sample_item_id`, `sample_item_name`, `datetime_utc`, `peak_id`, `mz`, `sparsity`, `signal_to_noise`, `segment`, `area`, `height` and `is_satellite`. With `matches=True` it adds the match columns as the server keeps them, `ionization_mechanism_id` among them, with no ion or compound score. `satellites=True` keeps the satellite peaks, sidelobes of a stronger peak that `get_peaks` leaves out, with `is_satellite` True. `samples=` takes a list of `sample_item_id`s and reads only those; an ID that is no sample of the batch is a failure with status 404. Each ID goes in the request's URL, so name at most a hundred or so per call. `df.attrs["failures"]` names each sample the server could not read (`status_code`, `error`). `df.attrs["complete"]` is then False, and the rest of the batch is answered without it.
 
 `series` is the slim counterpart of `members`: one row per (sample, batch peak) with the member's `sample_item_id`, `sample_peak_id`, `intensity` and `tier` beside its batch peak's `batch_peak_id`, `batch_mz`, `consensus_formula`, `consensus_ion_formula` and `consensus_tier`. `min_n_present=2` leaves out the batch peaks only one sample saw. `df.attrs["run_id"]` names the run the rows are from: `run_id` when given, else the batch's current run. While a rebuild or search is running, the previous run is still the current one but the live ledger is being rewritten, so the rows may be half of each; `series` logs a warning then, and a read after the run finishes is the reliable one. See [`load_batch_ledger`](#load_batch_ledger-the-batch-ledger).
 
@@ -908,7 +1242,7 @@ from mascope_sdk import MascopeClient
 
 mascope = MascopeClient(workspace="My Workspace")
 
-peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium")
+peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium", matches=True)
 
 # Filter to matched peaks and summarise by compound
 matched = peaks[peaks["target_compound_formula"].notna()]
@@ -1050,12 +1384,20 @@ except NotFoundError:
   - `ConfigurationError` — Missing/invalid configuration
   - `MascopeConnectionError` — Network/connection issues
     - `MascopeTimeoutError` — Request timeout
-  - `MascopeAPIError` — API errors (includes `status_code`, `message`, `url`)
+  - `MascopeAPIError` — API errors (includes `status_code`, `message`, `url`, and the server's answer: `body`, its `detail`, and the `code` that names the condition where the server gives one)
     - `AuthenticationError` — 401/403 responses
       - `PermissionDeniedError` — 403: the token is valid, its user lacks the role; a write names its `object_type`, `object_id` and `required_role`
     - `NotFoundError` — 404 responses
     - `ValidationError` — 422 responses
+      - `SampleIneligibleError` — `peak_assignments.assign` on a sample that cannot be assigned; names the `reason`
+    - `ConflictError` — 409: refused over the state the server is in
+      - `AssignmentInFlightError` — `peak_assignments.assign` on a sample with a run going; names its `peak_assignment_run_id`
     - `ServerError` — 5xx responses
+  - `AssignmentRunError` — a run `assign` or `wait_for_run` waited for failed (its `error`) or was cancelled
+  - `AssignmentTimeoutError` — the wait ended before the run did; carries its `peak_assignment_run_id`
+
+Branch on `code` rather than on the wording of `message`: the message is
+written for a person, and two conditions can share a status code.
 
 ### Project Structure
 

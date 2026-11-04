@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from mascope_backend.runtime import runtime
 
@@ -36,8 +36,14 @@ class FileContext:
 class FileContextManager:
     """Manages file contexts for file converter"""
 
-    def __init__(self):
+    def __init__(self, on_clear: Optional[Callable[[str], None]] = None):
+        """
+        :param on_clear: Called with a file's normalized name each time
+            ``clear_context`` is called for it, whether or not a context was
+            registered, so state kept per file elsewhere can go with it
+        """
         self._file_contexts: Dict[str, FileContext] = {}
+        self._on_clear = on_clear
 
     def _remove_extension(self, filename: str) -> str:
         """Remove .h5 or .raw extension if present
@@ -102,3 +108,5 @@ class FileContextManager:
         if normalized_filename in self._file_contexts:
             self._file_contexts.pop(normalized_filename)
             runtime.logger.debug(f"Cleared context for {normalized_filename}")
+        if self._on_clear is not None:
+            self._on_clear(normalized_filename)

@@ -5,6 +5,7 @@ Tests for the release manifest: generation, loading/validation, the
 
 import importlib
 import json
+from importlib import metadata
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,58 @@ def test_build_manifest_shape(monkeypatch):
     assert data["generated_at"].endswith("Z")
 
 
+def test_the_manifest_of_the_clis_own_release_names_the_cli(monkeypatch):
+    monkeypatch.setattr(rm, "read_alembic_head", lambda backend_path: _HEAD)
+    monkeypatch.setattr(rm.release, "RELEASE", "v1.3.0")
+
+    data = rm.build_manifest("v1.3.0", Path("unused"))
+
+    assert data["cli_version"] == metadata.version("mascope_cli")
+
+
+@pytest.mark.parametrize("version", ["v1.3.1", "v1.4.0-rc.1", "latest"])
+def test_the_manifest_of_another_release_names_no_cli(monkeypatch, version):
+    """The checkout's CLI deploys only its own release: it is not this one's."""
+    monkeypatch.setattr(rm, "read_alembic_head", lambda backend_path: _HEAD)
+    monkeypatch.setattr(rm.release, "RELEASE", "v1.3.0")
+
+    assert rm.build_manifest(version, Path("unused"))["cli_version"] is None
+
+
+def test_the_release_workflow_manifest_names_this_cli(
+    monkeypatch, cli_runner, tmp_path
+):
+    """`prod manifest --version <tag> --output ...`, as build-release-images runs it.
+
+    The workflow passes the release tag the checkout was built from; at a
+    release, the CLI in that checkout is the one cut with it.
+    """
+    monkeypatch.setattr(rm, "read_alembic_head", lambda backend_path: _HEAD)
+    out = tmp_path / rm.MANIFEST_FILENAME
+
+    result = cli_runner.invoke(
+        prod_main.prod_app,
+        ["manifest", "--version", rm.release.RELEASE, "--output", str(out)],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = rm.load_manifest(out)
+    assert data["app_version"] == rm.release.RELEASE
+    assert data["cli_version"] == metadata.version("mascope_cli")
+
+
+def test_a_manifest_naming_no_cli_warns(monkeypatch, cli_runner):
+    monkeypatch.setattr(rm, "read_alembic_head", lambda backend_path: _HEAD)
+    warnings = []
+    monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
+
+    result = cli_runner.invoke(prod_main.prod_app, ["manifest", "--version", "v0.0.1"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["cli_version"] is None
+    assert any("names no CLI" in w for w in warnings), warnings
+
+
 # --- load_manifest validation ---
 
 
@@ -96,6 +149,30 @@ def test_load_manifest_wrong_schema(tmp_path):
     bad = _valid_manifest()
     bad["schema_version"] = 999
     path.write_text(json.dumps(bad), encoding="utf-8")
+    with pytest.raises(rm.ManifestError):
+        rm.load_manifest(path)
+
+
+@pytest.mark.parametrize("cli_version", ["2026.11.2", "2026.11.2.post1", None])
+def test_load_manifest_accepts_a_cli_version_or_none(tmp_path, cli_version):
+    path = tmp_path / "m.json"
+    path.write_text(
+        json.dumps({**_valid_manifest(), "cli_version": cli_version}), encoding="utf-8"
+    )
+
+    assert rm.load_manifest(path)["cli_version"] == cli_version
+
+
+@pytest.mark.parametrize(
+    "cli_version", ["2026.11.2; curl evil", "latest", "", "v2026.11.2", 2026]
+)
+def test_load_manifest_rejects_a_cli_version_that_is_no_version(tmp_path, cli_version):
+    """It goes into an install command, so it must be a version and nothing else."""
+    path = tmp_path / "m.json"
+    path.write_text(
+        json.dumps({**_valid_manifest(), "cli_version": cli_version}), encoding="utf-8"
+    )
+
     with pytest.raises(rm.ManifestError):
         rm.load_manifest(path)
 

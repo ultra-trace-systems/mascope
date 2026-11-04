@@ -137,3 +137,49 @@ async def read_instrument_functions(
                 f"{filename}; its peaks are read by the file's"
             )
     return peakshape, resolution_function
+
+
+#: The m/z a file's line width is quoted at on the sample record. Thermo
+#: quotes an Orbitrap's resolving power at m/z 200, and one m/z for every
+#: class keeps a TOF's answer comparable with an Orbitrap's.
+LINE_WIDTH_REFERENCE_MZ = 200.0
+
+
+async def file_line_width(
+    filename: str,
+    polarity: str | None = None,
+    mz: float = LINE_WIDTH_REFERENCE_MZ,
+) -> dict:
+    """The width of a file's lines at one m/z, from what detection fitted.
+
+    Read off the instrument functions detection stored for the file, the way
+    the assignment engine reads them (by polarity, from the scan stream that
+    owns the m/z where the file was detected per stream), so a sample that
+    has no assignment run still says what width its lines have.
+
+    :param filename: Sample file name
+    :param polarity: The polarity of the sample's peaks
+    :param mz: The m/z to read the width at
+    :return: ``reference_mz``; ``resolution``, the resolving power m/dm
+        there; and ``fwhm_ppm``, the full width at half maximum it means
+        [ppm]. Both None for a file whose instrument functions were never
+        fitted (a blank) or could not be read.
+    """
+    width = {"reference_mz": float(mz), "resolution": None, "fwhm_ppm": None}
+    try:
+        _, resolution_function = await read_instrument_functions(
+            filename, polarity=polarity
+        )
+        resolution = float(
+            np.asarray(
+                resolution_function(np.array([mz], dtype=float)), dtype=float
+            ).ravel()[0]
+        )
+    except Exception as exc:  # noqa: BLE001 - the record answers without it
+        runtime.logger.debug(f"No line width for {filename}: {exc}")
+        return width
+    if not np.isfinite(resolution) or resolution <= 0:
+        return width
+    width["resolution"] = resolution
+    width["fwhm_ppm"] = 1e6 / resolution
+    return width

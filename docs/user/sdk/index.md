@@ -27,6 +27,14 @@ runs, among others. Keep it beside a figure you publish, and the figure names
 the build its numbers came from. Saving the frame as CSV or Excel drops it;
 the SDK readme shows how to keep it.
 
+`load_peaks` reads each batch a hundred samples per request, rather than one
+request per sample. With `samples=`, it asks the server for the chosen samples
+alone.
+It reads no matches unless you pass `matches=True`. A server older than that
+read is read one sample at a time, with matches, as before. Pass
+`save_path="batch.parquet"` to keep the load as a file. `pd.read_parquet`
+reads it back later with its `attrs`, with no server or sign-in.
+
 A load that could not read every sample returns what it read, and says so:
 `peaks.attrs["complete"]` is False and `peaks.attrs["failures"]` names each
 sample that failed and why. A script that loads more samples than the
@@ -90,7 +98,7 @@ compounds = mascope.reference.compounds("nitroaromatics")
 
 | Read | SDK | Operation | Returns |
 |---|---|---|---|
-| The loaded lists | `mascope.reference.sources()` | `GET /api/reference/sources` | one row per active list: its name, label, the publications it comes from (citation with DOI or ISBN), version, licence, polarity, size, load date, and `admitted`, whether the server's licence gate lets peak assignment match it |
+| The loaded lists | `mascope.reference.sources()` | `GET /api/reference/sources` | one row per active compound list, spectral libraries left out: its name, label, the publications it comes from (citation with DOI or ISBN), version, licence, polarity, size, load date, and `admitted`, whether the server's licence gate lets peak assignment match it |
 | What one list holds | `mascope.reference.compounds(name, version=None)` | `GET /api/reference/sources/{name}/compounds` | one row per compound of the active version, or of the one named: name, formula, mass, InChIKey, the list's own id, the DOI it cites, tags |
 
 Any role reads them: the lists belong to the server, not to a workspace. The
@@ -141,20 +149,25 @@ the role it needs in the web app:
 | Change | SDK | Operations | Role needed |
 |---|---|---|---|
 | Datasets: create, rename or describe, move to another workspace, delete | `mascope.datasets.create`, `.update`, `.move`, `.delete` | `POST /api/workspaces/{ws}/datasets`, `PATCH` and `DELETE /api/workspaces/{ws}/datasets/{id}`, `POST .../{id}/move` | editor in the workspace (a move: in both); a locked dataset needs the global admin role |
-| Batches: update, copy, delete | `mascope.batches.update`, `.copy`, `.delete` | `PATCH` and `DELETE /api/sample/batches/{id}`, `POST /api/sample/batches/{id}/copy` | editor on the batch, and for a copy on the destination dataset, which must not be locked; a locked batch needs the global admin role to update and the owner role to delete. An update sets the batch's target collections to the list it sends, so send the current list to keep them; an empty one detaches them all |
+| Batches: update, copy, move to another dataset, delete | `mascope.batches.update`, `.copy`, `.move`, `.delete` | `PATCH` and `DELETE /api/sample/batches/{id}`, `POST /api/sample/batches/{id}/copy`, `POST .../{id}/move` | editor on the batch, and for a copy or a move on the destination dataset, which must not be locked; a locked batch needs the global admin role to update or move, as does a move out of a locked dataset, and the owner role to delete. A moved batch keeps its ID, samples and collections; its collections must be global or of the destination's workspace, and ACQUISITION batches and datasets take no move. An update that sends no list of target collections keeps them; one that sends a list sets them to it, and an empty one detaches them all |
 | Samples: update, move, copy | `mascope.samples.update`, `.move`, `.copy` | `PATCH /api/sample/items/{id}`, `POST /api/sample/items/move`, `POST /api/sample/items/copy` | editor on the samples (a copy: guest is enough) and on the destination batch; a locked sample needs the owner role to update and cannot be moved |
 | Target collections: create, update, associate with batches, delete | `mascope.collections.create`, `.update`, `.associate`, `.delete` | `POST /api/target/collections`, `PATCH` and `DELETE /api/target/collections/{id}` | editor in the collection's workspace (a global collection: global admin); to only associate batches, guest on the collection and editor on the batches |
 | Target compounds: add, update, remove | `mascope.compounds.add`, `.update`, `.remove` | `POST` and `PATCH /api/target/compounds`, `DELETE /api/target/compounds/{id}` | the global editor role; the compound list is shared by every workspace. Deleting a collection with `delete_orphan_compounds=true` also removes the compounds no other collection uses, with the collection's role alone |
 | Matches: save a sample's or a batch's, or rebuild a batch's | `mascope.matching.save_sample`, `.save_batch`, `.resave_batch` | `POST /api/match/aggregate/sample/{id}/save`, `POST /api/match/aggregate/batch/{id}/save`, `POST /api/match/aggregate/batch/{id}/resave` | editor on the sample or batch |
+| Peak assignments: run the engine on a sample, record a verdict on an assignment, publish an external engine's run ([Publishing an assignment run](publishing-assignments.md)) or delete one left unfinished | `mascope.peak_assignments.assign`, `.verify`, `.import_run`, `.abandon_import` | `POST /api/peak-assignments/sample/{id}/assign`, `POST /api/peak-assignments/sample/{id}/verify`, `POST /api/peak-assignments/sample/{id}/runs/import`, `DELETE /api/peak-assignments/sample/{id}/runs/{run_id}` | editor on the sample, on a server with peak assignment switched on (`peak_assignment = true` under `[meta]`); with it off, all four are refused with a 403 |
 
 A write your role does not allow is refused with a 403, which says only
 that it was refused. The SDK raises it as `PermissionDeniedError`, naming
 what the call acted on (`object_type`, `object_id`) and the role this table
 gives for it (`required_role`). Running a sample's or a batch's matching
-without saving it (`mascope.matching.aggregate_sample`, `.aggregate_batch`)
-changes nothing and needs the guest role. The
+without saving it (`mascope.matching.aggregate_sample`, `.aggregate_batch`),
+or scoring a composition against a sample
+(`mascope.peak_assignments.fit_aggregate`), changes nothing and needs the
+guest role. The
 [SDK readme](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/sdk/README.md#changing-data)
-shows the write methods at work.
+shows the write methods at work, and its
+[Running and verifying](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/sdk/README.md#running-and-verifying)
+section the peak-assignment ones, with what each answers when it refuses.
 
 Besides these, a token can:
 
@@ -162,10 +175,9 @@ Besides these, a token can:
   (`POST /api/sample/files/delete`, admin in the instrument's workspace);
 - add an instrument function (`POST /api/instrument_configs`, the global
   editor role);
-- run and review peak assignments and the batch peak ledger, publish an
-  external engine's assignment run
-  ([Publishing an assignment run](publishing-assignments.md)), and refit an
-  instrument's peak-assignment confidence calibration (a superuser).
+- curate a sample's peak assignments and review the batch peak ledger, and
+  refit an instrument's peak-assignment confidence calibration (a
+  superuser).
 
 Everything else, such as workspaces and their members, m/z calibration,
 ionization modes, and rematching or removing matches, needs the web app.

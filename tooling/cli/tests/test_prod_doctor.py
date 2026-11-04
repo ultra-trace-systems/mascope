@@ -591,3 +591,39 @@ def test_doctor_command_json(monkeypatch, cli_runner):
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["ok"] is True and payload["images"]["count"] == 11
+
+
+def test_doctor_reports_drift_from_a_wheel_installs_cli_release(
+    monkeypatch, cli_runner, tmp_path
+):
+    """The CLI's release is what a wheel install's next `up` deploys: DRIFT.
+
+    After the CLI is upgraded and before the `prod up` that applies it, the
+    containers still run the previous release, which doctor has to say rather
+    than compare them with `latest` or with what ran last.
+    """
+    prod_main.runtime.full_config  # noqa: B018 - built before MASCOPE_PATH moves
+    monkeypatch.setenv("MASCOPE_PATH", str(tmp_path))
+    monkeypatch.setattr(prod_main.mascope_release, "RELEASE", "v1.12.0")
+    prod_main.deployed_release.save(str(tmp_path), "v1.11.0")
+    monkeypatch.setattr(
+        doctor,
+        "_run",
+        lambda cmd: _completed(
+            stdout="ghcr.io/ultra-trace-systems/mascope/backend:v1.11.0\n"
+        ),
+    )
+
+    def fake_build_report(**kwargs):
+        report = _healthy_report()
+        report.versions = doctor.version_status(
+            kwargs["expected_version"], kwargs["versioned_specs"][:1]
+        )
+        return report
+
+    monkeypatch.setattr(prod_main.prod_doctor, "build_report", fake_build_report)
+
+    result = cli_runner.invoke(prod_main.prod_app, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "backend v1.11.0  DRIFT (this deployment deploys v1.12.0)" in result.stdout

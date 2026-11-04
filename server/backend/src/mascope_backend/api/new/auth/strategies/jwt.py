@@ -38,23 +38,26 @@ class SessionJWTStrategy(JWTStrategy[User, int]):
 
     async def read_session(
         self, token: Optional[str], user_manager: BaseUserManager[User, int]
-    ) -> Optional[tuple[User, Optional[int]]]:
+    ) -> Optional[tuple[User, Optional[int], Optional[int]]]:
         """
-        The account a token belongs to and the token's issue time.
+        The account a token belongs to, and the token's issue and expiry times.
 
-        The socket keeps the issue time beside its session so subscribe can make
-        the same comparison later without the token.
+        The socket keeps both times beside its session so it can make the same
+        checks later without the token: subscribe compares the issue time with
+        the account's session cutoff, and a session whose token has expired is
+        signed out (:mod:`mascope_backend.socket.eviction`).
 
         :param token: The encoded token.
         :param user_manager: Resolves the subject to a user.
-        :return: ``(user, iat)``, with ``iat`` ``None`` for a token minted
-            before tokens carried one; ``None`` when the token is invalid, its
+        :return: ``(user, iat, exp)``, with ``iat`` ``None`` for a token minted
+            before tokens carried one and ``exp`` ``None`` for a token without
+            an expiry; ``None`` when the token is invalid or expired, its
             account is gone, or its session has been revoked.
         """
         claims = self._decode(token)
         if claims is None:
             return None
-        user_id, issued_at = claims
+        user_id, issued_at, expires_at = claims
 
         try:
             user = await user_manager.get(user_manager.parse_id(user_id))
@@ -67,7 +70,7 @@ class SessionJWTStrategy(JWTStrategy[User, int]):
                 "session cutoff"
             )
             return None
-        return user, issued_at
+        return user, issued_at, expires_at
 
     def issued_at(self, token: Optional[str]) -> Optional[int]:
         """
@@ -83,13 +86,17 @@ class SessionJWTStrategy(JWTStrategy[User, int]):
         claims = self._decode(token)
         return claims[1] if claims else None
 
-    def _decode(self, token: Optional[str]) -> Optional[tuple[str, Optional[int]]]:
+    def _decode(
+        self, token: Optional[str]
+    ) -> Optional[tuple[str, Optional[int], Optional[int]]]:
         """
-        A token's subject and issue time, once its signature and audience hold.
+        A token's subject, issue and expiry times, once its signature, audience
+        and expiry hold.
 
         :param token: The encoded token.
-        :return: ``(sub, iat)``, with ``iat`` ``None`` for a token minted before
-            tokens carried one; ``None`` when the token is invalid.
+        :return: ``(sub, iat, exp)``, with ``iat`` ``None`` for a token minted
+            before tokens carried one and ``exp`` ``None`` for a token without
+            one; ``None`` when the token is invalid or expired.
         """
         if token is None:
             return None
@@ -113,7 +120,11 @@ class SessionJWTStrategy(JWTStrategy[User, int]):
         issued_at = data.get("iat")
         if issued_at is not None and not isinstance(issued_at, int):
             return None
-        return user_id, issued_at
+        # PyJWT has already refused an expired token and a non-numeric expiry.
+        expires_at = data.get("exp")
+        if expires_at is not None:
+            expires_at = int(expires_at)
+        return user_id, issued_at, expires_at
 
     async def read_token(
         self, token: Optional[str], user_manager: BaseUserManager[User, int]

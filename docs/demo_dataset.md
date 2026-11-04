@@ -134,6 +134,14 @@ bundle from Zenodo, restores `snapshot/mascope_demo.dump` + the filestore into
 the demo env, launches `backend`/`frontend`/`file-converter`, seeds the fixed
 demo credentials, and prints the URL, login, and SDK token.
 
+It also lists the MS2 groups of the files that have an MS2 store, as
+`tooling/demo-init.sh` does for the containerized stack. The group inventory
+(`ms2_group`) is written when a file's store is, so a snapshot taken before the
+inventory existed restores stores it does not list, and the samples list, the
+batch MS2 groups and the sample detail would show no MS2. Both run
+`backfill_ms2_store` in run mode on every start: it reads the stores, opens no
+raw file, and finds nothing to do once the groups are listed.
+
 The seeded demo user + token are the real unlock for a low threshold: they
 remove the owner-registration and token-generation steps, and make the SDK
 (`pip install mascope_sdk`) work against the local demo out of the box.
@@ -163,9 +171,9 @@ into a real deployment.
 Same as the seed path, but instead of restoring the snapshot it restores the
 **reference seed** (so the pipeline has the ionization modes, instrument config,
 and calibration/diagnostic collections), launches the app, then a background
-thread uploads each `raw/` file to the real `POST /api/sample/files/upload`
-endpoint — as the File Agent does (bearer `file-agent` token +
-`X-Service-Name: file-agent`). The `file-converter` ingests them and runs the
+thread uploads each `raw/` file through the real resumable (TUS) upload
+endpoint, `/api/sample/files/upload/tus` — as the File Agent does (the SDK's
+`api_post_file_tus`, bearer `file-agent` token + `X-Service-Name: file-agent`). The `file-converter` ingests them and runs the
 real `RawProcessor` -> peak detection -> matching pipeline.
 
 Direct drops into `filestreams/` cannot work: the file context (uploader
@@ -173,32 +181,49 @@ identity + token) is registered only by the upload endpoint, so a dropped file
 is "not registered" and fails. This path runs the real pipeline, so it is what
 the reproducibility test drives.
 
-**Uploading is gated on the converter, not just the backend.** The upload
-endpoint emits each file's context over the `/file-converter` socket at upload
-time, so a file uploaded before the converter has connected has its context
-emitted into the void and fails deep in processing with "not registered in file
-converter service" — quarantined into `<env>/filestreams/failed_files/` while
-both sample batches still finish `ready`, which is exactly how a rebuild ends up
-short without saying so. The uploader therefore samples the backend's
-`mascope:service:file-converter` presence key *before* the stack starts and
-holds the first upload until a converter has connected since (waiting for the
-key to merely exist would be satisfied by a stale key from a killed run, or by
-another worktree's converter — the key is not env-scoped). It then keeps
-sweeping `failed_files/` for the rest of the run, re-uploading the bundle's own
-files up to twice each and reporting by name any that still never made it.
+**Uploading is gated on the converter, not just the backend.** The server
+refuses an upload with 503 while no file-converter is connected, before any
+bytes move, so a refused file reaches neither `<env>/filestreams/` nor its
+`failed_files/` quarantine and nothing downstream would retry it. The uploader
+therefore samples the backend's `mascope:service:file-converter` presence key
+*before* the stack starts and holds the first upload until a converter has
+connected since (waiting for the key to merely exist would be satisfied by a
+stale key from a killed run, or by another worktree's converter — the key is
+not env-scoped). If none connects within five minutes it uploads anyway, and
+re-posts the refused files in up to two more passes, each held until a
+converter is connected.
 
-**Two converters on one directory fail the same way, and the guard above does
+**A failed upload is looked up before it is re-posted.** After each pass, the
+last included, the uploader checks every file that failed: one pending in
+`filestreams/`, quarantined in `failed_files/`, or already a sample file in the
+demo database reached the server despite the error, and is not posted again.
+A second copy would be quarantined as a duplicate (`FileExistsError`) and
+reported as never ingested. The database is matched on the 14-digit acquisition
+stamp, since it stores the name the converter rebuilds from the file's metadata.
+
+The uploader then keeps sweeping `failed_files/` for the rest of the run,
+re-uploading the bundle's own files up to twice each, dropping a quarantined
+copy of a file the database already holds, and reporting by name any that
+still never made it.
+
+**Leftovers of an earlier rebuild are cleared before the stack starts.** Copies
+of the bundle's own files in the `filestreams/` root (from a run killed
+mid-ingestion) or in `failed_files/` would otherwise be ingested a second time
+or re-fed as duplicates. Files with other names are left alone.
+
+**Two converters on one directory quarantine files, and the guard above does
 not catch it.** A second stack that mounts this env's runtime home into its own
 file-converter puts two converters on one `filestreams/` directory. Whichever
 picks a file up first claims it, and when that is the other stack's converter
-the file was never registered with it, so it fails with the same "not
-registered in file converter service" and lands in `failed_files/`. The
-presence-key guard passes throughout, because a converter *has* connected; it
-is simply not the only one. A rebuild then stalls part-way with a large
-quarantine while the symptom points at the race above, which sends you reading
-the uploader's presence-key logic for a fault that is not there.
+the file was never registered with it, so it fails with "not registered in file
+converter service" and lands in `failed_files/`. The presence-key guard passes
+throughout, because a converter *has* connected; it is simply not the only one.
+A rebuild then stalls part-way with a large quarantine. It is not the startup
+gate: a converter that was not up yet gets the upload refused with 503, which
+leaves nothing in `failed_files/`, so do not look in the uploader's
+presence-key logic for it.
 
-The two are told apart by whether another converter is running at all, so check
+A quarantine like this means another converter is running, so check
 before starting a rebuild rather than diagnosing afterwards. Nothing should be
 printed:
 
@@ -473,6 +498,15 @@ repo); `<BUNDLE>` is the working bundle directory the tooling accumulates into.
    the check that would have caught bundle v1.0.0 shipping with 152 of its 161
    files.
 
+   On a refresh it also refuses to drop goldens the prior manifest had, file
+   by file (`build_bundle.check_goldens_kept`): the MS2 goldens of a file
+   still in the raw set that produced no spectra this time, and the per-ion
+   goldens (`expected/ions.parquet`) of a file still in the raw set that
+   exported no ions this time. Either refusal leaves `expected/`, `snapshot/`
+   and the manifest as they were. A file that left the raw set takes its
+   goldens with it: that is a deliberate change of the raw set, and the run
+   logs a warning naming the files.
+
 5. **Publish** to Zenodo and register the bundle — see [D](#d-publish-to-zenodo-versioning).
    Confirm `<BUNDLE>.deid_report.md` before publishing.
 
@@ -562,8 +596,20 @@ own MS order and polarity: the rule before counted the MS2 scans, and left
 these four files' first MS1 scan out as a TIC outlier. Their MS1 peaks and
 ions moved with it (heights by a median of 0.1 to 0.8%), their MS2 spectra
 only by the calibration's shift (under 0.002 ppm), and the 161 MS1 files not
-at all. They are hand-started, stepped-energy
-MS2 acquisitions of alpha-pinene oxidation products from a chamber oxidation
+at all. 1.4.3 is the same raw set and seed once more, rebuilt with the peak
+detection of v1.16: the instrument's side-lobe flag (a peak whose per-scan
+centroids are mostly marked Exception is a satellite, see
+[peak detection](user/how-it-works/peak-detection.md)) and the Orbitrap
+local floor. 97 of the 165 files move. 237 golden peaks leave: 233 sit on
+peaks now flagged satellite, one on the peak the local floor flags weak, and
+three were displaced when a sibling isotope line of the same ion, its own
+peak flagged, moved onto theirs. 87 isotope lines match another peak and 171
+new lines score, for 43,004 golden peaks against 1.4.2's 43,070; the other
+42,746 keep their m/z and height, and all but one their score. 58
+probable-match ion rows whose monoisotopic peak is now a satellite are gone,
+for 17,395 ions against 17,453. The MS2 spectra are identical. The four MS2
+files are hand-started, stepped-energy
+acquisitions of alpha-pinene oxidation products from a chamber oxidation
 experiment, on a second Orbitrap of the same model whose label was aliased
 to the demo's on the command line, in the three reagent-ion chemistries the
 experiment ran: one to nine precursors per file, each

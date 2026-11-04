@@ -184,6 +184,15 @@ Feature) carries the kind. Milestones are not used.
   added the entry with `git commit --fixup` and an autosquash rebase, so
   every commit still passes. "A branch with an entry in `CHANGELOG.md`" in
   `changelog.d/README.md` has the exact commands.
+- **A security fix files its entry under `security`, never `fixed`** -
+  `changelog.d/<branch>.security.md`. That fragment is the one mark of a
+  security-relevant fix: the monitoring host's check
+  (`tooling/monitoring/security-fix-distance.py`) reads it from the moment
+  the fix merges and reports each production deployment that does not run
+  it yet. A security fix filed as `fixed` is one that check never sees. A
+  fix is security-relevant when it closes a way to read, change or reach
+  what an account or a visitor should not: an access check, a session or
+  authentication flaw, an exposed secret or file, an injection.
 - **Anonymize commit messages and PR descriptions** - this repository is public,
   so text pushed to GitHub must never contain real instrument names or IDs,
   customer names, internal or customer server hostnames, tailnet/LAN addresses,
@@ -191,6 +200,21 @@ Feature) carries the kind. Milestones are not used.
   instead ("a customer Orbitrap instrument", "a production server", "the LAN
   agent host") or use neutral placeholders ("server A", "instrument X"). The
   same applies to issue comments, code comments, and committed test data.
+- **Docs are part of done.** A change in behaviour that a user or an operator
+  meets updates its page in the same PR: `docs/user/how-it-works/` for what the
+  app does, `docs/maintaining.md` for running and operating it, or the library's
+  README. A design note in `docs/dev` does not count: it records the plan, not
+  what shipped. A how-it-works page carries the literature references the
+  method rests on, mirrored from the design note and the code comments, so a
+  reader can check the method without reading either. The PR's `## Docs`
+  section names the page it updated, or says why none is needed, or links the
+  follow-up issue filed for it; a user- or operator-facing change with no
+  Docs line is a review finding.
+- **No screenshots in the user docs.** A screenshot goes stale with nothing
+  to flag it when the UI changes, and it shows only one of the docs' light
+  and dark themes. Say where a control is in words, naming it in bold as the
+  app labels it, and draw a diagram as a `mermaid` fence. "User docs in dev"
+  in `docs/dev/developer_guide.md` has the rest of the rules for writing them.
 - **Lint Python before committing** - CI's "Lint and format" job runs
   `ruff check .` and `ruff format --check .` and fails the PR on any violation.
   Run `uv run ruff check --fix . && uv run ruff format .` before you commit.

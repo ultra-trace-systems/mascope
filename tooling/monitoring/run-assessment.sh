@@ -26,10 +26,41 @@
 # two reports are kept under one timestamp with a comparison that says, per
 # control, where the vantages disagree and which layer answered.
 #
+# Two triggers, answering different questions. Without arguments this is the
+# periodic run, from cron: "has the ground shifted?" - certificates, edge rules,
+# base images, drift, none of which has a commit - and its heartbeat is the
+# dead-man switch, so it always runs, waiting its turn if it must. With
+# --on-deploy it is the deploy watch, from a frequent cron: "did this build
+# break a control?". It asks the target which release it runs, and assesses
+# only a release no run has started on yet; otherwise it does nothing at all.
+#
+# The watch reads the deployment rather than being told by it. Whatever
+# promotes a release - the auto-update timer, an operator, a fleet playbook,
+# a rollback - changes what the target reports, so one watch covers them all,
+# and the target, treated as hostile, holds no credential for this host. All
+# it can do is name a version, which is validated before it is used.
+#
+# A third trigger, --production, points the suite's non-mutating subset
+# (pytest --non-mutating) at each production deployment in PRODUCTION_TARGETS,
+# through the CDN, from a local copy as the CDN vantage runs. Those controls
+# sign in to no account, spend no budget and write nothing, so the run needs
+# no credential but the operator header and touches none of the triggers'
+# state. It shares the lock, so it never runs inside another run, and the same
+# suite copy and its report directory are never written by two at once.
+#
+# Runs never overlap and are spaced: a lock is held for the whole run, and the
+# next one starts no sooner than MIN_INTERVAL after the last ended. The login
+# rate limits the suite verifies have windows of a minute or five, so two runs
+# back to back would throttle each other's controls; ten minutes apart they do
+# not. A deploy run that meets the lock or the interval is deferred - the next
+# watch tick looks again - and a periodic one waits.
+#
 # Exit code is the suite's, so the heartbeat below reflects the assessment
 # rather than the plumbing - with two deliberate overrides: an unusable
 # report (1) and a target behind the current release (90). Both are cases
-# where pytest succeeded and the run is still not evidence.
+# where pytest succeeded and the run is still not evidence. A periodic or
+# production run that could not get the lock within LOCK_WAIT exits 75 and
+# assesses nothing.
 #
 # Config (env vars, or an optional sourced file - see CONFIG below). The
 # credentials live only in that file, never here:
@@ -40,7 +71,9 @@
 #   RECORDS              where logs, report archives and summaries are kept
 #   MAX_BYTES            cap on the pulled report stream (default 20 MB)
 #   HC_URL               optional healthchecks.io-style ping URL
-#   RELEASE_API          release endpoint used by the lag check
+#   RELEASE_API          release endpoint used by the lag check; the tag it
+#                        names goes to both vantages' suites as
+#                        MASCOPE_PENTEST_CURRENT_RELEASE, a record only
 #   RELEASE_TIMEOUT      lookup timeout; a failed lookup is never fatal
 #   MASCOPE_PENTEST_*    target credentials, passed through to the suite
 #   CDN_TARGET           public URL through the CDN; unset = origin run only
@@ -50,17 +83,50 @@
 #                        origin run spent for the same account
 #   MASCOPE_PENTEST_HEADER_NAME / _VALUE
 #                        the header the edge's skip rule matches (CDN run only)
+#   MIN_INTERVAL         seconds from the end of one run to the start of the
+#                        next (default 600)
+#   LOCK_WAIT            seconds a periodic run waits for a run in progress
+#                        (default 7200)
+#   DEPLOY_HC_URL        heartbeat for deploy runs (default HC_URL), so a
+#                        deploy run that fails still pages
+#   PRODUCTION_TARGETS   for --production: space-separated NAME=URL pairs, one
+#                        per deployment, NAME naming its records (a-z, 0-9, -)
+#                        and URL its public https:// address through the CDN
+#   PRODUCTION_SUITE_DIR local suite copy for --production (default
+#                        CDN_SUITE_DIR)
+#   PRODUCTION_HC_URL    heartbeat for production runs (default none, never
+#                        HC_URL)
 #
 # Each vantage leaves three files in RECORDS: <ts>-<vantage>.log (the suite's
-# output), <ts>-<vantage>.tar.gz (the report), and <ts>-<vantage>.summary
+# output), <ts>-<vantage>.tar.gz (that run's report alone), and <ts>-<vantage>.summary
 # (this script's own verdict, so an archived run still states what it
-# concluded). With both vantages, <ts>-vantage.{md,json} holds the comparison.
+# concluded). The summary names the listener the suite measured, and says
+# origin_pull=not_assessed when that is the host's loopback listener, :8443,
+# which an origin run with origin pulls on has to use. With both vantages,
+# <ts>-vantage.{md,json} holds the comparison.
+# A production run leaves the same three per deployment, as
+# <ts>-prod-<NAME>.{log,tar.gz,summary}.
+# The summary ends in the trigger, trigger=schedule, trigger=deploy or
+# trigger=production. Three
+# dotfiles in RECORDS hold the triggers' state: .run.lock, .last-run-end (when
+# the last run ended) and .last-run-version (the release the last run started
+# on).
 set -uo pipefail
+
+case "${1:-}" in
+    "") TRIGGER=schedule ;;
+    --on-deploy) TRIGGER=deploy ;;
+    --production) TRIGGER=production ;;
+    *) echo "usage: ${0##*/} [--on-deploy | --production]" >&2; exit 2 ;;
+esac
 
 CONFIG="${PENTEST_RUNNER_ENV:-/opt/pentest-runner/config.env}"
 [ -r "$CONFIG" ] && . "$CONFIG"
 
-TARGET_HOST="${TARGET_HOST:?TARGET_HOST not set}"
+# A production run never reaches the staging host, so it needs none of it.
+if [ "$TRIGGER" != production ]; then
+    TARGET_HOST="${TARGET_HOST:?TARGET_HOST not set}"
+fi
 TARGET_USER="${TARGET_USER:-pentest}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_staging_pentest}"
 SUITE_DIR="${SUITE_DIR:-/home/pentest/suite/pentest}"
@@ -72,19 +138,142 @@ RELEASE_TIMEOUT="${RELEASE_TIMEOUT:-10}"   # lookup only; never fatal
 CDN_TARGET="${CDN_TARGET:-}"
 CDN_SUITE_DIR="${CDN_SUITE_DIR:-/opt/pentest-runner/suite/pentest}"
 VANTAGE_GAP="${VANTAGE_GAP:-300}"
+MIN_INTERVAL="${MIN_INTERVAL:-600}"
+LOCK_WAIT="${LOCK_WAIT:-7200}"
+DEPLOY_HC_URL="${DEPLOY_HC_URL:-$HC_URL}"
+PRODUCTION_TARGETS="${PRODUCTION_TARGETS:-}"
+PRODUCTION_SUITE_DIR="${PRODUCTION_SUITE_DIR:-$CDN_SUITE_DIR}"
+# No fallback to HC_URL: the daily production pings would keep the weekly
+# periodic run's dead-man switch green after that run stopped, and turn its
+# /fail back to up the next morning.
+PRODUCTION_HC_URL="${PRODUCTION_HC_URL:-}"
+
+# Every production target is checked before anything runs: a name becomes a
+# file name here, and a URL that is not https:// would send the operator header
+# in the clear. One bad entry refuses the whole run rather than assessing the
+# rest of the fleet and leaving that one silently out. A repeated NAME is
+# refused for the same reason: both deployments would be assessed under one
+# file name, and the second one's records would overwrite the first's.
+production_target='^[a-z0-9][a-z0-9-]{0,31}=https://[A-Za-z0-9.:/_-]+$'
+if [ "$TRIGGER" = production ]; then
+    if [ -z "$PRODUCTION_TARGETS" ]; then
+        echo "--production needs PRODUCTION_TARGETS (NAME=URL ...)" >&2
+        exit 2
+    fi
+    names=" "
+    for entry in $PRODUCTION_TARGETS; do
+        if ! [[ "$entry" =~ $production_target ]]; then
+            echo "PRODUCTION_TARGETS: not NAME=https://URL: ${entry%%=*}" >&2
+            exit 2
+        fi
+        if [[ "$names" == *" ${entry%%=*} "* ]]; then
+            echo "PRODUCTION_TARGETS: NAME given twice: ${entry%%=*}" >&2
+            exit 2
+        fi
+        names+="${entry%%=*} "
+    done
+fi
 
 SSH_OPTS=(-i "$SSH_KEY" -o IdentitiesOnly=yes -o ForwardAgent=no
           -o BatchMode=yes -o StrictHostKeyChecking=accept-new
           -o ConnectTimeout=20)
-
-ts="$(date -u +%Y-%m-%dT%H%M%SZ)"
 
 ping_hc() {  # $1 = path suffix ("/start", "/fail", "")
     [ -n "$HC_URL" ] || return 0
     curl -fsS -m 10 --retry 3 --data-binary "${2:-}" "${HC_URL}$1" >/dev/null 2>&1 || true
 }
 
+# The release the target says it runs, from its anonymous version route, read
+# on the target for the same reason the suite runs there: the origin may answer
+# only the CDN. Empty when it cannot be read or names no release: "unknown" (no
+# version set) and "latest" (the rolling tag) name none, and a watch keyed on
+# either would assess once and never again. The answer is the target's, so it
+# is bounded, parsed by a JSON parser and held to the shape of a version before
+# it is compared, stored or printed.
+deployed_version() {
+    ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" \
+        "curl -fsS -k -m 10 '${MASCOPE_PENTEST_TARGET}/api/version/public'" \
+        2>/dev/null | head -c 4096 | python3 -c 'import json, re, sys
+try:
+    v = json.load(sys.stdin)["data"]["version"]
+    ok = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,99}", v)
+    ok = ok and v not in ("unknown", "latest")
+except Exception:
+    ok = False
+print(v if ok else "")' 2>/dev/null
+}
+
+# Seconds since the last run ended; empty when no run has recorded its end. An
+# end in the future (the clock stepped back) counts as just now, so no run
+# waits longer than MIN_INTERVAL.
+since_last_run() {
+    local end elapsed
+    end="$(cat "${RECORDS}/.last-run-end" 2>/dev/null)"
+    [[ "$end" =~ ^[0-9]+$ ]] || return 0
+    elapsed=$(( $(date +%s) - end ))
+    echo $(( elapsed < 0 ? 0 : elapsed ))
+}
+
+# One run at a time, for as long as this process lives: the lock goes with it,
+# however it ends.
+exec 9>>"${RECORDS}/.run.lock"
+deployed=""
+if [ "$TRIGGER" = deploy ]; then
+    # Checked in this order so a tick that cannot run touches nothing, the
+    # target included.
+    if ! flock -n 9; then
+        echo "deploy run deferred: a run is in progress"
+        exit 0
+    fi
+    elapsed="$(since_last_run)"
+    if [ -n "$elapsed" ] && [ "$elapsed" -lt "$MIN_INTERVAL" ]; then
+        echo "deploy run deferred: the last run ended ${elapsed}s ago"
+        exit 0
+    fi
+    deployed="$(deployed_version)"
+    if [ -z "$deployed" ]; then
+        echo "deploy watch: cannot read the deployed release"
+        exit 0
+    fi
+    # Assessed once per release, whatever the run concluded: a red run pages,
+    # and repeating it every tick would only spend the target's rate limits.
+    [ "$deployed" = "$(cat "${RECORDS}/.last-run-version" 2>/dev/null)" ] && exit 0
+    HC_URL="$DEPLOY_HC_URL"
+elif [ "$TRIGGER" = production ]; then
+    # The lock alone: a production run spends nothing of the staging target's
+    # login windows, so it neither waits out the interval nor moves it, and it
+    # leaves the deploy watch's state to the runs that assess staging.
+    HC_URL="$PRODUCTION_HC_URL"
+    if ! flock -w "$LOCK_WAIT" 9; then
+        ping_hc "/fail" "no run: another held the lock for ${LOCK_WAIT}s"
+        exit 75
+    fi
+else
+    if ! flock -w "$LOCK_WAIT" 9; then
+        ping_hc "/fail" "no run: another held the lock for ${LOCK_WAIT}s"
+        exit 75
+    fi
+    elapsed="$(since_last_run)"
+    if [ -n "$elapsed" ] && [ "$elapsed" -lt "$MIN_INTERVAL" ]; then
+        sleep $(( MIN_INTERVAL - elapsed ))
+    fi
+    deployed="$(deployed_version)"
+fi
+# Recorded at the start, by either trigger, so a periodic run on a new release
+# leaves the watch nothing to repeat.
+[ -n "$deployed" ] && printf '%s\n' "$deployed" > "${RECORDS}/.last-run-version"
+[ "$TRIGGER" = production ] || trap 'date +%s > "${RECORDS}/.last-run-end"' EXIT
+
+ts="$(date -u +%Y-%m-%dT%H%M%SZ)"
 ping_hc "/start"
+
+# What a run archives: its own report and nothing else from report/. The
+# suite also keeps report/history/ there, an entry per run that nothing
+# prunes; archived along, it would put every earlier run (and, in a suite copy
+# two vantages or deployments share, theirs) in each record, and grow each
+# archive until MAX_BYTES cut it short. The trail is the series of per-run
+# archives in RECORDS.
+REPORT_FILES=(report/pentest-report.json report/pentest-report.md)
 
 # Runs the suite on the target and pulls its report back. $1 = log, $2 = archive.
 run_origin() {
@@ -97,8 +286,15 @@ run_origin() {
     # The previous run's report is cleared first: report/ persists, and a run
     # that aborts before writing one (a WAF-refused 403, a usage error, a
     # crash) would otherwise archive the last good report under today's date.
+    #
+    # The current release goes along when the lookup named one, as a record
+    # for the report; the verdict and the exit code stay this script's. Only a
+    # validated release tag is ever spliced into the remote command line.
+    local release_env=""
+    [ -n "$current_release" ] && \
+        release_env="MASCOPE_PENTEST_CURRENT_RELEASE='${current_release}' "
     local remote_cmd="cd ${SUITE_DIR} && \
-  rm -f report/pentest-report.json report/pentest-report.md && \
+  rm -f ${REPORT_FILES[*]} && \
   MASCOPE_PENTEST_TARGET='${MASCOPE_PENTEST_TARGET}' \
   MASCOPE_PENTEST_EMAIL='${MASCOPE_PENTEST_EMAIL}' \
   MASCOPE_PENTEST_PASSWORD='${MASCOPE_PENTEST_PASSWORD}' \
@@ -106,7 +302,7 @@ run_origin() {
   MASCOPE_PENTEST_LOWPRIV_PASSWORD='${MASCOPE_PENTEST_LOWPRIV_PASSWORD:-}' \
   MASCOPE_PENTEST_VERIFY_TLS=false \
   MASCOPE_PENTEST_VANTAGE=origin \
-  ./.venv/bin/python -m pytest -q"
+  ${release_env}./.venv/bin/python -m pytest -q"
 
     ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" "$remote_cmd" > "$1" 2>&1
     local rc=$?
@@ -114,7 +310,7 @@ run_origin() {
     # head -c bounds the stream before it lands: an unbounded "report" from a
     # compromised target must not be able to starve the backup volume.
     ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" \
-        "cd ${SUITE_DIR} && tar -cz report" 2>/dev/null | head -c "$MAX_BYTES" > "$2"
+        "cd ${SUITE_DIR} && tar -cz ${REPORT_FILES[*]}" 2>/dev/null | head -c "$MAX_BYTES" > "$2"
     return "$rc"
 }
 
@@ -128,7 +324,9 @@ run_cdn() {
     (
         cd "$CDN_SUITE_DIR" || exit 2
         # As at the origin: an aborted run must leave no report to archive.
-        rm -f report/pentest-report.json report/pentest-report.md
+        # The release is set even when empty, so none inherited from cron's
+        # environment can stand in for a lookup that failed.
+        rm -f "${REPORT_FILES[@]}"
         MASCOPE_PENTEST_TARGET="$CDN_TARGET" \
         MASCOPE_PENTEST_EMAIL="${MASCOPE_PENTEST_EMAIL}" \
         MASCOPE_PENTEST_PASSWORD="${MASCOPE_PENTEST_PASSWORD}" \
@@ -138,12 +336,42 @@ run_cdn() {
         MASCOPE_PENTEST_HEADER_VALUE="${MASCOPE_PENTEST_HEADER_VALUE:-}" \
         MASCOPE_PENTEST_VERIFY_TLS=true \
         MASCOPE_PENTEST_VANTAGE=cdn \
+        MASCOPE_PENTEST_CURRENT_RELEASE="${current_release}" \
         exec ./.venv/bin/python -m pytest -q
     ) > "$1" 2>&1
     local rc=$?
     # The local copy is ours, but the report quotes what the deployment
     # answered: bounded the same way as the origin's.
-    tar -cz -C "$CDN_SUITE_DIR" report 2>/dev/null | head -c "$MAX_BYTES" > "$2"
+    tar -cz -C "$CDN_SUITE_DIR" "${REPORT_FILES[@]}" 2>/dev/null | head -c "$MAX_BYTES" > "$2"
+    return "$rc"
+}
+
+# Runs the non-mutating subset here against one production deployment, through
+# the edge. $1 = log, $2 = archive, $3 = its public URL.
+run_production() {
+    # As the CDN run, with two differences. --non-mutating holds the suite to
+    # the controls that change nothing a real user depends on, and it refuses
+    # to run at all while any control is unclassified. And no account goes
+    # along: those controls sign in nowhere, so the credentials are cleared
+    # rather than inherited from whatever environment cron gives this script.
+    (
+        cd "$PRODUCTION_SUITE_DIR" || exit 2
+        rm -f "${REPORT_FILES[@]}"
+        MASCOPE_PENTEST_TARGET="$3" \
+        MASCOPE_PENTEST_EMAIL= \
+        MASCOPE_PENTEST_PASSWORD= \
+        MASCOPE_PENTEST_LOWPRIV_EMAIL= \
+        MASCOPE_PENTEST_LOWPRIV_PASSWORD= \
+        MASCOPE_PENTEST_AGGRESSIVE= \
+        MASCOPE_PENTEST_HEADER_NAME="${MASCOPE_PENTEST_HEADER_NAME:-}" \
+        MASCOPE_PENTEST_HEADER_VALUE="${MASCOPE_PENTEST_HEADER_VALUE:-}" \
+        MASCOPE_PENTEST_VERIFY_TLS=true \
+        MASCOPE_PENTEST_VANTAGE=cdn \
+        MASCOPE_PENTEST_CURRENT_RELEASE="${current_release}" \
+        exec ./.venv/bin/python -m pytest -q --non-mutating
+    ) > "$1" 2>&1
+    local rc=$?
+    tar -cz -C "$PRODUCTION_SUITE_DIR" "${REPORT_FILES[@]}" 2>/dev/null | head -c "$MAX_BYTES" > "$2"
     return "$rc"
 }
 
@@ -152,15 +380,40 @@ report_json() {
     tar -xzOf "$1" report/pentest-report.json 2>/dev/null | head -c 4000000
 }
 
-current="" looked_up=""
+# Keep this in step with RELEASE_TAG_PATTERN in mascope_runtime: a box
+# piloting a pre-release runs a real release tag, and leaving it out here
+# would silently disarm the staleness check for the deployments most likely to
+# be forgotten - a candidate is short-lived by intention, not by mechanism.
+release_tag='^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.?[0-9]+)?$'
+
+# The current release, looked up HERE, once, before either vantage runs, so
+# both are measured against the same release and each report can record it.
+# A failed lookup leaves it empty and is never fatal. $current keeps whatever
+# the API named, for the summary; $current_release only a release tag, so
+# nothing unvalidated reaches the target's command line.
+lookup_release() {
+    current="$(curl -fsS -m "$RELEASE_TIMEOUT" --retry 2 \
+        -H 'Accept: application/vnd.github+json' "$RELEASE_API" 2>/dev/null \
+      | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("tag_name") or "")
+except Exception:
+    print("")' 2>/dev/null)"
+    current_release=""
+    [[ "$current" =~ $release_tag ]] && current_release="$current"
+    return 0
+}
 
 # Runs one vantage and leaves its verdict in $summary and $suite_rc.
-assess() {  # $1 = origin | cdn
-    local vantage="$1"
+# $1 = what its records are named: origin, cdn or prod-<NAME>. $2 = the
+# function that runs it, given the log, the archive and the arguments after.
+assess() {
+    local vantage="$1" runner="$2"
+    shift 2
     local archive="${RECORDS}/${ts}-${vantage}.tar.gz"
     local log="${RECORDS}/${ts}-${vantage}.log"
 
-    "run_${vantage}" "$log" "$archive"
+    "$runner" "$log" "$archive" "$@"
     suite_rc=$?
 
     summary="$(report_json "$archive" | python3 -c '
@@ -170,11 +423,26 @@ try:
 except Exception:
     print("report unreadable"); raise SystemExit
 s = d.get("summary", {})
-print("build=%s findings=%s accepted=%s stale=%s verified=%s not_assessed=%s" % (
+# The listener the run measured. The report comes from the target, so only
+# an integer port, a literal boolean and a known id reach the summary, and a
+# report from a suite that predates the field says "?" rather than passing for
+# :443.
+l = d.get("listener")
+l = l if isinstance(l, dict) else {}
+port = l.get("port")
+listener = "?"
+if type(port) is int:
+    listener = ("loopback:%d" if l.get("loopback") is True else "%d") % port
+unseen = l.get("unseen")
+unseen = [u.get("id") for u in unseen if isinstance(u, dict)] if isinstance(
+    unseen, list) else []
+print("build=%s findings=%s accepted=%s stale=%s verified=%s not_assessed=%s"
+      " throttled=%s listener=%s%s" % (
     (d.get("build") or {}).get("identity", "?"),
     s.get("findings", "?"), s.get("accepted_findings", 0),
     s.get("stale_baseline_entries", 0), s.get("controls_verified", "?"),
-    s.get("not_assessed", "?")))
+    s.get("not_assessed", "?"), s.get("throttled", "?"), listener,
+    " origin_pull=not_assessed" if "origin-pull" in unseen else ""))
 ' 2>/dev/null)"
     summary="${summary:-report unreadable}"
 
@@ -196,29 +464,12 @@ print("build=%s findings=%s accepted=%s stale=%s verified=%s not_assessed=%s" % 
     #
     # A lookup that fails must never redden an assessment - an unreachable
     # third party is not a security finding - so an undeterminable answer is
-    # recorded as "unknown" and leaves the exit code alone. Looked up once, so
-    # both vantages are measured against the same release.
+    # recorded as "unknown" and leaves the exit code alone. The release was
+    # looked up once, before either run, so both vantages are measured
+    # against the same one (see lookup_release).
     if [ "$summary" != "report unreadable" ]; then
         local assessed
         assessed="$(printf '%s' "$summary" | sed -n 's/.*build=\([^ ]*\).*/\1/p')"
-        if [ -z "$looked_up" ]; then
-            current="$(curl -fsS -m "$RELEASE_TIMEOUT" --retry 2 \
-                -H 'Accept: application/vnd.github+json' "$RELEASE_API" 2>/dev/null \
-              | python3 -c 'import json,sys
-try:
-    print(json.load(sys.stdin).get("tag_name") or "")
-except Exception:
-    print("")' 2>/dev/null)"
-            looked_up=1
-        fi
-
-        # Keep this in step with RELEASE_TAG_PATTERN in mascope_runtime: a box
-        # piloting a pre-release runs a real release tag, and leaving it out
-        # here would silently disarm the staleness check for the deployments
-        # most likely to be forgotten - a candidate is short-lived by
-        # intention, not by mechanism.
-        local release_tag='^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.?[0-9]+)?$'
-
         local lag=unknown
         if [[ "$assessed" =~ $release_tag ]] && [[ "$current" =~ $release_tag ]]; then
             if [ "$assessed" = "$current" ]; then
@@ -244,7 +495,10 @@ except Exception:
         # Same class as an unreadable report: the run itself succeeded and the
         # evidence is not about the artifact anyone wanted assessed. Distinct
         # exit code so a stale target is never read as a security finding.
-        if [ "$lag" = "behind" ] && [ "$suite_rc" -eq 0 ]; then
+        # Not for production: there the assessed build is the one users run,
+        # so the report is evidence about it, and the lag is recorded only.
+        if [ "$lag" = "behind" ] && [ "$suite_rc" -eq 0 ] \
+            && [ "$TRIGGER" != production ]; then
             suite_rc=90
         fi
     fi
@@ -253,7 +507,14 @@ except Exception:
     # the target was current - and until this existed only in the heartbeat
     # ping, i.e. in a third party's UI. Keep a copy beside the archive so an
     # archived run still states what it concluded, and so the evidence is
-    # readable without leaving this host.
+    # readable without leaving this host. It ends in the trigger, so a deploy
+    # run reads as one in the archive and in the heartbeat. A periodic run
+    # that could not read the deployed release says so: the deploy watch reads
+    # it the same way, so it is blind too, and would otherwise be blind in
+    # silence.
+    summary="${summary} trigger=${TRIGGER}"
+    [ -n "$deployed" ] || [ "$TRIGGER" = production ] \
+        || summary="${summary} deployed=unreadable"
     printf '%s\n' "$summary" > "${RECORDS}/${ts}-${vantage}.summary"
 }
 
@@ -263,13 +524,34 @@ except Exception:
 # then ranks below its own release and rc.10 above rc.9.
 _precedence() { printf '%s' "${1#v}" | sed -E 's/-(alpha|beta|rc)/~\1/'; }
 
-assess origin
+lookup_release
+
+if [ "$TRIGGER" = production ]; then
+    # Every deployment is assessed even when one fails, and the first failure's
+    # code is the run's: one broken site must not hide the state of the rest.
+    final_rc=0 final_summary=""
+    for entry in $PRODUCTION_TARGETS; do
+        name="${entry%%=*}"
+        assess "prod-${name}" run_production "${entry#*=}"
+        [ "$final_rc" -eq 0 ] && final_rc=$suite_rc
+        final_summary="${final_summary:+${final_summary} | }${name}: ${summary}"
+    done
+    find "$RECORDS" -maxdepth 1 -name '*-prod-*' -mtime +400 -delete 2>/dev/null
+    if [ "$final_rc" -eq 0 ]; then
+        ping_hc "" "$final_summary"
+    else
+        ping_hc "/fail" "suite exit ${final_rc} | ${final_summary}"
+    fi
+    exit "$final_rc"
+fi
+
+assess origin run_origin
 origin_rc=$suite_rc origin_summary=$summary
 final_rc=$origin_rc final_summary=$origin_summary
 
 if [ -n "$CDN_TARGET" ]; then
     sleep "$VANTAGE_GAP"
-    assess cdn
+    assess cdn run_cdn
     cdn_rc=$suite_rc cdn_summary=$summary
 
     # The comparison reads both reports through file descriptors, so neither

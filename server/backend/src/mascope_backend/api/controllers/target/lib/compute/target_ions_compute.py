@@ -22,7 +22,7 @@ from mascope_backend.db import (
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_tools.composition.config import ELECTRON_MASS
-from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
+from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
 from mascope_tools.composition.finder import replace_atom_with_isotope
 from mascope_tools.composition.heuristic_filter import extract_isotope_labels
 from mascope_tools.composition.mechanism_notation import (
@@ -403,7 +403,8 @@ def _extract_custom_elements(ion_composition: dict[str, int]) -> dict[str, dict]
         # Labelled distribution: heaviest isotope at `purity`, remainder split to
         # the lighter isotope(s). For the two-isotope elements defined today this
         # is simply (1 - purity) on the light isotope, `purity` on the heavy one.
-        purity = element.default_purity
+        # The purity in effect: a run's ionization setup's, inside the run.
+        purity = label_purity(symbol)
         abundances = [1.0 - purity] + [purity] * (len(element.isotopes) - 1)
 
         custom_elements[symbol] = {

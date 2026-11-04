@@ -10,7 +10,9 @@ express operator relevance, not verbosity:
   per request, per file, or per loop item belongs here. INFO and above
   reaches the log files.
 - WARNING: actionable operator signal, expected to be rare and to group into
-  a single monitored issue.
+  a single monitored issue. A warning that belongs in the log files but not
+  in monitoring - a transient outage of a service the code rides out - binds
+  ``SENTRY_SKIP``.
 - ERROR/CRITICAL: faults. Inside an except block use ``logger.exception`` so
   the traceback travels with the record, and log an incident exactly once -
   the outermost handler owns the record (no log-then-raise).
@@ -169,6 +171,13 @@ _sentry_ready = False
 #: apart.
 SENTRY_FINGERPRINT = "sentry_fingerprint"
 
+#: Loguru ``extra`` key that keeps a record out of monitoring when bound true:
+#: ``logger.bind(**{SENTRY_SKIP: True}).warning(...)``. The record still
+#: reaches the log files and the terminal. For a condition an operator may
+#: want to read in the logs but that monitoring should not file, such as a
+#: dropped connection to Redis the next call or tick recovers from.
+SENTRY_SKIP = "sentry_skip"
+
 
 def _fingerprint_parts(value) -> list[str]:
     """
@@ -303,6 +312,8 @@ def _sentry_sink(message) -> None:
     # "sentry_sdk.errors" would otherwise recurse back through this sink.
     name = str(record["name"])
     if name.startswith("sentry_sdk") or name.startswith("urllib3"):
+        return
+    if record["extra"].get(SENTRY_SKIP):
         return
 
     level_name = record["level"].name

@@ -15,7 +15,12 @@ const { socket, http, calls } = vi.hoisted(() => {
       resubscribe: record('resubscribe'),
       renew: record('renew')
     },
-    http: { get: record('identify'), post: vi.fn() }
+    http: {
+      // The profile read only: the first-owner check a signed-out tab makes
+      // is no step of signing in or out.
+      get: vi.fn(async (url) => (url === '/users/me' ? calls.push('identify') : undefined)),
+      post: vi.fn()
+    }
   }
 })
 
@@ -66,6 +71,56 @@ describe('auth store: the socket', () => {
     await auth.verifyMfa('123456')
 
     expect(calls).toEqual(['resubscribe', 'identify'])
+  })
+
+  // The profile read of a browser with no session any more.
+  const signedOutProfile = async () => calls.push('identify') && false
+
+  // The handler the store registered for the server's sign-out event.
+  const signedOut = () => socket.on.mock.calls.find(([event]) => event === 'signed_out')[1]
+
+  it('opens a new socket and reads the profile when another tab signs out', async () => {
+    // The browser has no session any more: the sign-in screen.
+    http.get.mockImplementationOnce(signedOutProfile)
+    await signedOut()()
+
+    expect(calls).toEqual(['renew', 'identify'])
+  })
+
+  it('asks for its rooms again when the browser has signed in meanwhile', async () => {
+    // The new connection was signed in from the cookie another tab set.
+    http.get.mockImplementationOnce(async () => calls.push('identify') && { id: 7 })
+    await signedOut()()
+
+    expect(calls).toEqual(['renew', 'identify', 'resubscribe'])
+  })
+
+  it('handles a burst of sign-out events once', async () => {
+    http.get.mockImplementationOnce(signedOutProfile)
+    await Promise.all([signedOut()(), signedOut()()])
+
+    expect(calls).toEqual(['renew', 'identify'])
+  })
+
+  it('ignores the event for its own sign-out', async () => {
+    // The server tells the signing-out tab's socket too, while the request is
+    // still in flight; the sign-out renews it once.
+    http.post.mockImplementationOnce(async () => {
+      await signedOut()()
+    })
+    await auth.logout()
+
+    expect(calls).toEqual(['renew', 'identify'])
+  })
+
+  it('heeds the event again once its own sign-out is over', async () => {
+    http.post.mockRejectedValueOnce(new Error('HTTP 500'))
+    await expect(auth.logout()).rejects.toThrow()
+
+    http.get.mockImplementationOnce(signedOutProfile)
+    await signedOut()()
+
+    expect(calls).toEqual(['renew', 'identify'])
   })
 
   it('asks for no rooms when the sign-in fails', async () => {

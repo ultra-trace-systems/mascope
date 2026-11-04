@@ -106,7 +106,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.1"
 
@@ -198,7 +198,7 @@ jobs:
         run: python3 tooling/check-licenses.py npm
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.1"
 
@@ -233,7 +233,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.1"
 
@@ -270,7 +270,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.1"
 
@@ -332,7 +332,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.1"
 
@@ -359,7 +359,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.1"
 
@@ -395,7 +395,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.1"
 
@@ -428,7 +428,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.1"
 
@@ -447,7 +447,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.1"
 
@@ -479,7 +479,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.1"
 
@@ -541,13 +541,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Free disk space on the runner
+        run: |
+          # The upload spec needs headroom on the root disk, where Docker keeps
+          # the stack's volumes and so the backend's upload spool. The backend
+          # refuses a resumable upload with 507 when admitting it would leave
+          # less than tus_min_free_disk_gb (10 GB by default) free there, and
+          # on some ubuntu-24.04 runner images only about 5.5 GB is left by
+          # the time the spec runs: every upload is refused, and the spec
+          # times out waiting for a file that never arrives. Delete
+          # toolchains this job never touches instead of lowering the floor,
+          # so the stack keeps the default it ships with: Python comes from
+          # uv, Node from setup-node, and the app runs in its images.
+          #
+          # The deletion frees about 19 GB but takes about two minutes - the
+          # Android SDK alone is a great many small files - so it runs
+          # detached while the images build and the stack starts, and "Wait
+          # for the disk cleanup" holds the e2e suite until it is done.
+          # Nothing before the upload spec needs the space: on a runner short
+          # of it, the build and the stack came up and only the upload was
+          # refused.
+          df -h /
+          nohup sh -c 'sudo rm -rf /usr/local/lib/android /usr/local/.ghcup \
+            /opt/ghc /opt/hostedtoolcache/CodeQL /usr/share/swift
+            echo "rm exited $?"; touch "$RUNNER_TEMP/disk-freed"' \
+            > "$RUNNER_TEMP/free-disk.log" 2>&1 &
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.1"
 
@@ -641,6 +667,24 @@ jobs:
           echo "Staged raw file: $RAW"
           echo "MASCOPE_E2E_RAW_FILE=$RAW" >> $GITHUB_ENV
 
+      - name: Wait for the disk cleanup
+        run: |
+          # The upload spec is the first thing that needs the space the first
+          # step frees, so finish that deletion before the suite starts. If it
+          # is still going after five more minutes, say so and run the suite
+          # anyway: a runner with room to spare passes without it, and on one
+          # without, the warning names the cause of the upload spec's timeout.
+          for i in $(seq 1 60); do
+            [ -f "$RUNNER_TEMP/disk-freed" ] && break
+            sleep 5
+          done
+          echo "Waited ${SECONDS}s for the disk cleanup."
+          cat "$RUNNER_TEMP/free-disk.log"
+          if [ ! -f "$RUNNER_TEMP/disk-freed" ]; then
+            echo "::warning::The disk cleanup had not finished; the upload spec may be refused for disk space (507)."
+          fi
+          df -h /
+
       - name: Run e2e tests
         working-directory: server/frontend
         env:
@@ -670,7 +714,14 @@ jobs:
 
       - name: Dump stack logs on failure
         if: failure()
-        run: docker compose -f docker-compose.demo.yaml logs --tail 200
+        run: |
+          docker compose -f docker-compose.demo.yaml logs --tail 200
+          # Free space where the stack keeps its volumes. The backend's
+          # warning for an upload it refused for disk space (507) is often
+          # gone from the tail above by now - the SDK contract tests run after
+          # the e2e suite - and otherwise only the Playwright trace has it.
+          df -h /
+          docker system df
 
       - name: Upload Playwright report
         if: failure()
@@ -716,7 +767,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.1"
 

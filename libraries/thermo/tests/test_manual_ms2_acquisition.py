@@ -567,9 +567,13 @@ class TestWhatTheMs2StoreReads:
     def contents(self, on_both, monkeypatch):
         if on_both == "thermo":
             # The Thermo library averages and reads peaks inside .NET, which
-            # the stand-in cannot reach: everything else is read on both.
+            # the stand-in cannot reach: everything else is read on both. An
+            # average is an empty spectrum in the reader's form, which the
+            # precursor is located in.
             monkeypatch.setattr(
-                ThermoBackend, "average_centroids", lambda self, scans, **_: scans
+                ThermoBackend,
+                "average_centroids",
+                lambda self, scans, **_: (np.array([]),) * 4,
             )
             monkeypatch.setattr(
                 ThermoBackend,

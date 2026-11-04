@@ -285,6 +285,7 @@ class TestSampleAccepted:
             second.json()["detail"]["peak_assignment_run_id"]
             == first.json()["data"][0]["peak_assignment_run_id"]
         )
+        assert second.json()["detail"]["code"] == "assignment_in_flight"
 
 
 class TestSampleRefused:
@@ -311,6 +312,7 @@ class TestSampleRefused:
         response = await editor_client.post(_sample_url(assign_batch["measured"]))
 
         assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "assignment_in_flight"
         assert response.json()["detail"]["peak_assignment_run_id"] == run_id
         assert response.json()["detail"]["sample_item_id"] == assign_batch["measured"]
         # Refused before a second run could be created.
@@ -340,6 +342,7 @@ class TestSampleRefused:
 
         assert response.status_code == 422
         detail = response.json()["detail"]
+        assert detail["code"] == "sample_ineligible"
         assert detail["reason"] == BLANK_REASON
         assert detail["sample_item_id"] == assign_batch["blank"]
         # The prose says the same thing, for a user reading a toast.
@@ -369,7 +372,22 @@ class TestSampleRefused:
         response = await editor_client.post(_sample_url(assign_batch["blank"]))
 
         assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "sample_ineligible"
         assert response.json()["detail"]["reason"] == UNCALIBRATED_REASON
+
+    @pytest.mark.asyncio
+    async def test_a_body_it_cannot_read_is_a_422_without_the_code(
+        self, editor_client, assign_batch, feature_enabled, launched_samples
+    ):
+        """The ineligibility code is what tells the two 422s apart."""
+        response = await editor_client.post(
+            _sample_url(assign_batch["measured"]),
+            json={"config": {"max_alternatives": -1}},
+        )
+
+        assert response.status_code == 422
+        assert "code" not in response.json()["detail"]
+        assert len(launched_samples) == 0
 
     @pytest.mark.asyncio
     async def test_an_ineligible_sample_creates_no_run(

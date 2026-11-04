@@ -111,6 +111,15 @@ class SampleFileCreate(SampleFileBase):
             "it under the instrument the agent reported"
         ),
     )
+    instrument_model: str | None = Field(
+        None,
+        max_length=128,
+        description=(
+            "The instrument model the reader reported, None where the file "
+            "names none. Not a column of the file: it fills the instrument's "
+            "own row."
+        ),
+    )
 
     @model_validator(mode="after")
     def settle_instrument_type(self):

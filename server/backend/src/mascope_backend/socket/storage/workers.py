@@ -30,8 +30,10 @@ import asyncio
 import os
 import uuid
 
-from mascope_backend.runtime import runtime
-from mascope_backend.socket.storage.client import redis_storage_client
+from mascope_backend.socket.storage.client import (
+    log_storage_failure,
+    redis_storage_client,
+)
 from mascope_backend.socket.storage.config import storage_config
 
 
@@ -66,8 +68,9 @@ async def _beat() -> None:
     except Exception as e:
         # Retried on the next tick. A lapse meanwhile makes this worker's
         # sockets read as gone, which leaves rooms rather than keeping them.
-        runtime.logger.exception(
-            f"Worker heartbeat: failed to write it: {e} [Worker {os.getpid()}]"
+        log_storage_failure(
+            f"Worker heartbeat: failed to write it: {e} [Worker {os.getpid()}]",
+            e,
         )
 
 
@@ -127,9 +130,10 @@ async def renew_socket_claim(sid: str) -> None:
     except Exception as e:
         # The socket then reads as gone to the user's other tabs: they leave
         # rooms it is in rather than keep rooms it is not.
-        runtime.logger.exception(
+        log_storage_failure(
             f"Worker heartbeat: failed to record the worker of socket {sid}: {e} "
-            f"[Worker {os.getpid()}]"
+            f"[Worker {os.getpid()}]",
+            e,
         )
 
 
@@ -162,8 +166,9 @@ async def release_socket_claim(sid: str) -> None:
     try:
         await redis_storage_client.client.delete(storage_config.socket_worker_key(sid))
     except Exception as e:
-        runtime.logger.exception(
-            f"Worker heartbeat: failed to drop the worker of socket {sid}: {e}"
+        log_storage_failure(
+            f"Worker heartbeat: failed to drop the worker of socket {sid}: {e}",
+            e,
         )
 
 
@@ -189,6 +194,7 @@ async def stop_worker_heartbeat() -> None:
     try:
         await redis_storage_client.client.delete(storage_config.worker_key(worker_id()))
     except Exception as e:
-        runtime.logger.exception(
-            f"Worker heartbeat: failed to remove it: {e} [Worker {os.getpid()}]"
+        log_storage_failure(
+            f"Worker heartbeat: failed to remove it: {e} [Worker {os.getpid()}]",
+            e,
         )

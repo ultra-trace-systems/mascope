@@ -87,6 +87,9 @@ _FORWARDED_ENV_VARS = [
     # backfill_axis_fingerprint
     "AXF_LIMIT",
     "AXF_RETRY",
+    # reflag_orbitrap_weak_peaks
+    "REFLAG_LIMIT",
+    "REFLAG_RETRY",
     # report_method_binding_disagreements
     "BINDING_REPORT_FILES",
     "BINDING_REPORT_PER_KEY",

@@ -1,16 +1,17 @@
 """
 Unit tests for the MS2 store backfill script.
 
-The script decides which Orbitrap files need a store, counts them per
-instrument, writes them one at a time with a rest between, remembers the
-files it could not write, and reads its settings. Each is tested here with
+The script decides which Orbitrap files need a store, and which have one
+whose groups the group inventory does not list, counts them per instrument,
+writes and lists them one at a time with a rest between, remembers the files
+it could not write, and reads its settings. Each is tested here with
 stand-ins, hermetically; the run over a real store is in
 ``tests/integration/db/test_ms2_store_backfill_run.py``.
 """
 
 import asyncio
 from collections import Counter
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from test_utils import captured_logs
@@ -28,12 +29,22 @@ def _always(value):
     return lambda *_args: value
 
 
-def _classify(props, *, raw=True, retry=False, store_on_disk=True):
+def _classify(props, *, raw=True, retry=False, store_on_disk=True, listed=None):
     with (
         patch.object(ms2_store, "store_path", _always("/filestore/F/ms2.zarr")),
         patch.object(script.os.path, "isdir", _always(store_on_disk)),
     ):
-        return script.classify("F", props, _always(raw), retry)
+        return script.classify("F", props, _always(raw), retry, listed)
+
+
+#: A store recording two groups.
+TWO_GROUPS = {
+    **CURRENT,
+    "groups": [
+        {"polarity": "+", "key": "195.0877@hcd10.00", "scan_count": 3},
+        {"polarity": "+", "key": "195.0877@hcd20.00", "scan_count": 3},
+    ],
+}
 
 
 # --- which files need a store -------------------------------------------------
@@ -93,6 +104,25 @@ class TestClassify:
     def test_one_whose_raw_file_was_not_kept(self):
         assert _classify({"scan_streams": [MS2]}, raw=False) == script.NO_RAW
 
+    @pytest.mark.parametrize("listed", [0, 1, 3])
+    def test_one_whose_stores_groups_the_inventory_does_not_list_is_listed(
+        self, listed
+    ):
+        """Of a store written before the inventory, or whose listing failed:
+        listed from the store, its raw file unread."""
+        props = {"scan_streams": [MS2], "ms2_store": TWO_GROUPS}
+
+        assert _classify(props, listed=listed, raw=False) == script.UNLISTED
+
+    @pytest.mark.parametrize(
+        ("recorded", "listed"), [(TWO_GROUPS, 2), (CURRENT, 0), (TWO_GROUPS, None)]
+    )
+    def test_one_it_lists_is_not(self, recorded, listed):
+        """Nor one whose listing is not known, as a stand-in's."""
+        props = {"scan_streams": [MS2], "ms2_store": recorded}
+
+        assert _classify(props, listed=listed) == script.HAS_STORE
+
 
 # --- the survey -----------------------------------------------------------------
 
@@ -143,6 +173,31 @@ class TestSurvey:
         )
 
         assert [p["filename"] for p in pending] == ["f0", "f1"]
+
+    def test_takes_a_file_to_list_beside_those_to_write(self):
+        props = {
+            "unlisted": {"scan_streams": [MS2], "ms2_store": TWO_GROUPS},
+            "listed": {"scan_streams": [MS2], "ms2_store": TWO_GROUPS},
+            "new": {"scan_streams": [MS2]},
+        }
+        candidates = [
+            {"filename": "unlisted", "instrument": "A", "listed": 0},
+            {"filename": "listed", "instrument": "A", "listed": 2},
+            {"filename": "new", "instrument": "A", "listed": 0},
+        ]
+
+        with patch.object(script, "has_current_store", lambda f, p: "ms2_store" in p):
+            pending, counts = asyncio.run(
+                script.survey(candidates, _props_of(props), _always(True))
+            )
+
+        assert {p["filename"]: p["listed_only"] for p in pending} == {
+            "unlisted": True,
+            "new": False,
+        }
+        assert counts["A"] == Counter(
+            {script.UNLISTED: 1, script.HAS_STORE: 1, script.PENDING: 1}
+        )
 
     def test_says_which_files_a_run_tried_before(self):
         """So a write after MS2_STORE_RETRY=1 clears the note, and no other
@@ -242,6 +297,71 @@ class TestFill:
 
         assert counts == Counter({"written": 1, "failed": 1})
         assert recorded == [("bad", "disk full")]
+
+    def test_lists_the_groups_of_each_store_it_writes(self):
+        events = []
+
+        def write(filename, _tried):
+            events.append(("write", filename))
+            return CURRENT
+
+        async def listing(candidate):
+            events.append(("list", candidate["filename"]))
+            return 2
+
+        counts = asyncio.run(
+            script.fill(_pending("a", "b"), write, None, 0, listing=listing)
+        )
+
+        assert counts == Counter({"written": 2, "listed": 2})
+        assert events == [("write", "a"), ("list", "a"), ("write", "b"), ("list", "b")]
+
+    def test_a_file_only_to_list_is_listed_and_not_written(self):
+        events = []
+
+        async def listing(candidate):
+            events.append(("list", candidate["filename"]))
+            return 2
+
+        counts = asyncio.run(
+            script.fill(
+                [{**_pending("a")[0], "listed_only": True}],
+                lambda *_: events.append("written"),
+                None,
+                0,
+                listing=listing,
+            )
+        )
+
+        assert counts == Counter({"listed": 1})
+        assert events == [("list", "a")]
+
+    def test_a_store_not_written_is_not_listed(self):
+        listing = AsyncMock()
+
+        def write(_filename, _tried):
+            raise OSError("disk full")
+
+        counts = asyncio.run(
+            script.fill(_pending("bad"), write, _always(None), 0, listing=listing)
+        )
+
+        assert counts == Counter({"failed": 1})
+        listing.assert_not_awaited()
+
+    def test_a_listing_that_fails_is_counted_and_the_run_goes_on(self):
+        async def listing(candidate):
+            if candidate["filename"] == "bad":
+                raise OSError("gone")
+            return 1
+
+        counts = asyncio.run(
+            script.fill(
+                _pending("bad", "good"), _always(CURRENT), None, 0, listing=listing
+            )
+        )
+
+        assert counts == Counter({"written": 2, "listed": 1, "unlisted": 1})
 
     def test_a_record_that_fails_does_not_end_the_run(self):
         def record(*_args):

@@ -31,6 +31,14 @@ describe('mechanismsOfSample', () => {
     expect(mechanisms({})).toEqual([])
   })
 
+  it("gives the current version's mechanisms to a sample bound under an earlier one", () => {
+    // Its next run moves it onto the current version before it searches.
+    const modes = [
+      { ionization_mode_id: 'v2', superseded_ids: ['v1'], ionization_mechanism_ids: ['mech-1'] }
+    ]
+    expect(mechanisms({ ionization_mode_id: 'v1' }, modes)).toEqual(['mech-1'])
+  })
+
   it('gives none for a mode the browser does not hold', () => {
     // Deleted since the browser loaded the sample that points at it.
     expect(mechanisms({ ionization_mode_id: 'mode-gone' })).toEqual([])

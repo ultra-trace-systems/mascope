@@ -1,14 +1,19 @@
 # Mascope systemd units
 
-The systemd units that run a Mascope deployment. `tooling/ubuntu.sh install`
-templates and installs all of them (filling in the deploy user and the resolved
-`mascope` binary); you normally don't touch them by hand. For the full
-operations story see [docs/maintaining.md](../../docs/maintaining.md).
+The systemd units that run a Mascope deployment. `mascope prod units install`
+templates and installs all of them, filling in the deploy user, the runtime
+home and the `mascope` binary that runs it; `tooling/ubuntu.sh install` calls
+it. You normally don't touch them by hand. A wheel install gets the same files
+bundled in the CLI (`tooling/cli/src/mascope_cli/data/systemd/`, kept
+identical by `tooling/cli/tests/test_package_data.py`): change them here and
+copy them there. For the full operations story see
+[docs/maintaining.md](../../docs/maintaining.md).
 
-| File | Installed as | Enabled by `ubuntu.sh`? | Purpose |
+| File | Installed as | Enabled by the install? | Purpose |
 |---|---|---|---|
 | `mascope.service` | `mascope.service` | yes | Bring the stack up on boot (`prod up --detach`) / down on stop. |
-| `mascope-update.service` | `mascope-update.service` | no (oneshot, run by the timer) | One unattended update pass (`prod update --auto`). |
+| `mascope-update.service` | `mascope-update.service` | no (oneshot, run by the timer) | One unattended update pass (`mascope-update.sh`). |
+| `mascope-update.sh` | `/usr/local/lib/mascope/mascope-update.sh` | - | Runs `prod update --auto`; on a wheel install's exit 40, installs the CLI it names and runs `--auto` again. |
 | `mascope-update.timer` | `mascope-update.timer` | **no - opt-in** | Fire the update service nightly. |
 | `update.env.example` | `/etc/mascope/update.env` (chmod 600) | seeded once | Update window / grace / tracked repository. No credentials: release discovery uses the public GitHub API. |
 | `mascope-disk-check.service` | `mascope-disk-check.service` | no (oneshot, run by the timer) | One disk-space check (`tooling/disk-check.sh`). |
@@ -18,16 +23,22 @@ operations story see [docs/maintaining.md](../../docs/maintaining.md).
 | `mascope-assignment-prune.timer` | `mascope-assignment-prune.timer` | **yes - on by default** | Fire the retention pass nightly at 03:30. |
 | `prune.env.example` | `/etc/mascope/prune.env` (chmod 600) | seeded once | Retention overrides (keep-per-sample, grace hours). |
 
-Both `.service` files template `@@USER@@`, `@@MASCOPE_BIN@@` and
-`@@MASCOPE_PATH@@`; `MASCOPE_PATH` and `LD_PRELOAD` come from
-`/etc/environment`, matching how `ubuntu.sh` provisions the box.
+The `.service` files template `@@USER@@`, `@@MASCOPE_BIN@@`,
+`@@MASCOPE_PATH@@`, `@@DISK_CHECK@@` and `@@UPDATE_SCRIPT@@`; `MASCOPE_PATH`
+and `LD_PRELOAD` come from `/etc/environment`, matching how `ubuntu.sh`
+provisions the box. The install copies `mascope-update.sh` to
+`/usr/local/lib/mascope`, and on a wheel install `disk-check.sh` too: a
+rollback to an older CLI, another Python minor or a checkout of an older
+release would otherwise take the file from under the unit. A checkout's disk
+check runs its `tooling/disk-check.sh` in place, which every release has.
+`remove` deletes the copies.
 
 `@@MASCOPE_PATH@@` fills the `WorkingDirectory`, which is not cosmetic: systemd
 otherwise starts a unit in `/`, and a deploy launched outside the checkout
 cannot read which release tag is checked out - it would deploy the rolling
 `latest` images instead. After changing any unit here, re-run
-`./tooling/ubuntu.sh install` on the server; a release update does not rewrite
-the installed units.
+`mascope prod units install` (or `./tooling/ubuntu.sh install`) on the server;
+a release update does not rewrite the installed units.
 
 ## Enabling auto-updates
 

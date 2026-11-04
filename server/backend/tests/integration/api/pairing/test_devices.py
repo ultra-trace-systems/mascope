@@ -19,7 +19,13 @@ from mascope_backend.api.new.auth.devices import service as devices_service
 from mascope_backend.api.new.auth.devices.service import record_reported_instrument
 from mascope_backend.api.new.auth.pairing import service as pairing_service
 from mascope_backend.app.fast import fast
-from mascope_backend.db import AccessToken, AgentDevice, User, hash_access_token
+from mascope_backend.db import (
+    AccessToken,
+    AgentDevice,
+    Instrument,
+    User,
+    hash_access_token,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -182,6 +188,14 @@ async def test_a_request_records_the_agent_version(
     assert row["last_seen_at"] is not None
 
 
+async def _instrument_id(session, name: str) -> str:
+    return (
+        await session.execute(
+            select(Instrument.instrument_id).where(Instrument.name == name)
+        )
+    ).scalar_one()
+
+
 @pytest.mark.asyncio
 async def test_an_upload_keeps_the_instrument_the_agent_reports(
     fake_redis, public_client, editor_client, async_session_factory
@@ -196,7 +210,10 @@ async def test_an_upload_keeps_the_instrument_the_agent_reports(
     # The first usable name fills the empty row...
     await record_reported_instrument(device_id, "Orbi-Lab2")
     async with async_session_factory() as session:
-        assert (await session.get(AgentDevice, device_id)).instrument == "Orbi-Lab2"
+        device = await session.get(AgentDevice, device_id)
+        assert device.instrument == "Orbi-Lab2"
+        # ...and links the instrument's own row, made for it if need be.
+        assert device.instrument_id == await _instrument_id(session, "Orbi-Lab2")
 
     # ...and a later, different one moves it. The agent is the authority for
     # what it watches, so a machine repointed at another instrument - its
@@ -210,9 +227,14 @@ async def test_an_upload_keeps_the_instrument_the_agent_reports(
     _, paired_id = await _pair(
         public_client, editor_client, "SET-PC", instrument="Orbi-A"
     )
+    async with async_session_factory() as session:
+        paired = await session.get(AgentDevice, paired_id)
+        assert paired.instrument_id == await _instrument_id(session, "Orbi-A")
     await record_reported_instrument(paired_id, "Orbi-B")
     async with async_session_factory() as session:
-        assert (await session.get(AgentDevice, paired_id)).instrument == "Orbi-B"
+        paired = await session.get(AgentDevice, paired_id)
+        assert paired.instrument == "Orbi-B"
+        assert paired.instrument_id == await _instrument_id(session, "Orbi-B")
 
     # No device behind the upload: nothing to record, nothing raised.
     await record_reported_instrument(None, "Orbi-B")

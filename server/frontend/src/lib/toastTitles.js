@@ -33,6 +33,7 @@ export const TOAST_TITLES = {
   match_aggregate_batch: 'Match refresh',
   sample_file_upload: 'Upload',
   download_sample_files: 'Download',
+  export_dataset_package: 'Deposit package',
   file_processing: 'Processing',
   auto_process_sample_file: 'Processing',
   compute_sample_file_peaks: 'Processing',

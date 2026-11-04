@@ -5,20 +5,19 @@ the records it was built from by their ids and says which build of Mascope
 wrote it, so a spreadsheet that ends up beside a paper can be traced back to
 the dataset, the batch and the server it came from.
 
-Three exports are made from the app:
+Four exports are made from the app:
 
 | Export | Where | Format |
 |---|---|---|
-| **Batch data** | Right-click a batch, *Download > Batch data* | A spreadsheet (`.xlsx`) of five sheets, below |
+| **Batch data** | Right-click a batch, *Download > Batch data* | A spreadsheet (`.xlsx`) of up to six sheets, below |
 | **Peak data** | Right-click a batch, *Download > Peak data*; or a sample's own *Download > Peak data* | A CSV, semicolon-separated |
 | **Batch ledger** | The batch peaks view's menu behind the cog, *Export ledger (CSV)* | A CSV: one row per member peak, described under [Batch peaks](../how-it-works/peak-assignment.md#batch-peaks) |
-
-A fourth export covers a whole dataset: the [deposit package](#the-deposit-package),
-one archive to upload to a data repository such as Zenodo. It is not made from
-the app yet. Whoever operates the server writes it with one command.
+| **Deposit package** | Right-click a dataset, *Prepare for publication* | A zip archive of the whole dataset, to upload to a data repository such as Zenodo, [below](#the-deposit-package) |
 
 Each export made from the app is written in the background, and the browser
-downloads the file when it is ready. The same data is one call away in the
+downloads the file when it is ready. The server keeps the file for 24 hours,
+so a notification's download works for a day; after that, export it again.
+The same data is one call away in the
 [Python SDK](../sdk/index.md), whose frames carry the same
 [provenance](#provenance) on `df.attrs["provenance"]`.
 
@@ -48,7 +47,7 @@ One row per sample.
 
 | Column | Content |
 |---|---|
-| Sample name, Filename, Datetime, Sample type, TIC, Filter ID | The sample as the sample browser shows it. *Datetime* is the acquisition's start in the instrument's local time |
+| Sample name, Filename, Datetime, Sample type, TIC, Filter ID | The sample as the sample browser shows it. *Datetime* is the acquisition's start in the instrument's local time. *TIC* is the mean total ion current per MS1 scan, in the unit of the sample's averaged spectrum: counts for an Orbitrap, ions/s for a TOF |
 | Total peak intensity (cps), Match score | The sample's match summary, empty for a sample with no match |
 | Sample item ID, Sample file ID | The sample's id, and the id of the raw file it was cut from |
 | Datetime UTC | The acquisition's start in UTC, written without a zone (Excel stores none) |
@@ -59,7 +58,7 @@ One row per sample.
 | m/z calibration verified, m/z calibration error (ppm) | Whether the fit cleared the [quality bar](../how-it-works/calibration.md#verification), and its mean post-fit m/z error |
 | Acquisition ID, Step ID, Sequence run ID, Agent ID | The identifiers of the file's [acquisition record](../instruments/acquisition-records.md), empty for a file that came with none |
 | File SHA-256 | The raw file's hash as it was uploaded, where the agent reported one and the bytes received had it |
-| Instrument model, Ion source, Mass analyser, Detector, Scan polarity, each followed by its *accession* column | The same acquisition context as [PSI-MS](https://github.com/HUPO-PSI/psi-ms-CV) controlled-vocabulary terms, each by its name and its accession (`MS:1000484`, ...), so another tool can read them without knowing Mascope's own names. A value the vocabulary has no term for, such as a TOF instrument's model or a family name, leaves both cells empty; a polarity-switching sample lists its two polarity terms joined by `; ` |
+| Instrument model, Ion source, Mass analyser, Detector, Scan polarity, each followed by its *accession* column | The same acquisition context as [PSI-MS](https://github.com/HUPO-PSI/psi-ms-CV) controlled-vocabulary terms, each by its name and its accession (`MS:1000484`, ...), so another tool can read them without knowing Mascope's own names. The model is the one the sample's own file reported when it was uploaded, else the one its kept raw file names, so two samples of one instrument name keep their own models when the hardware behind the name changed. Only a sample whose file names none falls back to the model last recorded on its instrument, so a sample whose raw file is no longer kept still has one. A value the vocabulary has no term for, such as a TOF instrument's model or a family name, leaves both cells empty; a polarity-switching sample lists its two polarity terms joined by `; ` |
 
 ### Match compounds
 
@@ -88,10 +87,42 @@ data.
 Rows carry the ids of the records they describe (sample item, target compound,
 target ion), not the ids of the match rows, which a rematch replaces.
 
+### Verifications
+
+The batch's current [verification verdicts](../how-it-works/peak-assignment.md#verifying-assignments),
+one row per judged peak, as each sample's assignment ledger shows them.
+Written only when something in the batch was judged. The sheet is the table
+`GET /api/peak-assignments/batch/{sample_batch_id}/verifications` answers and
+the SDK's `peak_assignments.verifications_for_batch` reads, row for row and
+under the same column names, so a script reads the sheet and the frame alike. A
+[deposit package](#the-deposit-package) writes the sheet without `note` and
+`verified_by`.
+
+A row is either the sample's own verdict, or a batch-level verdict that
+reaches the sample, with `borrowed` true. A batch-level verdict reaches a
+sample when the sample's peak folded into the judged batch peak and claims
+the formula and mechanism judged, and the sample has no current verdict of
+its own on it. A verdict a later one replaced is not listed.
+
+| Column | Content |
+|---|---|
+| `sample_item_id`, `sample_item_name`, `sample_batch_id`, `filename`, `datetime`, `datetime_utc` | The sample. `datetime` is the acquisition's start in the instrument's local time, `datetime_utc` in UTC |
+| `sample_peak_id`, `sample_peak_mz` | The judged peak and its m/z |
+| `assigned_formula`, `ionization_mechanism_id` | The claim judged |
+| `verdict`, `evidence_level`, `note`, `verified_by`, `verified_utc` | The verdict, the evidence it rests on, the note, the user's id and when it was recorded |
+| `superseded_utc` | Empty: only current verdicts are listed |
+| `context` | On a batch-level verdict, the batch peak's consensus as the user saw it, as JSON |
+| `fit_score`, `evidence`, `p_correct` | The assignment's score when the sample's own verdict was recorded; empty on a borrowed one |
+| `borrowed` | Whether the verdict is a batch-level one reaching the sample |
+| `assignment_verification_id`, `peak_assignment_id`, `peak_assignment_run_id` | The records behind the sample's own verdict |
+| `batch_peak_verification_id`, `batch_peak_id`, `stale` | The records behind a borrowed verdict; `stale` when the batch peak's consensus has since left the formula judged |
+
+Times are in UTC and written without a zone, which is all Excel stores.
+
 ### Provenance sheet
 
-The [provenance block](#provenance) of the build that wrote the file, one
-key/value row per entry with nested keys joined by a dot
+The last sheet. The [provenance block](#provenance) of the build that wrote
+the file, one key/value row per entry with nested keys joined by a dot
 (`produced_with.mascope_version`), and `inputs` naming the dataset, the batch
 and the target collections.
 
@@ -105,7 +136,7 @@ window, so a sample file of many scans gives many rows per peak.
 | Column | Content |
 |---|---|
 | `mz`, `intensity`, `unit` | The peak. The unit is `counts` for an Orbitrap and `ions` for a TOF; the batch export sums an Orbitrap peak's height and a TOF peak's area |
-| `datetime`, `datetime_utc`, `tic` | In the sample export, the scan's time in the instrument's local zone and in UTC, and the scan's total ion current; in the batch export, the sample's acquisition start and its TIC |
+| `datetime`, `datetime_utc`, `tic` | In the sample export, the scan's time in the instrument's local zone and in UTC, and the scan's total ion current; in the batch export, the sample's acquisition start and its TIC, the mean per MS1 scan as on the *Samples* sheet |
 | `sample_batch_name`, `sample_item_name`, `filename`, `filter_id`, `sample_item_type`, `instrument` | The sample |
 | `sample_file_id`, `sample_item_id`, `sample_batch_id`, `dataset_id` | The records behind the row |
 
@@ -120,11 +151,30 @@ A dataset as one zip archive, for a data repository such as
 what was measured, how, under what licence, by whom, and with which software.
 Mascope writes the archive. The repository keeps it and mints its DOI.
 
-Before asking for one, fill in the dataset's licence, authors, keywords,
-related identifiers and funding in the dataset dialog. They are what the
-archive's README and the repository's record say about the data. The archive
-is written by whoever operates the server
+Right-click the dataset and choose *Prepare for publication*. The dialog
+shows what the archive will hold: the dataset's metadata record as it stands,
+its batches and samples, its raw files and their size, its target collections
+and its ionization modes. Above them it lists what the dataset still lacks for
+a deposit:
+
+- **No licence.** Without one, nobody but the authors may reuse the data.
+- **No authors.** A repository cites a deposit by its creators.
+- **No description.** A repository shows it as what the deposit is.
+- **No samples.** The package would describe no measurement.
+
+*Edit dataset* opens the dataset dialog over it, where the licence, authors,
+description, keywords, related identifiers and funding are filled in. They are
+what the archive's README and the repository's record say about the data. When
+the dataset dialog closes, the list is read again. *Build package* writes the
+archive in the background, gaps or not, and the browser downloads it when it is
+ready. The notification gives its size, and counts the sample files with no
+raw file kept and the raw files changed since upload. Preparing a dataset
+takes the editor role in its workspace.
+
+Whoever operates the server can write the same archive with one command
 ([Packaging a dataset for deposit](https://github.com/ultra-trace-systems/mascope/blob/master/docs/maintaining.md#packaging-a-dataset-for-deposit)).
+The app and the command run the same builder, so for the same dataset they
+write the same archive.
 
 Unzipped, it is one folder, `mascope-package_<dataset id>_<dataset name>`:
 
@@ -134,10 +184,11 @@ Unzipped, it is one folder, `mascope-package_<dataset id>_<dataset name>`:
 | `DATA_LICENSE` | The dataset's licence, with a link for a Creative Commons one. A dataset without a licence says so: nobody but its authors may reuse it |
 | `raw/` | Each sample file's raw file, `.raw` or `.h5`, as it was uploaded. Its header is unchanged, and may name the instrument and the computer that acquired it |
 | `raw/<file>.mascope.json` | Beside a raw file, the [acquisition record](../instruments/acquisition-records.md) the instrument's control program sent with it, where it sent one. Its `machine`, the computer's host name and Windows machine GUID, is left out; Mascope keeps the record whole |
-| `batches/` | Each batch's [batch data spreadsheet](#the-batch-data-spreadsheet), the same file *Download > Batch data* gives |
+| `batches/` | Each batch's [batch data spreadsheet](#the-batch-data-spreadsheet), the file *Download > Batch data* gives, but for two columns of its [Verifications](#verifications) sheet. Each verdict's `note`, free text written for colleagues, and `verified_by`, the id of the user who judged it, are left out; the verdicts and their evidence levels stay |
 | `target_collections/` | Each collection a batch was matched against, or an ionization mode calibrates with: its compounds with their CAS number, InChIKey, InChI and SMILES where recorded, and the ions formed from them |
 | `instrument_functions.json` | The peak shape and resolution each raw file was processed with |
 | `manifest.json` | All of the above for a program, below |
+| `ro-crate-metadata.json` | The same as an [RO-Crate](#the-ro-crate), the format data repositories and RO-Crate viewers read |
 | `SHA256SUMS` | The SHA-256 of every other file. In the folder, `sha256sum -c SHA256SUMS` checks them all |
 
 `manifest.json` is laid out as the demo dataset's manifest is. Its `schema`
@@ -153,7 +204,7 @@ is `mascope-package/1`, and its keys are a contract in the way the
 | `raw` | One entry per sample file: `name`, `sha256` and `bytes` of its raw file; its acquisition context, m/z calibration verdict and PSI-MS terms; the SHA-256 recorded when it was uploaded; and its acquisition record's identifiers |
 | `batches` | One entry per batch: its samples, with their time windows and ionization modes, its target collections and its spreadsheet |
 | `target_collections` | One entry per collection: what it was used as (`matched`, `calibration`, `diagnostic`), its counts and its file |
-| `ionization_modes` | The modes the samples were processed under, with their ionization mechanisms and collections |
+| `ionization_modes` | The modes the samples were processed under, with their ionization mechanisms and collections. Each entry is one version of a setup: its `version`, the id of the version it replaced (`supersedes_id`, `null` on a first version) and the labelled reagent's isotopic purity it ran at (`label_purity`). Samples on two versions of one mode give two entries. `supersedes_id` links them, not the name: a rename changes the current version's name only. The version it names is listed only when one of the dataset's samples sits on it |
 
 Every record carries its id. On a deployment with an id, the dataset, its
 batches, samples and sample files, and the collections with their compounds
@@ -169,6 +220,29 @@ as it is, both values in its entry.
 
 After the repository mints a DOI, add it to the dataset's related
 identifiers. A package written again then points at the deposit.
+
+### The RO-Crate
+
+`ro-crate-metadata.json` describes the package as an
+[RO-Crate 1.2](https://w3id.org/ro/crate/1.2): JSON-LD in
+[schema.org](https://schema.org) terms. Data repositories, harvesters and
+generic RO-Crate viewers read it without knowing Mascope. It says nothing
+`manifest.json` does not, and the manifest keeps its keys.
+
+| In the crate | What it holds |
+|---|---|
+| The root `Dataset` | The dataset's name, description, licence, keywords, global id, and the time its files were acquired in |
+| `author` | Each author as a `Person`, with their ORCID iD as the `@id` where it is recorded, and their affiliation |
+| `funding`, `funder` | Each funding entry as a `Grant`, its award the `identifier`, and the funder as an `Organization` |
+| `citation`, `isBasedOn`, `isPartOf` | The related identifiers, a DOI or URL as the `@id`. `IsDerivedFrom`, `IsNewVersionOf` and `IsVersionOf` become `isBasedOn`, `IsPartOf` becomes `isPartOf`, and any other relation `citation`. Each one's description keeps the relation as written. An identifier given under two relations is one work that names both, and one that is Mascope's repository refers to Mascope itself |
+| `measurementTechnique` | The PSI-MS terms of the instrument models, ion sources, mass analysers and detectors |
+| `hasPart` | Every file, with its SHA-256 (`sha256`) and size, and each folder |
+| `mentions` | The action that wrote the package: when, and with which Mascope and raw-file reader versions. Also a work cited by an identifier that is neither a DOI nor a URL: RO-Crate cites by URI alone |
+
+A licence the dataset dialog suggests is named by its SPDX entry. Any other
+licence, or none, is named as it was recorded: RO-Crate asks for a licence,
+and the crate does not guess one. `SHA256SUMS` has its size in the crate but
+no checksum, since it holds the crate's own.
 
 ## Provenance
 

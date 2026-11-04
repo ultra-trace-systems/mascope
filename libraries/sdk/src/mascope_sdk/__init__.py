@@ -28,15 +28,21 @@ from ._agents import (  # noqa: F401
 # Public API
 from .client import MascopeClient
 from .exceptions import (
+    AssignmentInFlightError,
+    AssignmentRunError,
+    AssignmentTimeoutError,
     AuthenticationError,
     ConfigurationError,
     ConfirmationRequiredError,
+    ConflictError,
+    ImportValidationError,
     MascopeAPIError,
     MascopeConnectionError,
     MascopeError,
     MascopeTimeoutError,
     NotFoundError,
     PermissionDeniedError,
+    SampleIneligibleError,
     ServerError,
     ValidationError,
 )
@@ -82,7 +88,13 @@ __all__ = [
     "PermissionDeniedError",
     "NotFoundError",
     "ValidationError",
+    "ConflictError",
     "ServerError",
+    "AssignmentInFlightError",
+    "SampleIneligibleError",
+    "AssignmentRunError",
+    "AssignmentTimeoutError",
+    "ImportValidationError",
     "MascopeConnectionError",
     "MascopeTimeoutError",
     # Agent helpers

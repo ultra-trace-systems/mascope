@@ -649,6 +649,10 @@ def test_the_service_wires_the_watchers_as_unrestartable(tmp_path):
         patch.object(service, "_Supervised", _Recording),
         patch.object(service, "SHUTDOWN_EVENT", shutdown),
         patch.object(service, "runtime", fake_runtime),
+        # run() makes SIGTERM its own stop request; installed here, it would
+        # be pytest's SIGTERM handler for the rest of the session.
+        patch.object(service, "install_stop_signal", lambda: None),
+        patch.object(service, "SOCKET_CLIENT", MagicMock()),
         patch.object(service, "wait_for_backend", lambda: True),
         patch.object(service, "FSWatcher", MagicMock()),
         patch.object(service, "H5Processor", MagicMock()),

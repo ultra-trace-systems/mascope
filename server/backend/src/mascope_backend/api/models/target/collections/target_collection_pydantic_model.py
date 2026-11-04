@@ -124,12 +124,23 @@ class TargetCollectionUpdate(TargetCollectionValidator, TargetCollectionBase):
         None, description="Type of the target collection"
     )
 
+    # The two compound fields replace the collection's list together (the
+    # controller removes every compound they do not name), so their
+    # descriptions say so instead of the create model's "added".
     target_compound_ids: list[str] | None = Field(
         None,
-        description="IDs of already existing in db target compounds to be associated with the target collection",
+        description=(
+            "The existing compounds the collection is to hold, all of them; "
+            "with `target_compounds_create` they replace its list."
+        ),
     )
     target_compounds_create: list[TargetCompoundBase] | None = Field(
-        None, description="Compounds to be created and added to the target collection"
+        None,
+        description=(
+            "Compounds to create. With `target_compound_ids` they replace the "
+            "collection's compound list: a compound the request does not name "
+            "is removed. To add, send the current ids too."
+        ),
     )
     sample_batch_ids: list[str] | None = Field(
         None, description="IDs of sample batches associated with the target collection"

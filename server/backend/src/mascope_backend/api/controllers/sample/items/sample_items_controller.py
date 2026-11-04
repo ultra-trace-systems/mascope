@@ -53,6 +53,9 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     SampleItemUpdate,
     StreamItemCreate,
 )
+from mascope_backend.api.new.ionization.modes.versions import (
+    refuse_superseded_binding,
+)
 from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.db import (
     AcquisitionStream,
@@ -78,7 +81,12 @@ from mascope_thermo.thermo import NoScansFoundError
 
 
 async def _sample_item_tic(filename: str, polarity: str | None) -> float:
-    """The summed TIC of the scans a new sample item's signal is made of.
+    """The mean TIC per scan of the scans a new sample item's signal is made of.
+
+    A mean, not a sum: the item's spectrum is averaged over the same scans,
+    so its TIC is in the units of that spectrum - the intensity unit of the
+    file's reader per scan, ions/s for a TOF file - and an item twice as long
+    does not get twice the TIC.
 
     Those are the MS1 scans of its polarity, as its sample reads them
     (:func:`_polarity_tic_per_scan`). A polarity that recorded none - an
@@ -94,7 +102,7 @@ async def _sample_item_tic(filename: str, polarity: str | None) -> float:
 
     :param filename: The sample file's stored name.
     :param polarity: The item's polarity.
-    :return: The summed TIC.
+    :return: The mean TIC per scan.
     """
     try:
         _, tic_values = await asyncio.to_thread(
@@ -107,7 +115,7 @@ async def _sample_item_tic(filename: str, polarity: str | None) -> float:
             polarity=polarity,
             scan_type=None,
         )
-    return float(np.sum(tic_values))
+    return float(np.mean(tic_values))
 
 
 @api_controller()
@@ -326,6 +334,20 @@ async def create_sample_items(
         found_ids = set(sample_files_map.keys())
         if missing_ids := list(sample_file_ids - found_ids):
             raise NotFoundException(f"Sample files not found: {missing_ids}")
+
+        # --- An item made through a route binds under a current version ---
+        # The mode its caller names. The models the pipeline and the copy
+        # build (StreamItemCreate) are left out: the pipeline's rungs read
+        # the active rows only, and a copy keeps its source's version, which
+        # what is copied with it was computed under.
+        await refuse_superseded_binding(
+            session,
+            (
+                si.ionization_mode_id
+                for si in sample_items
+                if not isinstance(si, StreamItemCreate)
+            ),
+        )
 
         # --- The scan stream each item reads ---
         # Only the models the pipeline and the copy below build can name one
@@ -582,6 +604,12 @@ async def update_sample_item(
             for key, value in update_data.items()
             if getattr(existing_sample_item, key) != value
         }
+        if "ionization_mode_id" in changed_fields:
+            # As on create. An item that names the version it is on binds
+            # nothing anew, and is not in changed_fields.
+            await refuse_superseded_binding(
+                session, [changed_fields["ionization_mode_id"]]
+            )
         if changed_fields:
             # Update only the changed fields
             for key, value in changed_fields.items():

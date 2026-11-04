@@ -27,6 +27,7 @@ from mascope_backend.api.new.auth.pairing.exceptions import (
     PairingCodeInvalidException,
     PairingCodeUnavailableException,
 )
+from mascope_backend.api.new.instruments.registry import instrument_id_for
 from mascope_backend.capabilities import SERVER_CAPABILITIES
 from mascope_backend.db import AgentDevice, User, async_session
 from mascope_backend.runtime import runtime
@@ -198,6 +199,7 @@ async def approve_pairing(user: User, user_code: str) -> dict:
             # What the agent said about itself when it asked to pair; a
             # record written before these fields existed carries neither.
             instrument=record.get("instrument"),
+            instrument_id=await instrument_id_for(session, record.get("instrument")),
             last_seen_version=record.get("agent_version"),
             sponsor_user_id=user.id,
         )

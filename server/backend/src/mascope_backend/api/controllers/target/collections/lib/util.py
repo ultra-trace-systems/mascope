@@ -14,6 +14,10 @@ from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.models.target.collections.target_collection_pydantic_model import (
     TargetCollectionUpdate,
 )
+from mascope_backend.api.new.ionization.modes.versions import (
+    held_by_earlier_versions,
+    still_held,
+)
 from mascope_backend.db import (
     Dataset,
     IonizationMode,
@@ -197,19 +201,23 @@ async def validate_scope_change(
     # sample under it reads the collections it names. Pulling one of those into
     # a single workspace would leave the rest of the instance matching against
     # a collection they cannot see, and would be a way around the read check on
-    # the mode routes - bind a global collection, then narrow it.
+    # the mode routes - bind a global collection, then narrow it. Current
+    # versions count, and earlier ones samples are bound under; an earlier
+    # version no sample holds is history, which nothing matches against again.
     async with async_session() as session:
         referencing_mode = (
             await session.execute(
-                select(IonizationMode.ionization_mode_name)
+                select(IonizationMode)
                 .where(
                     or_(
                         IonizationMode.calibration_collection_id
                         == target_collection_db.target_collection_id,
                         IonizationMode.diagnostic_collection_id
                         == target_collection_db.target_collection_id,
-                    )
+                    ),
+                    still_held(),
                 )
+                .order_by(IonizationMode.is_active.desc())
                 .limit(1)
             )
         ).scalar_one_or_none()
@@ -217,8 +225,9 @@ async def validate_scope_change(
     if referencing_mode is not None:
         msg = (
             "Cannot change collection scope: the collection is used by "
-            f"ionization mode '{referencing_mode}', which is shared across "
-            "all workspaces."
+            f"ionization mode '{referencing_mode.ionization_mode_name}', which "
+            "is shared across all workspaces."
+            f"{held_by_earlier_versions([referencing_mode])}"
         )
         raise ApiException(
             user_message=msg,

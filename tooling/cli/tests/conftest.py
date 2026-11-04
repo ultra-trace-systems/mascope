@@ -25,9 +25,22 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _make_home() -> Path:
-    """Build a disposable MASCOPE_PATH home from the repo's config layers."""
+    """Build a disposable MASCOPE_PATH home from the repo's config layers.
+
+    With the compose files too, as `mascope init` leaves a home: the home is
+    no checkout, so `prod up` and `prod update` take it for a wheel install's
+    and bring its files to the CLI's bundled copies first, which these mirror
+    (test_package_data.py), so that leaves them as they are.
+    """
     home = Path(tempfile.mkdtemp(prefix="mascope-cli-tests-"))
-    for name in ("base.mascope.toml", "dev.mascope.toml", "prod.mascope.toml"):
+    for name in (
+        "base.mascope.toml",
+        "dev.mascope.toml",
+        "prod.mascope.toml",
+        "docker-compose.yaml",
+        "docker-compose.demo.yaml",
+        "docker-compose.dev.yaml",
+    ):
         shutil.copy(REPO_ROOT / name, home / name)
     (home / ".runtime" / "env" / "default").mkdir(parents=True)
     atexit.register(shutil.rmtree, home, ignore_errors=True)
@@ -103,6 +116,9 @@ def _reset_cli_state(monkeypatch):
 
     for var in env_vars:
         os.environ.pop(var, None)
+    # A wheel install's deployed-release record (TEST_HOME is no checkout):
+    # one test's `prod update --version` would pick the next test's release.
+    (TEST_HOME / ".runtime" / "deployed-release.json").unlink(missing_ok=True)
     runtime.env.name = env_name
     runtime.state.mode = "dev"
     runtime.state.env = "default"

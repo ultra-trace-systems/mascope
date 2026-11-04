@@ -53,7 +53,7 @@ def _limit_key_ip(ip: str) -> str:
     A /64 is one LAN segment, so an office or campus network shares one bucket -
     intended parity with an IPv4-NAT site, not a regression. It does not stop a
     client that controls a larger /56 or /48; login brute force is capped
-    separately per account (see :func:`rate_limit_login_by_account`).
+    separately per account (see :func:`enforce_login_rate_limit`).
 
     :param ip: Client address string from :func:`client_ip`.
     :return: ``ip`` unchanged for IPv4, an IPv4-mapped address, or a
@@ -84,9 +84,11 @@ async def _over_fixed_window(key: str, times: int, seconds: int) -> int | None:
     """
     client = redis_storage_client.client
     count = await client.incr(key)
-    if count == 1:
-        # First hit in this window: start the expiry countdown.
-        await client.expire(key, seconds)
+    # Start the window's countdown unless it runs already. On every hit, not
+    # only when the count is 1: the client retries a command whose reply was
+    # lost (socket/storage/client.py), so a first INCR can return 2, and a
+    # counter left with no expiry would refuse its IP or account for good.
+    await client.expire(key, seconds, nx=True)
     if count > times:
         retry_after = await client.ttl(key)
         # ttl can be -1 (no expiry set due to a race); fall back to the full
@@ -157,12 +159,12 @@ def _account_limit_key(identifier: str, scope: str) -> str:
     return f"mascope:ratelimit:{scope}:{_account_digest(identifier)}"
 
 
-def rate_limit_login_by_account(
-    *, times: int, seconds: int, scope: str = "auth-login-account"
-):
+async def enforce_login_rate_limit(
+    identifier: str, *, times: int, seconds: int, scope: str = "auth-login-account"
+) -> None:
     """
-    Build a dependency that limits login attempts **per account**, keyed on the
-    submitted login identifier (the form ``username`` field).
+    Limit login attempts **per account**, keyed on the submitted login
+    identifier (the form ``username`` field).
 
     This complements the per-IP :func:`rate_limit`: on its own the per-IP limit
     does not stop a distributed attack that guesses one account's password from
@@ -175,48 +177,45 @@ def rate_limit_login_by_account(
     indefinitely with a trickle of bogus attempts - after the real user signs
     in, the window resets.
 
-    No-ops when the request carries no form identifier (e.g. logout, which
-    shares the auth router), and fails open on Redis errors like
+    Called from the login route rather than attached as a dependency, so that
+    it counts an attempt only once the site's human check (Turnstile) has
+    passed. A dependency runs before the route body: there, a client that
+    solves no challenge at all could spend a victim's whole budget with
+    refused requests, and nothing would ever clear it, since none of them
+    signs in. The per-IP limit stays a dependency, ahead of the check, so a
+    bot still cannot hammer Cloudflare's siteverify.
+
+    No-ops on an empty identifier, and fails open on Redis errors like
     :func:`rate_limit`.
 
+    :param identifier: Login identifier as submitted.
     :param times: Maximum login attempts allowed per account within the window.
     :param seconds: Window length in seconds.
     :param scope: Namespacing label for the Redis keys.
-    :return: An async FastAPI dependency callable.
+    :raises HTTPException: 429 when the account is over its budget.
     """
-
-    async def dependency(request: Request) -> None:
-        try:
-            form = await request.form()
-        except Exception:
-            # Not a form-encoded request (nothing to key on); let it through.
-            return
-        identifier = form.get("username")
-        if not identifier:
-            return
-        key = _account_limit_key(str(identifier), scope)
-        try:
-            retry_after = await _over_fixed_window(key, times, seconds)
-        except Exception:
-            runtime.logger.exception("Account login rate limit check failed")
-            return
-        if retry_after is not None:
-            # Expected throttling of a noisy client, not a server fault. Log
-            # the digest, never the submitted identifier (see _account_digest).
-            runtime.logger.info(
-                "Login rate limit exceeded for account "
-                f"sha256:{_account_digest(str(identifier))[:12]}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=(
-                    "Too many login attempts for this account. "
-                    "Please wait and try again."
-                ),
-                headers={"Retry-After": str(retry_after)},
-            )
-
-    return dependency
+    if not identifier:
+        return
+    key = _account_limit_key(identifier, scope)
+    try:
+        retry_after = await _over_fixed_window(key, times, seconds)
+    except Exception:
+        runtime.logger.exception("Account login rate limit check failed")
+        return
+    if retry_after is not None:
+        # Expected throttling of a noisy client, not a server fault. Log
+        # the digest, never the submitted identifier (see _account_digest).
+        runtime.logger.info(
+            "Login rate limit exceeded for account "
+            f"sha256:{_account_digest(identifier)[:12]}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Too many login attempts for this account. Please wait and try again."
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
 
 
 def _user_limit_key(user_id: int, scope: str) -> str:

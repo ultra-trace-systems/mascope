@@ -11,8 +11,8 @@ matches nothing, so refusing those too would leave the row permanently unusable.
 
 A deployment that has not adopted one should not be offered it either, so the
 listing leaves those out - but only those. Adoption is anything of the
-deployment's on the mode: either target collection, or a sample bound to it
-(``system_mode_adopted``). An adopted mode has to be listed like any other,
+deployment's on the mode: either target collection, a sample bound to it, or
+an edit of it (``system_mode_adopted``). An adopted mode has to be listed like any other,
 because a sample bound to one carries an id the browser must resolve, and it
 is the same predicate that decides whether the mode may be released when a
 mechanism it holds is deleted.
@@ -93,8 +93,13 @@ async def system_mode(async_session_factory, sys_mechanisms):
         await session.commit()
     yield mode_id
     async with async_session_factory() as session:
+        # Every version of it: an edit of its collections makes the next one,
+        # which carries the key.
         await session.execute(
-            delete(IonizationMode).where(IonizationMode.ionization_mode_id == mode_id)
+            delete(IonizationMode).where(
+                (IonizationMode.ionization_mode_id == mode_id)
+                | (IonizationMode.system_key == f"{_SYSTEM_KEY}-{mode_id}")
+            )
         )
         await session.commit()
 
@@ -265,6 +270,24 @@ async def test_a_seeded_mode_takes_the_deployments_collection(
     )
     assert resp.status_code == 200
     assert resp.json()["data"]["calibration_collection_id"] == sys_collection
+
+
+@pytest.mark.asyncio
+async def test_a_seeded_mode_takes_the_deployments_reagent_purity(
+    admin_client, system_mode, sys_mechanisms
+):
+    """A labelled reagent's purity is the site's bottle, not the chemistry."""
+    resp = await admin_client.patch(
+        f"/api/ionization/modes/{system_mode}",
+        json=_body(
+            sys_mechanisms,
+            ionization_mode_name=f"Seeded Chemistry {system_mode}",
+            label_purity=0.99,
+        ),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["label_purity"] == 0.99
+    assert resp.json()["data"]["version"] == 2
 
 
 @pytest.mark.asyncio
@@ -527,3 +550,79 @@ async def test_a_diagnostic_only_seeded_mode_counts_as_adopted(
             )
         )
         await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_seeded_version_is_not_released_with_a_mechanism(
+    admin_client, async_session_factory, sys_collection
+):
+    """An edit of a seeded mode's collections leaves its first version, as
+    seeded and unadopted, behind its adopted successor. It is that mode's
+    history, not a mode nobody took up, so it is not released. No sample
+    holds it, so it does not block either: the mechanism both versions name
+    is shown, and its delete refused, for the current one alone."""
+    mechanism_id = gen_id(11)
+    first, second = gen_id(), gen_id()
+    key = f"{_SYSTEM_KEY}-versions-{first}"
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMechanism(
+                ionization_mechanism_id=mechanism_id,
+                ionization_mechanism_polarity="-",
+                ionization_mechanism="+Cl- (sys-mode-versions)",
+            )
+        )
+        session.add(
+            IonizationMode(
+                ionization_mode_id=first,
+                ionization_mode_name=f"Versioned Chemistry {first}",
+                ionization_mode_polarity="-",
+                ionization_mechanism_ids=[mechanism_id],
+                system_key=key,
+                is_active=False,
+            )
+        )
+        session.add(
+            IonizationMode(
+                ionization_mode_id=second,
+                ionization_mode_name=f"Versioned Chemistry {first}",
+                ionization_mode_polarity="-",
+                ionization_mechanism_ids=[mechanism_id],
+                calibration_collection_id=sys_collection,
+                system_key=key,
+                version=2,
+                supersedes_id=first,
+            )
+        )
+        await session.commit()
+
+    try:
+        listed = await admin_client.get(f"/api/ionization_mechanisms/{mechanism_id}")
+        resp = await admin_client.delete(f"/api/ionization_mechanisms/{mechanism_id}")
+        async with async_session_factory() as session:
+            kept = await session.get(IonizationMode, first)
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(IonizationMode).where(
+                    IonizationMode.ionization_mode_id.in_([second, first])
+                )
+            )
+            await session.execute(
+                delete(IonizationMechanism).where(
+                    IonizationMechanism.ionization_mechanism_id == mechanism_id
+                )
+            )
+            await session.commit()
+
+    assert resp.status_code == 400
+    blocking = resp.json()["detail"]["ionization_modes"]
+    assert {(m["ion_mode_id"], m["version"], m["is_active"]) for m in blocking} == {
+        (second, 2, True),
+    }
+    assert kept is not None
+    assert listed.status_code == 200, listed.text
+    assert {
+        (m["ion_mode_id"], m["version"], m["is_active"])
+        for m in listed.json()["data"]["ionization_modes"]
+    } == {(second, 2, True)}

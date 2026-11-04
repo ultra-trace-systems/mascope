@@ -31,12 +31,21 @@ from typing import Annotated, NoReturn, Optional
 
 import typer
 
+from mascope_cli import config_layers
+from mascope_cli import release as mascope_release
 from mascope_cli.checkout import backend_path
 from mascope_cli.cmd import lib
-from mascope_cli.cmd.prod import auto_update, cli_drift, preflight, release_manifest
+from mascope_cli.cmd.prod import (
+    auto_update,
+    cli_drift,
+    deployed_release,
+    preflight,
+    release_manifest,
+)
 from mascope_cli.cmd.prod import doctor as prod_doctor
 from mascope_cli.cmd.prod.db import prod_db_app
 from mascope_cli.cmd.prod.mfa import mfa_app
+from mascope_cli.cmd.prod.units import units_app
 from mascope_cli.pg.utils import check_data_dirs, is_container_running
 from mascope_cli.runtime import runtime
 from mascope_runtime import Runtime, is_release_tag, release_sort_key
@@ -57,6 +66,7 @@ _DEFAULT_UPDATE_REPO = "ultra-trace-systems/mascope"
 prod_app = typer.Typer()
 prod_app.add_typer(prod_db_app, name="db")
 prod_app.add_typer(mfa_app, name="mfa")
+prod_app.add_typer(units_app, name="units")
 
 
 #  --- Callback — runs before every prod subcommand ---
@@ -110,6 +120,135 @@ def _compose_path() -> str:
     return os.path.join(os.environ["MASCOPE_PATH"], "docker-compose.yaml")
 
 
+def _is_wheel_install(
+    mascope_path: Optional[str], version: Optional[str] = None
+) -> bool:
+    """
+    Whether ``mascope_path`` is a wheel install's runtime home.
+
+    One git cannot read (``parse_version`` resolves nothing there) and that
+    holds no CLI source either. The second half keeps a checkout whose git
+    fails from being taken for one, which would deploy the installed CLI's
+    release and write its bundled files over the checkout's own.
+
+    :param version: ``runtime.parse_version(cwd=mascope_path)``, when the
+        caller has it already.
+    """
+    if not mascope_path:
+        return False
+    if version is None:
+        version = runtime.parse_version(cwd=mascope_path)
+    return (
+        version == "unknown-version"
+        and not cli_drift.checkout_package_dir(mascope_path).is_dir()
+    )
+
+
+def _cli_for_release(target: str, mascope_path: str) -> Optional[str]:
+    """
+    The CLI version cut with release ``target``, read from its manifest.
+
+    None when ``target`` is no release tag, there is no such release or it
+    has no manifest, or its manifest names no CLI.
+
+    :raises auto_update.ManifestUnavailable: The manifest could not be
+        fetched, or is invalid: which CLI it names is not known.
+    """
+    if not is_release_tag(target):
+        return None
+    repo = os.environ.get("MASCOPE_UPDATE_REPO", _DEFAULT_UPDATE_REPO)
+    path = auto_update.download_manifest(
+        repo, target, auto_update.update_dir(mascope_path) / "manifests"
+    )
+    if path is None:
+        return None
+    try:
+        return release_manifest.load_manifest(path).get("cli_version")
+    except release_manifest.ManifestError as e:
+        raise auto_update.ManifestUnavailable(
+            f"{target}'s manifest is invalid: {e}"
+        ) from e
+
+
+def _deploy_own_release(target: str, *, exit_code: int = 1) -> None:
+    """
+    On a wheel install, refuse any release but the CLI's own, then ready it.
+
+    A wheel install's compose file and config layers are the copies its CLI
+    bundles, which belong to the release the CLI was cut with: deploying
+    another one would start its images on the wrong compose file. So
+    moving to another release is installing its CLI first, and this names
+    that CLI. The CLI's own release is readied by refreshing the home's copies
+    (`refresh_config_files`), which happens once after each CLI upgrade.
+    A checkout install selects its release and its files by its tag, and is
+    left alone.
+
+    :param target: The image tag about to be deployed.
+    :param exit_code: The exit code of a refusal or a failed refresh.
+    :raises typer.Exit: ``target`` is not the CLI's release, or the home
+        could not be refreshed for it.
+    """
+    from mascope_cli.cmd.init import refresh_config_files
+
+    mascope_path = os.environ.get("MASCOPE_PATH")
+    if not _is_wheel_install(mascope_path):
+        return
+    own = mascope_release.RELEASE
+    cli = mascope_release.cli_version()
+    if target != own:
+        try:
+            needed = _cli_for_release(target, mascope_path)
+        except auto_update.ManifestUnavailable as e:
+            how = (
+                "install the CLI cut with it, which its release manifest "
+                f"names, and that could not be read ({e}). Run this again "
+                "later, or install that CLI by hand ('uv tool install "
+                "mascope-cli==<its version>') and run 'mascope prod up'."
+            )
+        else:
+            how = (
+                f"install the CLI cut with it, then run 'mascope prod up':\n\n"
+                f"    {mascope_release.install_command(needed)}\n"
+                if needed
+                else (
+                    f"no published CLI names {target} as its release, so a "
+                    "wheel install cannot deploy it: deploy it from a source "
+                    "checkout, or move to a release that has one."
+                )
+            )
+        runtime.logger.error(
+            f"This CLI ({mascope_release.DISTRIBUTION} {cli or '(unversioned)'}) "
+            f"deploys {own} only: the compose file and config layers it writes "
+            f"into the runtime home are that release's. To deploy {target}, {how}"
+        )
+        raise typer.Exit(exit_code)
+    try:
+        refreshed = refresh_config_files(Path(mascope_path), cli or own)
+    except OSError as e:
+        runtime.logger.error(
+            f"Could not bring the config layers and compose files in "
+            f"'{mascope_path}' to {own}'s ({e}). Not deploying {own} on the "
+            "previous release's files; fix the cause and run it again."
+        )
+        raise typer.Exit(exit_code)
+    if refreshed is None:
+        return
+    # The prod callback loaded the previous release's layers; what is deployed
+    # next has to see the ones just written.
+    runtime.reload_config()
+    kept = (
+        f" The copies they replaced are in {refreshed.replaced_dir}; settings "
+        "belong in the env overlay (.runtime/env/<env>/prod.mascope.toml), "
+        "which no refresh touches."
+        if refreshed.replaced_dir
+        else ""
+    )
+    runtime.logger.warning(
+        f"Brought {', '.join(refreshed.written)} in '{mascope_path}' to "
+        f"{own}'s copies.{kept}"
+    )
+
+
 def _deploy_version() -> str:
     """
     Resolve the image tag for pulling/running published production images.
@@ -118,8 +257,9 @@ def _deploy_version() -> str:
     (``vX.Y.Z``, including a pre-release such as ``v2.0.0-rc.1``) - never for
     the branch-derived dev build id - so this ignores the checked-out branch
     entirely: an explicit ``MASCOPE_VERSION`` pin wins; otherwise a release tag
-    at HEAD selects that release; otherwise ``latest`` (the rolling master
-    build).
+    at HEAD selects that release; otherwise, off a checkout (a wheel install),
+    the release the CLI was cut with (`mascope_cli.release`); otherwise
+    ``latest`` (the rolling master build).
 
     :return: The image tag to deploy.
     :rtype: str
@@ -135,7 +275,8 @@ def _deploy_version() -> str:
     # Git only, not resolve_version: the CLI's own package version is a
     # calver (e.g. v2026.7.7) in a different series from the app's release
     # image tags (vX.Y.Z), so it must never be used as a deploy tag. A
-    # pip-installed CLI without a pin deploys `latest`.
+    # pip-installed CLI without a pin deploys the release it was cut with,
+    # which is a release tag (`mascope_cli.release.RELEASE`), not its calver.
     mascope_path = os.environ.get("MASCOPE_PATH")
     version = runtime.parse_version(cwd=mascope_path)
     if is_release_tag(version):
@@ -148,13 +289,18 @@ def _deploy_version() -> str:
     # have to be re-read to tell those apart.
     if version == "unknown-version":
         # Git resolved nothing at all (no checkout, or a directory that is not
-        # a repository).
+        # a repository): a wheel install, which deploys the release its CLI
+        # was cut with, since the compose file and config layers it wrote are
+        # that release's. Not the deployed-release record: that says what
+        # ran last, and after a CLI upgrade the next `up` is the update.
+        if _is_wheel_install(mascope_path, version=version):
+            return mascope_release.RELEASE
         runtime.logger.warning(
-            f"No git checkout found at '{mascope_path}' - "
-            "cannot tell which release this deployment runs, falling back to "
-            "the rolling 'latest' image tag. Pin the release explicitly with "
-            "MASCOPE_VERSION=vX.Y.Z, or deploy from a checkout at the release "
-            "tag."
+            f"No git checkout found at '{mascope_path}', but the CLI's source "
+            "is there - cannot tell which release this deployment runs, "
+            "falling back to the rolling 'latest' image tag. Check that git "
+            "can read the checkout, or pin the release with "
+            "MASCOPE_VERSION=vX.Y.Z."
         )
         return "latest"
     # A tag that looks like a release but is not one this codebase recognizes
@@ -176,32 +322,49 @@ def _deploy_version() -> str:
     return "latest"
 
 
-def _warn_if_pin_lapses(version: Optional[str], mascope_path: Optional[str]) -> None:
+def _record_deployed(target: str, mascope_path: Optional[str]) -> None:
     """
-    Say that an update's ``--version`` does not outlive it on a wheel install.
+    Record the release a wheel deployment just came up healthy on.
 
-    A checkout install keeps the release an update deployed: the checkout
-    moves to its tag (`_align_checkout`), and the next boot or `prod up` reads
-    it from there. A wheel install has no checkout, and ``--version`` pins
-    ``MASCOPE_VERSION`` for this process only - so the next `prod up` falls
-    back to `latest` unless the operator pins the release where the stack is
-    started from.
+    A checkout install keeps the release itself: the checkout moves to its
+    tag (`_align_checkout`), and the next boot or `prod up` reads it from
+    there. A wheel install deploys the release its CLI was cut with
+    (`_deploy_version`), and this records what last ran: after a CLI
+    upgrade, the release before it until a detached `prod up` or an update
+    deploys the new CLI's. Only a release tag is recorded: the CLI's own is
+    the only one a wheel install deploys.
 
-    :param version: The ``--version`` the update was given, or None.
+    Best-effort, as `_align_checkout` is: the stack already runs ``target``,
+    so a record that cannot be written is a warning, never a failed deploy.
+
+    :param target: The image tag just deployed.
     :param mascope_path: The runtime home, or None when unset.
     """
-    # `latest` is what a later `prod up` falls back to anyway.
-    if version is None or version == "latest":
+    if not mascope_path:
         return
     if runtime.parse_version(cwd=mascope_path) != "unknown-version":
         return  # a checkout: _align_checkout keeps the release
-    runtime.logger.warning(
-        f"No git checkout at '{mascope_path}', so the {version} pin lasts only "
-        "for this command: the next 'mascope prod up' deploys the rolling "
-        "'latest' images again. To stay on this release, set "
-        f"MASCOPE_VERSION={version} in the environment the stack is started "
-        "from."
-    )
+    if not is_release_tag(target):
+        return
+    try:
+        try:
+            recorded = deployed_release.load(mascope_path)
+        except deployed_release.DeployedReleaseError:
+            recorded = None  # unreadable: overwrite it
+        if recorded == target:
+            return  # a boot redeploying the recorded release
+        deployed_release.save(mascope_path, target)
+        runtime.logger.info(
+            f"Recorded {target} as the deployed release in "
+            f"{deployed_release.path(mascope_path)}."
+        )
+    except OSError as e:
+        runtime.logger.warning(
+            f"The stack runs {target} but the deployed-release record "
+            f"{deployed_release.path(mascope_path)} could not be updated ({e}); "
+            "it names the release that ran before. The next 'mascope prod up' "
+            f"still deploys {target}, the release this CLI was cut with."
+        )
 
 
 def _align_checkout(target: str, mascope_path: Optional[str]) -> None:
@@ -557,12 +720,14 @@ def _ensure_secrets() -> None:
     created empty, which their features read as "not set up". Existing files
     are never touched, so this can never rotate a key out from under a running
     deployment. A new auto-provisioned secret is mode 0600, as `mascope init`
-    writes them (see `create_secret`); a placeholder holds nothing secret and
-    is left at the umask.
+    writes them (see `create_secret`); so is a placeholder the operator later
+    writes a secret into, and the others are left at the umask (see
+    `create_placeholder`).
     """
     from mascope_cli.cmd.init import (
         AUTO_PROVISIONED_SECRETS,
         PLACEHOLDER_SECRETS,
+        create_placeholder,
         create_secret,
     )
 
@@ -578,7 +743,7 @@ def _ensure_secrets() -> None:
         target = secrets_dir / name
         if target.exists():
             continue
-        target.touch()
+        create_placeholder(target)
         runtime.logger.info(f"Created an empty placeholder for {target}")
 
 
@@ -612,6 +777,11 @@ def up(
     # Check database bind-mount dirs before starting containers. Missing secret
     # files are provisioned by _run_compose on any "up" (including the unattended
     # update path), so no explicit call is needed here.
+    target = None if rebuild else _deploy_version()
+    if target is not None:
+        # A wheel install deploys its CLI's release alone, on that release's
+        # files: the first `up` after a CLI upgrade is the update.
+        _deploy_own_release(target)
     check_data_dirs(_MODE)
     args = ["up"]
     if rebuild:
@@ -619,8 +789,16 @@ def up(
     if detach:
         args.append("--detach")
     # --build compiles the current HEAD (branch-derived version); a plain `up`
-    # runs the deploy version (pin, release tag, or latest).
+    # runs the deploy version (pin, release tag, the CLI's release, or latest).
     _run_compose(args, building=rebuild)
+    # A detached `up` returns once compose has started the stack, which the
+    # prod compose file does only after a healthy backend, so the release it
+    # deployed is recorded as what ran on a wheel install: the CLI's own,
+    # pinned or not (any other was refused above). Not a foreground `up`: it
+    # returns when the stack has stopped again, and not a --build, whose
+    # images are a local build rather than a release.
+    if detach and target is not None and is_release_tag(target):
+        _record_deployed(target, os.environ.get("MASCOPE_PATH"))
 
 
 @prod_app.command()
@@ -690,7 +868,9 @@ def manifest(
 
     Records the Alembic head baked into the current source tree so a deployed
     stack can classify a pending update (`mascope prod update --check
-    --manifest ...`) without inspecting the release image. Intended to run at
+    --manifest ...`) without inspecting the release image, and the CLI version
+    cut with the release, which a wheel install needs to deploy it (none when
+    the checkout's CLI names another release). Intended to run at
     release build time; the produced JSON is published alongside the release
     images (e.g. as a GitHub Release asset).
 
@@ -709,6 +889,12 @@ def manifest(
     except release_manifest.ManifestError as e:
         runtime.logger.error(str(e))
         raise typer.Exit(1)
+    if data.get("cli_version") is None:
+        runtime.logger.warning(
+            f"The manifest names no CLI: this checkout's CLI was cut with "
+            f"{mascope_release.RELEASE}, not '{app_version}', so a wheel install "
+            "cannot deploy this release."
+        )
 
     text = release_manifest.write_manifest(data, output)
     if output is not None:
@@ -804,6 +990,7 @@ def _apply_update(
     *,
     kind: str,
     alembic_head: str,
+    install_cli: Optional[str] = None,
 ) -> None:
     """
     Apply an update to ``target`` and verify health.
@@ -817,9 +1004,19 @@ def _apply_update(
 
     :param kind: "fast" or "migration" - recorded with a failure, and wording.
     :param alembic_head: The release's Alembic head, recorded with a failure.
+    :param install_cli: On a wheel install, the CLI version cut with
+        ``target`` when it is not this CLI's release: the update is due, but
+        only that CLI can apply it, so the run hands over to it instead.
     """
+    if install_cli is not None:
+        _hand_over_to_cli(target, install_cli, mascope_path, kind=kind)
+    _deploy_own_release(target, exit_code=auto_update.AUTO_ERROR)
     os.environ["MASCOPE_VERSION"] = target
     os.environ["_MASCOPE_VERSION_PINNED"] = "1"
+    # Read after the refresh above, which may have renamed the container.
+    backend_container = runtime.full_config.backend.get_backend_container_name(
+        mode=_MODE
+    )
 
     check_data_dirs(_MODE)
     runtime.logger.info(f"Applying {kind} update to '{target}'")
@@ -840,8 +1037,10 @@ def _apply_update(
         runtime.logger.success(message)
         auto_update.record_status(mascope_path, message)
         # Keep the checkout naming the release that runs, so a reboot
-        # between timer windows redeploys this release, not the previous one.
+        # between timer windows redeploys this release, not the previous one;
+        # off a checkout, the CLI's release does, and the record says it ran.
         _align_checkout(target, mascope_path)
+        _record_deployed(target, mascope_path)
         _run_compose(["ps"])
         # Images moved; the unattended tool cannot safely reinstall itself, so
         # record + log if the CLI now trails the checkout for the operator.
@@ -849,6 +1048,38 @@ def _apply_update(
         raise typer.Exit(auto_update.AUTO_OK)
 
     _fail_apply(target, mascope_path, kind=kind, alembic_head=alembic_head)
+
+
+def _hand_over_to_cli(
+    target: str, cli_version: str, mascope_path: str, *, kind: str
+) -> NoReturn:
+    """
+    Stop an unattended run whose update only another CLI can apply.
+
+    Names that CLI in `auto_update.cli_handover_path` and exits
+    ``AUTO_INSTALL_CLI``, for the unit to install it and run ``--auto`` again
+    as a new process. Reached only once the update is due (in the window, a
+    migration's grace or confirm met), so installing the CLI - after which a
+    reboot's `prod up` deploys its release - never brings an update forward.
+    """
+    requirement = f"{mascope_release.DISTRIBUTION}=={cli_version}"
+    try:
+        auto_update.record_cli_handover(mascope_path, requirement)
+    except OSError as e:
+        runtime.logger.error(
+            f"Could not record the CLI to install in "
+            f"{auto_update.cli_handover_path(mascope_path)} ({e})."
+        )
+        raise typer.Exit(auto_update.AUTO_ERROR)
+    message = (
+        f"{kind.capitalize()} update to {target} is due, but this CLI deploys "
+        f"{mascope_release.RELEASE} only. Install the CLI cut with {target} and "
+        f"run 'mascope prod update --auto' again: "
+        f"{mascope_release.install_command(cli_version)}"
+    )
+    runtime.logger.warning(message)
+    auto_update.record_status(mascope_path, message)
+    raise typer.Exit(auto_update.AUTO_INSTALL_CLI)
 
 
 def _fail_apply(
@@ -1055,14 +1286,51 @@ def _auto(*, pull: bool) -> None:
 
     # Prefer the release manifest's Alembic head; fall back to image inspection.
     target_head: Optional[str] = None
-    manifest_path = auto_update.download_manifest(
-        repo, target, auto_update.update_dir(mascope_path) / "manifests"
-    )
+    target_cli: Optional[str] = None
+    manifest_unread: Optional[str] = None
+    try:
+        manifest_path = auto_update.download_manifest(
+            repo, target, auto_update.update_dir(mascope_path) / "manifests"
+        )
+    except auto_update.ManifestUnavailable as e:
+        manifest_path = None
+        manifest_unread = f"could not be fetched ({e})"
     if manifest_path is not None:
         try:
-            target_head = release_manifest.load_manifest(manifest_path)["alembic_head"]
+            data = release_manifest.load_manifest(manifest_path)
         except release_manifest.ManifestError as e:
             runtime.logger.warning(f"Ignoring invalid release manifest: {e}")
+            manifest_unread = f"is invalid ({e})"
+        else:
+            target_head = data["alembic_head"]
+            target_cli = data.get("cli_version")
+
+    # A wheel install deploys only its CLI's release, so a newer one is
+    # applied by the CLI cut with it: the run classifies and holds as usual,
+    # and only where it would apply does it hand over (`_hand_over_to_cli`).
+    install_cli: Optional[str] = None
+    if _is_wheel_install(mascope_path) and target != mascope_release.RELEASE:
+        if manifest_unread:
+            message = (
+                f"The manifest of the newest release of '{repo}' ({target}) "
+                f"{manifest_unread}, so the CLI cut with it is not known, and "
+                f"this CLI deploys {mascope_release.RELEASE} only. The next "
+                "run tries again; or install that release's CLI by hand."
+            )
+            runtime.logger.error(message)
+            auto_update.record_status(mascope_path, message)
+            raise typer.Exit(auto_update.AUTO_ERROR)
+        if not target_cli:
+            message = (
+                f"The newest release of '{repo}' ({target}) names no CLI in its "
+                f"manifest, and this CLI deploys {mascope_release.RELEASE} "
+                "only - a wheel install cannot follow it unattended. Install "
+                "the CLI cut with it by hand, or deploy it from a checkout."
+            )
+            runtime.logger.error(message)
+            auto_update.record_status(mascope_path, message)
+            raise typer.Exit(auto_update.AUTO_ERROR)
+        install_cli = target_cli
 
     db_cfg = runtime.full_config.backend.database
     backend_cfg = runtime.full_config.backend
@@ -1141,6 +1409,7 @@ def _auto(*, pull: bool) -> None:
                 mascope_path,
                 kind="migration",
                 alembic_head=plan.target_revision,
+                install_cli=install_cli,
             )
 
         message = (
@@ -1172,6 +1441,7 @@ def _auto(*, pull: bool) -> None:
         mascope_path,
         kind="fast",
         alembic_head=plan.target_revision,
+        install_cli=install_cli,
     )
 
 
@@ -1183,7 +1453,8 @@ def update(
             "--version",
             help="Release to update to: vX.Y.Z, a pre-release of one "
             "(vX.Y.Z-rc.N), or 'latest'. Defaults to the MASCOPE_VERSION pin, "
-            "or 'latest'.",
+            "else the release this deployment runs (its checkout's tag, or the "
+            "release a wheel install recorded), else 'latest'.",
         ),
     ] = None,
     check: Annotated[
@@ -1225,7 +1496,9 @@ def update(
             "apply a fast update inside the maintenance window "
             "(MASCOPE_UPDATE_WINDOW, e.g. '2-5'), or record and notify a "
             "migration update without applying it. Exit codes: 0 handled, "
-            "30 migration pending, 2 error.",
+            "30 migration pending, 2 error, 40 an update is due that only the "
+            "newest release's CLI can apply (a wheel install): install the CLI "
+            "named in .runtime/update/cli-to-install, then run --auto again.",
         ),
     ] = False,
     confirm: Annotated[
@@ -1268,7 +1541,7 @@ def update(
 
     \b
     Examples:
-        mascope prod update                        # follow the latest release
+        mascope prod update                        # latest, or a wheel CLI's release
         mascope prod update --version v1.2.0       # move to a specific release
         MASCOPE_VERSION=v1.2.0 mascope prod update # same, via env pin
         mascope prod update --check                # classify without applying
@@ -1304,6 +1577,7 @@ def update(
         # Never returns - raises typer.Exit with the classification's code.
         _preflight(target, pull=pull, as_json=as_json, manifest=manifest)
 
+    _deploy_own_release(target)
     check_data_dirs(_MODE)
     _abort_if_low_disk(auto=False)
     runtime.logger.info(f"Updating the production stack to '{target}'")
@@ -1328,8 +1602,8 @@ def update(
             "'.runtime/update/state.json' in the deployment checkout - "
             "`mascope prod doctor` reads the same file."
         )
-    # Off a checkout nothing keeps --version once this process exits.
-    _warn_if_pin_lapses(version, os.environ.get("MASCOPE_PATH"))
+    # Off a checkout the record says which release ran last.
+    _record_deployed(target, os.environ.get("MASCOPE_PATH"))
     # Last, so it is the final thing the operator sees: the images moved but the
     # CLI tool did not - warn if it now trails the checkout.
     _warn_if_cli_stale(auto=False)
@@ -1477,6 +1751,141 @@ def doctor(
     else:
         typer.echo(prod_doctor.format_text(report))
     raise typer.Exit(report.exit_code)
+
+
+def _image_config_report(container: str) -> dict:
+    """
+    The config layer report, read inside the running backend container.
+
+    The backend reads the base and mode layers baked into its image, not the
+    host's copies, and validates them against the image's config models. So
+    the report is built there: this CLI pipes `mascope_cli.config_layers`, a
+    stdlib-only module, into the image's own Python, which prints the report
+    as one JSON line. The env layer is the host's file either way: compose
+    mounts the env directory into the container.
+
+    :param container: The backend container's name
+    :return: The report, as `config_layers.collect` returns it
+    :raises typer.Exit: When the container cannot run it
+    """
+    source = Path(config_layers.__file__).read_text(encoding="utf-8")
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                "-i",
+                container,
+                config_layers.IMAGE_PYTHON,
+                "-",
+                "--home",
+                config_layers.IMAGE_HOME,
+                "--env",
+                runtime.env.name,
+                "--mode",
+                _MODE,
+            ],
+            input=source,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        typer.secho(
+            f"Could not read the config in {container}: {exc}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    lines = result.stdout.strip().splitlines()
+    if result.returncode != 0 or not lines:
+        typer.secho(
+            f"Could not read the config in {container}; is the stack up "
+            "(`mascope prod ps`)?",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        typer.echo(result.stderr.strip(), err=True)
+        raise typer.Exit(1)
+    return json.loads(lines[-1])
+
+
+def _host_copies_differ(report: dict) -> list[str]:
+    """
+    The shipped layers whose host copy differs from the image's.
+
+    A home made by `mascope init` keeps its copies of base.mascope.toml and
+    prod.mascope.toml until `mascope init --force`, while the image carries
+    the release's. The backend reads the image's, so a host copy that differs
+    misleads whoever reads it on the host. Compared by the digest of the
+    parsed content, so a comment or the layout alone is no difference.
+
+    :param report: The image's report
+    :return: Paths of the host copies that differ from the image's
+    """
+    host = {
+        "base": runtime.path("base.mascope.toml"),
+        "mode": runtime.path(f"{_MODE}.mascope.toml"),
+    }
+    differ = []
+    for layer in report["layers"]:
+        path = host.get(layer["layer"])
+        if path is None:
+            continue
+        digest = config_layers.layer_digest(config_layers.read_layer(path))
+        if digest != layer["digest"]:
+            differ.append(path)
+    return differ
+
+
+@prod_app.command(name="config")
+def config_report(
+    show_all: Annotated[
+        bool,
+        typer.Option("--all", help="Print every setting, not only the overrides."),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit the report as JSON instead of text."),
+    ] = False,
+) -> None:
+    """
+    Show which config settings this deployment runs differently from the defaults.
+
+    Reads the config layers in the running backend container, as the backend
+    does: the image's base.mascope.toml and prod.mascope.toml, then the env's
+    own prod.mascope.toml. Prints every setting whose value differs from the
+    config model's default, with the layer that set it (base, mode or env).
+    Credentials are never printed. Warns when the host's copies of the
+    shipped layers differ from the image's: the backend reads the image's,
+    but `mascope prod up` passes some of the host's to compose. Needs the
+    stack up.
+
+    \b
+    Examples:
+        mascope prod config
+        mascope prod config --all
+        mascope prod config --json
+    """
+    container = runtime.full_config.backend.get_backend_container_name(mode=_MODE)
+    report = _image_config_report(container)
+    for path in _host_copies_differ(report):
+        typer.secho(
+            f"{path} differs from the image's copy. The backend reads the "
+            "image's, which this report shows, but `mascope prod up` still "
+            "passes the host copy's settings to compose: the Postgres server "
+            "settings and user in [backend.database], the container names, "
+            "[meta] filestore and [frontend]. `mascope init --force` brings "
+            "the host copy in line with the release.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    if as_json:
+        typer.echo(config_layers.format_json(report, show_all=show_all))
+        return
+    heading = config_layers.title(runtime.env.name, _MODE, show_all=show_all)
+    typer.echo(config_layers.format_text(report, show_all=show_all, title=heading))
 
 
 @prod_app.command(

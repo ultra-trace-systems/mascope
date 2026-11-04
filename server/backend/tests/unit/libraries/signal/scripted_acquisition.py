@@ -9,7 +9,7 @@ which in a run spanning several test directories is another directory's.
 
 import numpy as np
 
-from mascope_thermo.backend import _trailer_numbers
+from mascope_thermo.backend import _trailer_numbers, centroid_flag_mask
 from mascope_thermo.scan_filter import parse_scan_filter
 from mascope_thermo.streams import scan_stream_keys
 from mascope_thermo.thermo import NoScansFoundError, UnknownStreamError
@@ -39,6 +39,9 @@ class ScriptedAcquisition:
     :param resolutions: ``{event: resolution}``, the FT resolution the
         trailers of an event's scans report. An event it leaves out reports
         :attr:`RESOLUTION`.
+    :param flags: ``{scan number: {m/z: flags}}``, the centroid flags
+        (``mascope_thermo.backend.CENTROID_FLAGS`` values) the instrument set
+        on a scan's centroids. A centroid it leaves out carries none.
     """
 
     RESOLUTION = 120000
@@ -47,10 +50,11 @@ class ScriptedAcquisition:
     # sample is the same float in each scan's profile.
     PROFILE_STEP = 0.25
 
-    def __init__(self, scans, microscans=None, resolutions=None):
+    def __init__(self, scans, microscans=None, resolutions=None, flags=None):
         self._scans = list(scans)
         self._microscans = dict(microscans or {})
         self._resolutions = dict(resolutions or {})
+        self._flags = {scan: dict(marks) for scan, marks in (flags or {}).items()}
         self.trailer_reads = 0
         self.profiles_averaged = 0
 
@@ -150,6 +154,18 @@ class ScriptedAcquisition:
     def _peaks(self, scan_number):
         return self._scans[scan_number - 1][2]
 
+    def _flags_of(self, scan_number, masses):
+        marks = self._flags.get(scan_number, {})
+        return np.array([marks.get(mz, 0) for mz in masses], dtype=np.int64)
+
+    def centroid_masses(self, scan_number):
+        """Every centroid the scan recorded, in m/z order."""
+        return np.array(sorted(self._peaks(scan_number)), dtype=float)
+
+    def centroid_flags(self, scan_number):
+        """The flags of :meth:`centroid_masses`, in its order."""
+        return self._flags_of(scan_number, sorted(self._peaks(scan_number)))
+
     def tic_per_scan(
         self, polarity=None, t_min=None, t_max=None, ms_type="Ms", stream=None
     ):
@@ -174,12 +190,16 @@ class ScriptedAcquisition:
     ):
         """Each selected scan's centroids as it recorded them, in m/z order,
         with its number: every MS order unless one is asked for, as the
-        real reader selects them. Nothing is flagged, so nothing is left
-        out."""
+        real reader selects them, with the flags scripted for them, and
+        without those carrying a flag ``exclude`` names."""
+        excluded = centroid_flag_mask(exclude)
         out = []
         for row in self._selected(polarity, t_min, t_max, stream, ms_type=ms_type):
             peaks = self._peaks(row["scan"])
             masses = np.array(sorted(peaks), dtype=float)
+            flags = self._flags_of(row["scan"], masses)
+            kept = (flags & excluded) == 0
+            masses = masses[kept]
             out.append(
                 {
                     "scan": row["scan"],
@@ -187,7 +207,7 @@ class ScriptedAcquisition:
                     "intensities": np.array([peaks[mz] for mz in masses]),
                     "resolutions": np.full(len(masses), float(self.RESOLUTION)),
                     "signal_to_noise": np.full(len(masses), 100.0),
-                    "flags": np.zeros(len(masses), dtype=np.int64),
+                    "flags": flags[kept],
                     "timestamp": row["time_s"],
                 }
             )

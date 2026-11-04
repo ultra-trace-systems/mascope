@@ -842,6 +842,12 @@ def migrate_legacy_options(raw: dict, logger=None) -> dict:
     `tus_max_upload_gb` for a large-file instrument would drop back to 5 GB on
     upgrade without saying so.
 
+    A `[meta]` cap equal to the model's default does not count as set:
+    base.mascope.toml writes every default out as a live line, so the merged
+    `[meta]` always holds one, and only a value that differs from it was
+    written by an operator. A legacy `[backend]` value then wins over that
+    default, as it did before the base layer named it.
+
     :param raw: The merged but unvalidated config dictionary, modified in place
     :type raw: dict
     :param logger: Optional logger for the migration warnings
@@ -852,7 +858,8 @@ def migrate_legacy_options(raw: dict, logger=None) -> dict:
     if isinstance(backend, dict) and "tus_max_upload_gb" in backend:
         legacy = backend.pop("tus_max_upload_gb")
         meta = raw.setdefault("meta", {})
-        if "tus_max_upload_gb" in meta:
+        default = MetaConfig.model_fields["tus_max_upload_gb"].default
+        if meta.get("tus_max_upload_gb", default) != default:
             if logger:
                 logger.warning(
                     "Ignoring [backend] tus_max_upload_gb: the setting moved to "

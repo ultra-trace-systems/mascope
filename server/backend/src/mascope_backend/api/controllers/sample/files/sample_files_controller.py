@@ -54,6 +54,11 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileUpdate,
 )
 from mascope_backend.api.new.instruments import get_instruments
+from mascope_backend.api.new.instruments.registry import (
+    instrument_id_for,
+    record_instrument_seen,
+)
+from mascope_backend.api.new.ms2.inventory import write_ms2_inventory
 from mascope_backend.api.new.notifications.service import (
     resolve_processing_notifications,
 )
@@ -564,6 +569,22 @@ def _refuses_the_row(refused: DBAPIError) -> bool:
     return isinstance(sqlstate, str) and sqlstate[:2] in ("22", "23")
 
 
+async def _list_ms2_groups(sample_file_id: str, filename: str) -> None:
+    """List a registered file's MS2 groups in the group inventory.
+
+    Never fails the registration: a file whose groups could not be listed
+    keeps its MS2 store, which its routes read, and the MS2 store backfill
+    lists them.
+    """
+    try:
+        await write_ms2_inventory(sample_file_id, filename)
+    except Exception:  # noqa: BLE001 - one file's inventory, never its record
+        runtime.logger.opt(exception=True).warning(
+            f"Could not list the MS2 groups of {filename} in the group "
+            "inventory; the MS2 store backfill lists them"
+        )
+
+
 @api_controller()
 async def create_sample_file(
     sample_file_create: SampleFileCreate,
@@ -660,12 +681,28 @@ async def create_sample_file(
         )
         streams_note = await read_pooled_streams_note(sample_file_create.filename)
 
-        def row(record: dict | None, record_ids: dict[str, str]) -> SampleFile:
+        async def seen() -> str | None:
+            return await record_instrument_seen(
+                session,
+                sample_file_create.instrument,
+                instrument_type=sample_file_create.instrument_type,
+                model=sample_file_create.instrument_model,
+            )
+
+        def row(
+            record: dict | None, record_ids: dict[str, str], instrument_id: str | None
+        ) -> SampleFile:
             return SampleFile(
                 sample_file_id=gen_id(16),
                 **sample_file_create.model_dump(
-                    exclude={"uploaded_by_device_id", "mz_calibration", "acquisition"}
+                    exclude={
+                        "uploaded_by_device_id",
+                        "mz_calibration",
+                        "acquisition",
+                        "instrument_model",
+                    }
                 ),
+                instrument_id=instrument_id,
                 mz_calibration=mz_calibration,
                 acquisition=record,
                 **record_ids,
@@ -676,7 +713,7 @@ async def create_sample_file(
                 processing_updated_utc=datetime.now(timezone.utc),
             )
 
-        new_sample_file = row(acquisition, acquisition_ids)
+        new_sample_file = row(acquisition, acquisition_ids, await seen())
         session.add(new_sample_file)
 
         # Step 3: Commit transaction
@@ -701,12 +738,17 @@ async def create_sample_file(
                 f"({type(refused.orig).__name__}); storing the file without "
                 "the record"
             )
-            new_sample_file = row(None, {})
+            # The rollback took the instrument row's touch with it.
+            new_sample_file = row(None, {}, await seen())
             session.add(new_sample_file)
             await session.commit()
 
         # Step 4: Refresh instance
         await session.refresh(new_sample_file)
+
+        # The converter wrote the file's MS2 store before asking for the
+        # record, which its groups need.
+        await _list_ms2_groups(new_sample_file.sample_file_id, new_sample_file.filename)
 
         # Step 5. Emit creation event and handle instrument changes
         await emit_record_created(
@@ -1148,6 +1190,9 @@ async def update_sample_file(
             exclude_unset=True
         ).items():
             setattr(sample_file, key, value)
+        sample_file.instrument_id = await instrument_id_for(
+            session, sample_file.instrument
+        )
 
         await session.commit()
         await session.refresh(sample_file)

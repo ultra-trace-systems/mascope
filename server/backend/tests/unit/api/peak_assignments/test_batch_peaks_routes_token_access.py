@@ -34,6 +34,9 @@ _SDK_ROUTES = {
         "mascope.batch_peaks.runs(), and the poll import_run(wait=True) makes"
     ),
     "import_batch_run_route": "mascope.batch_peaks.import_run()",
+    "get_batch_peak_lists_route": (
+        "mascope.batch_peaks.peak_lists() and mascope.load_peaks()"
+    ),
 }
 
 

@@ -523,7 +523,7 @@ def test_loss_libraries_are_hill_formulas_of_the_right_parity():
 
 
 def test_loss_libraries_are_the_documented_ones_and_each_entry_is_named():
-    """The lists docs/ms2.md section 6 prints, in priority order: 43 closed-shell
+    """The lists docs/ms2.md section 7 prints, in priority order: 43 closed-shell
     and 16 radical formulas. Dropping an entry would not change a loss FORMULA -
     most entries also pass as one unnamed piece - but it changes
     `unnamed_pieces`, which ranks. peaky:
@@ -841,7 +841,7 @@ def test_radical_losses_are_flagged_ranked_last_and_optional():
 
 
 def test_parity_flipping_trades_at_one_nominal_mass():
-    """docs/ms2.md section 8, by value: at one nominal mass, opposite-parity
+    """docs/ms2.md section 9, by value: at one nominal mass, opposite-parity
     readings differ by an odd number of 14N atoms. The cheapest trades are
     [15N] for NH (10.8 mDa, only in a parent holding both N and [15N]) and N for
     CH2 (12.6 mDa); the closer ones are multi-atom ([15N]2 for NO, 2.2 mDa,
@@ -1096,9 +1096,11 @@ UNEXPLAINED = {
     "n_parents": 0,
     "ladder_support": "",
     "pieces": (),
+    "role": "unexplained",
+    "flag_note": "",
 }
 
-# The frame docs/ms2.md section 7 documents, written out here rather than read
+# The frame docs/ms2.md section 8 documents, written out here rather than read
 # from READINGS_COLUMNS, so a changed declaration fails.
 DOCUMENTED_DTYPES = {
     "spectrum": "str",
@@ -1122,6 +1124,8 @@ DOCUMENTED_DTYPES = {
     "n_candidates": "int64",
     "n_parents": "int64",
     "ladder_support": "str",
+    "role": "str",
+    "flag_note": "str",
 }
 
 
@@ -2590,7 +2594,7 @@ _CONSTANTS = (
 
 
 def test_every_threshold_is_named_in_the_doc_with_its_value():
-    """docs/ms2.md section 5 lists every constant, by name, with the value the
+    """docs/ms2.md section 6 lists every constant, by name, with the value the
     code holds; the library sizes and the cache sizes too."""
     doc = DOC.read_text(encoding="utf-8")
     table = {
@@ -2619,7 +2623,7 @@ def test_every_threshold_is_named_in_the_doc_with_its_value():
         "DEFAULT_TOLERANCE",
     ):
         assert f"| `{name}` |" in doc, name
-    # section 6 prints both libraries, in priority order
+    # section 7 prints both libraries, in priority order
     closed = doc.split("**Closed-shell** (`CLOSED_SHELL_LOSSES`):")[1].split(
         "**Radical**"
     )[0]

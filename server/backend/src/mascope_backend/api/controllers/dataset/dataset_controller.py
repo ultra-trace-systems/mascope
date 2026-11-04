@@ -19,6 +19,7 @@ from mascope_backend.api.models.dataset.dataset_pydantic_model import (
     DatasetUpdate,
 )
 from mascope_backend.api.new.dataset_tombstones.service import write_tombstones
+from mascope_backend.api.new.instruments.registry import instrument_id_for
 from mascope_backend.api.new.workspaces.exceptions import (
     WorkspaceNotFoundException,
 )
@@ -341,6 +342,7 @@ async def create_dataset(
             dataset_id=gen_id(16),
             workspace_id=workspace_id,
             **dataset.model_dump(),
+            instrument_id=await instrument_id_for(session, dataset.instrument),
             locked=(
                 1
                 if dataset.dataset_type == "ACQUISITION"

@@ -31,7 +31,7 @@ from mascope_match.params import (
 )
 from mascope_signal.runtime import runtime
 from mascope_thermo.thermo import NoScansFoundError
-from mascope_tools.alignment.utils import flag_satellite_peaks
+from mascope_tools.alignment.utils import flag_exception_peaks, flag_satellite_peaks
 
 
 # Restrict large chunks for dask
@@ -71,8 +71,28 @@ SNR_CORE_WIDTHS = 3.0
 #: wide enough to reach past the peaks of its unit mass into the gaps between
 #: unit masses, where the baseline is.
 SNR_WINDOW_DMZ = DMZ
+#: The half-width, in ppm of a peak's m/z, of the window an Orbitrap peak is
+#: measured against when its spectrum is dense there (:func:`below_local_floor`).
+#: Wide enough that the comb a few hundred ppm either side of a reagent ion,
+#: dense over too short a stretch, does not fill it: those are the satellite
+#: flag's.
+LOCAL_FLOOR_WINDOW_PPM = 3000.0
+#: How many other peaks of its spectrum that window must hold for the stretch
+#: to count as dense: one every 20 ppm on average over 6000 ppm. A list of
+#: resolved ions does not come near it; the floor of maxima around a dominant
+#: ion in a spectrum averaged over many microscans holds one every few ppm.
+LOCAL_FLOOR_MIN_NEIGHBOURS = 300
+#: How many times the median height of the window's peaks a peak of a dense
+#: stretch has to stand to be kept
+LOCAL_FLOOR_FACTOR = 5.0
 
 PEAK_ID_LENGTH = 20
+
+#: Where a raw Orbitrap file's peaks carry, from their reading to the
+#: satellite flag, whether the instrument marked them as side lobes
+#: (``mascope_tools.alignment.utils.flag_exception_peaks``). It goes into
+#: ``is_satellite`` and is not written to the store.
+EXCEPTION_PEAK = "is_exception_peak"
 
 #: The ``.props`` entry that records the decision a file's peak store is built
 #: by: true where its peaks are detected per scan stream. Absent where nobody
@@ -91,6 +111,61 @@ PER_STREAM_PROP = "peaks_per_stream"
 #: that rescaling the axis cannot bring two rows back onto one double
 #: (:func:`_strictly_increasing`).
 MZ_ROW_SEPARATION = 2.0**-40
+
+
+def below_local_floor(
+    mz: np.ndarray,
+    heights: np.ndarray,
+    spectrum: np.ndarray | None = None,
+) -> np.ndarray:
+    """Which peaks of an Orbitrap peak list sit under the floor around them.
+
+    The instrument writes a signal-to-noise with every centroid, and the weak
+    flag goes by it. Its noise is one figure for a wide stretch of m/z, and
+    it does not follow a floor that rises locally. Around a reagent ion of
+    millions of counts, a spectrum averaged over many microscans holds a
+    floor of maxima, a centroid every few ppm over several Da, each read far
+    above the threshold: the averaging lowered the noise and left the floor.
+
+    A peak is measured against the peaks around it instead: those of its own
+    spectrum within :data:`LOCAL_FLOOR_WINDOW_PPM` of its m/z, itself
+    included. Where the window holds at least
+    :data:`LOCAL_FLOOR_MIN_NEIGHBOURS` other peaks, the stretch is a floor
+    rather than a list of resolved ions, and a peak under
+    :data:`LOCAL_FLOOR_FACTOR` times the median height of the window's peaks
+    is one of its maxima. A real ion in the floor stands out of it and stays.
+    Where the window holds fewer peaks, the stretch says nothing of a floor
+    and its peaks are left to the signal-to-noise.
+
+    :param mz: The peaks' m/z
+    :type mz: np.ndarray
+    :param heights: Their heights, in any unit the list shares
+    :type heights: np.ndarray
+    :param spectrum: The spectrum each peak is of: its polarity, or its stream
+        where the file is detected per stream; None for a list of one. A peak
+        is measured against its own spectrum's peaks only: another
+        spectrum's floor is no floor of its.
+    :type spectrum: np.ndarray | None
+    :return: True for each peak under the floor of a dense stretch
+    :rtype: np.ndarray
+    """
+    mz = np.asarray(mz, dtype=np.float64)
+    heights = np.asarray(heights, dtype=np.float64)
+    if spectrum is None:
+        spectrum = np.zeros(mz.size, dtype=np.int8)
+    spectrum = np.asarray(spectrum)
+    below = np.zeros(mz.size, dtype=bool)
+    half_width = LOCAL_FLOOR_WINDOW_PPM * 1e-6
+    for label in np.unique(spectrum):
+        members = np.flatnonzero(spectrum == label)
+        order = members[np.argsort(mz[members], kind="stable")]
+        sorted_mz, sorted_heights = mz[order], heights[order]
+        lower = np.searchsorted(sorted_mz, sorted_mz * (1 - half_width))
+        upper = np.searchsorted(sorted_mz, sorted_mz * (1 + half_width))
+        for i in np.flatnonzero(upper - lower - 1 >= LOCAL_FLOOR_MIN_NEIGHBOURS):
+            floor = np.median(sorted_heights[lower[i] : upper[i]])
+            below[order[i]] = sorted_heights[i] < LOCAL_FLOOR_FACTOR * floor
+    return below
 
 
 class PeakDetectionError(Exception):
@@ -569,6 +644,11 @@ class OrbiPeakDetector(BasePeakDetector):
         """
         if peak_shape is None:
             peak_shape = self._peak_shape
+        if calibration is m_compute.RECORD_ON_FILE:
+            # Read once, for the centroids and for their flags below: the
+            # flags are read where the scans recorded the centroids, so the
+            # peaks are taken back there by the factor they came by
+            calibration = m_io.read_props(self._filename)["mz_calibration"]
         (
             peak_mzs,
             peak_heights,
@@ -577,6 +657,28 @@ class OrbiPeakDetector(BasePeakDetector):
         ) = await m_compute.get_orbi_centroids(
             self._filename, polarity=polarity, stream=stream, calibration=calibration
         )
+
+        # The peaks the instrument marked as side lobes, scan by scan. Read
+        # here, where the peaks are one spectrum, and carried as far as the
+        # satellite flag (_flag_satellite_peaks), which takes them in.
+        exception_share = await m_compute.get_orbi_centroid_flag_shares(
+            self._filename,
+            peak_mzs,
+            resolutions,
+            polarity=polarity,
+            stream=stream,
+            calibration=calibration,
+        )
+        is_exception_peak = flag_exception_peaks(
+            pd.DataFrame(
+                {
+                    "mz": peak_mzs,
+                    "intensity": peak_heights,
+                    "exception_share": exception_share,
+                    "resolution": resolutions,
+                }
+            )
+        )["is_exception_peak"].values
 
         # The m/z peak area is the integral of the analytic peak model, so it is
         # computed on a self-built grid inside calculate_peak_area and does not
@@ -600,44 +702,54 @@ class OrbiPeakDetector(BasePeakDetector):
                 "sum_peak_heights": (("mz"), peak_heights),
                 "signal_to_noise": (("mz"), signal_to_noise),
                 "polarity": (("mz"), np.full(peak_mzs.shape, polarity)),
+                EXCEPTION_PEAK: (("mz"), is_exception_peak),
             }
         ).assign_coords(mz=("mz", peak_mzs))
 
     def _flag_weak_peaks(self):
-        """Flag weak peaks based on signal-to-noise ratio."""
-        low_snr = (
-            self.peak_timeseries.signal_to_noise.values < SIGNAL_TO_NOISE_THRESHOLD
+        """Flag the peaks that do not stand out of the noise: under the
+        instrument's signal-to-noise threshold, or under the floor of a dense
+        stretch of their own spectrum (:func:`below_local_floor`)."""
+        store = self.peak_timeseries
+        low_snr = store.signal_to_noise.values < SIGNAL_TO_NOISE_THRESHOLD
+        # One spectrum per stream for a file detected per stream, else one
+        # per polarity
+        spectrum = store.stream.values if self._streams else store.polarity.values
+        is_weak = low_snr | below_local_floor(
+            store.mz.values, store.sum_peak_heights.values, spectrum
         )
-        is_weak = low_snr
-        self._peak_timeseries = self.peak_timeseries.assign(
-            {"is_weak": (("mz"), is_weak)}
-        )
+        self._peak_timeseries = store.assign({"is_weak": (("mz"), is_weak)})
 
     def _flag_satellite_peaks(self):
+        """Flag the side lobes of strong peaks as satellites: the peaks the
+        ratio test of ``flag_satellite_peaks`` reads as one, and those the
+        instrument marked (``flag_exception_peaks``, read as each spectrum's
+        peaks were). The instrument's mark is not kept in the store beside
+        the flag it went into."""
         peaks_df = pd.DataFrame(
             {
                 "mz": self.peak_timeseries.mz.values,
                 "intensity": self.peak_timeseries.sum_peak_heights.values,
             }
         )
-        if not self._streams:
-            peaks_df = flag_satellite_peaks(peaks_df)
-            is_satellite = peaks_df["is_satellite_peak"].values
-        else:
-            # A satellite is a sidelobe of a strong peak of its own spectrum,
-            # and a per-stream store's axis holds one spectrum per stream:
-            # judged together, a real peak of one stream would be read as the
-            # sidelobe of a strong peak of another.
-            is_satellite = np.zeros(len(peaks_df), dtype=bool)
-            peak_stream = self.peak_timeseries.stream.values
-            for index in range(len(self._streams)):
-                in_stream = peak_stream == index
-                if in_stream.any():
-                    flagged = flag_satellite_peaks(
-                        peaks_df[in_stream].reset_index(drop=True)
-                    )
-                    is_satellite[in_stream] = flagged["is_satellite_peak"].values
-        self._peak_timeseries = self.peak_timeseries.assign(
+        # A satellite is a sidelobe of a strong peak of its own spectrum, and
+        # the store's axis holds one spectrum per stream for a file detected
+        # per stream, else one per polarity: judged together, a real peak of
+        # one spectrum would be read as the sidelobe of a strong peak of
+        # another, and one spectrum's strong peaks would crowd the other's
+        # out of the bases.
+        spectrum = (
+            self.peak_timeseries.stream.values
+            if self._streams
+            else self.peak_timeseries.polarity.values
+        )
+        is_satellite = np.zeros(len(peaks_df), dtype=bool)
+        for label in np.unique(spectrum):
+            in_spectrum = spectrum == label
+            flagged = flag_satellite_peaks(peaks_df[in_spectrum].reset_index(drop=True))
+            is_satellite[in_spectrum] = flagged["is_satellite_peak"].values
+        is_satellite = is_satellite | self.peak_timeseries[EXCEPTION_PEAK].values
+        self._peak_timeseries = self.peak_timeseries.drop_vars(EXCEPTION_PEAK).assign(
             {"is_satellite": (("mz"), is_satellite)}
         )
 
@@ -814,14 +926,18 @@ class TofPeakDetector(BasePeakDetector):
         near zero and the column stopped tracking height.
 
         The spread is the MAD scaled to a standard deviation, so a small peak
-        too weak to be fitted does not count as noise. Where the baseline is
-        mostly empty and the MAD is zero, the spectrum is counting single
-        ions, and the noise is the height one of them leaves
-        (:func:`_event_height`), or the standard deviation where that is
-        larger. The standard deviation alone shrinks with how rarely an ion
-        arrives, so a peak of a few ions over an empty baseline scored ten
-        or more, as a strong peak does, and over a window with no ion in it
-        had no ratio at all.
+        too weak to be fitted does not count as noise; where the baseline is
+        mostly empty and the MAD is zero, it is the standard deviation. A
+        spectrum whose baseline is mostly empty somewhere is counting single
+        ions, and no peak's noise there is less than the height one of them
+        leaves (:func:`_event_height`), measured over those windows: nothing
+        stands less than one ion above its baseline. The standard deviation
+        of an empty baseline shrinks with how rarely an ion arrives, and the
+        MAD of one about half filled with stray ions is a small fraction of
+        an ion, so without the floor a peak of a few ions scored ten or more,
+        as a strong peak does, and over a window with no ion in it had no
+        ratio at all. A spectrum with no mostly empty baseline has no ion to
+        measure and keeps the MAD.
         A peak with no baseline left has no ratio (NaN), nor has one over a
         flat baseline in a spectrum with no single ion to measure.
 
@@ -853,35 +969,42 @@ class TofPeakDetector(BasePeakDetector):
         window_start = np.searchsorted(mz_axis, peak_mzs - half_window)
         window_end = np.searchsorted(mz_axis, peak_mzs + half_window, side="right")
 
-        # Where the baseline is mostly empty the MAD is zero, and the noise is
-        # read after every window is seen: one ion's height is measured over
-        # all of them
-        empty = []
+        # Every noise is read after every window is seen: one ion's height is
+        # measured over the windows whose baseline is mostly empty, and it
+        # floors the noise of all of them
+        spreads = []
         sparse = np.zeros(mz_axis.size, dtype=bool)
         for i in range(len(peak_mzs)):
             window = slice(window_start[i], window_end[i])
             baseline = signal[window][~in_core[window]]
             if baseline.size == 0:
                 continue
-            noise = median_abs_deviation(baseline, scale="normal")
+            spread = median_abs_deviation(baseline, scale="normal")
+            if spread == 0:
+                spread = np.std(baseline)
+                sparse[window] = True
+            spreads.append((i, spread))
+
+        event = _event_height(signal, in_core, sparse)
+        for i, spread in spreads:
+            noise = max(spread, event)
             if noise > 0:
                 snr[i] = peak_heights[i] / noise
-            else:
-                empty.append((i, np.std(baseline)))
-                sparse[window] = True
-
-        if empty:
-            event = _event_height(signal, in_core, sparse)
-            for i, spread in empty:
-                noise = max(spread, event)
-                if noise > 0:
-                    snr[i] = peak_heights[i] / noise
 
         return snr
 
     def _flag_weak_peaks(self):
-        """Flag weak peaks. Currently no weak peak criteria for TOF data."""
-        is_weak = np.full(len(self.peak_timeseries.mz), False, dtype=bool)
+        """Flag weak peaks: a signal-to-noise below
+        :data:`SIGNAL_TO_NOISE_THRESHOLD`, as on Orbitrap.
+
+        Over a mostly empty baseline the noise is the height one ion leaves
+        (:meth:`_compute_snr`), so the cutoff is a number of ions there: the
+        clusters of one or two ions a fit keeps at most unit masses of an
+        ambient spectrum are weak. A peak with no ratio (NaN) is not weak.
+        """
+        is_weak = (
+            self.peak_timeseries.signal_to_noise.values < SIGNAL_TO_NOISE_THRESHOLD
+        )
         self._peak_timeseries = self.peak_timeseries.assign(
             {"is_weak": (("mz"), is_weak)}
         )
@@ -1050,6 +1173,15 @@ class OrbiZarrPeakDetector(TofPeakDetector):
             snr[i] = peak_heights[i] / noise_std if noise_std > 0 else np.nan
 
         return snr
+
+    def _flag_weak_peaks(self):
+        """Flag no peak weak, as before TOF peaks were: the cutoff is read
+        on :meth:`TofPeakDetector._compute_snr`'s noise, and this sample's
+        signal-to-noise is still the old one (:meth:`_compute_snr`)."""
+        is_weak = np.full(len(self.peak_timeseries.mz), False, dtype=bool)
+        self._peak_timeseries = self.peak_timeseries.assign(
+            {"is_weak": (("mz"), is_weak)}
+        )
 
     def _flag_satellite_peaks(self):
         peaks_df = pd.DataFrame(

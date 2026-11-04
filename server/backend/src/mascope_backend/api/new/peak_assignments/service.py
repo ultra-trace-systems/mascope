@@ -26,6 +26,7 @@ from types import SimpleNamespace
 import pandas as pd
 from fastapi import status
 from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy.orm import aliased
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.controllers.samples.lib.samples_peaks import extract_peaks
@@ -48,6 +49,12 @@ from mascope_backend.api.new.instrument_configs.lib import read_instrument_funct
 from mascope_backend.api.new.ionization.modes.util import (
     fetch_sample_ionization_mechanism_ids,
 )
+from mascope_backend.api.new.ionization.modes.versions import (
+    move_to_current_versions,
+    sample_label_purity,
+    sample_setup,
+    setup_stamp,
+)
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.match.params.lib import (
     apply_match_params,
@@ -60,6 +67,14 @@ from mascope_backend.api.new.peak_assignments.admission import (
 from mascope_backend.api.new.peak_assignments.artifact_pass import (
     build_artifact_assignments,
     claim_artifact_peaks,
+)
+from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
+    claim_of,
+    is_stale,
+)
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    mz_from_delta,
+    resolve_candidate,
 )
 from mascope_backend.api.new.peak_assignments.calibration_store import (
     load_calibration,
@@ -84,17 +99,13 @@ from mascope_backend.api.new.peak_assignments.engine import (
     FRAGMENTS_KEY,
     LIST_PRIOR_WEIGHT,
     MASS_CALIBRATION_KEY,
-    MU_SOURCE_FITTED,
-    MU_SOURCE_NONE,
-    MU_SOURCE_REAGENT,
     PARTNER_GATE_KEY,
     PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
     SEARCH_SCOPE_KEY,
     SOURCE_DATABASE,
+    STAGE_A_FIT_MIN_IONS,
     TIERING_KEY,
-    ReagentOffset,
-    SampleMassAccuracy,
     apply_partner_gates,
     build_unassigned_assignments,
     calibration_meta,
@@ -104,7 +115,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
     list_readings,
     pattern_scoring_for,
     pattern_scoring_snapshot,
-    reagent_line_offset,
     record_displaced_list_readings,
     record_mirror_same_ion_readings,
     sample_mass_accuracy,
@@ -157,11 +167,15 @@ from mascope_backend.api.new.reference import service as reference_service
 from mascope_backend.api.new.reference.licenses import reference_license_gate
 from mascope_backend.db import (
     AssignmentVerification,
+    BatchPeak,
     BatchPeakOccurrence,
+    BatchPeakVerification,
     IonizationMechanism,
+    IonizationMode,
     PeakAssignment,
     PeakAssignmentRun,
     Sample,
+    SampleBatch,
     TargetCollectionInSampleBatch,
     TargetCompound,
     TargetCompoundInTargetCollection,
@@ -184,9 +198,22 @@ from mascope_tools.composition.calibration import (
     InsufficientCalibrationData,
     recalibrate,
 )
+from mascope_tools.composition.custom_elements import (
+    CUSTOM_ELEMENTS,
+    label_purity,
+    labelled_purity,
+)
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
 from mascope_tools.composition.known_window import KnownWindow
+from mascope_tools.composition.mass_accuracy import (
+    MU_SOURCE_FITTED,
+    MU_SOURCE_NONE,
+    MU_SOURCE_REAGENT,
+    ReagentOffset,
+    SampleMassAccuracy,
+    reagent_line_offset,
+)
 from mascope_tools.composition.mechanism_notation import (
     MechanismNotationError,
     mechanism_spellings,
@@ -201,6 +228,38 @@ from mascope_tools.composition.reagents import (
 # -------------------------------------------------------------------
 # Read model
 # -------------------------------------------------------------------
+
+
+#: The keys of a run's scoring width, as the runs listing serves them.
+SCORING_WIDTH_KEYS = ("sigma_ppm", "sigma_source", "mu_ppm", "mu_source")
+
+
+def scoring_width(run: PeakAssignmentRun) -> dict:
+    """The mass-error width a run scored at, and where each number came from.
+
+    An imported run answers with what its engine disclosed. An in-app run
+    answers from the ``pattern_scoring`` snapshot it wrote into its config
+    when it scored; an import's config is opaque, so the same key there is
+    the engine's own business and is not read.
+
+    :param run: The run.
+    :return: ``sigma_ppm``, ``sigma_source``, ``mu_ppm`` and ``mu_source``,
+        each None where the run recorded none.
+    """
+    if run.scoring_width is not None:
+        width = run.scoring_width
+    elif run.engine == IN_APP_ENGINE and isinstance(run.config, dict):
+        width = run.config.get(PATTERN_SCORING_KEY)
+    else:
+        width = None
+    if not isinstance(width, dict):
+        width = {}
+    return {key: width.get(key) for key in SCORING_WIDTH_KEYS}
+
+
+def run_record(run: PeakAssignmentRun) -> dict:
+    """The run as the runs listing serves it, its scoring width lifted out."""
+    return {**run.to_dict(), **scoring_width(run)}
 
 
 @api_controller()
@@ -231,7 +290,7 @@ async def get_peak_assignment_runs(sample_item_id: str) -> dict:
         # the fallback for a sample that has none.
         derived = await fold_run_record(session, sample)
 
-    data = [run.to_dict() for run in runs]
+    data = [run_record(run) for run in runs]
     if derived is not None:
         data.append(derived)
     return {
@@ -967,6 +1026,269 @@ async def get_verifications(sample_item_id: str) -> dict:
     }
 
 
+async def get_scope_verifications(
+    *,
+    sample_batch_id: str | None = None,
+    dataset_id: str | None = None,
+    verdict: str | None = None,
+    evidence_level: str | None = None,
+    since: dt | None = None,
+    include_superseded: bool = False,
+) -> list[dict]:
+    """The verdicts over every sample of a batch or a dataset, one row per
+    judged peak, as each sample's assignment ledger shows them.
+
+    A sample's own verdicts come first in precedence. A batch-level verdict
+    reaches a sample's peak when the peak folded into the judged batch peak and
+    the peak's own claim (formula, mechanism) is the one judged, so a dissenting
+    sample stays out from under a verdict about another formula; it is listed
+    ``borrowed``, and only where the sample has no current verdict of its own on
+    that claim. The precedence is settled on the whole record before the filters
+    apply, so a filter never lets a borrowed verdict through in place of the
+    sample's own one.
+
+    Each row carries the sample's filename and acquisition time and the peak's
+    m/z. Superseded per-sample verdicts are listed with ``include_superseded``;
+    batch-level ones are live only, since a replaced one reaches no sample.
+
+    :param sample_batch_id: The batch whose samples to read (or ``dataset_id``).
+    :param dataset_id: The dataset whose samples to read.
+    :param verdict: Keep only this verdict.
+    :param evidence_level: Keep only this evidence level.
+    :param since: Keep only verdicts recorded at or after this moment; naive is UTC.
+    :param include_superseded: Also list the per-sample verdicts a later one replaced.
+    :return: The rows, by sample acquisition time, then m/z, newest verdict first.
+    """
+    if (sample_batch_id is None) == (dataset_id is None):
+        raise ValueError("give exactly one of sample_batch_id and dataset_id")
+    samples = select(Sample.sample_item_id)
+    if sample_batch_id is not None:
+        samples = samples.where(Sample.sample_batch_id == sample_batch_id)
+    else:
+        samples = samples.join(
+            SampleBatch, SampleBatch.sample_batch_id == Sample.sample_batch_id
+        ).where(SampleBatch.dataset_id == dataset_id)
+    samples = samples.scalar_subquery()
+
+    # The peak's m/z: off the judged ledger row, else off any row of the same
+    # sample and peak - a re-run sets the judged one's id to NULL.
+    other_row = aliased(PeakAssignment)
+    any_row_mz = (
+        select(func.max(other_row.sample_peak_mz))
+        .where(
+            other_row.sample_item_id == AssignmentVerification.sample_item_id,
+            other_row.sample_peak_id == AssignmentVerification.sample_peak_id,
+        )
+        .correlate(AssignmentVerification)
+        .scalar_subquery()
+    )
+    async with async_session() as session:
+        sample_rows = {
+            row.sample_item_id: row
+            for row in (
+                await session.execute(
+                    select(
+                        Sample.sample_item_id,
+                        Sample.sample_item_name,
+                        Sample.sample_batch_id,
+                        Sample.filename,
+                        Sample.datetime,
+                        Sample.datetime_utc,
+                    ).where(Sample.sample_item_id.in_(samples))
+                )
+            ).all()
+        }
+        own = (
+            await session.execute(
+                select(
+                    AssignmentVerification,
+                    func.coalesce(PeakAssignment.sample_peak_mz, any_row_mz),
+                )
+                .outerjoin(
+                    PeakAssignment,
+                    PeakAssignment.peak_assignment_id
+                    == AssignmentVerification.peak_assignment_id,
+                )
+                .where(AssignmentVerification.sample_item_id.in_(samples))
+            )
+        ).all()
+        reaching = (
+            await session.execute(
+                select(
+                    BatchPeakOccurrence.sample_item_id,
+                    BatchPeakOccurrence.sample_peak_id,
+                    BatchPeakOccurrence.candidate,
+                    BatchPeakOccurrence.mz_delta_ppm,
+                    PeakAssignment.assigned_formula,
+                    PeakAssignment.ionization_mechanism_id,
+                    BatchPeakVerification,
+                    BatchPeak,
+                )
+                .join(
+                    BatchPeakVerification,
+                    BatchPeakVerification.batch_peak_id
+                    == BatchPeakOccurrence.batch_peak_id,
+                )
+                .join(
+                    BatchPeak,
+                    BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
+                )
+                .outerjoin(
+                    PeakAssignment,
+                    PeakAssignment.peak_assignment_id
+                    == BatchPeakOccurrence.peak_assignment_id,
+                )
+                .where(
+                    BatchPeakOccurrence.sample_item_id.in_(samples),
+                    BatchPeakVerification.superseded_utc.is_(None),
+                )
+            )
+        ).all()
+
+    # The identities a sample's own current verdict holds, which a batch-level
+    # verdict does not cover.
+    rows: list[dict] = []
+    judged = set()
+    for record, mz in own:
+        if record.superseded_utc is None:
+            judged.add(
+                (
+                    record.sample_item_id,
+                    record.sample_peak_id,
+                    record.assigned_formula,
+                    record.ionization_mechanism_id,
+                )
+            )
+        rows.append(
+            {
+                **record.to_dict(),
+                "sample_peak_mz": mz,
+                "borrowed": False,
+            }
+        )
+    for (
+        sample_item_id,
+        sample_peak_id,
+        candidate,
+        mz_delta_ppm,
+        row_formula,
+        row_mechanism,
+        record,
+        anchor,
+    ) in reaching:
+        # The member's own claim: its entry in the anchor's registry (none for
+        # an unassigned member), or the ledger row it was folded from on an
+        # anchor that predates the registry.
+        if anchor.candidates is not None:
+            entry = resolve_candidate(anchor.candidates, candidate)
+            claim = (entry.get("formula"), entry.get("ionization_mechanism_id"))
+        else:
+            claim = (row_formula, row_mechanism)
+        if claim != (record.assigned_formula, record.ionization_mechanism_id):
+            continue
+        if (sample_item_id, sample_peak_id, *claim) in judged:
+            continue
+        rows.append(
+            {
+                "sample_item_id": sample_item_id,
+                "sample_peak_id": sample_peak_id,
+                "sample_peak_mz": mz_from_delta(anchor.mz, mz_delta_ppm),
+                "assigned_formula": record.assigned_formula,
+                "ionization_mechanism_id": record.ionization_mechanism_id,
+                "verdict": record.verdict,
+                "evidence_level": record.evidence_level,
+                "note": record.note,
+                "context": record.context,
+                "verified_by": record.verified_by,
+                "verified_utc": record.verified_utc,
+                "superseded_utc": None,
+                "borrowed": True,
+                "batch_peak_verification_id": record.batch_peak_verification_id,
+                "batch_peak_id": record.batch_peak_id,
+                "stale": is_stale(record.to_dict(), claim_of(anchor)),
+            }
+        )
+
+    if since is not None and since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    kept = []
+    for row in rows:
+        if row["superseded_utc"] is not None and not include_superseded:
+            continue
+        if verdict is not None and row["verdict"] != verdict:
+            continue
+        if evidence_level is not None and row["evidence_level"] != evidence_level:
+            continue
+        if since is not None and (
+            row["verified_utc"] is None or row["verified_utc"] < since
+        ):
+            continue
+        sample = sample_rows.get(row["sample_item_id"])
+        kept.append(
+            {
+                **row,
+                "sample_item_name": sample.sample_item_name if sample else None,
+                "sample_batch_id": sample.sample_batch_id if sample else None,
+                "filename": sample.filename if sample else None,
+                "datetime": sample.datetime if sample else None,
+                "datetime_utc": sample.datetime_utc if sample else None,
+            }
+        )
+
+    def order(row: dict) -> tuple:
+        when = row["datetime_utc"]
+        verified = row["verified_utc"]
+        return (
+            when is None,
+            when.timestamp() if when else 0.0,
+            row["sample_item_id"],
+            row["sample_peak_mz"] is None,
+            row["sample_peak_mz"] or 0.0,
+            row["sample_peak_id"],
+            -(verified.timestamp() if verified else 0.0),
+        )
+
+    kept.sort(key=order)
+    return kept
+
+
+@api_controller()
+async def get_batch_verifications(sample_batch_id: str, **filters) -> dict:
+    """The verdicts over every sample of a batch; see :func:`get_scope_verifications`.
+
+    :param sample_batch_id: The batch.
+    :param filters: ``verdict``, ``evidence_level``, ``since``, ``include_superseded``.
+    :return: Status envelope with the rows.
+    """
+    data = await get_scope_verifications(sample_batch_id=sample_batch_id, **filters)
+    return _scope_envelope(data, "batch")
+
+
+@api_controller()
+async def get_dataset_verifications(dataset_id: str, **filters) -> dict:
+    """The verdicts over every sample of a dataset; see :func:`get_scope_verifications`.
+
+    :param dataset_id: The dataset.
+    :param filters: ``verdict``, ``evidence_level``, ``since``, ``include_superseded``.
+    :return: Status envelope with the rows.
+    """
+    data = await get_scope_verifications(dataset_id=dataset_id, **filters)
+    return _scope_envelope(data, "dataset")
+
+
+def _scope_envelope(data: list[dict], scope: str) -> dict:
+    borrowed = sum(1 for row in data if row["borrowed"])
+    return {
+        "status": "success",
+        "message": (
+            f"Retrieved {len(data)} verdict{'s' if len(data) != 1 else ''} over "
+            f"the {scope}'s samples, {borrowed} of them batch-level"
+        ),
+        "results": len(data),
+        "data": data,
+    }
+
+
 @api_controller()
 async def recalibrate_instrument(
     instrument: str,
@@ -1002,10 +1324,17 @@ async def recalibrate_instrument(
                     AssignmentVerification.evidence,
                     AssignmentVerification.evidence_level,
                     Sample.filename,
+                    PeakAssignmentRun.config,
+                    Sample.ionization_mode_id,
+                    IonizationMode.version,
                 )
                 .join(
                     Sample,
                     Sample.sample_item_id == AssignmentVerification.sample_item_id,
+                )
+                .outerjoin(
+                    IonizationMode,
+                    IonizationMode.ionization_mode_id == Sample.ionization_mode_id,
                 )
                 # Outer, and NULL passes: peak_assignment_run_id is nullable and
                 # carries no foreign key, so a label whose run has since been
@@ -1037,12 +1366,31 @@ async def recalibrate_instrument(
         ).all()
 
     scores, labels, levels = [], [], []
-    for verdict, evidence, evidence_level, filename in rows:
+    # The setups the labels were scored under, recorded on the curve: the run
+    # the evidence came from says which, and a label whose run is gone is
+    # taken under its sample's version.
+    setups: list[dict] = []
+    for (
+        verdict,
+        evidence,
+        evidence_level,
+        filename,
+        run_config,
+        mode_id,
+        version,
+    ) in rows:
         if get_instrument_type(filename) != inst:
             continue
         scores.append(float(evidence))
         labels.append(1 if verdict == "confirmed" else 0)
         levels.append(evidence_level)
+        setup = (
+            (run_config or {}).get(IONIZATION_SETUP_KEY)
+            if IONIZATION_SETUP_KEY in (run_config or {})
+            else setup_stamp(mode_id, version)
+        )
+        if setup is not None and setup not in setups:
+            setups.append(setup)
 
     current = await load_calibration(inst, score_version)
     try:
@@ -1067,7 +1415,11 @@ async def recalibrate_instrument(
             "n_neg": len(labels) - sum(labels),
         }
 
-    await save_calibration(result["calibration"], score_version)
+    await save_calibration(
+        result["calibration"],
+        score_version,
+        sorted(setups, key=lambda s: (s["ionization_mode_id"], s.get("version") or 0)),
+    )
     return {
         "status": "success",
         "message": (
@@ -1781,7 +2133,8 @@ def _build_reference_isotopes_df(
 # times. The key's reference part comes from known_state_fingerprint, so a
 # re-synced or (de)activated source invalidates naturally; the licence gate is
 # in the key too, because narrowing it must not be served the wider frame a run
-# from before the change left behind. A handful of entries covers a
+# from before the change left behind, and so is the labelled reagent's purity
+# a run's setup reads its labelled lines at. A handful of entries covers a
 # deployment's realistic (instrument, polarity, threshold) combinations.
 _REFERENCE_ISOTOPE_CACHE_MAX = 8
 _reference_isotope_cache: OrderedDict[tuple, pd.DataFrame] = OrderedDict()
@@ -1838,6 +2191,9 @@ async def _fetch_reference_known_isotopes(
         isotope_abundance_threshold,
         known_window,
         polarity,
+        # The lines of a labelled ion are built at the purity in effect, the
+        # run's setup's: a run under another setup builds its own.
+        tuple(label_purity(symbol) for symbol in sorted(CUSTOM_ELEMENTS)),
     )
 
     async with _reference_isotope_cache_lock:
@@ -2042,6 +2398,15 @@ RUNNING_RUN_STATUS = "running"
 #: It is server state that a run *reports*, not configuration a client supplies.
 REFERENCE_LICENSES_KEY = "reference_licenses"
 
+#: Key under which a run's stored config records the ionization setup it
+#: searched under: ``{"ionization_mode_id": ..., "version": ...}``, the
+#: version's own id and its number, or None for a sample bound under no mode.
+#: Server state like the licence gate, for the same reason: the mode is the
+#: sample's, not something a request chooses. With it, two runs whose recorded
+#: config is the same searched the same adduct panel; without it, an edit of
+#: the mode in between could make them differ and nothing would say so.
+IONIZATION_SETUP_KEY = "ionization_setup"
+
 
 def _stored_run_config(
     config: PeakAssignmentConfig,
@@ -2053,6 +2418,7 @@ def _stored_run_config(
     tiering: dict | None = None,
     partner_gate: dict | None = None,
     fragments: dict | None = None,
+    ionization_setup: dict | None = None,
 ) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
@@ -2099,6 +2465,10 @@ def _stored_run_config(
     which it left and why. A peak that reads as a reagent row on one run and a
     molecule on another is otherwise unexplained.
 
+    The ionization setup is the ninth, and the first the run does not compute:
+    the version of the sample's ionization mode it searched under. Its key is
+    always present, None for a sample bound under no mode.
+
     :param config: The validated client-supplied run configuration.
     :param resolved_profile: The chemistry the run resolved to, when known.
     :param search_scope: What the untargeted stage was offered, once it is known.
@@ -2109,10 +2479,13 @@ def _stored_run_config(
     :param partner_gate: What the partner gate decided, and at what margin.
     :param fragments: What the fragment claim took, where the profile names a
         ladder.
+    :param ionization_setup: The setup the sample is bound under
+        (:func:`~mascope_backend.api.new.ionization.modes.versions.sample_setup`).
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
     stored[REFERENCE_LICENSES_KEY] = reference_license_gate()
+    stored[IONIZATION_SETUP_KEY] = ionization_setup
     if resolved_profile is not None:
         stored[RESOLVED_PROFILE_KEY] = resolved_profile.snapshot()
     if search_scope is not None:
@@ -2143,6 +2516,7 @@ async def _record_resolved_profile(
     tiering: dict | None = None,
     partner_gate: dict | None = None,
     fragments: dict | None = None,
+    ionization_setup: dict | None = None,
 ) -> None:
     """Write the resolved chemistry onto a run that is about to use it.
 
@@ -2166,6 +2540,8 @@ async def _record_resolved_profile(
     :param partner_gate: What the partner gate decided, and at what margin.
     :param fragments: What the fragment claim took, where the profile names a
         ladder.
+    :param ionization_setup: The setup the sample is bound under, kept as the
+        run was created with it.
     """
     async with async_session() as session:
         await session.execute(
@@ -2182,6 +2558,7 @@ async def _record_resolved_profile(
                     tiering,
                     partner_gate,
                     fragments,
+                    ionization_setup,
                 )
             )
         )
@@ -2202,7 +2579,9 @@ async def _create_run(
         engine=IN_APP_ENGINE,
         engine_version=PEAK_ASSIGNMENT_ENGINE_VERSION,
         status=status,
-        config=_stored_run_config(config),
+        config=_stored_run_config(
+            config, ionization_setup=await sample_setup(sample_item_id)
+        ),
         # The same thresholds an import has to declare, recorded here too so a
         # tier means the same thing on either engine's run without reading into
         # the config blob.
@@ -2230,6 +2609,8 @@ async def create_pending_run(
     :param config: The run configuration; engine defaults when omitted.
     :return: The created run, in :data:`PENDING_RUN_STATUS`.
     """
+    # Before the row: the run is recorded under the version it will search.
+    await move_to_current_versions(sample_item_ids=[sample_item_id])
     return await _create_run(
         sample_item_id,
         config or PeakAssignmentConfig(),
@@ -2429,7 +2810,14 @@ def _claim_reagent_lines(
         peaks_df,
         reagent_library_for(resolved_profile.profile.name),
         claim_ppm=resolved_profile.mz_precision_ppm,
-        purity=resolved_profile.profile.label_purity,
+        # A labelled chemistry's reagent is read at the purity in effect: the
+        # sample's setup's, around a run. The profile's own figure is the
+        # library default a setup starts from; a site's bottle may differ.
+        purity=(
+            label_purity("^N")
+            if resolved_profile.profile.label_purity is not None
+            else None
+        ),
         resolution=resolution,
     )
 
@@ -2775,6 +3163,7 @@ async def _stage_a_assignments(
     fallback_sigma_ppm: float,
     known_window: KnownWindow | None,
     reagent_offset: ReagentOffset | None = None,
+    ionization_setup: dict | None = None,
 ) -> tuple[list[dict], dict | None, SampleMassAccuracy]:
     """Stage A: database-first assignment from the known composition set.
 
@@ -2805,15 +3194,16 @@ async def _stage_a_assignments(
         see :func:`drop_ions_claimed_elsewhere` for why the difference matters.
     :param fallback_sigma_ppm: The resolved profile's instrument class width.
         Stage A scores at it when the target library matched too few lines to
-        fit a width, as the untargeted stage does, so neither stage falls back
-        to a width the other does not use (:func:`score_ions_by_fit`).
+        fit a width, or lines of fewer than :data:`STAGE_A_FIT_MIN_IONS` ions,
+        as the untargeted stage does, so neither stage falls back to a width
+        the other does not use (:func:`score_ions_by_fit`).
     :param known_window: The resolved chemistry context's ceiling on every
         reference source's window, or None where the context sets none.
     :param reagent_offset: Where the reagent pre-pass's lines put the mass
         axis. Stage A scores at it where the target library matched too few
-        lines to fit an offset and the lines show one beyond the width
-        (:attr:`SampleMassAccuracy.scoring_mu_ppm`), and so does the untargeted
-        stage. The width stays the class's: a handful of the source's own
+        lines, or too few ions, to fit an offset and the lines show one beyond
+        the width (:attr:`SampleMassAccuracy.scoring_mu_ppm`), and so does the
+        untargeted stage. The width stays the class's: a handful of the source's own
         bright lines says where the axis sits, not how an analyte scatters
         about it.
     :return: The assignment rows; what a run records about the confidence curve
@@ -2825,9 +3215,10 @@ async def _stage_a_assignments(
         from, and the target library is exactly such a set. The reference
         mirror is not, so its lines are left out of the fit even though they
         compete for peaks in the same frame (:func:`target_library_rows`). Its
-        ``sigma_ppm`` is None when too few of the library's lines matched to
-        fit one, its ``anchors`` says how few, and its ``reagent`` is the
-        pre-pass's reading, carried even where the library matched nothing.
+        ``sigma_ppm`` is None when too few of the library's lines, or too few
+        of its ions, matched to fit one, its ``anchors`` and ``anchor_ions``
+        say how few, and its ``reagent`` is the pre-pass's reading, carried
+        even where the library matched nothing.
     """
     stage_a_assignments: list[dict] = []
     confidence_calibration: dict | None = None
@@ -2865,23 +3256,31 @@ async def _stage_a_assignments(
             # the peak-centric engine's scoring engine is the ion-level fit
             # quality, not the targeted matcher's per-isotopologue term. Runs
             # after gating so tolerance/intensity cuts carry into the fit.
+            # The fit counts the ions its lines come from as well as the lines:
+            # a few bright ions with many lines each would otherwise calibrate
+            # the sample on their own mass error (STAGE_A_FIT_MIN_IONS).
             match_isotope_df = score_ions_by_fit(
                 match_isotope_df,
                 fallback_sigma_ppm=fallback_sigma_ppm,
                 reagent_offset=reagent_offset,
+                min_anchor_ions=STAGE_A_FIT_MIN_IONS,
             )
             # Read off the frame the fit was computed on, so Stage B is judged
             # at the width Stage A was judged at rather than at one refitted
             # over a different set of rows.
             mass_accuracy = sample_mass_accuracy(
-                match_isotope_df, reagent=reagent_offset
+                match_isotope_df,
+                reagent=reagent_offset,
+                min_anchor_ions=STAGE_A_FIT_MIN_IONS,
             )
         instrument = get_instrument_type(sample.filename)
         # Load this instrument's confidence calibration from the D6 store (active DB row,
         # else the in-code provisional curve, else None -> uncalibrated). Passing it in keeps
         # the engine DB-free; its corroboration_weights drive the P3 adduct fold-in.
-        calibration = await load_calibration(instrument, SCORE_VERSION)
-        confidence_calibration = calibration_meta(calibration)
+        calibration = await load_calibration(
+            instrument, SCORE_VERSION, ionization_setup=ionization_setup
+        )
+        confidence_calibration = calibration_meta(calibration, ionization_setup)
         stage_a_assignments = invert_matches_to_peak_assignments(
             match_isotope_df,
             sample_item_id=sample.sample_item_id,
@@ -2896,6 +3295,36 @@ async def _stage_a_assignments(
 
 
 async def _run_sample_assignment(
+    sample_item_id: str,
+    config: PeakAssignmentConfig | None = None,
+    independent_transaction: bool = False,
+    user_id: int | None = None,
+    process_id: str | None = None,
+    parent_id: str | None = None,
+    run_id: str | None = None,
+) -> dict:
+    """:func:`_assign_sample` under the sample's current ionization setup.
+
+    A sample bound under a version an edit has replaced moves onto the current
+    one first, and the engine reads labelled ions at the purity that version
+    carries (``custom_elements.labelled_purity``): every prediction of a
+    labelled envelope the run makes, in Stage A's reference lines, the reagent
+    pre-pass, the untargeted search and the tiering, reads it.
+    """
+    await move_to_current_versions(sample_item_ids=[sample_item_id])
+    with labelled_purity(await sample_label_purity(sample_item_id)):
+        return await _assign_sample(
+            sample_item_id,
+            config,
+            independent_transaction,
+            user_id,
+            process_id,
+            parent_id,
+            run_id,
+        )
+
+
+async def _assign_sample(
     sample_item_id: str,
     config: PeakAssignmentConfig | None = None,
     independent_transaction: bool = False,
@@ -2925,6 +3354,7 @@ async def _run_sample_assignment(
     :return: A dictionary with run summary and status message
     """
     sample = await fetch_sample(sample_item_id)
+    ionization_setup = await sample_setup(sample_item_id)
     config = config or PeakAssignmentConfig()
 
     if (reason := ineligible_reason(sample)) is not None:
@@ -3015,7 +3445,10 @@ async def _run_sample_assignment(
                 "deployment has no ionization mechanism for; not searched."
             )
         await _record_resolved_profile(
-            run.peak_assignment_run_id, config, resolved_profile
+            run.peak_assignment_run_id,
+            config,
+            resolved_profile,
+            ionization_setup=ionization_setup,
         )
         # The mechanisms a sample's channels are searched and read through:
         # Stage A reads the reference lists through them, the untargeted
@@ -3086,6 +3519,7 @@ async def _run_sample_assignment(
             fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
             known_window=resolved_profile.context.known_window,
             reagent_offset=reagent_offset,
+            ionization_setup=ionization_setup,
         )
         runtime.logger.info(
             f"Stage A assigned {len(stage_a_assignments)} of {len(peaks_df)} "
@@ -3109,10 +3543,7 @@ async def _run_sample_assignment(
         # that branch ran: a run of Stage A alone still has committed rows whose
         # peaks a neighbour's envelope may already predict.
         scoring = pattern_scoring_for(
-            match_params,
-            mass_accuracy,
-            resolved_profile.fallback_sigma_ppm,
-            resolution,
+            match_params, mass_accuracy, instrument_type, resolution
         )
         if config.run_untargeted:
             eligible_df = peaks_df[
@@ -3220,7 +3651,8 @@ async def _run_sample_assignment(
                     f"Untargeted stage for sample '{sample.sample_item_name}' scores "
                     f"at {scoring.sigma_ppm:.3f} ppm "
                     f"({scoring_snapshot['sigma_source']}, "
-                    f"{mass_accuracy.anchors} anchors), offset "
+                    f"{mass_accuracy.anchors} anchors of "
+                    f"{mass_accuracy.anchor_ions} ions), offset "
                     f"{scoring.mu_ppm:+.3f} ppm ({scoring_snapshot['mu_source']})"
                 )
                 started = time.perf_counter()
@@ -3456,6 +3888,7 @@ async def _run_sample_assignment(
             tiering,
             partner_gate,
             fragments.summary if fragments.summary["ladders"] else None,
+            ionization_setup,
         )
         await send_progress_user_notification(notification, 0.8)
 

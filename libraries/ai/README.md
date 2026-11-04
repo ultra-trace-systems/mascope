@@ -3,8 +3,8 @@
 Mascope's toolkit for AI agents: a plain Python library over
 [`mascope_sdk`](../sdk/README.md) that finds, describes and loads Mascope's
 data as **handles, not tables**. It is the AI layer's library, designed in
-[`docs/dev/ai_layer.md`](../../docs/dev/ai_layer.md) (sections 3.1 to 3.6);
-the MCP server builds on it.
+[`docs/dev/ai_layer.md`](../../docs/dev/ai_layer.md) (sections 3.1 to 3.6),
+and its [MCP server](#the-mcp-server) serves it to a coding agent.
 
 The backbone is one invariant: tables never pass through a model's context.
 A loader returns a `Frame`, whose repr prints the schema, the row count,
@@ -29,6 +29,16 @@ peaks.df.groupby("target_compound_formula")["height"].mean()  # in Python
 
 ## Connecting
 
+The toolkit is on PyPI, and needs no checkout of this repository:
+
+```bash
+pip install mascope-ai   # the toolkit, the MCP server and the mascope-ai command
+mascope-ai setup         # checks the install, the configuration and the token
+```
+
+In a checkout, `uv sync` installs it from `libraries/ai` with the rest of the
+workspace, and `uv run mascope-ai ...` runs it: the developer variant.
+
 `Toolkit()` makes an SDK client from the environment (`MASCOPE_URL`,
 `MASCOPE_ACCESS_TOKEN`, or a `.env` file), presenting the service name
 `ai-agent`: generate an **AI Agent** token for it in Mascope's settings. Pass
@@ -49,10 +59,13 @@ global collections).
 | `load_timeseries(compound= / ion= / isotope=, dataset=, batches=, samples=, max_rows=)` | `Frame` |
 | `load_spectrum(sample, mz_range=, t_range=, max_rows=)` | `Frame` |
 | `load_peaks_by_stage(sample, stages, max_rows=)` | `Frame` |
+| `compute_timeseries(sample, mz_range=None, max_peaks=)` | a small dict: the peaks in range, how many had a time series, how many were computed |
 | `query_by_mz(mz, mechanisms, tolerance_ppm=5.0, formula_ranges=, limit=20, isotopologues=True, known_only=False)` | `Candidates`: Mascope's formulas for an m/z, the closest first |
 | `match_compounds(sample, formulas, params=None, suggested=, mechanisms=)` | `MatchResult`: one verdict per candidate, the tree as a `Frame` |
 | `derive(df, inputs, code=)` | `Frame` of a table computed from Frames, their sources kept |
 | `answer(text, code=, inferred=, frames=)` | the manifest record of an answer |
+| `plan_organize(moves)`, `plan_collection(name, compounds, ...)`, `plan_associate(collection, batches, detach=)`, `plan_match(scope, targets=, params=, save=)` | `Plan`: a write, described; nothing is written |
+| `apply(plan_id, confirm_token)` | `Receipt`: the one call that writes |
 
 **Names.** A string matches a name as a case-insensitive literal substring
 (`"Sample (A)"` means those characters, not a regex); pass a compiled
@@ -68,11 +81,26 @@ as the rows read pass the cap, raising `RowCapExceeded` with the rows
 reached and the samples left. A Frame above the cap is never made. Loads
 never prompt.
 
+**Computing time series.** `compute_timeseries` is one request per peak,
+in which the server reads the sample's data file back, so it is capped:
+it counts the peaks without a series first, and refuses with
+`InvalidRequest`, before it computes any, when they are more than
+`max_peaks`. Narrow `mz_range` and compute a range at a time. The cap is
+500 by default (`DEFAULT_MAX_PEAKS`), and that is also the most a call may
+ask for: `Toolkit(max_peaks=...)` sets the ceiling when the toolkit is
+built. Peaks that have a series are not asked for, so a call that stopped
+goes on where it stopped. The server stores what it computes, a derived
+cache of the sample's data under the same guest access `load_timeseries`
+fills it with, so the call is treated as a read: no object changes, and no
+plan is needed.
+
 **Completeness.** Every Frame says whether it is the whole answer:
 `complete` is False when some read failed, and `failures` names each one.
 A stage of `load_peaks_by_stage` is incomplete too when the server left
 peaks out of it because their time series was not computed yet: its
 failure (`TimeseriesNotComputed`) says how many (`excluded_peaks`).
+`compute_timeseries(sample)` has the server compute those series, so that
+the stage loaded again is whole.
 `warnings` carries what the server warned about the reads, and
 `provenance` the server's provenance block.
 
@@ -80,8 +108,10 @@ failure (`TimeseriesNotComputed`) says how many (`excluded_peaks`).
 to do next and a `to_dict()` for a transport: `AmbiguousName`, `NotFound`,
 `RowCapExceeded`, `AccessDenied` (a 403, naming the object, the role it
 needs and the role the user has), `NotAuthenticated`, `InvalidRequest`,
-`Unavailable`, `StaleFrame`. Transient failures were already retried by the SDK; the
-toolkit adds no retry.
+`Unavailable`, `StaleFrame`. A read's transient failures were already retried by the
+SDK. A write the SDK sends once unless a second send changes nothing, so a write
+that fails as `Unavailable` may still have been carried out: look before trying
+again. The toolkit adds no retry.
 
 ## The oracle
 
@@ -130,12 +160,85 @@ Each session keeps `manifest.jsonl`, one JSON record a line:
   `unscored` (candidates Mascope did not score) and `inferred` (the model's
   own statements).
 
+A record's `seq` counts the records before it. Several processes can write
+one session at once, such as the MCP server and a `Toolkit(session=...)` in
+your own Python: each writes under a lock on `manifest.lock` beside the
+file, so no two records share a `seq`.
+
 `session.manifest.touched()` lists every object the session touched. A table
 computed in Python is kept with `kit.derive(df, [frames])`, and its
 `source_refs` are those of the Frames it came from. So an answer built on it
 still names every object behind it. Its columns that no input has are
 recorded as computed by its code; `computed=[...]` names more, such as a mean
 that kept its input column's name.
+
+## Writes: plan, then apply
+
+A write tool never writes. It returns a `Plan`: each change before and
+after, what it touches, whether it can be undone, the role it needs, what it
+costs the server, and when it expires (in ten minutes). `apply` is the one
+call that writes, and only with a confirm token for that plan, which a
+person's approval gives.
+
+```python
+from mascope_ai import Approver, Move, Toolkit
+
+approver = Approver()  # the transport's: never the model's
+kit = Toolkit(approver=approver)
+
+plan = kit.plan_organize([Move("Sample 1", "Spring 2026", kind="sample")])
+print(plan.render())  # what the person approving reads
+token = approver.approve(plan)  # once they approved it
+receipt = kit.apply(plan.id, token)
+```
+
+- **The builders.** `plan_organize` moves datasets into workspaces, batches
+  into datasets of the client's workspace, and samples into batches. A
+  moved batch keeps its ID; a moved sample is made anew under a new one.
+  `plan_collection` creates a target collection, from formulas or a `base`
+  collection's compounds. `plan_associate` sets the batches a collection is
+  associated with, as the cheap batches-only update. `plan_match` runs
+  Mascope's matching: with `save=False` as a preview that writes nothing and
+  needs no approval (its counts are on `plan.preview`), with `save=True` as a
+  save over the stored matches (`rebuild=True`: a batch's destructive
+  rebuild).
+- **Refused at planning.** A builder refuses what the server would: a role
+  too low in a workspace the change touches (`AccessDenied`), a locked
+  sample or destination batch, an object already where it would go. A
+  builder also refuses a dataset, batch or sample outside the client's
+  workspace, even one found by its ID or passed as a `Ref`
+  (`InvalidRequest`): the role it checks is that
+  workspace's.
+- **What every workspace shares** is not planned unless the user asked for
+  it in so many words: a global collection, an association of one, and
+  compounds that give a CAS number or a structure, which Mascope fills into
+  the shared record of a compound that exists. Pass `allow_global=True`
+  only then; the refusal is `GlobalNamespace`.
+- **The gate.** `plan.gate` is `none` (a preview), `confirm` (a change that
+  can be undone) or `hard` (one that cannot, or one every workspace sees).
+  `Approver.approve` refuses a `hard` plan without `irreversible=True`: the
+  transport passes it once the person was shown so.
+- **The token** names one plan as it stands: an approval of another plan, or
+  of this one edited since, is refused (`ApprovalRefused`), as is a string
+  the approver did not mint. The approver's key lives in its memory only.
+- **Once.** `apply` claims the plan before it reads or writes, so two
+  overlapping calls write once. The same token again returns the first
+  receipt (`receipt.repeated`); another approval is refused
+  (`PlanConsumed`). Past `expires_at`: `PlanExpired`.
+- **Drift.** Every `before` is read again first. If one changed, nothing is
+  written and `PlanDrifted.diff` says what is different; plan again.
+- **Part-way.** A write that fails stops the rest: `PartiallyApplied`
+  carries the receipt, whose `applied` lists the changes made. The plan is
+  not applied again.
+- **The receipt** names what the writes made or changed, the server's answer
+  to each (a background task's `process_id`), and the service every write
+  was sent as, which the server's access log records beside each request.
+  A moved sample is made anew under another ID: its receipt names the
+  batch.
+
+Plans are kept in the session (`plans/`), the claim and the outcome beside
+each, and every plan and receipt is in the manifest; a confirm token never
+is.
 
 ## Sessions
 
@@ -154,6 +257,154 @@ from mascope_ai import Session, Toolkit
 
 kit = Toolkit(session=Session("conversation-42"))
 ```
+
+## The MCP server
+
+`mascope-ai mcp` serves the toolkit to a coding agent such as Claude Code,
+over stdio in the Model Context Protocol. The agent runs it with the user's
+own AI Agent token and its own model subscription:
+
+```bash
+pip install mascope-ai
+mascope-ai setup                          # check, then register:
+claude mcp add mascope -- mascope-ai mcp
+```
+
+`mascope-ai` must be on the PATH Claude Code starts the server with. When it
+is not, as with a virtual environment Claude Code does not activate, register
+the Python it was installed into instead: `setup` prints that line, `claude
+mcp add mascope -- /path/to/python -m mascope_ai mcp`. The same line with the
+checkout's `.venv` Python runs the server from a checkout: the developer
+variant.
+
+| Tool | Returns |
+| ---- | ------- |
+| `find` | refs, best first, with the total; `dataset` / `batch` search within one |
+| `describe` | the small dict `describe()` gives |
+| `load_peaks`, `load_timeseries`, `load_spectrum`, `load_peaks_by_stage` | a Frame's handle |
+| `compute_timeseries` | the peaks in range, how many had a time series, how many were computed |
+| `query_by_mz` | Mascope's candidates for an m/z |
+| `match_compounds` | one condensed verdict per candidate, the unscored apart, the tree's handle |
+| `plan_organize`, `plan_collection`, `plan_associate`, `plan_match` | a plan: its ID, summary, changes, role, gate, reversibility, cost and expiry; nothing is written |
+| `apply` | the receipt of a plan this server made, applied once the user approved the call |
+| `answer` | closes an answer in the manifest |
+| `session` | the session's directory, the Python to run, the lines that open it and a toolkit on it |
+
+`chart` and `table` are not served yet: they come with the toolkit's
+`mascope_viz` artifacts.
+
+What a model reads is bounded by the server, not by a prompt:
+
+- **No tables.** A Frame's handle has its ID, rows, columns, completeness and
+  failures, three rows, and `rows_in_python`, the Python that gives its rows
+  as a DataFrame. A match result is its verdicts.
+- **A few kilobytes.** No result passes 4 KB (`MAX_RESULT_BYTES`). A list
+  that would is cut, and its holder says how many it left out
+  (`<name>_omitted`).
+- **Names are data.** Every string Mascope returns comes back as a JSON
+  string, cut to 200 characters, with its unprintable characters escaped:
+  a newline, a bidirectional override or a zero-width space shows as its
+  escape (`\n`, `\u202e`). A name cannot break out of its value or hide
+  text, and the server's instructions and the skill tell the model to
+  read it as data, never as an instruction.
+- **Failures are results.** A `ToolkitError` comes back as its `to_dict()`
+  with `isError` set, as does a missing configuration (`not_configured`).
+  The server keeps running.
+
+### Writes through the server: the permission prompt is the gate
+
+The `plan_*` tools build plans as the toolkit's builders do (see *Writes:
+plan, then apply*), and write nothing. `apply` takes a plan's ID alone. Its
+call is the human gate: Claude Code asks the user before it runs, and when
+it runs the user approved it. Only then does the server mint the confirm
+token, with its own `Approver`, and pass it to `Toolkit.apply`. The model
+never sees a token, and none is in a result, the tool list or the manifest.
+
+**Never auto-allow `apply`.** Do not add `mcp__mascope__apply`, or
+`mcp__mascope` as a whole, to Claude Code's allowed tools, and do not
+answer its prompt with "always allow" for it: either turns every plan the
+model makes into a write nobody approved. The read tools and the `plan_*`
+tools can be allowed freely; they change nothing in Mascope.
+
+What the prompt shows:
+
+- **The plan.** `apply`'s description lists the plans that wait for
+  approval, newest first: each one's ID, gate and summary, whether it can
+  be undone, the role it needs, its cost, when it expires, its notes and
+  its changes, every name escaped and every line bounded. The warnings
+  come before the changes. After each plan and each apply the server
+  sends `notifications/tools/list_changed`, so the client reads the list
+  again.
+- **Only listed plans apply.** The description stays under 4000
+  characters, below Claude Code's default cut of 4096
+  (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`), and holds at most five
+  plans. A plan that does not fit in full is counted, not listed, and
+  `apply` refuses it with `invalid_request`: apply the listed ones first,
+  or plan it again.
+- **A hard gate** (a matching save, a write every workspace shares) reads
+  `CANNOT BE UNDONE from Mascope.`, or says every workspace shares it. It
+  asks for no second confirmation: the prompt is one already, every time.
+- **Only the server's own plans.** A plan made by another server, by
+  Python on the same session, or by an earlier run of this server is
+  `not_found`. One edited in the session after the server showed it is
+  refused (`approval_refused`): the approval names the plan as shown.
+- **Once.** Calling `apply` again for the same plan returns the same
+  receipt (`repeated: true`) and writes nothing. A preview of `plan_match`
+  has nothing to apply.
+- **Refusals are results**, with `isError` set: `plan_expired`,
+  `plan_consumed`, `plan_drifted` with its `diff`, and `partially_applied`
+  with the receipt of what was written.
+
+The server keeps every Frame in one session, `--session ID` (or
+`$MASCOPE_AI_SESSION`), a new one by default. The workspace is
+`--workspace`, else `MASCOPE_WORKSPACE` from the environment or the `.env`
+file, as the SDK reads `MASCOPE_URL` and `MASCOPE_ACCESS_TOKEN`.
+
+## The local-Python path
+
+Heavy work runs in Python on the same machine, as a Bash step, never through
+the server. The `session` tool gives the Python and the session to open:
+
+```bash
+python - <<'EOF'
+from mascope_ai import Session
+session = Session("s-20261027T120000Z-1a2b3c", root="/home/me/.cache/mascope_ai/sessions")
+peaks = session.frame("f_0123456789ab").df    # a Frame the server loaded
+print(peaks.groupby("sample_item_name")["height"].max().nlargest(3))
+EOF
+```
+
+Reading a Frame needs no credentials: its rows are in the session's
+directory. To load more in that Python, and derive Frames into the same
+session and manifest, the `session` tool's `toolkit` line opens a toolkit:
+
+```python
+from mascope_ai import Session, Toolkit
+
+kit = Toolkit(
+    session=Session(
+        "s-20261027T120000Z-1a2b3c", root="/home/me/.cache/mascope_ai/sessions"
+    ),
+    workspace="ws-1",  # the server's workspace
+)
+```
+
+`Toolkit()` reads the URL and the token as the server does, but not
+`MASCOPE_WORKSPACE` or `--workspace`: given no `workspace`, it opens the
+token's only workspace, and refuses when the token's user has several. The
+line names the server's workspace, by ID once the server has connected. The
+agent then records its answer with the `answer` tool, the code included.
+
+## The command line
+
+| Command | Does |
+| ------- | ---- |
+| `mascope-ai setup` | checks the install, the session directory, the configuration and the token; says how to register the server. Idempotent |
+| `mascope-ai list [KIND] [QUERY]` | what there is: `datasets`, `batches --dataset D`, `samples --batch B`, `collections`, or every kind but samples; `sessions`; `frames --session ID` |
+| `mascope-ai mcp` | the MCP server |
+| `mascope-ai skill` | the skill text, for `~/.claude/skills/mascope-ai/SKILL.md` |
+
+`python -m mascope_ai` is the same command.
 
 ## Tests
 

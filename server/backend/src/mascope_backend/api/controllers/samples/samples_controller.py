@@ -27,9 +27,12 @@ from mascope_backend.api.models.samples.sample_pydantic_model import SampleSortC
 from mascope_backend.api.models.target.collections.config import (
     target_collection_config,
 )
+from mascope_backend.api.new.instrument_configs.lib import file_line_width
+from mascope_backend.api.new.ms2.inventory import ms2_group_count, sample_ms2_groups
 from mascope_backend.db import (
     MatchCollection,
     MatchSample,
+    SampleFile,
     TargetCollection,
     async_session,
 )
@@ -37,7 +40,7 @@ from mascope_backend.db.views import Sample
 from mascope_backend.json_safe import non_finite_to_none
 from mascope_backend.runtime import runtime
 from mascope_file.io import load_coord, load_peak_data
-from mascope_file.name import get_sample_file_type
+from mascope_file.name import get_instrument_type, get_sample_file_type
 from mascope_signal.peak import get_peaks
 from mascope_thermo.thermo import NoScansFoundError
 
@@ -66,6 +69,31 @@ def _nearest_listed_mz(filename: str, peak_mz: float) -> float:
     if listed.size == 0:
         return peak_mz
     return float(listed[np.abs(listed - peak_mz).argmin()])
+
+
+def _listed_mz_calibration(record: dict | None) -> dict | None:
+    """A sample's calibration record as a sample list carries it.
+
+    A TOF fit's quality block lists every calibrant line the fit chose from
+    (``quality.points``), which no list reads: the sample's badge reads the
+    counts, the errors and the ``span``, and the calibration dialog reads the
+    points of the fit it previews, from ``GET /calibration/mz_calibration``.
+    The list leaves them out, so a batch's list does not carry the lines of
+    every sample in it. The stored record is not changed.
+
+    :param record: ``sample_file.mz_calibration``, or None
+    :type record: dict | None
+    :return: The record without ``quality.points``, the record itself where
+        it has none
+    :rtype: dict | None
+    """
+    quality = record.get("quality") if isinstance(record, dict) else None
+    if not isinstance(quality, dict) or "points" not in quality:
+        return record
+    return {
+        **record,
+        "quality": {key: value for key, value in quality.items() if key != "points"},
+    }
 
 
 @api_controller()
@@ -115,7 +143,11 @@ async def get_samples(
     :type sort: str
     :param order: Sorting order ("asc" or "desc"), defaults to "asc"
     :type order: str
-    :return: Dictionary with status, message, results count, and sample data with nested match information
+    :return: Dictionary with status, message, results count, and sample data
+        with nested match information, and each sample's ``ms2_group_count``:
+        how many MS2 groups the group inventory lists for it, 0 for a sample
+        with none. A sample's ``mz_calibration`` leaves out a TOF fit's
+        ``quality.points`` (:func:`_listed_mz_calibration`)
     :rtype: dict
     """
     async with async_session() as session:
@@ -145,6 +177,7 @@ async def get_samples(
                 Sample,
                 MatchSample,
                 alarming_subq.c.alarming,
+                ms2_group_count(Sample),
             )
             .outerjoin(MatchSample, Sample.sample_item_id == MatchSample.sample_item_id)
             .outerjoin(
@@ -193,6 +226,9 @@ async def get_samples(
                 column.name: getattr(row.Sample, column.name)
                 for column in Sample.__table__.columns
             }
+            sample_data["mz_calibration"] = _listed_mz_calibration(
+                sample_data["mz_calibration"]
+            )
 
             if row.MatchSample:
                 match_data = {
@@ -216,6 +252,7 @@ async def get_samples(
                 }
 
             sample_data["match"] = match_data
+            sample_data["ms2_group_count"] = row.ms2_group_count
             data.append(sample_data)
 
         return {
@@ -224,6 +261,36 @@ async def get_samples(
             "results": len(data),
             "data": data,
         }
+
+
+async def sample_line_width(sample: Sample) -> dict:
+    """The instrument class of a sample's file and the width of its lines.
+
+    What a client comparing itself to the sample would otherwise measure from
+    the raw profile: the class the assignment engine reads the file as, and
+    the line width detection fitted, at a reference m/z
+    (:func:`~mascope_backend.api.new.instrument_configs.lib.file_line_width`).
+    Answered whether or not the sample has an assignment run.
+
+    The class is the engine's rule (:func:`mascope_file.name.get_instrument_type`:
+    the data file, the props, the instrument's name), and where none of those
+    says, the class the file's row recorded at ingest.
+
+    :param sample: The sample view row.
+    :return: ``instrument_class`` (``orbi`` or ``tof``), ``reference_mz``,
+        ``resolution`` and ``fwhm_ppm``.
+    """
+    try:
+        instrument_class = await asyncio.to_thread(get_instrument_type, sample.filename)
+    except ValueError:
+        async with async_session() as session:
+            instrument_class = await session.scalar(
+                select(SampleFile.instrument_type).where(
+                    SampleFile.sample_file_id == sample.sample_file_id
+                )
+            )
+    width = await file_line_width(sample.filename, polarity=sample.polarity)
+    return {"instrument_class": instrument_class, **width}
 
 
 @api_controller()
@@ -235,7 +302,10 @@ async def get_sample(
 
     :param sample_item_id: Unique identifier for the sample.
     :type sample_item_id: str
-    :return: A dictionary containing detailed sample information, match data (if available), and match collection types (if available).
+    :return: A dictionary containing detailed sample information, match data (if available), and match collection types (if available),
+        and ``ms2_groups``: the MS2 groups the group inventory lists for the
+        sample, as the batch's groups route gives them
+        (:func:`mascope_backend.api.new.ms2.inventory.group_record`).
     :rtype: dict
     :raises NotFoundException: If the sample with the specified item ID is not found.
     """
@@ -306,6 +376,8 @@ async def get_sample(
         }
 
     sample_data["match"] = match_data
+    sample_data["ms2_groups"] = await sample_ms2_groups(row.Sample)
+    sample_data["line_width"] = await sample_line_width(row.Sample)
 
     return {
         "status": "success",

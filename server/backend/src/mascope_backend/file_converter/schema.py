@@ -159,3 +159,14 @@ class SampleFileProps(BaseModel):
             "an instrument's name need not say which class it is."
         ),
     )
+
+    instrument_model: str | None = Field(
+        default=None,
+        description=(
+            "The instrument model the file names, as its reader reports it "
+            "(a Thermo file's 'Model'). None where the file names none: a "
+            "TofDaq file records its digitizer, not its instrument, and a "
+            "file converted before the field existed has no value. Fills the "
+            "instrument's own row, which outlives its files."
+        ),
+    )

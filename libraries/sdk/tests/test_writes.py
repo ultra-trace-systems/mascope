@@ -205,6 +205,21 @@ REQUESTS = [
         },
         None,
     ),
+    # Left out, the collections are not sent, and the batch keeps them.
+    (
+        lambda r: r["batches"].update("b-1", name="b2"),
+        "PATCH",
+        "sample/batches/b-1",
+        {"sample_batch_name": "b2"},
+        None,
+    ),
+    (
+        lambda r: r["batches"].update("b-1", description="about"),
+        "PATCH",
+        "sample/batches/b-1",
+        {"sample_batch_description": "about"},
+        None,
+    ),
     (
         lambda r: r["batches"].copy("b-1", "ds-2", "b2"),
         "POST",
@@ -221,6 +236,13 @@ REQUESTS = [
             "sample_batch_name": "b2",
             "sample_batch_description": "about",
         },
+        None,
+    ),
+    (
+        lambda r: r["batches"].move("b-1", "ds-2"),
+        "POST",
+        "sample/batches/b-1/move",
+        {"dataset_id": "ds-2"},
         None,
     ),
     (
@@ -589,6 +611,13 @@ REFUSALS = [
         "dataset 'ds-2' (a locked dataset: none)",
     ),
     (
+        lambda r: r["batches"].move("b-1", "ds-2"),
+        "move",
+        "batch",
+        "b-1",
+        "dataset 'ds-2' (a locked batch or source dataset",
+    ),
+    (
         lambda r: r["batches"].delete("b-1"),
         "delete",
         "batch",
@@ -768,8 +797,102 @@ def test_a_401_is_not_a_permission_refusal():
     assert "check your API token" in str(refused.value)
 
 
-def test_a_write_retries_a_gateway_error(monkeypatch, client):
-    """The writes share the reads' retries: a 503 is sent again."""
+#: The (method, path, body) of each request in REQUESTS that is sent again on
+#: a transient failure: the server answers it the same however often it comes.
+#: Every other write is sent once, as a second send could carry it out twice.
+RETRIED = [
+    # Sets the fields to the values sent.
+    ("PATCH", "workspaces/ws-1/datasets/ds-1", {"dataset_name": "d2"}),
+    (
+        "PATCH",
+        "workspaces/ws-2/datasets/ds-1",
+        {
+            "dataset_description": "about",
+            "icon": {"icon_id": "i", "color": "#000000"},
+        },
+    ),
+    ("PATCH", "sample/batches/b-1", {"target_collection_ids": ["c-1"]}),
+    (
+        "PATCH",
+        "sample/batches/b-1",
+        {
+            "target_collection_ids": [],
+            "sample_batch_name": "b2",
+            "sample_batch_description": "about",
+        },
+    ),
+    ("PATCH", "sample/batches/b-1", {"sample_batch_name": "b2"}),
+    ("PATCH", "sample/batches/b-1", {"sample_batch_description": "about"}),
+    ("PATCH", "sample/items/s-1", {"sample_item": {"sample_item_name": "n"}}),
+    ("PATCH", "target/collections/c-1", {"target_collection_name": "c2"}),
+    ("PATCH", "target/collections/c-1", {"sample_batch_ids": ["b-1", "b-2"]}),
+    ("PATCH", "target/collections/c-1", {"sample_batch_ids": []}),
+    # Save nothing.
+    ("POST", "match/aggregate/sample/s-1", {}),
+    (
+        "POST",
+        "match/aggregate/sample/s-1",
+        {"target_ion_id": "i-1", "match_params": {"mz_tolerance": 5}},
+    ),
+    ("POST", "match/aggregate/batch/b-1", {}),
+    (
+        "POST",
+        "match/aggregate/batch/b-1",
+        {"target_ion_id": "i-1", "match_params": {"mz_tolerance": 5}},
+    ),
+]
+
+
+def _is_retried(method, path, body) -> bool:
+    return (method, path, body) in RETRIED
+
+
+def test_every_retried_request_is_one_of_the_writes():
+    """A typo in RETRIED would leave a write it means untested."""
+    sent = [(method, path, body) for _, method, path, body, _ in REQUESTS]
+    assert all(entry in sent for entry in RETRIED)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        requests.exceptions.Timeout("slow"),
+        requests.exceptions.ConnectionError("down"),
+        _response(504, {"error": "gateway timeout"}),
+    ],
+    ids=["timeout", "connection", "504"],
+)
+@pytest.mark.parametrize(("call", "method", "path", "body", "params"), REQUESTS)
+def test_a_write_is_sent_once_unless_sending_it_again_is_safe(
+    monkeypatch, client, call, method, path, body, params, failure
+):
+    """A lost answer may come after the server acted: a create, a save, a
+    move or a delete sent again would be carried out twice, so the failure is
+    raised after one send. A write the server answers the same each time is
+    sent again, as a read is."""
+    from mascope_sdk.exceptions import MascopeError
+
+    sent = []
+
+    def fake(method, url, **kwargs):
+        sent.append(method)
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+
+    monkeypatch.setattr(_http.requests, "request", fake)
+    monkeypatch.setattr(_http.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(MascopeError):
+        call(_resources(client))
+
+    expected = _http.RETRY_MAX_ATTEMPTS if _is_retried(method, path, body) else 1
+    assert len(sent) == expected
+
+
+def test_an_idempotent_write_retries_a_gateway_error(monkeypatch, client):
+    """A write that sets fields shares the reads' retries: a 503 is sent
+    again."""
     answers = [
         _response(503, {"error": "busy"}),
         _response(200, {"message": "ok", "data": {"id": "x"}}),
@@ -783,8 +906,25 @@ def test_a_write_retries_a_gateway_error(monkeypatch, client):
     monkeypatch.setattr(_http.requests, "request", fake)
     monkeypatch.setattr(_http.time, "sleep", lambda seconds: None)
 
-    assert DatasetsResource(client).delete("ds-1") == {"id": "x"}
-    assert sent == ["DELETE", "DELETE"]
+    assert DatasetsResource(client).update("ds-1", name="d2") == {"id": "x"}
+    assert sent == ["PATCH", "PATCH"]
+
+
+def test_a_write_sent_once_raises_the_gateway_error(monkeypatch, client):
+    """A delete answered with a 503 is not sent again: the 503 is raised."""
+    from mascope_sdk.exceptions import ServerError
+
+    sent = []
+
+    def fake(method, url, **kwargs):
+        sent.append(method)
+        return _response(503, {"error": "busy"})
+
+    monkeypatch.setattr(_http.requests, "request", fake)
+
+    with pytest.raises(ServerError):
+        DatasetsResource(client).delete("ds-1")
+    assert sent == ["DELETE"]
 
 
 def test_a_refusal_message_keeps_the_url(wire, client):
@@ -829,7 +969,7 @@ def test_a_writes_warnings_are_logged(wire, client):
         (requests.exceptions.ConnectionError("down"), "MascopeConnectionError"),
     ],
 )
-def test_a_write_retries_a_lost_connection_then_raises(
+def test_an_idempotent_write_retries_a_lost_connection_then_raises(
     monkeypatch, client, failure, raised
 ):
     """A timeout or a dropped connection is tried again, and the last one
@@ -846,7 +986,7 @@ def test_a_write_retries_a_lost_connection_then_raises(
     monkeypatch.setattr(_http.time, "sleep", slept.append)
 
     with pytest.raises(getattr(exceptions, raised)) as error:
-        DatasetsResource(client).delete("ds-1")
+        DatasetsResource(client).update("ds-1", name="d2")
 
     assert type(error.value).__name__ == raised
     assert len(sent) == _http.RETRY_MAX_ATTEMPTS
@@ -891,12 +1031,12 @@ def test_a_retry_is_logged(monkeypatch, client):
     )
     monkeypatch.setattr(_http.time, "sleep", lambda seconds: None)
     try:
-        DatasetsResource(client).delete("ds-1")
+        DatasetsResource(client).update("ds-1", name="d2")
     finally:
         logger.remove(handler)
 
     assert len(records) == 1
-    assert records[0].startswith("DELETE http://server/api/workspaces/ws-1/")
+    assert records[0].startswith("PATCH http://server/api/workspaces/ws-1/")
     assert "(attempt 1/4)" in records[0]
 
 

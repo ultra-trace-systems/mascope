@@ -16,11 +16,7 @@ from mascope_backend.api.models.target.isotopes.target_isotope_pydantic_model im
     GetTargetIsotopesQueryParams,
 )
 from mascope_backend.api.new.auth.dependencies import guest_user
-from mascope_backend.api.new.workspaces.dependencies import (
-    accessible_workspace_ids_for_user,
-    check_batch_access,
-    check_target_collection_access,
-)
+from mascope_backend.api.new.workspaces.dependencies import target_list_scope
 
 
 target_isotopes_router = APIRouter(
@@ -50,14 +46,11 @@ async def get_target_isotopes_route(
     :return: A dictionary containing total count and list of target isotopes.
     :rtype: dict
     """
-    if query_params.sample_batch_id:
-        await check_batch_access(query_params.sample_batch_id, user, "guest")
-    if query_params.target_collection_id:
-        await check_target_collection_access(
-            query_params.target_collection_id, user, "guest"
-        )
-    ws_ids = (
-        None if user.is_superuser else await accessible_workspace_ids_for_user(user)
+    ws_ids = await target_list_scope(
+        user,
+        sample_batch_id=query_params.sample_batch_id,
+        target_collection_id=query_params.target_collection_id,
+        show_target_collection=query_params.show_target_collection,
     )
     return await get_target_isotopes(
         **query_params.model_dump(), accessible_workspace_ids=ws_ids

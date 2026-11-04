@@ -37,7 +37,7 @@ from IsoSpecPy import IsoThreshold
 from pyteomics.mass import calculate_mass
 
 from mascope_tools.composition import utils
-from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
+from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
 from mascope_tools.composition.grid import NeutralGrid
 from mascope_tools.composition.models import (
     CompositionSearchConfig,
@@ -115,20 +115,22 @@ def _element_lines(symbol: str, count: int, floor: float) -> _ElementLines:
 
 
 @lru_cache(maxsize=1024)
-def _custom_lines(symbol: str, count: int, floor: float) -> _ElementLines:
+def _custom_lines(
+    symbol: str, count: int, floor: float, purity: float
+) -> _ElementLines:
     """The configurations of a labelled reagent's atoms worth a line.
 
     Measured from every atom at its LABELLED mass, which is where the search
     reads a labelled adduct, so the unlabelled remainder sits below it: a
     single 98% 15N atom answers its 15N line and a 14N line one unit down at
-    2% of it.
+    2% of it. ``purity`` is the labelled isotope's fraction, the purity in
+    effect (:func:`custom_elements.label_purity`) where it is called.
     """
     element = CUSTOM_ELEMENTS[symbol]
     (light_mass, light_number), (heavy_mass, heavy_number) = (
         element.isotopes[0],
         element.isotopes[-1],
     )
-    purity = element.default_purity
     probs = [
         comb(count, light) * purity ** (count - light) * (1.0 - purity) ** light
         for light in range(count + 1)
@@ -222,21 +224,30 @@ def line_offsets(
     return {
         nominal: (lowest, highest)
         for nominal, lowest, highest in _combined_offsets(
-            tuple(sorted(ranges.items())), floor
+            tuple(sorted(ranges.items())),
+            floor,
+            tuple(
+                (symbol, label_purity(symbol))
+                for symbol in sorted(ranges)
+                if symbol in CUSTOM_ELEMENTS
+            ),
         )
     }
 
 
 @lru_cache(maxsize=1024)
 def _combined_offsets(
-    ranges: tuple[tuple[str, tuple[int, int]], ...], floor: float
+    ranges: tuple[tuple[str, tuple[int, int]], ...],
+    floor: float,
+    purities: tuple[tuple[str, float], ...],
 ) -> tuple[tuple[int, float, float], ...]:
     """:func:`line_offsets` for one set of atom count ranges.
 
     Cached on the ranges rather than on the target: the box's own limits, not
     the target's mass, bound the counts of an ordinary search, so the peaks of
     one spectrum and a search repeated with the same parameters share one
-    answer.
+    answer. ``purities`` are the labelled elements' purities in effect, part of
+    the key so a run under another setup's purity gets an answer of its own.
 
     :return: ``(nominal offset, lowest, highest mass offset)``, ascending.
     """
@@ -246,7 +257,7 @@ def _combined_offsets(
         per_offset: dict[int, tuple[float, float, float]] = {}
         for count in range(low, high + 1):
             lines = (
-                _custom_lines(symbol, count, floor)
+                _custom_lines(symbol, count, floor, dict(purities)[symbol])
                 if symbol in CUSTOM_ELEMENTS
                 else _element_lines(symbol, count, floor)
             )
@@ -330,7 +341,7 @@ def _ion_lines(counts: Mapping[str, int], floor: float) -> list[tuple[float, flo
         if count <= 0:
             continue
         configurations = (
-            _custom_lines(symbol, count, floor)
+            _custom_lines(symbol, count, floor, label_purity(symbol))
             if symbol in CUSTOM_ELEMENTS
             else _element_lines(symbol, count, floor)
         )

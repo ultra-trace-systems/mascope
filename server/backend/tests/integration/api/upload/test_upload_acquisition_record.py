@@ -38,7 +38,7 @@ from mascope_backend.api.routes.sample.files import (
     sample_files_routes as files_routes,
 )
 from mascope_backend.capabilities import SERVER_CAPABILITIES
-from mascope_backend.db import SampleFile
+from mascope_backend.db import Instrument, SampleFile
 from mascope_sdk import acquisition
 
 
@@ -603,6 +603,17 @@ async def test_a_row_the_database_refuses_with_its_record_is_stored_without_it(
     assert await _without_a_record(async_session_factory, second["filename"])
     assert resp.json()["data"]["acquisition_id"] is None
     assert any("was refused by the database" in line for line in _said(lines))
+    # The rollback took the first attempt's instrument row with it; the file
+    # is stored linked to its instrument all the same.
+    async with async_session_factory() as session:
+        linked = (
+            await session.execute(
+                select(Instrument.instrument_id).where(
+                    Instrument.name == second["instrument"]
+                )
+            )
+        ).scalar_one()
+    assert newcomer.instrument_id == linked
 
 
 @pytest.mark.asyncio

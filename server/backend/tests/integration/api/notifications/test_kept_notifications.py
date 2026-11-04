@@ -27,6 +27,7 @@ from mascope_backend.api.new.notifications import service
 from mascope_backend.db import (
     AccessToken,
     AgentDevice,
+    Instrument,
     Notification,
     SampleFile,
     User,
@@ -702,6 +703,17 @@ async def test_case_variants_of_an_instrument_share_a_digest(
     (row,) = await _digests(async_session_factory, owner)
     assert row.count == 2
     assert row.instrument == INSTRUMENT
+    async with async_session_factory() as session:
+        assert (
+            row.instrument_id
+            == (
+                await session.execute(
+                    select(Instrument.instrument_id).where(
+                        Instrument.name == INSTRUMENT
+                    )
+                )
+            ).scalar_one()
+        )
 
 
 @pytest.mark.asyncio

@@ -10,13 +10,18 @@ the exit-code overrides and the summary it keeps beside the archive.
 
 The cases are the ones where the runner can go wrong: version ordering a string
 compare gets backwards, a lookup that fails (which must never redden an
-assessment), and an assessment failure that a deployment verdict must not hide.
+assessment), an assessment failure that a deployment verdict must not hide, and
+the two triggers: a deploy run once per release and never inside another run or
+the interval after one, a periodic run that always runs.
 """
 
+import fcntl
 import json
 import os
 import shutil
 import subprocess
+import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -31,8 +36,8 @@ pytestmark = [
         not SCRIPT.is_file(), reason="tooling/monitoring/run-assessment.sh absent"
     ),
     pytest.mark.skipif(
-        not (shutil.which("bash") and shutil.which("python3") and shutil.which("tar")),
-        reason="the runner needs bash, python3 and tar",
+        not all(shutil.which(tool) for tool in ("bash", "python3", "tar", "flock")),
+        reason="the runner needs bash, python3, tar and flock",
     ),
 ]
 
@@ -49,17 +54,35 @@ for last; do :; done
 exec bash -c "$last"
 """
 
-# The target's suite interpreter: writes the report bytes STUB_ORIGIN_REPORT
-# names, as the suite would, and exits STUB_SUITE_RC.
-ORIGIN_PYTHON_STUB = """#!/usr/bin/env bash
-echo "suite output"
-mkdir -p report
-[ -n "$STUB_ORIGIN_REPORT" ] && cp "$STUB_ORIGIN_REPORT" report/pentest-report.json
-exit "${STUB_SUITE_RC:-0}"
+# What every stubbed suite writes on a run that reports, as the suite does: the
+# report as JSON ($1 holds it) and Markdown, and a history entry ($2 names it)
+# that stays in report/history/ after the run, as the suite's trail does.
+WRITE_REPORT = """#!/usr/bin/env bash
+write_report() {
+  cp "$1" report/pentest-report.json
+  echo "# report" > report/pentest-report.md
+  mkdir -p report/history
+  cp "$1" "report/history/$(date +%s%N)-$2.json"
+}
 """
 
-# curl: the release lookup answers STUB_RELEASE (or fails when unset); every
-# heartbeat is appended to STUB_PINGS as "<url> <body>".
+# The target's suite interpreter: records the release it was given and whether
+# the runner's lock was free while it ran, writes the report bytes
+# STUB_ORIGIN_REPORT names, as the suite would, and exits STUB_SUITE_RC.
+ORIGIN_PYTHON_STUB = (
+    WRITE_REPORT
+    + """echo "suite output"
+echo "release=${MASCOPE_PENTEST_CURRENT_RELEASE-<unset>}" > "$STUB_ORIGIN_ENV"
+if flock -n "$STUB_LOCK" true; then echo free; else echo held; fi > "$STUB_LOCK_STATE"
+mkdir -p report
+[ -n "$STUB_ORIGIN_REPORT" ] && write_report "$STUB_ORIGIN_REPORT" origin
+exit "${STUB_SUITE_RC:-0}"
+"""
+)
+
+# curl: the release lookup answers STUB_RELEASE (or fails when unset), the
+# target's version route STUB_DEPLOYED (or fails when unset); every heartbeat
+# is appended to STUB_PINGS as "<url> <body>".
 CURL_STUB = """#!/usr/bin/env bash
 url= body=
 while [ $# -gt 0 ]; do
@@ -72,6 +95,7 @@ while [ $# -gt 0 ]; do
 done
 case "$url" in
   "$STUB_RELEASE_API") [ -n "${STUB_RELEASE+x}" ] || exit 7; printf '%s' "$STUB_RELEASE" ;;
+  */api/version/public) [ -n "${STUB_DEPLOYED+x}" ] || exit 22; printf '%s' "$STUB_DEPLOYED" ;;
   *) printf '%s %s\\n' "$url" "$body" >> "$STUB_PINGS" ;;
 esac
 """
@@ -80,18 +104,21 @@ esac
 # The CDN vantage's suite runs on this host from CDN_SUITE_DIR. Its interpreter
 # is stubbed: it records the environment it was given and writes the report
 # STUB_CDN_REPORT names, as the suite would.
-CDN_PYTHON_STUB = """#!/usr/bin/env bash
-{
+CDN_PYTHON_STUB = (
+    WRITE_REPORT
+    + """{
   echo "target=$MASCOPE_PENTEST_TARGET"
   echo "vantage=$MASCOPE_PENTEST_VANTAGE"
   echo "verify=$MASCOPE_PENTEST_VERIFY_TLS"
   echo "header=$MASCOPE_PENTEST_HEADER_NAME:$MASCOPE_PENTEST_HEADER_VALUE"
+  echo "release=${MASCOPE_PENTEST_CURRENT_RELEASE-<unset>}"
   echo "args=$*"
 } > "$STUB_CDN_ENV"
 mkdir -p report
-[ -n "$STUB_CDN_REPORT" ] && cp "$STUB_CDN_REPORT" report/pentest-report.json
+[ -n "$STUB_CDN_REPORT" ] && write_report "$STUB_CDN_REPORT" cdn
 exit "${STUB_CDN_RC:-0}"
 """
+)
 
 # sleep: the gap between the two vantages, recorded instead of waited out.
 SLEEP_STUB = """#!/usr/bin/env bash
@@ -102,18 +129,41 @@ CDN_TARGET = "https://app.invalid"
 HEADER_VALUE = "edge-bypass-0123456789"
 
 
-def _report(build="v1.7.2", findings=0, rows=None):
-    return {
+#: The listener a run against a deployment's :443 records.
+PUBLIC_LISTENER = {
+    "port": 443,
+    "loopback": False,
+    "loopback_listener": False,
+    "unseen": [],
+}
+
+
+def _report(
+    build="v1.7.2", findings=0, rows=None, throttled=0, listener=PUBLIC_LISTENER
+):
+    report = {
         **(rows or {}),
         "build": {"identity": build},
+        "listener": listener,
         "summary": {
             "findings": findings,
             "accepted_findings": 0,
             "stale_baseline_entries": 0,
             "controls_verified": 40,
             "not_assessed": 3,
+            "throttled": throttled,
         },
     }
+    if throttled is None:  # a report from a suite that predates the count
+        del report["summary"]["throttled"]
+    if listener is None:  # one from a suite that predates the listener
+        del report["listener"]
+    return report
+
+
+def _deployed(version):
+    """The target's answer on its anonymous version route."""
+    return json.dumps({"message": "", "data": {"version": version}})
 
 
 def _run(
@@ -127,9 +177,16 @@ def _run(
     cdn_rc=0,
     old_records=(),
     leftover=None,
+    extra_env=None,
+    args=(),
+    deployed=_deployed("v1.7.2"),
+    state=None,
 ):
     """
     Run the runner once; return (exit code, summary file, heartbeats).
+
+    The summary is ``None`` when the run assessed nothing; its console output
+    is left in ``tmp_path / "stdout"``.
 
     :param cdn: The CDN run's report, or ``...`` for a CDN run that writes none.
         ``None`` configures no CDN vantage at all.
@@ -137,6 +194,11 @@ def _run(
         past the retention.
     :param leftover: A report an earlier run left in both suite copies'
         ``report/``, at the target and here.
+    :param extra_env: Further variables in the runner's own environment.
+    :param args: The runner's arguments: none for the periodic run.
+    :param deployed: The target's version route's answer, ``None`` to fail.
+    :param state: Triggers' state to leave in RECORDS beforehand,
+        ``{"last-run-end": ..., "last-run-version": ...}``.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -144,10 +206,13 @@ def _run(
         (bin_dir / name).write_text(body)
         (bin_dir / name).chmod(0o755)
     records = tmp_path / "records"
-    records.mkdir()
+    # Made beforehand by a test that holds the runner's lock in it.
+    records.mkdir(exist_ok=True)
     for name in old_records:
         (records / name).write_text("old")
         os.utime(records / name, (0, 0))
+    for name, value in (state or {}).items():
+        (records / f".{name}").write_text(f"{value}\n")
 
     target = tmp_path / "target"
     (target / ".venv" / "bin").mkdir(parents=True)
@@ -178,8 +243,14 @@ def _run(
         "STUB_SUITE_RC": str(suite_rc),
         "STUB_PINGS": str(tmp_path / "pings"),
         "STUB_SSH_ARGS": str(tmp_path / "ssh-args"),
+        "STUB_ORIGIN_ENV": str(tmp_path / "origin-env"),
         "STUB_SLEEPS": str(tmp_path / "sleeps"),
+        "STUB_LOCK": str(records / ".run.lock"),
+        "STUB_LOCK_STATE": str(tmp_path / "lock-state"),
+        "MIN_INTERVAL": "600",
     }
+    if deployed is not None:
+        env["STUB_DEPLOYED"] = deployed
     if cdn is not None:
         suite = tmp_path / "suite"
         (suite / ".venv" / "bin").mkdir(parents=True)
@@ -215,20 +286,30 @@ def _run(
         (target / "report" / "pentest-report.json").write_text(json.dumps(leftover))
     if release is not None:
         env["STUB_RELEASE"] = release
+    env.update(extra_env or {})
     result = subprocess.run(
-        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
+        ["bash", str(SCRIPT), *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
+    (tmp_path / "stdout").write_text(result.stdout)
     summaries = list(records.glob("*-origin.summary"))
-    assert len(summaries) == 1, result.stderr
-    pings = (tmp_path / "pings").read_text().splitlines()
-    return result.returncode, summaries[0].read_text().strip(), pings
+    assert len(summaries) <= 1, result.stderr
+    pings_file = tmp_path / "pings"
+    pings = pings_file.read_text().splitlines() if pings_file.exists() else []
+    summary = summaries[0].read_text().strip() if summaries else None
+    return result.returncode, summary, pings
 
 
 def _tag(tag):
     return json.dumps({"tag_name": tag})
 
 
-COUNTS = "findings=0 accepted=0 stale=0 verified=40 not_assessed=3"
+COUNTS = (
+    "findings=0 accepted=0 stale=0 verified=40 not_assessed=3 throttled=0 listener=443"
+)
 
 # (id, assessed build, release lookup answer or None for unreachable, suite exit,
 #  expected exit, expected lag part of the summary)
@@ -293,7 +374,7 @@ def test_the_lag_verdict(tmp_path, assessed, release, suite_rc, code, lag):
         tmp_path, report=_report(build=assessed), release=release, suite_rc=suite_rc
     )
     assert rc == code
-    assert summary == f"build={assessed} {COUNTS} {lag}"
+    assert summary == f"build={assessed} {COUNTS} {lag} trigger=schedule"
     # The heartbeat carries the same verdict, on the fail path when red.
     if code == 0:
         assert pings[-1] == f"{HC_URL} {summary}"
@@ -304,14 +385,16 @@ def test_the_lag_verdict(tmp_path, assessed, release, suite_rc, code, lag):
 def test_an_unreadable_report_fails_the_run_and_appends_no_verdict(tmp_path):
     rc, summary, pings = _run(tmp_path, raw=b"{not json", release=_tag("v1.7.10"))
     assert rc == 1
-    assert summary == "report unreadable"
-    assert pings[-1] == f"{HC_URL}/fail suite exit 1 | report unreadable"
+    assert summary == "report unreadable trigger=schedule"
+    assert pings[-1] == (
+        f"{HC_URL}/fail suite exit 1 | report unreadable trigger=schedule"
+    )
 
 
 def test_an_empty_archive_fails_the_run(tmp_path):
     rc, summary, _ = _run(tmp_path, release=_tag("v1.7.2"))
     assert rc == 1
-    assert summary == "report unreadable"
+    assert summary == "report unreadable trigger=schedule"
 
 
 def _rows(**outcomes):
@@ -340,15 +423,16 @@ def test_the_cdn_vantage_runs_beside_the_origin_and_the_two_are_compared(tmp_pat
     )
     records = tmp_path / "records"
     assert rc == 0
-    assert origin == f"build=v1.7.2 {COUNTS} lag=current"
+    assert origin == f"build=v1.7.2 {COUNTS} lag=current trigger=schedule"
     [cdn_summary] = records.glob("*-cdn.summary")
-    assert cdn_summary.read_text().strip() == f"build=v1.7.2 {COUNTS} lag=current"
+    assert cdn_summary.read_text().strip() == origin
     assert len(list(records.glob("*-cdn.tar.gz"))) == 1
     assert len(list(records.glob("*-cdn.log"))) == 1
 
-    # One timestamp holds both vantages and their comparison.
-    # "2026-10-27T132500Z" is 18 characters.
-    assert len({path.name[:18] for path in records.iterdir()}) == 1
+    # One timestamp holds both vantages and their comparison. (The dotfiles
+    # are the triggers' state.) "2026-10-27T132500Z" is 18 characters.
+    assert len({path.name[:18] for path in records.glob("2*")}) == 1
+    assert len(list(records.iterdir())) == 8 + 3
     [comparison] = records.glob("*-vantage.json")
     verdicts = {
         d["id"]: (d["verdict"], d["layer"])
@@ -382,6 +466,59 @@ def test_the_header_goes_to_the_local_cdn_run_and_never_to_the_target(tmp_path):
     assert "X-Assessment" not in ssh_args
 
 
+def test_the_current_release_goes_to_both_suites(tmp_path):
+    # The report's copy of the lag needs the release the runner looked up, so
+    # the lookup happens before either run.
+    rc, summary, _ = _run(
+        tmp_path, report=_report(), release=_tag("v1.7.10"), cdn=_report()
+    )
+    assert rc == 90
+    assert summary.endswith("lag=behind current=v1.7.10 trigger=schedule")
+    assert "MASCOPE_PENTEST_CURRENT_RELEASE='v1.7.10'" in (
+        (tmp_path / "ssh-args").read_text()
+    )
+    assert (tmp_path / "origin-env").read_text().split() == ["release=v1.7.10"]
+    assert "release=v1.7.10" in (tmp_path / "cdn-env").read_text().splitlines()
+
+
+@pytest.mark.parametrize(
+    "release",
+    [
+        None,
+        "{not json",
+        _tag("nightly"),
+        # Anything that is not a release tag stays off the target's command
+        # line, a quote that would end the assignment included.
+        _tag("v1.7.10' && touch pwned && echo '"),
+    ],
+    ids=["unreachable", "malformed", "non-release", "injection"],
+)
+def test_no_current_release_goes_to_the_suites_without_a_release_tag(tmp_path, release):
+    rc, summary, _ = _run(tmp_path, report=_report(), release=release, cdn=_report())
+    assert rc == 0
+    assert "lag=unknown" in summary
+    ssh_args = (tmp_path / "ssh-args").read_text()
+    assert "MASCOPE_PENTEST_CURRENT_RELEASE" not in ssh_args
+    assert "pwned" not in ssh_args
+    assert not (tmp_path / "target" / "pwned").exists()
+    assert (tmp_path / "origin-env").read_text().split() == ["release=<unset>"]
+    # Set empty, not left unset, so nothing inherited can stand in for it.
+    assert "release=" in (tmp_path / "cdn-env").read_text().splitlines()
+
+
+def test_a_release_in_the_environment_does_not_stand_in_for_the_lookup(tmp_path):
+    rc, _, _ = _run(
+        tmp_path,
+        report=_report(),
+        cdn=_report(),
+        extra_env={"MASCOPE_PENTEST_CURRENT_RELEASE": "v1.7.2"},
+    )
+    # The CDN suite runs here and would inherit an exported value. (The
+    # origin's would not: ssh carries no environment, only the stub does.)
+    assert rc == 0
+    assert "release=" in (tmp_path / "cdn-env").read_text().splitlines()
+
+
 def test_a_failing_cdn_run_fails_the_run(tmp_path):
     rc, origin, pings = _run(
         tmp_path, report=_report(), release=_tag("v1.7.2"), cdn=_report(), cdn_rc=1
@@ -407,11 +544,11 @@ def test_a_cdn_run_without_a_report_fails_and_is_not_compared(tmp_path):
     records = tmp_path / "records"
     assert rc == 1
     assert next(records.glob("*-cdn.summary")).read_text().strip() == (
-        "report unreadable"
+        "report unreadable trigger=schedule"
     )
     assert not list(records.glob("*-vantage.*"))
     assert pings[-1].endswith(
-        "| cdn: report unreadable | vantages: comparison unavailable"
+        "| cdn: report unreadable trigger=schedule | vantages: comparison unavailable"
     )
 
 
@@ -429,15 +566,39 @@ def test_an_aborted_run_does_not_archive_the_previous_report(tmp_path):
     )
     records = tmp_path / "records"
     assert rc == 4
-    assert summary == "report unreadable"
+    assert summary == "report unreadable trigger=schedule"
     assert next(records.glob("*-cdn.summary")).read_text().strip() == (
-        "report unreadable"
+        "report unreadable trigger=schedule"
     )
     assert not list(records.glob("*-vantage.*"))
     assert pings[-1] == (
-        f"{HC_URL}/fail suite exit 4 | origin: report unreadable "
-        "| cdn: report unreadable | vantages: comparison unavailable"
+        f"{HC_URL}/fail suite exit 4 | origin: report unreadable trigger=schedule "
+        "| cdn: report unreadable trigger=schedule | vantages: comparison unavailable"
     )
+
+
+#: What a record's archive holds: the run's own report, and nothing else.
+OWN_REPORT = {"report/pentest-report.json", "report/pentest-report.md"}
+
+
+def _members(archive):
+    with tarfile.open(archive) as tar:
+        return set(tar.getnames())
+
+
+def test_each_vantage_archives_its_own_report_and_not_the_history(tmp_path):
+    # An entry from an earlier run in each copy's report/history/, beside this run's.
+    for copy in ("target", "suite"):
+        (tmp_path / copy / "report" / "history").mkdir(parents=True)
+        (tmp_path / copy / "report" / "history" / "earlier.json").write_text("{}")
+    rc, _, _ = _run(tmp_path, report=_report(), release=_tag("v1.7.2"), cdn=_report())
+    records = tmp_path / "records"
+    assert rc == 0
+    for vantage in ("origin", "cdn"):
+        assert _members(next(records.glob(f"*-{vantage}.tar.gz"))) == OWN_REPORT
+    # The suite's history stays where it is, this run's entry added.
+    for copy in ("target", "suite"):
+        assert len(list((tmp_path / copy / "report" / "history").iterdir())) == 2
 
 
 def test_without_a_cdn_target_only_the_origin_runs(tmp_path):
@@ -466,6 +627,629 @@ def test_retention_prunes_every_vantage_and_the_comparison(tmp_path):
         cdn=_report(),
         old_records=[*old, "keep-me.txt"],
     )
+    names = {path.name for path in (tmp_path / "records").iterdir()}
+    assert not names & set(old)
+    assert "keep-me.txt" in names
+
+
+# --------------------------------------------------------------------------- #
+# Throttling, as the summary carries it
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "throttled, says", [(2, "throttled=2"), (None, "throttled=?")], ids=["2", "old"]
+)
+def test_the_summary_counts_the_throttled_controls(tmp_path, throttled, says):
+    rc, summary, pings = _run(
+        tmp_path, report=_report(throttled=throttled), release=_tag("v1.7.2")
+    )
+    # A degraded run is told apart, not failed: a throttled control is not
+    # assessed, and not-assessed never reddens a run.
+    assert rc == 0
+    assert f" not_assessed=3 {says} listener=443 lag=current" in summary
+    assert pings[-1] == f"{HC_URL} {summary}"
+
+
+# --------------------------------------------------------------------------- #
+# The listener, as the summary carries it
+# --------------------------------------------------------------------------- #
+
+ORIGIN_PULL = {"id": "origin-pull", "title": "t", "reason": "r"}
+
+
+@pytest.mark.parametrize(
+    "listener, says",
+    [
+        (
+            {
+                "port": 8443,
+                "loopback": True,
+                "loopback_listener": True,
+                "unseen": [ORIGIN_PULL],
+            },
+            "listener=loopback:8443 origin_pull=not_assessed",
+        ),
+        (
+            {"port": 8080, "loopback": True, "loopback_listener": False, "unseen": []},
+            "listener=loopback:8080",
+        ),
+        (None, "listener=?"),
+        # The report is the target's: nothing but an integer port, a literal
+        # boolean and a known id reaches the summary and the heartbeat.
+        (
+            {"port": "443 lag=current", "loopback": "yes", "unseen": "origin-pull"},
+            "listener=?",
+        ),
+        ({"port": 8443, "loopback": "yes", "unseen": [{"id": ["x"]}]}, "listener=8443"),
+        ([ORIGIN_PULL], "listener=?"),
+        # Iterating a number would leave the whole report unreadable.
+        ({"port": 443, "loopback": False, "unseen": 7}, "listener=443"),
+    ],
+    ids=[
+        "loopback-listener",
+        "loopback",
+        "old",
+        "hostile",
+        "not-boolean",
+        "not-object",
+        "unseen-not-a-list",
+    ],
+)
+def test_the_summary_names_the_listener(tmp_path, listener, says):
+    rc, summary, pings = _run(
+        tmp_path, report=_report(listener=listener), release=_tag("v1.7.2")
+    )
+    # Recorded, not failed: what the loopback listener cannot see is not a
+    # finding, and not a pass either.
+    assert rc == 0
+    assert summary.endswith(f" throttled=0 {says} lag=current trigger=schedule")
+    assert pings[-1] == f"{HC_URL} {summary}"
+
+
+# --------------------------------------------------------------------------- #
+# The two triggers
+# --------------------------------------------------------------------------- #
+
+DEPLOY = ("--on-deploy",)
+DEPLOY_HC = "https://deploy-heartbeat.invalid/ping"
+
+
+def _state(tmp_path, name):
+    path = tmp_path / "records" / f".{name}"
+    return path.read_text().strip() if path.exists() else None
+
+
+def _suite_ran(tmp_path):
+    return (tmp_path / "origin-env").exists()
+
+
+def test_a_release_no_run_has_started_on_is_assessed_on_deploy(tmp_path):
+    rc, summary, pings = _run(
+        tmp_path,
+        args=DEPLOY,
+        report=_report(build="v1.7.3"),
+        release=_tag("v1.7.3"),
+        deployed=_deployed("v1.7.3"),
+        state={"last-run-version": "v1.7.2", "last-run-end": int(time.time()) - 3600},
+        extra_env={"DEPLOY_HC_URL": DEPLOY_HC},
+    )
+    assert rc == 0
+    assert summary == f"build=v1.7.3 {COUNTS} lag=current trigger=deploy"
+    # Its heartbeat is its own; the periodic one's is left to the clock.
+    assert pings == [f"{DEPLOY_HC}/start ", f"{DEPLOY_HC} {summary}"]
+    assert _state(tmp_path, "last-run-version") == "v1.7.3"
+    # Same records, same retention as a periodic run.
+    names = {path.name[18:] for path in (tmp_path / "records").glob("2*")}
+    assert names == {"-origin.log", "-origin.tar.gz", "-origin.summary"}
+
+
+def test_a_deploy_run_without_its_own_heartbeat_pings_the_periodic_one(tmp_path):
+    rc, summary, pings = _run(
+        tmp_path, args=DEPLOY, report=_report(), release=_tag("v1.7.2"), suite_rc=1
+    )
+    # A deploy run that finds a broken control has to page someone.
+    assert rc == 1
+    assert pings[-1] == f"{HC_URL}/fail suite exit 1 | {summary}"
+
+
+def test_a_release_already_assessed_is_not_assessed_again(tmp_path):
+    rc, summary, pings = _run(
+        tmp_path,
+        args=DEPLOY,
+        report=_report(),
+        state={"last-run-version": "v1.7.2"},
+    )
+    assert (rc, summary, pings) == (0, None, [])
+    assert not _suite_ran(tmp_path)
+    # Nothing ran, so nothing moved the interval either.
+    assert _state(tmp_path, "last-run-end") is None
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        None,
+        "{not json",
+        _deployed("unknown"),
+        # The rolling tag names no release: keyed on it, the watch would
+        # assess once and never again.
+        _deployed("latest"),
+        json.dumps({"data": {"version": 7}}),
+        json.dumps({"version": "v1.7.3"}),
+        # The target's answer, held to the shape of a version: nothing it says
+        # goes into a file name, a command line or the heartbeat as it is.
+        _deployed("v1.7.3' && touch pwned && echo '"),
+        _deployed("v1.7.3 build=v9.9.9"),
+        _deployed("v" + "1" * 200),
+    ],
+    ids=[
+        "unreachable",
+        "malformed",
+        "unknown",
+        "latest",
+        "not-a-string",
+        "no-envelope",
+        "injection",
+        "spaces",
+        "oversized",
+    ],
+)
+def test_a_deploy_watch_that_cannot_read_the_release_runs_nothing(tmp_path, answer):
+    # A release on record, so an empty answer is not "the same release".
+    rc, summary, pings = _run(
+        tmp_path,
+        args=DEPLOY,
+        report=_report(),
+        deployed=answer,
+        state={"last-run-version": "v1.7.2"},
+    )
+    assert (rc, summary, pings) == (0, None, [])
+    assert not _suite_ran(tmp_path)
+    assert _state(tmp_path, "last-run-version") == "v1.7.2"
+    assert "cannot read the deployed release" in (tmp_path / "stdout").read_text()
+    assert not list(tmp_path.rglob("pwned"))
+
+
+def test_a_deploy_run_waits_out_the_interval_after_the_last_run(tmp_path):
+    rc, summary, pings = _run(
+        tmp_path,
+        args=DEPLOY,
+        report=_report(build="v1.7.3"),
+        deployed=_deployed("v1.7.3"),
+        state={"last-run-version": "v1.7.2", "last-run-end": int(time.time()) - 60},
+    )
+    assert (rc, summary, pings) == (0, None, [])
+    assert "deferred: the last run ended" in (tmp_path / "stdout").read_text()
+    # Deferred before it asked the target anything: the next tick asks.
+    assert not (tmp_path / "ssh-args").exists()
+    assert _state(tmp_path, "last-run-version") == "v1.7.2"
+
+
+def test_a_deploy_run_after_the_interval_goes_ahead(tmp_path):
+    rc, summary, _ = _run(
+        tmp_path,
+        args=DEPLOY,
+        report=_report(build="v1.7.3"),
+        release=_tag("v1.7.3"),
+        deployed=_deployed("v1.7.3"),
+        state={"last-run-version": "v1.7.2", "last-run-end": int(time.time()) - 601},
+    )
+    assert rc == 0
+    assert summary.endswith("trigger=deploy")
+
+
+def _hold_the_lock(tmp_path):
+    records = tmp_path / "records"
+    records.mkdir()
+    holder = open(records / ".run.lock", "a")  # noqa: SIM115 - held past this call
+    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return holder
+
+
+def test_a_deploy_run_does_not_start_inside_a_run(tmp_path):
+    holder = _hold_the_lock(tmp_path)
+    try:
+        rc, summary, pings = _run(tmp_path, args=DEPLOY, report=_report())
+    finally:
+        holder.close()
+    assert (rc, summary, pings) == (0, None, [])
+    assert "deferred: a run is in progress" in (tmp_path / "stdout").read_text()
+    assert not (tmp_path / "ssh-args").exists()
+
+
+def test_a_periodic_run_waits_for_the_lock_and_fails_loudly_past_it(tmp_path):
+    holder = _hold_the_lock(tmp_path)
+    try:
+        rc, summary, pings = _run(
+            tmp_path, report=_report(), extra_env={"LOCK_WAIT": "1"}
+        )
+    finally:
+        holder.close()
+    assert rc == 75
+    assert summary is None
+    assert not _suite_ran(tmp_path)
+    # Its heartbeat says why, so a missed assessment is not a silent one.
+    assert pings == [f"{HC_URL}/fail no run: another held the lock for 1s"]
+
+
+def test_every_run_holds_the_lock_while_the_suite_runs(tmp_path):
+    _run(tmp_path, report=_report(), release=_tag("v1.7.2"))
+    assert (tmp_path / "lock-state").read_text().strip() == "held"
+    end = int(_state(tmp_path, "last-run-end"))
+    assert abs(end - time.time()) < 60
+
+
+def test_a_periodic_run_inside_the_interval_waits_it_out_and_runs(tmp_path):
+    rc, summary, pings = _run(
+        tmp_path,
+        report=_report(),
+        release=_tag("v1.7.2"),
+        state={"last-run-end": int(time.time()) - 60},
+    )
+    assert rc == 0
+    assert summary.endswith("trigger=schedule")
+    [wait] = (tmp_path / "sleeps").read_text().split()
+    assert 530 <= int(wait) <= 540
+    # Its heartbeat starts when the run does, not when it began waiting.
+    assert pings == [f"{HC_URL}/start ", f"{HC_URL} {summary}"]
+
+
+def test_a_last_run_that_ended_in_the_future_costs_one_interval_at_most(tmp_path):
+    # The clock stepped back after the last run ended.
+    _run(
+        tmp_path,
+        report=_report(),
+        release=_tag("v1.7.2"),
+        state={"last-run-end": int(time.time()) + 86400},
+    )
+    assert (tmp_path / "sleeps").read_text().split() == ["600"]
+
+
+def test_a_periodic_run_assesses_a_release_already_assessed(tmp_path):
+    # The clock asks whether the ground shifted, which a release cannot answer.
+    rc, summary, _ = _run(
+        tmp_path,
+        report=_report(),
+        release=_tag("v1.7.2"),
+        state={"last-run-version": "v1.7.2"},
+    )
+    assert rc == 0
+    assert summary == f"build=v1.7.2 {COUNTS} lag=current trigger=schedule"
+
+
+def test_a_periodic_run_on_a_new_release_leaves_the_watch_nothing_to_do(tmp_path):
+    _run(
+        tmp_path,
+        report=_report(build="v1.7.3"),
+        release=_tag("v1.7.3"),
+        deployed=_deployed("v1.7.3"),
+        state={"last-run-version": "v1.7.2"},
+    )
+    assert _state(tmp_path, "last-run-version") == "v1.7.3"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [None, _deployed("unknown"), _deployed("latest")],
+    ids=["unreachable", "unknown", "latest"],
+)
+def test_a_periodic_run_that_cannot_read_the_release_says_the_watch_is_blind(
+    tmp_path, answer
+):
+    rc, summary, _ = _run(
+        tmp_path,
+        report=_report(),
+        release=_tag("v1.7.2"),
+        deployed=answer,
+        state={"last-run-version": "v1.7.2"},
+    )
+    assert rc == 0
+    assert summary == (
+        f"build=v1.7.2 {COUNTS} lag=current trigger=schedule deployed=unreadable"
+    )
+    assert _state(tmp_path, "last-run-version") == "v1.7.2"
+
+
+def test_an_unknown_argument_is_refused(tmp_path):
+    rc, summary, pings = _run(tmp_path, args=("--on-deploy-now",), report=_report())
+    assert (rc, summary, pings) == (2, None, [])
+    assert not _suite_ran(tmp_path)
+
+
+# --------------------------------------------------------------------------- #
+# The production trigger: the non-mutating subset against each deployment
+# --------------------------------------------------------------------------- #
+
+PRODUCTION = ("--production",)
+PRODUCTION_HC = "https://heartbeat.invalid/production"
+
+# The production run's suite runs here, from PRODUCTION_SUITE_DIR, once per
+# deployment. Its interpreter appends the environment and arguments each run
+# was given to STUB_PROD_ENV, and writes the report and exits with the code
+# STUB_PROD_DIR holds for the deployment it was pointed at, as the suite would.
+PRODUCTION_PYTHON_STUB = (
+    WRITE_REPORT
+    + """host="${MASCOPE_PENTEST_TARGET#https://}"
+{
+  echo "target=$MASCOPE_PENTEST_TARGET"
+  echo "vantage=$MASCOPE_PENTEST_VANTAGE"
+  echo "verify=$MASCOPE_PENTEST_VERIFY_TLS"
+  echo "header=$MASCOPE_PENTEST_HEADER_NAME:$MASCOPE_PENTEST_HEADER_VALUE"
+  echo "account=$MASCOPE_PENTEST_EMAIL:$MASCOPE_PENTEST_PASSWORD"
+  echo "lowpriv=$MASCOPE_PENTEST_LOWPRIV_EMAIL:$MASCOPE_PENTEST_LOWPRIV_PASSWORD"
+  echo "aggressive=$MASCOPE_PENTEST_AGGRESSIVE"
+  echo "release=${MASCOPE_PENTEST_CURRENT_RELEASE-<unset>}"
+  echo "args=$*"
+  if flock -n "$STUB_LOCK" true; then echo lock=free; else echo lock=held; fi
+} >> "$STUB_PROD_ENV"
+mkdir -p report
+[ -f "$STUB_PROD_DIR/$host.json" ] && write_report "$STUB_PROD_DIR/$host.json" "$host"
+exit "$(cat "$STUB_PROD_DIR/$host.rc" 2>/dev/null || echo 0)"
+"""
+)
+
+
+def _run_production(
+    tmp_path,
+    deployments,
+    *,
+    targets=None,
+    release=_tag("v1.7.2"),
+    extra_env=None,
+    state=None,
+    old_records=(),
+    leftover=None,
+):
+    """
+    Run the runner with --production; return (exit code, summaries, heartbeats).
+
+    :param deployments: ``{name: (report or None, suite exit)}``; each is served
+        at ``https://<name>.invalid``.
+    :param targets: PRODUCTION_TARGETS as given, when not built from those.
+    :return: The summaries by record name (``prod-<name>``).
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in (("ssh", SSH_STUB), ("curl", CURL_STUB), ("sleep", SLEEP_STUB)):
+        (bin_dir / name).write_text(body)
+        (bin_dir / name).chmod(0o755)
+    records = tmp_path / "records"
+    records.mkdir(exist_ok=True)
+    for name in old_records:
+        (records / name).write_text("old")
+        os.utime(records / name, (0, 0))
+    for name, value in (state or {}).items():
+        (records / f".{name}").write_text(f"{value}\n")
+
+    suite = tmp_path / "suite"
+    (suite / ".venv" / "bin").mkdir(parents=True)
+    (suite / ".venv" / "bin" / "python").write_text(PRODUCTION_PYTHON_STUB)
+    (suite / ".venv" / "bin" / "python").chmod(0o755)
+    if leftover is not None:
+        (suite / "report").mkdir()
+        (suite / "report" / "pentest-report.json").write_text(json.dumps(leftover))
+    served = tmp_path / "served"
+    served.mkdir()
+    for name, (report, rc) in deployments.items():
+        if report is not None:
+            (served / f"{name}.invalid.json").write_text(json.dumps(report))
+        (served / f"{name}.invalid.rc").write_text(str(rc))
+    if targets is None:
+        targets = " ".join(f"{name}=https://{name}.invalid" for name in deployments)
+
+    # As on the monitoring host, the header lives in the config file.
+    config = tmp_path / "config.env"
+    config.write_text(
+        "MASCOPE_PENTEST_HEADER_NAME=X-Assessment\n"
+        f"MASCOPE_PENTEST_HEADER_VALUE={HEADER_VALUE}\n"
+    )
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "PENTEST_RUNNER_ENV": str(config),
+        "RECORDS": str(records),
+        "HC_URL": HC_URL,
+        "PRODUCTION_HC_URL": PRODUCTION_HC,
+        "RELEASE_API": RELEASE_API,
+        "STUB_RELEASE_API": RELEASE_API,
+        # Staging's account, in the environment cron gives the runner: it must
+        # not follow the run to production.
+        "MASCOPE_PENTEST_EMAIL": "admin@example.com",
+        "MASCOPE_PENTEST_PASSWORD": "secret",
+        "MASCOPE_PENTEST_LOWPRIV_EMAIL": "viewer@example.com",
+        "MASCOPE_PENTEST_LOWPRIV_PASSWORD": "secret",
+        "MASCOPE_PENTEST_AGGRESSIVE": "1",
+        "PRODUCTION_TARGETS": targets,
+        "PRODUCTION_SUITE_DIR": str(suite),
+        "STUB_PROD_DIR": str(served),
+        "STUB_PROD_ENV": str(tmp_path / "prod-env"),
+        "STUB_PINGS": str(tmp_path / "pings"),
+        "STUB_SSH_ARGS": str(tmp_path / "ssh-args"),
+        "STUB_SLEEPS": str(tmp_path / "sleeps"),
+        "STUB_LOCK": str(records / ".run.lock"),
+        "MIN_INTERVAL": "600",
+    }
+    if release is not None:
+        env["STUB_RELEASE"] = release
+    env.update(extra_env or {})
+    result = subprocess.run(
+        ["bash", str(SCRIPT), *PRODUCTION],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    (tmp_path / "stdout").write_text(result.stdout + result.stderr)
+    summaries = {
+        path.name[19:].removesuffix(".summary"): path.read_text().strip()
+        for path in records.glob("*-prod-*.summary")
+    }
+    pings_file = tmp_path / "pings"
+    pings = pings_file.read_text().splitlines() if pings_file.exists() else []
+    return result.returncode, summaries, pings
+
+
+def _production_runs(tmp_path):
+    """Each run's recorded environment, as a dict, in the order they ran."""
+    path = tmp_path / "prod-env"
+    if not path.exists():
+        return []
+    runs, current = [], {}
+    for line in path.read_text().splitlines():
+        key, _, value = line.partition("=")
+        current[key] = value
+        if key == "lock":
+            runs.append(current)
+            current = {}
+    return runs
+
+
+def test_production_runs_the_non_mutating_subset_against_each_deployment(tmp_path):
+    rc, summaries, pings = _run_production(
+        tmp_path, {"a": (_report(), 0), "b": (_report(build="v1.7.1"), 0)}
+    )
+    assert rc == 0, (tmp_path / "stdout").read_text()
+    runs = _production_runs(tmp_path)
+    assert [run["target"] for run in runs] == ["https://a.invalid", "https://b.invalid"]
+    for run in runs:
+        assert run["args"] == "-m pytest -q --non-mutating"
+        assert run["vantage"] == "cdn"
+        assert run["verify"] == "true"
+        assert run["header"] == f"X-Assessment:{HEADER_VALUE}"
+        # No account goes along: the subset signs in nowhere.
+        assert run["account"] == ":"
+        assert run["lowpriv"] == ":"
+        assert run["aggressive"] == ""
+        assert run["release"] == "v1.7.2"
+        assert run["lock"] == "held"
+
+    a = f"build=v1.7.2 {COUNTS} lag=current trigger=production"
+    b = f"build=v1.7.1 {COUNTS} lag=behind current=v1.7.2 trigger=production"
+    assert summaries == {"prod-a": a, "prod-b": b}
+    # Behind is recorded, not turned into a failure: this is the build users run.
+    assert pings == [f"{PRODUCTION_HC}/start ", f"{PRODUCTION_HC} a: {a} | b: {b}"]
+
+    names = {path.name[18:] for path in (tmp_path / "records").glob("2*")}
+    assert names == {
+        f"-prod-{name}.{kind}" for name in "ab" for kind in ("log", "tar.gz", "summary")
+    }
+    # Nothing of it reaches the staging host.
+    assert not (tmp_path / "ssh-args").exists()
+
+
+def test_each_deployment_archives_its_own_report_and_not_the_others(tmp_path):
+    # The deployments share one suite copy, whose trail holds every run's
+    # report: a record names one deployment and holds that one's alone.
+    rc, _, _ = _run_production(
+        tmp_path, {"a": (_report(), 0), "b": (_report(build="v1.7.1"), 0)}
+    )
+    records = tmp_path / "records"
+    assert rc == 0
+    for name, build in (("a", "v1.7.2"), ("b", "v1.7.1")):
+        archive = next(records.glob(f"*-prod-{name}.tar.gz"))
+        assert _members(archive) == OWN_REPORT
+        with tarfile.open(archive) as tar:
+            report = json.load(tar.extractfile("report/pentest-report.json"))
+        assert report["build"]["identity"] == build
+    history = tmp_path / "suite" / "report" / "history"
+    assert len(list(history.iterdir())) == 2
+
+
+def test_a_failing_deployment_fails_the_run_and_the_rest_are_still_assessed(
+    tmp_path,
+):
+    rc, summaries, pings = _run_production(
+        tmp_path, {"a": (_report(findings=2), 1), "b": (_report(), 0)}
+    )
+    assert rc == 1
+    assert set(summaries) == {"prod-a", "prod-b"}
+    assert pings[-1].startswith(f"{PRODUCTION_HC}/fail suite exit 1 | a: build=")
+
+
+def test_a_production_run_without_its_own_heartbeat_pings_nothing(tmp_path):
+    # Not the periodic run's check: daily pings would keep that weekly
+    # dead-man switch green, and turn its failure back to up.
+    rc, summaries, pings = _run_production(
+        tmp_path, {"a": (_report(), 0)}, extra_env={"PRODUCTION_HC_URL": ""}
+    )
+    assert (rc, set(summaries)) == (0, {"prod-a"})
+    assert pings == []
+
+
+def test_an_aborted_production_run_does_not_archive_the_previous_report(tmp_path):
+    rc, summaries, _ = _run_production(
+        tmp_path, {"a": (None, 4)}, leftover=_report(build="v1.7.1")
+    )
+    assert rc == 4
+    assert summaries == {"prod-a": "report unreadable trigger=production"}
+
+
+def test_a_production_run_leaves_the_staging_state_alone(tmp_path):
+    # Inside the interval after a staging run: a production run spends none of
+    # that target's login windows, so it neither waits nor moves the interval.
+    end = int(time.time()) - 60
+    rc, _, _ = _run_production(
+        tmp_path,
+        {"a": (_report(), 0)},
+        state={"last-run-end": end, "last-run-version": "v1.7.1"},
+    )
+    assert rc == 0
+    assert not (tmp_path / "sleeps").exists()
+    assert _state(tmp_path, "last-run-end") == str(end)
+    assert _state(tmp_path, "last-run-version") == "v1.7.1"
+
+
+def test_a_production_run_waits_for_the_lock_and_fails_loudly_past_it(tmp_path):
+    holder = _hold_the_lock(tmp_path)
+    try:
+        rc, summaries, pings = _run_production(
+            tmp_path, {"a": (_report(), 0)}, extra_env={"LOCK_WAIT": "1"}
+        )
+    finally:
+        holder.close()
+    assert (rc, summaries) == (75, {})
+    assert not _production_runs(tmp_path)
+    assert pings == [f"{PRODUCTION_HC}/fail no run: another held the lock for 1s"]
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        "",
+        "a=http://a.invalid",
+        "A=https://a.invalid",
+        "a=https://a.invalid b",
+        "../a=https://a.invalid",
+        "a=https://a.invalid/';touch${IFS}pwned;'",
+        "a=https://",
+        "a=https://a.invalid a=https://b.invalid",
+    ],
+    ids=[
+        "none",
+        "plain-http",
+        "upper-case",
+        "no-url",
+        "path",
+        "quote",
+        "no-host",
+        "repeated-name",
+    ],
+)
+def test_a_production_target_that_is_not_name_and_https_url_refuses_the_run(
+    tmp_path, targets
+):
+    rc, summaries, pings = _run_production(
+        tmp_path, {"a": (_report(), 0)}, targets=targets
+    )
+    assert (rc, summaries, pings) == (2, {}, [])
+    assert not _production_runs(tmp_path)
+    assert not list(tmp_path.rglob("pwned"))
+
+
+def test_retention_prunes_the_production_records(tmp_path):
+    old = ["2025-01-01T000000Z-prod-a.log", "2025-01-01T000000Z-prod-b.tar.gz"]
+    _run_production(tmp_path, {"a": (_report(), 0)}, old_records=[*old, "keep-me.txt"])
     names = {path.name for path in (tmp_path / "records").iterdir()}
     assert not names & set(old)
     assert "keep-me.txt" in names

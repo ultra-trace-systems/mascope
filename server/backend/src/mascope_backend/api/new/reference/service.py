@@ -160,7 +160,9 @@ def _references(row: SourceRow) -> list[dict]:
 
 
 async def list_sources() -> dict:
-    """The active reference sources, one row each, sorted by label.
+    """The active compound sources, one row each, sorted by label.
+
+    A spectral library's load is left out (:func:`mascope_reference.active_sources`).
 
     A shipped list is labelled as its file labels it, any other source by its
     name. ``references`` are the publications the source comes from, as its
@@ -207,7 +209,7 @@ async def source_compounds(
     :return: ``{"name", "version", "data": [...], "total": N}``, each row with
         its name, formula, monoisotopic mass, InChIKey, native id, the DOI the
         list cites for it and its tags; None when the source has no such
-        version.
+        version, or is a spectral library's load.
     """
     async with async_session() as session:
         found = await _source_compounds(

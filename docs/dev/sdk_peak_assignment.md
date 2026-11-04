@@ -3,7 +3,7 @@
 # Making the SDK peak-assignment aware (read-first)
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-10-29
 - **Tracked in:** MAS-71 in [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) for the import contract; the SDK write wrappers (section 8.4 steps 5 and 6) are MAS-330 and MAS-345, the demo bundle MAS-331 and the reference identities in frames MAS-332, in [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) milestone 3 (filed 2026-10-22)
 - **What:** The SDK's peak-assignment surface; section 8 is the run-import contract.
 
@@ -191,6 +191,7 @@ Request, top level:
 | `config` | the engine's full run configuration, **opaque JSON**, stored **verbatim** - the server never reads it and never writes into it. Size-capped (below) |
 | `tier_bands` | the `assigned` / `candidate` thresholds the engine tiered with, on the **evidence** scale (`fit_score` x chemical plausibility - see "Tier coherence" in Validation), **required** - a first-class run field, *not* buried in opaque `config`, because the server validates rows against it. Same two keys, same `{tier: threshold}` shape as before; only the scale the numbers are read on moved. The legacy key `identified` is accepted and normalised to `assigned` (see "Enum validity" in Validation) |
 | `calibration` | the client's calibration state, **required** - its own nullable JSON column on the run, *not* a reserved key inside `config` |
+| `scoring_width` | optional: `{sigma_ppm, sigma_source, mu_ppm, mu_source}`, the mass-error width the engine scored at and its centre. Its own nullable JSON column, like `calibration`, read from the request that creates the run. `sigma_ppm` (> 0) and `sigma_source` are required inside it. Served on the run record as the same four fields an in-app run serves from its `pattern_scoring` snapshot (MAS-410); omitted, all four are null |
 | `rows` | assignment rows (below) |
 | `chunk` | assembly control: `{run_id, import_id, index, complete}`, **required** (`import_id` with it) - see "One logical import" |
 
@@ -813,8 +814,16 @@ in-app path does not:
 > with the reason). `POST /batch/{id}/assign` was removed in the batch-primary epic
 > (PR #2049, 1.8.0) - a batch is assigned by folding at ingest and the untargeted search
 > runs once per batch peak ([peak_assignment_batch_primary.md](peak_assignment_batch_primary.md))
-> - so the batch half of this section has been cut. None of the SDK wrappers below exist
-> yet (steps 5 and 6 of §8.4).
+> - so the batch half of this section has been cut. *Status (2026-10-28).* Step 5 has
+> shipped: `assign`, `wait_for_run`, `verify`, `list_verifications` and `fit_aggregate`,
+> the send-once knob on `http_post` and `http_request`, and the error body on
+> `MascopeAPIError` with `ConflictError` for 409. The route's 409 and 422 now carry the
+> codes this section asked for, `assignment_in_flight` and `sample_ineligible`. A poll
+> that times out raises `AssignmentTimeoutError` carrying the run id. *Status
+> (2026-10-29).* Step 6 has shipped: `import_run` with `abandon_import`, and the
+> round-trip notebook `11_assignment_round_trip.ipynb`. A request the server refuses
+> after the run was created deletes the run, so a refused import leaves nothing
+> `importing`.
 
 v1 deferred these behind one question - "should the SDK trigger heavy async
 runs?" (the v1 decision log, removed). **Decided: yes.** The ground shifted after the question was
@@ -1112,7 +1121,7 @@ Each step is its own PR, and each leaves the system shippable:
    column list.
 5. **SDK triggering + verification + fit** - `assign` / `verify` /
    `list_verifications` / `fit_aggregate`, the polling helper, hermetic unit
-   tests.
+   tests. **Shipped**, the polling helper as `wait_for_run`.
 6. **SDK `import_run`** + a round-trip tutorial notebook: read peaks, compute
    externally, publish, see the run in the app - and then **compare the two
    engines on the same sample**, which needs no further backend work: both runs
@@ -1129,6 +1138,9 @@ Each step is its own PR, and each leaves the system shippable:
    of two engines per sample, joins them on `sample_peak_id` and reports where
    they agree, where they read the same ion as different neutral/adduct pairs,
    and how that varies with peak intensity (its README lists the outputs).
+   **Shipped**: `import_run`, `abandon_import` and the notebook
+   `11_assignment_round_trip.ipynb`, whose comparison makes that script's join
+   on one sample.
 7. **`peaky publish`** - the consumer, in the peaky repository (out of this
    repo's scope; listed so the sequence has its end state).
 8. **Demo bundle seeds a completed assignment run** - unblocks the v1
@@ -1157,13 +1169,10 @@ can be answered once real imported ledgers exist, not prerequisites.
   between. Step 4 keeps the run selector, the engine badge and the
   calibration badge. It needs no peak-inspector work: §8.5.5 cleans the blob at
   import instead, so what the inspector renders is Mascope's own or nothing.
-- **Step 5 proceeds.** The retry-safety and error-body plumbing (§8.3) can be
-  built first; the verify half of it is the only item in this revision that
-  silently corrupts stored data, so it should not wait.
-- **Step 6 proceeds.** §8.5.2 is settled at the floor, so `import_run` resolves
-  mechanisms by exact-string match and sends null otherwise. Its other
-  prerequisites are stated rather than open: the numeric chunk cap and the body
-  allowance, the per-column null policy, and the null-`fit_score` exemption.
+- **Step 5 has shipped**, the retry-safety and error-body plumbing (§8.3)
+  with it.
+- **Step 6 has shipped.** §8.5.2 settled at the floor, so `import_run` resolves
+  mechanisms by exact-string match and sends null otherwise.
 - **Step 8 is implementable, but it is not a code PR.** The demo stack fetches
   bundle content from a published Zenodo version - the init container refuses a
   registry entry with no download URL, and CI boots that same stack before

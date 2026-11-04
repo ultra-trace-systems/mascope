@@ -206,7 +206,7 @@ into dataframes in a notebook or script:
 from mascope_sdk import MascopeClient
 
 mascope = MascopeClient(workspace="My Workspace")
-peaks = mascope.load_peaks(dataset="My Dataset", batches="My Batch")
+peaks = mascope.load_peaks(dataset="My Dataset", batches="My Batch", matches=True)
 ```
 
 See [SDK & API](../sdk/index.md) for installation and the full reference.

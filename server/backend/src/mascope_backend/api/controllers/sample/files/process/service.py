@@ -106,6 +106,8 @@ from mascope_backend.api.new.ionization.modes.util import (
     resolve_ionization_modes_by_declaration,
     resolve_ionization_modes_by_tokens,
 )
+from mascope_backend.api.new.ionization.modes.versions import current_versions
+from mascope_backend.api.new.ms2.inventory import write_ms2_inventory
 from mascope_backend.api.new.peak_assignments.service import (
     auto_assign_sample_peaks,
 )
@@ -321,25 +323,39 @@ def choose_ionization_modes(
     return chosen
 
 
+async def current_ionization_modes(
+    ionization_mode_ids: list[str],
+) -> dict[str, IonizationMode]:
+    """The current version of the ionization mode each id names.
+
+    Everything that reads these binds a file - a person's choice, the modes a
+    bind handed on, the modes a re-processed file's items held - and a file is
+    bound under its setup as it stands, so an id of a version an edit has
+    replaced answers its successor.
+
+    :return: Each id's current version, keyed by the id given.
+    :raises ValueError: When an id names no mode, or a mode none of whose
+        versions is current.
+    """
+    async with async_session() as session:
+        current = await current_versions(session, ionization_mode_ids)
+    missing = {
+        mode_id for mode_id in ionization_mode_ids if current.get(mode_id) is None
+    }
+    if missing:
+        raise ValueError(f"No ionization mode has the id {', '.join(sorted(missing))}")
+    return current
+
+
 async def fetch_ionization_modes(
     ionization_mode_ids: list[str],
 ) -> list[IonizationMode]:
-    """The ionization modes with these ids.
+    """The current versions of the ionization modes with these ids, each once.
 
     :raises ValueError: When an id names no mode.
     """
-    async with async_session() as session:
-        modes = (
-            await session.scalars(
-                select(IonizationMode).where(
-                    IonizationMode.ionization_mode_id.in_(ionization_mode_ids)
-                )
-            )
-        ).all()
-    missing = set(ionization_mode_ids) - {mode.ionization_mode_id for mode in modes}
-    if missing:
-        raise ValueError(f"No ionization mode has the id {', '.join(sorted(missing))}")
-    return list(modes)
+    current = await current_ionization_modes(ionization_mode_ids)
+    return list({mode.ionization_mode_id: mode for mode in current.values()}.values())
 
 
 def _pipeline_item():
@@ -2215,17 +2231,31 @@ async def _rewrite_ms2_store(sample_file: SampleFile) -> None:
     be written does not stop the re-processing: the file keeps the store it
     had, which a rewrite replaces only whole, and is logged.
 
+    The group inventory then lists the groups of the store the file has now
+    (:func:`mascope_backend.api.new.ms2.inventory.write_ms2_inventory`), none
+    where it has none; a file whose store could not be written keeps the
+    groups it listed. Neither stops the re-processing.
+
     :param sample_file: The file being re-processed.
     """
     # Read on the loop: an attached ORM instance's attributes are not read in
     # the worker thread.
     filename = sample_file.filename
+    sample_file_id = sample_file.sample_file_id
     try:
         await asyncio.to_thread(refresh_ms2_store, filename)
     except Exception:  # noqa: BLE001 - one file's store, never its re-processing
         runtime.logger.opt(exception=True).warning(
             f"Could not write the MS2 store of {filename} again for its "
             "re-processing; it keeps the store it had"
+        )
+        return
+    try:
+        await write_ms2_inventory(sample_file_id, filename)
+    except Exception:  # noqa: BLE001 - one file's inventory, never its re-processing
+        runtime.logger.opt(exception=True).warning(
+            f"Could not list the MS2 groups of {filename} again for its "
+            "re-processing; the MS2 store backfill lists them"
         )
 
 
@@ -3032,15 +3062,23 @@ async def _kept_modes(sample_file: SampleFile) -> KeptModes | None:
     if not held:
         return None
     try:
+        # The current versions: a file is re-processed under its setups as
+        # they stand, which may be later versions than its items were bound
+        # under. Their provenance is the items' all the same.
+        current = await current_ionization_modes(list(held))
         modes = choose_ionization_modes(
-            sample_file, await fetch_ionization_modes(list(held))
+            sample_file,
+            list({mode.ionization_mode_id: mode for mode in current.values()}.values()),
         )
     except ValueError:
         return None
+    provenance = {
+        mode.ionization_mode_id: held[held_id] for held_id, mode in current.items()
+    }
     mode_ids = [mode.ionization_mode_id for mode in modes]
     return KeptModes(
         mode_ids=mode_ids,
-        provenance={mode_id: held[mode_id] for mode_id in mode_ids},
+        provenance={mode_id: provenance[mode_id] for mode_id in mode_ids},
     )
 
 

@@ -9,7 +9,7 @@ from mascope_backend.api.controllers.match.aggregate.sample.match_aggregate_samp
 )
 from mascope_backend.api.controllers.match.lib.match_score_v2 import (
     ion_score_v2,
-    sample_noise_floor,
+    ion_scores_v2,
 )
 from mascope_backend.api.lib.api_features import (
     api_controller,
@@ -96,6 +96,51 @@ def _instrument_sigma_ppm(match_params: BaseMatchParams | None) -> float | None:
     return tolerance / _TOLERANCE_SIGMA_DIVISOR
 
 
+def _fit_scores(results: list[dict], sigma: float) -> list[float | None]:
+    """Each candidate's fit, ``ion_score_v2`` over its isotope envelope.
+
+    The candidates are scored together, in one ``ion_scores_v2`` call over their
+    envelopes laid end to end. A candidate with no isotopes, or whose isotopes
+    lack a column the fit reads, has no fit, as it had when scored alone. Should
+    the call over all of them fail, each is scored alone, so one bad candidate
+    costs only its own fit: scoring must never break the search response.
+
+    :param results: The candidates, each with its isotopes as ``children``.
+    :param sigma: The instrument's mass-accuracy sigma (`_instrument_sigma_ppm`).
+    :return: One fit or None per candidate, in their order.
+    """
+    scorable = [
+        index
+        for index, entry in enumerate(results)
+        if _FIT_COLS.issubset({key for iso in entry.get("children", []) for key in iso})
+    ]
+    fits: list[float | None] = [None] * len(results)
+    if not scorable:
+        return fits
+    frame = pd.DataFrame(
+        [
+            {**iso, "_candidate": index}
+            for index in scorable
+            for iso in results[index]["children"]
+        ]
+    )
+    try:
+        scores = ion_scores_v2(frame, "_candidate", sigma_ppm=sigma)
+        for index, fit in (
+            scores.groupby(frame["_candidate"], sort=False).first().items()
+        ):
+            fits[index] = fit
+    except Exception:
+        for index in scorable:
+            try:
+                fits[index] = ion_score_v2(
+                    pd.DataFrame(results[index]["children"]), sigma_ppm=sigma
+                )
+            except Exception:
+                fits[index] = None
+    return fits
+
+
 def _annotate_assignment_scores(
     results: list[dict], match_params: BaseMatchParams | None
 ) -> None:
@@ -118,9 +163,7 @@ def _annotate_assignment_scores(
     - no fitted offset (``mu``) is subtracted - the only estimate available would be
       the median of the same window-bound errors, i.e. the window's centre.
 
-    The noise floor still comes from the matched intensities. It is only a fallback:
-    ``compute_match_isotopes`` carries real per-peak ``signal_to_noise``, and
-    ion_score_v2 prefers that whenever the column is populated.
+    Every candidate is scored in one call (`_fit_scores`).
     """
     if not results:
         return
@@ -130,20 +173,12 @@ def _annotate_assignment_scores(
     all_isotopes = [iso for entry in results for iso in entry.get("children", [])]
     if not all_isotopes:
         return
-    iso_df = pd.DataFrame(all_isotopes)
-    if not _FIT_COLS.issubset(iso_df.columns):
+    if not _FIT_COLS.issubset(pd.DataFrame(all_isotopes).columns):
         return
 
-    noise = sample_noise_floor(iso_df)
+    fits = _fit_scores(results, sigma)
     cfg = PeakAssignmentConfig()
-    for entry in results:
-        children = entry.get("children", [])
-        fit = None
-        if children:
-            try:
-                fit = ion_score_v2(pd.DataFrame(children), sigma_ppm=sigma, noise=noise)
-            except Exception:  # scoring must never break the search response
-                fit = None
+    for entry, fit in zip(results, fits):
         fit = float(fit) if fit is not None and np.isfinite(fit) else None
         entry["fit_score"] = round(fit, 4) if fit is not None else None
         formula = (entry.get("cheminfo") or {}).get("target_compound_formula")

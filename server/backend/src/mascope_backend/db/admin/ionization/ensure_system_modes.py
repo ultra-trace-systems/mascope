@@ -217,10 +217,13 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
                 )
             ).all()
         }
+        every_row = (await session.execute(select(IonizationMode))).scalars().all()
+        # The current versions. A superseded one keeps the key and the name
+        # its successor has, and claims nothing.
         existing = {
-            mode.ionization_mode_id: mode
-            for mode in (await session.execute(select(IonizationMode))).scalars().all()
+            mode.ionization_mode_id: mode for mode in every_row if mode.is_active
         }
+        ids_in_use = {mode.ionization_mode_id for mode in every_row}
         keyed = {
             mode.system_key for mode in existing.values() if mode.system_key is not None
         }
@@ -274,6 +277,16 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
                     .values(system_key=system_key)
                 )
                 counts["claimed"] += 1
+                continue
+            if mode_id in ids_in_use:
+                # A superseded version holds the catalogue's id: the chemistry
+                # was claimed, edited, and has since lost its key.
+                runtime.logger.warning(
+                    f"Ionization mode {mode_id} sits under the id the chemistry "
+                    f"{system_key!r} uses but is a version an edit has replaced, "
+                    "so the chemistry was not created."
+                )
+                counts["edited"] += 1
                 continue
 
             taken_by = names_in_use.get(name)

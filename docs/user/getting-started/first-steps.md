@@ -15,6 +15,13 @@ Open your Mascope address and enter your **Email** and **Password**, then click
 created by an administrator, so if you are missing yours (or a password reset),
 ask them.
 
+Some servers also show a check that you are human under the password, from
+Cloudflare. Most of the time it passes by itself after a moment; sometimes it
+asks you to tick a box. **Login** stays greyed out until it has passed. If the
+check cannot load, for instance because something in your browser blocks
+`challenges.cloudflare.com`, the form says so and you cannot sign in from that
+browser until it can.
+
 If your account has [two-factor authentication](../guides/two-factor.md)
 turned on, signing in has a second step: enter the six-digit code from your
 authenticator app (or one of your saved recovery codes). On a server that

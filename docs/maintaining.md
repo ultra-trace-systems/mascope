@@ -17,6 +17,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Start / stop the stack | `mascope prod up --detach` / `mascope prod down` |
 | Container status / logs | `mascope prod ps` / `mascope prod logs --follow` |
 | **Status at a glance** | `mascope prod doctor` (add `--json` to script it) |
+| Which settings this server overrides, and in which file | `mascope prod config` (`--all` for every setting) |
 | **Check for an update (applies nothing)** | `mascope prod update --check` |
 | Update now | `mascope prod update` |
 | Approve / defer a pending migration update, or retry / quiet a held release | `mascope prod update --confirm` / `--snooze 7` |
@@ -29,9 +30,12 @@ Everything below assumes an Ubuntu host provisioned with
 | What a raw file measured (its scan streams) | `mascope file scans <file.raw>` |
 | Package a dataset for a repository such as Zenodo | `mascope export package <dataset id>` |
 | What the method bindings would route, and where a file name disagrees | `mascope prod db script run report_method_binding_disagreements` |
-| Write the MS2 stores of files converted before them (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
+| Write the MS2 stores of files converted before them, and list their groups (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
 | List the files whose peak store lacks a scan they read, to re-process them | `mascope prod db script run report_stale_peak_stores` |
+| Flag the Orbitrap peaks under a local floor weak in stores written before the floor (dry run first) | `DRY_RUN=1 mascope prod db script run reflag_orbitrap_weak_peaks`, then without `DRY_RUN` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
+| Fill the model of instruments registered before it was read (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run backfill_instrument_model`, then without `DRY_RUN` |
+| Recompute every sample's TIC as the mean per scan (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run fix_sample_item_tic`, then without `DRY_RUN` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` (fill rate and projection on each line) |
 | Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
@@ -77,10 +81,11 @@ that is less than its window.
 
 **Version** compares the tag the containers are actually running against the
 one this deployment would deploy right now (the `MASCOPE_VERSION` pin, else the
-release tag checked out, else `latest`). A mismatch is reported as drift:
+release tag checked out, else on a wheel install the release its CLI was cut
+with, else `latest`). A mismatch is reported as drift:
 
 ```
-Version  backend latest · frontend latest  DRIFT (this checkout deploys vX.Y.Z)
+Version  backend latest · frontend latest  DRIFT (this deployment deploys vX.Y.Z)
 ```
 
 Drift means the next `mascope prod up` - a restart, or a reboot - moves the
@@ -89,7 +94,80 @@ the two into line: `git checkout <tag>` for the release the server should run,
 then reinstall the CLI from that checkout, then `mascope prod update` - in that
 order, see [Rolling out a release across several
 servers](#rolling-out-a-release-across-several-servers) for why the CLI has to
-move before the stack does.
+move before the stack does. On a wheel install the CLI is the release: after
+`uv tool install mascope-cli==<calver>`, drift lasts until the next
+`mascope prod up` deploys the new CLI's release (the
+[CLI's README](https://github.com/ultra-trace-systems/mascope/blob/develop/tooling/cli/README.md#the-deployed-release)
+has the steps).
+
+## The settings a deployment overrides
+
+A deployment's settings come from three layers, applied in order:
+`base.mascope.toml` and `prod.mascope.toml`, both shipped with the release,
+then the env's own `.runtime/env/<env>/prod.mascope.toml`. Whatever makes one
+server run differently from another is in that last file, or in a default a
+release changed. `mascope prod config` shows both, read-only:
+
+```
+$ mascope prod config
+Env "prod" in prod mode: settings that differ from the model defaults
+Layers, applied in this order:
+  base  /app/base.mascope.toml
+  mode  /app/prod.mascope.toml
+  env   /app/.runtime/env/prod/prod.mascope.toml
+
+[backend]
+  calibration_quality_gate = "enforce"     env      default "warn"
+
+[backend.database]
+  shm_size = "20g"                         mode     default "1g"
+  ...
+
+[file-converter]
+  raw_threads = 1                          base     default 2
+```
+
+Each line is a setting whose value differs from the config model's default,
+with the layer that set it: `base`, `mode` or `env`. A setting the release's
+`base.mascope.toml` moves away from the model's default shows as `base`, not
+as a default. A setting is credited to the last layer that writes it, even
+when it writes the value the layer below already gave: such a pin stays when
+a later release changes that value. A setting the mode or env layer moves
+back to the model's default is listed too, since it differs from what the
+layers below give. Its note reads `default; over base 1`, naming that layer
+and its value. Three more notes a line can carry:
+
+- **`unknown key, ignored by the loader`**: the config model has no such
+  setting, so the backend drops it without a word. Usually a misspelt key, or
+  a setting from another release.
+- **`no default`**: a setting the model leaves to the layers, such as an
+  agent's `host`. It is listed only when the mode or env layer sets it.
+- **`<hidden>`**: a credential, such as `[file-agent] access_token`. Its value
+  is never printed, nor is one nested in a table, such as under a misspelt
+  section. Nothing is read from `.runtime/secrets` either.
+
+`--all` prints every setting of the effective config, defaults included, and
+`--json` emits the same rows for scripting. Values are shown as the files
+write them: a relative path stays relative, and a `MASCOPE_LOGLEVEL` or
+`MASCOPE_API_PORT` set in the environment is not applied.
+
+**It reads the image's layers, not the host's.** The backend container reads
+the `base.mascope.toml` and `prod.mascope.toml` baked into its image; only the
+env directory is mounted from the host. A home made by `mascope init` keeps
+its own copies of those two files until `mascope init --force`. So the command
+runs its report inside the running backend container, against the image's
+files and config models, and needs the stack up. When a host copy differs
+from the image's, it warns on stderr and names the file. The report shows
+the image's copy, which is what the backend reads. The host's copy still
+sets what `mascope prod up` passes to compose, though: the Postgres server
+settings and user in `[backend.database]`, the container names, `filestore`
+in `[meta]` and the whole `[frontend]` section. For those settings the host
+copy is the one in force. `mascope init --force` brings it back in line with
+the release.
+
+On a development machine, `mascope dev config` reports the active env the same
+way, from the files `mascope dev run` reads. Set `MASCOPE_ENV` to report
+another env.
 
 ## Provisioning
 
@@ -100,8 +178,39 @@ git clone git@github.com:ultra-trace-systems/mascope.git && cd mascope
 
 `ubuntu.sh` installs system dependencies (Docker, uv, Node, restic, jemalloc,
 ...), builds the `mascope` binary, writes `MASCOPE_PATH` to `/etc/environment`,
-and installs the systemd units (below). Re-run with `reinstall` after pulling
-new tooling, or `uninstall` to remove the binary and units.
+and installs the systemd units (below) by running `mascope prod units install`.
+Re-run with `reinstall` after pulling new tooling, or `uninstall` to remove the
+binary and units.
+
+### The systemd units without the script
+
+`mascope prod units install` puts the units in place on its own, on a
+checkout install or a wheel install (`pip install mascope-cli` or
+`uv tool install mascope-cli`, then `mascope init`). Run it as the deploy
+user. It runs the privileged steps through `sudo`, and refuses to run as root
+or off Linux.
+
+```sh
+mascope prod units install --dry-run   # print every file and command, change nothing
+mascope prod units install
+mascope prod units remove              # stop, disable and delete them; /etc/mascope stays
+```
+
+- It fills in the deploy user, the runtime home and the `mascope` executable
+  that runs the command (`--bin` names another).
+- It writes the units to `/etc/systemd/system`, seeds the settings files in
+  `/etc/mascope` once, and enables the boot service, the disk check and the
+  assignment-run retention. The update timer stays off until you enable it.
+- The units read `MASCOPE_PATH` from `/etc/environment`. It adds the line
+  there when it is missing, and refuses when the file names another home.
+- A checkout's units come from its `tooling/systemd`. A wheel install's come
+  from the copies in the CLI, which are the same files. Re-run it after a
+  release that changes the units: an update does not rewrite them.
+- The scripts the units run are copied to `/usr/local/lib/mascope`, so a
+  rollback to an older CLI leaves the update and the disk check working. A
+  checkout's disk check runs its own `tooling/disk-check.sh`.
+- A re-run keeps each existing settings file and says so. It leaves an
+  enabled update timer enabled.
 
 > The provisioning user is the deploy user. `mascope.service` and
 > `mascope-update.service` run as that user, from the deployment checkout
@@ -168,6 +277,13 @@ regardless of the checkout, pin it in `/etc/environment`
 hand at every update. A `.env` file in the checkout has no effect: the CLI
 resolves `MASCOPE_VERSION` itself and passes it to compose.
 
+A stop (`systemctl stop`, a reboot, a shutdown) runs `mascope prod down`,
+which lets the work in flight finish first. The file converter finishes the
+file it is converting, then the backend finishes the processing it has
+running. Docker gives each up to 90 s before it kills it. An idle stack stops
+in a few seconds, and the unit waits up to 300 s (`TimeoutStopSec`) for a busy
+one.
+
 Day to day you can also drive it directly:
 
 ```sh
@@ -204,7 +320,9 @@ mascope prod update --version v1.3.0 # deploy a specific pinned release
 
 `mascope prod update` on its own follows the rolling **`latest`** master build,
 whose version shows in the UI as a date+hash build id (e.g.
-`2026.07.08-ab12cd34`) - *not* the newest `vX.Y.Z` release. To run a pinned
+`2026.07.08-ab12cd34`) - *not* the newest `vX.Y.Z` release. A wheel install
+deploys only the release its CLI was cut with, and refuses any other
+`--version`, `latest` included, naming the CLI to install for it. To run a pinned
 release, pass `--version vX.Y.Z` - a successful update then also moves the
 deployment checkout to that tag, so the server keeps tracking (and
 reporting) that release across restarts and future updates. Checking the
@@ -861,9 +979,20 @@ Zenodo, which keeps it and mints its DOI. `mascope export package` writes what
 they upload: one zip archive of a dataset, holding its raw files, its batch
 spreadsheets, its target collections, a README that says what was measured,
 how, under what licence, by whom and with which software, and a manifest with
-the SHA-256 of every file. The user guide's
+the SHA-256 of every file, also written as an RO-Crate for repositories and
+RO-Crate viewers. The user guide's
 [Export files](user/reference/exports.md#the-deposit-package) lists what it
 holds.
+
+A user with the editor role in the dataset's workspace builds the same archive
+from the app: right-click the dataset, *Prepare for publication*. The app and
+the command run one builder, so the archive is the same. The app builds it in
+a directory of the build's own under the env's `temp/packages/`, then moves it
+into the user's own temp directory, from which the browser downloads it. It
+stays there for 24 hours, the latest one per dataset and user, as every temp
+download does ([Disk space](#temp-downloads)). On a server where users package
+large datasets, plan for a day's worth of their raw files' size again on the
+env's disk.
 
 ```bash
 mascope export package <dataset id>                 # into the current directory
@@ -894,8 +1023,14 @@ The command reads whatever dataset it is given, whichever workspace it is in:
 whoever runs it has the database. When it is done it says what it wrote, and
 warns when the archive is not ready to deposit as it stands:
 
-- **No licence, or no authors.** A repository asks for both. The user adds
-  them to the dataset in the app, and the package is built again.
+- **No licence, no authors, no description, or no samples.** These are the
+  gaps the app's **Prepare for publication** flags, by the same rule. A
+  repository asks for the first three, and a package of no samples describes
+  no measurement. The user fills them in on the dataset in the app, and the
+  package is built again. A deployed release from before this check reports
+  no gaps, and has no **Prepare for publication** either: the command says
+  so, and the operator checks the dataset's licence, authors, description and
+  samples by hand.
 - **Sample files with no raw file.** The filestore keeps only the data
   converted from them, so the package describes them without the file.
 - **Raw files changed since upload.** Their SHA-256 is not the one recorded
@@ -984,6 +1119,22 @@ Configure it in `/etc/mascope/disk-check.env` (chmod 600, template
 sudo systemctl start mascope-disk-check.service   # run it now
 journalctl -u mascope-disk-check.service          # what it found
 ```
+
+### Temp downloads
+
+Every download the app writes - a spreadsheet, a CSV, the raw-file bundle, a
+dataset's [deposit package](#packaging-a-dataset-for-deposit) - goes into the
+user's own directory under the env's `temp/`, from which the browser fetches
+it. The bundle zips raw files and the package copies them, so either can be
+as large as a dataset. The bundle is one zip, written straight from the stored
+raw files, with no folder of copies beside it. A download stays for
+**24 hours** after it was written: each new export removes every user's
+downloads older than that. So `temp/` holds about one day of downloads. While
+no one exports, the older ones wait for the next export. A restart empties
+`temp/` as a whole. A user who comes back after a day exports again. The
+uploads in flight under `temp/tus/` and the package builds under
+`temp/packages/` are not downloads; uploads have a sweep of their own
+([Upload disk floor](#upload-disk-floor)).
 
 ### The update disk guard
 
@@ -1386,29 +1537,93 @@ curl -sk -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/
 Settings in the Cloudflare dashboard for the site's zone, one checkbox each. The
 application's own limits, which the edge must not undercut for one client, are
 10 sign-in attempts per 60 s per address and 15 per 300 s per account
-(`api/lib/rate_limit.py`).
+(`api/new/auth/routes.py` and `api/new/auth/login.py`). The plan the zones are on shapes two of the items:
+the WAF ships with a small managed ruleset only, and rate limiting is one rule
+with a fixed 10-second window.
 
-- [ ] **Managed rules.** The Cloudflare managed ruleset deployed on the zone,
-  with its default actions.
-- [ ] **Rate limit on sign-in and tokens.** One rule: `POST` to
+- [ ] **Managed rules.** The managed ruleset the plan provides is on by itself
+  and has no deploy step: check under WAF > Managed rules that it is still
+  enabled. It carries a few high-severity rules only; the full Cloudflare
+  Managed Ruleset and the OWASP core rules are not on this plan, so nothing
+  below relies on them.
+- [ ] **Rate limit on sign-in and tokens.** The plan's one rule: `POST` to
   `/api/auth/login` or `/api/auth/access_token/regenerate`, counted per IP,
-  **20 requests** in a period of **60 s or less**, action Block. Any threshold
-  above 10 with a period up to 60 s lets the application's own 429 answer one
-  client first. Leave `/api/auth/pairing/` and `/api/auth/mfa/` out: their own
-  limits allow more (30 polls per 60 s, 60 verifies per 300 s).
-- [ ] **Challenge on the sign-in POST only.** A Managed Challenge on `POST` to
-  `/api/auth/login`. Leave everything else challenge-free: SDK and agent calls
-  with a bearer token, `/api/sample/files/upload` and its `tus` route,
-  `/api/auth/pairing/`, and `/socket.io/`. A challenge cannot be solved by a
-  script, so any of those would stop. The web app signs in with `fetch`, and
-  Cloudflare cannot show a challenge to a `fetch` request: check sign-in from a
-  fresh private window on staging before going on. If it fails with a 403
-  carrying `cf-mitigated: challenge`, take the rule off again.
+  **15 requests per 10 s**, action Block. The window is fixed at 10 s, so the
+  threshold has to be read against the application's limit over that window:
+  a client may send all of its 10 attempts per 60 s inside one 10-second
+  window, and any threshold above 10 lets the application's own 429 answer
+  that client first. A lower one, such as 5 per 10 s, blocks at the edge
+  first, where the attempt is never logged by the application and the user
+  sees a Cloudflare block page instead of the sign-in form's message. Leave
+  `/api/auth/pairing/` and `/api/auth/mfa/` out: their own limits allow more
+  (30 polls per 60 s, 60 verifies per 300 s).
+- [ ] **Turnstile on the sign-in form**, not a challenge rule (below). Put no
+  Managed Challenge on `/api/auth/login`: the web app signs in with `fetch`, and
+  Cloudflare cannot show a challenge to a `fetch` request, so the sign-in gets
+  a 403 carrying `cf-mitigated: challenge` that the page never shows. Leave
+  everything else challenge-free too: SDK and agent calls with a bearer token,
+  `/api/sample/files/upload` and its `tus` route, `/api/auth/pairing/`, and
+  `/socket.io/`. A challenge cannot be solved by a script, so any of those
+  would stop.
 - [ ] **Skip rule for the security suite.** The rule from GitHub #1889, so the
-  suite's own runs pass the managed rules, the rate limit and the challenge.
+  suite's own runs pass the managed rules and the rate limit.
   Until it is built, the suite runs from its origin vantage only.
 - [ ] **Authenticated origin pulls**, with this zone's own certificate (below),
   turned on **before** the switch at the origin.
+
+### Turning Turnstile on
+
+With Turnstile on, the sign-in form shows Cloudflare's human check under the
+password, and **Login** stays greyed out until it is solved. The backend has
+Cloudflare confirm the check's token before it looks at the password, and
+refuses the sign-in without it. Only the password step is checked: the
+two-factor code, SDK and agent calls with a token, pairing and uploads never
+see it. It is off unless the site turns it on.
+
+A sign-in the check refuses still counts against the address's 10 attempts,
+but not against the account's 15: someone who solves no check cannot lock an
+account out by sending its address with no token. Wrong passwords sent with a
+solved check count against both, as they do without Turnstile.
+
+1. In the Cloudflare dashboard, under **Turnstile**, add a widget for the
+   site: its hostname, mode **Managed**. Cloudflare gives it a **site key**,
+   which is public, and a **secret key**, which is not.
+2. On the server, put the secret key where the backend reads it, and the site
+   key in `/etc/environment`:
+
+   ```sh
+   umask 077
+   printf '%s\n' '<secret key>' > "$(mascope path)/.runtime/secrets/turnstile_secret_key.txt"
+   echo MASCOPE_TURNSTILE_SITE_KEY=<site key> | sudo tee -a /etc/environment
+   export MASCOPE_TURNSTILE_SITE_KEY=<site key>
+   mascope prod up --detach
+   ```
+
+   The CLI creates `turnstile_secret_key.txt` empty on every server, readable
+   by its owner alone, so compose starts without it; writing into it keeps
+   that mode. With the site key set and the file still empty, the backend
+   refuses every sign-in with a 503 and logs why.
+
+   A reinstall drops `MASCOPE_TURNSTILE_SITE_KEY` from `/etc/environment`
+   without a word, as it does `MASCOPE_ORIGIN_PULL` (below), and the sign-in
+   form loses its check. After a reinstall, add the line again.
+3. Check it from a fresh private window: the sign-in page shows the check, and
+   signing in works once it is solved. `GET /api/auth/login/options` answers
+   with the site key. The app's Content-Security-Policy allows
+   `challenges.cloudflare.com` on every site, so nginx needs no change.
+
+The security suite and the release smoke test (`tooling/smoke-test.sh`) sign
+in with a password and cannot solve the check. On a site with Turnstile on, the
+security suite reads that from `GET /api/auth/login/options` and reports its
+signed-in checks as not assessed, with a check of its own that the login
+refuses a sign-in with no token (`tooling/monitoring/README.md`, section 10).
+The smoke test stops at
+`[smoke] FAIL: login rejected` on a healthy server. Read that failure as the
+check doing its job, not as a broken deployment.
+
+**Turning it off.** Remove `MASCOPE_TURNSTILE_SITE_KEY` from
+`/etc/environment`, unset it, and bring the stack up again. The secret file can
+stay.
 
 ### Turning origin pulls on
 
@@ -1520,6 +1735,20 @@ inherits the DSN in the container: a prod job or an operator's
 `docker exec -i <container> python - < script.py` keeps its errors on the
 terminal instead of filing them as the server's. Run a script by its path when
 its errors should reach GlitchTip.
+
+A short Redis outage files nothing from the web socket storage. A Redis
+restart, a dropped idle connection or a Redis host name that does not resolve
+yet while the stack comes up is logged there in the backend's log files as a
+warning ending in `(Redis out of reach)`, with no stack, and kept out of
+GlitchTip: the socket storage rides it out by retrying once, refusing the call,
+or letting a key lapse. python-socketio's own "Cannot receive from redis...
+retrying" and "Cannot publish to redis... retrying" lines are logged at
+`INFO`; its other errors, such as "giving up" on a publish, still reach
+GlitchTip. The same holds for a Redis that stays down: the socket storage
+reports it to GlitchTip no more than a blip, so read it in the log files, as a
+run of those warnings. A wrong Redis password, and any other failure of the
+socket storage, is still an `ERROR` with its stack. Socket sign-in, the login
+rate limit and MFA still file an error during a Redis outage.
 
 Backend images ship `sentry-sdk` (the runtime's `[sentry]` extra) since
 2026-07, so there is nothing to install per server; the DSN alone toggles
@@ -1931,6 +2160,69 @@ nothing. `STITCH_REPORT_FILES` caps the raw Orbitrap files one run walks
 mascope prod db script run report_stitch_overlaps
 ```
 
+### Calibration quality gate
+
+What happens to a sample whose m/z calibration falls below the quality bar is
+`calibration_quality_gate` in the `[backend]` section of the env's config
+toml:
+
+```toml
+[backend]
+calibration_quality_gate = "warn"   # "warn" (the default) or "enforce"
+```
+
+`"warn"` marks such a calibration with an amber badge and its reasons, and
+still matches and assigns the sample. `"enforce"` leaves the sample out of
+matching and peak assignment until it is recalibrated or an operator accepts
+the fit in the calibration dialog.
+[How it works: calibration](user/how-it-works/calibration.md#verification)
+describes both. Run on `"warn"` first, fix the calibration collections the
+badges point at, then switch. It takes effect on restart (`mascope prod up`),
+for calibrations from then on: a stored calibration keeps the verdict it was
+given.
+
+### Chemistry detection
+
+Chemistry detection reads which chemistry each MS1 polarity's spectrum names
+by its reagent ions, as a file is bound to an ionization mode or parked. It is
+`chemistry_detection` in the `[backend]` section of the env's config toml:
+
+```toml
+[backend]
+chemistry_detection = "audit"   # "audit" (the default) or "off"
+```
+
+`"audit"` stores the detector's call on the file, beside the rung and mode that
+bound it, and binds nothing: no file is routed, calibrated or matched any
+differently. `"off"` stores nothing. The audit reads the polarity's peak list
+once more per file, a fraction of a second. Its calls are how the detector is
+measured against the bindings before it may ever bind a file itself
+([the design note](dev/ingest_routing_and_splitting.md), section 5.4). It
+takes effect on restart, for files bound from then on.
+
+### Axis fingerprint
+
+The axis fingerprint of a raw Orbitrap file is the m/z offset its mass
+calibration stored in each frequency band of the Orbitrap axis, read back
+from the stored profile ([How it works:
+calibration](user/how-it-works/calibration.md#the-orbitrap-axis-fingerprint),
+and [the SDK](user/sdk/index.md#the-axis-fingerprint-of-an-orbitrap-file)
+that serves it). It is `axis_fingerprint` in the `[backend]` section of the
+env's config toml:
+
+```toml
+[backend]
+axis_fingerprint = "ingest"   # "ingest" (the default) or "off"
+```
+
+`"ingest"` computes it as each file is converted and stores it in the file's
+`.props`, adding about a second to the conversion. `"off"` stores `{}` in its
+place. It is a measurement for clients that correct the axis themselves:
+nothing in Mascope's own processing reads it and no m/z is altered by it, so
+switching it off changes no result. It takes effect on a restart of the file
+converter, for the files converted from then on. Switching it back on does not
+compute it for the files converted while it was off.
+
 ### The MS2 store
 
 A raw Orbitrap file that holds fragmentation scans gets an MS2 store when it
@@ -1949,6 +2241,14 @@ MS2_STORE_MODE=run mascope prod db script run backfill_ms2_store  # write; again
 - The count reads only each file's `.props` and writes nothing. Per
   instrument it says how many files hold fragmentation scans and no store,
   how many already have one, and how many hold **no scan-stream census**.
+- It also fills the **group inventory**, the `ms2_group` table that lists
+  each file's MS2 groups. The samples listing counts them
+  (`ms2_group_count`), and a batch's groups are one request
+  (`GET /api/sample/batches/{id}/ms2/groups`). A store it writes is listed
+  at once. A file whose store was written before the release that adds the
+  inventory is counted as one "whose groups the inventory does not list",
+  and a run lists it from its store alone, opening no raw file. Until then
+  such a file's samples count 0 groups.
 - A file with no census is left alone: nothing says whether it holds
   fragmentation scans without opening it. Run `backfill_scan_stream_census`
   (under [Method bindings](#method-bindings)) first, then this again.
@@ -1960,12 +2260,16 @@ MS2_STORE_MODE=run mascope prod db script run backfill_ms2_store  # write; again
 - A file whose store could not be written is remembered and passed over;
   `MS2_STORE_RETRY=1` tries those again once the cause is dealt with. Its MS2
   routes read the raw file meanwhile, as before.
-- It changes no database row, only files in the filestore, so the pre-script
-  database dump restores nothing it does: `--skip-backup` loses nothing.
+- Besides the stores in the filestore it writes only the group inventory's
+  rows, which a run writes again from the stores, so `--skip-backup` loses
+  nothing.
 - A store of another version than the release reads is not read, and the
   backfill counts its file as one to write. A release that changes the
   version says so in its changelog: run the backfill again after it. Until
-  then those files' MS2 routes read the raw file, as before.
+  then those files' MS2 routes read the raw file, as before. Version 3
+  records each group's located precursor, which the group inventory lists
+  and `GET /api/samples/{id}/ms2/window` serves: until a file's store is
+  written again, its groups list none.
 
 ### Peak stores a file has outgrown
 
@@ -2002,6 +2306,51 @@ mascope prod db script run report_stale_peak_stores
   re-processing. *Detect peaks* on that file rebuilds its store and matches
   its samples again, keeping the calibration it had.
 - Run the report again afterwards: it should list nothing.
+
+### Orbitrap peaks under a local floor
+
+A raw Orbitrap peak is weak when its signal-to-noise is under 3, or when it
+sits under the floor of a dense stretch of its own spectrum
+(`docs/user/how-it-works/peak-detection.md`, *Local Floor*). The flag is set
+when a file's peaks are detected, so a store written before the floor keeps
+the signal-to-noise flag alone. Around the reagent ions of a file averaged
+over many microscans, that leaves tens of thousands of noise peaks in the
+peak list, the calibration and the matches. Flag them in place after
+updating; this clears the matches made on them, but leaves each file's
+calibration as it was fit:
+
+```sh
+DRY_RUN=1 mascope prod db script run reflag_orbitrap_weak_peaks
+mascope prod db script run reflag_orbitrap_weak_peaks
+```
+
+- It reads each raw Orbitrap file's peak store, and nothing else: no raw
+  file, no new detection. It computes the flag as a detection does and
+  writes it only where it differs. A stitched store's `stitch_overlaps` are
+  read again among the peaks the new flag keeps.
+- **The dry run writes nothing.** It lists each file whose flag would
+  change, with how many peaks would turn weak, how many samples would lose
+  their matches and how many batches would be set to rematch, and totals
+  per instrument. Most files change nothing: the floor is reached at
+  reagent clusters and in long files with a dense comb.
+- Before a changed file's store is written, every batch holding one of its
+  samples is set to **rematch**, and every match of those samples is
+  removed, as applying a calibration does. Once the run is done, rematch
+  those batches: their status icon or **Refresh matches** matches the
+  samples again on the new peak list.
+- **The calibration is not refit.** Each file keeps the fit it had, made
+  on the peaks it had then. To fit a batch's files again on the new peak
+  list, use **Recalibrate** in the batch's context menu.
+- Each file read is recorded in its `.props`, so a later run moves past it.
+  `REFLAG_LIMIT=<n>` caps the files one run reads: run it again until it
+  reports nothing left to do. A file it could not read is recorded too, and
+  `REFLAG_RETRY=1` reads those again. A raw file with no peak store yet is
+  counted apart and not read: it gets the rule when its peaks are detected.
+- A file a detection or a calibration was writing at the same time is
+  counted as changed while read and left for the next run.
+- The `pg_dump` taken before it covers the batch statuses and the matches;
+  the flags are in the filestore. The flag before the floor was the
+  signal-to-noise cutoff alone, which the store still holds.
 
 ### Auditing a TOF instrument's mass calibration
 
@@ -2067,6 +2416,60 @@ Everything is set through the environment:
 
 The TOF mass calibration plan ([tof_calibration.md](dev/tof_calibration.md))
 is where the audit's readings go and what they decide.
+
+### Instruments without a model
+
+Each instrument is a row of its own, with its class, vendor, model and the
+model's PSI-MS term. Registering a file fills the model from what the file
+names. The upgrade that made the table knew no model, so an instrument whose
+files were all registered before it has none until a new file arrives, and
+the instrument list shows none for it. The batch export and a deposit package
+take each file's own model first (its props, then its kept raw file) and the
+row's only for a file that names none, so there the gap shows only for a
+file whose props name no model and whose raw file is no longer kept. Once,
+after that upgrade, fill them from the files already there:
+
+```sh
+DRY_RUN=1 mascope prod db script run backfill_instrument_model   # what it would fill
+mascope prod db script run backfill_instrument_model
+```
+
+For each instrument with no model it looks through the instrument's
+Orbitrap files, newest first, and takes the first model one names: in the
+file's props (recorded at conversion, or in its axis fingerprint), else, only
+when no file's props name one, in the header of the raw file kept beside one
+of the newest few files. It writes the model and its PSI-MS term together, as
+a registration does, the term left empty for a model the vocabulary has no
+term for. A row that already has a model is never touched, so a file
+registered during the run wins and running it again changes nothing. A TOF
+instrument has no model to find, since a TofDaq file names its digitizer and
+not the instrument, and is only counted.
+
+### Sample TIC as the mean per scan
+
+A sample's TIC is the mean TIC per scan of its MS1 scans, in the unit of
+its averaged spectrum: counts for an Orbitrap, ions/s for a TOF. Before
+this, it was the sum over the scans, so it grew with the sample's length.
+A new sample gets the mean, but a stored TIC is never computed again, and a
+copied sample carries the stored value. Once, after the upgrade, rewrite
+them all:
+
+```sh
+DRY_RUN=1 mascope prod db script run fix_sample_item_tic   # what it would write
+mascope prod db script run fix_sample_item_tic
+```
+
+It reads each file once per polarity, with the rule a new sample gets, and
+writes the result to every sample of that file and polarity, copies in other
+workspaces included. A sample with no TIC is left for ingestion to fill. A
+file it cannot read is skipped and counted in a warning at the end; its
+samples keep the old sum. Each file is written as it is read, so a run that
+stops keeps what it wrote, and running it again writes the same values.
+
+Every TIC changes by this: the TIC trace of the batch charts, the batch
+export's TIC column and `samples.list()` in the SDK. A notebook that divides
+a peak by the TIC gets a different number afterwards, now on the spectrum's
+own scale.
 
 ### Loading reference chemistry data
 
@@ -2152,6 +2555,11 @@ docker compose exec backend python -m mascope_backend.db.scripts.reference_sync 
   spectrum.
 - The load reports how many records it left out and why: MS1 or MS3 records,
   predicted (in-silico) spectra, records without a precursor.
+- A loaded library is not a reference list. It does not show on
+  **Reference lists** or in `GET /api/reference/sources`, and its name answers
+  404 on `GET /api/reference/sources/{name}/compounds`. To check that a load
+  landed, run `mascope reference status` (monorepo checkouts only), which lists
+  spectral loads with their spectrum counts.
 
 Every spectrum keeps the licence its record states. Any of the three libraries
 can hold spectra a commercial deployment may not use:
@@ -2390,6 +2798,24 @@ different records with the same string: give every deployment whose exports
 may meet a name of its own, and leave it unset where you have no reason to
 choose one.
 
+### Raw files time range
+
+The **Raw files** list opens on the last 7 days of acquisitions. A deployment
+can open it on another range with `acquisition_filter` in the `[frontend]`
+section of the env's config toml. It is unset by default; the lines below are
+examples:
+
+```toml
+[frontend]
+acquisition_filter = { min = '2020-01-01T00:00' }   # a fixed range; max is optional too
+# acquisition_filter = 'Last 30 days'              # or one of the list's presets
+```
+
+A string names a preset of the list's time selector, or a look-back of the
+same form, such as `'Last 14 days'`. One that names neither is logged as a
+warning, and the list opens on the default. The web app reads it at
+start, so a change takes a stack restart.
+
 ### Where a deployment's settings live
 
 | Path | What |
@@ -2397,7 +2823,7 @@ choose one.
 | `/etc/environment` | `MASCOPE_PATH`, `LD_PRELOAD` (read by the systemd units) |
 | `/etc/mascope/update.env` | update window / grace / repo, update disk floor (chmod 600) |
 | `/etc/mascope/disk-check.env` | disk-monitor thresholds + alert URL (chmod 600) |
-| `$MASCOPE_PATH/.runtime/secrets/` | `postgres_password.txt`, `jwt_secret_key.txt`, `server_owner_secret_key.txt`, `mfa_encryption_key.txt`, TLS cert/key, `backup.env` |
+| `$MASCOPE_PATH/.runtime/secrets/` | `postgres_password.txt`, `jwt_secret_key.txt`, `server_owner_secret_key.txt`, `mfa_encryption_key.txt`, TLS cert/key, `origin_pull_ca.pem`, `turnstile_secret_key.txt`, `backup.env` |
 | `$MASCOPE_PATH/.runtime/database/backups/prod/` | database dumps (incl. pre-migration) |
 | `$MASCOPE_PATH/.runtime/update/` | `state.json` (pending update), `status.log` |
 | the env's filestore, `deployment.json` | the generated [deployment id](#deployment-identity), unless `[backend] deployment_id` is set |
@@ -2421,7 +2847,14 @@ warning whenever it cannot resolve a version and falls back:
 it is enabled; `journalctl -u mascope-update.service` for the reason. Exit 2 is
 usually a stack that is down (the DB revision is read from the running Postgres)
 or no network to reach the releases API. Exit 30 is *not* a failure - it means a
-migration update is pending.
+migration update is pending. Exit 40 is a wheel install's: an update is due
+that only the newest release's CLI can apply. The unit handles it: it installs
+the CLI named in `.runtime/update/cli-to-install` (`uv tool install
+mascope-cli==<calver>`) and runs `mascope prod update --auto` again as a new
+process. If that hand-over fails, the unit fails with exit 2 and the journal
+says why; do the same two steps by hand. The second run asking for the same
+CLI again means the unit's `mascope` is not a `uv tool install` of
+`mascope-cli`.
 
 **A migration update won't apply.** It waits for the maintenance window, the
 grace period, or a confirm, and never applies while snoozed. Run

@@ -90,6 +90,7 @@ async def populate_none_instrument_function_ids() -> dict:
             new_config = InstrumentFunction(
                 instrument_function_id=new_id,
                 instrument=source.instrument,
+                instrument_id=source.instrument_id,
                 method_file=source.method_file,
                 datetime_utc=source.datetime_utc,
                 peakshape=source.peakshape,

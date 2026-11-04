@@ -4,7 +4,7 @@
 
 - **Status:** building
 - **As of:** 2026-10-23
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410 and MAS-443)
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 and MAS-570)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -98,8 +98,11 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.6 - the import contract: a verdict on batch rows, the engine tier where the user looks | - |  | planned; between rounds |
 | 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - |  | planned; after 3.5; feeds 4.3 and the axis-fingerprint project; the labelled sets wait for a release carrying the reference's #77 |
 | 5.8 - an identification level in Mascope's own vocabulary | - |  | planned 2026-10-14 (decision 30 taken); after 3.7 |
-| 5.9 - the width a run scored at, served on the run and sample records | - |  | planned 2026-10-22, from the readiness check (the digest's one unbinned ask); MAS-410 |
-| 5.10 - the instrument's side-lobe flag: Exception centroids out of the averaged profile, the averaged centroids and peak detection | - |  | planned 2026-10-23, from the centroid-flag census after MAS-6; measured beside 5.4; MAS-443 |
+| 5.9 - the width a run scored at, served on the run and sample records | #2784 | | built: `sigma_ppm`, `sigma_source`, `mu_ppm`, `mu_source` on the run record and in `list_runs` (an import discloses them in `scoring_width`); `line_width` on the sample record; no run or gate number moves; MAS-410 |
+| 5.10 - the instrument's side-lobe flag: Exception-majority peaks into the satellite flag | #2779 |  | built: a peak most of whose per-scan centroids the instrument flagged is a satellite, unless on an isotopologue line; the averaged profile kept as measured (MAS-577); MAS-443 |
+| 5.11 - a batch's peak lists in one read, and the SDK snapshot of it | #2764 |  | built: one Parquet read per batch, `load_peaks` takes it and keeps the per-sample reads for older servers, `save_path`; MAS-568 |
+| 5.12 - the per-sample scoring derivation as one library function, and a bulk candidate scorer | #2767 | | built: `pattern_scoring_for_sample` and `score_candidates` in `mascope_tools`, the engine and the finder call them; no score moves beyond rounding; MAS-569 |
+| 5.13 - the current verdicts of a batch or dataset in one read, through the API, the SDK and the export | - |  | built: one row per judged peak, a batch-level verdict marked `borrowed` where it reaches a sample, a sheet of the batch export; MAS-570 |
 
 ## Purpose
 
@@ -943,7 +946,7 @@ under its milestone 5.
 | rider | folds into a planned step; written into that step's issue and named in its status row | 3.4e (three), 3.4f (one), 3.6 (two), 3.3d (one), 4.2 (five) |
 | new step | its own step under milestone 5 | 5.1 to 5.7 below |
 | not ours | the reference's strategy, exploration or narrative, by the charter's boundary | its evidence scale and claims as a vocabulary, its merge vote, trace-first and the rolling centre, its scorecard and A/B scripts as scripts, its report and workbook, its MCP tools |
-| ask of Mascope | a server, library or contract gap the reference worked around | the batch import's missing verdict (5.6), the TOF signal-to-noise column (5.5), the Orbitrap axis (5.7 and the axis-fingerprint project), the censored minor lines (5.3), a per-line centre in the library's score (3.5b), the mechanism catalogue read as a configuration (5.6's docs line) |
+| ask of Mascope | a server, library or contract gap the reference worked around | the batch import's missing verdict (5.6), the TOF signal-to-noise column (5.5), the Orbitrap axis (5.7 and the axis-fingerprint project), the censored minor lines (5.3), a per-line centre in the library's score (3.5b), the mechanism catalogue read as a configuration (5.6's docs line), a batch's peak lists in one read (5.11), the verdicts of a batch or dataset in one read (5.13) |
 
 ### 5.1 The reference pinned at a release, and a boundary review per peaky release
 
@@ -1209,59 +1212,196 @@ under its milestone 5.
   as a reading, not a target. No run or gate number moves.
 - **Size.** S. Independent; between rounds, with 5.6 at the earliest
   (MAS-410).
+- **As built.** What was stored decided the shape. An in-app run already
+  kept its `pattern_scoring` snapshot in its config, so the runs listing
+  lifts the four numbers from it and nothing is backfilled. No per-peak
+  resolution survives detection into the peak table, but the instrument
+  functions detection fitted are kept per file, so the sample record reads
+  the width off them at m/z 200, by the sample's polarity as the engine
+  does. An imported run discloses its width in an optional `scoring_width`
+  field on the sample import, beside `calibration` (the owner's answer to
+  MAS-575: not gated on 5.6), kept in a column of its own because an
+  import's config is opaque. On the testbed copy every completed in-app
+  run answers a width (55 `fitted`, 3,423 `instrument_class`). The imported
+  reference runs answer none yet: they carry a `pattern_scoring` key in
+  their opaque config, which the server does not read. Served line widths
+  at m/z 200: Orbitrap files median R 118,944 (8.4 ppm FWHM), TOF files
+  6,286 (159 ppm). The reference's own measurement from the raw profile,
+  as a reading on twelve samples of each class: within 0.98 to 1.12 of the
+  served R on the Orbitrap (median 1.04), whose served profile is drawn
+  from the stored resolutions; 0.53 to 1.31 on the TOF (median 1.09).
 
-### 5.10 The instrument's side-lobe flag: Exception centroids out of the averaged profile and peak detection
+### 5.10 The instrument's side-lobe flag: Exception-majority peaks into the satellite flag
 
-- **What.** Measure first. On the demo raws and the gate's Orbitrap sets,
-  take for every peak the picker keeps the share of its per-scan centroids
-  that the instrument flagged Exception (Thermo's `PeakOptions` value 8,
-  `CENTROID_FLAGS["exception"]`, read on both backends by
-  `ReaderBackend.centroid_flags` since MAS-6). Count the Exception-majority
-  peaks the sidelobe flag already takes, those it misses, and the
-  satellites that are not Exception-majority, and read ten of each against
-  the raw profile. The census below read one instrument, so first check
-  the gate's other instruments against the published demo raws: the same
-  shape, and a share in their range (3.9-6.8 % of centroids per file),
-  read as a range only, since on one instrument the share moves with the
-  method. If Exception-majority peaks turn out to be ions (an
-  isotopologue, a weak real peak), stop there and report. Otherwise leave
-  every Exception centroid out of the OpenTFRaw backend's
-  `average_profile`, blanking its profile chunk per scan before averaging
-  as the vendor's averaging does, and out of `average_centroids` on both
-  backends, and bump `AVERAGED_PROFILE_GENERATION`. Keep the centroids
-  flagged Reference (the lock mass is an ion and can be the base peak) and
-  the Fragmented and Merged ones that are not also Exception.
-- **Why.** The reader opens a file with `IncludeReferenceAndExceptionData`
-  to keep the lock mass, which lets the Exception centroids in too, and
-  nothing downstream reads the flag. A census on 2026-10-23 read every
-  centroid of the 161 raws of demo bundle 1.3.1, all MS1 and from one
-  instrument: 5.2 % of their 940,950 centroids are flagged Exception, 3.9
-  to 6.8 % per file, and no file has none. Four MS2 raws from the same
-  instrument, which a 1.4.0 candidate bundle adds, flag more: 11.5 % of
-  their MS1 centroids (6.4 to 12.5 % per file) and 5.1 % of their MS2
-  ones. Read on every 16th demo raw (3,319 flagged centroids), 99.8 % sit
+As built (MAS-443). The step was planned as Exception centroids out of the
+averaged profile and the averaged centroids; its measurement stopped that,
+and the plan owner's call on MAS-577 (2026-10-29) moved it to the picker,
+with the averaged profile kept as measured.
+
+- **What.** For every peak of each spectrum it averages (a polarity, or a
+  scan stream), the raw Orbitrap detector reads the share of the per-scan
+  centroids within half the peak's width that the instrument flagged
+  Exception (Thermo's `PeakOptions` value 8, `CENTROID_FLAGS["exception"]`,
+  read on both backends since MAS-6). A peak over half is marked
+  `is_satellite`, which a load already drops, unless it sits within half its
+  width (never under 1 ppm) of an isotopologue line (13C, 2H, 15N, 17O,
+  18O, 34S, 37Cl, 81Br) of a peak under half, at a height that line can have
+  beside it (the reference's ratio band and mass cap). The averaged profile
+  and the averaged centroids keep every centroid, as the vendor's
+  `AverageScans` does on a file opened as the reader opens one; no profile or
+  centroid moves and `AVERAGED_PROFILE_GENERATION` stays at 6. The share is
+  not stored.
+- **Why.** The flag is mostly the FT side lobe: on the 161 MS1 demo raws
+  5.2 % of the centroids carry it (3.9 to 6.8 % per file), 99.7 % of them
   within 200 ppm of an unflagged, brighter line at under 5 % of its height
-  (a median 0.6 %, 33 ppm away), in clusters, and most clear an S/N of 3
-  in a single scan (a median 4.4); the candidate raws' 48,960 flagged
-  centroids show the same shape. That is the FT side lobe, and at 33 ppm
-  it is resolved, so it reaches the picker as a peak of its own. The ratio
-  test catches part of them: the log ("What the FT sidelobe flag still has
-  to find") records 43-236 peaks per Orbitrap set that the reference labels
-  artifacts and the flag misses, at -56 to +45 ppm around set A's reagent
-  ion, which is where Exception centroids sit. The instrument has already
-  said which centroids they are.
-- **Where.** `libraries/thermo/src/mascope_thermo/backend.py`
-  (`average_profile`, `average_centroids`, `AVERAGED_PROFILE_GENERATION`)
-  and `reader_pipeline.md`; read only, for the measurement,
-  `mascope_signal.peak` and `mascope_tools.alignment.utils`. A change to the
-  averaged profile moves the reproducibility goldens and ships with a new
-  demo bundle.
-- **Verify.** No peak the picker keeps on the demo raws is
-  Exception-majority; every peak lost is one the measurement read as a
-  lobe; no isotopologue of a bright line is lost; both backends leave out
-  the same centroids; G6 and G8 unchanged.
-- **Size.** L. Beside 5.4: the measurement reads what both take, and the
-  two land apart by footprint (MAS-443).
+  (a median 0.6 %, 33 ppm away), and instruments B and C show the same
+  shape. 11,758 of the 218,933 peaks the demo raws keep are
+  Exception-majority, and the ratio test takes about half of them. But the
+  instrument flags by position, and it flags real lines where it expects a
+  lobe of a brighter one: an ion's 2H line lies 2.92 mDa above its 13C line,
+  about 2.4 widths at m/z 150-230, and 345 Exception-majority demo peaks sit
+  there against 82 and 27 at offsets moved by 0.6 mDa. Leaving every
+  Exception centroid out of the averages would have lost 595 of the goldens'
+  948 matched 2H lines. Against control offsets the exemption finds real
+  13C, 2H and 18O lines among the flagged peaks, and real links out to about
+  0.6 FWHM from the exact spacing, a line averaged with the lobe it sits on
+  being centroided between the two; hence half the width. 29Si is left out:
+  its spacing falls 3.8 mDa below 13C's, on the negative lobe of an ion's
+  13C line. The report and the readings against the raw profile are on
+  MAS-443.
+- **Measured.** On the 165 demo raws and 88 Orbitrap raws of the gate's
+  sets A, C, C2, D, K, K2, K3, L (the demo instrument), B and G, H, I:
+  18,311 kept peaks Exception-majority, 4,032 of them spared on a line,
+  14,279 marked; 5,843 of those were not satellites before (3,343 on the
+  161 MS1 demo raws, 1.5 % of their kept peaks). Of the demo goldens' 42,570 matched
+  peaks, 307 sit on a newly marked peak: 62 M0 lines, every one read is a
+  lobe of a bright line the matcher took for an ion (a shoulder pair, a
+  ringing comb whose 13C copy is flagged too); 120 13C, 37 15N, 34 18O and
+  28 2H lines, nearly all more than half a width from the exact line of
+  their ion, which the matcher's window took. A few are a real line averaged
+  with a lobe and pulled further out than half its width.
+- **Where.** `mascope_thermo.thermo.get_centroid_flag_shares`,
+  `mascope_signal.compute.get_orbi_centroid_flag_shares`,
+  `mascope_signal.peak.OrbiPeakDetector`,
+  `mascope_tools.alignment.utils.flag_exception_peaks`;
+  `reader_pipeline.md` (sections 2 and 7) and the how-it-works page on peak
+  detection.
+- **Verify.** No Exception-majority peak the demo raws keep is outside the
+  satellite flag except on an isotopologue line; every matched compound lost
+  sat at an Exception-majority peak; both backends give the same shares
+  (`test_centroid_flag_shares_match_thermo`); G6 and G8 unchanged, read on
+  the planner's pass. The goldens move with the satellite flag and ship with
+  a new demo bundle.
+- **Size.** L. Beside 5.4 (MAS-69), which reads the same lobes by their
+  width-scaled signatures and can take the instrument's flag as one of them.
+
+### 5.11 A batch's peak lists in one read, and the SDK snapshot of it
+
+- **What.** `GET /api/batch-peaks/batch/{sample_batch_id}/peaks` answers
+  every peak of every sample of a batch as one Parquet table, each sample
+  read as `GET /api/samples/{sample_item_id}/peaks` reads it with no range:
+  `sample_item_id`, `sample_item_name`, `datetime_utc`, `peak_id`, `mz`,
+  `sparsity`, `signal_to_noise`, `segment`, `area`, `height`,
+  `is_satellite`. `matches` adds the match columns (one row per match,
+  off by default), `satellites` keeps the satellite peaks the per-sample
+  read leaves out, flagged. The file's metadata names the samples whose
+  read failed; the batch is answered without them. The SDK's `load_peaks`
+  reads each batch this way, lays the table out as its per-sample reads
+  were, and reads sample by sample from a server that answers the route
+  404; `matches` defaults to off there and on for the older server, as it
+  always was. `load_peaks(..., save_path=...)` writes the frame, `attrs`
+  included, as a Parquet file.
+- **Why.** The reference builds its batch time series through
+  `load_peaks`, which was one JSON request per sample with the match
+  expansion on, and keeps the table only when asked for a parquet. Every
+  batch consumer repeats that read and caches it its own way.
+- **Where.** `api/controllers/samples/batch_peak_table.py`,
+  `batch_peaks_routes.py`, `samples_peaks.py` (the satellite option);
+  `mascope_sdk/_loaders.py`, `resources/batch_peaks.py` (`peak_lists`),
+  `libraries/sdk/README.md`.
+- **Verify.** On the demo stack, `load_peaks` over either demo batch
+  returns the same frame through the batch read as through the per-sample
+  reads, in 1 request instead of 80 and 81; the snapshot reads back equal.
+  No gate number moves.
+- **Size.** M. Independent (MAS-568).
+
+### 5.12 The per-sample scoring derivation as one library function, and a bulk candidate scorer
+
+- **What.** The `PatternScoring` a sample is judged at is derived in
+  `mascope_tools.composition.scoring.pattern_scoring_for_sample(mass_accuracy,
+  instrument_type, match_params, resolution)`: the width Stage A fitted or
+  the instrument class's, both widened by `PRED_SIGMA_PPM`; the offset Stage
+  A fitted, else the reagent lines' where they are beyond that width, else
+  none; the match window and the envelope floor of the match parameters;
+  the file's resolving power. `SampleMassAccuracy` and `ReagentOffset`, with
+  the stand-in offset rule, moved into `mass_accuracy`.
+  `engine.pattern_scoring_for` calls it, and the run and the batch search
+  hand it the sample's instrument class instead of a resolved width.
+  Candidates are scored on arrays: `heuristic_filter.score_patterns_v2` is
+  `score_pattern_v2` over many envelopes laid end to end;
+  `score_ion_envelopes` predicts each distinct envelope once, matches every
+  line with one `searchsorted` and scores them together, and the finder's
+  `match_isotopic_pattern` runs it; `scoring.score_candidates` is the public
+  form for any candidate list over any peak list. Stage A's
+  `score_ions_by_fit`, and through it the seeded re-score, scores every ion
+  of its frame with `ion_scores_v2`, the many-ion form of `ion_score_v2`.
+  The one-at-a-time rule stays as `score_ion_envelope`, the statement the
+  bulk path is tested against.
+- **Why.** The reference re-derived the scoring object from the SDK peak
+  frame in the same order, and two copies of one rule drift: the resolution
+  term, the stand-in offset and the TOF handling each landed on one side
+  first. And both engines scored candidates one at a time, about a
+  millisecond each over some 10^5 candidates of a file's first pass.
+- **As built.** No score moves beyond the rounding of a sum. On the demo
+  dataset's candidate pools of `tooling/score_eval` (90,490 candidates, 161
+  files) the bulk scores equal develop's finder one candidate at a time
+  within 3e-16, with the same top-1 (0.7795) and AUC (0.8842), in a third of
+  the time. The engine on seven demo samples, develop against this step,
+  records the same scoring snapshot and the same 8,546 ledger rows, fit
+  scores within 2e-16. A tie
+  at an ion's top abundance, where `ion_score_v2`'s sort picks the anchor
+  with an unstable quicksort, is settled by that same sort. The reference is
+  told of the two functions at its next boundary review (5.1).
+- **Where.** `libraries/tools/src/mascope_tools/composition/` (`scoring.py`,
+  `mass_accuracy.py`, `heuristic_filter.py`); the backend's `engine.py`,
+  `service.py`, `batch_untargeted.py`, `seeded_scoring.py` and
+  `match_score_v2.py`.
+- **Size.** M (MAS-569). Lands before or with 5.9, which serves the object
+  this computes.
+
+### 5.13 The current verdicts of a batch or dataset in one read
+
+- **What.** `GET /api/peak-assignments/batch/{sample_batch_id}/verifications`
+  and `GET /api/peak-assignments/dataset/{dataset_id}/verifications` answer
+  the current verdicts over every sample of the batch or dataset, one row
+  per judged peak, as each sample's assignment ledger shows them: the
+  sample's own verdict, or a batch-level verdict that reaches it, marked
+  `borrowed`. A batch-level verdict reaches a sample when the sample's peak
+  folded into the judged batch peak and claims the formula and mechanism
+  judged, and the sample has no current verdict of its own on that claim;
+  that precedence is settled before the filters (`verdict`,
+  `evidence_level`, `since`, `include_superseded`) apply. Each row carries
+  the sample's filename and acquisition time, the peak's m/z, the evidence
+  level and the score snapshot. The SDK reads them as
+  `peak_assignments.verifications_for_batch` and
+  `verifications_for_dataset`, and the batch export writes the same table
+  as its Verifications sheet, under the API's field names.
+- **Why.** The reference's refactoring plan proposes a vetted truth corpus
+  to judge engines by, and Mascope's verdicts are the one truth source
+  Mascope produces. They left the app one sample at a time, so the labelled
+  record could not be exported into a corpus, audited across a dataset, or
+  joined by `tooling/assignment_compare` against a human rather than the
+  other engine.
+- **Where.** `api/new/peak_assignments/service.py`
+  (`get_scope_verifications`), `routes.py`, `schemas.py`;
+  `api/controllers/sample/batches/export/service.py`;
+  `mascope_sdk/resources/peak_assignments.py`, `libraries/sdk/README.md`.
+- **Verify.** Two verdicts on two samples of a batch, one superseded, read
+  as one current row each through the batch and the dataset read, the
+  superseded one only on request; a batch-level verdict reaches the member
+  samples with none of their own, as `borrowed`, and a per-sample verdict
+  wins; the export sheet is the read. No gate number moves.
+- **Size.** S to M. Independent (MAS-570).
 
 ### Riders written into planned steps
 
@@ -1324,6 +1464,12 @@ under its milestone 5.
   already keys reagent lines on the ion; the envelope claim keys on the row.
 - The electron-attachment mechanism: shipped since 3.3e.
 - Peak areas in the peaks endpoint and the batch time series: served.
+- A batch's peak lists in one read rather than one request per sample, and
+  a snapshot of them to re-read offline (mascope#2757): 5.11.
+- The per-sample scoring derivation in the library, and candidates scored
+  in bulk: 5.12.
+- The verdicts of a batch or dataset in one read, for a truth corpus and
+  for comparing an engine against the human record (mascope#2759): 5.13.
 
 ### Not taken
 

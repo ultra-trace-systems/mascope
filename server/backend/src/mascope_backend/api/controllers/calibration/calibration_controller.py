@@ -66,6 +66,7 @@ from mascope_backend.api.models.calibration.config import calibration_config
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileUpdate,
 )
+from mascope_backend.api.new.ionization.modes.versions import move_to_current_versions
 from mascope_backend.db import IonizationMode, Sample, SampleBatch, async_session
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
@@ -1260,6 +1261,9 @@ async def calibration_mz_calibrate_sample(
     :raises ApiException: For any exceptions that occur during the calibration process.
     """
     # --- Retrieve sample and affected IDs ---
+    # Calibrated under the current version of its ionization mode, whose
+    # calibration collection an edit may have changed, and recorded under it.
+    await move_to_current_versions(sample_item_ids=[sample_item_id])
     sample = await fetch_sample(sample_item_id)
     (
         affected_sample_item_ids,

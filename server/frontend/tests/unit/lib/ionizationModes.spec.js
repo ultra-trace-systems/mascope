@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 
 import {
   choicesForScope,
+  findMode,
   hasIonizationToken,
   instrumentChoices,
   ionizationModeChoices
@@ -291,5 +292,30 @@ describe('the instrument choices a mode is offered', () => {
   it('leaves the list alone for a mode with no scope', () => {
     const options = instrumentChoices([{ instrument: 'ORBI-1' }])
     expect(choicesForScope(options, null)).toBe(options)
+  })
+})
+
+// The browser holds the current version of each mode; a sample bound under an
+// earlier one keeps that version's id until it is reprocessed.
+describe('findMode', () => {
+  const current = {
+    ionization_mode_id: 'v3',
+    ionization_mode_name: 'Nitrate',
+    superseded_ids: ['v2', 'v1']
+  }
+  const other = { ionization_mode_id: 'other', ionization_mode_name: 'Bromide' }
+
+  it('finds a current version by its own id', () => {
+    expect(findMode([other, current], 'v3')).toBe(current)
+  })
+
+  it('finds an earlier version through the current one', () => {
+    expect(findMode([other, current], 'v1')).toBe(current)
+  })
+
+  it('finds nothing for no id, or one no listed mode has held', () => {
+    expect(findMode([current], null)).toBeUndefined()
+    expect(findMode([current], undefined)).toBeUndefined()
+    expect(findMode([current], 'gone')).toBeUndefined()
   })
 })

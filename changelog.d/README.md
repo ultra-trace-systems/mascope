@@ -21,6 +21,10 @@ Name the file `<branch>.<section>.md`:
   uses it, and a branch name is the one that is sure not to.
 - `<section>` is where the entry goes in the release: `added`, `changed`,
   `deprecated`, `removed`, `performance`, `fixed` or `security`.
+  A fix that closes a security weakness goes under `security`, never
+  `fixed`: the monitoring host reads these fragments to report the
+  deployments that do not run a merged security fix yet
+  (`tooling/monitoring/README.md`, section 11).
 
 The file holds the entry exactly as `CHANGELOG.md` is to show it - a bullet
 starting `- `, continuation lines indented two spaces, a bold lead sentence as
@@ -110,7 +114,8 @@ replayed.
 
 `uv run python tooling/changelog.py compile X.Y.Z` writes every fragment into
 `CHANGELOG.md` as `## [X.Y.Z] - <date>`, deletes the fragments, and sets
-`CITATION.cff`'s `version` and `date-released`. Within each section the
+`CITATION.cff`'s `version` and `date-released`, the CLI's `RELEASE` to
+`vX.Y.Z`, and the CLI's version to the date's calver. Within each section the
 entries come in merge order: the order of the commits that added their
 fragments, with file-name order between fragments one commit added. Running
 it again for the same version, before `vX.Y.Z` is tagged, adds whatever merged

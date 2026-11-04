@@ -1466,7 +1466,10 @@ def get_tic_per_scan(
                 # Concatenate TIC values from each group
                 tic_per_scan = np.concatenate(group_tic_per_scan, axis=0)
 
-            # Correct TIC values by total TIC value if available
+            # Correct TIC values by total TIC value if available. The props'
+            # "tic" is the file's total, the sum of its scans' TIC (the
+            # converters that wrote it summed them), so each scan keeps a
+            # value per scan in the total's unit.
             try:
                 total_tic = m_io.read_props(base_filename)["tic"]
                 tic_per_scan = tic_per_scan / tic_per_scan.sum() * total_tic
@@ -1745,6 +1748,64 @@ async def get_orbi_centroids(
     return masses, intensities, resolutions, signal_to_noise
 
 
+async def get_orbi_centroid_flag_shares(
+    base_filename: str,
+    masses: np.ndarray,
+    resolutions: np.ndarray,
+    flag: str = "exception",
+    polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
+    calibration: dict | None | object = RECORD_ON_FILE,
+) -> np.ndarray:
+    """The share of each peak's per-scan centroids that carry a centroid flag.
+
+    For the peaks :func:`get_orbi_centroids` gives for the same selection:
+    over the scans averaged into them, the centroids within half a width of
+    each peak, and of those the ones the instrument flagged
+    (``mascope_thermo.thermo.get_centroid_flag_shares``).
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :param masses: The peaks' m/z, on the file's axis as
+        :func:`get_orbi_centroids` returns them.
+    :type masses: np.ndarray
+    :param resolutions: Each peak's resolution (m/z over its FWHM).
+    :type resolutions: np.ndarray
+    :param flag: The name of a centroid flag, defaults to ``exception``.
+    :type flag: str, optional
+    :param polarity: Polarity of the scans, as for :func:`get_orbi_centroids`.
+    :type polarity: Literal['+', '-'], optional
+    :param stream: Key of the scan stream, as for :func:`get_orbi_centroids`.
+    :type stream: str, optional
+    :param calibration: The calibration record the masses were put on the
+        file's axis by, as handed to :func:`get_orbi_centroids`: they are
+        taken off it again by the same factor, since a scan's centroids are
+        read as it recorded them. Left out, the record the file holds.
+    :type calibration: dict | None, optional
+    :return: One share per peak, NaN where no centroid falls within its width.
+    :rtype: np.ndarray
+    """
+    sample_type = m_name.get_sample_file_type(base_filename)
+    if sample_type != "orbi_raw":
+        raise NotImplementedError(
+            "Centroid flags are only read from Orbitrap raw files."
+        )
+    if calibration is RECORD_ON_FILE:
+        calibration = m_io.read_props(base_filename)["mz_calibration"]
+    recorded = np.asarray(masses, dtype=np.float64)
+    if calibration:
+        recorded = recorded / m_factor.stream_factor(calibration, stream)
+    return await asyncio.to_thread(
+        m_thermo.get_centroid_flag_shares,
+        m_name.filename_to_datafile_path(base_filename),
+        recorded,
+        resolutions,
+        flag=flag,
+        polarity=polarity,
+        stream=stream,
+    )
+
+
 def get_orbi_centroids_per_scan(
     base_filename: str,
     t_min: float | None = None,
@@ -1835,6 +1896,7 @@ async def get_orbi_ms2_centroids_by_parent(
     ppm: int = 1,
     average: bool = True,
     by_activation: bool = True,
+    on_file_axis: bool = True,
 ) -> dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     """Extract averaged MS2 centroids per (parent peak, activation) group.
 
@@ -1863,6 +1925,10 @@ async def get_orbi_ms2_centroids_by_parent(
     :param by_activation: If True (the default), group by activation as well as
                           parent peak; if False, one group per parent peak.
     :type by_activation: bool, optional
+    :param on_file_axis: If True (the default), the masses on the file's
+                         calibrated axis (:func:`ms2_centroids_on_file_axis`);
+                         if False, on the instrument's, as the parent keys are.
+    :type on_file_axis: bool, optional
     :return: Mapping of (parent peak m/z, activation) to
              (masses, intensities, resolutions, signal_to_noise).
     :rtype: dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
@@ -1883,6 +1949,46 @@ async def get_orbi_ms2_centroids_by_parent(
                 ppm=ppm,
                 average=average,
                 by_activation=by_activation,
+            )
+            if not on_file_axis:
+                return mapped_ms2_centroids
+            return ms2_centroids_on_file_axis(base_filename, mapped_ms2_centroids)
+        case _:
+            raise NotImplementedError(
+                "MS2 centroid extraction is only implemented for Orbitrap raw files."
+            )
+
+
+async def get_orbi_ms2_centroids_of_scans(
+    base_filename: str,
+    scans_by_group: dict[tuple[float, str], list[int]],
+    ppm: int = 1,
+) -> dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """Averaged MS2 centroids over scans grouped by the caller, read raw.
+
+    :func:`mascope_thermo.thermo.get_ms2_centroids_of_scans`, on the file's
+    calibrated axis: the raw read of a window whose groups are the MS2
+    store's (:meth:`mascope_signal.ms2_store.Ms2Store.window_scans`).
+
+    :param base_filename: Sample file name (base, not full path).
+    :type base_filename: str
+    :param scans_by_group: Mapping of (parent peak m/z, activation) to the
+        scan numbers to average.
+    :type scans_by_group: dict[tuple[float, str], list[int]]
+    :param ppm: Mass tolerance in ppm for centroid binning, defaults to 1.
+    :type ppm: int, optional
+    :return: Mapping of the same keys to
+             (masses, intensities, resolutions, signal_to_noise).
+    :rtype: dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+    """
+    sample_type = m_name.get_sample_file_type(base_filename)
+    match sample_type:
+        case "orbi_raw":
+            mapped_ms2_centroids = await asyncio.to_thread(
+                m_thermo.get_ms2_centroids_of_scans,
+                m_name.filename_to_datafile_path(base_filename),
+                scans_by_group,
+                ppm=ppm,
             )
             return ms2_centroids_on_file_axis(base_filename, mapped_ms2_centroids)
         case _:
@@ -1934,6 +2040,74 @@ def ms2_centroids_on_file_axis(
             resolutions,
             signal_to_noise,
         ) in mapped_ms2_centroids.items()
+    }
+
+
+#: How far past an isolation window's nominal edge its inventory reaches
+#: [Da]. A quadrupole's transmission edge is a slope, not a step, so a
+#: centroid just outside the nominal half-width is listed, its share saying
+#: whether it matters, rather than dropped. A margin, not a fit: peaky's
+#: ``WINDOW_PAD_DA``.
+MS2_WINDOW_PAD = 0.005
+
+
+def ms2_isolation_window(
+    centroids: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    parent_peak_mz: float,
+    width: float | None,
+) -> dict[str, list]:
+    """The MS1 centroids in one MS2 group's isolation window.
+
+    Every centroid within +/-(``width`` / 2 + :data:`MS2_WINDOW_PAD`) of the
+    parent key, whatever its S/N, in m/z order, with its offset from the key,
+    its share of the window's summed intensity and ``is_parent`` on the one
+    :func:`mascope_thermo.thermo.locate_precursor` picks among them. Windows
+    are drawn one group at a time, so a centroid in two groups' windows is in
+    both.
+
+    With no ``width`` there is no window to draw, and only the target is
+    listed: the centroid :func:`~mascope_thermo.thermo.locate_precursor` picks
+    near the key, with no share.
+
+    :param centroids: The sample's averaged MS1 centroids, ``(masses,
+        intensities, resolutions, signal_to_noise)``.
+    :param parent_peak_mz: The group's parent key, the window's centre.
+    :param width: The isolation width [Da], or None for none.
+    :return: ``mz``, ``offset`` (from the key, Da), ``intensity``, ``share``
+        (None with no ``width``), ``resolution``, ``signal_to_noise`` and
+        ``is_parent``, one entry per centroid listed.
+    """
+    masses, intensities, resolutions, signal_to_noise = (
+        np.asarray(values, dtype=np.float64) for values in centroids
+    )
+    if width is None:
+        found = m_thermo.locate_precursor(masses, intensities, parent_peak_mz)
+        listed = np.array([] if found is None else [found], dtype=np.intp)
+    else:
+        listed = np.flatnonzero(
+            np.abs(masses - parent_peak_mz) <= width / 2 + MS2_WINDOW_PAD
+        )
+        listed = listed[np.argsort(masses[listed], kind="stable")]
+    mz = masses[listed]
+    intensity = intensities[listed]
+    parent = (
+        m_thermo.locate_precursor(mz, intensity, parent_peak_mz) if mz.size else None
+    )
+    total = float(np.nansum(intensity))
+    if width is None:
+        share = [None] * mz.size
+    elif total > 0:
+        share = (intensity / total).tolist()
+    else:
+        share = [None] * mz.size
+    return {
+        "mz": mz.tolist(),
+        "offset": (mz - parent_peak_mz).tolist(),
+        "intensity": intensity.tolist(),
+        "share": share,
+        "resolution": resolutions[listed].tolist(),
+        "signal_to_noise": signal_to_noise[listed].tolist(),
+        "is_parent": [i == parent for i in range(mz.size)],
     }
 
 

@@ -30,6 +30,14 @@ from mascope_backend.api.models.target.collections.target_collection_pydantic_mo
     TargetCollectionSortColumn,
     TargetCollectionUpdate,
 )
+from mascope_backend.api.new.ionization.modes.versions import (
+    held_by_earlier_versions,
+    still_held,
+)
+from mascope_backend.api.new.workspaces.dependencies import (
+    WorkspaceScope,
+    where_collection_visible,
+)
 from mascope_backend.db import (
     IonizationMode,
     TargetCollection,
@@ -51,7 +59,7 @@ async def get_target_collections(
     sample_batch_id: str | None = None,
     target_collection_type: list[str] | None = None,
     workspace_id: str | None = None,
-    accessible_workspace_ids: set[str] | None = None,
+    accessible_workspace_ids: WorkspaceScope | None = None,
     sort: str | None = None,
     order: str | None = None,
     page: int | None = None,
@@ -78,6 +86,11 @@ async def get_target_collections(
     :param workspace_id: Filter collections by workspace ID. Null-workspace (global)
                          collections are always included. Defaults to None.
     :type workspace_id: str | None, optional
+    :param accessible_workspace_ids: List only the collections of these workspaces
+        and the global ones; ``ALL_WORKSPACES`` lists every collection
+        (superusers and internal callers). Required: left out, the list raises
+        ``TypeError``.
+    :type accessible_workspace_ids: WorkspaceScope
     :param target_collection_type: Filter by target collection types, can specify
     multiple types, defaults to None
     :type target_collection_type: list[str] | None, optional
@@ -128,14 +141,7 @@ async def get_target_collections(
             )
 
         # Restrict to collections the caller can see (workspace ACL).
-        # accessible_workspace_ids is None for superusers (no restriction).
-        if accessible_workspace_ids is not None:
-            stmt = stmt.where(
-                or_(
-                    TargetCollection.workspace_id.in_(accessible_workspace_ids),
-                    TargetCollection.workspace_id.is_(None),
-                )
-            )
+        stmt = where_collection_visible(stmt, accessible_workspace_ids)
         # Apply sorting if specified
         if sort:
             stmt = stmt.order_by(
@@ -364,6 +370,7 @@ async def create_target_collection(
             sample_batch_ids=sample_batch_ids,
             status="rematch",
             independent_transaction=True,
+            never_lower=True,
         )
 
     # Step 7: Emit reload events
@@ -635,6 +642,7 @@ async def update_target_collection(
             sample_batch_ids=list(affected_sample_batch_ids),
             status="rematch",
             independent_transaction=True,  # batches reloads to show rematch status
+            never_lower=True,
         )
 
     # Step 8: Emit reload events based on change types
@@ -726,24 +734,37 @@ async def delete_target_collection(
         assoc.target_compound_id for assoc in target_collection.target_compound
     }
 
-    # Query ionization modes that reference this collection (deletion not allowed)
+    # Query ionization modes that reference this collection (deletion not
+    # allowed): current versions, and earlier ones samples are bound under. An
+    # earlier version no sample holds is history; the delete clears its
+    # reference (the foreign key sets it null).
     async with async_session() as session:
         affected_modes_result = await session.execute(
             select(IonizationMode).where(
                 or_(
                     IonizationMode.calibration_collection_id == target_collection_id,
                     IonizationMode.diagnostic_collection_id == target_collection_id,
-                )
+                ),
+                still_held(),
             )
         )
         affected_ionization_modes = list(affected_modes_result.scalars())
 
     # -- Block deletion if collection is used by any ionization mode --
     if affected_ionization_modes:
-        mode_names = [mode.ionization_mode_name for mode in affected_ionization_modes]
+        mode_names = [
+            mode.ionization_mode_name
+            for mode in affected_ionization_modes
+            if mode.is_active
+        ]
+        associated = (
+            f" because it is associated with ionization modes: {', '.join(mode_names)}."
+            if mode_names
+            else "."
+        )
         raise ValueError(
-            f"Cannot delete '{target_collection.target_collection_name}' because "
-            f"it is associated with ionization modes: {', '.join(mode_names)}."
+            f"Cannot delete '{target_collection.target_collection_name}'"
+            f"{associated}{held_by_earlier_versions(affected_ionization_modes)}"
         )
 
     # -- Identify orphan compounds if their deletion is requested --
@@ -780,6 +801,7 @@ async def delete_target_collection(
             sample_batch_ids=list(affected_sample_batch_ids),
             status="rematch",
             independent_transaction=True,
+            never_lower=True,
         )
 
     # -- Delete orphan compounds if requested --

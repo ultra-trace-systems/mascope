@@ -5,6 +5,7 @@ Hermetic unit tests for the ``peak_assignments`` resource and the
 """
 
 import inspect
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -407,3 +408,146 @@ class TestLoadAssignments:
         params = inspect.signature(MascopeClient.load_assignments).parameters
         assert "exact" in params
         assert not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+#: The verdicts of a batch as the scope read serves them: one of a sample's own
+#: and one borrowed from the batch level.
+SCOPE_VERDICTS = [
+    {
+        "sample_item_id": "s1",
+        "sample_item_name": "Sample 1",
+        "sample_batch_id": "b1",
+        "filename": "file-1.zarr",
+        "datetime": "2026-08-17T10:00:00",
+        "datetime_utc": "2026-08-17T08:00:00Z",
+        "sample_peak_id": "peak-001",
+        "sample_peak_mz": 181.0707,
+        "assigned_formula": "C6H12O6",
+        "ionization_mechanism_id": None,
+        "verdict": "confirmed",
+        "evidence_level": "pattern",
+        "fit_score": 0.9,
+        "evidence": 0.8,
+        "p_correct": None,
+        "note": None,
+        "context": None,
+        "verified_by": 1,
+        "verified_utc": "2026-08-18T10:00:00Z",
+        "superseded_utc": None,
+        "borrowed": False,
+        "assignment_verification_id": "v1",
+        "peak_assignment_id": "a1",
+        "peak_assignment_run_id": "run-latest",
+        "batch_peak_verification_id": None,
+        "batch_peak_id": None,
+        "stale": None,
+    },
+    {
+        "sample_item_id": "s2",
+        "sample_item_name": "Sample 2",
+        "sample_batch_id": "b1",
+        "filename": "file-2.zarr",
+        "datetime": "2026-08-17T11:00:00",
+        "datetime_utc": "2026-08-17T09:00:00Z",
+        "sample_peak_id": "peak-002",
+        "sample_peak_mz": 181.0708,
+        "assigned_formula": "C6H12O6",
+        "ionization_mechanism_id": None,
+        "verdict": "rejected",
+        "evidence_level": None,
+        "fit_score": None,
+        "evidence": None,
+        "p_correct": None,
+        "note": None,
+        "context": {"mz": 181.0707},
+        "verified_by": 1,
+        "verified_utc": "2026-08-18T11:00:00Z",
+        "superseded_utc": None,
+        "borrowed": True,
+        "assignment_verification_id": None,
+        "peak_assignment_id": None,
+        "peak_assignment_run_id": None,
+        "batch_peak_verification_id": "bv1",
+        "batch_peak_id": "bp1",
+        "stale": False,
+    },
+]
+
+
+class _ScopeServer:
+    """The two scope reads, recording what each request asked for."""
+
+    def __init__(self):
+        self.rows = list(SCOPE_VERDICTS)
+        self.calls: list[tuple[str, dict]] = []
+
+    def http_get(self, url, path, access_token, params=None, **kwargs):
+        self.calls.append((path, dict(params or {})))
+        return _FakeResponse(
+            {
+                "status": "success",
+                "message": f"Retrieved {len(self.rows)} verdicts",
+                "results": len(self.rows),
+                "data": self.rows,
+            }
+        )
+
+
+@pytest.fixture()
+def scope_server(monkeypatch):
+    fake = _ScopeServer()
+    monkeypatch.setattr(
+        "mascope_sdk.resources.peak_assignments.http_get", fake.http_get
+    )
+    return fake
+
+
+class TestScopeVerifications:
+    def test_reads_a_batch_into_one_frame(self, scope_server):
+        df = PeakAssignmentsResource(_StubClient()).verifications_for_batch("b1")
+
+        assert scope_server.calls == [("peak-assignments/batch/b1/verifications", {})]
+        assert df["borrowed"].tolist() == [False, True]
+        assert df["evidence_level"].tolist()[0] == "pattern"
+        assert df["fit_score"].tolist()[0] == 0.9
+        for column in ("verified_utc", "superseded_utc", "datetime_utc"):
+            assert isinstance(df[column].dtype, pd.DatetimeTZDtype), column
+            assert str(df[column].dt.tz) == "UTC", column
+        assert pd.api.types.is_datetime64_any_dtype(df["datetime"])
+
+    def test_reads_a_dataset(self, scope_server):
+        df = PeakAssignmentsResource(_StubClient()).verifications_for_dataset("d1")
+
+        assert scope_server.calls == [("peak-assignments/dataset/d1/verifications", {})]
+        assert len(df) == 2
+
+    def test_passes_the_filters(self, scope_server):
+        since = datetime(2026, 8, 18, 10, 30, tzinfo=timezone.utc)
+        PeakAssignmentsResource(_StubClient()).verifications_for_batch(
+            "b1",
+            verdict="confirmed",
+            evidence_level="msms",
+            since=since,
+            include_superseded=True,
+        )
+
+        assert scope_server.calls[0][1] == {
+            "verdict": "confirmed",
+            "evidence_level": "msms",
+            "since": since.isoformat(),
+            "include_superseded": "true",
+        }
+
+    def test_passes_a_since_given_as_text_as_it_is(self, scope_server):
+        PeakAssignmentsResource(_StubClient()).verifications_for_dataset(
+            "d1", since="2026-08-18"
+        )
+
+        assert scope_server.calls[0][1] == {"since": "2026-08-18"}
+
+    def test_returns_none_when_nothing_was_judged(self, scope_server):
+        scope_server.rows = []
+
+        assert (
+            PeakAssignmentsResource(_StubClient()).verifications_for_batch("b1") is None
+        )

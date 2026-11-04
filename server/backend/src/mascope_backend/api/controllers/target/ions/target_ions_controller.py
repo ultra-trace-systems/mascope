@@ -5,7 +5,6 @@ from sqlalchemy import (
     and_,
     cast,
     func,
-    or_,
     select,
 )
 from sqlalchemy.orm import joinedload
@@ -35,6 +34,10 @@ from mascope_backend.api.models.target.ions.target_ion_pydantic_model import (
 from mascope_backend.api.new.ionization.modes.util import (
     fetch_batch_ionization_mechanism_ids,
 )
+from mascope_backend.api.new.workspaces.dependencies import (
+    WorkspaceScope,
+    where_collection_visible,
+)
 from mascope_backend.db import (
     IonizationMechanism,
     IonizationMode,
@@ -60,7 +63,7 @@ async def get_target_ions(
     sample_batch_id: Optional[str] = None,
     target_collection_id: Optional[str] = None,
     show_target_collection: bool = False,
-    accessible_workspace_ids: set[str] | None = None,
+    accessible_workspace_ids: WorkspaceScope | None = None,
     show_ionization_mechanism: bool = False,
     target_compound_ids: Optional[List[str]] = None,
     ionization_mechanism_ids: Optional[List[str]] = None,
@@ -97,9 +100,10 @@ async def get_target_ions(
     :param show_target_collection: Include detailed target collection data in the results, defaults to False.
     :type show_target_collection: bool
     :param accessible_workspace_ids: With ``show_target_collection``, list only the
-        collections of these workspaces and the global ones; None lists every
-        collection (superusers and internal callers), defaults to None.
-    :type accessible_workspace_ids: set[str] | None
+        collections of these workspaces and the global ones; ``ALL_WORKSPACES``
+        lists every collection (superusers and internal callers). Required with
+        ``show_target_collection``: left out, the list raises ``TypeError``.
+    :type accessible_workspace_ids: WorkspaceScope | None
     :param show_ionization_mechanism: Include ionization mechanism data in the results, defaults to False.
     :type show_ionization_mechanism: bool
     :param target_compound_ids: List of target compound IDs for broader filtering, defaults to None.
@@ -198,13 +202,7 @@ async def get_target_ions(
                     == TargetCompoundInTargetCollection.target_collection_id,
                 )
                 # Restrict to collections the caller can see (workspace ACL).
-                if accessible_workspace_ids is not None:
-                    stmt = stmt.where(
-                        or_(
-                            TargetCollection.workspace_id.in_(accessible_workspace_ids),
-                            TargetCollection.workspace_id.is_(None),
-                        )
-                    )
+                stmt = where_collection_visible(stmt, accessible_workspace_ids)
                 stmt = stmt.add_columns(
                     TargetCompoundInTargetCollection.target_collection_id,
                     TargetCollection.target_collection_name,

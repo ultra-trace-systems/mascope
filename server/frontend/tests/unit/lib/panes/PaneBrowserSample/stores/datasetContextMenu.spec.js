@@ -134,3 +134,30 @@ describe('dataset context menu: paste into a new dataset', () => {
     expect(entry(menu, 'Paste batch into a new dataset').visible).toBe(false)
   })
 })
+
+// "Prepare for publication" opens its dialog on the right-clicked dataset, and
+// the dialog keeps it once the menu has moved on: the dialog stays open while
+// the user right-clicks elsewhere or edits the dataset.
+describe('dataset context menu: prepare for publication', () => {
+  const entry = (menu) => menu.entries.find(({ label }) => label === 'Prepare for publication')
+
+  it('opens the dialog on the right-clicked dataset', async () => {
+    const menu = useDatasetContextMenu()
+    await menu.onClick({ data: DATASET })
+
+    expect(entry(menu).visible).toBe(true)
+    entry(menu).command()
+    menu.hide()
+
+    expect(menu.dialog.publish).toEqual(DATASET)
+    // Not the dataset dialog's action: that dialog opens on any value.
+    expect(menu.dialog.op).toBe(null)
+  })
+
+  it('is not offered on empty space', async () => {
+    const menu = useDatasetContextMenu()
+    await menu.onClick({ data: null })
+
+    expect(entry(menu).visible).toBe(false)
+  })
+})

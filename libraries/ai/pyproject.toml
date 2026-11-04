@@ -1,6 +1,6 @@
 [project]
 name = "mascope_ai"
-version = "2026.10.21"
+version = "2026.11.4"
 description = "Mascope's toolkit for AI agents: handles to Mascope's data, never tables in a model's context."
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
@@ -18,16 +18,23 @@ requires-python = ">=3.10"
 dependencies = [
     # The toolkit loads through the SDK's per-sample loaders and its
     # concurrency hook, which are internal to it: it needs the SDK of the
-    # same release, not merely a compatible one. This bound does not say so
-    # yet - develop's SDK carried this version before those were added - and
-    # needs not while the workspace resolves the SDK from this repository;
-    # pin it to the SDK's release when mascope_ai is first published.
-    "mascope_sdk>=2026.10.20",
+    # same release, not merely a compatible one. The floor is that release's
+    # SDK version; raise it with every SDK bump the toolkit is published
+    # beside.
+    "mascope_sdk>=2026.11.4",
     "loguru>=0.7.3",
     "pandas>=2.0.0",
     # Frames are kept as parquet in the session directory.
     "pyarrow>=14.0.0",
+    # The command line reads MASCOPE_WORKSPACE from the .env file the SDK
+    # reads its URL and token from.
+    "python-dotenv>=1.0.0",
 ]
+
+[project.scripts]
+# The MCP server (`mascope-ai mcp`), its setup preflight and the discovery
+# listing; `python -m mascope_ai` is the same command.
+mascope-ai = "mascope_ai.cli:main"
 
 [project.urls]
 homepage = "https://ultratrace.eu/"

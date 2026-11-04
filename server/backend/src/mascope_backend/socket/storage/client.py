@@ -14,9 +14,80 @@ Redis key namespaces:
 """
 
 from redis.asyncio import Redis, from_url
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialWithJitterBackoff
+from redis.exceptions import AuthenticationError as RedisAuthenticationError
+from redis.exceptions import AuthorizationError as RedisAuthorizationError
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage.config import storage_config
+from mascope_runtime.logging import SENTRY_SKIP
+
+
+#: Failures of the connection to Redis rather than of the code using it: a
+#: Redis restart, an idle connection the server closed, a host name that does
+#: not resolve yet while the stack restarts, a stall past the socket timeout.
+#: redis-py raises its own classes for these; the built-in ones are listed for
+#: a socket error it lets through unwrapped.
+TRANSIENT_REDIS_ERRORS = (
+    RedisConnectionError,
+    RedisTimeoutError,
+    ConnectionError,
+    TimeoutError,
+)
+
+#: redis-py's ``ConnectionError`` subclasses that no wait heals: a wrong or
+#: rotated password, an account the server refuses a command. They are a
+#: misconfiguration to report, not Redis out of reach.
+REDIS_CONFIGURATION_ERRORS = (RedisAuthenticationError, RedisAuthorizationError)
+
+#: Retries of a command that failed with a connection error or a timeout. One
+#: is enough to replace a pooled connection Redis or a proxy closed while it
+#: sat idle. Every command the socket storage sends is safe to send again
+#: (SET, EXPIRE, DEL, SADD, SREM, a check-and-delete script).
+COMMAND_RETRIES = 1
+
+#: Seconds one attempt waits to connect, or for a reply, before it fails.
+SOCKET_TIMEOUT = 5
+
+
+def is_transient_redis_error(error: BaseException) -> bool:
+    """
+    Whether a failed call met Redis briefly out of reach, not a fault.
+
+    :param error: The exception a Redis call raised.
+    :return: True for :data:`TRANSIENT_REDIS_ERRORS`, except the
+        :data:`REDIS_CONFIGURATION_ERRORS` that subclass them.
+    """
+    return isinstance(error, TRANSIENT_REDIS_ERRORS) and not isinstance(
+        error, REDIS_CONFIGURATION_ERRORS
+    )
+
+
+def log_storage_failure(message: str, error: BaseException) -> None:
+    """
+    Log a failed socket storage call, from inside its ``except`` block.
+
+    A transient failure (:func:`is_transient_redis_error`) is Redis being
+    briefly out of reach, which every caller already rides out (a refused call, a retry on the
+    next tick, a key that lapses on its own). It is logged as a warning with no
+    stack, and kept out of error monitoring. Any other exception is a fault and
+    is logged with its stack, as before.
+
+    The record is attributed to the caller, so the log line and the monitoring
+    group name the storage function that failed, not this helper.
+
+    :param message: What failed, naming the socket or service.
+    :param error: The exception being handled.
+    """
+    if is_transient_redis_error(error):
+        runtime.logger.bind(**{SENTRY_SKIP: True}).opt(depth=1).warning(
+            f"{message} (Redis out of reach)"
+        )
+    else:
+        runtime.logger.opt(depth=1, exception=True).error(message)
 
 
 class RedisStorageClient:
@@ -51,14 +122,25 @@ class RedisStorageClient:
 
         try:
             # This client is consulted inline by API requests (e.g. the
-            # converter-availability gate before uploads and peak detection).
-            # No blocking Redis commands are used on it, so the timeouts bound
-            # how long a hung Redis connection can stall a request mid-await.
+            # converter-availability gate before uploads, the login rate
+            # limiter). No blocking Redis commands are used on it, so the
+            # timeouts bound how long a hung Redis can stall a request: at
+            # most (COMMAND_RETRIES + 1) attempts of SOCKET_TIMEOUT, 10 s,
+            # plus a backoff under 0.2 s. The retry replaces a connection
+            # Redis dropped while it sat idle, so that call does not fail.
+            # No health_check_interval: redis-py runs the same Retry around
+            # its health-check PING inside each command attempt, so a Redis
+            # that accepts and never answers cost (retries + 1) ** 2 attempts.
             self._client = from_url(
                 redis_url,
                 decode_responses=True,
-                socket_timeout=5,
-                socket_connect_timeout=5,
+                socket_timeout=SOCKET_TIMEOUT,
+                socket_connect_timeout=SOCKET_TIMEOUT,
+                retry=Retry(
+                    ExponentialWithJitterBackoff(cap=1.0, base=0.1),
+                    COMMAND_RETRIES,
+                ),
+                retry_on_error=[RedisConnectionError, RedisTimeoutError],
             )
             # Test connection
             await self._client.ping()

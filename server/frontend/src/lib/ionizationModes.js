@@ -37,8 +37,7 @@ export const carriesToken = (filename, mode) =>
  * outside needs to - the pane takes `instrumentChoices` and `choicesForScope`
  * rather than folding names of its own.
  */
-const instrumentKey = (instrument) =>
-  instrument ? String(instrument).trim().toLowerCase() : null
+const instrumentKey = (instrument) => (instrument ? String(instrument).trim().toLowerCase() : null)
 
 /**
  * One option per instrument, however each name was recorded.
@@ -198,3 +197,21 @@ export function ionizationModeChoices({
     reason: RESOLUTION_REASONS[Math.min(matched.length, 2)]
   }
 }
+
+/**
+ * The listed mode a sample's mode id stands for.
+ *
+ * A mode is a versioned setup, and the browser holds the current versions
+ * only. A sample bound under an earlier one keeps that version's id until it
+ * is re-processed, so it is found through the current version's
+ * `superseded_ids` - the version its next run is searched under.
+ *
+ * @param {Array<object>} modes - The listed ionization modes.
+ * @param {string|null|undefined} id - A mode id, of any version.
+ * @returns {object|undefined} The current version, if the browser holds it.
+ */
+export const findMode = (modes = [], id) =>
+  id == null
+    ? undefined
+    : (modes.find((mode) => mode.ionization_mode_id === id) ??
+      modes.find((mode) => (mode.superseded_ids ?? []).includes(id)))

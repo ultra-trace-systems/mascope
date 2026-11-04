@@ -1,15 +1,17 @@
 # MS2 readings: fragment sub-formulas with loss decomposition
 
-*Reference for `mascope_tools.composition.ms2.readings`: `read_fragments`,
-`ladder_gate` and the functions under them. The rules are peaky's
-(`peaky/ms2/subformula.py` and `peaky/ms2/readings.py`, peaky PRs 78 and 80),
-ported with peaky's known answers as tests
-(`libraries/tools/tests/test_ms2_readings.py`), so that the two engines read one
-spectrum alike. The design note is `docs/dev/ms2_analysis.md`, section 2.4.*
+*Reference for `mascope_tools.composition.ms2.readings` (`read_fragments`,
+`ladder_gate` and the functions under them) and `.hygiene` (`flag_harmonics`,
+`flag_satellites`, `read_window`, `spectrum_counts`). The rules are peaky's
+(`peaky/ms2/subformula.py`, `peaky/ms2/readings.py` and the side-lobe rule of
+`peaky/ms2/attribute.py`, peaky PRs 78, 80 and 82), ported with peaky's known
+answers as tests (`libraries/tools/tests/test_ms2_readings.py`,
+`test_ms2_hygiene.py`), so that the two engines read one spectrum alike. The
+design note is `docs/dev/ms2_analysis.md`, section 2.4.*
 
 > Keep this in sync with the code. Every threshold below is a named constant in
-> `readings.py`; `test_ms2_readings.py` fails when one is missing here or its
-> value differs.
+> `readings.py` or `hygiene.py`; `test_ms2_readings.py` and
+> `test_ms2_hygiene.py` fail when one is missing here or its value differs.
 
 ## 1. What it is - and what it is not
 
@@ -24,9 +26,10 @@ It is a **composition test**, applied to every ion of the isolation window (the
 target and its co-isolates) with the same rules. It never decides *which*
 window ion a fragment came from: a peak two window ions can both explain keeps
 both readings (`n_parents` 2). Attribution needs intensities across collision
-energies and is a later module's (`ms2.attribute`, MAS-399). Harmonic ghosts
-and side-lobe satellites, centroids that are no ions at all, are flagged by
-another (MAS-388); this one reads every peak it is given.
+energies and is a later module's (`ms2.attribute`, MAS-399). `read_fragments`
+reads every peak it is given; harmonic ghosts and side lobes, centroids that are
+no ions at all, are `hygiene`'s (section 5): `read_window` reads a window's
+spectra and makes each of them one row with no formula.
 
 ```
 MS2 peaks (m/z [+ intensity])           window ions {label: ion formula}
@@ -198,11 +201,12 @@ I and [15N]; any other symbol, another isotope label included, raises.
    `n_parents` is how many parents have at least one candidate for the peak. A
    peak no parent explains gets **one** row - every input peak is in the
    output. That row keeps its `spectrum`, `peak`, `mz`, `mz_cal` and
-   `intensity` and carries `''` in every other text field, 0 in `loss_pieces`,
-   `unnamed_pieces`, `rank`, `n_candidates` and `n_parents`, `False` in
-   `radical_loss` and `is_precursor`, and NaN in `dbe` and `ppm`, so a filter on
-   a flag or a piece count never picks it up as a reading. `best_readings`
-   keeps the rank-1 rows plus the unexplained rows.
+   `intensity`, its `role` is `'unexplained'`, and it carries `''` in every
+   other text field, 0 in `loss_pieces`, `unnamed_pieces`, `rank`,
+   `n_candidates` and `n_parents`, `False` in `radical_loss` and
+   `is_precursor`, and NaN in `dbe` and `ppm`, so a filter on a flag or a piece
+   count never picks it up as a reading. `best_readings` keeps the rank-1 rows
+   plus the unexplained and flagged rows.
 
 ## 4. The ladder gate
 
@@ -249,9 +253,148 @@ Example: the hexose [M+NH4]+ C6H16NO6+ -> C6H7O3+ (loss H9NO3,
 peak needs a fourth piece at all: the gate and `k_max` 3 read exactly the same
 readings (tested).
 
-## 5. Constants
+## 5. Peak hygiene: harmonic ghosts and side lobes
 
-All in `mascope_tools.composition.ms2.readings`.
+Two kinds of MS2 centroid are no ion, and read as sub-formulas of almost
+anything - of a large O/N-rich window ion nearly every m/z is one. Both are
+**flags on the peak, never deletions**: `flag_harmonics` and `flag_satellites`
+return, per spectrum, one `PeakFlag` or `None` per peak, in the peaks' order;
+`read_window` reads the window with each flagged peak one row with no formula.
+
+Both read **one window's spectra** together, `{spectrum key: peaks}` in their
+order (one per collision energy), the peaks as `read_fragments` takes them with
+`intensity`, `signal_to_noise` and `resolution` (the resolving power, m/z over
+the line width) where known - the columns of the MS2 centroid routes. A peak
+without an intensity is never flagged. Both read **by place**: a place some
+spectrum of the window shows as an ion is an ion's at every energy, so a
+product weak at its first energies, or whose line is gone at a later one, is
+read at all of them and never half erased. A place is matched within the
+reading window (`tolerance`, `max(ppm * mz, mda)`, as `read_fragments` reads),
+on the peaks' own m/z: within one window the axis offset is one ratio, and
+cancels.
+
+```
+one window's spectra {key: peaks (m/z, intensity, S/N, resolution)}
+     |                                   |
+flag_harmonics                      flag_satellites
+  ion places: in no line's band,      ion places: no peak >= 50x brighter
+  or above every cap at S/N >= 10       within 5 widths (or no width known)
+  ghost: brightest under the cap      lobe: every peak at its place is a
+  within 40 ppm of m/z / 4, m/z / 9     candidate, in every spectrum
+     |                                   |
+     +--------------> read_window <------+
+        read_fragments per spectrum; a ghost, or a lobe no window ion reads
+        as its precursor -> ONE row: role 'harmonic' / 'satellite', no formula
+                              |
+              ladder_gate (no step)    spectrum_counts (out of TIC, counted)
+```
+
+### 5.1 Harmonic ghosts (`flag_harmonics`)
+
+An Orbitrap reads m/z off an ion's axial frequency f (m/z ~ 1/f^2), and a
+strong line's transient carries weak harmonics at 2f and 3f: peaks at about
+m/z / 4 and m/z / 9 that no ion made.
+
+1. **Every line L of a spectrum is tested**, a co-isolate's and a strong
+   fragment's as much as the precursor's. For each order n of
+   `HARMONIC_ORDERS` (2, 3), a ghost candidate lies within `HARMONIC_PPM`
+   (40 ppm) of m/z(L) / n^2 and holds at most `HARMONIC_CAP[n]` of L's
+   intensity in the same spectrum (2f 0.5 %, 3f 8 %; a peak at the cap is
+   under it). Of several candidates in a band the brightest is the ghost: one
+   line has one ghost per order, and a second, weaker peak in the band is
+   something else. 4f (m/z / 16) is not read; it was not seen. Where a peak is
+   the ghost of several lines it is named after the brightest (of equally
+   bright lines, the lower order, then the earlier peak).
+2. **An ion's place.** A peak's m/z is an ion's place when, in its own
+   spectrum, no line's cap holds it: it sits in no line's band (a ghost exists
+   only beside its line - the product of a precursor gone at that energy, one
+   that a ppm of jitter puts just out of the band, a spectrum of that peak
+   alone), or it holds more than the cap of every line whose band holds it,
+   read at an S/N of at least `HARMONIC_CLEAR_SN` (10) or with no S/N known. A
+   peak within the reading window of an ion's place is no candidate at any
+   energy, and of the others in its band the brightest is the ghost.
+3. **Why the S/N.** Near the S/N floor a peak is seen only where the noise
+   lifts it - read up to about two noise sd high, so its share of its line up
+   to s / (s - 2) of the true one at S/N s: twice it at S/N 4, 1.25 times at 10.
+   A ghost reads above the cap only there (at the highest energies, where its
+   line has fallen), and one noisy energy would otherwise switch the rule off
+   at every energy; at S/N 10 a 3f ghost of a few per cent stays under 8 %.
+
+The flag (`PeakFlag`): `role` `'harmonic'`, the peak's `mz`, its `line` (0-based
+position among the spectrum's peaks) and `line_mz`, its `share` of the line,
+the `order` n and its `offset`, ppm from m/z(line) / n^2. `note` is peaky's
+wording: `'2f ghost of the line at 179.1068 (m/z / 4): -1.9 ppm, 0.0985 % of
+it'`.
+
+**Known answer** (peaky's exploratory fixture, its 179.1069 window in the
+server's S/N-3 spectra): the precursor C11H15O2+ carries its 2f ghost at
+m/z 44.7766 at NCE 1, 5, 10 and 15, -1.9, -1.9, -2.0 and -2.7 ppm off m/z / 4
+and 0.0985, 0.0985, 0.0938 and 0.0814 % of the line; the rule flags those
+four and nothing else, there or in any window of peaky's three fixtures.
+
+### 5.2 Side lobes (`flag_satellites`)
+
+A peak list processed from Orbitrap profiles carries weak centroids a few line
+widths beside a much brighter line, which the profile does not hold.
+
+1. **A lobe candidate**: another peak of the same spectrum, of any role, at
+   least `SATELLITE_RATIO` (50) times brighter, lies within `SATELLITE_FWHM`
+   (5) of ITS line widths, the width being that brighter peak's m/z over its
+   `resolution`. The line named is the brightest such peak.
+2. **A side lobe**: every peak at its place, in every spectrum of the window
+   that holds one, is a candidate. A peak with no such neighbour, or whose
+   neighbours report no resolution, makes its place an ion's at every energy:
+   a real fragment one of whose peaks clears the band or the ratio is kept. A
+   peak with no finite positive intensity is neither a lobe nor an ion's
+   place. A window whose peaks report no resolution is never tested.
+3. **A window ion's precursor is never a side lobe.** `flag_satellites` reads
+   peaks only and flags such a peak too; `read_window` keeps the precursor
+   reading of a peak a window ion reads as its precursor - the caller named
+   that ion, and peaky's rule reads fragments only.
+
+The flag: `role` `'satellite'`, `order` 0, `offset` in line widths from the
+line, signed (negative below it); `note` e.g. `'side lobe of the line at
+161.0961: -2.32 line widths (-2.20 mDa), 1.01 % of it'`.
+
+**Known answer** (peaky's synthetic case): a centroid 2.2 mDa below a line 99x
+brighter (2.32 widths at a resolving power of 170 000, where an Orbitrap's
+negative lobe sits) reads as C7H14[15N]O3+, a sub-formula of the target only;
+at every energy it is a satellite. At 400 000 (5.5 widths), or with one peak
+only 40x weaker than its line, it is a fragment. On peaky's three public
+fixtures no peak peaky reads as a fragment or a precursor is a side lobe;
+113 of the 424 peaks it reads as unexplained are (section 10).
+
+### 5.3 The window's readings (`read_window`) and counts (`spectrum_counts`)
+
+`read_window(spectra, window_ions, *, k_max, tolerance, offset_ppm,
+allow_radical, keep=False)` reads each spectrum with `read_fragments` under its
+own key, with the same arguments. Each peak `flag_harmonics` flags, and each
+peak `flag_satellites` flags that no window ion reads as its precursor - a ghost
+first where both flag one - becomes **one row** laid out as an unexplained one
+(section 3, step 8), with `role` `'harmonic'` or `'satellite'` and `flag_note`
+the flag's note, at the place its first reading held. Every other row is as
+`read_fragments` writes it: whole peaks are replaced, so nothing is re-ranked
+and no other peak's `n_parents` moves. A flagged peak is therefore:
+
+- **in no fragment and no reading**: it has no formula, rank 0, and
+  `best_readings` keeps it as it keeps an unexplained row;
+- **no ladder step**: `ladder_gate` reads it as no reading (read the window at
+  `k_max=LADDER_K` and gate the result);
+- **out of the spectrum's TIC and peak count**: `spectrum_counts(readings)`
+  gives, per spectrum in the order the spectra first appear, `tic` (the summed
+  intensity of every peak that is not flagged, a peak with no intensity adding
+  0), `n_peaks`, and the flagged peaks counted apart, `n_harmonic` /
+  `harmonic_intensity` and `n_satellite` / `satellite_intensity`. Each
+  (spectrum, peak) counts once. A ghost is its line seen again and a lobe a
+  processing artifact of its line: counting either would count the line twice.
+
+`keep=True` reads every peak as `read_fragments` does, flagging none - for
+debugging, as peaky's `--keep-harmonics`.
+
+## 6. Constants
+
+In `mascope_tools.composition.ms2.readings`, but for the six of section 5,
+which are in `.hygiene`.
 
 | constant | value | role |
 |---|---|---|
@@ -269,13 +412,19 @@ All in `mascope_tools.composition.ms2.readings`.
 | `VALENCES` | C, Si 4; N, [15N], P 3; O, S 2; H, F, Cl, Br, I 1 | DBE (2 x DBE = 2 + sum((v - 2) n), `config.UNSATURATION_COEFFICIENTS` for the elements it lists) and Senior's second rule |
 | `H_OR_HALOGEN` | H, F, Cl, Br, I | an unnamed loss piece must hold one |
 | `ELEMENTS` | C, H, O, N, S, P, Si, F, Cl, Br, I, [15N] | the element axis, in peaky's order |
-| `CLOSED_SHELL_LOSSES` | 43 formulas | section 6 |
-| `RADICAL_LOSSES` | 16 formulas | section 6 |
+| `CLOSED_SHELL_LOSSES` | 43 formulas | section 7 |
+| `RADICAL_LOSSES` | 16 formulas | section 7 |
 | `DEFAULT_TOLERANCE` | `Tolerance(5.0, 0.3)` | the documented window |
 | `_GRID_CACHE` | `32` | sub-formula grids cached, per (composition, charge); `read_fragments` holds its window's grids for the call, so a larger window builds each once a call, not at every peak |
 | `_LOSS_CACHE` | `65536` | loss decompositions cached, per (loss, `k_max`) |
+| `HARMONIC_ORDERS` | `(2, 3)` | the harmonics read: nf, seen at m/z / n^2 |
+| `HARMONIC_PPM` | `40.0` ppm | how far a ghost may sit from m/z(line) / n^2: the calibration's higher terms put it -2 ppm off on peaky's fixture, tens of ppm on other files (2 mDa at m/z 50) |
+| `HARMONIC_CAP` | `{2: 0.005, 3: 0.08}` | the most a ghost holds of its line in the same spectrum: 2f five times the fixture's ghost (0.08-0.10 %; real ions at m/z / 4 of a line hold a few % to tens of %), 3f twice the few per cent a 3f ghost holds |
+| `HARMONIC_CLEAR_SN` | `10.0` | the S/N a reading above every cap needs to make its place an ion's |
+| `SATELLITE_RATIO` | `50.0` | how many times brighter than a side lobe its line is, at least: peaky's MS1 side-lobe guard's ratio |
+| `SATELLITE_FWHM` | `5.0` | how many of its line's widths (m/z / resolving power) a side lobe lies within: the outer edge of peaky's MS1 side-lobe band (1 to 5) |
 
-## 6. The loss library (priority order)
+## 7. The loss library (priority order)
 
 The library only **names** pieces and breaks ties between decompositions of
 equal size; a loss that is not a library formula is still read as one unnamed
@@ -296,9 +445,9 @@ N2O.
 **Radical** (`RADICAL_LOSSES`): H, CH3, HO, HO2, NO, [15N]O, NO2, [15N]O2, NO3,
 [15N]O3, CHO, CH3O, C2H5, Cl, Br, I.
 
-## 7. Outputs
+## 8. Outputs
 
-`read_fragments` and `ladder_gate` return a tuple of `Reading`:
+`read_fragments`, `ladder_gate` and `read_window` return a tuple of `Reading`:
 
 | field | type | meaning |
 |---|---|---|
@@ -321,15 +470,23 @@ N2O.
 | `n_parents` | int | parents with at least one reading of the peak; above 1 = composition-ambiguous |
 | `ladder_support` | str | the step a four-piece reading stands on (`ladder_gate`), else `''` |
 | `pieces` | tuple | the decomposition's pieces, as `loss_name` spells them |
+| `role` | str | `'precursor'` (a precursor reading), `'fragment'` (any other reading), `'unexplained'` (no window ion reads the peak) - all three follow from `rank` and `is_precursor`, and are written so whatever was given - or `'harmonic'` / `'satellite'`, a flagged peak's one row (section 5) |
+| `flag_note` | str | a flagged row's note, naming its line; `''` on every other row |
 
 `ms2.frame.readings_frame` builds a pandas DataFrame of them with fixed dtypes
-(`READINGS_COLUMNS`, every field but `pieces`), whatever the content.
+(`READINGS_COLUMNS`, every field but `pieces`), whatever the content. A role
+other than these five raises, and so do a flag role on a row of rank above 0
+and a `flag_note` on an unflagged row. `flag_harmonics` and `flag_satellites`
+return `{spectrum key: (PeakFlag or None, ...)}` (section 5);
+`spectrum_counts` returns a `SpectrumCounts` per spectrum (`spectrum`, `tic`,
+`n_peaks`, `n_harmonic`, `harmonic_intensity`, `n_satellite`,
+`satellite_intensity`).
 `fragment_candidates` returns the readings of one (peak, parent) as
 `FragmentCandidate`s (with `mz_theo` and `pieces`); `decompose_loss` returns a
 `LossDecomposition` (`pieces`, `unnamed`, `radical`, `k`, `name`) or None;
 `mass_offset` returns a `MassOffset` (`offset_ppm`, `anchors`).
 
-## 8. Properties and gotchas
+## 9. Properties and gotchas
 
 - **Composition, not attribution.** `n_parents` above 1 means two window ions
   can both make the peak; nothing here prefers one. In peaky's monoterpene
@@ -357,7 +514,7 @@ N2O.
 - **Deterministic.** Same input, same readings, across runs, with cold caches
   and under any hash seed (tested in two processes).
 
-## 9. Where it differs from peaky
+## 10. Where it differs from peaky
 
 - **Notation.** `[15N]` where peaky writes `^N`, and `utils.to_hill_order`'s
   order, which puts `[15N]` before `N` (`C6H17[15N]NO5+`; peaky writes
@@ -378,9 +535,22 @@ N2O.
 - **Shape.** `read_fragments` is peaky's `assign_fragments` returning `Reading`
   rows rather than a DataFrame (`readings_frame` builds one), with the window
   as one `Tolerance` and a `spectrum` key on each row; `ladder_gate` takes those
-  rows. Peaky's `read_window` (one window across energies, with harmonic
-  ghosts) has no counterpart here: the caller reads each spectrum, and the
-  ghosts are MAS-388's.
+  rows. `read_window` is peaky's `read_window` without the gate: one
+  window's spectra as a mapping of key to peaks, the ghosts and lobes flagged;
+  `ladder_gate` is the caller's (section 5.3).
+- **Side lobes are flags on the peak, out of the TIC.** Peaky tests the
+  fragments only (a fragment merged across the energies by its formulas and
+  m/z, `attribute.merge_fragment_peaks`) and keeps a lobe's peaks in the TIC,
+  unexplained. Here, as for a harmonic ghost, a lobe is the line seen again:
+  every peak but a window ion's precursor is tested, by its place across the
+  energies, and a lobe is out of the TIC and the peak count. So the TIC does
+  not depend on which window ions happen to read a lobe as a formula; only a
+  named precursor keeps one in. On peaky's three public fixtures the two
+  agree on every fragment and precursor (no lobe among them); the 113 lobes are
+  peaks peaky reads as unexplained and counts in its TIC.
+- **Where a window ion's precursor is a ghost**, peaky reads it as the ghost;
+  so does `read_window` (no MS2 scan holds a line at four or nine times its
+  window's m/z), while a lobe never takes a named precursor (section 5.2).
 
 ## References
 
@@ -391,5 +561,5 @@ N2O.
 - NIST. *Atomic Weights and Isotopic Compositions for All Elements*, version
   4.1 (2015), relative atomic masses from AME2012.
   [link](https://physics.nist.gov/cgi-bin/Compositions/stand_alone.pl)
-- Peaky, `docs/MS2.md` sections 1 to 9 and 11.2;
+- Peaky, `docs/MS2.md` sections 1 to 9, 11.2 and 11.12 (harmonic ghosts);
   [github.com/ultra-trace-systems/peaky](https://github.com/ultra-trace-systems/peaky).

@@ -86,6 +86,22 @@ Base = declarative_base(
 )
 
 
+def _instrument_link(**kwargs):
+    """The ``instrument_id`` beside a free-text ``instrument`` column.
+
+    Nullable, and SET NULL should an instrument row ever go: the string beside
+    it still says which instrument it was. Filled wherever the string is
+    written (``instruments.registry``), and by the migration that made it for
+    every row that carried a name then.
+    """
+    return mapped_column(
+        String(16),
+        ForeignKey("instrument.instrument_id", ondelete="SET NULL"),
+        nullable=True,
+        **kwargs,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Workspace & membership
 # ---------------------------------------------------------------------------
@@ -482,6 +498,7 @@ class Notification(Base):
     # The instrument whose files it is about, when it is about any, as the
     # first of them spelled it; instrument_key is what rows are matched on.
     instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     instrument_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     # How many events the row stands for.
@@ -586,6 +603,7 @@ class AgentDevice(Base):
     # the server knew the field. Reported, not verified, and not read by
     # routing, which still takes an upload's instrument from the file name.
     instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     # The person who approved the pairing and vouches for this machine.
     sponsor_user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
@@ -649,6 +667,7 @@ class Dataset(Base):
         server_default=text(f"'{dataset_config.DEFAULT_LOCKED_STATUS}'"),
     )
     instrument: Mapped[Optional[str]] = mapped_column(String(64))
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     icon: Mapped[Optional[dict]] = mapped_column(JSON)
     dataset_utc_created: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
     dataset_utc_modified: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
@@ -755,6 +774,7 @@ class DatasetTombstone(Base):
     dataset_description: Mapped[Optional[str]] = mapped_column(Text)
     dataset_type: Mapped[Optional[str]] = mapped_column(String(64))
     instrument: Mapped[Optional[str]] = mapped_column(String(64))
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     # The five descriptive fields of `Dataset` as one object:
     # {license, authors, keywords, related_identifiers, funding}.
     descriptive_metadata: Mapped[Optional[dict]] = mapped_column(JSON)
@@ -897,6 +917,51 @@ def _instrument_type_from_name(context) -> str | None:
     return resolve_instrument_type(instrument, throw=False)
 
 
+class Instrument(Base):
+    """An instrument, as a row of its own that outlives its files.
+
+    Until this table an instrument was ``SELECT DISTINCT sample_file.instrument``,
+    the first segment of a file's name: delete the last file and the instrument
+    was gone, with everything known about it. A row is made or touched when a
+    file of it is registered (``api.new.instruments.registry``)
+    and whenever another table records the name, and nothing deletes one.
+
+    ``name`` is that same string, spelled exactly as the files spell it: one
+    row per distinct string, as the instrument list (``GET /api/instruments``)
+    groups them. The free-text ``instrument`` columns stay beside the
+    ``instrument_id`` that links them here, and every read still goes through
+    them; the link is what a later change reads instead.
+
+    What the file says about the instrument fills the rest, where its reader
+    reports it: the model from a Thermo file, nothing from a TofDaq one, which
+    names its digitizer and not the instrument. The serial number and the
+    software version come only from Thermo's own reader, and ``cv_term`` (the
+    PSI-MS term for the model) from the controlled-vocabulary mapping; all are
+    NULL until something fills them.
+    """
+
+    __tablename__ = "instrument"
+
+    instrument_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    #: "orbi" or "tof", the class of the files it has registered. NULL for a
+    #: name only a mode's scope, a paired device or a notification has given.
+    instrument_type: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    vendor: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    serial_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    software_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    cv_term: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    created_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+    #: When a file of it was last registered. NULL for a name no file has
+    #: carried since the row was made.
+    last_seen_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+
 #: The sample file's deferred columns, which ``SampleFile.to_dict`` leaves out
 #: unless they were loaded. Named rather than read off the instance's unloaded
 #: set: after a commit every column of a row is unloaded, and to_dict reads
@@ -928,6 +993,7 @@ class SampleFile(Base):
     )
     filename: Mapped[str] = mapped_column(String(256), unique=True)
     instrument: Mapped[str] = mapped_column(String(64))
+    instrument_id: Mapped[Optional[str]] = _instrument_link(index=True)
     method_file: Mapped[Optional[str]] = mapped_column(String(512))
     datetime: Mapped[dt] = mapped_column(
         TIMESTAMP(timezone=False),
@@ -1237,6 +1303,84 @@ class AcquisitionStream(Base):
     stitch: Mapped[Optional[dict]] = mapped_column(
         JSON(none_as_null=True), nullable=True
     )
+
+
+class Ms2Group(Base):
+    """One MS2 group of a sample file: the group inventory.
+
+    A file's MS2 scans are grouped by polarity, parent peak and activation in
+    its MS2 store (``mascope_signal.ms2_store``), and this table holds one row
+    per group, so that which samples of a batch have MS2, of which
+    precursors, at what energies, is one query rather than a read of every
+    file (``docs/dev/ms2_analysis.md``, section 2.3).
+
+    **Written when the store is**, from the store and over all of each
+    group's scans (``Ms2Store.inventory``): when the file is registered after
+    its conversion, and when re-processing writes its store again or removes
+    it; the MS2 store backfill fills it for a file whose store was written
+    before. A file's rows are replaced whole each time, and go with the file.
+
+    **A sample's groups** are its file's in its polarity whose span meets
+    its window (``api/new/ms2/inventory.py``): a row is the file's, and a
+    sample reads the groups whose scans fall in its window, as it reads the
+    store.
+
+    The columns are the group's record in the MS2 summary, with what its
+    scans' filters give alike and its located precursor.
+    """
+
+    __tablename__ = "ms2_group"
+
+    # CASCADE: a group is a description of part of its file. The key leads
+    # with the file, so it is also the index that finds a file's groups, a
+    # sample's (by its polarity), and that the cascade walks.
+    sample_file_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_file.sample_file_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    polarity: Mapped[str] = mapped_column(String(1), primary_key=True)
+    # The group key's one string form (``ms2_store.group_key``): the parent
+    # peak m/z with four decimals, "@", the activation; "137.0960@hcd25.00".
+    precursor_key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    # The parent peak m/z the scans were grouped at, which the key spells.
+    parent_peak_mz: Mapped[float] = mapped_column(Float)
+    # As the scans' filters give it, "" when they name none.
+    activation: Mapped[str] = mapped_column(String(256))
+    # Parsed from the activation: "hcd", "cid@hcd" for a chained one; the
+    # NCE, NULL where the activation has no one energy.
+    activation_kind: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    nce: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # The HCD energies [V] the trailer gives, averaged over the scans, one
+    # per step within a scan: the summary's "hcd_energy".
+    hcd_energy: Mapped[list] = mapped_column(JSON)
+    # Every isolation width the scans used, narrowest first, each with its
+    # scan count: [{"isolation_width": 1.0, "scan_count": 12}].
+    isolation_widths: Mapped[list] = mapped_column(JSON)
+    scan_count: Mapped[int] = mapped_column(Integer)
+    # The first and last scan's time [s] from the start of the acquisition.
+    t_min: Mapped[float] = mapped_column(Float)
+    t_max: Mapped[float] = mapped_column(Float)
+    # The outer bounds of the scans' scan ranges [m/z].
+    low_mass: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    high_mass: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # The precursor (``docs/dev/ms2_analysis.md``, section 2.5), on the
+    # instrument's axis as the store holds it: located once per parent peak,
+    # in the lowest-energy spectrum of its groups that holds a candidate, so
+    # the same on every group of it - its m/z, its intensity there and that
+    # spectrum's activation; NULL for one located in none, and for a row of a
+    # store written before it was located.
+    located_precursor_mz: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    located_precursor_intensity: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True
+    )
+    located_precursor_activation: Mapped[Optional[str]] = mapped_column(
+        String(256), nullable=True
+    )
+    # This group's own peak followed from the located precursor; NULL where
+    # the precursor is spent.
+    precursor_mz: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    precursor_intensity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
 
 class SampleItem(Base):
@@ -1716,7 +1860,15 @@ class IonizationMechanism(Base):
 
 
 class IonizationMode(Base):
-    """Ionization mode configuration."""
+    """Ionization mode configuration: one version of an ionization setup.
+
+    A row is one version, and is not edited in what a run computes from it:
+    an edit of the polarity, the mechanisms or the collections inserts the
+    next version and marks this one inactive (``api.new.ionization.modes.
+    versions``). The name, the token and the instrument scope change no
+    result and are edited on the active row in place. A sample item keeps the
+    version it was bound under until it is re-processed.
+    """
 
     __tablename__ = "ionization_mode"
 
@@ -1732,6 +1884,7 @@ class IonizationMode(Base):
     # polarity and the scoped token covers the shared one, the instrument's own
     # wins; a name carrying two different tokens stays ambiguous.
     instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     ionization_mode_polarity: Mapped[str] = mapped_column(String(1))
     ionization_mechanism_ids: Mapped[list[str]] = mapped_column(JSON)
     # The chemistry this row stands for, the same string on every server, for
@@ -1739,8 +1892,30 @@ class IonizationMode(Base):
     # mode the deployment made, which is every mode it names itself. A row that
     # has one owns its name, polarity and mechanisms: only its target
     # collections are the deployment's to set.
-    system_key: Mapped[Optional[str]] = mapped_column(
-        String(64), nullable=True, unique=True
+    system_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    #: 1 for the setup as made, one more for each edit that changed what a
+    #: run computes from it.
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    #: False once a later version has replaced this one. Only active rows are
+    #: offered, routed to or edited; an inactive one is kept for what was
+    #: bound under it.
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true")
+    )
+    #: The isotopic purity of the setup's labelled reagent, the heaviest
+    #: isotope's fraction (``custom_elements.label_purity``): what a run reads a
+    #: labelled ion's envelope at. The library's own default (0.98, ``^N``'s
+    #: ``default_purity``; the models do not import the composition package),
+    #: so a setup that never set it searches as every run did before.
+    label_purity: Mapped[float] = mapped_column(
+        Float, default=0.98, server_default=text("0.98")
+    )
+    #: The version this one replaced, NULL on a first version.
+    supersedes_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("ionization_mode.ionization_mode_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     calibration_collection_id: Mapped[Optional[str]] = mapped_column(
         String(16),
@@ -1778,11 +1953,14 @@ class IonizationMode(Base):
         # Postgres counts NULLs as distinct: a plain composite would let two
         # unscoped modes share a token, which is the ambiguity this whole rule
         # exists to prevent.
+        #
+        # Among the active versions only: a superseded version keeps the
+        # token it had, and its successor usually has the same one.
         Index(
             "uq_ionization_mode_token_global",
             "ionization_mode_token",
             unique=True,
-            postgresql_where=text("instrument IS NULL"),
+            postgresql_where=text("instrument IS NULL AND is_active"),
         ),
         # Folded, like every other comparison of an instrument name
         # (`method_keys.instrument_key`): `ORBI-1` and `orbi-1` are one
@@ -1793,7 +1971,15 @@ class IonizationMode(Base):
             "ionization_mode_token",
             func.lower(instrument),
             unique=True,
-            postgresql_where=text("instrument IS NOT NULL"),
+            postgresql_where=text("instrument IS NOT NULL AND is_active"),
+        ),
+        # A chemistry Mascope ships is one setup on a server: every version of
+        # it carries the key, and one of them is active.
+        Index(
+            "uq_ionization_mode_system_key",
+            "system_key",
+            unique=True,
+            postgresql_where=text("is_active"),
         ),
     )
 
@@ -1824,6 +2010,7 @@ class MethodBinding(Base):
     # Digest of the three columns below; see method_keys.binding_digest.
     binding_key: Mapped[str] = mapped_column(String(64))
     instrument: Mapped[str] = mapped_column(String(64))
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     # "" when the instrument reported no method name, or one that never
     # varies. Such a binding keys on the signature class alone and yields to
     # the filename token.
@@ -2259,6 +2446,13 @@ class PeakAssignmentRun(Base):
     confidence_calibration: Mapped[Optional[dict]] = mapped_column(
         JSON(none_as_null=True)
     )
+    # The mass-error width an imported run's engine disclosed it scored at:
+    # ``sigma_ppm``, ``sigma_source``, ``mu_ppm``, ``mu_source``. An in-app
+    # run keeps the same numbers in its config's ``pattern_scoring`` snapshot,
+    # which the runs listing reads instead; an import's config is opaque, so
+    # its disclosure needs a place of its own. NULL for in-app runs and for
+    # imports that disclosed none.
+    scoring_width: Mapped[Optional[dict]] = mapped_column(JSON(none_as_null=True))
     # The importing client's own id for the logical import. What makes the
     # request that *creates* a run idempotent: the row-offset check covers every
     # later chunk, but the first one has no run id yet to be idempotent about,
@@ -2838,6 +3032,7 @@ class InstrumentFunction(Base):
 
     instrument_function_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     instrument: Mapped[str] = mapped_column(String(64))
+    instrument_id: Mapped[Optional[str]] = _instrument_link()
     method_file: Mapped[str] = mapped_column(String(512))
     datetime_utc: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
     peakshape: Mapped[Optional[dict]] = mapped_column(JSON)
@@ -3027,7 +3222,8 @@ class AssignmentCalibration(Base):
     Keyed by ``(instrument, score_version)`` because a curve is only valid for the fit-score
     version it was fit against; ``is_active`` marks the row the loader reads (refitting flips the
     previous one inactive). When the table has no active row the loader falls back to the in-code
-    provisional curve, so this is additive and safe to ship empty.
+    provisional curve, so this is additive and safe to ship empty. ``instrument`` is the
+    instrument class ("orbi", "tof"), not an instrument's name, so it links no ``instrument`` row.
     """
 
     __tablename__ = "assignment_calibration"
@@ -3045,6 +3241,12 @@ class AssignmentCalibration(Base):
     source: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     provisional: Mapped[bool] = mapped_column(Boolean, default=True)
     corroboration_weights: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    #: The ionization setups the curve's labels were scored under, each
+    #: ``{"ionization_mode_id": ..., "version": ...}``: the reagent chemistry
+    #: the key above cannot say. Recorded, not keyed on - a run under another
+    #: setup still reads this curve, with a warning
+    #: (``calibration_store.load_calibration``). NULL where none is known.
+    ionization_setups: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     fit_utc: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
@@ -3356,6 +3558,7 @@ __all__ = [
     "SampleBatch",
     "SampleFile",
     "AcquisitionStream",
+    "Ms2Group",
     "SampleItem",
     "TargetCollection",
     "TargetCollectionInSampleBatch",
@@ -3380,6 +3583,7 @@ __all__ = [
     "BatchPeakRun",
     "BatchPeakRunAnchor",
     "AttributeTemplate",
+    "Instrument",
     "InstrumentFunction",
     "ReferenceSource",
     "ReferenceCompound",

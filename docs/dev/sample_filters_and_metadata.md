@@ -269,6 +269,7 @@ counts simple, and `v` leaves room for it.
 | `mz_range` | the sample's m/z bounds: its file's today, its stream's once files are split | `covers: [a, b]` (the sample's range contains it) or `overlaps: [a, b]`. Needs numeric columns (section 6) |
 | `instrument_type` | `sample_file.instrument_type` | `orbi` / `tof` |
 | `method` | `method_keys.method_key(sample_file.method_file)` | groups "similar hardware settings" where the method name varies |
+| `ms2` | the sample's MS2 groups in `ms2_group`: its file's, in its polarity, whose span meets its window, as the samples listing counts them (`ms2_group_count`) | `{"has": true}` ("has MS2"), `{"precursor": {"mz": 137.096, "tolerance": 0.005}}` ("fragmented this precursor", on `parent_peak_mz`), optionally with `activation_kind` or an `nce` range. Typed columns, so no metadata schema is needed; Orbitrap only, a TOF sample has none (`ms2_analysis.md`, section 2.3) |
 | `metadata` | effective acquisition metadata (section 4.4) | phase 2; operators by field type: `eq`, `any_of`, `between`, `exists` |
 
 Facets: a second route returns counts per value for each clause under the
@@ -647,6 +648,12 @@ phase 1 depends on nothing.
 - **The user guide [Reference compound lists](../user/guides/reference-lists.md)**:
   the header keys it documents as "read, but nothing acts on them yet" gain
   their consumer, and the source row records them.
+- **`ms2_analysis.md`**: its group inventory (section 2.3) is acquisition
+  metadata of the typed kind, keyed to the file as this design keys
+  metadata, and is the `ms2` clause's source (section 4.1). It is written
+  at conversion and filled by its backfill, so the clause needs nothing
+  from this design but its grammar and its facet (samples with and without
+  MS2, per precursor).
 - **`peak_assignment_batch_primary.md`**: unchanged. A refresh is incremental arrival
   into a batch, the case its frozen anchors exist for.
 - **`ui_state_persistence.md`**: the location chain is unchanged, since a

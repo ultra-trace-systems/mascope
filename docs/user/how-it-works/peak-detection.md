@@ -72,10 +72,12 @@ $$\text{Window}_{\text{baseline}} = \pm \max\left(0.5,\ 10 \cdot w\right)$$
 
 Every fitted peak's core, $\pm 3w$ around its centre, is cut out of the window, not only the peak's own: in a TOF spectrum the window holds the peak's wings and its neighbours at the same unit mass, and counting them as noise would make the noise grow with the heights around the peak.
 The local noise ($\sigma_{\text{noise}}$) is the median absolute deviation of the remaining points, scaled to a standard deviation, so a peak too small to be fitted does not count as noise either.
-Where the baseline is mostly empty, that deviation is zero: the spectrum is counting single ions, as an ambient-mode TOF's often is, and each ion is a short blip above zero.
-The noise there is the height of one ion: the median height of the blips in the empty stretches of the whole spectrum, leaving out any that reach into a fitted peak.
-Where the standard deviation of the remaining points is larger, it stands in.
-So over an empty baseline a peak's $\text{SNR}$ is about the number of ions it holds, and a peak of a few stray ions stays below the gates that read the $\text{SNR}$.
+Where the baseline is mostly empty, that deviation is zero, and the standard deviation of the remaining points stands in.
+Such a spectrum is counting single ions, as an ambient-mode TOF's often is, and each ion is a short blip above zero.
+One ion's height is the median height of the blips in the empty stretches of the whole spectrum, leaving out any that reach into a fitted peak.
+No peak's noise is less than that height, whether its own baseline is empty or about half filled with stray ions: nothing stands less than one ion above its baseline.
+So over a sparse baseline a peak's $\text{SNR}$ is about the number of ions it holds, and a peak of a few stray ions stays below the gates that read the $\text{SNR}$.
+A spectrum with no mostly empty stretch has no single ion to measure, and its noise is the deviation alone.
 A peak with no baseline left in its window has no $\text{SNR}$, nor has one over a flat baseline in a spectrum with no single ion to measure.
 
 The localized signal-to-noise ratio is given by:
@@ -98,7 +100,33 @@ The cumulative peak area is computed by evaluating the predefined empirical peak
 ## Quality Control Filtering
 
 ### Signal-to-Noise Ratio
-Peaks exhibiting a signal-to-noise ratio ($\text{SNR}$) below a strict threshold ($\text{SNR} < 3$) are flagged as weak.
+Peaks exhibiting a signal-to-noise ratio ($\text{SNR}$) below a strict threshold ($\text{SNR} < 3$) are flagged as weak, on Orbitrap and on TOF files alike.
+A peak with no $\text{SNR}$ is not flagged by this cutoff.
+
+A weak peak stays in the file's peak store but is left out wherever peaks are read by default: the peak list, the peak marks on the spectrum, m/z calibration and assignment.
+
+On a TOF file whose baseline is mostly empty, typically an ambient-mode file with no reagent ion, the noise is the height of one ion, so the cutoff means about three ions.
+The fit keeps a cluster of one or two stray ions at most unit masses of such a spectrum, and these are now weak: such a file lists a fraction of the peaks it did.
+A real ion of only one or two counts is hidden with them.
+What decides how many peaks a TOF file loses is how full its baseline is, not whether it has a reagent ion.
+A file with a sparse baseline, a reagent-ion one included, loses most of its small peaks as well.
+Where the baseline holds many counts, as on most reagent-ion files, nearly every peak stands well above the cutoff.
+
+TOF files detected before this flag existed keep their peaks unflagged until they are reprocessed.
+An Orbitrap file without its raw file, detected on the TOF path, keeps its earlier $\text{SNR}$ and flags no peak weak.
+
+### Local Floor (Orbitrap)
+An Orbitrap peak's $\text{SNR}$ is the instrument's: its noise is one figure for a wide stretch of the spectrum, and it does not follow a floor that rises locally.
+Around a dominant ion, such as a chemical-ionization reagent ion of millions of counts, a spectrum averaged over many microscans holds a continuous floor of maxima, a centroid every few ppm over several Da.
+Averaging lowered the noise and left the floor, so each of its maxima reads an $\text{SNR}$ far above the threshold, and such a file can hold tens of thousands of them.
+
+An Orbitrap peak is therefore also measured against the peaks of its own spectrum (its polarity, or its scan stream) within $\pm 3000\text{ ppm}$ of its m/z.
+Where that window holds at least $300$ other peaks, one every $20\text{ ppm}$ on average, the stretch is a floor rather than a list of resolved ions, and a peak lower than $5$ times the median height of the window's peaks is flagged as weak.
+The window is wide so that the comb of side lobes a few hundred ppm either side of a reagent ion, dense over too short a stretch to fill it, is left to the satellite flag below.
+An ion standing five times out of the floor is kept; a real ion weaker than that is flagged weak with the floor.
+Where the window holds fewer peaks, the stretch says nothing of a floor, and its peaks are judged by their $\text{SNR}$ alone.
+
+An Orbitrap file detected before this rule keeps its earlier flags until it is reprocessed, or until an operator flags its stored peaks again in place.
 
 ### Satellite Peak Identification
 Fourier-transform and Orbitrap mass spectrometers can generate electronic ringing artifacts, apodization side lobes, or high-intensity harmonic shoulders flanking major ionic signals.
@@ -107,7 +135,9 @@ These are formally classified as satellite peaks and must be flagged to prevent 
 The algorithm targets artifacts generated exclusively around dominant ionic signals.
 Potential parent components (base peaks) are isolated using an intensity criterion.
 Peaks are classified as base candidates if their intensities meet or exceed a percentile threshold of $99\%$.
-If the total count of candidates exceeds $20$, the array is trimmed to keep only the top $20$ most intense parent profiles across the dataset.
+If the total count of candidates exceeds $20$, the array is trimmed to keep only the top $20$ most intense parent profiles of the spectrum.
+A raw Orbitrap file is judged one spectrum at a time: each polarity on its own, or each scan stream when its peaks are detected per stream.
+A peak is only ever a satellite of a strong peak of its own spectrum, and one spectrum's strong peaks do not take the bases of another.
 
 For each validated base peak with coordinates $(m/z_{\text{parent}}, I_{\text{parent}})$, a localized search range is established.
 A bounding mass tolerance $\Delta m/z_{\text{win}}$ is computed:
@@ -144,3 +174,55 @@ Any remaining unflagged candidate that fails the symmetry criteria can still be 
 More distant satellites require the mirror-pair evidence above, since dense spectra carry genuine weak peaks at tens of ppm from strong ones.
 
 Following evaluation across all base peaks, the boolean status is mapped back to the original index positions and appended to the output dataset.
+
+### The Instrument's Side-Lobe Flag (Orbitrap)
+An Orbitrap marks some of the centroids it records in each scan ([Thermo Fisher Scientific, RawFileReader](#thermo-rfr)).
+The Exception mark says that the instrument reads the centroid as a weak side lobe of a brighter peak beside it: the ringing a Fourier transform leaves around an intense line ([Mathur and O'Connor, 2009](#mo09)).
+About one centroid in twenty carries it on the published demo raws, and more on some acquisition methods.
+Mascope reads the mark for every Orbitrap file it detects from its raw file.
+
+The summed spectrum averages the scans, so a peak of it holds a centroid from most of them.
+For each peak, the centroids that the averaged scans recorded within half the peak's width of its m/z are counted, together with how many of them carry the mark:
+
+$$s = \frac{N_{\text{Exception}}}{N_{\text{centroids}}}, \qquad |m/z_{\text{centroid}} - m/z_{\text{peak}}| \le \frac{m/z_{\text{peak}}}{2R}$$
+
+where $R$ is the peak's resolution.
+A peak with $s > 0.5$ is the instrument's side lobe, and is flagged as a satellite like those above.
+The share is nearly all or nothing: of the peaks with any marked centroid, 85 % have $s > 0.8$.
+These lobes sit about 30 ppm from their parent, at well under a percent of its height.
+Most of them clear the signal-to-noise threshold, and the ratio test above, which only takes the strongest peaks as bases, misses about half of them.
+
+The instrument marks a centroid by where it sits, not by what it is, and a real isotope line can sit where it expects a lobe.
+An ion's $^{2}\text{H}$ line lies 2.92 mDa above its $^{13}\text{C}$ line, about 2.4 peak widths at m/z 150 to 230, and is marked whenever the $^{13}\text{C}$ line is bright.
+So a marked peak is kept when it sits on an isotopologue line of a peak that is not marked.
+The lines are those of $^{13}\text{C}$, $^{2}\text{H}$, $^{15}\text{N}$, $^{17}\text{O}$, $^{18}\text{O}$, $^{34}\text{S}$, $^{37}\text{Cl}$ and $^{81}\text{Br}$, at their spacing $\Delta$ above the other peak ([Coursey et al.](#nist-iso)):
+
+$$|m/z_{\text{peak}} - m/z_{\text{other}} - \Delta| \le \max\left(\frac{m/z_{\text{peak}}}{2R},\ 1\ \text{ppm}\right)$$
+
+The tolerance is half the peak's width because a real line and a lobe on top of it are averaged into one peak, centroided between the two.
+The marked peak's height also has to be one that line can have beside the other peak.
+For $^{13}\text{C}$ that is between 0.004 and 0.5 of it, about half a carbon to 47 carbons, and never above 1.5 times what the most carbons the other peak's mass can hold would give.
+For the other lines, the same range is scaled by their abundance per atom over that of $^{13}\text{C}$.
+A lobe of a peak's own isotope line sits one spacing above the same lobe of the peak, which is marked too, so it is not kept by this rule.
+$^{29}\text{Si}$ is left out: its spacing falls 3.8 mDa below that of $^{13}\text{C}$, where the negative lobe of an ion's $^{13}\text{C}$ line sits.
+The exemption follows the side-lobe guard of the reference engine, peaky ([sidelobes.py](#peaky-sl)).
+
+Measured on the 165 demo raws and 88 Orbitrap files of three instruments, the instrument marks over half the centroids of 6.5 % of the peaks above the noise.
+Of those, 22 % sit on an isotopologue line and are kept.
+The rest are satellites, 5.0 % of the peaks above the noise; 2.1 % were not satellites before and now leave the peak list.
+The summed spectrum itself does not change: it still holds every centroid the instrument recorded, marked or not.
+
+#### References
+
+- <a id="thermo-rfr"></a>Thermo Fisher Scientific. *RawFileReader*, the `PeakOptions`
+  of a centroid (Reference, Exception, Merged, Fragmented).
+  [link](https://github.com/thermofisherlsms/RawFileReader)
+- <a id="mo09"></a>Mathur, R.; O'Connor, P. B. *Artifacts in Fourier transform mass
+  spectrometry.* Rapid Communications in Mass Spectrometry 2009, 23(4):523–529.
+  [link](https://doi.org/10.1002/rcm.3904)
+- <a id="nist-iso"></a>Coursey, J. S.; Schwab, D. J.; Tsai, J. J.; Dragoset, R. A.
+  *Atomic Weights and Isotopic Compositions with Relative Atomic Masses.* NIST Standard
+  Reference Database 144. [link](https://www.nist.gov/pml/atomic-weights-and-isotopic-compositions-relative-atomic-masses)
+- <a id="peaky-sl"></a>peaky, the reference assignment engine: `chem/sidelobes.py`, its
+  isotopologue and fine-structure exemptions.
+  [link](https://github.com/ultra-trace-systems/peaky/blob/main/peaky/chem/sidelobes.py)

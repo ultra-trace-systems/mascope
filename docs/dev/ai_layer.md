@@ -3,7 +3,7 @@
 # Mascope AI layer: Design & Plan
 
 - **Status:** building
-- **As of:** 2026-10-26
+- **As of:** 2026-10-27
 - **Tracked in:** [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) (Linear, MAS-123 to MAS-142)
 - **What:** A natural-language agent over the SDK, read-only first, with a confirmed write path later.
 
@@ -23,14 +23,15 @@ open questions that draft flagged are resolved here against the backend source,
 its appendix is corrected, and the staging is revised around a constraint the
 draft missed (section 1.3).
 
-> **Status (2026-10-26).** Building, in the Linear project
+> **Status (2026-10-27).** Building, in the Linear project
 > [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) (appendix B):
 > phase 0 is mostly done (MAS-123, MAS-125, MAS-126, MAS-127, MAS-142, MAS-202,
 > MAS-264, MAS-277 and MAS-278 Done; MAS-433 open), phase 1 has started
 > (MAS-128 part 1 merged 2026-10-21 as `libraries/ai`; MAS-129, the oracle and
 > the manifest, done; MAS-131 adds the evaluation fixture, phase 1 below;
-> MAS-130 open), the backend half of phase 3 is done (MAS-136, the
-> write routes; MAS-137, the SDK write wrappers; MAS-138 open), and phases 2 and
+> MAS-130 adds the MCP server, `mascope-ai mcp`), the backend half of phase 3
+> is done (MAS-136, the write routes; MAS-137, the SDK write wrappers;
+> MAS-138 open), and phases 2 and
 > 4 have not started. The design revision below is from 2026-10-19: written and
 > verified against the tree on 2026-08-11 and committed 2026-10-14 as written. Section 1 and the appendix were re-read against
 > `develop` on 2026-10-19, the first step of the plan: the SDK's write path
@@ -72,6 +73,11 @@ Four RPC-style POSTs are queries, not mutations
 though `peaks/timeseries` computes and stores a peak's time series the first
 time it is asked for one, which `compute_peak_timeseries` drives on purpose
 ([samples.py:671-778](../../libraries/sdk/src/mascope_sdk/resources/samples.py)).
+The toolkit treats filling that cache as a read (MAS-531): it is derived from
+the sample's data, under the same guest ACL `load_timeseries` already fills it
+with, and changes no object of the user's. `compute_timeseries` is bounded by
+its cap of peaks per call (500, a ceiling the toolkit is built with), not by
+plan/apply.
 The high-level loaders stamp the server's provenance block (deployment id,
 `mascope_version`, `match_score_version`, `peak_assignment_engine_version`) on
 every frame they return as `df.attrs["provenance"]`: the five loaders stamp
@@ -249,7 +255,7 @@ Consequences:
 
 - **The organisation routes the SDK's write wrappers need are token-reachable
   since phase 3** (2026-10-20): dataset create, update, move and delete; batch
-  update, copy and delete; sample update, move and copy; collection create,
+  update, copy and delete (and move, MAS-552); sample update, move and copy; collection create,
   update and delete; compound add, update and remove; and aggregate `/save`
   and `/resave`, each opened after reading its ACL and side effects
   (appendix). The rest of the organisation surface (dataset-level and
@@ -367,7 +373,10 @@ The toolkit is the asset; transports are disposable adapters.
 ```
 
 Near-term: an MCP server driven by Claude Code, heavy compute in local Python
-via Bash, the user's own token and subscription. Long-term: a chat panel in the
+via Bash, the user's own token and subscription. The toolkit is published to
+PyPI as `mascope-ai`, so its users need no checkout: `pip install mascope-ai`,
+`mascope-ai setup`, then `claude mcp add mascope -- mascope-ai mcp`. A
+developer runs the same server from a checkout's environment instead. Long-term: a chat panel in the
 web app over Anthropic's code-execution sandbox with programmatic tool calling
 (PTC) — the sandbox has no network access, so `mascope_ai` calls pause the
 container, execute server-side with the user's credentials, and return data
@@ -419,6 +428,7 @@ load_timeseries(compound=None, ion=None, isotope=None, *,
                 dataset=None, batches=None) -> Frame
 load_spectrum(sample, mz_range=None) -> Frame
 load_peaks_by_stage(sample, stages) -> Frame
+compute_timeseries(sample, mz_range=None, *, max_peaks=500) -> dict
 ```
 
 `find` is one fuzzy entry point rather than four `list()` calls; it is backed
@@ -443,6 +453,14 @@ outright; otherwise it loads sample by sample through the SDK's concurrent
 fetch, keeps a running row count, and stops at the cap, raising with the count
 reached and the samples left unloaded so the model narrows the query itself.
 A Frame above the cap is never materialised. Loads never prompt.
+
+`compute_timeseries` (MAS-531) has the server compute the per-scan time series
+a stage left out, so that the stage loaded again is whole. Its cost is one
+request per peak, the data file read back for each, so its cap is in peaks:
+it counts the peaks without a series first and refuses before computing any
+when they are more than `max_peaks`, naming the count, so the model narrows
+`mz_range`. 500 is the default and the most a call may ask for; the ceiling
+is set when the toolkit is built.
 
 ### 3.3 Tool surface: the oracle
 
@@ -556,7 +574,14 @@ Each phase is intended to land independently and leave the system shippable.
   package `mascope_ai`), oracle wrappers with condensed verdicts, `chart`/
   `table`, provenance manifest.
 - MCP server exposing the thin tool set; heavy work documented as the
-  local-Python path (Bash + `mascope_ai` imports), mirroring peaky.
+  local-Python path (Bash + `mascope_ai` imports), mirroring peaky. Built
+  in MAS-130 as `mascope_ai.mcp`, run as `mascope-ai mcp` beside an
+  idempotent `setup`, a `list` of what there is and the skill text
+  (`mascope-ai skill`); the [library's README](../../libraries/ai/README.md#the-mcp-server)
+  describes it. Its loaders answer with a Frame's handle, which Python on the
+  same machine opens from the shared session directory; no result passes
+  4 KB, and every name Mascope returns comes back as an inert JSON string.
+  `chart` and `table` wait for the `mascope_viz` artifacts (MAS-237).
 - **Evaluation fixture**: a golden-question set against the demo dataset
   (metadata, analysis, and interpretation questions with known answers),
   runnable as pytest against the demo stack. This is the acceptance test for
@@ -582,7 +607,7 @@ answered wrongly, failed, or **not answerable**: a solver raises
   why, and the session ends with the run's report. `uv run python
   libraries/ai/tests/ai_golden.py run --url ...` prints the same report
   without pytest; `list` prints the table below.
-- **Reference values.** The answers are those of demo bundle 1.4.2, the
+- **Reference values.** The answers are those of demo bundle 1.4.3, the
   registry's default, which CI's stack loads. The numbers come from the
   bundle's goldens (`expected/peaks.parquet`, `expected/ions.parquet`).
   Where a question can be checked against them, a hermetic test holds the
@@ -619,6 +644,12 @@ answered wrongly, failed, or **not answerable**: a solver raises
   given the toolkit and `ai_golden.py prompts`. Its transcript is kept
   under [`libraries/ai/tests/golden_transcripts/`](../../libraries/ai/tests/golden_transcripts/README.md),
   which says how to run it. MAS-130's verification is the first such run.
+  **Runs:** 2026-10-27, Claude Sonnet 5.5 over the MCP server, the analysis
+  questions with the machine's Python too
+  ([transcript](../../libraries/ai/tests/golden_transcripts/2026-10-27-sonnet-mcp.md)):
+  15 of 15 right, the largest tool result 2.2 KB. The round before missed A1
+  and A2: it read a batch's time series scan by scan, until the skill and
+  the loaders' descriptions said it is one point per sample.
 - **Extending it.** A skill (phase 2) or a new oracle wrapper adds its
   questions to `QUESTIONS` with known answers from the demo data, and
   regenerates the table below.
@@ -721,6 +752,48 @@ apply(plan_id: str, confirm_token: str) -> Receipt
 Every write maps to a verified endpoint + ACL (appendix); the plan builder
 surfaces the required role in the plan itself so a doomed apply fails at
 planning time, not approval time.
+
+**As built (MAS-138).** `mascope_ai.plans` and `mascope_ai.writes`; the
+library's README has the usage. What the sketch above did not know:
+
+- **No batch moves, at first.** No route moved a batch into another dataset
+  (the appendix listed update, copy and delete only), so `plan_organize`
+  moved datasets into workspaces and samples into batches, and refused a
+  batch. MAS-552 added `POST /api/sample/batches/{id}/move`, which
+  reassigns the batch's dataset in one transaction (it keeps its ID,
+  samples and collections), `batches.move` in the SDK, and a
+  `Move(batch, dataset)` arm: within the client's workspace, refusing at
+  planning an ACQUISITION batch or destination and a locked destination,
+  and asking for the global admin role for a locked batch or source dataset.
+- **A moved sample is a new sample.** The server's sample move creates
+  each item anew in the destination batch and deletes the old one, so the
+  receipt names the batch, not the samples, and the plan says so.
+- **The token** is an HMAC of the plan's ID, its digest (of everything the
+  plan says and does) and a nonce, under a key the transport's `Approver`
+  keeps in memory. A plan gated hard is approved only with
+  `irreversible=True`. The CAS is an exclusive create of a claim file in
+  the session directory, so it holds across processes sharing the session.
+  A model with a shell on the same machine holds the user's SDK token
+  anyway: the gate binds approvals to plans on the tool surface, and the
+  coding agent's own shell prompt is what guards the shell.
+- **The compound namespace.** No builder calls the compound routes. A new
+  collection's compounds are created through the collection route, which
+  fills a missing CAS number or structure into an existing shared compound
+  record; `plan_collection` therefore refuses compounds that give either
+  unless `allow_global=True`.
+- **The MCP transport's `apply` tool** (MAS-544) takes the plan's ID
+  alone and applies only plans that server made. Its description lists
+  the plans waiting for approval, rendered for the person, and the server
+  sends `tools/list_changed` when that list changes, so Claude Code's
+  permission prompt shows what a call approves. The list is bounded below
+  the client's cut of a description (4096 characters by default), the
+  warnings of each plan ahead of its changes, and `apply` refuses a plan
+  the list does not show in full. When the call runs, the
+  server mints the token and applies. A hard gate asks for no second
+  confirmation (MCP elicitation): the permission prompt is already one per
+  call, its text says the plan cannot be undone, and elicitation is a
+  capability not every client has, so the prompt would have to suffice
+  without it anyway.
 
 ---
 
@@ -827,7 +900,7 @@ a token.
 | Capability | Endpoints | ACL | Token |
 |---|---|---|---|
 | Datasets ([dataset_routes.py](../../server/backend/src/mascope_backend/api/routes/dataset/dataset_routes.py)) | `POST /api/workspaces/{ws}/datasets`, `PATCH/DELETE .../{id}`, `POST .../{id}/move` | workspace editor (move: editor on both workspaces); a locked dataset needs global admin to update, delete or move | **yes** (phase 3): all four |
-| Batches ([sample_batches_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/sample_batches_routes.py)) | `POST /api/sample/batches`, `PATCH /{id}`, `PATCH /status`, `POST /{id}/import`, `POST /{id}/copy`, `DELETE /{id}`; background jobs `POST /{id}/peaks` (batch-peak aggregation), `POST /{id}/export_peaks` and `POST /{id}/export/spreadsheet` ([batches/export/routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/export/routes.py), included in this router) | dataset editor to create; batch editor otherwise, the background jobs included (status: editor on every listed batch; copy: also editor on the destination dataset); locked: update needs global admin, delete needs owner, import into it and copy into a locked dataset are refused | **yes** (phase 3): update, copy, delete |
+| Batches ([sample_batches_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/sample_batches_routes.py)) | `POST /api/sample/batches`, `PATCH /{id}`, `PATCH /status`, `POST /{id}/import`, `POST /{id}/copy`, `POST /{id}/move`, `DELETE /{id}`; background jobs `POST /{id}/peaks` (batch-peak aggregation), `POST /{id}/export_peaks` and `POST /{id}/export/spreadsheet` ([batches/export/routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/export/routes.py), included in this router) | dataset editor to create; batch editor otherwise, the background jobs included (status: editor on every listed batch; copy and move: also editor on the destination dataset); locked: update and move need global admin (a move also for a locked source dataset), delete needs owner, import into it and copy or move into a locked dataset are refused; a move refuses ACQUISITION batches and datasets | **yes** (phase 3): update, copy, delete; move (MAS-552) |
 | Samples ([sample_items_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/items/sample_items_routes.py)) | `POST /api/sample/items`, `PATCH /{id}`, `POST /move`, `/copy`, `/delete`, `/process`, `/{id}/export_peak_data`, `DELETE /{id}` | editor (copy: **guest** on source, editor on destination batch; move: editor on both); locked: update and delete need owner, move refuses a locked source item or destination, copy a locked destination | **yes** (phase 3): update, move, copy |
 | Target collections ([target_collections_routes.py](../../server/backend/src/mascope_backend/api/routes/target/collections/target_collections_routes.py)) | `POST/PATCH/DELETE /api/target/collections[/{id}]`; association via the `sample_batch_ids` payload field | workspace editor (global collection: global admin or superuser); batches-only update: guest on collection + editor on changed batches | **yes** (phase 3): all three |
 | Target compounds ([target_compounds_routes.py](../../server/backend/src/mascope_backend/api/routes/target/compounds/target_compounds_routes.py)) | `POST/PATCH /api/target/compounds`, `DELETE /{id}` | **global editor only — no workspace ACL** | **yes** (phase 3): all three |
@@ -891,6 +964,8 @@ carries its user's rights, no more.
 | `describe` collection | `GET /api/target/collections/{id}` | collection guest | **opened** |
 | `load_peaks`, `load_peaks_by_stage` | `GET /api/samples/{id}/peaks` | sample guest | yes |
 | `load_timeseries` | `POST /api/samples/{id}/peaks/timeseries` | sample guest | yes |
+| `compute_timeseries`: the peaks, and those with a series | `GET /api/samples/{id}/peaks` | sample guest | yes |
+| `compute_timeseries`: a time-series cache fill, treated as a read | `POST /api/samples/{id}/peaks/timeseries` | sample guest | yes |
 | `load_spectrum` | `GET /api/samples/{id}/spectrum` | sample guest | yes |
 | provenance of every Frame | `GET /api/provenance` | global guest | yes |
 | `match_compounds` | `POST /api/match/aggregate/sample/{id}/compounds` | sample guest | yes |

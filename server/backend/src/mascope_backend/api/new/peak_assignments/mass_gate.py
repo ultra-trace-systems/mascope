@@ -727,7 +727,7 @@ def fit_run_mass_accuracy(
     The source's own monoisotopic lines anchor it beside the commits
     (:func:`reagent_line_errors`), pooled with them. The reagent-line offset
     reads the same pre-pass where a target library is too thin
-    (``engine.reagent_line_offset``), but only the reagent's ladder and the
+    (``mass_accuracy.reagent_line_offset``), but only the reagent's ladder and the
     calibrant beam, isotope lines included: it leaves out the air's ions, which
     sit where the axis bends. Here every family is wanted, monoisotopic lines
     only: on a charge-transfer source the air's ions are the mode's calibration

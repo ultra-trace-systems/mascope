@@ -19,7 +19,20 @@ RUN echo "MASCOPE_RUNTIME='${MASCOPE_RUNTIME}'" >> .env.production
 # build frontend
 COPY NOTICE LICENSE /src/
 COPY server/frontend/ ./
-RUN npm install
+# Install exactly what package-lock.json names, as CI's frontend jobs do. npm
+# still drops an optional dependency it fails to fetch without a word, and the
+# build needs two that are: the platform's native bindings of rolldown (vite's
+# bundler) and of lightningcss (vite's CSS minifier). Without either,
+# `npm run build` fails with "Cannot find native binding" or "Cannot find
+# module". Loading both packages checks their bindings are there; when one is
+# not, install once more, and fail here, with the loader's error naming the
+# package, if it is still missing.
+RUN npm ci --no-audit --no-fund && \
+    if ! node -e "require('rolldown'); require('lightningcss')"; then \
+        echo "a native binding is missing after npm ci (error above); installing again" >&2 && \
+        npm ci --no-audit --no-fund && \
+        node -e "require('rolldown'); require('lightningcss')"; \
+    fi
 RUN npm run build
 
 # DOCS BUILDER

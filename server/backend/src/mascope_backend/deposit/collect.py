@@ -17,7 +17,7 @@ import json
 import re
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from importlib import metadata
 from typing import Any
@@ -152,9 +152,12 @@ async def collect_package(dataset_id: str) -> Package:
         provenance["generated_utc"], "%Y-%m-%dT%H:%M:%SZ"
     ).replace(tzinfo=timezone.utc)
 
-    models = await asyncio.to_thread(
-        lambda: {
-            sample_file.sample_file_id: export._instrument_model(sample_file.filename)
+    models = await export.instrument_models_of(
+        {
+            sample_file.sample_file_id: (
+                sample_file.filename,
+                sample_file.instrument_type,
+            )
             for sample_file in records.files
         }
     )
@@ -299,6 +302,7 @@ async def _read_records(session, dataset: Dataset) -> _Records:
                 .where(IonizationMode.ionization_mode_id.in_(sorted(mode_ids)))
                 .order_by(
                     IonizationMode.ionization_mode_name,
+                    IonizationMode.version,
                     IonizationMode.ionization_mode_id,
                 )
             )
@@ -585,9 +589,24 @@ def _batch(
     return entry, spreadsheet
 
 
+#: The Verifications sheet's columns a deposit leaves out: a verdict's
+#: free-text note, written for colleagues rather than a public record, and the
+#: id of the user who judged it, which means nothing off the server it came from.
+_UNPUBLISHED_VERIFICATION_COLUMNS = ("note", "verified_by")
+
+
 async def _spreadsheet(sample_batch_id: str) -> bytes:
-    """A batch's spreadsheet, as the app's export writes it."""
+    """
+    A batch's spreadsheet, as the app's export writes it, but for the
+    Verifications sheet's :data:`_UNPUBLISHED_VERIFICATION_COLUMNS`.
+    """
     sheets = await export.build_batch_sheets(sample_batch_id)
+    sheets = replace(
+        sheets,
+        verifications=sheets.verifications.drop(
+            columns=list(_UNPUBLISHED_VERIFICATION_COLUMNS), errors="ignore"
+        ),
+    )
     workbook = io.BytesIO()
     await asyncio.to_thread(export.write_batch_workbook, workbook, sheets)
     return workbook.getvalue()
@@ -668,10 +687,17 @@ def _mechanism(mechanism_id: str, mechanism: IonizationMechanism | None) -> dict
 def _ionization_mode(
     mode: IonizationMode, mechanisms: dict[str, IonizationMechanism]
 ) -> dict:
-    """An ionization mode the dataset's samples were processed under."""
+    """
+    An ionization mode the dataset's samples were processed under: one
+    version of a setup, with the version it replaced and the labelled
+    reagent's purity a run read its envelopes at.
+    """
     return {
         "ionization_mode_id": mode.ionization_mode_id,
         "ionization_mode_name": mode.ionization_mode_name,
+        "version": mode.version,
+        "supersedes_id": mode.supersedes_id,
+        "label_purity": mode.label_purity,
         "ionization_mode_token": mode.ionization_mode_token,
         "instrument": mode.instrument,
         "ionization_mode_polarity": mode.ionization_mode_polarity,

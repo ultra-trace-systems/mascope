@@ -49,6 +49,12 @@ from mascope_backend.db import PeakAssignmentRun, async_session
 # users (e.g. the match-write locks).
 _ASSIGNMENT_CLAIM_NAMESPACE = "mascope_peak_assignment"
 
+#: The code in the ``detail`` of a 409 that refuses a request only because
+#: another request holds the sample's claim. Nothing was applied, and the same
+#: request goes through once that one finishes - which tells it apart from a
+#: 409 over the run's state, which sending it again cannot change.
+CLAIM_HELD_CODE = "assignment_claim_held"
+
 # Run states that mean "this sample already has work in progress". A run in any
 # of them refuses a new one, so neither engine can start a second ledger for the
 # same sample behind the first.

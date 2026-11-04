@@ -11,6 +11,19 @@ answered from them, and every response gives the tolerance its groups were
 made at in ``parent_peak_tolerance``. The MS1 centroids are read from the raw
 file's MS1 scans, as before.
 
+Only a raw Orbitrap file is read (the MS2 design note's decision 7). A sample
+of any other file, a TOF one, is answered as holding nothing, with the reason
+``"unsupported"``: the summary in its ``data``, the other reads beside
+``source``, where a sample that is read answers ``reason`` null.
+
+The summary's groups are read from the group inventory where it can answer
+for the sample (``source: "inventory"``, :mod:`.inventory`), which is also
+what lists the groups of every sample of a batch in one query.
+
+The isolation-window inventory (:func:`get_ms2_window`) lists, per group,
+the sample's MS1 centroids in its isolation window beside the precursor the
+store located for it.
+
 Compute functions (in mascope_signal) use asyncio.to_thread internally, so the
 event loop is not blocked; however, each request still awaits the result
 synchronously—long-running operations may exceed client-side timeouts.
@@ -22,6 +35,8 @@ waits: if the computation exceeds the limit, the server responds with 504.
 import asyncio
 from typing import Literal
 
+import numpy as np
+
 import mascope_signal.compute as m_compute
 from mascope_backend.api.controllers.sample.files.process.census import (
     holds_only_fragmentation_scans,
@@ -32,8 +47,18 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     NotFoundException,
 )
-from mascope_signal.ms2_store import Ms2Store, group_key, parse_group_key
-from mascope_thermo.thermo import NoScansFoundError
+from mascope_backend.api.new.ms2.inventory import (
+    batch_ms2_groups,
+    sample_ms2_inventory,
+)
+from mascope_file.name import get_sample_file_type
+from mascope_signal.ms2_store import (
+    PRECURSOR_FIELDS,
+    Ms2Store,
+    group_key,
+    parse_group_key,
+)
+from mascope_thermo.thermo import NoScansFoundError, locate_precursors, ms2_summary
 
 
 DEFAULT_TIMEOUT = 120  # seconds
@@ -42,6 +67,34 @@ DEFAULT_TIMEOUT = 120  # seconds
 SOURCE_STORE = "store"
 #: What ``source`` says of a response read from the raw file.
 SOURCE_RAW = "raw"
+#: What ``source`` says of a summary whose groups are the group inventory's.
+SOURCE_INVENTORY = "inventory"
+
+#: Why a summary lists no group: a raw Orbitrap file whose sample holds none,
+#: and a file whose MS2 scans are not read, which is any other (a TOF one).
+REASON_NONE = "none"
+REASON_UNSUPPORTED = "unsupported"
+#: Why the isolation windows list no MS1 centroid: the sample has no MS1
+#: scans, an acquisition of fragmentation scans alone.
+REASON_NO_MS1_SCANS = "no_ms1_scans"
+#: What a group's window says when there is none to draw.
+NO_WIDTH_NOTE = (
+    "Its scans store no isolation width and none was asked for, so its window "
+    "lists the target alone."
+)
+
+#: A group's fields in the summary, as ``mascope_thermo.thermo.ms2_group_summary``
+#: makes them.
+_SUMMARY_GROUP_FIELDS = (
+    "parent_peak_mz",
+    "activation",
+    "hcd_energy",
+    "isolation_width",
+    "isolation_widths",
+    "scan_count",
+    "t_min",
+    "t_max",
+)
 
 
 async def _open_store(filename: str) -> Ms2Store | None:
@@ -60,6 +113,56 @@ def ms2_group_key(parent_peak_mz: float, activation: str) -> str:
     return f"{parent_peak_mz}@{activation}" if activation else f"{parent_peak_mz}"
 
 
+def _inventory_record(group: dict) -> dict:
+    """A group of the inventory as the summary gives a group."""
+    return {name: group[name] for name in _SUMMARY_GROUP_FIELDS}
+
+
+async def _summary_from_inventory(sample, store: Ms2Store) -> dict | None:
+    """The sample's summary with its groups read from the group inventory.
+
+    Its groups are the inventory's, which are what the samples listing
+    counts and the batch's groups list, and the rest of the summary - the
+    scan counts and the one width every MS2 scan shares - is read from the
+    store's scan index. None when the inventory cannot answer, and the store
+    is read instead: a sample with no polarity, one whose window cuts a
+    group, one that holds no group, and a file whose inventory does not list
+    every group its store holds, or lists one it does not.
+    """
+    if sample.polarity not in ("+", "-"):
+        return None
+    groups, listed = await sample_ms2_inventory(sample)
+    stored = {(group["polarity"], group["key"]) for group in store.attrs["groups"]}
+    if not groups or listed != stored or not all(g["whole"] for g in groups):
+        return None
+    counts = await asyncio.to_thread(
+        store.scan_counts, sample.t0, sample.t1, sample.polarity
+    )
+    return ms2_summary(
+        [_inventory_record(group) for group in groups],
+        counts[2],
+        counts[0],
+        counts[1],
+        store.parent_peak_tolerance,
+    )
+
+
+def _reads_raw_ms2(filename: str) -> bool:
+    """Whether a file's MS2 scans can be read from its raw file: a raw
+    Orbitrap file, kept beside its sample."""
+    try:
+        return get_sample_file_type(filename) == "orbi_raw"
+    except ValueError:
+        # Of no instrument class this can tell: not a raw Orbitrap file
+        return False
+
+
+async def _unsupported(filename: str) -> bool:
+    """Whether a file is one whose scans these routes do not read: any but a
+    raw Orbitrap file, whose reads would fail."""
+    return not await asyncio.to_thread(_reads_raw_ms2, filename)
+
+
 @api_controller()
 async def get_ms2_summary(
     sample_item_id: str,
@@ -76,6 +179,15 @@ async def get_ms2_summary(
     ``isolation_width`` is ``None`` when the scans do not share one, as a
     targeted method's events may not.
 
+    The groups are the group inventory's (``source: "inventory"``) for a
+    sample whose window holds each of its groups whole, which is a sample of
+    the whole acquisition; else the store's, else the raw file's.
+    ``reason`` says why a summary lists no group: ``"none"`` for a raw
+    Orbitrap file whose sample holds none, ``"unsupported"`` for a file whose
+    MS2 scans Mascope does not read, which is any but a raw Orbitrap file (a
+    TOF sample), and which answers with no scan counted; None when it lists
+    some.
+
     :param sample_item_id: Unique identifier for the sample.
     :param parent_peak_tolerance: Tolerance in Da for merging duplicate parent peaks.
     :param timeout: Maximum seconds to wait for the computation.
@@ -87,11 +199,21 @@ async def get_ms2_summary(
     async def read() -> tuple[dict, str, float]:
         store = await _open_store(sample.filename)
         if store is not None:
+            summary = await _summary_from_inventory(sample, store)
+            if summary is not None:
+                return summary, SOURCE_INVENTORY, store.parent_peak_tolerance
             summary = await asyncio.to_thread(
                 store.summary, sample.t0, sample.t1, sample.polarity
             )
             if summary is not None:
                 return summary, SOURCE_STORE, store.parent_peak_tolerance
+        if not await asyncio.to_thread(_reads_raw_ms2, sample.filename):
+            # Nothing to read: the inventory holds no group of such a file,
+            # and its scans are not counted
+            unsupported = ms2_summary([], [], 0, 0, parent_peak_tolerance)
+            unsupported["ms1_scan_count"] = None
+            unsupported["reason"] = REASON_UNSUPPORTED
+            return unsupported, SOURCE_INVENTORY, parent_peak_tolerance
         summary = await m_compute.get_ms2_summary(
             sample.filename,
             t_min=sample.t0,
@@ -110,6 +232,8 @@ async def get_ms2_summary(
             504,
         )
 
+    if "reason" not in summary:
+        summary = {**summary, "reason": None if summary["groups"] else REASON_NONE}
     return {
         "message": f"MS2 summary for sample '{sample.sample_item_name}'.",
         "source": source,
@@ -143,15 +267,25 @@ async def get_ms2_averaged_centroids(
     a sample of the whole acquisition does - and, by parent peak, every
     activation of each one or one alone. A sample whose window cuts a group,
     or holds several activations of a parent peak and not all when they are
-    merged, is averaged from the raw file, over its own scans.
+    merged, is averaged from the raw file, over its own scans of each of the
+    store's groups: its spectra are keyed as its summary and its groups'
+    scans are, at the store's tolerance, even where a precursor's m/z drifts
+    and the window's scans alone would be grouped at another m/z.
 
     :param sample_item_id: Unique identifier for the sample.
     :param noise_threshold: Minimum signal-to-noise ratio threshold.
-    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks.
+    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks,
+        used only for a file with no MS2 store or a sample with no polarity,
+        which are grouped from the raw file at it. Otherwise the store's
+        groups answer, a window read raw included, and the response's
+        ``parent_peak_tolerance`` gives the tolerance they were made at.
     :param by_activation: Split each parent peak by activation.
     :param timeout: Maximum seconds to wait for the computation.
     :return: Dictionary with averaged MS2 centroids keyed by group,
-        ``source`` and the ``parent_peak_tolerance`` the groups were made at.
+        ``source`` and the ``parent_peak_tolerance`` the groups were made at,
+        and ``reason``: ``"unsupported"`` for a sample of a file that is not
+        a raw Orbitrap file, which answers no spectrum and no ``source``,
+        else None.
     """
     sample = await fetch_sample(sample_item_id)
 
@@ -163,12 +297,27 @@ async def get_ms2_averaged_centroids(
             return None
         return m_compute.ms2_centroids_on_file_axis(sample.filename, spectra)
 
-    async def read() -> tuple[dict, str, float]:
+    async def read() -> tuple[dict | None, str | None, float]:
         store = await _open_store(sample.filename)
         if store is not None:
             spectra = await asyncio.to_thread(stored, store)
             if spectra is not None:
                 return spectra, SOURCE_STORE, store.parent_peak_tolerance
+            scans = await asyncio.to_thread(
+                store.window_scans,
+                sample.t0,
+                sample.t1,
+                sample.polarity,
+                by_activation=by_activation,
+            )
+            if scans is not None:
+                # The window's own scans, read raw, under the store's groups
+                spectra = await m_compute.get_orbi_ms2_centroids_of_scans(
+                    sample.filename, scans, ppm=store.ppm
+                )
+                return spectra, SOURCE_RAW, store.parent_peak_tolerance
+        if await _unsupported(sample.filename):
+            return None, None, parent_peak_tolerance
         spectra = await m_compute.get_orbi_ms2_centroids_by_parent(
             sample.filename,
             t_min=sample.t0,
@@ -189,6 +338,18 @@ async def get_ms2_averaged_centroids(
             f"asyncio.TimeoutError in get_ms2_averaged_centroids (timeout={timeout}s)",
             504,
         )
+    if source is None:
+        return {
+            "message": (
+                f"Sample '{sample.sample_item_name}' is not of a raw Orbitrap "
+                "file, so its MS2 scans are not read."
+            ),
+            "results": 0,
+            "source": None,
+            "parent_peak_tolerance": tolerance,
+            "reason": REASON_UNSUPPORTED,
+            "data": {},
+        }
 
     # Convert to serializable format with noise filtering
     averaged = {}
@@ -217,6 +378,7 @@ async def get_ms2_averaged_centroids(
         "results": len(ms2_by_parent),
         "source": source,
         "parent_peak_tolerance": tolerance,
+        "reason": None,
         "data": averaged,
     }
 
@@ -242,9 +404,25 @@ async def get_ms1_averaged_centroids(
     :param sample_item_id: Unique identifier for the sample.
     :param ppm: Mass tolerance in ppm for centroid binning.
     :param timeout: Maximum seconds to wait for the computation.
-    :return: Dictionary with mz, intensity, resolution, and signal_to_noise arrays.
+    :return: Dictionary with mz, intensity, resolution, and signal_to_noise
+        arrays, and ``reason``: ``"unsupported"`` for a sample of a file that
+        is not a raw Orbitrap file, which answers them empty, else None.
     """
     sample = await fetch_sample(sample_item_id)
+    if await _unsupported(sample.filename):
+        return {
+            "message": (
+                f"Sample '{sample.sample_item_name}' is not of a raw Orbitrap "
+                "file, so its MS1 centroids are not read here."
+            ),
+            "reason": REASON_UNSUPPORTED,
+            "data": {
+                "mz": [],
+                "intensity": [],
+                "resolution": [],
+                "signal_to_noise": [],
+            },
+        }
 
     try:
         (
@@ -280,6 +458,7 @@ async def get_ms1_averaged_centroids(
                 f"Sample '{sample.sample_item_name}' has no MS1 scans, so it "
                 "has no MS1 centroids."
             ),
+            "reason": None,
             "data": {
                 "mz": [],
                 "intensity": [],
@@ -290,6 +469,7 @@ async def get_ms1_averaged_centroids(
 
     return {
         "message": f"Averaged MS1 centroids for sample '{sample.sample_item_name}'.",
+        "reason": None,
         "data": {
             "mz": masses.tolist(),
             "intensity": intensities.tolist(),
@@ -326,7 +506,10 @@ async def get_ms2_timeseries(
         run shows its fragments changing as the energy steps.
     :param timeout: Maximum seconds to wait for the computation.
     :return: Dictionary with fragment timeseries data, ``source`` and the
-        ``parent_peak_tolerance`` the parent peaks were merged at.
+        ``parent_peak_tolerance`` the parent peaks were merged at, and
+        ``reason``: ``"unsupported"`` for a sample of a file that is not a
+        raw Orbitrap file, which answers empty arrays and no ``source``, else
+        None.
     """
     sample = await fetch_sample(sample_item_id)
 
@@ -345,12 +528,14 @@ async def get_ms2_timeseries(
             sample.filename, *scans, noise_threshold, normalize_by
         )
 
-    async def read() -> tuple[dict, str, float]:
+    async def read() -> tuple[dict | None, str | None, float]:
         store = await _open_store(sample.filename)
         if store is not None:
             timeseries = await asyncio.to_thread(stored, store)
             if timeseries is not None:
                 return timeseries, SOURCE_STORE, store.parent_peak_tolerance
+        if await _unsupported(sample.filename):
+            return None, None, parent_peak_tolerance
         timeseries = await m_compute.get_ms2_fragment_timeseries(
             sample.filename,
             parent_peak_mz,
@@ -372,6 +557,17 @@ async def get_ms2_timeseries(
             f"asyncio.TimeoutError in get_ms2_timeseries (timeout={timeout}s)",
             504,
         )
+    if source is None:
+        return {
+            "message": (
+                f"Sample '{sample.sample_item_name}' is not of a raw Orbitrap "
+                "file, so its MS2 scans are not read."
+            ),
+            "source": None,
+            "parent_peak_tolerance": tolerance,
+            "reason": REASON_UNSUPPORTED,
+            "data": {"mz_values": [], "time": [], "values": []},
+        }
 
     return {
         "message": (
@@ -380,6 +576,7 @@ async def get_ms2_timeseries(
         ),
         "source": source,
         "parent_peak_tolerance": tolerance,
+        "reason": None,
         "data": timeseries,
     }
 
@@ -413,7 +610,9 @@ async def get_ms2_scans(
         ``parent_peak_mz``, ``activation``) and ``scans``, each a record with
         its ``centroids`` (``mz``, ``intensity``, ``resolution``,
         ``signal_to_noise``); ``source`` and the ``parent_peak_tolerance``
-        the groups were made at.
+        the groups were made at; ``reason``, ``"unsupported"`` for a sample
+        of a file that is not a raw Orbitrap file, which answers the group
+        with no scan and no ``source``, else None.
     :raises NotFoundException: When the sample holds no scan of such a group.
     """
     sample = await fetch_sample(sample_item_id)
@@ -434,7 +633,7 @@ async def get_ms2_scans(
             m_compute.ms2_calibration_factor(sample.filename),
         )
 
-    async def read() -> tuple[tuple | None, str, float]:
+    async def read() -> tuple[tuple | None, str | None, float]:
         store = await _open_store(sample.filename)
         if store is not None and sample.polarity in ("+", "-"):
             # The store's groups are its file's: one it does not hold is not
@@ -444,6 +643,8 @@ async def get_ms2_scans(
                 SOURCE_STORE,
                 store.parent_peak_tolerance,
             )
+        if await _unsupported(sample.filename):
+            return None, None, parent_peak_tolerance
         scans = await m_compute.get_ms2_group_scans(
             sample.filename,
             parent_peak_mz,
@@ -475,6 +676,23 @@ async def get_ms2_scans(
             f"asyncio.TimeoutError in get_ms2_scans (timeout={timeout}s)",
             504,
         )
+    if source is None:
+        return {
+            "message": (
+                f"Sample '{sample.sample_item_name}' is not of a raw Orbitrap "
+                "file, so its MS2 scans are not read."
+            ),
+            "source": None,
+            "parent_peak_tolerance": tolerance,
+            "reason": REASON_UNSUPPORTED,
+            "data": {
+                "group": group_key(parent_peak_mz, activation),
+                "polarity": sample.polarity,
+                "parent_peak_mz": parent_peak_mz,
+                "activation": activation,
+                "scans": [],
+            },
+        }
     if scans is None:
         raise NotFoundException(
             f"Sample '{sample.sample_item_name}' holds no scan of an MS2 group "
@@ -504,6 +722,7 @@ async def get_ms2_scans(
         ),
         "source": source,
         "parent_peak_tolerance": tolerance,
+        "reason": None,
         "data": {
             "group": described["key"],
             "polarity": described["polarity"],
@@ -511,4 +730,261 @@ async def get_ms2_scans(
             "activation": described["activation"],
             "scans": served,
         },
+    }
+
+
+def _widest(group: dict) -> float | None:
+    """The width a group's window is drawn at: the widest its scans used, so
+    a group isolated at two widths lists every centroid either took."""
+    widths = [entry["isolation_width"] for entry in group["isolation_widths"]]
+    return max(widths) if widths else None
+
+
+def _on_file_axis(precursor: dict, factor: float | None) -> dict:
+    """A group's precursor (``PRECURSOR_FIELDS``) on the file's calibrated
+    axis, as every MS2 m/z is served."""
+    if factor is None:
+        return precursor
+    return {
+        **precursor,
+        **{
+            field: None if precursor[field] is None else precursor[field] * factor
+            for field in ("located_precursor_mz", "precursor_mz")
+        },
+    }
+
+
+async def _window_groups(
+    sample, parent_peak_tolerance: float
+) -> tuple[list[dict] | None, dict | None, str | None, float]:
+    """The sample's groups, each group's precursor, and where they were read.
+
+    From the store, which located each group's precursor when it was written,
+    over all of the group's scans; for a file with none, from the raw file,
+    located in the same way over the sample's own scans.
+
+    :return: The groups as the summary lists them, their precursors keyed by
+        (parent peak m/z, activation) on the file's calibrated axis,
+        ``source``, and the tolerance the groups were made at; the groups and
+        ``source`` None for a file whose MS2 scans are not read.
+    """
+    store = await _open_store(sample.filename)
+    if store is not None:
+        groups = await asyncio.to_thread(
+            store.groups, sample.t0, sample.t1, sample.polarity
+        )
+        if groups is not None:
+            factor = await asyncio.to_thread(
+                m_compute.ms2_calibration_factor, sample.filename
+            )
+            precursors = {
+                key: _on_file_axis(precursor, factor)
+                for key, precursor in store.precursors(sample.polarity).items()
+            }
+            return groups, precursors, SOURCE_STORE, store.parent_peak_tolerance
+    if await _unsupported(sample.filename):
+        return None, None, None, parent_peak_tolerance
+    spectra = await m_compute.get_orbi_ms2_centroids_by_parent(
+        sample.filename,
+        t_min=sample.t0,
+        t_max=sample.t1,
+        polarity=sample.polarity,
+        parent_peak_tolerance=parent_peak_tolerance,
+        by_activation=True,
+        # Located on the instrument's axis, around the parent keys, as the
+        # store locates them; put on the file's axis after
+        on_file_axis=False,
+    )
+    try:
+        summary = await m_compute.get_ms2_summary(
+            sample.filename,
+            t_min=sample.t0,
+            t_max=sample.t1,
+            polarity=sample.polarity,
+            parent_peak_tolerance=parent_peak_tolerance,
+        )
+        groups = summary["groups"]
+    except ValueError:
+        # No MS2 scan stores a width, and there is no summary: the groups
+        # are the spectra's, each with no width
+        groups = [
+            {"parent_peak_mz": pp, "activation": activation, "isolation_widths": []}
+            for pp, activation in spectra
+        ]
+    factor = await asyncio.to_thread(m_compute.ms2_calibration_factor, sample.filename)
+    precursors = {
+        key: _on_file_axis(precursor, factor)
+        for key, precursor in locate_precursors(spectra).items()
+    }
+    return groups, precursors, SOURCE_RAW, parent_peak_tolerance
+
+
+async def _ms1_centroids(sample) -> tuple | None:
+    """The sample's averaged MS1 centroids, as ``ms2/ms1_centroids`` reads
+    them; None for the sample of an acquisition of fragmentation scans alone,
+    which has none."""
+    try:
+        return await m_compute.get_orbi_centroids(
+            sample.filename,
+            t_min=sample.t0,
+            t_max=sample.t1,
+            polarity=sample.polarity,
+            ppm=1,
+            average=True,
+        )
+    except NoScansFoundError:
+        # As the MS1 centroids route tells the two apart
+        if not await holds_only_fragmentation_scans(sample.filename):
+            raise
+        return None
+
+
+@api_controller()
+async def get_ms2_window(
+    sample_item_id: str,
+    width: float | None = None,
+    parent_peak_tolerance: float = 0.001,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict:
+    """Retrieve the isolation-window inventory of a sample's MS2 groups.
+
+    Per group, the MS1 centroids of the sample within +/-(width / 2 + 5 mDa)
+    of its parent key (:func:`mascope_signal.compute.ms2_isolation_window`):
+    each with its offset from the key, intensity, share of the window,
+    resolution, S/N and ``is_parent``, the one that is the precursor. The
+    width is ``width`` when asked for, else the widest the group's scans
+    used; a group with neither lists only its target, with no share, and a
+    ``note`` that says so. Overlapping windows list a centroid under each
+    group. Every centroid is listed, whatever its S/N.
+
+    Beside them, the group's precursor as its MS2 spectra locate it
+    (:func:`mascope_thermo.thermo.locate_precursors`): once per parent peak,
+    in its lowest-energy spectrum that holds one, and the group's own peak
+    followed from there, None where the precursor is spent. The store
+    located it when written, over each group's every scan; a file with no
+    store is located over the sample's own scans. All m/z are on the file's
+    calibrated axis.
+
+    :param sample_item_id: Unique identifier for the sample.
+    :param width: The isolation width [Da] to draw every window at, instead
+        of each group's own.
+    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks,
+        for a file read raw; a file's MS2 store answers from its own grouping.
+    :param timeout: Maximum seconds to wait for the computation.
+    :return: One record per group in the summary's order: ``group`` (its
+        key), ``polarity``, ``parent_peak_mz``, ``activation``, ``width``
+        (the one its window was drawn at, None for none), ``note``, the
+        precursor (``located_precursor_mz``, ``located_precursor_intensity``,
+        ``located_precursor_activation``, ``precursor_mz``,
+        ``precursor_intensity``) and ``centroids``; with ``source``, the
+        ``parent_peak_tolerance`` the groups were made at, ``window_pad`` and
+        ``reason``: ``"unsupported"`` for a file whose MS2 scans are not read,
+        ``"none"`` for a sample that holds no group, ``"no_ms1_scans"`` for
+        one with no MS1 scans, whose windows are empty, else None.
+    """
+    sample = await fetch_sample(sample_item_id)
+
+    async def read():
+        groups, precursors, source, tolerance = await _window_groups(
+            sample, parent_peak_tolerance
+        )
+        if not groups:
+            return groups, precursors, None, source, tolerance
+        return groups, precursors, await _ms1_centroids(sample), source, tolerance
+
+    try:
+        groups, precursors, ms1, source, tolerance = await asyncio.wait_for(
+            read(), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        raise ApiException(
+            f"MS2 isolation-window read timed out after {timeout}s for sample",
+            f"asyncio.TimeoutError in get_ms2_window (timeout={timeout}s)",
+            504,
+        )
+    answer = {
+        "source": source,
+        "parent_peak_tolerance": tolerance,
+        "window_pad": m_compute.MS2_WINDOW_PAD,
+    }
+    if source is None:
+        return {
+            "message": (
+                f"Sample '{sample.sample_item_name}' is not of a raw Orbitrap "
+                "file, so its MS2 scans are not read."
+            ),
+            **answer,
+            "reason": REASON_UNSUPPORTED,
+            "data": [],
+        }
+    if not groups:
+        return {
+            "message": f"Sample '{sample.sample_item_name}' holds no MS2 group.",
+            **answer,
+            "reason": REASON_NONE,
+            "data": [],
+        }
+
+    no_ms1 = (np.array([]),) * 4
+    windows = []
+    for group in groups:
+        key = (group["parent_peak_mz"], group["activation"])
+        group_width = width if width is not None else _widest(group)
+        windows.append(
+            {
+                "group": group_key(*key),
+                "polarity": sample.polarity,
+                "parent_peak_mz": group["parent_peak_mz"],
+                "activation": group["activation"],
+                "width": group_width,
+                "note": None if group_width is not None else NO_WIDTH_NOTE,
+                **{field: precursors[key][field] for field in PRECURSOR_FIELDS},
+                "centroids": m_compute.ms2_isolation_window(
+                    no_ms1 if ms1 is None else ms1, group["parent_peak_mz"], group_width
+                ),
+            }
+        )
+    if ms1 is None:
+        return {
+            "message": (
+                f"Sample '{sample.sample_item_name}' has no MS1 scans, so its "
+                "isolation windows hold no MS1 centroid."
+            ),
+            **answer,
+            "reason": REASON_NO_MS1_SCANS,
+            "data": windows,
+        }
+    return {
+        "message": (
+            f"The isolation windows of {len(windows)} MS2 groups"
+            f" in sample '{sample.sample_item_name}'."
+        ),
+        **answer,
+        "reason": None,
+        "data": windows,
+    }
+
+
+@api_controller()
+async def get_batch_ms2_groups(sample_batch_id: str) -> dict:
+    """Retrieve the MS2 groups of every sample of a batch.
+
+    Read from the group inventory in one query, whatever the batch's size:
+    one record per (sample, group), with the sample's id
+    (:func:`.inventory.group_record`), ordered by the samples' acquisition
+    time and within a sample as its summary orders its groups. A group the
+    sample's window cuts has ``whole`` false: its counts and span are its
+    file's. Empty for a batch none of whose samples holds a group - an MS1
+    batch, a TOF one, or one whose files' stores the backfill has not
+    listed yet.
+
+    :param sample_batch_id: The batch.
+    :return: The groups, and how many.
+    """
+    groups = await batch_ms2_groups(sample_batch_id)
+    samples = len({group["sample_item_id"] for group in groups})
+    return {
+        "message": f"{len(groups)} MS2 groups of {samples} samples of the batch.",
+        "results": len(groups),
+        "data": groups,
     }

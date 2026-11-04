@@ -57,12 +57,16 @@ from mascope_backend.api.new.peak_assignments.schemas import (
     ProfilePreviewQueryParams,
     ProfilePreviewResponse,
     RecalibrateResponse,
+    ScopeVerificationQueryParams,
+    ScopeVerificationsResponse,
     VerifyAssignmentBody,
 )
 from mascope_backend.api.new.peak_assignments.service import (
     assign_sample_peaks,
     create_pending_run,
     create_verification,
+    get_batch_verifications,
+    get_dataset_verifications,
     get_peak_assignment_detail,
     get_peak_assignment_runs,
     get_peak_assignments,
@@ -76,6 +80,7 @@ from mascope_backend.api.new.peak_assignments.visualization import (
 )
 from mascope_backend.api.new.workspaces.dependencies import (
     check_batch_access,
+    check_dataset_access,
     check_sample_access,
     require_sample_role,
 )
@@ -86,6 +91,12 @@ from mascope_backend.db.id import gen_id
 peak_assignments_router = APIRouter(
     prefix="/api/peak-assignments", tags=["Peak Assignments"]
 )
+
+#: The codes in the ``detail`` of the sample assign route's refusals. A client
+#: branches on these, not on the prose: the 422 shares its status with a body
+#: the route could not read, which carries no code.
+ASSIGNMENT_IN_FLIGHT_CODE = "assignment_in_flight"
+SAMPLE_INELIGIBLE_CODE = "sample_ineligible"
 
 
 async def reject_oversized_import(request: Request) -> None:
@@ -287,7 +298,9 @@ async def get_peak_assignment_runs_route(
 
     :param sample_item_id: The unique identifier of the sample.
     :param user: The current authenticated user. Requires workspace guest role.
-    :return: Run records with status, engine version, and configuration.
+    :return: Run records with status, engine version, and configuration,
+        and the mass-error width each run scored at (`sigma_ppm`, `mu_ppm`
+        and their sources), null where a run recorded none.
     """
     await check_sample_access(sample_item_id, user, "guest")
     result = await get_peak_assignment_runs(sample_item_id=sample_item_id)
@@ -388,6 +401,60 @@ async def get_verifications_route(
     await check_sample_access(sample_item_id, user, "guest")
     result = await get_verifications(sample_item_id=sample_item_id)
     return AssignmentVerificationsResponse.model_validate(result)
+
+
+@peak_assignments_router.get(
+    "/batch/{sample_batch_id}/verifications",
+    response_model=ScopeVerificationsResponse,
+)
+@api_route(token_access=True)
+async def get_batch_verifications_route(
+    sample_batch_id: str,
+    query_params: ScopeVerificationQueryParams = Query(),
+    user: User = Depends(current_active_user),
+) -> ScopeVerificationsResponse:
+    """
+    Retrieve the current verdicts over every sample of a batch, one row per judged peak.
+
+    Each sample's own verdicts, and the batch-level verdicts that reach a sample with
+    none of its own on the claim judged, marked ``borrowed``, as the sample's assignment
+    ledger shows them. Each row carries the sample's filename and acquisition time and
+    the peak's m/z.
+
+    :param sample_batch_id: The unique identifier of the batch.
+    :param query_params: ``verdict``, ``evidence_level``, ``since``, ``include_superseded``.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The verdicts, by sample acquisition time, then m/z.
+    """
+    await check_batch_access(sample_batch_id, user, "guest")
+    result = await get_batch_verifications(sample_batch_id, **query_params.model_dump())
+    return ScopeVerificationsResponse.model_validate(result)
+
+
+@peak_assignments_router.get(
+    "/dataset/{dataset_id}/verifications",
+    response_model=ScopeVerificationsResponse,
+)
+@api_route(token_access=True)
+async def get_dataset_verifications_route(
+    dataset_id: str,
+    query_params: ScopeVerificationQueryParams = Query(),
+    user: User = Depends(current_active_user),
+) -> ScopeVerificationsResponse:
+    """
+    Retrieve the current verdicts over every sample of a dataset, one row per judged peak.
+
+    The batch read (``/batch/{sample_batch_id}/verifications``) over each of the
+    dataset's batches, in one response.
+
+    :param dataset_id: The unique identifier of the dataset.
+    :param query_params: ``verdict``, ``evidence_level``, ``since``, ``include_superseded``.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The verdicts, by sample acquisition time, then m/z.
+    """
+    await check_dataset_access(dataset_id, user, "guest")
+    result = await get_dataset_verifications(dataset_id, **query_params.model_dump())
+    return ScopeVerificationsResponse.model_validate(result)
 
 
 @peak_assignments_router.post(
@@ -593,8 +660,10 @@ async def assign_sample_peaks_route(
       that run instead of minting a second one.
     - **409** when another run for this sample is still in flight, naming it, so
       a client can follow the run that is actually producing the ledger. (A race
-      with another worker's creation can leave the id absent.)
+      with another worker's creation can leave the id absent.) Code
+      ``assignment_in_flight``.
     - **422** when the sample cannot usefully be assigned, carrying the reason.
+      Code ``sample_ineligible``, which a body the route could not read lacks.
     - **403** when peak assignment is not enabled for this environment.
 
     :param sample_item_id: The unique identifier of the sample.
@@ -610,7 +679,11 @@ async def assign_sample_peaks_route(
         raise ApiException(
             f"Peak assignment is not possible for sample "
             f"'{sample.sample_item_name}': {reason}.",
-            {"sample_item_id": sample_item_id, "reason": reason},
+            {
+                "code": SAMPLE_INELIGIBLE_CODE,
+                "sample_item_id": sample_item_id,
+                "reason": reason,
+            },
             422,
         )
 
@@ -626,6 +699,7 @@ async def assign_sample_peaks_route(
                 f"Peak assignment is already running for sample "
                 f"'{sample.sample_item_name}'.",
                 {
+                    "code": ASSIGNMENT_IN_FLIGHT_CODE,
                     "sample_item_id": sample_item_id,
                     "peak_assignment_run_id": blocking_run_id,
                 },
@@ -706,7 +780,9 @@ async def import_assignment_run_route(
     importer's. `tier_bands` and `calibration` are required: tiers are validated
     against the bands the engine actually tiered with, and an import bypasses
     the m/z verification gate, so what it calibrated against goes on the record.
-    `config` is opaque and stored verbatim.
+    `scoring_width` is optional: the mass-error width and centre the engine
+    scored at, served on the run as `sigma_ppm`, `sigma_source`, `mu_ppm` and
+    `mu_source`. `config` is opaque and stored verbatim.
 
     **Partial imports are allowed, and they replace.** A run may cover a subset
     of the sample's peaks, but the batch overview takes the sample's whole
@@ -716,7 +792,10 @@ async def import_assignment_run_route(
     Returns 403 when peak assignment is not enabled for this environment, 409
     when another run for this sample is still in flight (naming it) or a chunk
     arrives out of order, 413 when one request's body exceeds the byte cap, and
-    422 when the payload is well-formed but refused.
+    422 when the payload is well-formed but refused. A 409 with the code
+    `assignment_claim_held` applied nothing: another request on this sample was
+    still running, and the same request goes through once it finishes - the one
+    a retried chunk meets while its first attempt is still being applied.
 
     :param sample_item_id: The unique identifier of the sample.
     :param body: The run metadata and this chunk's assignment rows.
@@ -753,7 +832,9 @@ async def abandon_import_run_route(
 
     Deliberately restricted to runs in `importing`: a completed run is ledger
     data, and removing that is retention's business rather than a client's.
-    Anything else is refused with 409.
+    Anything else is refused with 409, as is a delete that meets another
+    request on this sample still running (code `assignment_claim_held`, which
+    goes through once that one finishes).
 
     Returns 403 when peak assignment is not enabled for this environment.
 

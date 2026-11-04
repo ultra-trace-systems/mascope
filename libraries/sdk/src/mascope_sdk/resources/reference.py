@@ -65,6 +65,9 @@ class ReferenceResource(BaseResource):
     def sources(self) -> pd.DataFrame:
         """List the active reference sources, one row each.
 
+        Compound lists only: a spectral library loaded for MS/MS matching is
+        not listed.
+
         :return: A DataFrame sorted by ``label``, with columns ``name``,
                  ``version``, ``label`` (a shipped list's own label, any
                  other source's name), ``references`` (the publications the
@@ -123,8 +126,8 @@ class ReferenceResource(BaseResource):
                  version read, the active one's when none was given.
         :rtype: pd.DataFrame
         :raises NotFoundError: If the server has no such source, or the source
-            no such version (no active one, when none is named), or the server
-            predates the route.
+            no such version (no active one, when none is named), or the source
+            is a spectral library, or the server predates the route.
         :raises AuthenticationError: If authentication fails.
         :raises MascopeAPIError: If the API request fails.
 

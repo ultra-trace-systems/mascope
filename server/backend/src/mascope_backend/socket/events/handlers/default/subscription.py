@@ -37,10 +37,10 @@ async def subscribe(sid, room):
     A socket whose web session has been ended since it authenticated - the
     account's session cutoff has moved past the token's issue time, the same
     comparison the cookie strategy makes - is held to the same room, and so is
-    a disabled account. The tab hears there that its session is over, and its
-    next REST request is refused. A socket already subscribed when any of this
-    happens is evicted from its rooms by whatever changed the account
-    (:mod:`mascope_backend.socket.eviction`).
+    one whose token has expired, and a disabled account. The tab hears there
+    that its session is over, and its next REST request is refused. A socket
+    already subscribed when any of this happens is evicted from its rooms by
+    whatever changed the account (:mod:`mascope_backend.socket.eviction`).
 
     Performs dual registration on success:
     - Socket.IO room (for event routing via AsyncRedisManager)
@@ -79,7 +79,9 @@ async def subscribe(sid, room):
     # committed and enters the room just after eviction ran keeps that room
     # until it reconnects. The window is milliseconds; a reconnect is gated.
     if room != f"user-{user_id}" and (
-        reason := socket_hold_reason(user, session.get("issued_at"))
+        reason := socket_hold_reason(
+            user, session.get("issued_at"), session.get("expires_at")
+        )
     ):
         runtime.logger.warning(
             f"Denied room subscription: user {user_id} {reason} -> room '{room}'"

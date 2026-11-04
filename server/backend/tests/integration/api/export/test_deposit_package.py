@@ -9,27 +9,40 @@ identity and its ion, and an instrument function. Its package is built from
 the test database and a filestore of the test's own, and read back as a
 stranger would: the zip, its README, its checksums and its manifest.
 
+The app's "Prepare for publication" is tested on the same dataset, through its
+routes: the preview, the gaps, the build in the background, the download, and
+that the archive downloaded is the one the operator command's builder writes.
+
 The spreadsheets read their samples through ``sample_view``, which the test
 schema does not create, so it is created here.
 """
 
+import datetime as datetime_module
 import hashlib
 import io
 import json
 import os
+import time
+import types
 import uuid
 import zipfile
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from urllib.parse import unquote
 
+import openpyxl.packaging.core
+import openpyxl.writer.excel
 import pandas as pd
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
+from mascope_backend import provenance
 from mascope_backend.api.controllers.sample.batches.export import service
+from mascope_backend.api.lib import api_features
 from mascope_backend.db import (
     Dataset,
+    Instrument,
     InstrumentFunction,
     IonizationMechanism,
     IonizationMode,
@@ -42,6 +55,7 @@ from mascope_backend.db import (
     TargetCompoundInTargetCollection,
     TargetIon,
     Workspace,
+    WorkspaceMember,
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.db.views import Sample
@@ -432,6 +446,7 @@ async def package(dataset, out, monkeypatch):
         read=read,
         paths=sorted(name.removeprefix(f"{root}/") for name in archive.namelist()),
         manifest=json.loads(read("manifest.json")),
+        crate=json.loads(read("ro-crate-metadata.json")),
         readme=read("README.md").decode(),
         licence=read("DATA_LICENSE").decode(),
     )
@@ -478,6 +493,7 @@ async def test_the_package_holds_every_file_the_layout_names(package, dataset):
             "README.md",
             "DATA_LICENSE",
             "manifest.json",
+            "ro-crate-metadata.json",
             "SHA256SUMS",
             f"raw/{names.orbi}.raw",
             f"raw/{names.orbi}.raw.mascope.json",
@@ -490,12 +506,13 @@ async def test_the_package_holds_every_file_the_layout_names(package, dataset):
             "instrument_functions.json",
         ]
     )
-    # README first, the checksums last, which hold the manifest's too.
+    # README first, the checksums last: the crate holds the manifest's, and
+    # SHA256SUMS both of theirs.
     order = [
         name.removeprefix(f"{package.root}/") for name in package.archive.namelist()
     ]
     assert order[:2] == ["README.md", "DATA_LICENSE"]
-    assert order[-2:] == ["manifest.json", "SHA256SUMS"]
+    assert order[-3:] == ["manifest.json", "ro-crate-metadata.json", "SHA256SUMS"]
 
 
 @pytest.mark.asyncio
@@ -520,11 +537,159 @@ async def test_the_manifest_checksums_every_file_it_names(package):
     named += [batch["spreadsheet"] for batch in manifest["batches"]]
     named += manifest["target_collections"]
     named += [manifest["instrument_functions"]]
-    assert len(named) == len(package.paths) - 4
+    # All but README.md, DATA_LICENSE, itself, the crate and SHA256SUMS.
+    assert len(named) == len(package.paths) - 5
     for entry in named:
         data = package.read(entry["path"])
         assert entry["sha256"] == hashlib.sha256(data).hexdigest(), entry["path"]
         assert entry["bytes"] == len(data), entry["path"]
+
+
+def _entities(crate: dict) -> dict:
+    """A crate's entities by their ``@id``."""
+    return {entity["@id"]: entity for entity in crate["@graph"]}
+
+
+def _refs(value) -> list[str]:
+    """The ``@id`` of each entity a property refers to: one, or a list."""
+    return [ref["@id"] for ref in (value if isinstance(value, list) else [value])]
+
+
+@pytest.mark.asyncio
+async def test_the_ro_crate_reaches_every_file_with_its_checksum(package, dataset):
+    """``ro-crate-metadata.json`` is an RO-Crate 1.2 whose root reaches every
+    other file of the archive through ``hasPart``, each directory a
+    ``Dataset`` and each file a ``File`` carrying the SHA-256 and size of its
+    bytes in the archive. ``SHA256SUMS``, which holds the crate's own
+    checksum, has its size alone."""
+    names, ids = dataset.names, dataset.ids
+    crate = package.crate
+    assert crate["@context"] == "https://w3id.org/ro/crate/1.2/context"
+    entities = _entities(crate)
+    assert entities["ro-crate-metadata.json"] == {
+        "@id": "ro-crate-metadata.json",
+        "@type": "CreativeWork",
+        "conformsTo": {"@id": "https://w3id.org/ro/crate/1.2"},
+        "about": {"@id": "./"},
+    }
+    files, directories = [], []
+    todo = _refs(entities["./"]["hasPart"])
+    while todo:
+        entity = entities[todo.pop(0)]
+        if entity["@type"] == "Dataset":
+            directories.append(entity["@id"])
+            todo += _refs(entity["hasPart"])
+        else:
+            files.append(entity["@id"])
+    assert sorted(directories) == ["batches/", "raw/", "target_collections/"]
+    assert sorted(unquote(file) for file in files) == [
+        path for path in package.paths if path != "ro-crate-metadata.json"
+    ]
+    # Each file is named as a person knows it.
+    assert entities[f"raw/{names.orbi}.raw"]["name"] == names.orbi
+    assert entities[f"raw/{names.orbi}.raw.mascope.json"]["name"] == (
+        f"Acquisition record of {names.orbi}"
+    )
+    assert entities[f"batches/First_batch_{ids.first_batch}.xlsx"]["name"] == (
+        "Batch First batch"
+    )
+    assert entities["instrument_functions.json"]["name"] == "Instrument functions"
+    for file in files:
+        path = unquote(file)
+        data = package.read(path)
+        entity = entities[file]
+        assert entity["@type"] == "File", path
+        assert entity["contentSize"] == str(len(data)), path
+        if path == "SHA256SUMS":
+            assert "sha256" not in entity
+        else:
+            assert entity["sha256"] == hashlib.sha256(data).hexdigest(), path
+
+
+@pytest.mark.asyncio
+async def test_the_ro_crate_root_is_the_datasets_record(package, dataset):
+    """The root ``Dataset`` carries the metadata record in schema.org terms:
+    a licence a viewer names, authors by their ORCID iD, funding, related
+    identifiers, the dataset's global id and the PSI-MS terms of what
+    measured it."""
+    ids = dataset.ids
+    entities = _entities(package.crate)
+    root = entities["./"]
+    assert root["name"] == f"Package DS {ids.dataset}"
+    assert root["description"] == "Ambient air, winter campaign."
+    assert root["datePublished"] == package.manifest["created"]
+    assert root["dateCreated"] == "2026-01-01T00:00:00Z"
+    assert root["keywords"] == ["aerosol", "CI-MS"]
+    assert root["temporalCoverage"] == "2026-01-01T12:00:00Z/2026-01-03T08:00:00Z"
+    assert entities[root["license"]["@id"]] == {
+        "@id": "https://spdx.org/licenses/CC-BY-4.0",
+        "@type": "CreativeWork",
+        "name": "Creative Commons Attribution 4.0 International",
+        "identifier": "CC-BY-4.0",
+        "description": "The SPDX licence CC-BY-4.0; its terms are at "
+        "https://creativecommons.org/licenses/by/4.0/.",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+    }
+    one, two = (entities[ref] for ref in _refs(root["author"]))
+    assert one["@id"] == "https://orcid.org/0000-0002-1825-0097"
+    assert (one["@type"], one["name"]) == ("Person", "Author One")
+    assert entities[one["affiliation"]["@id"]]["name"] == "Lab A"
+    assert two == {"@id": "#author-2", "@type": "Person", "name": "Author Two"}
+    grant = entities[root["funding"]["@id"]]
+    assert (grant["@type"], grant["name"], grant["identifier"]) == (
+        "Grant",
+        "Funder A, 123",
+        "123",
+    )
+    assert grant["funder"] == root["funder"]
+    assert entities[root["funder"]["@id"]]["name"] == "Funder A"
+    assert entities[root["citation"]["@id"]]["@id"] == "https://doi.org/10.1234/example"
+    assert entities[root["identifier"]["@id"]]["value"] == (
+        f"{_DEPLOYMENT}:dataset:{ids.dataset}"
+    )
+    terms = [entities[ref] for ref in _refs(root["measurementTechnique"])]
+    assert len(terms) == len({term["@id"] for term in terms})
+    assert {term["termCode"] for term in terms} == {
+        entry["cv_terms"][key]["accession"]
+        for entry in package.manifest["raw"]
+        for key in ("instrument_model", "ion_source", "mass_analyser", "detector")
+        if entry["cv_terms"][key]
+    }
+    model = next(term for term in terms if term["termCode"] == "MS:1003095")
+    assert model["@id"] == "http://purl.obolibrary.org/obo/MS_1003095"
+    assert model["name"] == "Orbitrap Exploris 120"
+    assert entities[model["inDefinedTermSet"]["@id"]]["version"] == "4.2.6"
+
+
+@pytest.mark.asyncio
+async def test_the_ro_crate_says_which_software_wrote_the_package(package, dataset):
+    """The root mentions a ``CreateAction``: Mascope and the raw-file reader,
+    at the versions the manifest gives, wrote every file but the raw files,
+    which were its object."""
+    names = dataset.names
+    manifest = package.manifest
+    entities = _entities(package.crate)
+    action = entities[entities["./"]["mentions"]["@id"]]
+    assert action["@type"] == "CreateAction"
+    assert action["endTime"] == manifest["created"]
+    assert f"deployment {_DEPLOYMENT}" in action["description"]
+    mascope, reader = (entities[ref] for ref in _refs(action["instrument"]))
+    assert mascope["@type"] == "SoftwareApplication"
+    assert (mascope["name"], mascope["version"]) == ("Mascope", "v9.9.9-test")
+    assert mascope["url"] == "https://github.com/ultra-trace-systems/mascope"
+    assert entities[mascope["license"]["@id"]]["identifier"] == "Apache-2.0"
+    distribution, _, version = manifest["produced_with"]["opentfraw_version"].partition(
+        "=="
+    )
+    assert reader["version"] == version
+    assert reader["url"] == f"https://pypi.org/project/{distribution}/"
+    raw = [f"raw/{names.orbi}.raw", f"raw/{names.tof}.h5"]
+    assert sorted(_refs(action["object"])) == raw
+    assert sorted(_refs(action["result"])) == sorted(
+        path
+        for path in package.paths
+        if path not in raw and path != "ro-crate-metadata.json"
+    )
 
 
 @pytest.mark.asyncio
@@ -561,6 +726,80 @@ async def test_a_file_the_filestore_no_longer_keeps_is_described_not_packed(
     assert package.summary["raw_files_included"] == 2
     assert "## Not included" in package.readme
     assert f"`{dataset.names.gone}`" in package.readme
+
+
+@pytest.mark.asyncio
+async def test_a_file_the_filestore_no_longer_keeps_has_its_instruments_model(
+    dataset, out, async_session_factory
+):
+    """The model is the one the instrument's row records, so a raw file that
+    is gone still gets its model and its term, which no header could give."""
+    instrument_id = gen_id(16)
+    async with async_session_factory() as session:
+        session.add(
+            Instrument(
+                instrument_id=instrument_id,
+                name=f"deposit-{instrument_id}",
+                instrument_type="orbi",
+                model="Orbitrap Exploris 240",
+            )
+        )
+        await session.flush()
+        gone = await session.get(SampleFile, dataset.ids.gone_file)
+        gone.instrument_id = instrument_id
+        await session.commit()
+
+    summary = await build_package(dataset.ids.dataset, str(out))
+    with zipfile.ZipFile(summary["archive"]) as archive:
+        manifest = json.loads(archive.read(f"{summary['package']}/manifest.json"))
+    entry = next(
+        entry
+        for entry in manifest["raw"]
+        if entry["sample_file_id"] == dataset.ids.gone_file
+    )
+    assert entry["included"] is False
+    assert entry["instrument_model"] == "Orbitrap Exploris 240"
+    assert entry["cv_terms"]["instrument_model"] == {
+        "accession": "MS:1003094",
+        "name": "Orbitrap Exploris 240",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_file_states_the_model_its_own_props_name(
+    dataset, out, async_session_factory
+):
+    """A file's props come before its raw file's header and its instrument's
+    row: the row holds the model the last registered file of the name
+    reported, which an older file of other hardware does not share."""
+    instrument_id = gen_id(16)
+    async with async_session_factory() as session:
+        session.add(
+            Instrument(
+                instrument_id=instrument_id,
+                name=f"deposit-{instrument_id}",
+                instrument_type="orbi",
+                model="Orbitrap Exploris 240",
+            )
+        )
+        await session.flush()
+        orbi = await session.get(SampleFile, dataset.ids.orbi_file)
+        orbi.instrument_id = instrument_id
+        await session.commit()
+    props = os.path.join(parse_path_from_item_filename(dataset.names.orbi), ".props")
+    with open(props, "w") as f:
+        json.dump({"instrument_model": "Q Exactive Plus"}, f)
+
+    summary = await build_package(dataset.ids.dataset, str(out))
+    with zipfile.ZipFile(summary["archive"]) as archive:
+        manifest = json.loads(archive.read(f"{summary['package']}/manifest.json"))
+    entry = next(
+        entry
+        for entry in manifest["raw"]
+        if entry["sample_file_id"] == dataset.ids.orbi_file
+    )
+    assert entry["instrument_model"] == "Q Exactive Plus"
+    assert entry["cv_terms"]["instrument_model"]["name"] == "Q Exactive Plus"
 
 
 @pytest.mark.asyncio
@@ -714,6 +953,7 @@ async def test_the_readme_tells_a_stranger_what_how_who_and_which_software(
         "`raw/*.mascope.json`",
         "`batches/`",
         "`target_collections/`",
+        "`ro-crate-metadata.json`",
     ):
         assert f"| {row} |" in readme
     assert "without the computer it names (`machine`)" in readme
@@ -788,6 +1028,50 @@ async def test_each_batch_is_its_spreadsheet_and_its_samples(package, dataset):
 
 
 @pytest.mark.asyncio
+async def test_a_packaged_verifications_sheet_has_no_note_and_no_user(
+    dataset, out, monkeypatch
+):
+    """The package's Verifications sheet leaves out each verdict's note and
+    who judged it; the app's own export of the batch keeps both."""
+    ids = dataset.ids
+
+    async def verdicts(sample_batch_id):
+        if sample_batch_id != ids.first_batch:
+            return []
+        return [
+            {
+                "sample_item_id": ids.orbi_item,
+                "sample_peak_id": "peak-1",
+                "assigned_formula": "C6H5O-",
+                "verdict": "confirmed",
+                "evidence_level": "reference_standard",
+                "note": "checked against the standard",
+                "verified_by": 42,
+                "borrowed": False,
+            }
+        ]
+
+    monkeypatch.setattr(service, "get_scope_verifications", verdicts)
+    summary = await build_package(ids.dataset, str(out))
+    with zipfile.ZipFile(summary["archive"]) as archive:
+        manifest = json.loads(archive.read(f"{summary['package']}/manifest.json"))
+        path = manifest["batches"][0]["spreadsheet"]["path"]
+        packaged = archive.read(f"{summary['package']}/{path}")
+    with pd.ExcelFile(io.BytesIO(packaged)) as book:
+        sheet = pd.read_excel(book, "Verifications")
+    assert "note" not in sheet.columns
+    assert "verified_by" not in sheet.columns
+    assert sheet[["sample_item_id", "verdict", "evidence_level"]].values.tolist() == [
+        [ids.orbi_item, "confirmed", "reference_standard"]
+    ]
+
+    exported = (await service.build_batch_sheets(ids.first_batch)).verifications
+    assert exported[["note", "verified_by"]].values.tolist() == [
+        ["checked against the standard", 42]
+    ]
+
+
+@pytest.mark.asyncio
 async def test_collections_carry_compound_identity_and_their_ions(package, dataset):
     """Both the collection a batch was matched against and the one its
     ionization mode calibrates with are packed, each saying which it is."""
@@ -841,6 +1125,9 @@ async def test_the_ionization_setup_and_instrument_functions_are_packed(
         {
             "ionization_mode_id": ids.mode,
             "ionization_mode_name": "Bromide package test",
+            "version": 1,
+            "supersedes_id": None,
+            "label_purity": 0.98,
             "ionization_mode_token": f"Br-{ids.mode}",
             "instrument": None,
             "ionization_mode_polarity": "-",
@@ -874,6 +1161,75 @@ async def test_the_ionization_setup_and_instrument_functions_are_packed(
             }
         ]
     }
+
+
+@pytest.mark.asyncio
+async def test_two_versions_of_one_mode_are_told_apart(
+    dataset, out, async_session_factory, editor_client, members
+):
+    """An edit of the setup, then a re-process of one sample: the samples
+    sit on two versions of one mode, and the package lists both, in version
+    order, each with the version it replaced and the purity it ran at."""
+    ids = dataset.ids
+    # An id that sorts before the first version's: the entries come in
+    # version order, not by id.
+    second = "0000" + gen_id()[:12]
+    assert second < ids.mode
+    async with async_session_factory() as session:
+        first = await session.get(IonizationMode, ids.mode)
+        first.is_active = False
+        session.add(
+            IonizationMode(
+                ionization_mode_id=second,
+                ionization_mode_name=first.ionization_mode_name,
+                ionization_mode_token=first.ionization_mode_token,
+                ionization_mode_polarity="-",
+                ionization_mechanism_ids=[ids.mechanism],
+                version=2,
+                supersedes_id=ids.mode,
+                label_purity=0.95,
+            )
+        )
+        await session.flush()
+        item = await session.get(SampleItem, ids.orbi_again_item)
+        item.ionization_mode_id = second
+        await session.commit()
+    summary = await build_package(ids.dataset, str(out / "versions.zip"))
+    with zipfile.ZipFile(summary["archive"]) as archive:
+        manifest = json.loads(archive.read(f"{summary['package']}/manifest.json"))
+        readme = archive.read(f"{summary['package']}/README.md").decode()
+    assert "- Ionization mode **Bromide package test**, polarity -" in readme
+    assert (
+        "- Ionization mode **Bromide package test**, version 2, polarity -, "
+        f"ions formed as \\[M+Br\\]- {ids.mechanism}."
+    ) in readme
+    assert [
+        (
+            mode["ionization_mode_id"],
+            mode["ionization_mode_name"],
+            mode["version"],
+            mode["supersedes_id"],
+            mode["label_purity"],
+        )
+        for mode in manifest["ionization_modes"]
+    ] == [
+        (ids.mode, "Bromide package test", 1, None, 0.98),
+        (second, "Bromide package test", 2, ids.mode, 0.95),
+    ]
+    resp = await editor_client.get(_preview_path(ids.workspace, ids.dataset))
+    assert resp.status_code == 200
+    assert resp.json()["data"]["ionization_modes"] == [
+        {
+            "ionization_mode_id": ids.mode,
+            "ionization_mode_name": "Bromide package test",
+            "version": 1,
+        },
+        {
+            "ionization_mode_id": second,
+            "ionization_mode_name": "Bromide package test",
+            "version": 2,
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -941,3 +1297,347 @@ async def test_a_build_that_fails_leaves_no_archive(dataset, out, monkeypatch):
     with pytest.raises(RuntimeError, match="no spreadsheet"):
         await build_package(dataset.ids.dataset, str(out / "failed.zip"))
     assert list(out.iterdir()) == []
+
+
+# ============= The app's path: "Prepare for publication" =============
+
+
+@pytest_asyncio.fixture
+async def members(async_session_factory, dataset, test_users):
+    """The guest and the editor as members of the dataset's workspace, by
+    those roles, and the editor of a second workspace that holds nothing."""
+    other = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            Workspace(
+                workspace_id=other,
+                workspace_name=f"Other WS {other}",
+                workspace_status="active",
+                workspace_utc_created=_NOW,
+                workspace_utc_modified=_NOW,
+            )
+        )
+        await session.flush()
+        for workspace_id, role in (
+            (dataset.ids.workspace, "guest"),
+            (dataset.ids.workspace, "editor"),
+            (other, "editor"),
+        ):
+            session.add(
+                WorkspaceMember(
+                    workspace_member_id=gen_id(),
+                    workspace_id=workspace_id,
+                    user_id=test_users[role].id,
+                    workspace_role=role,
+                    granted_at=_NOW,
+                    granted_by=test_users[role].id,
+                )
+            )
+        await session.commit()
+    return SimpleNamespace(other_workspace=other)
+
+
+@pytest.fixture
+def temp(tmp_path, monkeypatch):
+    """The env's temp directory, the test's own: where the users' downloads
+    and the builds' own directories go."""
+    root = tmp_path / "env"
+    path = runtime.env.path
+    monkeypatch.setattr(
+        runtime.env,
+        "path",
+        lambda *parts: (
+            str(root.joinpath(*parts)) if parts[:1] == ("temp",) else path(*parts)
+        ),
+    )
+    return root / "temp"
+
+
+#: The instant every build under ``frozen_clock`` is made at.
+_FROZEN = datetime(2026, 3, 4, 5, 6, 8, tzinfo=timezone.utc)
+
+
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return (
+            _FROZEN.astimezone(tz) if tz else _FROZEN.astimezone().replace(tzinfo=None)
+        )
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """
+    One instant for every clock a package reads: the provenance block's, and
+    those openpyxl and zipfile stamp a spreadsheet with. zipfile dates a
+    member written from a string by the time now, and one written from a
+    file by that file's mtime, through ``localtime``: openpyxl writes each
+    worksheet to a temp file and adds it so. Two builds of one dataset differ
+    in nothing else, so under it they are the same bytes.
+    """
+    clock = types.ModuleType("datetime")
+    clock.__dict__.update(vars(datetime_module))
+    clock.datetime = _FrozenDatetime
+    monkeypatch.setattr(provenance, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(openpyxl.packaging.core, "datetime", clock)
+    monkeypatch.setattr(openpyxl.writer.excel, "datetime", clock)
+    zip_clock = types.ModuleType("time")
+    zip_clock.__dict__.update(vars(time))
+    zip_clock.time = _FROZEN.timestamp
+    zip_clock.localtime = lambda secs=None: time.localtime(_FROZEN.timestamp())
+    monkeypatch.setattr(zipfile, "time", zip_clock)
+
+
+@pytest.fixture
+def notifications(monkeypatch):
+    """What the background tasks tell their user, as (status, message, data)."""
+    sent = []
+
+    async def record(rooms, notification, kwargs, result):
+        sent.append((notification.status, notification.message, notification.data))
+
+    monkeypatch.setattr(api_features, "handle_notifications", record)
+    return sent
+
+
+def _preview_path(workspace_id: str, dataset_id: str) -> str:
+    return (
+        f"/api/workspaces/{workspace_id}/datasets/{dataset_id}/export/package/preview"
+    )
+
+
+def _export_path(workspace_id: str, dataset_id: str) -> str:
+    return f"/api/workspaces/{workspace_id}/datasets/{dataset_id}/export/package"
+
+
+@pytest.mark.asyncio
+async def test_the_preview_shows_what_the_package_will_hold(
+    editor_client, members, dataset, temp
+):
+    """Before anything is built: the archive's name, the metadata record as
+    it stands, the batches and their samples, the raw files and their size,
+    and a dataset with all a deposit needs has no gap."""
+    ids, names, raw = dataset.ids, dataset.names, dataset.raw
+    resp = await editor_client.get(_preview_path(ids.workspace, ids.dataset))
+    assert resp.status_code == 200
+    preview = resp.json()["data"]
+    root = f"mascope-package_{ids.dataset}_Package_DS_{ids.dataset}"
+    assert preview["archive"] == f"{root}.zip"
+    assert preview["dataset"]["dataset_id"] == ids.dataset
+    assert preview["dataset"]["dataset_global_id"] == (
+        f"{_DEPLOYMENT}:dataset:{ids.dataset}"
+    )
+    assert preview["dataset"]["license"] == "CC-BY-4.0"
+    assert [a["name"] for a in preview["dataset"]["authors"]] == [
+        "Author One",
+        "Author Two",
+    ]
+    assert preview["dataset"]["keywords"] == ["aerosol", "CI-MS"]
+    assert preview["batches"] == [
+        {
+            "sample_batch_id": ids.first_batch,
+            "sample_batch_name": "First batch",
+            "samples": 2,
+        },
+        {
+            "sample_batch_id": ids.second_batch,
+            "sample_batch_name": _LONG_NAME,
+            "samples": 2,
+        },
+    ]
+    assert preview["raw_files"] == 3
+    assert preview["raw_files_included"] == 2
+    assert preview["raw_files_not_kept"] == [names.gone]
+    assert preview["raw_bytes"] == len(raw.orbi) + len(raw.tof)
+    assert preview["acquisition_records"] == 1
+    assert preview["target_collections"] == [
+        {
+            "target_collection_id": ids.calibrants,
+            "target_collection_name": f"Calibrants {ids.calibrants}",
+            "used_as": ["calibration"],
+        },
+        {
+            "target_collection_id": ids.matched,
+            "target_collection_name": f"Matched compounds {ids.matched}",
+            "used_as": ["matched", "diagnostic"],
+        },
+    ]
+    assert preview["ionization_modes"] == [
+        {
+            "ionization_mode_id": ids.mode,
+            "ionization_mode_name": "Bromide package test",
+            "version": 1,
+        }
+    ]
+    assert preview["gaps"] == []
+    # Nothing is written to preview a package.
+    assert not temp.exists()
+
+
+@pytest.mark.asyncio
+async def test_the_preview_counts_the_files_the_archive_holds(
+    editor_client, members, dataset, out, temp
+):
+    resp = await editor_client.get(
+        _preview_path(dataset.ids.workspace, dataset.ids.dataset)
+    )
+    summary = await build_package(dataset.ids.dataset, str(out))
+    assert resp.json()["data"]["files"] == summary["files"]
+    assert resp.json()["data"]["archive"] == os.path.basename(summary["archive"])
+
+
+@pytest.mark.asyncio
+async def test_the_preview_flags_what_a_deposit_lacks(
+    editor_client, members, dataset, async_session_factory, temp
+):
+    """The descriptive metadata is optional in Mascope; here its absence
+    shows, as the fields to fill in."""
+    async with async_session_factory() as session:
+        row = await session.get(Dataset, dataset.ids.dataset)
+        row.license = None
+        row.authors = None
+        row.dataset_description = ""
+        await session.commit()
+    resp = await editor_client.get(
+        _preview_path(dataset.ids.workspace, dataset.ids.dataset)
+    )
+    assert [gap["field"] for gap in resp.json()["data"]["gaps"]] == [
+        "license",
+        "authors",
+        "dataset_description",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_build_reports_the_gaps_the_preview_flags(
+    editor_client, members, dataset, out, async_session_factory, temp
+):
+    """The operator command warns of what "Prepare for publication" flags:
+    the build reports the preview's gaps, from the same rule."""
+    async with async_session_factory() as session:
+        row = await session.get(Dataset, dataset.ids.dataset)
+        row.license = None
+        row.dataset_description = ""
+        await session.commit()
+    resp = await editor_client.get(
+        _preview_path(dataset.ids.workspace, dataset.ids.dataset)
+    )
+    preview = resp.json()["data"]["gaps"]
+    summary = await build_package(dataset.ids.dataset, str(out))
+    assert [gap["field"] for gap in summary["gaps"]] == [
+        "license",
+        "dataset_description",
+    ]
+    assert summary["gaps"] == preview
+
+
+@pytest.mark.asyncio
+async def test_the_app_builds_the_archive_the_command_builds(
+    editor_client, members, dataset, out, temp, frozen_clock, notifications, test_users
+):
+    """
+    The acceptance: from the app alone, a dataset goes from its metadata to
+    an archive downloaded, and the archive is byte for byte the one the
+    operator command's builder writes for it at the same instant.
+    """
+    ids = dataset.ids
+    resp = await editor_client.post(_export_path(ids.workspace, ids.dataset))
+    assert resp.status_code == 202
+    assert resp.headers["Process-ID"]
+
+    # The task ran with the request, and told the user which file to fetch.
+    [(status, message, data)] = notifications
+    root = f"mascope-package_{ids.dataset}_Package_DS_{ids.dataset}"
+    assert status == "success"
+    assert data == {"dataset_id": ids.dataset, "download": f"{root}.zip"}
+    assert message.startswith(
+        f"The deposit package of dataset 'Package DS {ids.dataset}' is ready: "
+        "13 files, "
+    )
+    assert "1 sample file(s) have no raw file kept" in message
+    assert "differ from the file uploaded" not in message
+
+    download = await editor_client.get(f"/api/temp/{root}.zip")
+    assert download.status_code == 200
+    command = await build_package(ids.dataset, str(out))
+    with open(command["archive"], "rb") as archive:
+        assert download.content == archive.read()
+
+    # The archive is the user's alone, and the build left no directory.
+    assert sorted(p.name for p in temp.iterdir()) == sorted(
+        ["packages", str(test_users["editor"].id)]
+    )
+    assert list((temp / "packages").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_changed_raw_file_is_named_in_the_notification(
+    editor_client, members, dataset, async_session_factory, temp, notifications
+):
+    async with async_session_factory() as session:
+        sample_file = await session.get(SampleFile, dataset.ids.orbi_file)
+        sample_file.sha256 = "0" * 64
+        await session.commit()
+    await editor_client.post(_export_path(dataset.ids.workspace, dataset.ids.dataset))
+    [(status, message, _)] = notifications
+    assert status == "success"
+    assert (
+        "1 raw file(s) differ from the file uploaded; the manifest gives both "
+        "checksums." in message
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_build_that_fails_leaves_no_download_and_no_directory(
+    editor_client, members, dataset, temp, notifications, monkeypatch, test_users
+):
+    async def broken(sample_batch_id):
+        raise RuntimeError("no spreadsheet")
+
+    monkeypatch.setattr(service, "build_batch_sheets", broken)
+    resp = await editor_client.post(
+        _export_path(dataset.ids.workspace, dataset.ids.dataset)
+    )
+    assert resp.status_code == 202
+    [(status, _, data)] = notifications
+    assert status == "error"
+    assert not data
+    assert list((temp / "packages").iterdir()) == []
+    assert list((temp / str(test_users["editor"].id)).glob("*")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_", ["preview", "export"])
+async def test_a_guest_is_refused(guest_client, members, dataset, temp, request_):
+    """An editor's, as the batch spreadsheet export is: the package holds the
+    spreadsheets, and every raw file of the dataset."""
+    if request_ == "preview":
+        resp = await guest_client.get(
+            _preview_path(dataset.ids.workspace, dataset.ids.dataset)
+        )
+    else:
+        resp = await guest_client.post(
+            _export_path(dataset.ids.workspace, dataset.ids.dataset)
+        )
+    assert resp.status_code == 403
+    assert not temp.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_", ["preview", "export"])
+async def test_a_dataset_of_another_workspace_is_not_found(
+    editor_client, members, dataset, temp, notifications, request_
+):
+    """An editor of one workspace cannot package another's dataset by
+    naming their own workspace in the path."""
+    if request_ == "preview":
+        resp = await editor_client.get(
+            _preview_path(members.other_workspace, dataset.ids.dataset)
+        )
+    else:
+        resp = await editor_client.post(
+            _export_path(members.other_workspace, dataset.ids.dataset)
+        )
+    assert resp.status_code == 404
+    assert notifications == []
+    assert not temp.exists()

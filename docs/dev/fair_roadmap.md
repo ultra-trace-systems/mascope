@@ -3,7 +3,7 @@
 # FAIR: Review & Roadmap
 
 - **Status:** building
-- **As of:** 2026-10-23
+- **As of:** 2026-10-27
 - **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea) (Linear, MAS-19 to MAS-36)
 - **Supersedes:** section 7 of `ionization_method_config.md` (retired 2026-10-22)
 - **What:** Mascope against the FAIR principles, and the phased plan: provenance, ids, metadata, deposit.
@@ -340,8 +340,31 @@ the reasoning.
 15. **RO-Crate as the manifest format.** JSON-LD, schema.org-based, and the
     de-facto standard for exactly this. Gets I1/I2 in the manifest layer as a
     side-effect of a format choice rather than a vocabulary project.
+    *Built (MAS-34):* the package carries `ro-crate-metadata.json`, an
+    RO-Crate 1.2 rendered from `manifest.json` by
+    `mascope_backend.deposit.crate`, beside the manifest rather than in its
+    place. The root `Dataset` holds the metadata record, authors by ORCID
+    iD, funding as `Grant`s, related identifiers as `citation`, `isBasedOn`
+    or `isPartOf`, and the files' PSI-MS terms as `measurementTechnique`.
+    Every file carries its `sha256` and size, and a `CreateAction` names the
+    Mascope and reader versions. It passes the RO-Crate validator's 1.2
+    profile at its required level. The recommended level asks for what the
+    record does not hold: ROR ids, contact points, a publisher.
 16. **A UI path**, not just a CLI - "Prepare for publication" on a dataset.
     Scientists deposit data; they do not run CLIs.
+    *Built (MAS-35):* the dataset's right-click menu opens a dialog that
+    reads the package `collect_package` gathers, without building it
+    (`mascope_backend.deposit.preview`): the metadata record as it stands,
+    the batches, raw files and their size, the collections and modes, and
+    the gaps a deposit would have. A gap is no licence, no authors, no
+    description (Zenodo asks for all three) or no samples; it links to the
+    dataset dialog and does not stop the build. The build is
+    `build_package` in a background task, the archive moved into the user's
+    temp directory for the notification's download, as the batch spreadsheet
+    export does; the routes are `api/new/dataset_package`, for an editor of
+    the dataset's workspace. A test builds the archive through the app and
+    through `build_package` under one frozen clock and finds the bytes
+    equal. The command still warns of licence and authors only (#2725).
 17. **Zenodo deposition** (optional, last). The API is simple, and by this
     point the package is the payload. Explicitly *not* a prerequisite: the
     package is valuable on its own, and a manual upload is a fine v1.
@@ -363,7 +386,7 @@ attached to them, not scheduled against them.
 
 | Workstream | Relationship |
 |---|---|
-| **Ionization/method redesign** (`ionization_method_config.md`, retired 2026-10-22; its target model is in [ingest_routing_and_splitting.md](ingest_routing_and_splitting.md) phase 8) | **Hard prerequisite** for most of I and R. Its `Instrument` table closes A2's root cause, and its versioned `IonizationSetup` is what a provenance block points at; neither is built, and MAS-300 files them (blocked by the Decisions MAS-350 and MAS-351). Phase 2 item 10 hangs directly off it |
+| **Ionization/method redesign** (`ionization_method_config.md`, retired 2026-10-22; its target model is in [ingest_routing_and_splitting.md](ingest_routing_and_splitting.md) phase 8) | **Hard prerequisite** for most of I and R. Its `Instrument` table closes A2's root cause, and its versioned `IonizationSetup` is what a provenance block points at; both are built (MAS-300, 2026-10-27): an `instrument` row per instrument name, and a mode's versions with each run's `config.ionization_setup`. Phase 2 item 10 hangs directly off it |
 | **Peak-centric assignment epic** | **Already the model to copy.** `engine_version` + `config` + per-row `provenance` is the pattern; the classic matching path is what lacks it. Do not invent a second provenance design |
 | **Identification confidence** ([assignment_confidence.md](assignment_confidence.md)) | **Owns Phase 2 item 12.** Schymanski levels are already P4 there. FAIR adds a reason, not a task |
 | **Public database integration** ([public_database_integration.md](public_database_integration.md)) | **Already delivered the I3 half that is done.** Phase 1 item 9 is a small extension of its annotation path |

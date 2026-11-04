@@ -20,6 +20,7 @@ from mascope_backend.api.new.peak_assignments.service import (
     _fetch_reference_known_isotopes,
 )
 from mascope_reference import KnownComposition, KnownIdentity
+from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, labelled_purity
 from mascope_tools.composition.profiles import KNOWN_WINDOW_CEILING
 
 
@@ -170,6 +171,28 @@ class TestReferenceExpansionCache:
         build.assert_called_once()
         known.assert_awaited_once()
         pd.testing.assert_frame_equal(first, second)
+
+    @pytest.mark.asyncio
+    async def test_a_run_under_another_purity_builds_its_own(self):
+        """The lines of a labelled ion are built at the purity the run's setup
+        carries, so a run under another purity is not served the frame one
+        under the default left behind; one under the same purity is."""
+        built = pd.DataFrame({"mz": [183.1026], "relative_abundance": [1.0]})
+        _, _, build = self._patches([(("src-1", "t1"),)] * 4, built)
+
+        async def fetch():
+            await _fetch_reference_known_isotopes(
+                _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            )
+
+        await fetch()
+        with labelled_purity(0.95):
+            await fetch()
+            await fetch()
+        with labelled_purity(CUSTOM_ELEMENTS["^N"].default_purity):
+            await fetch()
+
+        assert build.call_count == 2
 
     @pytest.mark.asyncio
     async def test_resynced_source_invalidates(self):

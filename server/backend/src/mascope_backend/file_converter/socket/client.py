@@ -1,4 +1,6 @@
 import threading
+from collections import OrderedDict
+from dataclasses import dataclass, field
 
 import socketio
 
@@ -14,6 +16,26 @@ from mascope_runtime.logging import SENTRY_FINGERPRINT
 # be checked just now, the backend's role configuration is broken) say
 # nothing about the next event, so it is still sent.
 TOKEN_REJECTIONS = frozenset({"SOCKET_UNAUTHENTICATED", "SOCKET_FORBIDDEN"})
+
+# The most files whose rejections are kept at once. A file's entry goes when
+# its context is cleared; the files that never had one (a peak request carries
+# its own token) or whose last acknowledgement came back after it was cleared
+# are dropped oldest first past this, so the entries stay bounded for the life
+# of the process. Dropping one costs at most one more rejected event and one
+# more warning for that file.
+MAX_REJECTED_FILES = 256
+
+
+@dataclass
+class _FileRejections:
+    """What the backend rejected for one file."""
+
+    # The access token rejected by a TOKEN_REJECTIONS code, whose events are
+    # no longer sent (None when only other codes were seen)
+    token: str | None = None
+    # The (token, code) rejections already logged, so each is logged once
+    # however many events it drops
+    reported: set[tuple[str | None, str]] = field(default_factory=set)
 
 
 class FileConverterSocketClient:
@@ -33,18 +55,17 @@ class FileConverterSocketClient:
             # value happening to match whatever host it connected to.
             websocket_extra_options={"suppress_origin": True},
         )
-        self.context_manager = FileContextManager()
-        # The access token the backend last rejected for each file (by its
-        # normalized name): an event for that file carrying that token would
+        # A file's rejections go with its context: the file is done with,
+        # and a new upload of it brings a new context and a new token
+        self.context_manager = FileContextManager(on_clear=self._forget_rejections)
+        # What the backend rejected for each file (by its normalized name),
+        # oldest first. An event for a file carrying its rejected token would
         # only be dropped again, so it is not sent. A later context or peak
         # request brings a fresh token, which is sent as usual. Only a
-        # rejection of the token itself (TOKEN_REJECTIONS) is kept here.
+        # rejection of the token itself (TOKEN_REJECTIONS) holds events back.
         # Written from the Socket.IO thread that runs acknowledgement
         # callbacks, read from the processing threads that emit.
-        self._rejected_tokens: dict[str | None, str | None] = {}
-        # The (file, token, code) rejections already logged, so each is
-        # logged once however many events it drops
-        self._reported_rejections: set[tuple[str | None, str | None, str]] = set()
+        self._rejections: OrderedDict[str | None, _FileRejections] = OrderedDict()
         self._rejected_lock = threading.Lock()
         self.event_handler = SocketEventHandler(
             self,
@@ -150,7 +171,13 @@ class FileConverterSocketClient:
 
     def _is_rejected(self, file_key: str | None, access_token: str) -> bool:
         with self._rejected_lock:
-            return self._rejected_tokens.get(file_key) == access_token
+            rejections = self._rejections.get(file_key)
+            return rejections is not None and rejections.token == access_token
+
+    def _forget_rejections(self, file_key: str) -> None:
+        """Drop what was rejected for a file whose context was cleared."""
+        with self._rejected_lock:
+            self._rejections.pop(file_key, None)
 
     def _acknowledgement_handler(
         self, event: str, file_key: str | None, access_token: str | None
@@ -160,10 +187,13 @@ class FileConverterSocketClient:
         The backend acknowledges an event it rejects for auth with
         ``{"error": <code>}`` and drops it (``file_converter_socket_auth``); an
         accepted event's acknowledgement is its handler's return, today
-        nothing. A rejection is logged once per file, token and code. A
-        rejection of the token itself (``TOKEN_REJECTIONS``) also remembers
-        the token, so ``emit`` stops sending that file's events with it;
-        any other code drops that one event only, since the next may pass.
+        nothing. A rejection is logged once per file, token and code while
+        the file's entry is kept; after its context is cleared or the entry
+        is evicted (``MAX_REJECTED_FILES``), the same rejection is logged
+        again. A rejection of the token itself (``TOKEN_REJECTIONS``) also
+        remembers the token, so ``emit`` stops sending that file's events
+        with it; any other code drops that one event only, since the next
+        may pass.
         Events already sent before the first acknowledgement came back are
         dropped by the backend too, and logged no further. An event sent
         with no token is never held back: ``emit`` compares only a token it
@@ -177,12 +207,17 @@ class FileConverterSocketClient:
             code = str(payload["error"])
             holds_back = code in TOKEN_REJECTIONS
             with self._rejected_lock:
+                rejections = self._rejections.get(file_key)
+                if rejections is None:
+                    rejections = self._rejections[file_key] = _FileRejections()
+                    while len(self._rejections) > MAX_REJECTED_FILES:
+                        self._rejections.popitem(last=False)
                 if holds_back:
-                    self._rejected_tokens[file_key] = access_token
-                reported = (file_key, access_token, code)
-                if reported in self._reported_rejections:
+                    rejections.token = access_token
+                reported = (access_token, code)
+                if reported in rejections.reported:
                     return
-                self._reported_rejections.add(reported)
+                rejections.reported.add(reported)
             consequence = (
                 "not sending further events for it with this access token"
                 if holds_back

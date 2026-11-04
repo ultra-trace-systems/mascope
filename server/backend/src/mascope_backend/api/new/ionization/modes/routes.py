@@ -143,10 +143,12 @@ async def update_ionization_mode_route(
 
     Editor level, matching creation of a mode and the whole instrument-config
     surface, and matching what ``docs/authorization.md`` states for shared
-    reference data. Note that an edit is retroactive - it changes how samples
-    already processed under this mode are calibrated and matched - so it is a
-    heavier action than it looks, but that weight is not a reason to require a
-    global role that also carries user administration.
+    reference data. An edit of the polarity, the mechanisms or a collection
+    makes the mode's next version: the samples already processed keep the
+    version they were bound under, and move onto the new one when they are
+    re-processed - the recalibration or rematch the edit flags their batches
+    for. That is still a heavier action than it looks, but its weight is not a
+    reason to require a global role that also carries user administration.
     """
     await _check_referenced_collections(
         ionization_mode_data,

@@ -55,6 +55,7 @@ def _props():
         acquisition_timezone=None,
         utc_offset_source=None,
         instrument_type="tof",
+        instrument_model=None,
     )
 
 

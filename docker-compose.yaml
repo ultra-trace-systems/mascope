@@ -130,7 +130,8 @@ services:
     # sample file committed with no matched peaks and no explanation. Inherited
     # by file_converter through the anchor, which wants the same protection for
     # a conversion in flight. Raise together with the drain timeout, never
-    # below it.
+    # below it, and keep TimeoutStopSec in tooling/systemd/mascope.service
+    # above the chain of grace periods `compose down` waits through.
     stop_grace_period: 90s
     logging: *default-logging
     build:
@@ -183,15 +184,22 @@ services:
       # Opt-in error reporting to a self-hosted GlitchTip/Sentry; empty = off
       # (see docs/maintaining.md -> Monitoring). Inherited by file_converter.
       MASCOPE_SENTRY_DSN: ${MASCOPE_SENTRY_DSN:-}
+      # The public site key of the site's Turnstile widget; empty = off. Set,
+      # the sign-in form asks for the human check and the backend verifies it
+      # with the secret key in turnstile_secret_key (docs/maintaining.md,
+      # "The edge").
+      MASCOPE_TURNSTILE_SITE_KEY: ${MASCOPE_TURNSTILE_SITE_KEY:-}
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       JWT_SECRET_KEY_FILE: /run/secrets/jwt_secret_key
       SERVER_OWNER_SECRET_KEY_FILE: /run/secrets/server_owner_secret_key
       MFA_ENCRYPTION_KEY_FILE: /run/secrets/mfa_encryption_key
+      TURNSTILE_SECRET_KEY_FILE: /run/secrets/turnstile_secret_key
     secrets:
       - jwt_secret_key
       - mfa_encryption_key
       - postgres_password
       - server_owner_secret_key
+      - turnstile_secret_key
   file_converter:
     <<: *backend
     container_name: ${MASCOPE_FILE_CONVERTER_CONTAINER_NAME:-mascope_prod_file_converter}
@@ -267,3 +275,8 @@ secrets:
   # absent, so a site without origin pulls still starts.
   origin_pull_ca:
     file: .runtime/secrets/origin_pull_ca.pem
+  # Operator-supplied too, and created empty (owner-only) by the CLI when
+  # absent: the secret key of the site's Turnstile widget, read with
+  # MASCOPE_TURNSTILE_SITE_KEY set.
+  turnstile_secret_key:
+    file: .runtime/secrets/turnstile_secret_key.txt

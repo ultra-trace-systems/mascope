@@ -2,7 +2,7 @@
 Target isotope service layer.
 """
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload
 
 from mascope_backend.api.lib.api_features import api_controller
@@ -13,6 +13,10 @@ from mascope_backend.api.models.target.isotopes.target_isotope_pydantic_model im
 )
 from mascope_backend.api.new.ionization.modes.util import (
     fetch_batch_ionization_mechanism_ids,
+)
+from mascope_backend.api.new.workspaces.dependencies import (
+    WorkspaceScope,
+    where_collection_visible,
 )
 from mascope_backend.db import (
     IonizationMechanism,
@@ -37,7 +41,7 @@ async def get_target_isotopes(
     sample_batch_id: str | None = None,
     target_collection_id: str | None = None,
     show_target_collection: bool = False,
-    accessible_workspace_ids: set[str] | None = None,
+    accessible_workspace_ids: WorkspaceScope | None = None,
     show_match_params: bool = False,
     show_ionization_mechanism: bool = False,
     sort: str | None = None,
@@ -85,9 +89,10 @@ async def get_target_isotopes(
     :param show_target_collection: Whether to include target collection details in the response.
     :type show_target_collection: bool
     :param accessible_workspace_ids: With ``show_target_collection``, list only the
-        collections of these workspaces and the global ones; None lists every
-        collection (superusers and internal callers), defaults to None.
-    :type accessible_workspace_ids: set[str] | None
+        collections of these workspaces and the global ones; ``ALL_WORKSPACES``
+        lists every collection (superusers and internal callers). Required with
+        ``show_target_collection``: left out, the list raises ``TypeError``.
+    :type accessible_workspace_ids: WorkspaceScope | None
     :param show_match_params: Whether to include filter parameters from the parent target ion.
     :type show_match_params: bool
     :param show_ionization_mechanism: Whether to include ionization mechanism details including polarity.
@@ -213,13 +218,7 @@ async def get_target_isotopes(
                     == TargetCompoundInTargetCollection.target_collection_id,
                 )
                 # Restrict to collections the caller can see (workspace ACL).
-                if accessible_workspace_ids is not None:
-                    stmt = stmt.where(
-                        or_(
-                            TargetCollection.workspace_id.in_(accessible_workspace_ids),
-                            TargetCollection.workspace_id.is_(None),
-                        )
-                    )
+                stmt = where_collection_visible(stmt, accessible_workspace_ids)
                 stmt = stmt.add_columns(
                     TargetCompoundInTargetCollection.target_collection_id,
                     TargetCollection.target_collection_name,

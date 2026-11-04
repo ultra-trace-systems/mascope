@@ -8,9 +8,11 @@ a transport to hand back in place of a stack trace. Long lists (candidates,
 the samples a load left) are cut to :data:`LISTED` entries there, with the
 full count beside them.
 
-The SDK's exceptions are mapped onto these by :func:`sdk_errors`. Transient
-failures were already retried by the SDK (four attempts, exponential
-backoff); the toolkit adds no retry of its own.
+The SDK's exceptions are mapped onto these by :func:`sdk_errors`. A read's
+transient failures were already retried by the SDK (four attempts,
+exponential backoff). A write the SDK sends once, unless sending it again
+changes nothing, so a failed write may still have been carried out. The
+toolkit adds no retry of its own.
 """
 
 from collections.abc import Iterator, Sequence
@@ -63,6 +65,17 @@ def _listed(items: Sequence[Any]) -> list[Any]:
     ]
 
 
+#: Kinds whose plural is not the kind with an ``s``.
+_PLURALS = {"batch": "batches"}
+
+
+def _plural(kind: str | None) -> str:
+    """The plural of a kind for a message, ``objects`` for no kind."""
+    if not kind:
+        return "objects"
+    return _PLURALS.get(kind, kind + "s")
+
+
 class AmbiguousName(ToolkitError):
     """A name that matches more than one object.
 
@@ -84,7 +97,7 @@ class AmbiguousName(ToolkitError):
         more = len(self.candidates) - LISTED
         super().__init__(
             f"{query!r} matches {len(self.candidates)} "
-            f"{kind + 's' if kind else 'objects'}: {shown}"
+            f"{_plural(kind)}: {shown}"
             f"{f' and {more} more' if more > 0 else ''}. "
             "Pass one of them (its Ref or its ID), or a more specific name."
         )
@@ -261,13 +274,24 @@ class InvalidRequest(ToolkitError):
 
 
 class Unavailable(ToolkitError):
-    """The server could not be reached or failed, after the SDK's retries.
+    """The server could not be reached or failed.
 
-    Transient by nature: the same call may succeed later. The toolkit does
-    not retry it again.
+    Transient by nature: the same call may succeed later. A read failed
+    after the SDK's retries; a write the SDK may have sent once only, and
+    the server may have carried it out before the failure. The toolkit does
+    not retry either.
     """
 
     code = "unavailable"
+
+
+def _acting(operation: str, target: Ref | None) -> str:
+    """The operation with its object, when it has one.
+
+    An operation without a target is a whole phrase already (``"connect to
+    Mascope"``, ``"list the workspaces"``): nothing goes after it.
+    """
+    return f"{operation} {target}" if target else operation
 
 
 @contextmanager
@@ -277,6 +301,7 @@ def sdk_errors(
     *,
     required_role: str = "guest",
     current_role: Any = None,
+    write: bool = False,
 ) -> Iterator[None]:
     """Raise the SDK's exceptions inside as :class:`ToolkitError`.
 
@@ -289,6 +314,9 @@ def sdk_errors(
     :param required_role: The role the operation needs; a read needs guest.
     :param current_role: Called on a 403 for ``(role, workspace name)``, the
         user's role where the object lives, when the caller can tell.
+    :param write: Whether the calls inside change data. A write that fails
+        on the way is not sent again by the SDK (unless a second send
+        changes nothing), so its message says to look before trying again.
     """
     try:
         yield
@@ -314,12 +342,166 @@ def sdk_errors(
         ) from e
     except ValidationError as e:
         raise InvalidRequest(
-            f"The server refused to {operation} {target or 'it'}: {e.message}"
+            f"The server refused to {_acting(operation, target)}: {e.message}"
         ) from e
     except (ServerError, MascopeAPIError, MascopeConnectionError) as e:
         # What is left of MascopeAPIError here is a 408 or a 429 the SDK
-        # retried as transient
+        # treats as transient: retried for a read, not for most writes
+        if write:
+            advice = (
+                "The server may have carried out the write before it failed: "
+                "look at what is there now, or plan again, before trying it "
+                "again, or ask whoever runs the server."
+            )
+        else:
+            advice = (
+                "The SDK already retried; try again later, or ask whoever "
+                "runs the server."
+            )
         raise Unavailable(
-            f"Could not {operation} {target or 'it'}: {e}. The SDK already "
-            "retried; try again later, or ask whoever runs the server."
+            f"Could not {_acting(operation, target)}: {e}. {advice}"
         ) from e
+
+
+class GlobalNamespace(ToolkitError):
+    """A plan that would write what every workspace shares: a global
+    collection, or a target compound's record.
+
+    The server's ACL may allow it - a global admin's role does - but the
+    toolkit does not plan it unless the user asked for it in so many words
+    (``allow_global=True``), and such a plan is gated hard.
+
+    :ivar target: The shared object, if there is one yet.
+    """
+
+    code = "global_namespace"
+
+    def __init__(self, message: str, target: Ref | None = None):
+        self.target = target
+        super().__init__(
+            f"{message} It is shared by every workspace, so the toolkit "
+            "plans no write to it by default. Only if the user asked for "
+            "exactly this, plan again with allow_global=True."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"target": self.target.to_dict() if self.target else None}
+
+
+class ApprovalRefused(ToolkitError):
+    """An ``apply`` without the person's approval of that very plan: no
+    confirm token, or one minted for another plan or another version of it.
+
+    A confirm token comes from the transport when a person approves the plan
+    (a permission prompt, an approval card), never from the model.
+
+    :ivar plan_id: The plan.
+    """
+
+    code = "approval_refused"
+
+    def __init__(self, plan_id: str, reason: str):
+        self.plan_id = plan_id
+        super().__init__(
+            f"Plan {plan_id} was not applied: {reason} Show the person the "
+            "plan and let them approve it; their approval gives the token."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"plan_id": self.plan_id}
+
+
+class PlanExpired(ToolkitError):
+    """A plan past its ``expires_at``: what it recorded may be out of date.
+
+    :ivar plan_id: The plan.
+    :ivar expires_at: When it expired, as ISO text.
+    """
+
+    code = "plan_expired"
+
+    def __init__(self, plan_id: str, expires_at: str):
+        self.plan_id = plan_id
+        self.expires_at = expires_at
+        super().__init__(
+            f"Plan {plan_id} expired at {expires_at} and was not applied. "
+            "Plan it again from the current state."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"plan_id": self.plan_id, "expires_at": self.expires_at}
+
+
+class PlanConsumed(ToolkitError):
+    """A plan already applied, being applied, or stopped: its approval was
+    used once and a plan is never applied twice.
+
+    :ivar plan_id: The plan.
+    :ivar state: ``applying``, ``applied``, ``failed`` or ``drifted``.
+    """
+
+    code = "plan_consumed"
+
+    def __init__(self, plan_id: str, state: str):
+        self.plan_id = plan_id
+        self.state = state
+        said = {
+            "applying": "is being applied under another approval",
+            "applied": "was already applied",
+            "failed": "failed part-way and is not applied again",
+            "drifted": "was stopped because its objects changed",
+        }.get(state, f"is {state}")
+        super().__init__(
+            f"Plan {plan_id} {said}; this call wrote nothing. A plan is "
+            "applied once: plan again for another change."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"plan_id": self.plan_id, "state": self.state}
+
+
+class PlanDrifted(ToolkitError):
+    """A plan whose objects changed since it was made: a ``before`` it
+    recorded no longer holds, so nothing was written.
+
+    :ivar plan_id: The plan.
+    :ivar diff: Each change that no longer holds: the object, the field,
+        the value the plan recorded and the value now.
+    """
+
+    code = "plan_drifted"
+
+    def __init__(self, plan_id: str, diff: Sequence[dict[str, Any]]):
+        self.plan_id = plan_id
+        self.diff = list(diff)
+        super().__init__(
+            f"Plan {plan_id} was not applied: {len(self.diff)} of its "
+            "objects changed since it was made (diff). Nothing was written; "
+            "plan again from the current state."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"plan_id": self.plan_id, "diff": _listed(self.diff)}
+
+
+class PartiallyApplied(ToolkitError):
+    """A plan whose writes stopped part-way: the receipt says which changes
+    were applied. It is not applied again; plan again from the new state.
+
+    :ivar receipt: The plan's :class:`~mascope_ai.plans.Receipt`.
+    """
+
+    code = "partially_applied"
+
+    def __init__(self, receipt: Any):
+        self.receipt = receipt
+        failure = receipt.failure or {}
+        super().__init__(
+            f"Plan {receipt.plan_id} stopped part-way: "
+            f"{len(receipt.applied)} change(s) were applied before a write "
+            f"failed ({failure.get('message', 'unknown error')}). It is not "
+            "applied again; plan again from the new state."
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"receipt": self.receipt.to_dict()}

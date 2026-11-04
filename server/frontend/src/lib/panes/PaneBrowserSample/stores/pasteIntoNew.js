@@ -29,7 +29,8 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
     pending: false
   })
 
-  // A copied batch, or copied or cut samples. A batch is only ever copied.
+  // A copied batch, or copied or cut samples. A cut batch is not offered a
+  // new dataset yet (#2863): it moves only into an existing one.
   const batchPaste = computed(() => clipboard.batch !== null && clipboard.op === 'copy')
   const samplesPaste = computed(
     () => clipboard.samples !== null && ['copy', 'cut'].includes(clipboard.op)

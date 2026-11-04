@@ -319,6 +319,17 @@ copy a whole acquisition batch and make it your own:
 The copy — with all its samples — is yours: rename it, and delete the samples
 that do not belong to your analysis. The acquisition record is untouched.
 
+To move one of your own batches into another dataset rather than copy it,
+right-click the batch and choose **Cut batch**, then open the other dataset,
+right-click the empty space in the *Batches* pane, and choose **Paste batch**.
+The batch moves whole, at once: it keeps its samples, their matches and its
+target collections. **Cut batch** is not offered on an acquisition batch, and
+**Paste batch** appears only in a dataset you may edit that is neither locked
+nor an acquisition dataset. A batch that is locked, or sits in a locked
+dataset, only a global admin can move. If the move is refused, for example
+because a target collection of the batch belongs to another workspace, the
+message says why and the batch stays where it was.
+
 To cherry-pick individual measurements instead, open the acquisition batch,
 select the samples you want (hold `Shift` or `Ctrl` to select several),
 right-click and choose **Copy samples**, then paste them into a batch of your

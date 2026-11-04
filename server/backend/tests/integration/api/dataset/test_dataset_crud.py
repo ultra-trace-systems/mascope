@@ -8,6 +8,9 @@ import asyncio
 import pytest
 from fastapi import status
 
+from mascope_backend.api.new.instruments.registry import instrument_id_for
+from mascope_backend.db import Dataset
+
 
 # ============= Role-Based Access Control Tests =============
 
@@ -443,7 +446,7 @@ async def test_update_dataset_sets_and_clears_descriptive_metadata(
 
 @pytest.mark.asyncio
 async def test_acquisition_dataset_accepts_descriptive_metadata(
-    test_workspace, admin_client
+    test_workspace, admin_client, async_session_factory
 ):
     """ACQUISITION datasets carry metadata like any other (they are locked on
     creation, so only an admin edits them, metadata included)."""
@@ -457,6 +460,9 @@ async def test_acquisition_dataset_accepts_descriptive_metadata(
     )
     assert create_response.status_code == 201
     dataset_id = create_response.json()["data"]["dataset_id"]
+    async with async_session_factory() as session:
+        created = await session.get(Dataset, dataset_id)
+        assert created.instrument_id == await instrument_id_for(session, "instrument-x")
 
     response = await admin_client.patch(
         f"/api/workspaces/{test_workspace}/datasets/{dataset_id}",

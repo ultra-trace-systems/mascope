@@ -138,16 +138,22 @@ class SampleBatchUpdate(SampleBatchBaseValidator, BaseModel):
     """
     Model for updating sample batches - only user-editable fields.
 
-    Target collections associations and build parameters are always included
-    in the update request, on service level they are handled separately.
+    A partial update: a field left out stays as it is. Target collection
+    associations are handled separately on service level: a list replaces
+    them, an empty list detaches them all, and leaving the field out (or
+    sending null) leaves them as they are.
     """
 
     sample_batch_name: str | None = Field(None, description="Name of the sample batch")
     sample_batch_description: str | None = Field(
         None, description="Description of the sample batch"
     )
-    target_collection_ids: list[str] = Field(
-        ..., description="IDs of target collections associated with the sample batch"
+    target_collection_ids: list[str] | None = Field(
+        None,
+        description=(
+            "The target collections the batch is to have, all of them; absent, "
+            "the associations stay as they are; an empty list detaches them all."
+        ),
     )
 
     model_config = ConfigDict(from_attributes=True)
@@ -290,3 +296,9 @@ class SampleBatchCopyBody(BaseModel):
     sample_batch_description: str | None = Field(
         None, description="Description of the new sample batch"
     )
+
+
+class SampleBatchMoveBody(BaseModel):
+    """Request body for moving a sample batch into another dataset."""
+
+    dataset_id: str = Field(..., description="ID of the dataset to move the batch into")

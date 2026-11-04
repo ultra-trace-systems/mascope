@@ -664,7 +664,6 @@ The git-tracked mode configurations provide defaults for development vs producti
 ```toml
 [backend.redis]
 port = 6379 # default Redis port
-image = "redis:7-alpine" # standard Redis image
 ```
 
 **`dev.mascope.toml`** (for local development):
@@ -1633,8 +1632,13 @@ code is a verdict on the token (`SOCKET_UNAUTHENTICATED`, `SOCKET_FORBIDDEN`), i
 further events for that file with that token: the backend would drop them too. A fresh token
 for the file, from a new upload context or a new peak detection request, is sent as usual.
 The other codes say nothing about the next event, so only the rejected one is lost and the
-file's later events, its result included, are still sent. What the converter does with the
-file itself is unchanged.
+file's later events, its result included, are still sent. The converter carries on with the
+file itself, on purpose: it is converted as usual, and the uploader is not told the outcome,
+since every notification needs the rejected token. What was rejected for a file is forgotten
+when the converter clears the file's context, once the file is converted or moved aside. At
+most `MAX_REJECTED_FILES` files are remembered at once, oldest dropped first, for the files
+that have no context to clear (a peak detection request) and an acknowledgement that comes
+back after the clear.
 
 **Axis fingerprint** — for every raw Orbitrap file the converter computes its axis
 fingerprint (`mascope_thermo.axis_fingerprint`): the m/z offset the file's mass calibration
@@ -1941,6 +1945,17 @@ blank lines. Indented or paragraph-glued `$$...$$` is parsed as *inline* math
 with one leftover `$` on each side, which then shows up verbatim on the page.
 Escape percent signs inside math (`$95\%$`); a bare `%` starts a TeX comment
 and silently swallows the rest of the expression.
+
+Do not put screenshots in the user docs. A screenshot shows the app as it
+looked the day it was taken, and nothing flags it when the UI moves on: the
+text beside it gets updated with the change, the picture does not. It also
+shows one theme, so it clashes with the page in the other, and capturing
+every one twice doubles the upkeep. Say where a control is in words instead,
+naming it in bold as the app labels it (open the home menu, choose
+**Settings**, and press **Reference lists** under **Data**), and say what each
+part of a view shows, as the guides do. Draw a diagram as a `mermaid` fence:
+it is written as text, so a diff shows what changed, and it follows the
+page's theme.
 
 ### Frontend Tech
 
@@ -2761,18 +2776,28 @@ This library exposes a public Python SDK for end-users to leverage especially in
 #### Publish
 
 Publishing to [PyPI](https://pypi.org/) is automated for `mascope-sdk`,
-`mascope-tools`, `mascope-runtime`, `mascope-cli` and `mascope-file-agent` by
-the `publish-pypi` workflow (`.github/workflows/publish-pypi.yaml`). To release
-a new version:
+`mascope-tools`, `mascope-ai`, `mascope-runtime`, `mascope-cli` and
+`mascope-file-agent` by the `publish-pypi` workflow
+(`.github/workflows/publish-pypi.yaml`). To release a new version:
 
 1. In a PR, set `version` in the package's `pyproject.toml`
-   (under `libraries/sdk/`, `libraries/tools/`, `libraries/runtime/`,
-   `tooling/cli/` or `agents/file/`) to the commit date in unpadded
+   (under `libraries/sdk/`, `libraries/tools/`, `libraries/ai/`,
+   `libraries/runtime/`, `tooling/cli/` or `agents/file/`) to the commit date in unpadded
    CalVer (e.g. `2026.7.6` — no leading zeros; PEP 440 strips them anyway):
 
    ```sh
    git log -1 --date=format:"%Y.%-m.%-d" --format="%ad"   # Version to copy
    ```
+
+   `mascope-cli` is bumped with every app release, in its release-prep pull
+   request ([Cutting a citable release](#cutting-a-citable-release)), and
+   `RELEASE` in `tooling/cli/src/mascope_cli/release.py` is set there to the
+   release's `vX.Y.Z`: `tooling/changelog.py compile X.Y.Z` sets both, with
+   the CLI's entry in `uv.lock`. That pair is what ties a CLI to its release: the
+   release manifest names the CLI version only when the checkout's `RELEASE`
+   is the tag it is built for (`cli_version`, `null` otherwise), and a wheel
+   install deploys only its CLI's `RELEASE`. A CLI bump between releases
+   leaves `RELEASE` as it is, and still deploys that release.
 
 2. Merge to `master`. The workflow compares each package's version against
    PyPI, and builds, import-checks and uploads the ones that are new. Versions
@@ -2826,7 +2851,7 @@ Releases use **SemVer** `vMAJOR.MINOR.PATCH`:
 
 To cut one, in this order:
 
-1. **Compile the changelog on `develop`.** In a release-prep pull request into `develop`, run `uv run python tooling/changelog.py compile X.Y.Z`: it writes every fragment in [`changelog.d/`](../../changelog.d/README.md) into `CHANGELOG.md` as `## [X.Y.Z] - <today>` - grouped by section, in the order the commits that added them merged - deletes the fragments, and in the same change bumps [`CITATION.cff`](../../CITATION.cff): `version:` to the new `X.Y.Z`, `date-released:` to today (`--date YYYY-MM-DD` for another day). Read the section it wrote and edit it as the release needs - related entries side by side, say - then commit the two files together. One commit on purpose: as a standalone step the citation bump was skipped by every release after v1.0.0. Nothing else in `CITATION.cff` changes per release - its `doi:` is the concept DOI, since a version DOI only exists once Zenodo has archived the published release. A package that should reach PyPI with the release gets its version bump in the same pull request ([Publish](#publish)). Merge the prep pull request into `develop`.
+1. **Compile the changelog on `develop`.** In a release-prep pull request into `develop`, run `uv run python tooling/changelog.py compile X.Y.Z`: it writes every fragment in [`changelog.d/`](../../changelog.d/README.md) into `CHANGELOG.md` as `## [X.Y.Z] - <today>` - grouped by section, in the order the commits that added them merged - deletes the fragments, and in the same change bumps [`CITATION.cff`](../../CITATION.cff): `version:` to the new `X.Y.Z`, `date-released:` to today (`--date YYYY-MM-DD` for another day). It also cuts the CLI with the release, since a wheel install deploys only the release its CLI was cut with: `RELEASE` in `tooling/cli/src/mascope_cli/release.py` becomes `vX.Y.Z`, and the CLI's `version` in `tooling/cli/pyproject.toml` and `uv.lock` becomes the release date's calver. A second release on the same day takes the next fourth part (`2026.11.4.1`), since PyPI has that day's calver already. Read the section it wrote and edit it as the release needs - related entries side by side, say - then commit the files it changed together. One commit on purpose: as a standalone step the citation bump was skipped by every release after v1.0.0. Nothing else in `CITATION.cff` changes per release - its `doi:` is the concept DOI, since a version DOI only exists once Zenodo has archived the published release. Any other package that should reach PyPI with the release gets its version bump by hand in the same pull request ([Publish](#publish)). Merge the prep pull request into `develop`.
 2. **Merge `develop` into `master`.** Cut a `release/vX.Y.Z` branch from `develop` after the prep has merged, open a pull request titled `[vX.Y.Z]` from it into `master`, and merge it with a merge commit. The head is a release branch rather than `develop` itself because the repository deletes a pull request's head branch when it merges. The changelog check on a pull request into `master` (`check --release`) fails while any fragment is left: a pull request that merged into `develop` after the prep left a fragment of its own behind, so run `compile X.Y.Z` again on `develop` and cut the release branch again. The second run adds what is new to the same section and keeps its heading. That only works until `vX.Y.Z` is tagged; after that `compile` refuses the version, since its notes are published, and a late entry goes into the next release. A branch still in flight keeps its fragment through all of this and goes into the next release. The merge into `master` runs the [release pipeline](#github-releases), which builds and pushes the per-merge images, and `publish-pypi`.
 3. **Tag the merge commit and push the tag:** `git fetch origin master && git tag vX.Y.Z origin/master && git push origin vX.Y.Z`. Tag pushes do **not** trigger the build pipeline, so this won't rebuild images.
 4. **Draft and publish the GitHub Release.** On GitHub, **Releases → Draft a new release**, pick the `vX.Y.Z` tag, fill in the title + notes (below), and **Publish**.
