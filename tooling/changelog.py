@@ -550,7 +550,8 @@ def _cli_version(root: Path, date: datetime.date, new: bool) -> tuple[str, str]:
     Returns the text and the version. A release cut the same day as the one
     before it would get that release's calver, which PyPI has already, so it
     takes the next fourth part (2026.11.4.1). Compiled again into its own
-    section, a release keeps the version its first compile set.
+    section, a release keeps the version its first compile set, unless a
+    later --date moves it on.
     """
     text = (root / CLI_PROJECT).read_text(encoding="utf-8")
     match = _PROJECT_VERSION.search(text)
@@ -558,11 +559,12 @@ def _cli_version(root: Path, date: datetime.date, new: bool) -> tuple[str, str]:
         raise ChangelogError(f"{CLI_PROJECT} has no `version` under [project] to set")
     current = match["version"]
     version = calver(date)
-    try:
-        now = _parse_version(current)
-    except ValueError:
-        now = None  # not a plain release: anything compile sets is newer
-    if now is not None and now >= _parse_version(version):
+    now, suffix = _release_part(current)
+    # PEP 440 orders the release part first. A pre-release or a dev release
+    # of the day's calver (2026.11.4rc1) sorts below the calver itself, which
+    # can take its place; a post-release (2026.11.4.post1) sorts above it.
+    below = now == _parse_version(version) and _PRE_RELEASE.match(suffix)
+    if now is not None and now >= _parse_version(version) and not below:
         if not new:
             return text, current
         if now[:3] != _parse_version(version):
@@ -578,6 +580,20 @@ def _cli_version(root: Path, date: datetime.date, new: bool) -> tuple[str, str]:
 
 def _parse_version(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
+
+
+# The numeric release part a version opens with, and a suffix that marks a
+# pre-release or a dev release of it, as release_manifest's _CLI_VERSION has them.
+_RELEASE_PART = re.compile(r"[0-9]+(\.[0-9]+)*")
+_PRE_RELEASE = re.compile(r"[.]?(a|b|rc|dev)[0-9]")
+
+
+def _release_part(version: str) -> tuple[tuple[int, ...] | None, str]:
+    """The numeric release part of `version`, and what follows it."""
+    match = _RELEASE_PART.match(version)
+    if not match:
+        return None, version
+    return _parse_version(match[0]), version[match.end() :]
 
 
 def _tagged(root: Path, version: str) -> bool:
