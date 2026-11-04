@@ -58,25 +58,11 @@ def match_score_version() -> int:
         return 1  # malformed value -> the default
 
 
-def sample_noise_floor(match_isotope_df: pd.DataFrame) -> float:
-    """2nd-percentile matched intensity — a per-sample intensity floor.
-
-    It does NOT feed the fit score any more (see the module docstring: it is a
-    dynamic-range statistic, not a noise estimate), and no scoring path computes it
-    any more."""
-    inten = pd.to_numeric(
-        match_isotope_df.get("sample_peak_intensity"), errors="coerce"
-    )
-    inten = inten[inten > 0]
-    return float(np.percentile(inten, 2)) if len(inten) else 1.0
-
-
 def ion_score_v2(
     group: pd.DataFrame,
     *,
     sigma_ppm: float | None = None,
     mu: float | None = 0.0,
-    noise: float = 1.0,
     calibrate: bool = False,
     calibration: tuple[float, float] | None = None,
 ) -> float:
@@ -94,10 +80,6 @@ def ion_score_v2(
     the matched arrays, and calls `score_pattern_v2`. Rows without a usable
     `signal_to_noise` are scored in its no-SNR mode; there is no proxy SNR (module
     docstring).
-
-    `noise` is accepted and IGNORED. It fed the deleted intensity-derived proxy SNR, which
-    conflated dynamic range with signal-to-noise; no caller in the backend passes it any
-    more.
 
     `mu` is the sample's fitted mass offset, and ``None`` means none was fitted -
     `fit_mass_accuracy` answers that for a sample with too few anchors to measure one.

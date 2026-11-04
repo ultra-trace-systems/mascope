@@ -17,7 +17,6 @@ from mascope_backend.api.controllers.match.lib.match_score_v2 import (
     ion_score_v2,
     ion_scores_v2,
     match_score_version,
-    sample_noise_floor,
 )
 from mascope_tools.composition.heuristic_filter import DEFAULT_CALIBRATION_V2
 
@@ -70,7 +69,7 @@ def test_absent_monoisotopic_scores_zero():
 def test_no_snr_column_scores_without_proxy():
     # No signal_to_noise column is the DB-read case: no-SNR mode, no proxy. For a clean
     # envelope that is the same answer a real SNR gives, to ~0.1%.
-    s = ion_score_v2(_ion(110.0), sigma_ppm=0.5, noise=5.0)
+    s = ion_score_v2(_ion(110.0), sigma_ppm=0.5)
     assert s == pytest.approx(0.9560, abs=1e-3)
 
 
@@ -79,9 +78,7 @@ def test_no_snr_column_matches_real_snr_for_a_clean_envelope():
     # exceeds the 5%-of-abundance floor below SNR ~20, so a normally-measured envelope
     # scores identically either way.
     real = ion_score_v2(_ion(110.0, snr=[500, 55]), sigma_ppm=0.5)
-    assert real == pytest.approx(
-        ion_score_v2(_ion(110.0), sigma_ppm=0.5, noise=5.0), abs=1e-3
-    )
+    assert real == pytest.approx(ion_score_v2(_ion(110.0), sigma_ppm=0.5), abs=1e-3)
 
 
 def test_per_row_nan_snr_does_not_inflate():
@@ -94,9 +91,9 @@ def test_per_row_nan_snr_does_not_inflate():
         abs=1e-3,
     )
     # ... and without the column at all, where the proxy used to score it 0.7391.
-    assert ion_score_v2(
-        _ion(880.0, me=(0.0, 0.0)), sigma_ppm=0.5, noise=5.0
-    ) == pytest.approx(0.2543, abs=1e-3)
+    assert ion_score_v2(_ion(880.0, me=(0.0, 0.0)), sigma_ppm=0.5) == pytest.approx(
+        0.2543, abs=1e-3
+    )
 
 
 def test_absent_isotopologue_penalised_without_snr_column():
@@ -104,7 +101,7 @@ def test_absent_isotopologue_penalised_without_snr_column():
     # M+1 predicted at 30% of base and entirely absent scored a perfect 1.0. The
     # abundance fallback restores the real-SNR answer exactly.
     absent = dict(rel=0.30, me=(0.0, 0.0))
-    no_column = ion_score_v2(_ion(0.0, **absent), sigma_ppm=0.5, noise=5.0)
+    no_column = ion_score_v2(_ion(0.0, **absent), sigma_ppm=0.5)
     assert no_column == pytest.approx(0.7574, abs=1e-3)
     assert no_column == pytest.approx(
         ion_score_v2(_ion(0.0, snr=[500, np.nan], **absent), sigma_ppm=0.5), abs=1e-3
@@ -136,15 +133,6 @@ def test_mixed_null_group_keeps_per_row_snr_concessions():
     assert ion_score_v2(noisy, sigma_ppm=0.5) > ion_score_v2(all_null, sigma_ppm=0.5)
 
 
-def test_noise_argument_does_not_change_the_score():
-    # `noise` is retained for the call sites that still pass a sample_noise_floor, and is
-    # inert: nothing about the score may depend on it any more.
-    scores = {
-        ion_score_v2(_ion(110.0), sigma_ppm=0.5, noise=n) for n in (1.0, 5.0, 1e6)
-    }
-    assert len(scores) == 1
-
-
 def test_raw_vs_calibrated():
     g = _ion(110.0, snr=[500, 55])
     raw = ion_score_v2(g, sigma_ppm=0.5, calibrate=False)
@@ -165,11 +153,6 @@ def test_calibrate_refuses_an_instrument_agnostic_curve():
         ion_score_v2(_ion(110.0, snr=[500, 55]), sigma_ppm=0.5, calibrate=True)
 
 
-def test_sample_noise_floor_positive():
-    df = pd.DataFrame({"sample_peak_intensity": [1.0, 10.0, 100.0, 1000.0]})
-    assert sample_noise_floor(df) > 0
-
-
 def test_satellite_matched_isotopologue_treated_as_absent():
     base = dict(_ion(110.0, snr=[500, 55]))
     normal = ion_score_v2(
@@ -188,7 +171,7 @@ def test_satellite_penalty_applies_without_snr_column():
     # instead of 0.8561). The no-SNR gate reproduces the real-SNR penalty exactly.
     base = dict(_ion(110.0))
     sat = ion_score_v2(
-        pd.DataFrame({**base, "is_satellite": [False, True]}), sigma_ppm=0.5, noise=5.0
+        pd.DataFrame({**base, "is_satellite": [False, True]}), sigma_ppm=0.5
     )
     assert sat == pytest.approx(0.8561, abs=1e-3)
     with_snr = dict(_ion(110.0, snr=[500, 55]))
