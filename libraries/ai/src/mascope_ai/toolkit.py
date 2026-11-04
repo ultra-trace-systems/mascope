@@ -617,7 +617,12 @@ class Toolkit:
         if within is not None and within.kind == "batch":
             return _refs(self._sample_rows(within), "sample", *columns), []
         dataset = within.id if within is not None and within.kind == "dataset" else None
-        with self._errors("list the samples of", within):
+        listing = (
+            ("list the samples of", within)
+            if within is not None
+            else ("list the samples of the workspace", None)
+        )
+        with self._errors(*listing):
             try:
                 rows = self.client.samples.list(
                     batches=re.compile(""), dataset=dataset, drop_columns=[]
@@ -754,7 +759,7 @@ class Toolkit:
         sample this user may read - most often, that it is a name.
         """
         try:
-            with self._errors("read sample", None):
+            with self._errors("read the sample"):
                 record = self.client.samples.get(sample_id)
         except (NotFound, InvalidRequest, AccessDenied):
             return None
@@ -1082,8 +1087,13 @@ class Toolkit:
             and all(f.get("error_type") == "PermissionDeniedError" for f in failures)
         ):
             role, workspace = self._role()
+            target = sources[0] if sources else None
             raise AccessDenied(
-                "read", sources[0] if sources else None, "guest", role, workspace
+                "read" if target else "read what the load asked for",
+                target,
+                "guest",
+                role,
+                workspace,
             )
         return df, sources
 
@@ -1280,7 +1290,8 @@ class Toolkit:
         cap = _RowCap(
             max_rows, "sample", items, lambda args: args[0]["sample_item_id"], hint
         )
-        with self._errors("read the peaks of", sources[0] if sources else None):
+        # _scope refuses a load that names nothing, so there is a source
+        with self._errors("read the peaks of", sources[0]):
             df = _loaders.load_sample_peaks(
                 self.client,
                 tasks,
@@ -1360,7 +1371,8 @@ class Toolkit:
             "which have nothing to load. Load fewer samples or targets, or "
             "raise max_rows.",
         )
-        with self._errors("read the time series of", sources[0] if sources else None):
+        # _scope refuses a load that names nothing, so there is a source
+        with self._errors("read the time series of", sources[0]):
             df = _loaders.load_sample_timeseries(
                 self.client,
                 tasks,

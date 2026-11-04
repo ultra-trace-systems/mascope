@@ -191,7 +191,9 @@ class RowCapExceeded(ToolkitError):
 class AccessDenied(ToolkitError):
     """A 403: the token's user lacks the role an operation needs.
 
-    :ivar operation: What the call set out to do, e.g. ``"read peaks of"``.
+    :ivar operation: What the call set out to do, e.g. ``"read peaks of"``;
+        without a target, a whole phrase that names its object (``"list
+        the target collections"``).
     :ivar target: The object it acted on, if known.
     :ivar required_role: The role the operation needs, and where.
     :ivar current_role: The user's role in the workspace, where the toolkit
@@ -220,7 +222,7 @@ class AccessDenied(ToolkitError):
             else f"You have no role{where} that allows it; "
         )
         super().__init__(
-            f"Refused to {operation} {target or 'the object'}. {have}"
+            f"Refused to {_acting(operation, target)}. {have}"
             f"it needs {required_role}. Ask a workspace admin for the role, "
             "or work with objects you can read."
         )

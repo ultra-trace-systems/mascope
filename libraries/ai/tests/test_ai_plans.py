@@ -561,6 +561,9 @@ def test_a_plan_that_fails_part_way_says_what_it_applied(kit, api, ws2_editor):
     assert receipt.applied == (0,)
     assert receipt.failure["step"] == 1
     assert receipt.failure["error"] == "access_denied"
+    assert receipt.failure["message"].startswith(
+        f"Refused to apply plan {plan.id}: samples.move. You have"
+    )
     assert [r.id for r in receipt.results] == ["d2"]
     assert kit.session.plans.state(plan.id)["state"] == "failed"
     writes = len(changed(api))
