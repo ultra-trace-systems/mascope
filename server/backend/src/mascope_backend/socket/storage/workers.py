@@ -21,6 +21,13 @@ past ``worker_ttl`` reads as dead until it beats again; its sockets then hold
 no room for others, which only routes notifications to the user's own room, as
 before rooms were counted per socket.
 
+The heartbeat also calls Redis steadily on every worker a web socket reached,
+so it is what reports a Redis that stays down. Every storage call logs a failed Redis
+connection as a warning kept out of monitoring, since a blip is ridden out; the
+heartbeat counts its own failures in a row, and once ``redis_outage_beats`` of
+them have failed it logs one monitored warning for the outage, and one more when
+a beat succeeds again. Each worker reports its own, under one monitoring issue.
+
 Redis keys:
     mascope:workers:{worker_id} - present while that worker runs
     mascope:sockets:worker:{sid} - the worker holding one web socket
@@ -28,13 +35,18 @@ Redis keys:
 
 import asyncio
 import os
+import time
 import uuid
+from typing import Callable
 
+from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage.client import (
+    is_transient_redis_error,
     log_storage_failure,
     redis_storage_client,
 )
 from mascope_backend.socket.storage.config import storage_config
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 
 
 # (pid, id): the id is made again in a forked child, which must not answer for
@@ -43,6 +55,64 @@ _worker: tuple[int, str] | None = None
 
 # This worker's heartbeat task, started by the first web socket to connect.
 _heartbeat: asyncio.Task | None = None
+
+
+#: Monitoring groups of the outage and of its end: one issue each across
+#: workers and releases, whichever line logs them.
+OUTAGE_FINGERPRINT = "redis-outage:worker-heartbeat"
+RECOVERY_FINGERPRINT = "redis-outage-over:worker-heartbeat"
+
+
+class RedisOutage:
+    """
+    This worker's run of heartbeats that found Redis out of reach.
+
+    Only a transient failure (:func:`is_transient_redis_error`) counts: any
+    other is a fault already reported on its own, and says nothing of whether
+    Redis answers.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._clear()
+
+    def _clear(self) -> None:
+        self.failed_beats = 0
+        self.since: float | None = None
+        self.reported = False
+
+    def beat_failed(self) -> None:
+        """Count a failed beat; report the outage on the threshold's beat."""
+        if self.since is None:
+            self.since = self._clock()
+        self.failed_beats += 1
+        if self.reported or self.failed_beats < storage_config.redis_outage_beats:
+            return
+        self.reported = True
+        runtime.logger.bind(**{SENTRY_FINGERPRINT: [OUTAGE_FINGERPRINT]}).warning(
+            f"Redis has been out of reach for {self._lasted()}: "
+            f"{self.failed_beats} worker heartbeats in a row failed "
+            f"[Worker {os.getpid()}]"
+        )
+
+    def beat_succeeded(self) -> None:
+        """End the run; report the outage over if it was reported."""
+        if self.reported:
+            runtime.logger.bind(**{SENTRY_FINGERPRINT: [RECOVERY_FINGERPRINT]}).warning(
+                f"Redis is back after {self._lasted()} out of reach: "
+                f"{self.failed_beats} worker heartbeats failed "
+                f"[Worker {os.getpid()}]"
+            )
+        self._clear()
+
+    def _lasted(self) -> str:
+        seconds = round(self._clock() - self.since)
+        if seconds < 120:
+            return f"{seconds} s"
+        return f"{round(seconds / 60)} min"
+
+
+_redis_outage = RedisOutage()
 
 
 def worker_id() -> str:
@@ -72,6 +142,10 @@ async def _beat() -> None:
             f"Worker heartbeat: failed to write it: {e} [Worker {os.getpid()}]",
             e,
         )
+        if is_transient_redis_error(e):
+            _redis_outage.beat_failed()
+    else:
+        _redis_outage.beat_succeeded()
 
 
 async def _keep_beating() -> None:

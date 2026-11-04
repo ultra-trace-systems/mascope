@@ -42,6 +42,12 @@ class SocketStorageConfig(BaseModel):
     # services, the renewal interval stays well under the TTL.
     worker_ttl: int = 30  # Heartbeat key lifetime absent renewal
     worker_renewal_interval: int = 10  # How often a running worker refreshes it
+    # A failed heartbeat is a warning kept out of monitoring, like any Redis
+    # blip the socket storage rides out. This many failed in a row report the
+    # outage to monitoring once, and the next beat that succeeds reports it
+    # over. At one beat per worker_renewal_interval, six span about a minute,
+    # where a Redis restart is answering again by the next beat or the one after.
+    redis_outage_beats: int = 6
 
     # Redis key prefixes
     session_key_prefix: str = "mascope:session:"  # Session storage keys
