@@ -400,6 +400,7 @@ which are in `.hygiene`.
 |---|---|---|
 | `READING_TOLERANCE_PPM` | `5.0` ppm | relative half-width of the reading window |
 | `READING_TOLERANCE_MDA` | `0.3` mDa | absolute floor of the window (the low-mass offset) |
+| `CORE_VERSION` | `1` | the core's version: what a reading was made by, for a cache or a record of readings to name. Raised whenever a rule, a threshold, the library or the masses change a reading, a flag or a count; `test_ms2_hygiene` pins the readings of peaky's public fixtures to it |
 | `K_MAX_DEFAULT` | `3` | most molecules a loss may split into |
 | `K_MAX_LIMIT` | `6` | `k_max` above this raises; 6 still reads NH3 + 5 H2O (H13NO5, DBE -5). The search holds only multisets that fit inside the loss and stops at the first size that reads: the tests' eight deep losses at 6 take 5 to 40 ms each, once (cached), and 20 to 60 times longer without the pruning |
 | `LADDER_K` | `4` | the piece count `ladder_gate` admits on a ladder |

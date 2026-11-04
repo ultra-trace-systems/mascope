@@ -72,6 +72,7 @@ from mascope_tools.composition.utils import to_hill_order, to_pyteomics
 
 __all__ = [
     "CLOSED_SHELL_LOSSES",
+    "CORE_VERSION",
     "DEFAULT_TOLERANCE",
     "ELEMENTS",
     "FLAG_ROLES",
@@ -295,6 +296,13 @@ READING_TOLERANCE_PPM = 5.0
 #: and 5 ppm at m/z 43 is 0.21 mDa, no margin. The floor makes it 7 ppm there
 #: and is inert above m/z 60.
 READING_TOLERANCE_MDA = 0.3
+#: The composition core's version: what a reading made by this package was
+#: made by. The readings route caches its readings under it, so a reading
+#: cached by another version is never served. Raised whenever a rule, a
+#: threshold, the loss library or the masses change what a reading, a flag or
+#: a count says; ``test_ms2_hygiene`` pins the readings of peaky's public
+#: fixtures to it and fails on such a change until it is raised.
+CORE_VERSION = 1
 # Cache sizes: sub-formula grids per (composition, charge), loss decompositions
 # per (loss, k_max).
 _GRID_CACHE = 32
