@@ -1,4 +1,5 @@
 import os
+import signal
 from collections.abc import Callable
 from queue import Queue
 from threading import Event, Thread
@@ -280,6 +281,42 @@ def wait_for_backend() -> bool:
     return False
 
 
+def install_stop_signal() -> None:
+    """Make SIGTERM a request to shut down.
+
+    Docker stops a container with SIGTERM, and SIGKILLs it once its stop grace
+    period has run out. The converter is its container's PID 1, and the kernel
+    drops a signal sent to a PID namespace's init process unless that process
+    has a handler for it. Python installs none for SIGTERM, so without this a
+    stop goes unseen: the converter keeps taking files for the whole grace
+    period and is killed at its end, idle or mid-conversion, and every stop of
+    the boot unit times out waiting for it (#2903).
+
+    With it, a stop sets SHUTDOWN_EVENT. Each thread finishes the item it holds
+    and takes no new one, so an idle converter is gone within a watcher
+    interval, and a conversion in flight is finished rather than cut off as
+    long as it ends inside the grace period.
+
+    The handler only writes a byte; a thread of its own sets the event. Python
+    runs a signal handler in the main thread, between any two steps of what
+    that thread was doing, and the main thread spends its life in
+    SHUTDOWN_EVENT.wait(). A handler that set the event itself could interrupt
+    it while it holds the lock Event.set() takes, and wait on itself forever.
+    """
+    read_fd, write_fd = os.pipe()
+
+    def relay() -> None:
+        os.read(read_fd, 1)
+        SHUTDOWN_EVENT.set()
+        runtime.logger.info("Stop requested; finishing the work in flight")
+
+    def on_stop(_signum, _frame) -> None:
+        os.write(write_fd, b"\0")
+
+    Thread(target=relay, name="Stop signal relay", daemon=True).start()
+    signal.signal(signal.SIGTERM, on_stop)
+
+
 # Global variables
 SHUTDOWN_EVENT = Event()
 # Startup wait tuning: retry delays double from 1 s up to this cap, and a
@@ -310,6 +347,10 @@ def run():
             f"Creating missing source directory {runtime.config.source}"
         )
         os.makedirs(runtime.config.source)
+
+    # Before the startup wait, so a stop that comes while the backend is still
+    # booting ends that wait too.
+    install_stop_signal()
 
     # Everything the converter produces flows through the socket, so connect
     # before starting any watcher or worker threads: starting them earlier
@@ -413,6 +454,10 @@ def run():
         # Shutdown gracefully on exception
         SHUTDOWN_EVENT.set()
     finally:
+        # Ctrl+C ends the loop with a KeyboardInterrupt, which is no Exception:
+        # the threads are told to stop on that way out as well, or the joins
+        # below would wait for threads nobody stopped.
+        SHUTDOWN_EVENT.set()
         # Wait for all threads to finish
         for processor in processors:
             processor.join()
@@ -420,6 +465,13 @@ def run():
         h5_fs_watcher.join()
         for worker in peak_workers:
             worker.join()
+        # Leave now rather than at the backend's ping timeout: until then it
+        # still counts the converter as connected and accepts uploads for it.
+        try:
+            SOCKET_CLIENT.sio.disconnect()
+        except Exception as e:
+            runtime.logger.info(f"Could not disconnect from the backend: {e}")
+        runtime.logger.info("File converter stopped")
 
 
 if __name__ == "__main__":
