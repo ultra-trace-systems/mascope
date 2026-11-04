@@ -98,6 +98,17 @@
 #                        CDN_SUITE_DIR)
 #   PRODUCTION_HC_URL    heartbeat for production runs (default none, never
 #                        HC_URL)
+#   PRODUCTION_BASELINE_DIR
+#                        absolute directory of the production deployments'
+#                        accepted findings, prod-<NAME>.json each (default
+#                        /opt/pentest-runner/baselines). A missing file
+#                        accepts nothing.
+#
+# Each run reads the accepted findings of its own target, which the runner
+# names in MASCOPE_PENTEST_BASELINE: both staging vantages the suite's own
+# baseline.json, a production deployment its prod-<NAME>.json. Staging's
+# acceptances are about staging, so they neither accept a production finding
+# nor turn stale where production passes.
 #
 # Each vantage leaves three files in RECORDS: <ts>-<vantage>.log (the suite's
 # output), <ts>-<vantage>.tar.gz (that run's report alone), and <ts>-<vantage>.summary
@@ -149,6 +160,7 @@ PRODUCTION_SUITE_DIR="${PRODUCTION_SUITE_DIR:-$CDN_SUITE_DIR}"
 # periodic run's dead-man switch green after that run stopped, and turn its
 # /fail back to up the next morning.
 PRODUCTION_HC_URL="${PRODUCTION_HC_URL:-}"
+PRODUCTION_BASELINE_DIR="${PRODUCTION_BASELINE_DIR:-/opt/pentest-runner/baselines}"
 
 # Every production target is checked before anything runs: a name becomes a
 # file name here, and a URL that is not https:// would send the operator header
@@ -174,6 +186,12 @@ if [ "$TRIGGER" = production ]; then
         fi
         names+="${entry%%=*} "
     done
+    # The suite takes a relative path from its own directory, which would put
+    # a deployment's acceptances in the suite copy every sync replaces.
+    if [[ "$PRODUCTION_BASELINE_DIR" != /* ]]; then
+        echo "PRODUCTION_BASELINE_DIR is not an absolute path" >&2
+        exit 2
+    fi
 fi
 
 SSH_OPTS=(-i "$SSH_KEY" -o IdentitiesOnly=yes -o ForwardAgent=no
@@ -304,6 +322,7 @@ run_origin() {
   MASCOPE_PENTEST_LOWPRIV_PASSWORD='${MASCOPE_PENTEST_LOWPRIV_PASSWORD:-}' \
   MASCOPE_PENTEST_VERIFY_TLS=false \
   MASCOPE_PENTEST_VANTAGE=origin \
+  MASCOPE_PENTEST_BASELINE=baseline.json \
   ${release_env}./.venv/bin/python -m pytest -q"
 
     ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" "$remote_cmd" > "$1" 2>&1
@@ -338,6 +357,7 @@ run_cdn() {
         MASCOPE_PENTEST_HEADER_VALUE="${MASCOPE_PENTEST_HEADER_VALUE:-}" \
         MASCOPE_PENTEST_VERIFY_TLS=true \
         MASCOPE_PENTEST_VANTAGE=cdn \
+        MASCOPE_PENTEST_BASELINE=baseline.json \
         MASCOPE_PENTEST_CURRENT_RELEASE="${current_release}" \
         exec ./.venv/bin/python -m pytest -q
     ) > "$1" 2>&1
@@ -349,13 +369,14 @@ run_cdn() {
 }
 
 # Runs the non-mutating subset here against one production deployment, through
-# the edge. $1 = log, $2 = archive, $3 = its public URL.
+# the edge. $1 = log, $2 = archive, $3 = its public URL, $4 = its NAME.
 run_production() {
     # As the CDN run, with two differences. --non-mutating holds the suite to
     # the controls that change nothing a real user depends on, and it refuses
     # to run at all while any control is unclassified. And no account goes
     # along: those controls sign in nowhere, so the credentials are cleared
     # rather than inherited from whatever environment cron gives this script.
+    # Its accepted findings are its own, never staging's.
     (
         cd "$PRODUCTION_SUITE_DIR" || exit 2
         rm -f "${REPORT_FILES[@]}"
@@ -369,6 +390,7 @@ run_production() {
         MASCOPE_PENTEST_HEADER_VALUE="${MASCOPE_PENTEST_HEADER_VALUE:-}" \
         MASCOPE_PENTEST_VERIFY_TLS=true \
         MASCOPE_PENTEST_VANTAGE=cdn \
+        MASCOPE_PENTEST_BASELINE="${PRODUCTION_BASELINE_DIR}/prod-${4}.json" \
         MASCOPE_PENTEST_CURRENT_RELEASE="${current_release}" \
         exec ./.venv/bin/python -m pytest -q --non-mutating
     ) > "$1" 2>&1
@@ -534,7 +556,7 @@ if [ "$TRIGGER" = production ]; then
     final_rc=0 final_summary=""
     for entry in $PRODUCTION_TARGETS; do
         name="${entry%%=*}"
-        assess "prod-${name}" run_production "${entry#*=}"
+        assess "prod-${name}" run_production "${entry#*=}" "$name"
         [ "$final_rc" -eq 0 ] && final_rc=$suite_rc
         final_summary="${final_summary:+${final_summary} | }${name}: ${summary}"
     done
