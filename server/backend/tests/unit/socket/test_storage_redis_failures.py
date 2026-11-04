@@ -62,6 +62,9 @@ def failing_redis(monkeypatch):
         stub = SimpleNamespace(client=_FailingRedis(error))
         for module in (rooms, services, sessions, workers):
             monkeypatch.setattr(module, "redis_storage_client", stub)
+        # A fresh run of failed beats: the cases here are one beat each, and
+        # must not add up to the outage report (test_storage_redis_outage.py).
+        monkeypatch.setattr(workers, "_redis_outage", workers.RedisOutage())
 
     return _install
 
