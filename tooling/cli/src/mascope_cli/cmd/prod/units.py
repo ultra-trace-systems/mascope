@@ -13,6 +13,12 @@ A checkout install takes the templates from its checkout (``tooling/systemd``,
 ``tooling/disk-check.sh``), which ``tooling/ubuntu.sh install`` relies on; a
 wheel install takes the copies bundled in the CLI (``mascope_cli/data/systemd``),
 which a test keeps identical to the checkout's.
+
+The scripts the units run are copied to ``/usr/local/lib/mascope`` when their
+source can move or vanish under the units: the bundled copies live in the CLI's
+venv, which a rollback to an older CLI or another Python minor replaces, and
+the update script is missing from any checkout of a release before it. Only a
+checkout's ``tooling/disk-check.sh``, which every release has, runs in place.
 """
 
 import getpass
@@ -36,6 +42,8 @@ units_app = typer.Typer()
 SYSTEMD_DIR = Path("/etc/systemd/system")
 CONFIG_DIR = Path("/etc/mascope")
 ENVIRONMENT_FILE = Path("/etc/environment")
+# Where the scripts the units run are copied to, out of reach of a CLI change.
+SCRIPT_DIR = Path("/usr/local/lib/mascope")
 
 # Templated units, in the order they are written.
 TEMPLATED_UNITS = (
@@ -107,6 +115,11 @@ class Step:
     # A failure is expected and ignored (stopping a unit that is not loaded).
     check: bool = True
 
+    @property
+    def is_message(self) -> bool:
+        """Nothing to run: the step only says what is left as it is."""
+        return not self.argv
+
 
 def bundled_dir() -> Path:
     """The directory of the unit templates bundled in the CLI."""
@@ -129,6 +142,29 @@ def sources_for(home: Path) -> Sources:
     return Sources({name: bundled / name for name in SOURCE_FILES}, "bundled")
 
 
+def script_paths(sources: Sources) -> dict[str, Path]:
+    """
+    Where the units run each script from, by its bundled name.
+
+    A copy under :data:`SCRIPT_DIR`, which `install` makes, except a
+    checkout's disk check: ``tooling/disk-check.sh`` is in every release's
+    checkout, and it is where ``tooling/ubuntu.sh`` always pointed the unit.
+    """
+    paths = {name: SCRIPT_DIR / name for name in ("disk-check.sh", "mascope-update.sh")}
+    if sources.origin == "checkout":
+        paths["disk-check.sh"] = sources.files["disk-check.sh"]
+    return paths
+
+
+def copied_scripts(sources: Sources) -> dict[str, Path]:
+    """The scripts `install` copies under :data:`SCRIPT_DIR`: name -> target."""
+    return {
+        name: target
+        for name, target in script_paths(sources).items()
+        if target != sources.files[name]
+    }
+
+
 def render(
     sources: Sources, *, user: str, mascope_bin: str, home: Path
 ) -> dict[str, str]:
@@ -137,12 +173,13 @@ def render(
 
     :raises ValueError: A template keeps a placeholder nothing fills.
     """
+    scripts = script_paths(sources)
     values = {
         "@@USER@@": user,
         "@@MASCOPE_BIN@@": mascope_bin,
         "@@MASCOPE_PATH@@": str(home),
-        "@@DISK_CHECK@@": str(sources.files["disk-check.sh"]),
-        "@@UPDATE_SCRIPT@@": str(sources.files["mascope-update.sh"]),
+        "@@DISK_CHECK@@": str(scripts["disk-check.sh"]),
+        "@@UPDATE_SCRIPT@@": str(scripts["mascope-update.sh"]),
     }
     rendered = {}
     for name in UNITS:
@@ -193,9 +230,8 @@ def named_executable(value: str) -> Optional[str]:
     return str(path.absolute())
 
 
-def environment_mascope_path(path: Optional[Path] = None) -> Optional[str]:
-    """``MASCOPE_PATH`` as ``/etc/environment`` sets it, or None."""
-    path = path or ENVIRONMENT_FILE
+def env_file_value(path: Path, name: str) -> Optional[str]:
+    """The last value an env file of ``KEY=value`` lines gives ``name``, or None."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
@@ -203,9 +239,41 @@ def environment_mascope_path(path: Optional[Path] = None) -> Optional[str]:
     value = None
     for line in lines:
         key, sep, raw = line.strip().partition("=")
-        if sep and key.strip() == "MASCOPE_PATH":
+        if sep and key.strip() == name:
             value = raw.strip().strip("'\"")
     return value
+
+
+def environment_mascope_path(path: Optional[Path] = None) -> Optional[str]:
+    """``MASCOPE_PATH`` as ``/etc/environment`` sets it, or None."""
+    return env_file_value(path or ENVIRONMENT_FILE, "MASCOPE_PATH")
+
+
+def healthcheck_url_set() -> bool:
+    """
+    Whether ``/etc/mascope/disk-check.env`` gives the disk check somewhere to
+    send its alerts. False when the file cannot be read: the hint is then
+    worth printing.
+    """
+    try:
+        value = env_file_value(CONFIG_DIR / "disk-check.env", "HEALTHCHECK_URL")
+    except OSError:
+        return False
+    return bool(value)
+
+
+def update_timer_enabled() -> bool:
+    """Whether ``mascope-update.timer`` is enabled; asking needs no sudo."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-enabled", "mascope-update.timer"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.stdout.strip().startswith("enabled")
 
 
 def _tee(path: Path, content: str, note: str) -> Step:
@@ -239,6 +307,21 @@ def install_steps(
                 stdin=f"{lead}MASCOPE_PATH={home}\n",
             )
         )
+    copies = copied_scripts(sources)
+    if copies:
+        steps.append(
+            Step(
+                ["sudo", "install", "-d", "-m", "755", str(SCRIPT_DIR)],
+                f"make {SCRIPT_DIR}",
+            )
+        )
+    for name, target in copies.items():
+        steps.append(
+            Step(
+                ["sudo", "install", "-m", "755", str(sources.files[name]), str(target)],
+                f"copy {name} to {target}, where a CLI change leaves it",
+            )
+        )
     for name in UNITS:
         steps.append(
             _tee(SYSTEMD_DIR / name, rendered[name], f"write {SYSTEMD_DIR / name}")
@@ -252,6 +335,7 @@ def install_steps(
     for installed, template in ENV_FILES.items():
         target = CONFIG_DIR / installed
         if target.exists():
+            steps.append(Step([], f"kept existing {target}"))
             continue
         steps.append(
             Step(
@@ -289,7 +373,10 @@ def install_steps(
 
 
 def remove_steps() -> list[Step]:
-    """What `remove` does: stop, disable and delete every unit, then reload."""
+    """
+    What `remove` does: stop, disable and delete every unit, reload, and delete
+    the copied scripts.
+    """
     steps = []
     for unit in REMOVE_ORDER:
         steps += [
@@ -299,7 +386,13 @@ def remove_steps() -> list[Step]:
             ),
             Step(["sudo", "rm", "-f", str(SYSTEMD_DIR / unit)], f"delete {unit}"),
         ]
-    steps.append(Step(["sudo", "systemctl", "daemon-reload"], "reload systemd"))
+    steps += [
+        Step(["sudo", "systemctl", "daemon-reload"], "reload systemd"),
+        Step(
+            ["sudo", "rm", "-rf", str(SCRIPT_DIR)],
+            f"delete the scripts the units ran from {SCRIPT_DIR}",
+        ),
+    ]
     return steps
 
 
@@ -317,6 +410,12 @@ def _run(step: Step) -> subprocess.CompletedProcess:
 def _carry_out(steps: list[Step], dry_run: bool) -> None:
     """Print each step under --dry-run, else run it and stop at a failure."""
     for step in steps:
+        if step.is_message:
+            if dry_run:
+                typer.echo(f"# {step.note}\n")
+            else:
+                runtime.logger.info(step.note)
+            continue
         if dry_run:
             typer.echo(f"# {step.note}")
             typer.echo(" ".join(step.argv))
@@ -378,8 +477,9 @@ def install(
     Install the units that start the stack at boot and keep it maintained.
 
     Writes them to /etc/systemd/system with the deploy account, this runtime
-    home and the mascope executable filled in, seeds the settings files in
-    /etc/mascope once (never overwriting one), and enables the boot service,
+    home and the mascope executable filled in, copies the scripts they run to
+    /usr/local/lib/mascope, where a CLI change leaves them, seeds the settings
+    files in /etc/mascope once (never overwriting one), and enables the boot service,
     the disk check and the assignment-run retention. The unattended update is
     installed but left disabled: enable mascope-update.timer when ready.
     Runs its privileged steps through sudo; run it as the deploy account,
@@ -451,15 +551,22 @@ def install(
         "the newest 2 completed runs per sample) are enabled; tune them in "
         f"{CONFIG_DIR}/disk-check.env and prune.env."
     )
-    runtime.logger.info(
-        f"Set HEALTHCHECK_URL in {CONFIG_DIR}/disk-check.env to get alerted: "
-        "until then the disk check alerts nobody. See docs/maintaining.md."
-    )
-    runtime.logger.info(
-        "Auto-updates are INSTALLED but DISABLED. To turn them on: "
-        "'sudo systemctl enable --now mascope-update.timer'. See "
-        "docs/maintaining.md."
-    )
+    if not healthcheck_url_set():
+        runtime.logger.info(
+            f"Set HEALTHCHECK_URL in {CONFIG_DIR}/disk-check.env to get alerted: "
+            "until then the disk check alerts nobody. See docs/maintaining.md."
+        )
+    if update_timer_enabled():
+        runtime.logger.info(
+            "Auto-updates stay ENABLED (mascope-update.timer): this left the "
+            "timer as it was."
+        )
+    else:
+        runtime.logger.info(
+            "Auto-updates are INSTALLED but DISABLED. To turn them on: "
+            "'sudo systemctl enable --now mascope-update.timer'. See "
+            "docs/maintaining.md."
+        )
 
 
 @units_app.command("remove")
@@ -470,7 +577,8 @@ def remove(
     ] = False,
 ) -> None:
     """
-    Stop, disable and delete the units. The settings in /etc/mascope stay.
+    Stop, disable and delete the units and the scripts copied for them. The
+    settings in /etc/mascope stay.
     """
     _require_linux()
     _carry_out(remove_steps(), dry_run)

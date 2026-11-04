@@ -4,4 +4,6 @@
   `--dry-run` prints every file and command first, and `mascope prod units
   remove` takes the units out again. On a wheel install, the update unit
   completes the hand-over `--auto` asks for with exit 40: it installs the
-  newer CLI, then runs the update again as a new process.
+  newer CLI, then runs the update again as a new process. The scripts the
+  units run are copied to `/usr/local/lib/mascope`, so going back to an older
+  CLI leaves the update and the disk check working.

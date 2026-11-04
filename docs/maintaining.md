@@ -206,6 +206,11 @@ mascope prod units remove              # stop, disable and delete them; /etc/mas
 - A checkout's units come from its `tooling/systemd`. A wheel install's come
   from the copies in the CLI, which are the same files. Re-run it after a
   release that changes the units: an update does not rewrite them.
+- The scripts the units run are copied to `/usr/local/lib/mascope`, so a
+  rollback to an older CLI leaves the update and the disk check working. A
+  checkout's disk check runs its own `tooling/disk-check.sh`.
+- A re-run keeps each existing settings file and says so. It leaves an
+  enabled update timer enabled.
 
 > The provisioning user is the deploy user. `mascope.service` and
 > `mascope-update.service` run as that user, from the deployment checkout

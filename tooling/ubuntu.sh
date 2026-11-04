@@ -283,6 +283,8 @@ function uninstall_mascope() {
         sudo rm -f "/etc/systemd/system/$unit"
     done
     sudo systemctl daemon-reload
+    # The copies of the scripts they ran (mascope prod units install).
+    sudo rm -rf /usr/local/lib/mascope
     write_line "systemd units disabled and removed (kept /etc/mascope/update.env)"
 
     write_section "UNINSTALLING MASCOPE BINARIES"
