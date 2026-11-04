@@ -32,10 +32,12 @@
 #                    pull requests into master.
 #   preview          Print the [Unreleased] section the fragments make.
 #   compile X.Y.Z    Write the fragments into CHANGELOG.md as the section
-#                    `## [X.Y.Z] - <date>`, delete them, and set CITATION.cff's
-#                    version and date-released. Run again for the same
-#                    version before it is tagged, it adds what merged since
-#                    to that section.
+#                    `## [X.Y.Z] - <date>`, delete them, set CITATION.cff's
+#                    version and date-released, and set the CLI's RELEASE to
+#                    vX.Y.Z and its version, in its pyproject and uv.lock, to
+#                    the date's calver. Run again
+#                    for the same version before it is tagged, it adds what
+#                    merged since to that section.
 #   extract          Move entries written under [Unreleased] in CHANGELOG.md
 #                    into fragments named after the current branch (in a
 #                    rebase, the branch being rebased): the way out for a
@@ -60,6 +62,16 @@ ROOT = Path(__file__).resolve().parent.parent
 CHANGELOG = "CHANGELOG.md"
 FRAGMENTS = "changelog.d"
 CITATION = "CITATION.cff"
+# The CLI is cut with every release: a wheel install deploys only the release
+# its RELEASE names, and the calver in its pyproject is what PyPI gets.
+CLI_RELEASE = "tooling/cli/src/mascope_cli/release.py"
+CLI_PROJECT = "tooling/cli/pyproject.toml"
+# The lockfile records the workspace's own versions, and CI's `uv lock
+# --check` fails while the CLI's there and in its pyproject differ.
+LOCK = "uv.lock"
+_LOCKED_CLI = re.compile(
+    r'(?m)^(name = "mascope-cli"\nversion = ")[^"]*("\nsource = \{ editable = "tooling/cli" \})$'
+)
 
 # A section's file-name suffix and its heading, in the order a release lists
 # them: Keep a Changelog's six, plus the Performance this changelog has used.
@@ -502,17 +514,66 @@ def _count(entries: dict[str, list[str]]) -> str:
     return f"{_plural(sum(n for n, _ in counts), 'entry', 'entries')} ({detail})"
 
 
-def _set_citation(root: Path, version: str, date: datetime.date) -> None:
-    path = root / CITATION
-    text = path.read_text(encoding="utf-8")
+def _set(text: str, rel: str, key: str, pattern: str, line: str) -> str:
+    """`text` with the first line `pattern` matches replaced by `line`."""
+    text, found = re.subn(pattern, lambda _: line, text, count=1)
+    if not found:
+        raise ChangelogError(f"{rel} has no top-level `{key}` to set")
+    return text
+
+
+def _citation(root: Path, version: str, date: datetime.date) -> str:
+    """CITATION.cff with its version and date-released set."""
+    text = (root / CITATION).read_text(encoding="utf-8")
     for key, value in (
         ("version", version),
         ("date-released", f'"{date.isoformat()}"'),
     ):
-        text, found = re.subn(rf"(?m)^{key}: .*$", f"{key}: {value}", text, count=1)
-        if not found:
-            raise ChangelogError(f"{CITATION} has no top-level `{key}:` to set")
-    _write(path, text)
+        text = _set(text, CITATION, f"{key}:", rf"(?m)^{key}: .*$", f"{key}: {value}")
+    return text
+
+
+def calver(date: datetime.date) -> str:
+    """The CLI's version for a release cut on `date`: unpadded, as PEP 440 has it."""
+    return f"{date.year}.{date.month}.{date.day}"
+
+
+# The [project] table's own version line, not a later table's.
+_PROJECT_VERSION = re.compile(
+    r'(?ms)^(\[project\]\n(?:(?!^\[).)*?^)version = "(?P<version>[^"]*)"$'
+)
+
+
+def _cli_version(root: Path, date: datetime.date, new: bool) -> tuple[str, str]:
+    """The CLI's pyproject with its version set for a release on `date`.
+
+    Returns the text and the version. A release cut the same day as the one
+    before it would get that release's calver, which PyPI has already, so it
+    takes the next fourth part (2026.11.4.1). Compiled again into its own
+    section, a release keeps the version its first compile set.
+    """
+    text = (root / CLI_PROJECT).read_text(encoding="utf-8")
+    match = _PROJECT_VERSION.search(text)
+    if not match:
+        raise ChangelogError(f"{CLI_PROJECT} has no `version` under [project] to set")
+    current = match["version"]
+    version = calver(date)
+    try:
+        now = _parse_version(current)
+    except ValueError:
+        now = None  # not a plain release: anything compile sets is newer
+    if now is not None and now >= _parse_version(version):
+        if not new:
+            return text, current
+        if now[:3] != _parse_version(version):
+            raise ChangelogError(
+                f"{CLI_PROJECT} has version {current} already, later than "
+                f"{version} for a release on {date.isoformat()}: compile with "
+                "a --date no earlier than the CLI's"
+            )
+        version = f"{version}.{(now[3] if len(now) > 3 else 0) + 1}"
+    start, end = match.span("version")
+    return f"{text[:start]}{version}{text[end:]}", version
 
 
 def _parse_version(version: str) -> tuple[int, ...]:
@@ -596,16 +657,34 @@ def compile_release(root: Path, version: str, date: datetime.date | None = None)
     while not out[-1].strip():
         out.pop()
     out = [*out, "", *lines[after:]]
-    # The citation first: if it cannot be set, nothing has changed yet, and
-    # no fragment is lost with a CHANGELOG.md checked out again.
-    _set_citation(root, version, date)
+    # Every file's new text first: if one cannot be set, nothing has changed
+    # yet, and no fragment is lost with a CHANGELOG.md checked out again.
+    citation = _citation(root, version, date)
+    release = _set(
+        (root / CLI_RELEASE).read_text(encoding="utf-8"),
+        CLI_RELEASE,
+        "RELEASE",
+        r'(?m)^RELEASE = ".*"$',
+        f'RELEASE = "v{version}"',
+    )
+    project, cli = _cli_version(root, date, new=verb == "takes")
+    lock, found = _LOCKED_CLI.subn(
+        lambda m: f"{m[1]}{cli}{m[2]}", (root / LOCK).read_text(encoding="utf-8")
+    )
+    if not found:
+        raise ChangelogError(f"{LOCK} has no editable `mascope-cli` package to set")
+    _write(root / CITATION, citation)
+    _write(root / CLI_RELEASE, release)
+    _write(root / CLI_PROJECT, project)
+    _write(root / LOCK, lock)
     _write(root / CHANGELOG, "\n".join(out))
     for fragment in fragments:
         fragment.path.unlink()
     return (
         f"{CHANGELOG}: {heading[3:]} {verb} {_count(entries)} from "
         f"{_plural(len(fragments), 'fragment')}, now deleted.\n"
-        f"{CITATION}: version {version}, date-released {date.isoformat()}."
+        f"{CITATION}: version {version}, date-released {date.isoformat()}.\n"
+        f"CLI: RELEASE v{version}, version {cli} (pyproject and {LOCK})."
     )
 
 

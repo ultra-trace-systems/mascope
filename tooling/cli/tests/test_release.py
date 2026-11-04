@@ -1,10 +1,11 @@
 """
 Tests for the release the CLI was cut with (`mascope_cli.release`).
 
-`RELEASE` is set by hand at release prep, beside the CLI's calver. These pin
-it to the version the same prep writes into `CITATION.cff`, so a prep pull
-request that forgets it fails here rather than shipping a CLI that refuses
-the release it was published with.
+`RELEASE` is set at release prep, beside the CLI's calver, by the same
+`tooling/changelog.py compile` that writes the version into `CITATION.cff`.
+These pin the two together, so a prep pull request that sets one by hand and
+not the other fails here rather than shipping a CLI that refuses the release
+it was published with.
 """
 
 import re
@@ -43,7 +44,7 @@ def test_release_is_the_cited_release_or_a_candidate_for_the_next():
     else:
         assert release.RELEASE == cited, (
             f"mascope_cli.release.RELEASE is {release.RELEASE} but CITATION.cff "
-            f"cites {cited}: set RELEASE at release prep, beside the CLI's calver"
+            f"cites {cited}: release prep sets both with tooling/changelog.py compile"
         )
 
 

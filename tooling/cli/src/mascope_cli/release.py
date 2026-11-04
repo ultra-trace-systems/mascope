@@ -8,9 +8,10 @@ CLI first (``uv tool install mascope-cli==<calver>``). The release manifest
 names the CLI cut with each release (``cmd/prod/release_manifest.py``), which
 is how ``prod update --auto`` learns which CLI to hand over to.
 
-``RELEASE`` is set at release prep, in the same pull request that bumps the
-CLI's calver in ``tooling/cli/pyproject.toml`` and the app's version in
-``CITATION.cff``; a test fails while it and ``CITATION.cff`` disagree.
+``RELEASE`` is set at release prep by ``tooling/changelog.py compile``, in
+the same change that bumps the CLI's calver in ``tooling/cli/pyproject.toml``
+and the app's version in ``CITATION.cff``; a test fails while it and
+``CITATION.cff`` disagree.
 """
 
 from importlib import metadata
