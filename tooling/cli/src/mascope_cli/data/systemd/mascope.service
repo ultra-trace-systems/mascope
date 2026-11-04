@@ -15,6 +15,14 @@ EnvironmentFile=/etc/environment
 ExecStart=@@MASCOPE_BIN@@ prod up --detach
 ExecStop=@@MASCOPE_BIN@@ prod down
 TimeoutStartSec=300
+# Longer than the longest chain of stop grace periods `prod down` can wait
+# through. `docker compose down` stops each service only once everything that
+# depends on it has stopped, giving each its stop_grace_period from
+# docker-compose.yaml: the file converter's 90 s, then the backend's 90 s, then
+# Redis and Postgres. At systemd's 90 s default `prod down` would be killed
+# part-way and the rest of the stack never stopped by it.
+# tooling/cli/tests/test_systemd_units.py holds the two together.
+TimeoutStopSec=300
 
 [Install]
 WantedBy=multi-user.target

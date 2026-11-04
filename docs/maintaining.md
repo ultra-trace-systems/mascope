@@ -277,6 +277,13 @@ regardless of the checkout, pin it in `/etc/environment`
 hand at every update. A `.env` file in the checkout has no effect: the CLI
 resolves `MASCOPE_VERSION` itself and passes it to compose.
 
+A stop (`systemctl stop`, a reboot, a shutdown) runs `mascope prod down`,
+which lets the work in flight finish first. The file converter finishes the
+file it is converting, then the backend finishes the processing it has
+running. Docker gives each up to 90 s before it kills it. An idle stack stops
+in a few seconds, and the unit waits up to 300 s (`TimeoutStopSec`) for a busy
+one.
+
 Day to day you can also drive it directly:
 
 ```sh
