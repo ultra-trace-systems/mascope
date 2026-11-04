@@ -2294,6 +2294,11 @@ MS2_STORE_MODE=run mascope prod db script run backfill_ms2_store  # write; again
   written again, its groups list none. Version 4 holds the scans the reader
   selects since it leaves out a first scan far above the rest of its own
   experiment (*Peak stores a file has outgrown*, below).
+- A store also caches the readings `GET /api/samples/{id}/ms2/readings`
+  makes of its groups, in its `readings/` group: the newest 64 per file,
+  written on request under the store's lock. It is no part of the layout and
+  needs no backfill: a store written again starts with none, and removing
+  `readings/` only makes the next requests read again.
 
 ### Peak stores a file has outgrown
 

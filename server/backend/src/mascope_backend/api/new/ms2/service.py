@@ -24,6 +24,10 @@ The isolation-window inventory (:func:`get_ms2_window`) lists, per group,
 the sample's MS1 centroids in its isolation window beside the precursor the
 store located for it.
 
+The readings (:func:`get_ms2_readings`) read a group's window against the
+ions a caller names, with the composition core (:mod:`.readings`), and cache
+them in the file's MS2 store.
+
 Compute functions (in mascope_signal) use asyncio.to_thread internally, so the
 event loop is not blocked; however, each request still awaits the result
 synchronously—long-running operations may exceed client-side timeouts.
@@ -33,6 +37,7 @@ waits: if the computation exceeds the limit, the server responds with 504.
 """
 
 import asyncio
+import json
 from typing import Literal
 
 import numpy as np
@@ -47,10 +52,12 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     NotFoundException,
 )
+from mascope_backend.api.new.ms2 import readings as ms2_readings
 from mascope_backend.api.new.ms2.inventory import (
     batch_ms2_groups,
     sample_ms2_inventory,
 )
+from mascope_backend.runtime import runtime
 from mascope_file.name import get_sample_file_type
 from mascope_signal.ms2_store import (
     PRECURSOR_FIELDS,
@@ -59,6 +66,7 @@ from mascope_signal.ms2_store import (
     parse_group_key,
 )
 from mascope_thermo.thermo import NoScansFoundError, locate_precursors, ms2_summary
+from mascope_tools.composition.ms2 import CORE_VERSION
 
 
 DEFAULT_TIMEOUT = 120  # seconds
@@ -145,6 +153,51 @@ async def _summary_from_inventory(sample, store: Ms2Store) -> dict | None:
         counts[1],
         store.parent_peak_tolerance,
     )
+
+
+async def _stored_spectra(
+    sample, store: Ms2Store, by_activation: bool, parent_peak_mz: float | None = None
+) -> tuple[dict, str] | None:
+    """A sample's averaged MS2 spectra under the store's groups, on the
+    file's calibrated axis, and where they were read.
+
+    The store's own spectra (``"store"``) for a window that holds each of its
+    groups whole; else the window's own scans of each of the store's groups,
+    averaged from the raw file (``"raw"``). None for a sample with no
+    polarity, which the store cannot select from.
+
+    :param parent_peak_mz: Read no other parent peak's scans from the raw
+        file: the store's own spectra are read whole, and cheaply.
+    :raises NoScansFoundError: When the sample holds no MS2 scan.
+    """
+
+    def stored() -> dict | None:
+        spectra = store.averaged_centroids(
+            sample.t0, sample.t1, sample.polarity, by_activation=by_activation
+        )
+        if spectra is None:
+            return None
+        return m_compute.ms2_centroids_on_file_axis(sample.filename, spectra)
+
+    spectra = await asyncio.to_thread(stored)
+    if spectra is not None:
+        return spectra, SOURCE_STORE
+    scans = await asyncio.to_thread(
+        store.window_scans,
+        sample.t0,
+        sample.t1,
+        sample.polarity,
+        by_activation=by_activation,
+    )
+    if scans is None:
+        return None
+    if parent_peak_mz is not None:
+        scans = {key: n for key, n in scans.items() if key[0] == parent_peak_mz}
+    # The window's own scans, read raw, under the store's groups
+    spectra = await m_compute.get_orbi_ms2_centroids_of_scans(
+        sample.filename, scans, ppm=store.ppm
+    )
+    return spectra, SOURCE_RAW
 
 
 def _reads_raw_ms2(filename: str) -> bool:
@@ -289,33 +342,12 @@ async def get_ms2_averaged_centroids(
     """
     sample = await fetch_sample(sample_item_id)
 
-    def stored(store: Ms2Store) -> dict | None:
-        spectra = store.averaged_centroids(
-            sample.t0, sample.t1, sample.polarity, by_activation=by_activation
-        )
-        if spectra is None:
-            return None
-        return m_compute.ms2_centroids_on_file_axis(sample.filename, spectra)
-
     async def read() -> tuple[dict | None, str | None, float]:
         store = await _open_store(sample.filename)
         if store is not None:
-            spectra = await asyncio.to_thread(stored, store)
+            spectra = await _stored_spectra(sample, store, by_activation)
             if spectra is not None:
-                return spectra, SOURCE_STORE, store.parent_peak_tolerance
-            scans = await asyncio.to_thread(
-                store.window_scans,
-                sample.t0,
-                sample.t1,
-                sample.polarity,
-                by_activation=by_activation,
-            )
-            if scans is not None:
-                # The window's own scans, read raw, under the store's groups
-                spectra = await m_compute.get_orbi_ms2_centroids_of_scans(
-                    sample.filename, scans, ppm=store.ppm
-                )
-                return spectra, SOURCE_RAW, store.parent_peak_tolerance
+                return *spectra, store.parent_peak_tolerance
         if await _unsupported(sample.filename):
             return None, None, parent_peak_tolerance
         spectra = await m_compute.get_orbi_ms2_centroids_by_parent(
@@ -754,6 +786,28 @@ def _on_file_axis(precursor: dict, factor: float | None) -> dict:
     }
 
 
+async def _store_groups(sample, store: Ms2Store) -> tuple[list[dict], dict] | None:
+    """The sample's groups as its store holds them, and each group's
+    precursor, located when the store was written over all of its scans.
+
+    :return: The groups as the summary lists them and their precursors keyed
+        by (parent peak m/z, activation) on the file's calibrated axis; None
+        for a sample with no polarity, which the store cannot select from.
+    :raises NoScansFoundError: When the sample holds no scan.
+    """
+    groups = await asyncio.to_thread(
+        store.groups, sample.t0, sample.t1, sample.polarity
+    )
+    if groups is None:
+        return None
+    factor = await asyncio.to_thread(m_compute.ms2_calibration_factor, sample.filename)
+    precursors = {
+        key: _on_file_axis(precursor, factor)
+        for key, precursor in store.precursors(sample.polarity).items()
+    }
+    return groups, precursors
+
+
 async def _window_groups(
     sample, parent_peak_tolerance: float
 ) -> tuple[list[dict] | None, dict | None, str | None, float]:
@@ -770,20 +824,26 @@ async def _window_groups(
     """
     store = await _open_store(sample.filename)
     if store is not None:
-        groups = await asyncio.to_thread(
-            store.groups, sample.t0, sample.t1, sample.polarity
-        )
-        if groups is not None:
-            factor = await asyncio.to_thread(
-                m_compute.ms2_calibration_factor, sample.filename
-            )
-            precursors = {
-                key: _on_file_axis(precursor, factor)
-                for key, precursor in store.precursors(sample.polarity).items()
-            }
-            return groups, precursors, SOURCE_STORE, store.parent_peak_tolerance
+        held = await _store_groups(sample, store)
+        if held is not None:
+            return *held, SOURCE_STORE, store.parent_peak_tolerance
     if await _unsupported(sample.filename):
         return None, None, None, parent_peak_tolerance
+    groups, precursors, _ = await _raw_groups(sample, parent_peak_tolerance)
+    return groups, precursors, SOURCE_RAW, parent_peak_tolerance
+
+
+async def _raw_groups(
+    sample, parent_peak_tolerance: float
+) -> tuple[list[dict], dict, dict]:
+    """The sample's groups read from its raw file, each group's precursor
+    located over the sample's own scans as the store locates it, and the
+    groups' averaged spectra it was located in.
+
+    :return: The groups as the summary lists them, their precursors keyed by
+        (parent peak m/z, activation) on the file's calibrated axis, and the
+        spectra, keyed alike, on the instrument's axis.
+    """
     spectra = await m_compute.get_orbi_ms2_centroids_by_parent(
         sample.filename,
         t_min=sample.t0,
@@ -816,7 +876,7 @@ async def _window_groups(
         key: _on_file_axis(precursor, factor)
         for key, precursor in locate_precursors(spectra).items()
     }
-    return groups, precursors, SOURCE_RAW, parent_peak_tolerance
+    return groups, precursors, spectra
 
 
 async def _ms1_centroids(sample) -> tuple | None:
@@ -962,6 +1022,179 @@ async def get_ms2_window(
         **answer,
         "reason": None,
         "data": windows,
+    }
+
+
+def _the_group(groups: list[dict], parent_peak_mz: float, activation: str):
+    """The group of ``groups`` a key names, as the scans route finds it."""
+    return next(
+        (
+            group
+            for group in groups
+            if round(group["parent_peak_mz"], 4) == parent_peak_mz
+            and group["activation"] == activation
+        ),
+        None,
+    )
+
+
+@api_controller()
+async def get_ms2_readings(
+    sample_item_id: str,
+    group: str,
+    ions: str,
+    noise_threshold: float = 10.0,
+    parent_peak_tolerance: float = 0.001,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict:
+    """Read one MS2 group's fragments as formulas, over the ions named.
+
+    The group's window is read whole: every group of its parent peak in the
+    sample, one averaged spectrum per activation at or above
+    ``noise_threshold``, as the centroids route serves them with
+    ``by_activation``, because the composition core reads a window's spectra
+    together (:mod:`.readings`). The named ions are checked against the
+    window - in it, aliases read once, one of them the precursor at the key -
+    and the window is recalibrated once on its target's located precursor;
+    then each spectrum is read by the core: every peak against every window
+    ion, harmonic ghosts and side lobes flagged, a fourth loss piece only on
+    a ladder.
+
+    The readings are cached in the file's MS2 store under a digest of
+    everything they are made of, the core's version included
+    (:func:`.readings.cache_key`), and ``cached`` says whether they were
+    read from it. The same request answers the same data twice. A file with
+    no store is read raw and cached nowhere.
+
+    :param sample_item_id: Unique identifier for the sample.
+    :param group: The group's key, ``"<parent m/z>@<activation>"``
+        (:func:`mascope_signal.ms2_store.group_key`).
+    :param ions: The window ions, comma-separated ion formulas
+        (:func:`.readings.parse_ions`).
+    :param noise_threshold: Minimum signal-to-noise ratio of the peaks read.
+    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks,
+        for a file read raw; a file's MS2 store answers from its own grouping.
+    :param timeout: Maximum seconds to wait for the computation.
+    :return: The readings (``docs/ms2.md`` section 11 of the tools library)
+        with ``source``, the ``parent_peak_tolerance`` the groups were made
+        at, ``cached``, ``core_version`` and ``reason``: ``"unsupported"``
+        for a sample of a file that is not a raw Orbitrap file, which answers
+        the group with no spectrum and no ``source``, else None.
+    :raises ApiException: 422 for a key that is no group key, and for named
+        ions the window refuses (:class:`.readings.IonRefused`), saying why.
+    :raises NotFoundException: When the sample holds no such group.
+    """
+    sample = await fetch_sample(sample_item_id)
+    try:
+        parent_peak_mz, activation = parse_group_key(group)
+        named = ms2_readings.parse_ions(ions, sample.polarity)
+    except ValueError as e:
+        raise ApiException(str(e), f"ValueError in get_ms2_readings: {e}", 422) from e
+    described = {
+        "group": group_key(parent_peak_mz, activation),
+        "polarity": sample.polarity,
+        "parent_peak_mz": parent_peak_mz,
+        "activation": activation,
+    }
+
+    async def spectra_of(store, raw, parent: float) -> tuple[dict, str]:
+        if store is None:
+            on_axis = await asyncio.to_thread(
+                m_compute.ms2_centroids_on_file_axis, sample.filename, raw
+            )
+            return on_axis, SOURCE_RAW
+        return await _stored_spectra(sample, store, True, parent)
+
+    async def read():
+        store = await _open_store(sample.filename)
+        held = None if store is None else await _store_groups(sample, store)
+        if held is not None:
+            groups, precursors = held
+            raw, tolerance = None, store.parent_peak_tolerance
+        elif await _unsupported(sample.filename):
+            return None
+        else:
+            store, tolerance = None, parent_peak_tolerance
+            groups, precursors, raw = await _raw_groups(sample, parent_peak_tolerance)
+        found = _the_group(groups, parent_peak_mz, activation)
+        if found is None:
+            return found, None, None, None, tolerance
+        key = (found["parent_peak_mz"], found["activation"])
+        width = _widest(found)
+        located = precursors[key]["located_precursor_mz"]
+        window = ms2_readings.window_ions(named, found, width, located, groups)
+        spectra, source = await spectra_of(store, raw, found["parent_peak_mz"])
+        spectra = ms2_readings.window_spectra(
+            spectra, found["parent_peak_mz"], noise_threshold
+        )
+        digest = ms2_readings.cache_key(
+            described["group"], named, spectra, width, located, noise_threshold
+        )
+        if store is not None:
+            payload = await asyncio.to_thread(store.cached_readings, digest)
+            if payload is not None:
+                return found, json.loads(payload), source, True, tolerance
+
+        payload = await asyncio.to_thread(
+            ms2_readings.payload,
+            described,
+            window,
+            spectra,
+            width,
+            located,
+            noise_threshold,
+        )
+        if store is not None:
+            try:
+                await asyncio.to_thread(store.cache_readings, digest, payload)
+            except Exception:  # noqa: BLE001 - an uncached read is still a read
+                runtime.logger.opt(exception=True).warning(
+                    f"Could not cache the MS2 readings of {sample.filename} in "
+                    "its MS2 store; they are served uncached"
+                )
+        # Served as the cache serves it, so a later hit answers the same data
+        return found, json.loads(payload), source, False, tolerance
+
+    try:
+        answer = await asyncio.wait_for(read(), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise ApiException(
+            f"MS2 readings timed out after {timeout}s for sample",
+            f"asyncio.TimeoutError in get_ms2_readings (timeout={timeout}s)",
+            504,
+        )
+    except ms2_readings.IonRefused as e:
+        raise ApiException(str(e), f"IonRefused in get_ms2_readings: {e}", 422) from e
+    if answer is None:
+        return {
+            "message": (
+                f"Sample '{sample.sample_item_name}' is not of a raw Orbitrap "
+                "file, so its MS2 scans are not read."
+            ),
+            "source": None,
+            "parent_peak_tolerance": parent_peak_tolerance,
+            "cached": False,
+            "core_version": CORE_VERSION,
+            "reason": REASON_UNSUPPORTED,
+            "data": ms2_readings.unread(described),
+        }
+    found, data, source, cached, tolerance = answer
+    if found is None:
+        raise NotFoundException(
+            f"Sample '{sample.sample_item_name}' holds no MS2 group '{group}'."
+        )
+    return {
+        "message": (
+            f"Readings of the MS2 group '{data['group']}' in sample "
+            f"'{sample.sample_item_name}': {len(data['spectra'])} spectra of its "
+            f"window over {len(data['ions'])} window ions."
+        ),
+        "source": source,
+        "parent_peak_tolerance": tolerance,
+        "cached": cached,
+        "core_version": CORE_VERSION,
+        "reason": None,
+        "data": data,
     }
 
 

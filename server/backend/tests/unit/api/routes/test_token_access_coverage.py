@@ -161,6 +161,7 @@ OTHER_TOKEN_ROUTES = {
     ("GET", "/api/samples/{sample_item_id}/axis_fingerprint"),
     ("GET", "/api/samples/{sample_item_id}/ms2/centroids"),
     ("GET", "/api/samples/{sample_item_id}/ms2/ms1_centroids"),
+    ("GET", "/api/samples/{sample_item_id}/ms2/readings"),
     ("GET", "/api/samples/{sample_item_id}/ms2/scans"),
     ("GET", "/api/samples/{sample_item_id}/ms2/summary"),
     ("GET", "/api/samples/{sample_item_id}/ms2/timeseries"),

@@ -11,6 +11,7 @@ from mascope_backend.db import User
 from .schema import (
     GetMs1CentroidsQueryParams,
     GetMs2CentroidsQueryParams,
+    GetMs2ReadingsQueryParams,
     GetMs2ScansQueryParams,
     GetMs2SummaryQueryParams,
     GetMs2TimeseriesQueryParams,
@@ -20,6 +21,7 @@ from .service import (
     get_batch_ms2_groups,
     get_ms1_averaged_centroids,
     get_ms2_averaged_centroids,
+    get_ms2_readings,
     get_ms2_scans,
     get_ms2_summary,
     get_ms2_timeseries,
@@ -230,6 +232,62 @@ async def get_ms2_window_route(
     :return: The isolation windows of the sample's MS2 groups.
     """
     return await get_ms2_window(
+        sample_item_id=sample_item_id,
+        **query_params.model_dump(),
+    )
+
+
+@ms2_router.get("/{sample_item_id}/ms2/readings")
+@api_route(token_access=True)
+async def get_ms2_readings_route(
+    sample_item_id: str,
+    query_params: GetMs2ReadingsQueryParams = Depends(),
+    user: User = Depends(current_active_user),
+    membership=Depends(require_sample_role("guest")),
+):
+    """Read one MS2 group's fragments as formulas, over the ions named.
+
+    The group's window is read whole - every activation of its parent peak
+    in the sample, one averaged spectrum each at or above ``noise_threshold``
+    - against the named ``ions``: the group's precursor and the ions
+    co-isolated with it. Each must lie in the isolation window, within
+    +/-(width / 2 + 5 mDa) of the key, and one of them, the target, within
+    max(10 ppm, 5 mDa) of it; one that does not is refused (422) with the
+    nearest key and its offset from it. Of two named ions within the reading
+    tolerance of each other only the first is read, and ``left_out`` names
+    the other. The window is recalibrated once, by one constant-ppm offset on
+    the target's located precursor (``recalibration``).
+
+    Per spectrum (``spectra``, each keyed by its ``group``), its TIC and peak
+    counts with the harmonic ghosts and side lobes out of them, and
+    ``readings``: one row per (peak, window ion, reading), every peak at
+    least once - ``peak`` (its place among the spectrum's peaks at the S/N
+    floor, as ``ms2/centroids`` serves them), ``mz``, ``mz_cal`` (on the
+    recalibrated axis), ``intensity``, ``signal_to_noise``, ``role``
+    (``precursor``, ``fragment``, ``unexplained``, ``harmonic``,
+    ``satellite``), ``window_ion``, ``formula``, ``parity``, ``dbe``,
+    ``ppm``, ``loss`` and its ``pieces``, ``unnamed_pieces``,
+    ``radical_loss``, ``rank``, ``n_candidates``, ``n_parents``,
+    ``ladder_support`` and ``note``, null where the row has none.
+    ``ions_source`` says whose ions were read: ``named``, the caller's.
+
+    The readings are cached in the file's MS2 store, keyed by the ions, the
+    spectra and the composition core's version (``core_version``), and
+    ``cached`` says whether they were read from it. ``source`` says where
+    the spectra were read (``"store"`` or ``"raw"``). ``reason`` is
+    ``"unsupported"`` for a sample of a file whose MS2 scans are not read (a
+    TOF sample), which answers the group with no spectrum and ``source``
+    null; null otherwise. A sample that holds no such group answers 404.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param query_params: Query parameters naming the group and its ions.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :type user: User
+    :param membership: Workspace membership with guest role on the sample.
+    :type membership: WorkspaceMember
+    :return: The group's readings.
+    """
+    return await get_ms2_readings(
         sample_item_id=sample_item_id,
         **query_params.model_dump(),
     )

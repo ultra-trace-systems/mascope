@@ -154,3 +154,44 @@ class GetMs2WindowQueryParams(QueryParamsModel):
         gt=0,
         le=600,
     )
+
+
+class GetMs2ReadingsQueryParams(QueryParamsModel):
+    """Query parameters for reading one MS2 group's fragments as formulas."""
+
+    group: str = Field(
+        ...,
+        description=(
+            "The group's key: its parent peak m/z with four decimals, '@', its "
+            "activation, e.g. '195.0877@hcd20.00'. Its window is read whole: "
+            "every activation of its parent peak in the sample"
+        ),
+    )
+    ions: str = Field(
+        ...,
+        description=(
+            "The window ions, comma-separated singly charged ion formulas "
+            "('C8H11N4O2+,C10H11O4+'; 15N as [15N], peaky's ^N accepted): the "
+            "group's precursor, its target, and the ions co-isolated with it. "
+            "Each must lie in the isolation window, one of them within "
+            "max(10 ppm, 5 mDa) of the key; of two within the reading "
+            "tolerance of each other only the first is read"
+        ),
+    )
+    noise_threshold: float = Field(
+        DEFAULT_NOISE_THRESHOLD,
+        description="Minimum signal-to-noise ratio of the peaks read",
+    )
+    parent_peak_tolerance: float = Field(
+        DEFAULT_PARENT_PEAK_TOLERANCE,
+        description=(
+            "Tolerance in Da for merging near-duplicate parent peaks, for a "
+            "file read raw; a file's MS2 store answers from its own grouping"
+        ),
+    )
+    timeout: float = Field(
+        DEFAULT_TIMEOUT,
+        description="Maximum seconds to wait for the computation before returning 504",
+        gt=0,
+        le=600,
+    )
