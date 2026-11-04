@@ -268,11 +268,15 @@ class TestTheScans:
             for number in _scans_of(definition, "precursor"):
                 assert list(backend.scan_trailer(number)) == list(survey)
 
-    def test_its_survey_scans_are_the_files_own(self, shape):
+    def test_its_survey_scans_are_the_files_own_and_the_survey_centroids(self, shape):
         path, definition = shape
         # The file itself, as OpenTFRaw reads it without the backend
         source = opentfraw.RawFile(str(fixture.SOURCE_FILE))
-        real = {n: np.asarray(source.centroid_labels(n)["mz"]) for n in (1, 2)}
+        survey = [c["mz"] for c in fixture.answers()["survey"]]
+        real = {
+            n: np.sort(np.concatenate([source.centroid_labels(n)["mz"], survey]))
+            for n in (1, 2)
+        }
 
         with open_backend(path) as backend:
             for number in _scans_of(definition, "ms1"):
