@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 
 import { useApp } from '@/stores'
 import { DEFAULT_SAMPLE_BATCH_TYPE, ANALYSIS_POLARITY } from '@/lib/constants'
+import { canEditWorkspace } from '@/lib/permissions'
 
 import { useClipboard } from './clipboard.js'
 
@@ -29,9 +30,15 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
     pending: false
   })
 
-  // A copied batch, or copied or cut samples. A cut batch is not offered a
-  // new dataset yet (#2863): it moves only into an existing one.
-  const batchPaste = computed(() => clipboard.batch !== null && clipboard.op === 'copy')
+  // A copied or cut batch, or copied or cut samples. A cut batch moves, which
+  // takes the editor role in the workspace the new dataset goes into, as the
+  // move route does; the menu cut it only where it may leave its own.
+  const batchPaste = computed(
+    () =>
+      clipboard.batch !== null &&
+      (clipboard.op === 'copy' ||
+        (clipboard.op === 'cut' && canEditWorkspace(app.data.workspace.focused, app.auth.user)))
+  )
   const samplesPaste = computed(
     () => clipboard.samples !== null && ['copy', 'cut'].includes(clipboard.op)
   )
@@ -102,7 +109,10 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
         dataset_id = dialog.createdDatasetId
       }
 
-      if (batch) {
+      if (batch && op === 'cut') {
+        await app.data.batch.move({ sample_batch_id: batch.sample_batch_id, dataset_id })
+        clipboard.clear()
+      } else if (batch) {
         await app.data.batch.copy({
           sample_batch_id: batch.sample_batch_id,
           dataset_id,

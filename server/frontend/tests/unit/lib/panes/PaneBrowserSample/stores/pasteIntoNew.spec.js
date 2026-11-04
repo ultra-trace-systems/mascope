@@ -7,10 +7,11 @@ import { createPinia, setActivePinia } from 'pinia'
 // retry, which must not create the containers a second time.
 
 const app = {
+  auth: { user: null },
   data: {
     workspace: { focusedId: 'ws-1', focused: { workspace_id: 'ws-1', is_system: false } },
     dataset: { focusedId: null, focused: null, create: vi.fn(), focusWhenPresent: vi.fn() },
-    batch: { create: vi.fn(), copy: vi.fn(), focusWhenPresent: vi.fn() },
+    batch: { create: vi.fn(), copy: vi.fn(), move: vi.fn(), focusWhenPresent: vi.fn() },
     sample: { copy: vi.fn(), move: vi.fn() }
   }
 }
@@ -40,6 +41,8 @@ beforeEach(async () => {
   app.data.dataset.focusedId = null
   app.data.dataset.focused = null
   app.data.workspace.focused.is_system = false
+  app.data.workspace.focused.my_role = undefined
+  app.auth.user = null
   app.data.dataset.create.mockResolvedValue({ data: { dataset_id: 'ds-new' } })
   app.data.batch.create.mockResolvedValue({ data: { sample_batch_id: 'b-new' } })
   const { useClipboard } = await import('@/lib/panes/PaneBrowserSample/stores/clipboard.js')
@@ -109,6 +112,83 @@ describe('paste into a new dataset', () => {
     await clipboard.copy(SAMPLES)
     app.data.workspace.focused.is_system = true
     expect(paste.datasetValid).toBe(false)
+  })
+
+  it('moves a cut batch into a new dataset and lets go of the cut', async () => {
+    await clipboard.cut(BATCH)
+    expect(paste.batchPaste).toBe(true)
+    expect(paste.datasetValid).toBe(true)
+
+    paste.open({ dataset: true })
+    expect(paste.dialog.batch).toBe(false)
+    paste.dialog.datasetName = 'Campaign'
+    await paste.execute()
+
+    expect(app.data.batch.create).not.toHaveBeenCalled()
+    expect(app.data.batch.copy).not.toHaveBeenCalled()
+    expect(app.data.batch.move).toHaveBeenCalledWith({
+      sample_batch_id: 'b-src',
+      dataset_id: 'ds-new'
+    })
+    // a pasted cut is not offered again
+    expect(clipboard.batch).toBeNull()
+    expect(app.data.dataset.focusWhenPresent).toHaveBeenCalledWith({ dataset_id: 'ds-new' })
+    expect(paste.dialog.visible).toBe(false)
+  })
+
+  it('retries a refused batch move into the dataset it already created', async () => {
+    await clipboard.cut(BATCH)
+    app.data.batch.move.mockRejectedValueOnce(new Error('409'))
+
+    paste.open({ dataset: true })
+    paste.dialog.datasetName = 'Campaign'
+    await paste.execute()
+
+    expect(paste.dialog.visible).toBe(true)
+    // the cut stays for the retry
+    expect(clipboard.batch).not.toBeNull()
+
+    await paste.execute()
+
+    expect(app.data.dataset.create).toHaveBeenCalledTimes(1)
+    expect(app.data.batch.move).toHaveBeenCalledTimes(2)
+    expect(app.data.batch.move).toHaveBeenLastCalledWith({
+      sample_batch_id: 'b-src',
+      dataset_id: 'ds-new'
+    })
+    expect(clipboard.batch).toBeNull()
+    expect(paste.dialog.visible).toBe(false)
+  })
+
+  // the move route takes the editor role in the workspace the dataset goes into
+  it('does not offer a cut batch to a guest of the workspace', async () => {
+    await clipboard.cut(BATCH)
+    app.auth.user = { user_id: 'u-1', role_id: 200 }
+    app.data.workspace.focused.my_role = 'guest'
+    expect(paste.batchPaste).toBe(false)
+    expect(paste.datasetValid).toBe(false)
+  })
+
+  it('offers a cut batch to an editor of the workspace', async () => {
+    await clipboard.cut(BATCH)
+    app.auth.user = { user_id: 'u-1', role_id: 200 }
+    app.data.workspace.focused.my_role = 'editor'
+    expect(paste.batchPaste).toBe(true)
+    expect(paste.datasetValid).toBe(true)
+  })
+
+  it('does not offer a cut batch in the system workspace', async () => {
+    await clipboard.cut(BATCH)
+    app.data.workspace.focused.is_system = true
+    expect(paste.datasetValid).toBe(false)
+  })
+
+  // the editor check is the move's; a copied batch is offered as before
+  it('does not put the editor check on a copied batch', async () => {
+    await clipboard.copy(BATCH)
+    app.auth.user = { user_id: 'u-1', role_id: 200 }
+    app.data.workspace.focused.my_role = 'guest'
+    expect(paste.batchPaste).toBe(true)
   })
 
   it('does not create the dataset again when a retry follows a failed batch', async () => {
