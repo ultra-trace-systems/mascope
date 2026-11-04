@@ -130,7 +130,8 @@ services:
     # sample file committed with no matched peaks and no explanation. Inherited
     # by file_converter through the anchor, which wants the same protection for
     # a conversion in flight. Raise together with the drain timeout, never
-    # below it.
+    # below it, and keep TimeoutStopSec in tooling/systemd/mascope.service
+    # above the chain of grace periods `compose down` waits through.
     stop_grace_period: 90s
     logging: *default-logging
     build:

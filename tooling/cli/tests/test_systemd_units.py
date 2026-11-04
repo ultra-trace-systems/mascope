@@ -22,9 +22,11 @@ import shutil
 import stat
 import subprocess
 import sys
+from importlib import resources
 from pathlib import Path
 
 import pytest
+import yaml
 from loguru import logger
 from typer.testing import CliRunner
 
@@ -35,6 +37,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SYSTEMD_DIR = REPO_ROOT / "tooling" / "systemd"
 INSTALLER = REPO_ROOT / "tooling" / "ubuntu.sh"
 UPDATE_SCRIPT = SYSTEMD_DIR / "mascope-update.sh"
+BUNDLED_DATA = Path(str(resources.files("mascope_cli") / "data"))
+
+# Docker's stop timeout for a service that sets no stop_grace_period.
+DOCKER_DEFAULT_GRACE_S = 10
 
 # The units that invoke the `mascope` CLI, which resolves the deployed release
 # from the checkout it runs in.
@@ -153,6 +159,63 @@ def test_cli_units_run_from_the_deployment_checkout(name):
         f"{name} must run from the checkout; without it systemd starts the "
         "unit in '/', where the CLI cannot resolve the checked-out release "
         "and falls back to deploying `latest`"
+    )
+
+
+def _seconds(duration: str) -> int:
+    """A compose duration such as "90s" or "1m30s", in seconds."""
+    parts = re.fullmatch(r"(?:(\d+)m)?(?:(\d+)s)?", duration)
+    assert parts and any(parts.groups()), f"unreadable duration {duration!r}"
+    minutes, seconds = (int(part or 0) for part in parts.groups())
+    return 60 * minutes + seconds
+
+
+@pytest.mark.parametrize("origin", ["checkout", "bundled"])
+def test_the_boot_unit_outlasts_the_longest_compose_down(origin):
+    """
+    `prod down` is the boot unit's ExecStop, and systemd kills an ExecStop that
+    runs past TimeoutStopSec - and with it the stop of every service it has not
+    reached yet. `docker compose down` stops a service only once everything that
+    depends on it has stopped, each given its own stop_grace_period, so the
+    longest it can take is the longest chain of grace periods down the
+    dependency graph: the file converter's, then the backend's, then what the
+    backend runs on. A checkout install runs the checkout's unit and compose
+    file, a wheel install the bundled copies, so both pairs are read.
+    """
+    if origin == "checkout":
+        if not SYSTEMD_DIR.is_dir():
+            pytest.skip("repo-root tooling/systemd not available")
+        compose = REPO_ROOT / "docker-compose.yaml"
+        unit_file = SYSTEMD_DIR / "mascope.service"
+    else:
+        compose = BUNDLED_DATA / "docker-compose.yaml"
+        unit_file = units.bundled_dir() / "mascope.service"
+
+    services = yaml.safe_load(compose.read_text(encoding="utf-8"))["services"]
+    dependents = {name: [] for name in services}
+    for name, service in services.items():
+        for dependency in service.get("depends_on") or {}:
+            dependents[dependency].append(name)
+
+    def stopped_after(name: str) -> int:
+        """Seconds into `compose down` by which `name` has stopped, at worst."""
+        grace = services[name].get("stop_grace_period", f"{DOCKER_DEFAULT_GRACE_S}s")
+        first = max((stopped_after(other) for other in dependents[name]), default=0)
+        return first + _seconds(grace)
+
+    longest = max(stopped_after(name) for name in services)
+
+    unit = unit_file.read_text(encoding="utf-8")
+    setting = re.search(r"^TimeoutStopSec=(.*)$", unit, re.MULTILINE)
+    assert setting, (
+        "mascope.service sets no TimeoutStopSec, so systemd's 90 s default "
+        f"applies to a `prod down` that can take {longest} s"
+    )
+    assert setting[1].isdigit(), "write TimeoutStopSec in plain seconds"
+    assert int(setting[1]) > longest, (
+        f"mascope.service gives `prod down` {setting[1]} s, but its compose file "
+        f"lets `compose down` wait {longest} s for its grace periods; systemd "
+        "would kill it part-way and leave the rest of the stack running"
     )
 
 
