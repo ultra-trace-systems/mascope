@@ -781,8 +781,19 @@ library's README has the usage. What the sketch above did not know:
   fills a missing CAS number or structure into an existing shared compound
   record; `plan_collection` therefore refuses compounds that give either
   unless `allow_global=True`.
-- **The MCP transport's `apply` tool** waits for the MCP server (MAS-130)
-  and is its own issue, MAS-544.
+- **The MCP transport's `apply` tool** (MAS-544) takes the plan's ID
+  alone and applies only plans that server made. Its description lists
+  the plans waiting for approval, rendered for the person, and the server
+  sends `tools/list_changed` when that list changes, so Claude Code's
+  permission prompt shows what a call approves. The list is bounded below
+  the client's cut of a description (4096 characters by default), the
+  warnings of each plan ahead of its changes, and `apply` refuses a plan
+  the list does not show in full. When the call runs, the
+  server mints the token and applies. A hard gate asks for no second
+  confirmation (MCP elicitation): the permission prompt is already one per
+  call, its text says the plan cannot be undone, and elicitation is a
+  capability not every client has, so the prompt would have to suffice
+  without it anyway.
 
 ---
 

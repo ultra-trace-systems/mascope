@@ -285,6 +285,8 @@ variant.
 | `compute_timeseries` | the peaks in range, how many had a time series, how many were computed |
 | `query_by_mz` | Mascope's candidates for an m/z |
 | `match_compounds` | one condensed verdict per candidate, the unscored apart, the tree's handle |
+| `plan_organize`, `plan_collection`, `plan_associate`, `plan_match` | a plan: its ID, summary, changes, role, gate, reversibility, cost and expiry; nothing is written |
+| `apply` | the receipt of a plan this server made, applied once the user approved the call |
 | `answer` | closes an answer in the manifest |
 | `session` | the session's directory, the Python to run, the lines that open it and a toolkit on it |
 
@@ -308,6 +310,50 @@ What a model reads is bounded by the server, not by a prompt:
 - **Failures are results.** A `ToolkitError` comes back as its `to_dict()`
   with `isError` set, as does a missing configuration (`not_configured`).
   The server keeps running.
+
+### Writes through the server: the permission prompt is the gate
+
+The `plan_*` tools build plans as the toolkit's builders do (see *Writes:
+plan, then apply*), and write nothing. `apply` takes a plan's ID alone. Its
+call is the human gate: Claude Code asks the user before it runs, and when
+it runs the user approved it. Only then does the server mint the confirm
+token, with its own `Approver`, and pass it to `Toolkit.apply`. The model
+never sees a token, and none is in a result, the tool list or the manifest.
+
+**Never auto-allow `apply`.** Do not add `mcp__mascope__apply`, or
+`mcp__mascope` as a whole, to Claude Code's allowed tools, and do not
+answer its prompt with "always allow" for it: either turns every plan the
+model makes into a write nobody approved. The read tools and the `plan_*`
+tools can be allowed freely; they change nothing in Mascope.
+
+What the prompt shows:
+
+- **The plan.** `apply`'s description lists the plans that wait for
+  approval, newest first: each one's ID, gate and summary, whether it can
+  be undone, the role it needs, its cost, when it expires, its notes and
+  its changes, every name escaped and every line bounded. The warnings
+  come before the changes. After each plan and each apply the server
+  sends `notifications/tools/list_changed`, so the client reads the list
+  again.
+- **Only listed plans apply.** The description stays under 4000
+  characters, below Claude Code's default cut of 4096
+  (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`), and holds at most five
+  plans. A plan that does not fit in full is counted, not listed, and
+  `apply` refuses it with `invalid_request`: apply the listed ones first,
+  or plan it again.
+- **A hard gate** (a matching save, a write every workspace shares) reads
+  `CANNOT BE UNDONE from Mascope.`, or says every workspace shares it. It
+  asks for no second confirmation: the prompt is one already, every time.
+- **Only the server's own plans.** A plan made by another server, by
+  Python on the same session, or by an earlier run of this server is
+  `not_found`. One edited in the session after the server showed it is
+  refused (`approval_refused`): the approval names the plan as shown.
+- **Once.** Calling `apply` again for the same plan returns the same
+  receipt (`repeated: true`) and writes nothing. A preview of `plan_match`
+  has nothing to apply.
+- **Refusals are results**, with `isError` set: `plan_expired`,
+  `plan_consumed`, `plan_drifted` with its `diff`, and `partially_applied`
+  with the receipt of what was written.
 
 The server keeps every Frame in one session, `--session ID` (or
 `$MASCOPE_AI_SESSION`), a new one by default. The workspace is

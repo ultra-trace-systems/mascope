@@ -1,6 +1,8 @@
 """
 The MCP server against a live demo stack: every tool once, on the published
-demo dataset, each answering within a few kilobytes.
+demo dataset, each answering within a few kilobytes. The write tools work in
+the scratch workspaces of the plans' contract tests
+(``test_ai_plans_contract.py``), never on the demo data.
 
 Opt-in, with the switch and settings of the toolkit's contract tests
 (``test_ai_contract.py``): a running demo stack and
@@ -13,6 +15,7 @@ import os
 
 import pandas as pd
 import pytest
+from test_ai_plans_contract import _api, scratch  # noqa: F401 (a fixture)
 
 from mascope_ai import Session, Toolkit
 from mascope_ai.mcp import MAX_RESULT_BYTES, Server
@@ -160,3 +163,34 @@ def test_answer_and_session(server, sample):
     assert out["recorded"] > 0
     session = ok(server, "session")
     assert sample["peaks"]["frame"] in [f["frame"] for f in session["frames"]]
+
+
+def test_a_plan_is_applied_through_the_tools_once(scratch, tmp_path):  # noqa: F811
+    moving = _api(
+        scratch.session,
+        "POST",
+        f"workspaces/{scratch.home}/datasets",
+        json={"dataset_name": "moved through the server"},
+    )["dataset_id"]
+    server = Server(
+        Session(root=tmp_path),
+        make_toolkit=lambda session: Toolkit(scratch.client, session=session),
+    )
+    plan = ok(
+        server,
+        "plan_organize",
+        moves=[{"item": moving, "to": scratch.other, "kind": "dataset"}],
+    )
+    assert plan["gate"] == "confirm"
+    assert f"Plan {plan['plan']} (gate confirm)" in server.apply_description()
+
+    receipt = ok(server, "apply", plan_id=plan["plan"])
+
+    assert receipt["complete"] and receipt["service_name"] == "ai-agent"
+    assert [(r["id"], r["parent"]) for r in receipt["results"]] == [
+        (moving, scratch.other)
+    ]
+    scratch.client.clear_cache()
+    assert moving not in scratch.client.datasets.list()["dataset_id"].tolist()
+    assert ok(server, "apply", plan_id=plan["plan"])["repeated"] is True
+    assert plan["plan"] not in server.apply_description()
