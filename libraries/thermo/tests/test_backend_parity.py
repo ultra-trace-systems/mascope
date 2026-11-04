@@ -761,6 +761,15 @@ def _bounded_window(monkeypatch, path):
     return float(times[0]), float(times[min(times.size, MAX_AVG_SCANS) - 1])
 
 
+def _nearest_ppm(reference: np.ndarray, mz: np.ndarray) -> np.ndarray:
+    """How far each of ``mz`` lies from the nearest of ``reference`` [ppm]."""
+    reference = np.sort(reference)
+    pos = np.searchsorted(reference, mz)
+    below = reference[np.clip(pos - 1, 0, reference.size - 1)]
+    above = reference[np.clip(pos, 0, reference.size - 1)]
+    return np.minimum(np.abs(below - mz), np.abs(above - mz)) / mz * 1e6
+
+
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_centroids_average_matches_thermo(monkeypatch, path):
     """Approximate parity for averaged centroids.
@@ -788,7 +797,7 @@ def test_centroids_average_matches_thermo(monkeypatch, path):
 
     assert om.size == orr.size == osn.size == oi.size
     # Peak counts in the same ballpark (re-centroiding splits/merges differently;
-    # measured 0.99-1.04 across the corpus, so this is comfortably loose).
+    # measured 1.00-1.06 on the 165 demo raws, so this is comfortably loose).
     assert 0.85 * tm.size <= om.size <= 1.20 * tm.size, (
         f"centroid count {om.size} vs Thermo {tm.size}"
     )
@@ -797,28 +806,45 @@ def test_centroids_average_matches_thermo(monkeypatch, path):
 
     # Each OpenTFRaw peak's nearest Thermo peak (robust to which single peak
     # happens to be tallest, unlike a base-peak check).
-    tm_sorted = np.sort(tm)
-    pos = np.searchsorted(tm_sorted, om)
-    dev_ppm = np.full(om.shape, np.inf)
-    for k, mzv in enumerate(om):
-        for c in (pos[k] - 1, pos[k]):
-            if 0 <= c < tm_sorted.size:
-                dev_ppm[k] = min(dev_ppm[k], abs(tm_sorted[c] - mzv) / mzv * 1e6)
-    # (1) High match fraction within 1 ppm. The ~5-8 % that don't pair are
-    # sub-threshold noise peaks (discarded downstream) and ringing/satellite
-    # artifacts around very intense peaks (a sub-FWHM picket fence the two
-    # backends position slightly differently; flagged downstream by
-    # flag_satellite_peaks) -- not lost analytes; measured >=0.95 across the
-    # corpus, so 0.92 leaves margin. Pushing to ~100 % would need re-centroiding
-    # the averaged profile (matching Thermo's AverageScans), not a threshold.
+    dev_ppm = _nearest_ppm(tm, om)
+    # (1) High match fraction within 1 ppm. What does not pair is mostly what
+    # peak detection sets aside: of the unpaired on the 165 demo raws and on
+    # 11,116 short customer Orbitrap files, 69-74 % are weak (under S:N 3 or
+    # the local floor) and 16-18 % satellites, by the pipeline's own flags. Of
+    # the 10-13 % it keeps, two in five are Thermo's peak within half a FWHM
+    # but over 1 ppm off: a weak peak's centroid scatters with its width, so
+    # twice as far at half the resolution. Many of the rest are shoulders
+    # within 2 FWHM of a peak ten times their height (56 % on the demo raws,
+    # 1 % of the peaks that pair), which Thermo's re-centroided profile does
+    # not split off (GitHub #2946). So the share follows a file's noise, strong
+    # peaks and resolution: 0.919-0.996 on the demo raws (median 0.980; the
+    # lowest is the one raw acquired at 60,000, the rest are at 120,000) and
+    # from 0.904 on the customer files (median 0.977), so 0.90. Where the lock
+    # mass engages part-way through the averaged scans it runs lower: one
+    # low-m/z ion is two Thermo centroids there, the locked and the unlocked
+    # scans', and one OpenTFRaw centroid between them, on purpose
+    # (_labels_on_one_calibration); this test does not cover that (GitHub
+    # #2945). Pushing to ~100 % would need re-centroiding the averaged profile
+    # (matching Thermo's AverageScans), not a threshold.
     matched = dev_ppm <= 1.0
-    assert matched.mean() >= 0.92, (
+    assert matched.mean() >= 0.90, (
         f"only {int(matched.sum())}/{om.size} averaged centroids matched Thermo "
         "within 1 ppm"
     )
-    # (2) The matched peaks must agree to *sub-0.1 ppm* -- this is the HRMS mass
+    # (2) And Thermo's peaks are OpenTFRaw's: a peak the averaging lost is a
+    # Thermo centroid with no OpenTFRaw centroid near it, which (1) cannot see,
+    # as it only asks where OpenTFRaw's peaks are. Measured 0.966-1.000 on the
+    # demo raws and from 0.973 on the customer files without a lock-mass step,
+    # so 0.95.
+    found = _nearest_ppm(om, tm) <= 1.0
+    assert found.mean() >= 0.95, (
+        f"only {int(found.sum())}/{tm.size} of Thermo's averaged centroids have "
+        "an OpenTFRaw centroid within 1 ppm"
+    )
+    # (3) The matched peaks must agree to *sub-0.1 ppm* -- this is the HRMS mass
     # accuracy guarantee, and the centroid m/z is what feeds peak detection.
-    # Measured median 0.02-0.05 ppm, p90 <= 0.15 ppm.
+    # Measured on the demo raws: median 0.04-0.09 ppm, p90 0.11-0.25 ppm (the
+    # highest of both is the raw at 60,000).
     md = dev_ppm[matched]
     assert float(np.median(md)) <= 0.1, (
         f"median matched-peak m/z deviation {np.median(md):.3f} ppm (> 0.1)"
