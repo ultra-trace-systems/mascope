@@ -24,8 +24,8 @@ before rooms were counted per socket.
 The heartbeat also calls Redis steadily on every worker a web socket reached,
 so it is what reports a Redis that stays down. Every storage call logs a failed Redis
 connection as a warning kept out of monitoring, since a blip is ridden out; the
-heartbeat counts its own failures in a row, and once ``redis_outage_beats`` of
-them have failed it logs one monitored warning for the outage, and one more when
+heartbeat counts its own timed failures in a row, and once ``redis_outage_beats``
+of them have failed it logs one monitored warning for the outage, and one more when
 a beat succeeds again. Each worker reports its own, under one monitoring issue.
 
 Redis keys:
@@ -129,8 +129,16 @@ def worker_id() -> str:
     return _worker[1]
 
 
-async def _beat() -> None:
-    """Write (or refresh) this worker's heartbeat key."""
+async def _beat(*, tick: bool = False) -> None:
+    """
+    Write (or refresh) this worker's heartbeat key.
+
+    :param tick: Whether this is one of the heartbeat's timed beats, the only
+        failures an outage counts. A web socket's connect beats too, and a few
+        page loads during a blip would otherwise reach the threshold in
+        seconds; its beat that succeeds still ends the run.
+    :type tick: bool
+    """
     try:
         await redis_storage_client.client.setex(
             storage_config.worker_key(worker_id()), storage_config.worker_ttl, "1"
@@ -142,7 +150,7 @@ async def _beat() -> None:
             f"Worker heartbeat: failed to write it: {e} [Worker {os.getpid()}]",
             e,
         )
-        if is_transient_redis_error(e):
+        if tick and is_transient_redis_error(e):
             _redis_outage.beat_failed()
     else:
         _redis_outage.beat_succeeded()
@@ -152,7 +160,7 @@ async def _keep_beating() -> None:
     """Refresh this worker's heartbeat until cancelled."""
     while True:
         await asyncio.sleep(storage_config.worker_renewal_interval)
-        await _beat()
+        await _beat(tick=True)
 
 
 def _heartbeat_running() -> bool:

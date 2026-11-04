@@ -1746,8 +1746,9 @@ retrying" and "Cannot publish to redis... retrying" lines are logged at
 `INFO`; its other errors, such as "giving up" on a publish, still reach
 GlitchTip. A Redis that stays down is reported by each backend worker's web
 socket heartbeat, which writes to Redis every 10 seconds: once 6 heartbeats in a
-row have failed, about a minute, the worker files one warning, "Redis has
-been out of reach for ...", and when a heartbeat succeeds again one more,
+row have failed, about a minute, or two when Redis hangs rather than refuses
+connections, the worker files one warning, "Redis has been out of reach for
+...", and when a heartbeat succeeds again one more,
 "Redis is back after ... out of reach". Nothing repeats while the outage lasts,
 and every worker's warnings group into one GlitchTip issue each. The heartbeat
 runs only on a worker a web socket has connected to since it started, which
