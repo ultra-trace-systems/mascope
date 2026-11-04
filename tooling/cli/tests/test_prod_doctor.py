@@ -388,6 +388,115 @@ def test_image_footprint_none_when_docker_unavailable(monkeypatch):
     assert im.count is None
 
 
+# --- unit scripts ---
+
+
+def _unit(directory, name, exec_start):
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_text(
+        f"[Service]\nType=oneshot\nUser=deploy\nExecStart={exec_start}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _script(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/bash\n", encoding="utf-8")
+    return path
+
+
+def test_unit_script_reads_the_script_after_bash(tmp_path):
+    script = _script(tmp_path / "lib" / "mascope-update.sh")
+    unit = _unit(
+        tmp_path / "systemd",
+        "mascope-update.service",
+        f"/bin/bash {script} /home/deploy/.local/bin/mascope /srv/mascope",
+    )
+    found = doctor.unit_script(unit)
+    assert (found.unit, found.script, found.state) == (
+        "mascope-update.service",
+        str(script),
+        "in-place",
+    )
+    assert found.ok
+
+
+def test_unit_script_reads_a_command_run_directly(tmp_path):
+    # A unit that runs its script itself, not through bash: the script is
+    # the command, and what follows it is arguments.
+    script = _script(tmp_path / "lib" / "disk-check.sh")
+    unit = _unit(tmp_path, "mascope-disk-check.service", f"{script} --flag")
+    found = doctor.unit_script(unit)
+    assert (found.script, found.state) == (str(script), "in-place")
+
+
+def test_unit_script_flags_a_script_inside_a_venv(tmp_path):
+    # A hand-written or pre-release unit that runs the copy bundled in the
+    # CLI's tool venv, which a reinstall or another Python minor moves.
+    script = _script(
+        tmp_path
+        / "tools/mascope-cli/lib/python3.12/site-packages/mascope_cli/data/systemd"
+        / "disk-check.sh"
+    )
+    unit = _unit(tmp_path, "mascope-disk-check.service", f"/bin/bash {script}")
+    found = doctor.unit_script(unit)
+    assert found.state == "venv"
+    # It still runs: flagged, not a failure.
+    assert found.ok
+
+
+def test_unit_script_missing_fails(tmp_path):
+    gone = tmp_path / "tools/mascope-cli/lib/python3.12/site-packages/disk-check.sh"
+    unit = _unit(tmp_path, "mascope-disk-check.service", f"/bin/bash {gone}")
+    found = doctor.unit_script(unit)
+    assert (found.script, found.state) == (str(gone), "missing")
+    assert not found.ok
+
+
+def test_unit_script_without_exec_start_is_missing(tmp_path):
+    unit = tmp_path / "mascope-update.service"
+    unit.write_text("[Service]\nType=oneshot\n", encoding="utf-8")
+    found = doctor.unit_script(unit)
+    assert (found.script, found.state, found.ok) == (None, "missing", False)
+
+
+def test_unit_scripts_absent_when_not_installed(tmp_path):
+    found = doctor.unit_scripts(tmp_path)
+    assert [u.unit for u in found] == list(doctor.SCRIPT_UNITS)
+    assert all(u.state == "absent" and u.ok for u in found)
+
+
+def test_unit_scripts_default_to_the_units_directory(monkeypatch, tmp_path):
+    script = _script(tmp_path / "lib" / "disk-check.sh")
+    _unit(tmp_path / "systemd", "mascope-disk-check.service", f"/bin/bash {script}")
+    monkeypatch.setattr(doctor.prod_units, "SYSTEMD_DIR", tmp_path / "systemd")
+    states = {u.unit: u.state for u in doctor.unit_scripts()}
+    assert states == {
+        "mascope-disk-check.service": "in-place",
+        "mascope-update.service": "absent",
+    }
+
+
+def test_build_report_reads_the_units(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor, "_run", lambda cmd, **k: _completed(returncode=1))
+    _unit(tmp_path / "systemd", "mascope-update.service", "/bin/bash /gone.sh")
+    report = doctor.build_report(
+        mascope_path=str(tmp_path),
+        container_specs=[],
+        versioned_specs=[],
+        expected_version=None,
+        disk_specs=[],
+        backups_dir=tmp_path / "backups",
+        min_free_gb=1.0,
+        systemd_dir=tmp_path / "systemd",
+    )
+    states = {u.unit: u.state for u in report.units}
+    assert states["mascope-update.service"] == "missing"
+    assert report.ok is False
+
+
 # --- report / rendering ---
 
 
@@ -457,8 +566,54 @@ def test_report_not_ok_on_version_drift():
 def test_format_text_contains_sections():
     text = doctor.format_text(_healthy_report())
     assert text.startswith("[OK]")
-    for section in ("Stack", "Version", "Disk", "Updates", "Backups", "Images"):
+    for section in (
+        "Stack",
+        "Version",
+        "Disk",
+        "Updates",
+        "Backups",
+        "Images",
+        "Units",
+    ):
         assert section in text
+    assert "Units    not installed" in text
+
+
+def test_units_in_place():
+    report = _healthy_report()
+    report.units = [
+        doctor.UnitScript(name, f"/usr/local/lib/mascope/{name}.sh", "in-place")
+        for name in doctor.SCRIPT_UNITS
+    ]
+    assert report.ok is True
+    assert "Units    scripts in place" in doctor.format_text(report)
+
+
+def test_a_unit_running_from_a_venv_is_flagged_but_ok():
+    report = _healthy_report()
+    report.units = [
+        doctor.UnitScript(
+            "mascope-disk-check.service", "/v/site-packages/disk-check.sh", "venv"
+        ),
+        doctor.UnitScript("mascope-update.service", None, "absent"),
+    ]
+    assert report.ok is True and report.exit_code == 0
+    text = doctor.format_text(report)
+    assert text.startswith("[OK]")
+    assert "mascope-disk-check.service runs /v/site-packages/disk-check.sh" in text
+    assert "STALE" in text and "re-run 'mascope prod units install'" in text
+    assert report.to_dict()["units"][0]["state"] == "venv"
+
+
+def test_a_unit_missing_its_script_is_attention():
+    report = _healthy_report()
+    report.units = [
+        doctor.UnitScript("mascope-update.service", "/v/mascope-update.sh", "missing")
+    ]
+    assert report.ok is False and report.exit_code == 1
+    text = doctor.format_text(report)
+    assert text.startswith("[ATTENTION]")
+    assert "mascope-update.service cannot find /v/mascope-update.sh  MISSING" in text
 
 
 def test_format_text_shows_fill_rates_and_projection():

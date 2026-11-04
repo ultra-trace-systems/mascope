@@ -1684,13 +1684,16 @@ def doctor(
     Gathers container health, the deployed version, free disk on the state,
     filestore and docker filesystems with how fast each is filling (from the
     disk-check timer's history), the recorded pending update, local backup
-    freshness, and the docker image footprint. Read-only and network-free -
-    safe to run anytime or to poll.
+    freshness, the docker image footprint, and the scripts the systemd units
+    run. Read-only and network-free - safe to run anytime or to poll.
 
     Exits 0 when everything looks healthy, 1 when a container is not running,
     the running images do not match the release this deployment would deploy,
-    or a filesystem is below the free-space floor (MASCOPE_UPDATE_MIN_FREE_GB),
-    so it can double as a monitoring probe. Exits 3 when the stack is otherwise
+    a filesystem is below the free-space floor (MASCOPE_UPDATE_MIN_FREE_GB),
+    or an installed unit cannot find the script it runs, so it can double as a
+    monitoring probe. A unit that runs its script from inside a venv, where a
+    CLI reinstall moves it, is flagged STALE without changing the exit code;
+    re-running `mascope prod units install` mends both. Exits 3 when the stack is otherwise
     healthy but a filesystem is filling fast enough to reach that floor within
     MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR days (default 7) - a warning, which the
     fleet playbooks let a rollout pass and doctor-push.sh reports on its
