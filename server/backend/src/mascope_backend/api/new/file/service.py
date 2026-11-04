@@ -39,6 +39,32 @@ def _zip_files(zipfile_path: str, members: list[tuple[str, str]]) -> None:
             archive.write(from_path, arcname)
 
 
+def _copy_into_place(from_path: str, to_path: str) -> None:
+    """
+    Copy a file to ``to_path`` through a name of its own beside it.
+
+    The copy is written under a unique name and moved over ``to_path`` once
+    complete, so ``to_path`` always holds a whole copy: a second download of
+    the same file replaces the first's in one step, and a download already
+    reading the first keeps its open handle.
+
+    :param from_path: The file to copy.
+    :param to_path: Where the copy is offered for download.
+    """
+    fd, part_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(to_path)}.",
+        suffix=".part",
+        dir=os.path.dirname(to_path),
+    )
+    os.close(fd)
+    try:
+        shutil.copyfile(from_path, part_path)
+        os.replace(part_path, to_path)
+    except BaseException:
+        os.remove(part_path)
+        raise
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     error_notification_rooms=["user_id"],
@@ -134,9 +160,7 @@ async def download_files(
         if os.path.exists(from_path):
             download = f"{sample_file.filename}.{extension}"
             to_path = user_temp_path(user_id, download)
-            if os.path.exists(to_path):
-                os.remove(to_path)
-            shutil.copy(from_path, to_path)
+            await asyncio.to_thread(_copy_into_place, from_path, to_path)
             found.append(sample_file.to_dict())
         else:
             not_found.append(sample_file.to_dict())

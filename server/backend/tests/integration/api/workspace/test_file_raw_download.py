@@ -174,3 +174,88 @@ async def test_a_failed_zip_leaves_nothing_behind(
         await download_files(sample_file_ids=[sample_file, beta_sample_file], user_id=1)
 
     assert os.listdir(stored) == []
+
+
+@pytest.mark.asyncio
+async def test_one_file_is_copied_under_its_own_name(
+    stored, async_session_factory, sample_file
+):
+    (name,) = await _store(stored, async_session_factory, sample_file)
+
+    result = await download_files(sample_file_ids=[sample_file], user_id=1)
+
+    download = result["_notification_data"]["download"]
+    assert download == f"{name}.raw"
+    # The copy's working name is gone: the download is all the temp dir holds.
+    assert os.listdir(stored) == [download]
+    assert (stored / download).read_bytes() == name.encode()
+
+
+@pytest.mark.asyncio
+async def test_the_copy_is_written_off_the_event_loop(
+    stored, async_session_factory, sample_file, monkeypatch
+):
+    # A single raw file can be gigabytes; copied on the loop's own thread, it
+    # would hold every other request until done.
+    await _store(stored, async_session_factory, sample_file)
+    copy_into_place = service._copy_into_place
+    threads = []
+
+    def recording(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return copy_into_place(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_copy_into_place", recording)
+    await download_files(sample_file_ids=[sample_file], user_id=1)
+
+    assert len(threads) == 1
+    assert threads[0] != threading.get_ident()
+
+
+@pytest.mark.asyncio
+async def test_a_second_download_replaces_the_copy_whole(
+    stored, async_session_factory, sample_file, monkeypatch
+):
+    # The second download of one file writes beside the first's copy and
+    # moves over it: the name never holds a partial copy, nor none at all.
+    (name,) = await _store(stored, async_session_factory, sample_file)
+    await download_files(sample_file_ids=[sample_file], user_id=1)
+    download = stored / f"{name}.raw"
+    first = download.stat().st_ino
+    seen = []
+    copyfile = service.shutil.copyfile
+
+    def watching(src, dst):
+        seen.append((dst, download.read_bytes()))
+        return copyfile(src, dst)
+
+    monkeypatch.setattr(service.shutil, "copyfile", watching)
+    await download_files(sample_file_ids=[sample_file], user_id=1)
+
+    ((written, during),) = seen
+    assert os.path.dirname(written) == str(stored)
+    assert os.path.basename(written) != download.name
+    assert during == name.encode()
+    assert download.stat().st_ino != first
+    assert os.listdir(stored) == [download.name]
+    assert download.read_bytes() == name.encode()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_copy_leaves_the_earlier_one(
+    stored, async_session_factory, sample_file, monkeypatch
+):
+    (name,) = await _store(stored, async_session_factory, sample_file)
+    await download_files(sample_file_ids=[sample_file], user_id=1)
+
+    def unwritable(_src, dst):
+        with open(dst, "wb") as partial:
+            partial.write(b"half")
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(service.shutil, "copyfile", unwritable)
+    with pytest.raises(OSError):
+        await download_files(sample_file_ids=[sample_file], user_id=1)
+
+    assert os.listdir(stored) == [f"{name}.raw"]
+    assert (stored / f"{name}.raw").read_bytes() == name.encode()
