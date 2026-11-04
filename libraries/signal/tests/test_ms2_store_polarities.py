@@ -13,6 +13,7 @@ import zarr
 
 from mascope_signal.ms2_store import Ms2Store, _write
 from mascope_thermo.backend import MS2_SCAN_RECORD_SOURCES
+from mascope_thermo.thermo import locate_precursors
 
 
 PARENT_PEAK_MZ, ACTIVATION = 137.096, "hcd20.00"
@@ -62,6 +63,7 @@ def _contents() -> dict:
             "records": [_record(n, polarity) for n in fragments],
             "groups": {KEY: fragments},
             "averaged": {KEY: _spectrum(FRAGMENT_MZ[polarity])},
+            "precursors": locate_precursors({KEY: _spectrum(FRAGMENT_MZ[polarity])}),
             "merged": {},
         }
         for n in fragments:
@@ -161,6 +163,9 @@ def test_a_windows_groups_are_ordered_by_their_first_scan_in_it(tmp_path):
                     (PARENT_PEAK_MZ, step): scans for step, scans in steps.items()
                 },
                 "averaged": {(PARENT_PEAK_MZ, step): _spectrum(50.0) for step in steps},
+                "precursors": locate_precursors(
+                    {(PARENT_PEAK_MZ, step): _spectrum(50.0) for step in steps}
+                ),
                 "merged": {(PARENT_PEAK_MZ, ""): _spectrum(50.0)},
             }
         },

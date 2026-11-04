@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import zarr
 
-from mascope_signal.ms2_store import Ms2Store, _write
+from mascope_signal.ms2_store import PRECURSOR_FIELDS, Ms2Store, _write
 from mascope_thermo.backend import MS2_SCAN_RECORD_SOURCES
 
 
@@ -102,11 +102,29 @@ def _polarity(polarity: str, survey: int) -> dict:
         "records": [_record(n) for n in fragments],
         "groups": groups,
         "averaged": {key: _spectrum() for key in groups},
+        "precursors": {key: _precursor(key, polarity) for key in groups},
         "merged": {
             (mz, ""): _spectrum()
             for mz in parents
             if sum(1 for p, _ in groups if p == mz) > 1
         },
+    }
+
+
+def _precursor(key: tuple[float, str], polarity: str) -> dict:
+    """A group's located precursor as the reader gives it, one of its own:
+    its parent peak's located at that peak's lowest step, its own peak above
+    it by its activation's length; none for the chained activation's."""
+    parent_peak_mz, activation = key
+    if "@" in activation:
+        return dict.fromkeys(PRECURSOR_FIELDS)
+    sign = 1.0 if polarity == "+" else -1.0
+    return {
+        "located_precursor_mz": parent_peak_mz + 0.0002,
+        "located_precursor_intensity": sign * 1000.0,
+        "located_precursor_activation": "hcd10.00" if activation else "",
+        "precursor_mz": parent_peak_mz + 0.0001 * len(activation),
+        "precursor_intensity": sign * 100.0 * len(activation),
     }
 
 
@@ -159,6 +177,27 @@ def test_each_group_is_its_record_in_the_summary_of_the_whole_file(store, polari
     assert [{k: g[k] for k in summary["groups"][0]} for g in listed] == summary[
         "groups"
     ]
+
+
+def test_each_group_holds_its_located_precursor(store):
+    """As the reader located it, per group and polarity, on the
+    instrument's axis; the store reads each polarity's back alone."""
+    for (polarity, _), group in _listed(store).items():
+        key = (group["parent_peak_mz"], group["activation"])
+        assert {field: group[field] for field in PRECURSOR_FIELDS} == _precursor(
+            key, polarity
+        )
+    for polarity in ("+", "-"):
+        held = {
+            (g["parent_peak_mz"], g["activation"])
+            for g in store.inventory()
+            if g["polarity"] == polarity
+        }
+        precursors = store.precursors(polarity)
+        assert set(precursors) == held
+        for key, precursor in precursors.items():
+            assert precursor == _precursor(key, polarity)
+    assert store.precursors(None) is None
 
 
 def test_a_group_holds_what_its_scans_differ_in(store):

@@ -26,7 +26,7 @@ from sqlalchemy import Float, String, and_, delete, func, insert, literal, or_, 
 from sqlalchemy.sql.elements import ColumnElement
 
 from mascope_backend.db import Ms2Group, SampleFile, SampleItem, async_session
-from mascope_signal.ms2_store import Ms2Store
+from mascope_signal.ms2_store import PRECURSOR_FIELDS, Ms2Store
 
 
 #: How the reader widens a window: both bounds by machine epsilon times the
@@ -49,7 +49,7 @@ _COLUMNS = (
     "t_max",
     "low_mass",
     "high_mass",
-    "located_precursor_mz",
+    *PRECURSOR_FIELDS,
 )
 
 
@@ -75,6 +75,7 @@ def _row(sample_file_id: str, group: dict) -> dict:
         "t_max": group["t_max"],
         "low_mass": group["low_mass"],
         "high_mass": group["high_mass"],
+        **{field: group[field] for field in PRECURSOR_FIELDS},
     }
 
 

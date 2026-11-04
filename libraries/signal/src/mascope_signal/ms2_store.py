@@ -25,7 +25,8 @@ of that module read it, per polarity:
 - ``averaged/``: each group's averaged centroids, and each parent peak's over
   every activation, at no S/N floor: the routes apply theirs on read.
 - the attributes: the layout and its version, the grouping tolerance, the
-  averaging bin, the groups and the parent peaks, and the vocabularies the
+  averaging bin, the groups with their located precursor
+  (:data:`PRECURSOR_FIELDS`) and the parent peaks, and the vocabularies the
   scan table's text columns index into.
 
 A group is a (polarity, parent peak, activation) group of the whole file, made
@@ -80,8 +81,9 @@ LAYOUT = "mascope.ms2_store"
 #: The layout's version. A store of another one is not read; the backfill
 #: writes it again. Version 2 holds the scans the reader selects since its
 #: first-scan rule compares the first scan within its MS order and polarity:
-#: an index of version 1 can lack an ordinary first MS1 scan.
-VERSION = 2
+#: an index of version 1 can lack an ordinary first MS1 scan. Version 3
+#: records each group's located precursor (:data:`PRECURSOR_FIELDS`).
+VERSION = 3
 #: The store's name in the sample directory: ``ms2.zarr``.
 STORE_NAME = "ms2"
 #: The tolerance [Da] near-duplicate parent peaks are merged at: the MS2
@@ -116,6 +118,18 @@ _READER_CENTROID_FIELDS = dict(
     zip(_CENTROID_FIELDS, ("masses", "intensities", "resolutions", "signal_to_noise"))
 )
 _POLARITY_CODES = {"+": 1, "-": -1}
+#: What a group records of its precursor
+#: (:func:`mascope_thermo.thermo.locate_precursors`), on the instrument's
+#: axis: where its parent peak's precursor was located, at what intensity
+#: and in the spectrum of which activation, and the group's own peak
+#: followed from it; None where there is none.
+PRECURSOR_FIELDS = (
+    "located_precursor_mz",
+    "located_precursor_intensity",
+    "located_precursor_activation",
+    "precursor_mz",
+    "precursor_intensity",
+)
 
 
 def group_key(parent_peak_mz: float, activation: str) -> str:
@@ -256,6 +270,7 @@ def _write(path: str, contents: dict, parent_peak_tolerance: float, ppm: int) ->
                     "key": group_key(parent_peak_mz, activation),
                     "scan_count": len(scan_numbers),
                     "spectrum": len(spectra),
+                    **held["precursors"][(parent_peak_mz, activation)],
                 }
             )
             spectra.append(held["averaged"][(parent_peak_mz, activation)])
@@ -692,16 +707,39 @@ class Ms2Store:
         if polarity not in _POLARITY_CODES:
             return None
         selected, rows = self._selection(t_min, t_max, polarity)
-        # The times the reader selects by, as the raw summary reads them
-        times = self._index["time_s"][selected & self._index["ms2"]]
-        groups = [
-            self._group_summary(group, own, times[np.searchsorted(rows, own)])
-            for _, group, own in self._groups_held(rows)
-        ]
+        groups = self._held_summaries(selected, rows)
         ms1_scan_count, ms2_scan_count, widths = self._counted(selected, rows)
         return m_thermo.ms2_summary(
             groups, widths, ms1_scan_count, ms2_scan_count, self.parent_peak_tolerance
         )
+
+    def _held_summaries(self, selected: np.ndarray, rows: np.ndarray) -> list[dict]:
+        """The summary's records of the groups the selection holds."""
+        # The times the reader selects by, as the raw summary reads them
+        times = self._index["time_s"][selected & self._index["ms2"]]
+        return [
+            self._group_summary(group, own, times[np.searchsorted(rows, own)])
+            for _, group, own in self._groups_held(rows)
+        ]
+
+    def groups(
+        self,
+        t_min: float | None,
+        t_max: float | None,
+        polarity: Literal["+", "-"] | None,
+    ) -> list[dict] | None:
+        """The groups of a selection, as its summary lists them.
+
+        :meth:`summary`'s ``groups``, over the selection's scans of each, but
+        also for a selection none of whose MS2 scans stores a width, which
+        has no summary: each such group lists no width.
+
+        :return: The groups, or None for a selection with no polarity.
+        :raises NoScansFoundError: When the selection holds no scan.
+        """
+        if polarity not in _POLARITY_CODES:
+            return None
+        return self._held_summaries(*self._selection(t_min, t_max, polarity))
 
     def _counted(
         self, selected: np.ndarray, rows: np.ndarray
@@ -747,8 +785,9 @@ class Ms2Store:
         ``t_max``), with its ``polarity`` and ``key`` (:func:`group_key`),
         and what its scans' filters give alike: ``activation_kind`` and
         ``nce``, None when its scans do not share one (a chained activation
-        has no one energy), and ``low_mass`` and ``high_mass``, the outer
-        bounds of its scans' scan ranges, None when no scan records one.
+        has no one energy), ``low_mass`` and ``high_mass``, the outer
+        bounds of its scans' scan ranges, None when no scan records one, and
+        its precursor (:data:`PRECURSOR_FIELDS`), on the instrument's axis.
         """
         index = self._index
         numbers = self._scan_numbers
@@ -773,9 +812,32 @@ class Ms2Store:
                     "nce": _shared(nces[own]),
                     "low_mass": _bound(np.min, lows[own]),
                     "high_mass": _bound(np.max, highs[own]),
+                    **{field: group[field] for field in PRECURSOR_FIELDS},
                 }
             )
         return records
+
+    def precursors(
+        self, polarity: Literal["+", "-"] | None
+    ) -> dict[tuple[float, str], dict] | None:
+        """Each group's precursor (:data:`PRECURSOR_FIELDS`), on the
+        instrument's axis.
+
+        Located when the store was written, over each group's every scan, so
+        for any window: a window that cuts a group reads its file's.
+
+        :return: ``{(parent peak m/z, activation): {...}}`` for the groups of
+            ``polarity``, or None for a selection with no polarity.
+        """
+        if polarity not in _POLARITY_CODES:
+            return None
+        return {
+            (group["parent_peak_mz"], group["activation"]): {
+                field: group[field] for field in PRECURSOR_FIELDS
+            }
+            for group in self.attrs["groups"]
+            if group["polarity"] == polarity
+        }
 
     def _spectrum(self, number: int) -> tuple[np.ndarray, ...]:
         offsets = self._array("averaged/offsets")
