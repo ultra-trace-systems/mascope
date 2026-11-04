@@ -596,8 +596,20 @@ own MS order and polarity: the rule before counted the MS2 scans, and left
 these four files' first MS1 scan out as a TIC outlier. Their MS1 peaks and
 ions moved with it (heights by a median of 0.1 to 0.8%), their MS2 spectra
 only by the calibration's shift (under 0.002 ppm), and the 161 MS1 files not
-at all. They are hand-started, stepped-energy
-MS2 acquisitions of alpha-pinene oxidation products from a chamber oxidation
+at all. 1.4.3 is the same raw set and seed once more, rebuilt with the peak
+detection of v1.16: the instrument's side-lobe flag (a peak whose per-scan
+centroids are mostly marked Exception is a satellite, see
+[peak detection](user/how-it-works/peak-detection.md)) and the Orbitrap
+local floor. 97 of the 165 files move. 237 golden peaks leave: 233 sit on
+peaks now flagged satellite, one on the peak the local floor flags weak, and
+three were displaced when a sibling isotope line of the same ion, its own
+peak flagged, moved onto theirs. 87 isotope lines match another peak and 171
+new lines score, for 43,004 golden peaks against 1.4.2's 43,070; the other
+42,746 keep their m/z and height, and all but one their score. 58
+probable-match ion rows whose monoisotopic peak is now a satellite are gone,
+for 17,395 ions against 17,453. The MS2 spectra are identical. The four MS2
+files are hand-started, stepped-energy
+acquisitions of alpha-pinene oxidation products from a chamber oxidation
 experiment, on a second Orbitrap of the same model whose label was aliased
 to the demo's on the command line, in the three reagent-ion chemistries the
 experiment ran: one to nine precursors per file, each
