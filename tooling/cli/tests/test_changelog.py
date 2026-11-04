@@ -13,8 +13,10 @@ check rather than the release.
 
 import datetime
 import importlib.util
+import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -60,18 +62,40 @@ CITATION = (
     'cff-version: 1.2.0\ntitle: Mascope\nversion: 1.2.0\ndate-released: "2026-10-01"\n'
 )
 
+CLI_RELEASE = (
+    '"""The release."""\n\n# The release.\nRELEASE = "v1.2.0"\n\nOTHER = "v0"\n'
+)
+# Each with a version that is not the CLI's ahead of the CLI's own.
+CLI_PROJECT = (
+    '[tool.before]\nversion = "1.0"\n\n'
+    '[project]\nname = "mascope_cli"\nversion = "2026.10.1"\n'
+    'classifiers = [\n    "Topic :: A",\n]\n'
+)
+LOCK = (
+    'version = 1\n\n[[package]]\nname = "mascope-ai"\nversion = "2026.10.1"\n'
+    'source = { editable = "libraries/ai" }\n\n'
+    '[[package]]\nname = "mascope-cli"\nversion = "2026.10.1"\n'
+    'source = { editable = "tooling/cli" }\n'
+)
+
 ADDED = "- **A new feature.** It does\n  a thing.\n\n  And a second paragraph."
 FIXED = "- **A fix.** Of a bug."
 
 
 def make_root(tmp_path, unreleased="", fragments=None, released=RELEASED):
-    """A checkout's changelog files: CHANGELOG.md, CITATION.cff and changelog.d/."""
+    """A checkout's files compile writes: CHANGELOG.md, CITATION.cff, the CLI's
+    release.py and pyproject.toml, uv.lock, and changelog.d/."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     body = f"{unreleased.strip()}\n\n" if unreleased.strip() else ""
     (tmp_path / "CHANGELOG.md").write_text(
         f"{HEADER}## [Unreleased]\n\n{body}{released}", encoding="utf-8"
     )
     (tmp_path / "CITATION.cff").write_text(CITATION, encoding="utf-8")
+    cli = tmp_path / "tooling" / "cli"
+    (cli / "src" / "mascope_cli").mkdir(parents=True)
+    (cli / "src" / "mascope_cli" / "release.py").write_text(CLI_RELEASE)
+    (cli / "pyproject.toml").write_text(CLI_PROJECT)
+    (tmp_path / "uv.lock").write_text(LOCK)
     directory = tmp_path / "changelog.d"
     directory.mkdir()
     (directory / "README.md").write_text("# Changelog fragments\n\n- not an entry\n")
@@ -282,6 +306,80 @@ def test_compile_writes_a_release_section_and_deletes_the_fragments(tmp_path):
     assert "cff-version: 1.2.0" in citation  # only the top-level keys move
     assert "4 entries (1 Added, 2 Fixed, 1 Security) from 4 fragments" in summary
     assert changelog.check(root, release=True) == []
+    # The CLI is cut with the release, in the same change.
+    assert _cli_files(root) == (
+        CLI_RELEASE.replace('"v1.2.0"', '"v1.3.0"'),
+        CLI_PROJECT.replace('"2026.10.1"', '"2026.10.20"'),
+    )
+    # Only the CLI's own package moves in the lockfile.
+    assert (root / "uv.lock").read_text(encoding="utf-8") == LOCK.replace(
+        'cli"\nversion = "2026.10.1"', 'cli"\nversion = "2026.10.20"'
+    )
+    assert "CLI: RELEASE v1.3.0, version 2026.10.20" in summary
+
+
+def _cli_files(root):
+    cli = root / "tooling" / "cli"
+    return (
+        (cli / "src" / "mascope_cli" / "release.py").read_text(encoding="utf-8"),
+        (cli / "pyproject.toml").read_text(encoding="utf-8"),
+    )
+
+
+def _cli_version(root):
+    return _project_version(_cli_files(root)[1])
+
+
+def _set_cli_version(root, version):
+    path = root / "tooling" / "cli" / "pyproject.toml"
+    path.write_text(CLI_PROJECT.replace('"2026.10.1"', f'"{version}"'))
+
+
+@pytest.mark.parametrize(
+    "date, version",
+    [
+        (datetime.date(2026, 11, 2), "2026.11.2"),
+        (datetime.date(2026, 12, 31), "2026.12.31"),
+        (datetime.date(2027, 1, 9), "2027.1.9"),
+    ],
+)
+def test_compile_sets_the_cli_version_to_the_unpadded_calver(tmp_path, date, version):
+    root = make_root(tmp_path, fragments={"mas-1-x.fixed.md": FIXED})
+    changelog.compile_release(root, "1.3.0", date)
+    assert _cli_version(root) == version
+
+
+@pytest.mark.parametrize(
+    "current, expected",
+    [("2026.10.20", "2026.10.20.1"), ("2026.10.20.1", "2026.10.20.2")],
+)
+def test_a_release_the_same_day_as_the_last_takes_a_newer_cli_version(
+    tmp_path, current, expected
+):
+    # The calver of the day is on PyPI already, with the release before.
+    root = make_root(tmp_path, fragments={"mas-1-x.fixed.md": FIXED})
+    _set_cli_version(root, current)
+    summary = changelog.compile_release(root, "1.3.0", datetime.date(2026, 10, 20))
+    assert _cli_version(root) == expected
+    lock = (root / "uv.lock").read_text(encoding="utf-8")
+    assert f'"mascope-cli"\nversion = "{expected}"' in lock
+    assert f"version {expected} " in summary
+
+
+def test_a_cli_version_that_is_no_plain_release_is_replaced(tmp_path):
+    root = make_root(tmp_path, fragments={"mas-1-x.fixed.md": FIXED})
+    _set_cli_version(root, "2026.10.20rc1")
+    changelog.compile_release(root, "1.3.0", datetime.date(2026, 10, 20))
+    assert _cli_version(root) == "2026.10.20"
+
+
+def test_a_cli_version_later_than_the_release_date_is_refused(tmp_path):
+    root = make_root(tmp_path, fragments={"mas-1-x.fixed.md": FIXED})
+    _set_cli_version(root, "2026.10.21")
+    with pytest.raises(changelog.ChangelogError, match="later than 2026.10.20"):
+        changelog.compile_release(root, "1.3.0", datetime.date(2026, 10, 20))
+    assert (root / "changelog.d" / "mas-1-x.fixed.md").exists()
+    assert "v1.2.0" in _cli_files(root)[0]
 
 
 def test_compile_adds_what_merged_late_to_the_newest_section(tmp_path):
@@ -309,10 +407,29 @@ def test_compile_adds_what_merged_late_to_the_newest_section(tmp_path):
         encoding="utf-8"
     )
     assert "gains 2 entries" in summary
+    # The section's own date gives the calver the CLI has already, and
+    # RELEASE names the release already.
+    assert _cli_files(root) == (CLI_RELEASE, CLI_PROJECT)
+
+
+def test_a_late_compile_keeps_the_cli_version_its_first_compile_set(tmp_path):
+    # The first compile of a same-day release took 2026.10.1.1: compiled
+    # again, the release keeps it rather than taking a third.
+    root = make_root(tmp_path, fragments={"late.fixed.md": "- **Late fix.**"})
+    _set_cli_version(root, "2026.10.1.1")
+    changelog.compile_release(root, "1.2.0")
+    assert _cli_version(root) == "2026.10.1.1"
+
+
+def test_a_late_compile_with_a_later_date_moves_the_cli_version(tmp_path):
+    root = make_root(tmp_path, fragments={"late.fixed.md": "- **Late fix.**"})
+    changelog.compile_release(root, "1.2.0", datetime.date(2026, 10, 5))
+    assert _cli_version(root) == "2026.10.5"
 
 
 def test_compile_on_a_changelog_with_no_release_yet(tmp_path):
     root = make_root(tmp_path, fragments={"mas-1-x.fixed.md": FIXED}, released="")
+    _set_cli_version(root, "0.0.0")
     changelog.compile_release(root, "0.1.0", datetime.date(2026, 1, 2))
     assert (
         (root / "CHANGELOG.md")
@@ -377,18 +494,60 @@ def test_a_late_compile_keeps_what_follows_the_heading_date(tmp_path, date, head
     assert _section(root, "1.2.0").startswith(heading + "\n")
 
 
-def test_a_citation_it_cannot_set_leaves_everything_as_it_was(tmp_path):
+@pytest.mark.parametrize(
+    "path, text, expected",
+    [
+        ("CITATION.cff", "cff-version: 1.2.0\nversion: 1.2.0\n", "date-released"),
+        (
+            "tooling/cli/src/mascope_cli/release.py",
+            'OTHER = "v1.2.0"\n',
+            "`RELEASE`",
+        ),
+        (
+            "tooling/cli/pyproject.toml",
+            '[project]\nname = "x"\n\n[tool.after]\nversion = "1.0"\n',
+            "no `version` under \\[project\\]",
+        ),
+        ("uv.lock", LOCK.replace('"tooling/cli"', '"elsewhere"'), "`mascope-cli`"),
+    ],
+)
+def test_a_file_it_cannot_set_leaves_everything_as_it_was(
+    tmp_path, path, text, expected
+):
     root = make_root(tmp_path, fragments={"mas-1-x.fixed.md": FIXED})
-    (root / "CITATION.cff").write_text("cff-version: 1.2.0\nversion: 1.2.0\n")
-    before = {
-        name: (root / name).read_text(encoding="utf-8")
-        for name in ("CHANGELOG.md", "CITATION.cff", "changelog.d/mas-1-x.fixed.md")
-    }
-    with pytest.raises(changelog.ChangelogError, match="date-released"):
+    (root / path).write_text(text)
+    names = (
+        "CHANGELOG.md",
+        "CITATION.cff",
+        "tooling/cli/src/mascope_cli/release.py",
+        "tooling/cli/pyproject.toml",
+        "uv.lock",
+        "changelog.d/mas-1-x.fixed.md",
+    )
+    before = {name: (root / name).read_text(encoding="utf-8") for name in names}
+    with pytest.raises(changelog.ChangelogError, match=expected):
         changelog.compile_release(root, "1.3.0")
     assert before == {
         name: (root / name).read_text(encoding="utf-8") for name in before
     }
+
+
+def test_the_repository_has_what_compile_sets():
+    # The tests above write their own copies of these files: this pins the
+    # patterns to the real ones.
+    release = (REPO_ROOT / changelog.CLI_RELEASE).read_text(encoding="utf-8")
+    project = (REPO_ROOT / changelog.CLI_PROJECT).read_text(encoding="utf-8")
+    assert len(re.findall(r'(?m)^RELEASE = ".*"$', release)) == 1
+    match = changelog._PROJECT_VERSION.search(project)
+    assert match and match["version"] == _project_version(project)
+    lock = (REPO_ROOT / changelog.LOCK).read_text(encoding="utf-8")
+    locked = changelog._LOCKED_CLI.findall(lock)
+    assert len(locked) == 1, "uv.lock has no single editable mascope-cli package"
+    assert f'version = "{match["version"]}"' in changelog._LOCKED_CLI.search(lock)[0]
+
+
+def _project_version(text):
+    return tomllib.loads(text)["project"]["version"]
 
 
 @pytest.mark.parametrize(

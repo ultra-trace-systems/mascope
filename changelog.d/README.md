@@ -114,7 +114,8 @@ replayed.
 
 `uv run python tooling/changelog.py compile X.Y.Z` writes every fragment into
 `CHANGELOG.md` as `## [X.Y.Z] - <date>`, deletes the fragments, and sets
-`CITATION.cff`'s `version` and `date-released`. Within each section the
+`CITATION.cff`'s `version` and `date-released`, the CLI's `RELEASE` to
+`vX.Y.Z`, and the CLI's version to the date's calver. Within each section the
 entries come in merge order: the order of the commits that added their
 fragments, with file-name order between fragments one commit added. Running
 it again for the same version, before `vX.Y.Z` is tagged, adds whatever merged
