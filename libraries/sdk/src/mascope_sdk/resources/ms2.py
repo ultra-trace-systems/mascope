@@ -1,8 +1,46 @@
 """MS2 analysis sub-resource for the Mascope SDK."""
 
+from collections.abc import Sequence
 from typing import Any
 
+import pandas as pd
+
 from ._base import BaseResource, _log_api_message
+
+
+#: The columns of :meth:`Ms2Resource.get_readings`' frame, in order: the
+#: spectrum each reading is of, then the route's fields of a reading.
+READINGS_COLUMNS: tuple[str, ...] = (
+    "group",
+    "peak",
+    "mz",
+    "mz_cal",
+    "intensity",
+    "signal_to_noise",
+    "role",
+    "window_ion",
+    "formula",
+    "parity",
+    "dbe",
+    "ppm",
+    "loss",
+    "pieces",
+    "unnamed_pieces",
+    "radical_loss",
+    "rank",
+    "n_candidates",
+    "n_parents",
+    "ladder_support",
+    "note",
+)
+#: What the frame's ``attrs`` hold of the response beside the readings.
+_READINGS_ATTRS = (
+    "source",
+    "cached",
+    "core_version",
+    "parent_peak_tolerance",
+    "reason",
+)
 
 
 class Ms2Resource(BaseResource):
@@ -258,3 +296,94 @@ class Ms2Resource(BaseResource):
             "parent_peak_tolerance": body.get("parent_peak_tolerance"),
             "window_pad": body.get("window_pad"),
         }
+
+    def get_readings(
+        self,
+        group: str,
+        ions: str | Sequence[str],
+        *,
+        noise_threshold: float = 10.0,
+        parent_peak_tolerance: float = 0.001,
+    ) -> pd.DataFrame:
+        """Read one MS2 group's fragments as formulas, over the ions named.
+
+        The server reads the group's window whole - every activation of its
+        parent peak in the sample, one averaged spectrum each - against the
+        named window ions: the group's precursor and the ions co-isolated
+        with it, which must lie in its isolation window, one of them at its
+        key. Every peak is read against every window ion, harmonic ghosts
+        and side lobes flagged, by the composition core peaky also uses.
+        A named ion the window does not hold is refused with the key it
+        belongs to (:class:`~mascope_sdk.exceptions.ValidationError`), and a
+        group the sample does not hold is not found
+        (:class:`~mascope_sdk.exceptions.NotFoundError`, as from a server
+        that predates the readings).
+
+        One row per (spectrum, peak, window ion, reading), every peak at
+        least once: ``group`` names the spectrum's group; ``role`` is
+        ``precursor``, ``fragment``, ``unexplained``, ``harmonic`` or
+        ``satellite``; ``rank`` 1 is a peak's best reading against its
+        window ion. ``df.attrs`` holds ``source``, ``cached``,
+        ``core_version`` and ``parent_peak_tolerance``, ``reason`` (None
+        unless the sample's file is not read), and ``window``: the group,
+        its ``ions`` (the target first), the aliases ``left_out``, the
+        ``recalibration`` and each spectrum's counts (``spectra``: ``tic``,
+        ``n_peaks``, ``n_harmonic``, ...).
+
+        :param group: The group's key, ``"<parent m/z>@<activation>"``
+            (``"195.0877@hcd20.00"``), as the summary's groups give it.
+        :type group: str
+        :param ions: The window ions: ion formulas, as a list or one
+            comma-separated string (``"C8H11N4O2+,C10H11O4+"``); 15N as
+            ``[15N]``, peaky's ``^N`` accepted.
+        :type ions: str | Sequence[str]
+        :param noise_threshold: Minimum signal-to-noise ratio of the peaks
+            read.
+        :type noise_threshold: float
+        :param parent_peak_tolerance: Tolerance in Da for merging parent
+            peaks, for a file the server reads raw.
+        :type parent_peak_tolerance: float
+        :return: The readings, with the columns of :data:`READINGS_COLUMNS`
+            whatever the content.
+        :rtype: pandas.DataFrame
+
+        Example::
+
+            ms2 = mascope.samples.ms2("sample-456")
+            readings = ms2.get_readings(
+                "195.0877@hcd20.00", ["C8H11N4O2+", "C10H11O4+"]
+            )
+            best = readings[readings["rank"] == 1]
+            print(best[["group", "mz", "formula", "loss"]])
+            print(readings.attrs["window"]["recalibration"]["offset_ppm"])
+        """
+        if not isinstance(ions, str):
+            ions = ",".join(ions)
+        params: dict[str, Any] = {
+            "group": group,
+            "ions": ions,
+            "noise_threshold": noise_threshold,
+            "parent_peak_tolerance": parent_peak_tolerance,
+        }
+        body = self._get_envelope(f"{self._base_path}/readings", params=params)
+        _log_api_message(body)
+        data = body.get("data") or {}
+        spectra = data.get("spectra") or []
+        frame = pd.DataFrame(
+            [
+                {"group": spectrum["group"], **row}
+                for spectrum in spectra
+                for row in spectrum["readings"]
+            ],
+            columns=list(READINGS_COLUMNS),
+        )
+        for name in _READINGS_ATTRS:
+            frame.attrs[name] = body.get(name)
+        frame.attrs["window"] = {
+            **{name: value for name, value in data.items() if name != "spectra"},
+            "spectra": [
+                {name: value for name, value in s.items() if name != "readings"}
+                for s in spectra
+            ],
+        }
+        return frame

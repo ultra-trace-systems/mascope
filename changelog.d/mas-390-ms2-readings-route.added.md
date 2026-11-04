@@ -1,5 +1,6 @@
 - **An MS2 group's fragments as formulas, over the ions you name.**
-  `GET /api/samples/{id}/ms2/readings?group=<key>&ions=<formula>,...` reads
+  `GET /api/samples/{id}/ms2/readings?group=<key>&ions=<formula>,...`, and
+  `mascope.samples.ms2(sample).get_readings(group, ions)` in the SDK, read
   every peak of a group's spectra as a sub-formula of each named window ion:
   its formula, the neutral loss and the molecules it splits into, the ppm, the
   rank among a peak's readings and how many window ions can explain it, or
