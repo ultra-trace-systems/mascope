@@ -411,8 +411,11 @@ report counts them (`turnstile` in its summary) and opens with a notice. Its
 `AUTHN-06` then checks that the login refuses a sign-in with no token. Point
 the staging run at a deployment with Turnstile off, so the signed-in controls
 are assessed somewhere, and do not give it Cloudflare's test keys to get past
-the check: that turns the check off where it is assessed. A production run
-is non-mutating and signs in nowhere anyway, so Turnstile changes nothing
+the check: that turns the check off where it is assessed. `AUTHN-06` is then
+not assessed on staging. The production run assesses it instead: it is
+non-mutating and signs in nowhere, and on a site with Turnstile on it sends
+`AUTHN-06`'s one login, for an account that does not exist, which costs one
+request of the per-address login budget. Turnstile changes nothing else
 there but the report's **Turnstile** line (`security/pentest/README.md`, "A
 site with Turnstile on").
 
@@ -455,12 +458,14 @@ answered (`security/pentest/README.md`, "The CDN vantage").
 mutating (`security/pentest/README.md`, "Mutating and non-mutating
 controls"). Non-mutating means it signs in to no account, spends no budget,
 writes nothing, and stays harmless on the day the control it checks is
-broken. Only those run against production. A control with no classification
+broken. `AUTHN-06` is the one exception, written down beside it: on a site
+with Turnstile on it spends one request of the per-address login budget, for
+an account that does not exist. Only those run against production. A control with no classification
 fails the run at collection, so a new one cannot reach production by default.
 
 | Class | Runs against | Controls |
 | --- | --- | --- |
-| Non-mutating (`--non-mutating`) | staging and production | `RECON-01`, `RECON-02`, `RECON-03`, `HDR-01`, `HDR-02`, `HDR-03`, `HDR-04`, `HDR-05`, `HDR-06`, `AUTHN-01`, `TOKEN-01`, `INFO-02`, `TLS-01`, `TLS-02`, `CORS-01`, `CORS-02` |
+| Non-mutating (`--non-mutating`) | staging and production | `RECON-01`, `RECON-02`, `RECON-03`, `HDR-01`, `HDR-02`, `HDR-03`, `HDR-04`, `HDR-05`, `HDR-06`, `AUTHN-01`, `AUTHN-06`, `TOKEN-01`, `INFO-02`, `TLS-01`, `TLS-02`, `CORS-01`, `CORS-02` |
 | Mutating | staging only | every other control: they sign in, provision accounts, workspaces, devices or uploads, burst a rate limit, spend a login or pairing budget, or send a write that a missing gate would perform |
 
 `selftest/test_classification.py` pins the first row against the markers, so
