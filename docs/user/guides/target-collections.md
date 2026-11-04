@@ -127,7 +127,11 @@ batches** to assign it across many batches at once.
 Changing a batch's collections (or a collection's compounds) does not
 recompute matches immediately — the batch is *flagged*: its status icon in the
 *Batches* pane changes to circling arrows with the tooltip *"Batch has been
-modified, matches may be out of date"*.
+modified, matches may be out of date"*. A batch that already waits for an m/z
+recalibration (a scales icon, after its ionization mode's calibration
+collection changed) keeps that icon: once recalibrated, it is flagged for
+a rematch, which picks up the target changes too. A rematch forced on such a
+batch that fails leaves it waiting for the recalibration.
 
 - **Click the status icon** to refresh the matches, or right-click the batch
   and choose **Process → Refresh matches**. (**Process → Rematch** rebuilds

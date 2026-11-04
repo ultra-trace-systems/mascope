@@ -1503,11 +1503,14 @@ async def rematch_batch(
         }
 
     except ApiException as e:
-        # Step 7: Revert status on failure to allow retry rematching
+        # Step 7: Revert status on failure to allow retry rematching. A batch
+        # the rematch was forced on while it waited for a recalibration goes
+        # back to waiting for it: the rematch did not re-fit its m/z axis
         await update_sample_batch_status(
             sample_batch_ids=[sample_batch_id],
-            status="rematch",
+            status="recalibrate" if batch_status == "recalibrate" else "rematch",
             independent_transaction=True,  # reload UI status icons
+            never_lower=True,
         )
         runtime.logger.exception(
             f"Rematch failed for batch '{sample_batch_name}': {e.user_message}"

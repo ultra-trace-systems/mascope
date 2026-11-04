@@ -910,6 +910,7 @@ async def copy_sample_items(
             sample_batch_ids=[sample_batch_id],
             status="rematch",
             independent_transaction=True,
+            never_lower=True,
         )
 
     # Step 7: Return the copied sample and message
