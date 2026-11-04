@@ -324,6 +324,7 @@ async def test_registering_a_file_lists_its_stores_groups(
             "t_max": row.t_max,
             "low_mass": row.low_mass,
             "high_mass": row.high_mass,
+            **{name: getattr(row, name) for name in ms2_store.PRECURSOR_FIELDS},
         } == {
             name: group[name]
             for name in group
@@ -331,7 +332,16 @@ async def test_registering_a_file_lists_its_stores_groups(
         }
         assert row.activation_kind == "hcd"
         assert row.nce == float(row.activation[3:])
-        assert row.located_precursor_mz is None
+    # Each group's precursor, as the store located it: the fixture's own
+    # precursor, at the intensity its step's spectrum holds it
+    for row, group in zip(rows, registered.answers["groups"], strict=True):
+        spectrum = ANSWERS["spectra"][group["spectrum"]]
+        ion = ANSWERS["precursors"][spectrum["precursor"]]
+        (peak,) = [c for c in spectrum["centroids"] if c["role"] == "precursor"]
+        assert row.located_precursor_mz == pytest.approx(ion["mz"], abs=1e-6)
+        assert row.located_precursor_activation is not None
+        assert row.precursor_mz == pytest.approx(ion["mz"], abs=1e-6)
+        assert row.precursor_intensity == pytest.approx(peak["intensity"])
 
 
 @pytest.mark.asyncio
@@ -665,7 +675,6 @@ async def test_the_batch_lists_each_samples_groups(registered, guest_client):
             **{
                 name: stored[name] for name in stored if name not in ("polarity", "key")
             },
-            "located_precursor_mz": None,
             "whole": True,
         }
     # One sample's groups together, in the summary's order

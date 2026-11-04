@@ -21,6 +21,7 @@ import pandas as pd
 import xarray as xr
 
 from mascope_thermo.backend import (
+    _activation_kind_and_nce,
     _centroids_meta,
     _common_isolation_width,
     _isolation_width_counts,
@@ -1149,6 +1150,146 @@ def _merge_activations(
     return {key: sorted(scan_indices) for key, scan_indices in merged.items()}
 
 
+# The precursor's location, once per parent peak (``docs/dev/ms2_analysis.md``,
+# section 2.5). Ported from peaky's MS2 source (``peaky.ms2.sources``, its
+# PR #79), with its measurements; peaky's known answers are its tests.
+
+#: Where a precursor is searched for around its parent key: within
+#: max(ppm, mDa) of it. The key is the method's isolation centre as typed, and
+#: a centre typed with two decimals (137.13) can sit up to 5 mDa from its ion:
+#: on peaky's monoterpene standard it sat 2.3 mDa below C10H17+, where the
+#: keys of 41 other spectra sat 0.02-0.35 mDa from their precursors.
+PRECURSOR_SEARCH_PPM = 10.0
+PRECURSOR_SEARCH_MDA = 5.0
+#: A peak of the search window is a candidate only at this share of the
+#: window's strongest or more, and the candidate nearest the key wins, the
+#: stronger on a tie. Nearest alone fails where the key is rounded: side
+#: peaks at -1.3 and -2.2 mDa, under 1 % of the spectrum, sat nearer to 137.13
+#: than the precursor at +2.3 mDa (72 %). Strongest alone fails too: a
+#: co-isolate 2.2 mDa above a precursor was the stronger peak at NCE 5
+#: (19 % against 13 % of the spectrum).
+PRECURSOR_MIN_SHARE = 0.10
+#: Once located, in the lowest-energy spectrum of its parent that holds a
+#: candidate, the precursor is followed across the other energies within
+#: max(ppm, mDa) of that m/z, so a breakdown follows one ion and never jumps
+#: to a neighbour once the precursor is spent. A precursor wandered 0.12 mDa
+#: at most across its energies, and the nearest other peak sat 1.9 mDa from
+#: one.
+PRECURSOR_TRACK_PPM = 5.0
+PRECURSOR_TRACK_MDA = 0.5
+#: The S/N floor of the spectra the precursor is located and followed in:
+#: the floor peaky reads its spectra at. A store keeps its spectra at none,
+#: and at none a spent precursor's place fills with noise centroids, one of
+#: which would be followed as the precursor.
+PRECURSOR_SIGNAL_TO_NOISE = 3.0
+
+
+def _search_tolerance(mz: float) -> float:
+    return max(PRECURSOR_SEARCH_PPM * mz * 1e-6, PRECURSOR_SEARCH_MDA * 1e-3)
+
+
+def _track_tolerance(mz: float) -> float:
+    return max(PRECURSOR_TRACK_PPM * mz * 1e-6, PRECURSOR_TRACK_MDA * 1e-3)
+
+
+def locate_precursor(mz, intensity, parent_mz: float) -> int | None:
+    """The index of the precursor's peak around a parent key, or None.
+
+    The candidates are the peaks within max(:data:`PRECURSOR_SEARCH_PPM`,
+    :data:`PRECURSOR_SEARCH_MDA`) of the key that hold at least
+    :data:`PRECURSOR_MIN_SHARE` of the strongest of them; the one nearest the
+    key wins, the stronger on a tie. Read off an MS2 spectrum
+    (:func:`locate_precursors`) and off the MS1 centroids of an isolation
+    window alike.
+
+    :param mz: The peaks' m/z.
+    :param intensity: Their intensities; NaN counts as none.
+    :param parent_mz: The parent key.
+    :return: The winner's index into ``mz``, None when no peak is near enough.
+    """
+    mz = np.asarray(mz, dtype=np.float64)
+    intensity = np.nan_to_num(np.asarray(intensity, dtype=np.float64), nan=0.0)
+    near = np.flatnonzero(np.abs(mz - parent_mz) <= _search_tolerance(parent_mz))
+    if not near.size:
+        return None
+    near = near[intensity[near] >= PRECURSOR_MIN_SHARE * intensity[near].max()]
+    order = np.lexsort((-intensity[near], np.abs(mz[near] - parent_mz)))
+    return int(near[order[0]])
+
+
+def _energy_order(activation: str) -> tuple:
+    """Where a group's spectrum comes among its parent peak's: by NCE, lowest
+    first, one with no one energy last, then by the activation."""
+    _, nce = _activation_kind_and_nce(activation)
+    return (nce is None, 0.0 if nce is None else nce, activation)
+
+
+def locate_precursors(
+    spectra: dict[tuple[float, str], tuple[np.ndarray, ...]],
+) -> dict[tuple[float, str], dict]:
+    """Each group's precursor: located once per parent peak, then followed.
+
+    The precursor of a parent peak is located (:func:`locate_precursor`) in
+    the lowest-energy spectrum of its groups that holds a candidate, and each
+    group's spectrum then holds it as its peak nearest that m/z within
+    max(:data:`PRECURSOR_TRACK_PPM`, :data:`PRECURSOR_TRACK_MDA`), none where
+    it is spent. Only peaks at :data:`PRECURSOR_SIGNAL_TO_NOISE` or more are
+    read.
+
+    :param spectra: Each group's averaged centroids, ``{(parent peak m/z,
+        activation): (masses, intensities, resolutions, signal_to_noise)}``,
+        as :func:`get_ms2_centroids_by_parent` gives them.
+    :return: For each group, keyed as ``spectra``: ``located_precursor_mz``
+        and ``located_precursor_intensity``, the precursor as its parent
+        peak's location found it, and ``located_precursor_activation``, the
+        activation of the spectrum it was found in, all three None for a
+        parent peak none of whose spectra holds a candidate; and
+        ``precursor_mz`` and ``precursor_intensity``, the group's own peak
+        followed from it, None where there is none.
+    """
+    readable = {}
+    for key, (masses, intensities, _resolutions, signal_to_noise) in spectra.items():
+        kept = np.asarray(signal_to_noise) >= PRECURSOR_SIGNAL_TO_NOISE
+        readable[key] = (
+            np.asarray(masses, dtype=np.float64)[kept],
+            np.asarray(intensities, dtype=np.float64)[kept],
+        )
+
+    located: dict[float, tuple[float, float, str]] = {}
+    for parent_peak_mz, activation in sorted(
+        readable, key=lambda key: (key[0], _energy_order(key[1]))
+    ):
+        if parent_peak_mz in located:
+            continue
+        masses, intensities = readable[(parent_peak_mz, activation)]
+        found = locate_precursor(masses, intensities, parent_peak_mz)
+        if found is not None:
+            located[parent_peak_mz] = (
+                float(masses[found]),
+                float(intensities[found]),
+                activation,
+            )
+
+    precursors = {}
+    for (parent_peak_mz, activation), (masses, intensities) in readable.items():
+        anchor = located.get(parent_peak_mz)
+        peak_mz = peak_intensity = None
+        if anchor is not None and masses.size:
+            distance = np.abs(masses - anchor[0])
+            nearest = int(np.argmin(distance))
+            if distance[nearest] <= _track_tolerance(anchor[0]):
+                peak_mz = float(masses[nearest])
+                peak_intensity = float(intensities[nearest])
+        precursors[(parent_peak_mz, activation)] = {
+            "located_precursor_mz": None if anchor is None else anchor[0],
+            "located_precursor_intensity": None if anchor is None else anchor[1],
+            "located_precursor_activation": None if anchor is None else anchor[2],
+            "precursor_mz": peak_mz,
+            "precursor_intensity": peak_intensity,
+        }
+    return precursors
+
+
 def get_ms2_centroids_by_parent(
     datafile_path: str,
     t_min: float | None = None,
@@ -1618,6 +1759,9 @@ def get_ms2_store_contents(
       :func:`get_ms2_centroids_by_parent` groups the whole polarity at
       ``parent_peak_tolerance``;
     - ``averaged``: each group's averaged centroids, keyed as ``groups``;
+    - ``precursors``: each group's precursor, keyed as ``groups``, located
+      once per parent peak in those spectra and followed across its groups
+      (:func:`locate_precursors`);
     - ``merged``: the averaged centroids over every scan of each parent peak
       measured at more than one activation, keyed ``(parent peak m/z, "")``,
       as ``by_activation=False`` averages it. A parent peak measured at one
@@ -1679,6 +1823,7 @@ def get_ms2_store_contents(
                 "records": records,
                 "groups": groups,
                 "averaged": averaged,
+                "precursors": locate_precursors(averaged),
                 "merged": merged,
             }
         every_ms2_scan = sorted(

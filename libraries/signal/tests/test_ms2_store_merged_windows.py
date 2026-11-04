@@ -20,6 +20,7 @@ import zarr
 
 from mascope_signal.ms2_store import Ms2Store, _write
 from mascope_thermo.backend import MS2_SCAN_RECORD_SOURCES
+from mascope_thermo.thermo import locate_precursors
 
 
 STEPPED_MZ, OTHER_MZ = 137.096, 200.5
@@ -91,6 +92,9 @@ def _contents() -> dict:
                 ],
                 "groups": dict(SCANS),
                 "averaged": {key: _spectrum(mz) for key, mz in OWN_MZ.items()},
+                "precursors": locate_precursors(
+                    {key: _spectrum(mz) for key, mz in OWN_MZ.items()}
+                ),
                 # Only the precursor taken at several activations has one
                 "merged": {(STEPPED_MZ, ""): _spectrum(MERGED_MZ)},
             },
@@ -105,6 +109,9 @@ def _contents() -> dict:
                 ],
                 "groups": dict(NEGATIVE_SCANS),
                 "averaged": {key: _spectrum(NEGATIVE_MZ) for key in NEGATIVE_SCANS},
+                "precursors": locate_precursors(
+                    {key: _spectrum(NEGATIVE_MZ) for key in NEGATIVE_SCANS}
+                ),
                 "merged": {},
             },
         },

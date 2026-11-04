@@ -1326,7 +1326,7 @@ class Ms2Group(Base):
     store.
 
     The columns are the group's record in the MS2 summary, with what its
-    scans' filters give alike and the precursor once it is located.
+    scans' filters give alike and its located precursor.
     """
 
     __tablename__ = "ms2_group"
@@ -1364,10 +1364,23 @@ class Ms2Group(Base):
     # The outer bounds of the scans' scan ranges [m/z].
     low_mass: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     high_mass: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    # The precursor's m/z located among the MS1 peaks near the key
-    # (``docs/dev/ms2_analysis.md``, section 2.5). NULL until the step that
-    # locates it writes it.
+    # The precursor (``docs/dev/ms2_analysis.md``, section 2.5), on the
+    # instrument's axis as the store holds it: located once per parent peak,
+    # in the lowest-energy spectrum of its groups that holds a candidate, so
+    # the same on every group of it - its m/z, its intensity there and that
+    # spectrum's activation; NULL for one located in none, and for a row of a
+    # store written before it was located.
     located_precursor_mz: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    located_precursor_intensity: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True
+    )
+    located_precursor_activation: Mapped[Optional[str]] = mapped_column(
+        String(256), nullable=True
+    )
+    # This group's own peak followed from the located precursor; NULL where
+    # the precursor is spent.
+    precursor_mz: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    precursor_intensity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
 
 class SampleItem(Base):
