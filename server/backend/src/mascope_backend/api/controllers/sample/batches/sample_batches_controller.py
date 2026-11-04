@@ -565,7 +565,9 @@ async def update_sample_batch(
 ) -> dict:
     """
     Updates the specified sample batch with new information and associations.
-    Changes to ion mechanisms, calibration parameters, or target collections set batch status to "rematch"
+    Changes to ion mechanisms, calibration parameters, or target collections set batch status to "rematch".
+    An update that leaves ``target_collection_ids`` out (or null) keeps the
+    associations and the status as they are; a list replaces them.
 
     Steps:
     1. Fetch existing batch data and validate existence

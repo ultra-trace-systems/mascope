@@ -47,8 +47,12 @@ def detect_update_batch_changes(existing_batch, sample_batch_update) -> dict[str
         tc.target_collection_id for tc in existing_batch.target_collection
     }
 
-    # Extract proposed new state using dot notation
-    new_collections = set(sample_batch_update.target_collection_ids)
+    # Collections left out of the update (or sent as null) stay as they are;
+    # a list, an empty one included, is the whole new set.
+    if sample_batch_update.target_collection_ids is None:
+        new_collections = current_collections
+    else:
+        new_collections = set(sample_batch_update.target_collection_ids)
 
     # Calculate collection changes
     collections_to_add = new_collections - current_collections
