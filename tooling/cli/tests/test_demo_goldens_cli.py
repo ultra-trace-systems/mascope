@@ -257,8 +257,8 @@ def test_a_prior_ms2_file_that_left_the_raw_set_is_dropped_with_a_warning(
     backend_goldens, tmp_path, warnings
 ):
     """Taking the MS2 file out of the raw set is a deliberate change: the
-    bundle is written without MS2 goldens, their file goes with them, and the
-    log says so."""
+    bundle is written without MS2 goldens, and the log says so. The file stays
+    until the manifest is written (`build`, below)."""
     prior = _prior_ms2(tmp_path, [_ms2_row(_db_name(MS2))])
     backend_goldens.peaks = [_peak(_db_name(MS1))]
     backend_goldens.ingested = [_db_name(MS1)]
@@ -267,7 +267,7 @@ def test_a_prior_ms2_file_that_left_the_raw_set_is_dropped_with_a_warning(
 
     assert expected is not None
     assert "ms2" not in expected
-    assert not (tmp_path / "expected" / "ms2.parquet").exists()
+    assert (tmp_path / "expected" / "ms2.parquet").exists()
     assert any(
         "Dropping the MS2 goldens of 1 file(s)" in w and _db_name(MS2) in w
         for w in warnings
@@ -393,7 +393,8 @@ def test_a_prior_ion_file_that_left_the_raw_set_is_dropped_with_a_warning(
 ):
     """A `--raw` refresh that replaces every file the ion goldens covered with
     files that score no ions is a deliberate change: the bundle is written
-    without ion goldens, their file goes with them, and the log says so."""
+    without ion goldens, and the log says so. The file stays until the
+    manifest is written (`build`, below)."""
     prior = _prior_ions(tmp_path, [_ion(_db_name(MS1))])
     backend_goldens.peaks = [_peak(_db_name(MS1_B))]
     backend_goldens.ingested = [_db_name(MS1_B)]
@@ -402,7 +403,7 @@ def test_a_prior_ion_file_that_left_the_raw_set_is_dropped_with_a_warning(
 
     assert expected is not None
     assert "ions" not in expected
-    assert not (tmp_path / "expected" / "ions.parquet").exists()
+    assert (tmp_path / "expected" / "ions.parquet").exists()
     assert any(
         "Dropping the ion goldens of 1 file(s)" in w and _db_name(MS1) in w
         for w in warnings
@@ -477,26 +478,127 @@ def test_a_run_without_ions_of_a_bundle_that_never_had_them_writes_no_ions_block
     assert warnings == []
 
 
+# --- a dropped golden's file goes once the manifest is written ---------------
+
+
+SNAPSHOT = {"dump": "snapshot/mascope_demo.dump", "sha256": "s" * 64}
+
+
+def _write_manifest(out_dir, raw: list[dict], expected: dict) -> dict:
+    manifest = {
+        "bundle_version": out_dir.name,
+        "raw": raw,
+        "measurement": {},
+        "expected": expected,
+    }
+    (out_dir / bundles.MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
+
+
+def _read_manifest(out_dir) -> dict:
+    return json.loads((out_dir / bundles.MANIFEST_NAME).read_text(encoding="utf-8"))
+
+
+def _drop_setup(tmp_path, block: str) -> dict:
+    """A bundle whose prior goldens of ``block`` cover only a file that has
+    left the raw set: the raw set is now MS1_B alone, which scores no ions and
+    has no spectra. Returns the manifest written."""
+    if block == "ms2":
+        prior = _prior_ms2(tmp_path, [_ms2_row(_db_name(MS2))])
+    else:
+        prior = _prior_ions(tmp_path, [_ion(_db_name(MS1))])
+    return _write_manifest(tmp_path, _raw_entries(MS1_B), prior)
+
+
+@pytest.mark.parametrize(
+    ("block", "name"), [("ms2", "ms2.parquet"), ("ions", "ions.parquet")]
+)
+def test_snapshot_update_that_drops_a_golden_block_removes_its_file(
+    backend_goldens, tmp_path, monkeypatch, block, name
+):
+    """`build(update=True)` writes the manifest without the dropped block and
+    then removes its file, so the published zip does not ship it."""
+    _drop_setup(tmp_path, block)
+    backend_goldens.peaks = [_peak(_db_name(MS1_B))]
+    backend_goldens.ingested = [_db_name(MS1_B)]
+    monkeypatch.setattr(build_bundle, "export_snapshot", lambda _out_dir: SNAPSHOT)
+
+    build_bundle.build(tmp_path, update=True)
+
+    assert block not in _read_manifest(tmp_path)["expected"]
+    assert not (tmp_path / "expected" / name).exists()
+    assert (tmp_path / "expected" / "peaks.parquet").exists()
+
+
+@pytest.mark.parametrize(
+    ("block", "name"), [("ms2", "ms2.parquet"), ("ions", "ions.parquet")]
+)
+def test_a_drop_whose_snapshot_fails_keeps_the_file_and_re_runs(
+    backend_goldens, tmp_path, monkeypatch, block, name
+):
+    """A snapshot dump that fails after the goldens export leaves the prior
+    manifest in place, and the file it names stays with it. The re-run is then
+    the same drop again: it succeeds and removes the file."""
+    manifest = _drop_setup(tmp_path, block)
+    backend_goldens.peaks = [_peak(_db_name(MS1_B))]
+    backend_goldens.ingested = [_db_name(MS1_B)]
+
+    def _failed_snapshot(_out_dir):
+        raise RuntimeError("pg_dump failed")
+
+    monkeypatch.setattr(build_bundle, "export_snapshot", _failed_snapshot)
+    with pytest.raises(RuntimeError, match="pg_dump failed"):
+        build_bundle.build(tmp_path, update=True)
+
+    assert _read_manifest(tmp_path) == manifest
+    assert (tmp_path / "expected" / name).exists()
+
+    monkeypatch.setattr(build_bundle, "export_snapshot", lambda _out_dir: SNAPSHOT)
+    build_bundle.build(tmp_path, update=True)
+
+    assert block not in _read_manifest(tmp_path)["expected"]
+    assert not (tmp_path / "expected" / name).exists()
+
+
 @pytest.mark.parametrize("name", ["ms2.parquet", "ions.parquet"])
 def test_a_golden_file_no_manifest_names_is_removed(
-    backend_goldens, tmp_path, warnings, name
+    backend_goldens, tmp_path, monkeypatch, name
 ):
     """A bundle whose manifest no longer names a golden file can still hold it,
-    left by a refresh before the drop removed it. The next run that writes no
-    block for it removes it too, so the published zip does not ship it."""
-    prior = {"peaks": "expected/peaks.parquet", "sha256": "x" * 64}
+    left by a refresh before the drop removed it. The next refresh removes it,
+    also one that matched nothing and keeps the prior goldens."""
     stale = tmp_path / "expected" / name
     stale.parent.mkdir(parents=True)
     stale.write_bytes(b"stale")
-    backend_goldens.peaks = [_peak(_db_name(MS1))]
+    prior = {"peaks": "expected/peaks.parquet", "sha256": "x" * 64}
+    _write_manifest(tmp_path, _raw_entries(MS1), prior)
     backend_goldens.ingested = [_db_name(MS1)]
+    monkeypatch.setattr(build_bundle, "export_snapshot", lambda _out_dir: SNAPSHOT)
 
-    expected = build_bundle.export_goldens(tmp_path, _raw_entries(MS1), prior)
+    build_bundle.build(tmp_path, update=True)
 
-    assert set(expected) == {"peaks", "sha256"}
+    assert _read_manifest(tmp_path)["expected"] == prior
     assert not stale.exists()
-    assert (tmp_path / "expected" / "peaks.parquet").exists()
-    assert warnings == []
+
+
+def test_a_refresh_keeps_the_golden_files_its_manifest_names(
+    backend_goldens, tmp_path, monkeypatch
+):
+    """A refresh that writes both blocks again keeps both files."""
+    _prior_ms2(tmp_path, [_ms2_row(_db_name(MS2))])
+    _write_manifest(tmp_path, _raw_entries(MS1, MS2), {})
+    backend_goldens.peaks = [_peak(_db_name(MS1))]
+    backend_goldens.ms2 = [_ms2_row(_db_name(MS2))]
+    backend_goldens.ions = [_ion(_db_name(MS1))]
+    backend_goldens.ingested = [_db_name(MS1), _db_name(MS2)]
+    monkeypatch.setattr(build_bundle, "export_snapshot", lambda _out_dir: SNAPSHOT)
+
+    build_bundle.build(tmp_path, update=True)
+
+    expected = _read_manifest(tmp_path)["expected"]
+    assert {"ms2", "ions"} <= set(expected)
+    assert (tmp_path / "expected" / "ms2.parquet").exists()
+    assert (tmp_path / "expected" / "ions.parquet").exists()
 
 
 def test_snapshot_update_refuses_to_drop_the_prior_manifests_ion_goldens(
