@@ -2259,7 +2259,10 @@ MS2_STORE_MODE=run mascope prod db script run backfill_ms2_store  # write; again
 - A store of another version than the release reads is not read, and the
   backfill counts its file as one to write. A release that changes the
   version says so in its changelog: run the backfill again after it. Until
-  then those files' MS2 routes read the raw file, as before.
+  then those files' MS2 routes read the raw file, as before. Version 3
+  records each group's located precursor, which the group inventory lists
+  and `GET /api/samples/{id}/ms2/window` serves: until a file's store is
+  written again, its groups list none.
 
 ### Peak stores a file has outgrown
 

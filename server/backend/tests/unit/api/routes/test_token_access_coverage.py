@@ -164,6 +164,7 @@ OTHER_TOKEN_ROUTES = {
     ("GET", "/api/samples/{sample_item_id}/ms2/scans"),
     ("GET", "/api/samples/{sample_item_id}/ms2/summary"),
     ("GET", "/api/samples/{sample_item_id}/ms2/timeseries"),
+    ("GET", "/api/samples/{sample_item_id}/ms2/window"),
     ("GET", "/api/sample/batches/{sample_batch_id}/ms2/groups"),
     ("POST", "/api/match/aggregate/sample/{sample_item_id}/compound"),
     ("GET", "/api/sample/files"),

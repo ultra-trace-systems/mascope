@@ -14,6 +14,7 @@ from .schema import (
     GetMs2ScansQueryParams,
     GetMs2SummaryQueryParams,
     GetMs2TimeseriesQueryParams,
+    GetMs2WindowQueryParams,
 )
 from .service import (
     get_batch_ms2_groups,
@@ -22,6 +23,7 @@ from .service import (
     get_ms2_scans,
     get_ms2_summary,
     get_ms2_timeseries,
+    get_ms2_window,
 )
 
 
@@ -188,6 +190,51 @@ async def get_ms2_scans_route(
     )
 
 
+@ms2_router.get("/{sample_item_id}/ms2/window")
+@api_route(token_access=True)
+async def get_ms2_window_route(
+    sample_item_id: str,
+    query_params: GetMs2WindowQueryParams = Depends(),
+    user: User = Depends(current_active_user),
+    membership=Depends(require_sample_role("guest")),
+):
+    """Retrieve the isolation-window inventory of each MS2 group.
+
+    Per group, the sample's MS1 centroids within +/-(width / 2 + 5 mDa) of
+    its parent key, each with its ``offset`` from the key, ``intensity``,
+    ``share`` of the window, ``resolution``, ``signal_to_noise`` and
+    ``is_parent``, the one that is the precursor; and the group's precursor
+    as its MS2 spectra locate it: ``located_precursor_mz``,
+    ``located_precursor_intensity`` and ``located_precursor_activation``,
+    found once per parent peak in its lowest-energy spectrum that holds it,
+    and ``precursor_mz`` and ``precursor_intensity``, the group's own peak
+    followed from there, null where the precursor is spent. All m/z are on
+    the file's calibrated axis.
+
+    ``width`` draws every window at that width instead of each group's own,
+    the widest its scans used. A group with no width and none asked for
+    lists only its target, with no share, and its ``note`` says so.
+    ``source`` says where the groups and their precursors were read
+    (``"store"`` or ``"raw"``). ``reason`` is ``"unsupported"`` for a sample
+    of a file whose MS2 scans are not read (a TOF sample), ``"none"`` for a
+    sample that holds no group, and ``"no_ms1_scans"`` for a sample with no
+    MS1 scans, an acquisition of fragmentation scans alone, whose windows
+    hold no centroid; null otherwise.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param query_params: Query parameters including the width override.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :type user: User
+    :param membership: Workspace membership with guest role on the sample.
+    :type membership: WorkspaceMember
+    :return: The isolation windows of the sample's MS2 groups.
+    """
+    return await get_ms2_window(
+        sample_item_id=sample_item_id,
+        **query_params.model_dump(),
+    )
+
+
 @ms2_batch_router.get("/{sample_batch_id}/ms2/groups")
 @api_route(token_access=True)
 async def get_batch_ms2_groups_route(
@@ -201,9 +248,15 @@ async def get_batch_ms2_groups_route(
     sample's id, the group's file, polarity and ``precursor_key``
     (``137.0960@hcd25.00``, the key ``ms2/scans?group=`` takes), parent peak
     m/z, activation with its kind and NCE, HCD energies, isolation widths,
-    scan count, time span, scan range and located precursor, and ``whole``,
-    false where the sample's window cuts the group. An MS1-only batch
-    answers an empty list.
+    scan count, time span, scan range, and ``whole``, false where the
+    sample's window cuts the group. And its precursor, located when the
+    file's MS2 store was written: ``located_precursor_mz``,
+    ``located_precursor_intensity`` and ``located_precursor_activation``,
+    where its parent peak's precursor was found, and ``precursor_mz`` and
+    ``precursor_intensity``, the group's own peak followed from there, null
+    where the precursor is spent. These m/z are on the instrument's axis, as
+    the key is; ``ms2/window`` gives them on the sample's calibrated axis.
+    An MS1-only batch answers an empty list.
 
     :param sample_batch_id: The unique identifier of the sample batch.
     :param user: The current authenticated user. Requires workspace guest role.
