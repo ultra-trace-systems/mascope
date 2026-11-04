@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from ._base import BaseResource
+from ._base import BaseResource, _log_api_message
 
 
 class Ms2Resource(BaseResource):
@@ -10,7 +10,7 @@ class Ms2Resource(BaseResource):
 
     Accessed via ``mascope.samples.ms2(sample_id)``. Provides methods for
     MS2 data extraction including summaries, averaged centroids per parent peak,
-    and normalized fragment timeseries.
+    normalized fragment timeseries and each group's isolation window.
 
     Example::
 
@@ -22,6 +22,7 @@ class Ms2Resource(BaseResource):
         summary = ms2.get_summary()
         centroids = ms2.get_averaged_centroids()
         timeseries = ms2.get_timeseries(parent_peak_mz=285.0789)
+        windows = ms2.get_window()
     """
 
     def __init__(self, client: "Any", sample_item_id: str):
@@ -191,3 +192,69 @@ class Ms2Resource(BaseResource):
             "activation": activation,
         }
         return self._get(f"{self._base_path}/timeseries", params=params)
+
+    def get_window(
+        self,
+        *,
+        width: float | None = None,
+        parent_peak_tolerance: float = 0.001,
+    ) -> dict:
+        """Retrieve the isolation window of each MS2 group and its precursor.
+
+        ``data`` holds one record per (parent peak, activation) group, in the
+        summary's order: ``group`` (its key, ``"137.0960@hcd25.00"``),
+        ``polarity``, ``parent_peak_mz``, ``activation``, ``width`` (the one
+        its window was drawn at, ``None`` for none) and ``note``. Its
+        ``centroids`` are the sample's MS1 centroids within +/-(width / 2 +
+        ``window_pad``) of the parent key, as columns: ``mz``, ``offset``
+        from the key, ``intensity``, ``share`` of the window, ``resolution``,
+        ``signal_to_noise`` and ``is_parent``, true for the precursor's own.
+        Beside them the precursor as the group's MS2 spectra locate it:
+        ``located_precursor_mz``, ``located_precursor_intensity`` and
+        ``located_precursor_activation``, found once per parent peak in its
+        lowest-energy spectrum that holds it, and ``precursor_mz`` and
+        ``precursor_intensity``, the group's own peak followed from there,
+        ``None`` where the precursor is spent. All m/z are on the file's
+        calibrated axis.
+
+        ``reason`` says why ``data`` is empty or its windows hold nothing:
+        ``"unsupported"`` for a sample of a file whose MS2 scans are not read
+        (a TOF sample), ``"none"`` for a sample that holds no group, and
+        ``"no_ms1_scans"`` for one with no MS1 scans, whose windows hold no
+        centroid; ``None`` otherwise. ``source`` says where the groups were
+        read (``"store"`` or ``"raw"``, ``None`` with ``"unsupported"``), and
+        ``parent_peak_tolerance`` what they were made at.
+
+        :param width: The isolation width in Da to draw every window at.
+                      Defaults to each group's own, the widest its scans
+                      used; a group with neither lists only its target, with
+                      no share, and its ``note`` says so.
+        :type width: float | None
+        :param parent_peak_tolerance: Tolerance in Da for merging near-duplicate
+                                      parent peaks, for a file read raw; a
+                                      file's MS2 store answers from its own
+                                      grouping.
+        :type parent_peak_tolerance: float
+        :return: Dictionary with ``data``, ``reason``, ``source``,
+                 ``parent_peak_tolerance`` and ``window_pad``.
+        :rtype: dict
+
+        Example::
+
+            window = mascope.samples.ms2("sample-456").get_window(width=1.0)
+            for group in window["data"]:
+                listed = len(group["centroids"]["mz"])
+                print(group["group"], group["located_precursor_mz"], listed)
+        """
+        params: dict[str, Any] = {"parent_peak_tolerance": parent_peak_tolerance}
+        if width is not None:
+            params["width"] = width
+        body = self._get_envelope(f"{self._base_path}/window", params=params)
+        _log_api_message(body)
+        return {
+            "data": body.get("data"),
+            "reason": body.get("reason"),
+            "source": body.get("source"),
+            "parent_peak_tolerance": body.get("parent_peak_tolerance"),
+            "window_pad": body.get("window_pad"),
+        }
