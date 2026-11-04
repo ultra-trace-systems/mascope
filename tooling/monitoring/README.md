@@ -587,6 +587,62 @@ size-bounded before it lands, the archive is never extracted, and only counts
 are sent to the heartbeat service — finding detail describes weaknesses in your
 own deployment and the heartbeat is a third party.
 
+### The weakened-target guard (`run-weakened-guard.sh`)
+
+A green assessment is only evidence if its controls can fail.
+[`run-weakened-guard.sh`](run-weakened-guard.sh) checks that some of them can,
+weekly and unattended. It brings up a throwaway demo stack on this host and
+weakens it by configuration, one edit at a time. It strips a security header,
+turns the nginx version banner on, or adds a wildcard CORS header. Each control
+the edit should trip must then report a finding
+(`security/pentest/mutations/README.md`, "The weakened target"). It touches no
+deployment, and spends nothing of the staging target's rate limits.
+
+It needs Docker, which this host has (section 1). The stack's frontend is
+published on loopback only, under its own compose project, and taken down
+again however the run ends. Its volumes stay, so the next run reuses the
+downloaded demo bundle. Its containers use the demo's fixed names
+(`mascope_demo_*`), so no other demo stack may run on this host.
+
+1. Use the CDN vantage's suite copy (`CDN_SUITE_DIR`), or set
+   `WEAKENED_SUITE_DIR` to another copy of `security/pentest/` with its venv.
+2. Put `docker-compose.demo.yaml` from the same tag beside it, by default at
+   `/opt/pentest-runner/docker-compose.demo.yaml` (`WEAKENED_DEMO_COMPOSE`).
+   Set `MASCOPE_VERSION` in `config.env` to that tag; the default is
+   `latest`. The weakenings edit the nginx config the image ships, so the
+   images and the suite copy must come from one release.
+3. Optionally give it a heartbeat of its own, `WEAKENED_HC_URL`. It never
+   falls back to `HC_URL`, whose weekly check its pings would keep green.
+4. Cron it clear of the assessment, for example:
+
+   ```cron
+   30 3 * * 0  /opt/pentest-runner/run-weakened-guard.sh 2>&1 | logger -t pentest-weakened
+   ```
+
+The script header lists every variable. It sources the same `config.env`,
+but the staging credentials and the edge header in it do not reach the guard:
+the controls it runs sign in nowhere.
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | every expected control reported its weakening |
+| `1` | a control stayed green on a target known to be weakened: a control that cannot fail. Read the log before believing it; the mutation guard's README says how to triage |
+| `2` | nothing was established: an edit did not take, a witness did not see it, the suite did not run, or the stack never answered |
+| `75` | another run of this guard was in progress; nothing ran |
+
+Any non-zero pings `/fail`. An edit that cannot apply, say on an image whose
+nginx config no longer has the line, stops the frontend instead of serving a
+healthy stack, and the run says `2` rather than blaming a control. Each run
+leaves `<ts>-weakened.log` and `<ts>-weakened.summary` in `RECORDS`, pruned at
+400 days. The summary reads `detected N  missed N  unproven N version=TAG`.
+
+The guard covers 8 controls. The log's coverage line counts the others by
+reason, and `security/pentest/mutations/weakened.py` gives each one's:
+application code no configuration reaches, a missing test-only switch, a
+topology the demo does not have, or an edit not yet written.
+`tooling/cli/tests/test_run_weakened_guard.py` runs this script with `docker`,
+`curl` and the guard stubbed; CI runs it with the CLI tests.
+
 ## 11. Security fixes not yet deployed (`security-fix-distance.py`)
 
 A fix on `develop` is not a fix in production.
