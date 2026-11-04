@@ -14,6 +14,7 @@ straightforward to test without a live stack.
 
 import datetime
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from mascope_cli.cmd.prod import auto_update
+from mascope_cli.cmd.prod import units as prod_units
 
 
 def _run(cmd: list[str], timeout: Optional[int] = 15) -> subprocess.CompletedProcess:
@@ -462,6 +464,73 @@ def image_footprint() -> ImageFootprint:
     return ImageFootprint(None, None, None)
 
 
+# --- Units ---
+
+# The units that run a script of their own rather than the mascope executable.
+SCRIPT_UNITS = ("mascope-disk-check.service", "mascope-update.service")
+
+
+@dataclass
+class UnitScript:
+    """The script one installed unit runs, and whether it is still there."""
+
+    unit: str
+    # The script its ExecStart runs, or None when the unit names none.
+    script: Optional[str]
+    # in-place / venv / missing / absent (the unit is not installed).
+    # venv: inside a Python environment, as in a hand-written or pre-release
+    # unit that runs the copy bundled in the CLI's venv, which a reinstall of
+    # the CLI or another Python minor moves. `units install` never writes
+    # that; the unit still runs until the path moves, and re-running
+    # `units install` points it at the copies in /usr/local/lib/mascope.
+    state: str
+
+    @property
+    def ok(self) -> bool:
+        """The unit can run its script, or is not installed at all."""
+        return self.state != "missing"
+
+
+def unit_script(unit_file: Path) -> UnitScript:
+    """
+    The script a unit's ``ExecStart`` runs: the argument after ``/bin/bash``,
+    as `units install` writes it, else the command itself.
+    """
+    try:
+        text = unit_file.read_text(encoding="utf-8")
+    except OSError:
+        return UnitScript(unit_file.name, None, "absent")
+    script = None
+    for line in text.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if not sep or key.strip() != "ExecStart":
+            continue
+        try:
+            argv = shlex.split(value)
+        except ValueError:
+            argv = value.split()
+        if len(argv) > 1 and Path(argv[0]).name == "bash":
+            script = argv[1]
+        elif argv:
+            script = argv[0]
+    if script is None:
+        return UnitScript(unit_file.name, None, "missing")
+    path = Path(script)
+    if not path.is_file():
+        state = "missing"
+    elif "site-packages" in path.parts:
+        state = "venv"
+    else:
+        state = "in-place"
+    return UnitScript(unit_file.name, script, state)
+
+
+def unit_scripts(systemd_dir: Optional[Path] = None) -> list[UnitScript]:
+    """The script each of :data:`SCRIPT_UNITS` runs, as installed."""
+    directory = systemd_dir or prod_units.SYSTEMD_DIR
+    return [unit_script(directory / name) for name in SCRIPT_UNITS]
+
+
 # --- Report ---
 
 
@@ -475,18 +544,22 @@ class Report:
     updates: UpdateStatus
     backups: BackupStatus
     images: ImageFootprint
+    units: list[UnitScript] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         """
-        Healthy stack, no version drift, and no filesystem below its floor
-        (the remaining sections are info-only, and a filesystem that is only
-        projected to reach its floor is a warning - see ``filling``).
+        Healthy stack, no version drift, no filesystem below its floor, and
+        no installed unit without its script (the remaining sections are
+        info-only, a unit whose script is inside a venv is flagged but still
+        runs, and a filesystem that is only projected to reach its floor is a
+        warning - see ``filling``).
         """
         return (
             all(c.ok for c in self.containers)
             and not self.versions.drift
             and not any(d.low for d in self.disks)
+            and all(u.ok for u in self.units)
         )
 
     @property
@@ -512,6 +585,7 @@ class Report:
             "updates": asdict(self.updates),
             "backups": asdict(self.backups),
             "images": asdict(self.images),
+            "units": [asdict(u) for u in self.units],
         }
 
 
@@ -526,6 +600,7 @@ def build_report(
     min_free_gb: float,
     disk_history: Optional[Path] = None,
     min_days_to_floor: float = 0.0,
+    systemd_dir: Optional[Path] = None,
     now: Optional[datetime.datetime] = None,
 ) -> Report:
     """Assemble the report from injected container names and paths."""
@@ -548,6 +623,7 @@ def build_report(
         updates=update_status(mascope_path),
         backups=backup_status(backups_dir, now=now),
         images=image_footprint(),
+        units=unit_scripts(systemd_dir),
     )
 
 
@@ -612,6 +688,23 @@ def _disk_line(d: DiskUsage, label: str) -> str:
     return " · ".join(parts) + flag
 
 
+def _units_line(units: list[UnitScript]) -> str:
+    """The units' scripts: in place, or which unit lost or may lose its own."""
+    installed = [u for u in units if u.state != "absent"]
+    if not installed:
+        return "not installed"
+    flagged = [u for u in installed if u.state in ("venv", "missing")]
+    if not flagged:
+        return "scripts in place"
+    parts = []
+    for u in flagged:
+        if u.state == "missing":
+            parts.append(f"{u.unit} cannot find {u.script or 'its script'}  MISSING")
+        else:
+            parts.append(f"{u.unit} runs {u.script} inside a venv  STALE")
+    return " · ".join(parts) + " · re-run 'mascope prod units install'"
+
+
 def format_text(report: Report) -> str:
     """Render the report as an aligned, human-readable block."""
     lines = []
@@ -670,6 +763,8 @@ def format_text(report: Report) -> str:
         lines.append(
             ("Images", f"{im.count} images · {im.size} ({im.reclaimable} reclaimable)")
         )
+
+    lines.append(("Units", _units_line(report.units)))
 
     header = {0: "OK", 1: "ATTENTION", EXIT_FILLING: "WARNING"}[report.exit_code]
     body = "\n".join(f"{label.ljust(9)}{value}" for label, value in lines)

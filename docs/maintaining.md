@@ -57,11 +57,13 @@ Disk     state, docker 142 GiB / 61% free · +0.4 GiB/day (7d), +0.3 GiB/day (30
 Updates  no pending migration recorded
 Backups  5 local dump(s) · newest 8h ago
 Images   11 images · 6.2GB (2.1GB reclaimable)
+Units    scripts in place
 ```
 
 It exits `0` when the stack is healthy, the running images match the release
-this deployment would deploy, and every filesystem is above the free-space
-floor (`MASCOPE_UPDATE_MIN_FREE_GB`); `1` otherwise - so it doubles as a
+this deployment would deploy, every filesystem is above the free-space
+floor (`MASCOPE_UPDATE_MIN_FREE_GB`), and no installed unit has lost the
+script it runs; `1` otherwise - so it doubles as a
 monitoring probe. It exits `3`, under a `[WARNING]` header, when all of that
 holds but a filesystem is filling fast enough to reach the floor within
 `MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR` days (default 7, `0` disables): the Kuma
@@ -78,6 +80,18 @@ of its own: it reads the samples the [disk monitor](#the-monitor-early-warning)
 records every 15 minutes, so the rates appear once that timer has a day of
 history, and the label in brackets is how much history a rate rests on when
 that is less than its window.
+
+**Units** reads the script that the disk check and the update unit run, from
+their `ExecStart` in `/etc/systemd/system`. A unit whose script is gone is
+`MISSING`: it fails at its next start, so the doctor exits `1`. A unit that
+still runs a script inside a Python environment is `STALE`. `units install`
+never writes such a unit: it is a guard against a hand-written or pre-release
+one that runs the copy bundled in the CLI's venv, which a reinstall of the CLI
+or another Python minor moves. It still runs, so it is flagged without
+changing the exit code. Re-running `mascope prod units install`
+mends either: it copies the scripts to `/usr/local/lib/mascope` (see
+[the systemd units](#the-systemd-units-without-the-script)). A host without
+the units reads `not installed`.
 
 **Version** compares the tag the containers are actually running against the
 one this deployment would deploy right now (the `MASCOPE_VERSION` pin, else the
@@ -209,6 +223,8 @@ mascope prod units remove              # stop, disable and delete them; /etc/mas
 - The scripts the units run are copied to `/usr/local/lib/mascope`, so a
   rollback to an older CLI leaves the update and the disk check working. A
   checkout's disk check runs its own `tooling/disk-check.sh`.
+  `mascope prod doctor` flags a unit that still runs a script from inside a
+  venv.
 - A re-run keeps each existing settings file and says so. It leaves an
   enabled update timer enabled.
 
