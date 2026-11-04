@@ -16,8 +16,8 @@
 # a hand-over that cannot be completed exits 2.
 #
 # The work is inside a function that is called on the last line, so bash has
-# read the whole file before `uv tool install` replaces the environment this
-# copy may live in (a wheel install's units run the CLI's bundled copy).
+# read the whole file before anything replaces it. The units run a copy in
+# /usr/local/lib/mascope, which `uv tool install` leaves alone.
 
 set -uo pipefail
 

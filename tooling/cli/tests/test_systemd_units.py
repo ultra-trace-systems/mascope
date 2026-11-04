@@ -97,28 +97,45 @@ def test_the_units_name_the_account_the_binary_and_the_home(mascope_home):
     assert "ExecStart=/home/deploy/.local/bin/mascope prod db script run" in prune
 
 
-def test_a_wheel_install_runs_the_bundled_scripts(mascope_home):
+def test_a_wheel_install_runs_copies_of_the_bundled_scripts(mascope_home):
+    """
+    Not the bundled files themselves: they live in the CLI's venv, which a
+    rollback to an older CLI or another Python minor replaces.
+    """
     rendered = _render(mascope_home)
-    bundled = units.bundled_dir()
     assert (
-        f"ExecStart=/bin/bash {bundled / 'disk-check.sh'}\n"
+        "ExecStart=/bin/bash /usr/local/lib/mascope/disk-check.sh\n"
         in rendered["mascope-disk-check.service"]
     )
     assert (
-        f"ExecStart=/bin/bash {bundled / 'mascope-update.sh'} "
+        "ExecStart=/bin/bash /usr/local/lib/mascope/mascope-update.sh "
         f"/home/deploy/.local/bin/mascope {mascope_home}\n"
     ) in rendered["mascope-update.service"]
+    sources = units.sources_for(mascope_home)
+    assert units.copied_scripts(sources) == {
+        "disk-check.sh": Path("/usr/local/lib/mascope/disk-check.sh"),
+        "mascope-update.sh": Path("/usr/local/lib/mascope/mascope-update.sh"),
+    }
 
 
 @needs_checkout
-def test_a_checkout_runs_its_own_scripts():
-    """Where `tooling/ubuntu.sh` always pointed the disk check: the checkout."""
+def test_a_checkout_runs_its_disk_check_and_a_copy_of_the_update_script():
+    """
+    The disk check where `tooling/ubuntu.sh` always pointed it, the checkout;
+    the update script from a copy, as a checkout of an older release lacks it.
+    """
     rendered = _render(REPO_ROOT)
     assert (
         f"ExecStart=/bin/bash {REPO_ROOT / 'tooling' / 'disk-check.sh'}\n"
         in rendered["mascope-disk-check.service"]
     )
-    assert f"ExecStart=/bin/bash {UPDATE_SCRIPT} " in rendered["mascope-update.service"]
+    assert (
+        "ExecStart=/bin/bash /usr/local/lib/mascope/mascope-update.sh "
+        in rendered["mascope-update.service"]
+    )
+    assert units.copied_scripts(units.sources_for(REPO_ROOT)) == {
+        "mascope-update.sh": Path("/usr/local/lib/mascope/mascope-update.sh"),
+    }
 
 
 @needs_checkout
@@ -160,6 +177,9 @@ def test_the_installer_removes_every_unit():
     assert loop, "uninstall_mascope's unit loop not found"
     listed = tuple(loop.group(1).replace("\\\n", " ").split())
     assert listed == units.REMOVE_ORDER
+    assert f"rm -rf {units.SCRIPT_DIR}\n" in installer, (
+        "uninstall leaves the scripts `units install` copied"
+    )
 
 
 @needs_checkout
@@ -210,6 +230,7 @@ def host(monkeypatch, tmp_path, mascope_home):
     monkeypatch.setattr(
         units, "running_executable", lambda: "/home/deploy/.local/bin/mascope"
     )
+    monkeypatch.setattr(units, "update_timer_enabled", lambda: False)
     steps: list[units.Step] = []
 
     def run(step):
@@ -263,7 +284,7 @@ def test_install_seeds_the_settings_files_once(host):
     config.mkdir()
     (config / "update.env").write_text("MASCOPE_UPDATE_WINDOW=1-2\n")
     runner.invoke(units.units_app, ["install"])
-    seeded = [s.argv for s in host["steps"] if s.argv[:2] == ["sudo", "install"]]
+    seeded = [s.argv for s in host["steps"] if str(config) in " ".join(s.argv)]
     assert seeded[0] == ["sudo", "install", "-d", "-m", "755", str(config)]
     bundled = units.bundled_dir()
     assert seeded[1:] == [
@@ -282,6 +303,47 @@ def test_install_seeds_the_settings_files_once(host):
         for name, template in units.ENV_FILES.items()
         if name != "update.env"
     ]
+
+
+def test_install_copies_the_scripts_before_writing_the_units(host):
+    runner.invoke(units.units_app, ["install"])
+    argvs = _argvs(host["steps"])
+    bundled = units.bundled_dir()
+    copies = [
+        "sudo install -d -m 755 /usr/local/lib/mascope",
+        f"sudo install -m 755 {bundled / 'disk-check.sh'} "
+        "/usr/local/lib/mascope/disk-check.sh",
+        f"sudo install -m 755 {bundled / 'mascope-update.sh'} "
+        "/usr/local/lib/mascope/mascope-update.sh",
+    ]
+    first_unit = argvs.index("sudo tee /etc/systemd/system/mascope.service")
+    assert argvs[first_unit - 3 : first_unit] == copies
+
+
+def test_install_dry_run_prints_the_copies(host):
+    result = runner.invoke(units.units_app, ["install", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert (
+        "# copy mascope-update.sh to /usr/local/lib/mascope/mascope-update.sh"
+        in result.output
+    )
+
+
+def test_install_says_which_settings_files_it_kept(host, logs):
+    config = host["etc"] / "mascope"
+    config.mkdir()
+    kept = config / "update.env"
+    kept.write_text("MASCOPE_UPDATE_WINDOW=1-2\n")
+    result = runner.invoke(units.units_app, ["install", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert f"# kept existing {kept}\n" in result.output
+    assert result.output.count("kept existing") == 1
+    assert host["steps"] == []
+
+    result = runner.invoke(units.units_app, ["install"])
+    assert result.exit_code == 0, result.output
+    assert f"kept existing {kept}" in logs()
+    assert all(s.argv for s in host["steps"]), "a message step was run"
 
 
 def test_install_dry_run_prints_and_does_nothing(host, mascope_home):
@@ -351,6 +413,91 @@ def test_install_tells_how_to_get_alerted(host, logs):
     assert f"Set HEALTHCHECK_URL in {host['etc']}/mascope/disk-check.env" in logs()
 
 
+def test_install_tells_nothing_about_alerts_once_they_are_set(host, logs):
+    config = host["etc"] / "mascope"
+    config.mkdir()
+    (config / "disk-check.env").write_text(
+        "# HEALTHCHECK_URL=https://hc-ping.com/<uuid>\n"
+        "HEALTHCHECK_URL=https://hc-ping.com/abc\n"
+    )
+    result = runner.invoke(units.units_app, ["install"])
+    assert result.exit_code == 0, result.output
+    assert "Set HEALTHCHECK_URL" not in logs()
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        (None, False),
+        ("# HEALTHCHECK_URL=https://hc-ping.com/<uuid>\n", False),
+        ("HEALTHCHECK_URL=\n", False),
+        ('HEALTHCHECK_URL="https://hc-ping.com/abc"\n', True),
+    ],
+)
+def test_healthcheck_url_set(monkeypatch, tmp_path, text, expected):
+    monkeypatch.setattr(units, "CONFIG_DIR", tmp_path)
+    if text is not None:
+        (tmp_path / "disk-check.env").write_text(text)
+    assert units.healthcheck_url_set() is expected
+
+
+def test_healthcheck_url_set_on_an_unreadable_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(units, "CONFIG_DIR", tmp_path)
+
+    def unreadable(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(units, "env_file_value", unreadable)
+    assert units.healthcheck_url_set() is False
+
+
+def test_install_says_updates_are_off_when_the_timer_is(host, logs):
+    result = runner.invoke(units.units_app, ["install"])
+    assert result.exit_code == 0, result.output
+    assert "Auto-updates are INSTALLED but DISABLED" in logs()
+    assert "stay ENABLED" not in logs()
+
+
+def test_install_says_updates_stay_on_when_the_timer_is(host, logs, monkeypatch):
+    monkeypatch.setattr(units, "update_timer_enabled", lambda: True)
+    result = runner.invoke(units.units_app, ["install"])
+    assert result.exit_code == 0, result.output
+    assert "Auto-updates stay ENABLED" in logs()
+    assert "DISABLED" not in logs()
+
+
+@pytest.mark.parametrize(
+    "stdout, code, expected",
+    [
+        ("enabled\n", 0, True),
+        ("enabled-runtime\n", 0, True),
+        # is-enabled exits 0 for these too, yet nothing starts the timer.
+        ("static\n", 0, False),
+        ("indirect\n", 0, False),
+        ("disabled\n", 1, False),
+        ("", 1, False),
+    ],
+)
+def test_update_timer_enabled(monkeypatch, stdout, code, expected):
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, code, stdout, "")
+
+    monkeypatch.setattr(units.subprocess, "run", run)
+    assert units.update_timer_enabled() is expected
+    assert seen == [["systemctl", "is-enabled", "mascope-update.timer"]]
+
+
+def test_update_timer_enabled_without_systemctl(monkeypatch):
+    def run(argv, **kwargs):
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(units.subprocess, "run", run)
+    assert units.update_timer_enabled() is False
+
+
 def test_install_is_refused_off_linux(host, monkeypatch):
     monkeypatch.setattr(units.platform, "system", lambda: "Windows")
     result = runner.invoke(units.units_app, ["install", "--dry-run"])
@@ -414,7 +561,10 @@ def test_remove_stops_disables_and_deletes_every_unit(host):
     for unit in units.UNITS:
         assert f"sudo systemctl disable {unit}" in argvs
         assert f"sudo rm -f /etc/systemd/system/{unit}" in argvs
-    assert argvs[-1] == "sudo systemctl daemon-reload"
+    assert argvs[-2:] == [
+        "sudo systemctl daemon-reload",
+        "sudo rm -rf /usr/local/lib/mascope",
+    ]
     assert not any("/etc/mascope" in a or "environment" in a for a in argvs)
 
 

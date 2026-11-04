@@ -13,7 +13,7 @@ copy them there. For the full operations story see
 |---|---|---|---|
 | `mascope.service` | `mascope.service` | yes | Bring the stack up on boot (`prod up --detach`) / down on stop. |
 | `mascope-update.service` | `mascope-update.service` | no (oneshot, run by the timer) | One unattended update pass (`mascope-update.sh`). |
-| `mascope-update.sh` | run in place | - | Runs `prod update --auto`; on a wheel install's exit 40, installs the CLI it names and runs `--auto` again. |
+| `mascope-update.sh` | `/usr/local/lib/mascope/mascope-update.sh` | - | Runs `prod update --auto`; on a wheel install's exit 40, installs the CLI it names and runs `--auto` again. |
 | `mascope-update.timer` | `mascope-update.timer` | **no - opt-in** | Fire the update service nightly. |
 | `update.env.example` | `/etc/mascope/update.env` (chmod 600) | seeded once | Update window / grace / tracked repository. No credentials: release discovery uses the public GitHub API. |
 | `mascope-disk-check.service` | `mascope-disk-check.service` | no (oneshot, run by the timer) | One disk-space check (`tooling/disk-check.sh`). |
@@ -26,8 +26,12 @@ copy them there. For the full operations story see
 The `.service` files template `@@USER@@`, `@@MASCOPE_BIN@@`,
 `@@MASCOPE_PATH@@`, `@@DISK_CHECK@@` and `@@UPDATE_SCRIPT@@`; `MASCOPE_PATH`
 and `LD_PRELOAD` come from `/etc/environment`, matching how `ubuntu.sh`
-provisions the box. The two scripts run from where the templates were read:
-the checkout's `tooling/`, or the CLI's bundled copies.
+provisions the box. The install copies `mascope-update.sh` to
+`/usr/local/lib/mascope`, and on a wheel install `disk-check.sh` too: a
+rollback to an older CLI, another Python minor or a checkout of an older
+release would otherwise take the file from under the unit. A checkout's disk
+check runs its `tooling/disk-check.sh` in place, which every release has.
+`remove` deletes the copies.
 
 `@@MASCOPE_PATH@@` fills the `WorkingDirectory`, which is not cosmetic: systemd
 otherwise starts a unit in `/`, and a deploy launched outside the checkout

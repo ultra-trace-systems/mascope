@@ -119,7 +119,8 @@ sudo systemctl enable --now mascope-update.timer   # opt in to unattended update
 
 The units run the `mascope` executable that installed them, on this runtime
 home, as this account. The update needs that executable to be a
-`uv tool install mascope-cli`. Their settings files are seeded once into
+`uv tool install mascope-cli`. The scripts they run are copied to
+`/usr/local/lib/mascope`, so going back to an older CLI leaves them working. Their settings files are seeded once into
 `/etc/mascope`, and `MASCOPE_PATH` is added to `/etc/environment` when it is
 missing. Re-run the command after a CLI upgrade that changes the units;
 `mascope prod units remove` takes them out again. The full story is in
