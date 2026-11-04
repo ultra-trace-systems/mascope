@@ -709,7 +709,9 @@ def export_goldens(
                            refresh. When it records MS2 goldens, this run must
                            export spectra for every file they covered that is
                            still in ``raw_entries`` (:func:`check_goldens_kept`).
-                           Its ion goldens are kept the same way.
+                           Its ion goldens are kept the same way. A block
+                           this run writes nothing for loses its parquet in
+                           ``expected/`` too, so no golden outlives its key.
     :return: The manifest ``expected`` block, or ``None`` if no peaks have been
              matched yet (logged as a warning so ``--update`` still records the
              snapshot rather than aborting).
@@ -821,9 +823,12 @@ def export_goldens(
 
     # MS2 spectra, when the bundle has an acquisition with fragmentation scans.
     # A bundle without one records no `ms2` block, and the comparison side
-    # skips it, so an MS1-only bundle is unchanged by this export.
+    # skips it, so an MS1-only bundle is unchanged by this export. A block left
+    # out takes its file with it: the publish step zips the whole bundle
+    # directory, and a parquet no manifest key names or checksum covers would
+    # ship the dropped files' goldens with it.
+    ms2_path = dest_dir / "ms2.parquet"
     if ms2_rows:
-        ms2_path = dest_dir / "ms2.parquet"
         pd.DataFrame(ms2_rows).to_parquet(ms2_path, index=False)
         groups = {
             (r["filename"], r["polarity"], r["parent_peak_mz"], r["activation"])
@@ -835,25 +840,29 @@ def export_goldens(
         )
         expected["ms2"] = "expected/ms2.parquet"
         expected["ms2_sha256"] = bundles.sha256_file(ms2_path)
-    elif ms2_dropped:
-        runtime.logger.warning(
-            "The bundle had MS2 goldens and is written without them: none of "
-            "its files with MS2 spectra is in the raw set any more."
-        )
+    else:
+        ms2_path.unlink(missing_ok=True)
+        if ms2_dropped:
+            runtime.logger.warning(
+                "The bundle had MS2 goldens and is written without them: none "
+                "of its files with MS2 spectra is in the raw set any more."
+            )
 
     # Per-ION scores: this is the level the consolidated v2 match score operates at
     # (the per-isotopologue peaks.parquet above is unchanged by it).
+    ions_path = dest_dir / "ions.parquet"
     if ion_rows:
-        ions_path = dest_dir / "ions.parquet"
         pd.DataFrame(ion_rows).to_parquet(ions_path, index=False)
         runtime.logger.success(f"Exported {len(ion_rows)} golden ion(s) to {ions_path}")
         expected["ions"] = "expected/ions.parquet"
         expected["ions_sha256"] = bundles.sha256_file(ions_path)
-    elif ion_dropped:
-        runtime.logger.warning(
-            "The bundle had ion goldens and is written without them: none of "
-            "the files they covered is in the raw set any more."
-        )
+    else:
+        ions_path.unlink(missing_ok=True)
+        if ion_dropped:
+            runtime.logger.warning(
+                "The bundle had ion goldens and is written without them: none "
+                "of the files they covered is in the raw set any more."
+            )
 
     return expected
 
