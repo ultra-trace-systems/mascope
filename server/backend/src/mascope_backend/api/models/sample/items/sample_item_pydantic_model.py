@@ -157,6 +157,27 @@ class StreamItemCreate(SampleItemCreate):
     )
 
 
+class CopiedItemCreate(StreamItemCreate):
+    """A copy of a sample item, made by the copy path.
+
+    Deliberately not the model any route takes, for the reason
+    :class:`StreamItemCreate` gives and one of its own: the origin key says
+    which part of the acquisition record the copy came from, and a refresh
+    trusts it to tell what a batch holds. A request that could set it could
+    make a batch hold a sample it does not, or not hold one it does
+    (``docs/dev/sample_filters_and_metadata.md``, section 4.3).
+    """
+
+    origin_key: str | None = Field(
+        None,
+        description=(
+            "Which part of the acquisition record the copy was made from: "
+            "a digest of the part's file, polarity and window "
+            "(api.controllers.sample.lib.origin_key), never edited afterwards."
+        ),
+    )
+
+
 class AcquisitionItemCreate(StreamItemCreate):
     """An ACQUISITION item the ingest pipeline creates, with its provenance.
 

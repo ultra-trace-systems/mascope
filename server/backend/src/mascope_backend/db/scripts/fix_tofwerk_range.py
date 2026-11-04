@@ -27,6 +27,22 @@ from mascope_backend.runtime import runtime
 # Maximum number of affected rows to log individually
 _PREVIEW_LIMIT = 20
 
+# A row the bug left: its range a list of more than two values. Nested, since
+# Postgres does not promise to evaluate the parts of an AND in order, and the
+# length of a range that is not a list is an error that would stop the fix.
+_AFFECTED = (
+    "CASE WHEN json_typeof(range) = 'array' "
+    "THEN json_array_length(range) > 2 ELSE false END"
+)
+
+# The last element of an affected row's range, and whether both its ends are
+# numbers: the m/z bounds are read off the two ends only when both are, as
+# range_bounds and the migration that made the bounds read a range.
+_LAST = "range->(json_array_length(range) - 1)"
+_ENDS_ARE_NUMBERS = (
+    f"json_typeof(range->0) = 'number' AND json_typeof({_LAST}) = 'number'"
+)
+
 
 async def _fix_database() -> dict:
     """Find and fix rows in ``sample_file`` where ``range`` has > 2 elements.
@@ -37,9 +53,9 @@ async def _fix_database() -> dict:
     async with async_session() as session:
         # --- Count affected rows ---
         count_result = await session.execute(
-            text("""
+            text(f"""
                 SELECT COUNT(*) FROM sample_file
-                WHERE json_array_length(range) > 2
+                WHERE {_AFFECTED}
             """)
         )
         affected = count_result.scalar()
@@ -52,11 +68,11 @@ async def _fix_database() -> dict:
 
         # --- Preview a subset ---
         preview_result = await session.execute(
-            text("""
+            text(f"""
                 SELECT filename,
                        json_array_length(range) AS range_len
                 FROM sample_file
-                WHERE json_array_length(range) > 2
+                WHERE {_AFFECTED}
                 ORDER BY datetime
                 LIMIT :lim
             """),
@@ -69,21 +85,28 @@ async def _fix_database() -> dict:
 
         # --- Collect all affected filenames for filestore fix ---
         filenames_result = await session.execute(
-            text("""
+            text(f"""
                 SELECT filename FROM sample_file
-                WHERE json_array_length(range) > 2
+                WHERE {_AFFECTED}
             """)
         )
         filenames = [row.filename for row in filenames_result]
 
         # --- Fix: keep only first and last element ---
+        # The bounds beside the range are its two ends, written in the same
+        # statement: SQL passes by the model, which keeps them in step
+        # wherever else the range is set (SampleFile.mz_min, range_bounds).
         update_result = await session.execute(
-            text("""
+            text(f"""
                 UPDATE sample_file
                 SET range = (
                     SELECT json_build_array(range->0, range->(json_array_length(range) - 1))
-                )
-                WHERE json_array_length(range) > 2
+                ),
+                    mz_min = CASE WHEN {_ENDS_ARE_NUMBERS}
+                        THEN (range->>0)::float8 END,
+                    mz_max = CASE WHEN {_ENDS_ARE_NUMBERS}
+                        THEN (range->>(json_array_length(range) - 1))::float8 END
+                WHERE {_AFFECTED}
             """)
         )
 

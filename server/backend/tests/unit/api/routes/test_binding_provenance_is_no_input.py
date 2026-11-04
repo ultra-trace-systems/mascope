@@ -9,6 +9,11 @@ and the sample view, which makes them fields a client holds and may well send
 back with the rest of a row - so what keeps them out is no longer that nothing
 knows their names.
 
+Nor which part of the acquisition record a copy came from,
+``sample_item.origin_key``, for the same reason: the copy path writes it once
+(``CopiedItemCreate``) and a refresh trusts it to tell what a batch holds, and
+it is read back through the sample view.
+
 Structural, like ``test_api_route_coverage.py``: it walks whatever routes the
 app registers and every model a request to each is read into, so a route or a
 request model added later is covered without anyone coming back here. What it
@@ -26,6 +31,9 @@ from mascope_backend.app.fast import fast
 
 #: The two fields, by the names a request would have to use.
 PROVENANCE = {"bound_by", "method_binding_id"}
+
+#: A copy's origin key, by the same.
+ORIGIN = {"origin_key"}
 
 
 def _collect(annotation, names: set[str], seen: set[type]) -> None:
@@ -116,3 +124,13 @@ def test_no_route_takes_what_bound_an_item():
     }
 
     assert taking == {}
+
+
+def test_no_route_takes_the_part_a_copy_came_from():
+    taking = [
+        f"{method} {path}"
+        for (method, path), fields in _routes().items()
+        if fields & ORIGIN
+    ]
+
+    assert taking == []
