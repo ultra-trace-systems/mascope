@@ -1532,7 +1532,7 @@ lint = [{ name = "ruff", specifier = ">=0.16.3,<0.18" }]
 
 [[package]]
 name = "mascope-ai"
-version = "2026.10.30"
+version = "2026.11.4"
 source = { editable = "libraries/ai" }
 dependencies = [
     { name = "loguru" },
@@ -1669,7 +1669,7 @@ requires-dist = [
 
 [[package]]
 name = "mascope-cli"
-version = "2026.10.28"
+version = "2026.11.4"
 source = { editable = "tooling/cli" }
 dependencies = [
     { name = "mascope-runtime", extra = ["logs"] },
@@ -1780,7 +1780,7 @@ dev = [
 
 [[package]]
 name = "mascope-runtime"
-version = "2026.10.27"
+version = "2026.11.4"
 source = { editable = "libraries/runtime" }
 dependencies = [
     { name = "loguru" },
@@ -1810,7 +1810,7 @@ provides-extras = ["logs", "sentry"]
 
 [[package]]
 name = "mascope-sdk"
-version = "2026.10.29"
+version = "2026.11.4"
 source = { editable = "libraries/sdk" }
 dependencies = [
     { name = "loguru" },
@@ -1931,7 +1931,7 @@ requires-dist = [
 
 [[package]]
 name = "mascope-tools"
-version = "2026.10.27"
+version = "2026.11.4"
 source = { editable = "libraries/tools" }
 dependencies = [
     { name = "isospecpy" },

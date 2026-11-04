@@ -20,7 +20,7 @@ from typing import Optional
 
 # The app release (``vX.Y.Z``, or a pre-release of the next one) this CLI
 # deploys on a wheel install.
-RELEASE = "v1.15.0"
+RELEASE = "v1.16.0"
 
 # The CLI's distribution name, as `uv tool install` and PyPI know it.
 DISTRIBUTION = "mascope-cli"

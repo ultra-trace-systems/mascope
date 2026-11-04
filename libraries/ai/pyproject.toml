@@ -1,6 +1,6 @@
 [project]
 name = "mascope_ai"
-version = "2026.10.30"
+version = "2026.11.4"
 description = "Mascope's toolkit for AI agents: handles to Mascope's data, never tables in a model's context."
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
@@ -21,7 +21,7 @@ dependencies = [
     # same release, not merely a compatible one. The floor is that release's
     # SDK version; raise it with every SDK bump the toolkit is published
     # beside.
-    "mascope_sdk>=2026.10.29",
+    "mascope_sdk>=2026.11.4",
     "loguru>=0.7.3",
     "pandas>=2.0.0",
     # Frames are kept as parquet in the session directory.
