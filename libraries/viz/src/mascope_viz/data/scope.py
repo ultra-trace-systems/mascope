@@ -328,6 +328,10 @@ class ResolvedScope:
         of :attr:`batches`: ``target_collection_id``,
         ``target_collection_name``, ``target_collection_type``,
         ``workspace_id`` (None for a global one) and ``sample_batch_ids``.
+    :ivar samples: The samples :attr:`batches` counts, one row each, as
+        ``client.samples.list`` lists them with ``datetime_utc`` tz-aware:
+        those of the batches that the scope's instrument, polarity, mode and
+        range leave in it.
     :ivar collection: The ID of the collection the scope names, if it does.
     :ivar timezone: The instrument's acquisition time zone, as its files in
         range record it; None when they do not. A scope that spans
@@ -349,6 +353,7 @@ class ResolvedScope:
     batches: pd.DataFrame
     files: pd.DataFrame
     collections: pd.DataFrame
+    samples: pd.DataFrame = field(default_factory=pd.DataFrame)
     collection: str | None = None
     timezone: str | None = None
     display_tz: str = "UTC"
@@ -887,6 +892,9 @@ def resolve(client: "MascopeClient", scope: Scope) -> ResolvedScope:
         batches=batches,
         files=files,
         collections=collections,
+        samples=samples.sort_values(
+            ["datetime_utc", "sample_item_id"], kind="stable"
+        ).reset_index(drop=True),
         collection=collection,
         timezone=timezone,
         display_tz=display_tz,
