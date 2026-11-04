@@ -292,6 +292,23 @@ width instead of each group's own. A file with no MS1 scans has no
 centroids to list: its windows are empty, and `reason` is
 `"no_ms1_scans"`.
 
+A group's fragments can be read as formulas over the ions you name: the
+precursor's ion, and any ion isolated with it. Each must lie in the group's
+isolation window, and the precursor's within 5 mDa of the group's m/z (10 ppm
+above m/z 500); the answer says where an ion that does not belongs. Every
+energy of the precursor is read together, and each peak comes back with its
+formula, the neutral loss and how it splits into molecules, or why it has
+none:
+
+```python
+readings = ms2.get_readings("195.0877@hcd20.00", ["C8H11N4O2+", "C10H11O4+"])
+best = readings[readings["rank"] == 1]
+print(best[["group", "mz", "role", "formula", "loss", "pieces"]])
+```
+
+The [MS2 readings reference](https://github.com/ultra-trace-systems/mascope/blob/master/libraries/tools/docs/ms2.md)
+has the rules and every threshold.
+
 ### Files stored as centroids
 
 An Orbitrap method can store each scan's centroids alone, without the

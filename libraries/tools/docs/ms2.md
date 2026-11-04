@@ -558,8 +558,8 @@ return `{spectrum key: (PeakFlag or None, ...)}` (section 5);
 
 `GET /api/samples/{id}/ms2/readings?group=<key>&ions=<formula>,...` serves
 the core's readings of one MS2 group, over ions its caller names
-(`mascope_backend.api.new.ms2.readings`; the design note
-`docs/dev/ms2_analysis.md`, section 2.5). It reads with this
+(`mascope_backend.api.new.ms2.readings`, the SDK's `Ms2Resource.get_readings`;
+the design note `docs/dev/ms2_analysis.md`, section 2.5). It reads with this
 package and adds only what a server needs around it: which spectra make the
 window, which ions are read, the offset, the rows as JSON and a cache.
 
