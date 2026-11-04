@@ -637,7 +637,8 @@ leaves `<ts>-weakened.log` and `<ts>-weakened.summary` in `RECORDS`, pruned at
 400 days. The summary reads `detected N  missed N  unproven N version=TAG`.
 
 The guard covers 8 controls. The log's coverage line counts the others by
-reason, and `security/pentest/mutations/weakened.py` gives each one's:
+reason, and each control's marker gives its own (`weakening=` in
+`security/pentest/test_*.py`, which `mutations/weakened.py` reads):
 application code no configuration reaches, a missing test-only switch, a
 topology the demo does not have, or an edit not yet written.
 `tooling/cli/tests/test_run_weakened_guard.py` runs this script with `docker`,
