@@ -38,6 +38,8 @@ READINGS_COLUMNS: dict[str, str] = {
     "n_candidates": "int64",
     "n_parents": "int64",
     "ladder_support": "str",
+    "role": "str",
+    "flag_note": "str",
 }
 
 
