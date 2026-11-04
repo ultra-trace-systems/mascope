@@ -3,7 +3,7 @@
 # Visual digests: charts, dashboards and reports over the SDK
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-11-04
 - **Tracked in:** [Visual digests](https://linear.app/ultra-trace/project/visual-digests-51cecff8f790) (Linear, MAS-217 to MAS-244)
 - **What:** Charts, dashboards and reports over the SDK for campaign-scale questions.
 
@@ -35,6 +35,16 @@ It is an engineering design and phased plan, not a user guide.
 > verified against `develop` at 5bd66b2d1 on 2026-10-20; file links are the
 > evidence. The plan is a Linear project (appendix B); this note stays the
 > record.
+
+> **Amended 2026-11-04: one Figure spec, three renderers.** The "Peaky is
+> the shell" framing ([`ai_analyst_shell.md`](ai_analyst_shell.md)
+> section 2.5, MAS-665) makes peaky's figure modules recipe step
+> implementations, which belong here, and the four figure stacks (the web
+> app, the SDK notebooks, this package, peaky) converge on one contract: a
+> versioned JSON Figure spec that the browser renders too. Section 2.5 is
+> rewritten, section 2.8 added, decision 5 restated, decision 8 given a
+> draft, and the catalogue names the peaky module each kind absorbs.
+> MAS-226 and MAS-218 carry the Linear side.
 
 > **Scope decision (v1): read-only, over the public API.** The package reads
 > through `mascope_sdk` with the user's own token and writes nothing to the
@@ -260,13 +270,18 @@ second figure stack. With it, `mascope_ai.chart` is a thin front over
         |                                  |
    notebooks (consumers)          mascope_ai: chart(), table(), digest() delegate here
                                            |
-                                  Claude Code (now) / in-app panel (AI layer phase 4)
+                                  a coding agent / the Peaky shell / the in-app panel
+
+   the web app                    renders the same Figure spec with plotly.js (section 2.8)
 ```
 
-Dependency direction: `mascope_viz` depends on `mascope_sdk`, pandas, numpy,
-pyarrow, matplotlib and plotly, with datashader behind a `[big]` extra;
-nothing on the server depends on `mascope_viz`; `mascope_ai` depends on it;
-peaky does not (section 2.5).
+Dependency direction: `mascope_viz.data` and `mascope_viz.charts` depend on
+`mascope_sdk`, pandas, numpy and pyarrow only; matplotlib and plotly are
+imported by `mascope_viz.render` alone, with datashader behind a `[big]`
+extra. `mascope_ai` depends on the package; peaky's figure modules move
+into `charts/` as chart kinds under the shell framing (section 2.5); the
+server may depend on `data/` and `charts/`, never on `render/`
+(section 2.8, decision 8).
 
 Location: `libraries/viz/` in this repository, package `mascope_viz`,
 published to PyPI beside `mascope_sdk`, for the reasons MAS-212 gives for
@@ -373,6 +388,19 @@ summary (the numbers a caption may cite: the series' medians, maxima and their
 times, the coverage fraction) and the data frame behind it. Tests assert on
 specs and summaries, not pixels; one smoke render per backend.
 
+**The spec is a document, not a Python object.** A Figure serialises to a
+versioned JSON document (`figure_spec_version`, the primitives, the
+columns a panel draws, the theme tokens by name), and every renderer
+reads that document, not the Python class. This is the contract that
+keeps the figure stacks at one: the two renderers here, the web app's
+plotly.js (section 2.8) and whatever the Peaky shell draws in later all
+consume the same spec. Two rules follow. A primitive carries no
+renderer-specific escape hatch: when a chart needs what the eight cannot
+say, the vocabulary grows and every renderer implements the addition. And
+a spec with its data is small enough to send: a panel holds the frame it
+draws, binned by the view, never the store, and the raster mode below
+sends an image with its axes.
+
 **Renderers**: matplotlib for PNG, SVG and the PDF (via `PdfPages`,
 section 2.6); plotly for the HTML dashboard. Two renderers over eight
 primitives is the cost of having both a print-quality, deterministic report
@@ -400,7 +428,13 @@ measures where it pays, on a year of a real acquisition dataset, before any
 chart requires it. `mascope_chem.image` (section 1.3) is the precedent to
 read first.
 
-### 2.5 Relations: `mascope_ai`, peaky, the app
+### 2.5 Relations: `mascope_ai`, Peaky, the app, the notebooks
+
+Four places draw Mascope data today: the web app's six Plotly charts over
+one wrapper (section 1.1), the thirty-odd Plotly cells of the SDK notebooks
+(1.3), peaky's matplotlib figures and PdfPages report (1.4), and this
+package. The relations below bring them to one figure library and one
+spec.
 
 - **`mascope_ai`** (AI layer phase 1): `chart(frame, kind, x, y)` and
   `table(frame)` from MAS-129 become thin wrappers over `mascope_viz.charts`
@@ -408,14 +442,27 @@ read first.
   `digest(scope, recipe)` tool joins them. MAS-129's brief is amended to
   depend on this package's phase 2 rather than drawing on its own.
   Decision 5.
-- **peaky** stays a standalone package and skill. It keeps its figures; it
-  may adopt `mascope_viz` renderers when it next touches them, at its own
-  pace. No dependency either way in v1.
-- **The web app** gets nothing from this plan directly. Whether the app
-  shows long time series natively, embeds a stored dashboard (the AI layer's
-  artifact panel is the natural host), or leaves it to the package, is a
-  product question this note records and does not decide (decision 8). The
-  pilot (phase 3) is where the demand is measured.
+- **Peaky.** Written in October 2026, this note let peaky keep its figures
+  with no dependency either way. The "Peaky is the shell" framing of
+  [`ai_analyst_shell.md`](ai_analyst_shell.md) section 2.5 (proposed
+  2026-11-04, pending the peaky owner's agreement, MAS-665) supersedes
+  that: report rendering and the science figures are recipe *step
+  implementations*, and step implementations are Mascope's. Peaky's figure
+  modules become chart kinds here, each named in the catalogue (section 3);
+  peaky's PDF report becomes a recipe composition over the PdfPages spine
+  this package already takes from it (section 2.6); the composition, the
+  report style and the narrative template stay Peaky's, as data. Peaky
+  then depends on `mascope_viz` the way it pins the SDK, and each module
+  moves through the boundary note's protocol with a register row, "same
+  output expected" tested on the corpus. Until MAS-665 is decided nothing
+  moves; the catalogue's mapping says what would.
+- **The web app** keeps its six charts as they are: they are navigation
+  surfaces, with click-to-focus and lasso selection wired into the stores,
+  and a declarative spec should not carry that. What the app gains is a
+  renderer of the Figure spec (section 2.8), so a chart kind drawn here
+  shows in the app without a second implementation. Whether the app shows
+  long time series, saved dashboards or neither remains decision 8;
+  section 2.8 drafts it, and the pilot (phase 3) measures the demand.
 - **The notebooks**: once phase 2 lands, notebooks 02, 03, 04 and 08 are
   rewritten on `mascope_viz` and shrink to the data story; the package's
   docs point at them.
@@ -488,6 +535,51 @@ Prompt injection is live here as it is in the AI layer: sample, batch,
 dataset and collection names flow into titles and captions. The package
 renders them inertly and the skill says they are data.
 
+### 2.8 One recipe, three outputs: dashboards, reports and the app
+
+A recipe (section 2.6) is a scope, an ordered list of sections, each a
+chart kind with its parameters and a caption slot, and a narrative
+template. That is also what a configurable dashboard is, and what a report
+is. One recipe schema therefore has three outputs:
+
+| Output | Rendered by | Where |
+|---|---|---|
+| `report.pdf` | the matplotlib renderer, byte-deterministic | the bundle; the artifact of record |
+| `dashboard.html` | the plotly renderer, one self-contained file | the bundle; mail, a browser, the Peaky shell |
+| a live view | the web app's plotly.js renderer of the same Figure spec | the app, the in-app AI panel |
+
+The live view is the output this plan did not have. It needs two things:
+
+1. **A figure endpoint on the server.** A route that takes a chart id, a
+   scope and parameters, runs the chart kind server-side over the data the
+   server already serves (the compact series routes feed the same tables),
+   and returns the Figure spec with its binned data. The server then
+   depends on `mascope_viz.data` and `mascope_viz.charts`, pandas-only
+   modules, never on `mascope_viz.render`; the package split of
+   section 2.1 exists for this. A day's scope renders live from the routes
+   the app's batch charts use today. A campaign's scope needs server-side
+   rollups, which the client-side campaign store does not give the
+   server: that is the real cost inside decision 8's question (a), and
+   the pilot measures the demand before anyone builds it.
+2. **A Figure renderer component in the app.** One Vue component that
+   draws a Figure spec with plotly.js, beside the hand-written navigation
+   charts, sharing the theme (section 2.4) so the two read as one system.
+   The in-app AI panel (`ai_analyst_shell.md`, milestone 5) renders the
+   `chart` and `digest` artifacts with the same component.
+
+With both, a user's dashboard is a saved recipe rendered live, and a
+customisable report recipe needs no file editing: the conversation is the
+authoring surface. The agent assembles the sections, the user says "save
+this as my weekly view", and the recipe is stored with its scope and
+parameters. The shipped recipes (section 2.6) stay data files in the
+Peaky bundle; a user's own need a home on the server, per user or per
+workspace, a product question decision 8 now carries.
+
+What a saved recipe is not: a saved *figure*. It stores chart ids,
+parameters and a scope, never data or rendered output, so it re-renders
+on today's data, and after an engine run it re-renders with the run id
+on its face, as every chart here does.
+
 ---
 
 ## 3. The catalogue
@@ -540,6 +632,22 @@ server does not yet serve.
 
 Twenty-one kinds; ten in tier 1. The science charts carry their references
 (appendix C) in the user docs, as the how-it-works pages do.
+
+**Peaky's figure modules, mapped.** Under the shell framing (section 2.5)
+each of peaky's figures is a chart kind here, and the mapping says what
+would move: `analyte_viz.py`'s Van Krevelen is `van_krevelen` and its
+per-ion time traces are `species_series`; `gka_figure.py`, the Kendrick
+figure and the rotating GKA widget, is `mass_defect` in its Kendrick form,
+the rotation an interactive parameter of the plotly rendering;
+`qc_figure.py`, mass defect and mass error for one run, is `mass_defect`
+and `mass_accuracy` at the scope of one batch; `batch/clustering.py`'s
+co-varying-family panels are `covariation`, which then moves peaky's
+method here as the implementation rather than shelling out (open
+question 5, answered this way if MAS-665 stands); the report's section
+functions become sections of the `campaign` and `composition` recipes
+(section 2.6). The tiered Excel workbook is a tabular export, not a
+figure, and stays with the assignment run it describes. No new kind is
+needed; four existing ones gain a precedent to read first.
 
 ---
 
@@ -596,8 +704,10 @@ agent with review.
 
 ### Phase 2 - Charts: primitives, renderers, tier 1
 
-- The Figure spec and the eight primitives; the matplotlib and plotly
-  renderers; the theme.
+- The Figure spec and the eight primitives, serialised as a versioned JSON
+  document every renderer reads (section 2.4; MAS-226 amended 2026-11-04
+  to say so, and to keep matplotlib and plotly out of `data/` and
+  `charts/`); the matplotlib and plotly renderers; the theme.
 - The ten tier-1 charts, each with its summary and its data frame.
 - CLI `list`, `describe`, `chart`.
 - Notebooks 02, 03, 04 and 08 rewritten on the package.
@@ -656,6 +766,10 @@ agent with review.
   untargeted `mz:` alignment across batches.
 - Verify: per chart as in phase 2; the scheduled digest runs a week on the
   internal server; the raster measurement is in this note. L.
+- Not in this plan's phases: the figure endpoint and the app's renderer
+  component of section 2.8. They follow decision 8, taken with the
+  pilot's reading in hand, and span the backend and the frontend, so
+  they would be a Linear project of their own.
 
 Phases 0 to 3 are worth having if the agent surface never ships; phases 0 to
 2 are worth having if no one ever builds a digest, because they give the
@@ -723,6 +837,16 @@ notebooks and `mascope_ai` their figure library.
 - **Time zones.** A diurnal cycle in the wrong zone is a wrong result. The
   store is UTC, display defaults to the file's `acquisition_timezone`, and
   every time axis labels its zone.
+- **The server's dependency on the package.** Section 2.8 lets the server
+  import `mascope_viz.data` and `charts`. The split keeps the renderers
+  out of the server image, but a chart kind the server runs is server
+  code: its cost is bounded as a route's is (a cap on points, a timeout),
+  and a skew between the package version the server runs and the one a
+  notebook installs is what the spec version exists to name.
+- **Two kinds of chart in the app.** Six navigation charts hand-written,
+  the rest spec-rendered. The theme module is what stops them from
+  looking like two apps; a visual rule that lives in one and not the
+  other is a bug.
 
 ---
 
@@ -750,17 +874,29 @@ issue for the owner in the Linear project.
    auth in phase 0, route by route, as the AI layer did.* Alternative: build
    series from `/members` and per-sample peaks through the SDK, rejected on
    cost (one call per sample against one per batch).
-5. **`mascope_ai` and peaky.** *Recommend `mascope_ai.chart`, `table` and
-   `digest` delegate to this package (MAS-129 amended), and peaky stays
-   independent.*
+5. **`mascope_ai` and Peaky.** *Recommend `mascope_ai.chart`, `table` and
+   `digest` delegate to this package (MAS-129 amended).* Written as "peaky
+   stays independent" in October 2026; restated 2026-11-04 under the shell
+   framing: peaky's figure modules are step implementations and move here
+   as chart kinds (section 2.5, the mapping in section 3), pending MAS-665.
 6. **Time zone.** *Recommend UTC in the store, the file's acquisition zone
    for display by default, a named zone on request, the zone on every
    axis.*
 7. **Normalisation default.** *Recommend raw, named in every title; recipes
    per chemistry may set TIC or a reagent ion; never silent.*
-8. **The app.** *Not this plan's to decide.* Native long time series in the
-   web app, a stored dashboard embedded in it, or neither: a product call,
-   informed by the pilot. Recorded so it is not decided by default.
+8. **The app.** *Not this plan's to decide*, but drafted 2026-11-04 for
+   MAS-218 as section 2.8 lays it out: (i) the Figure spec is a JSON
+   document the browser renders, and the app gets one renderer component
+   for it beside its six navigation charts; (ii) a figure endpoint on the
+   server runs chart kinds over `mascope_viz.data` and `charts`, the
+   renderers excluded; (iii) a user's dashboard is a saved recipe rendered
+   live, and a report is the same recipe rendered to PDF; (iv) a day's
+   scope renders live now, a campaign's waits for server-side rollups the
+   pilot has to justify; (v) where a user's saved recipes live, per user
+   or per workspace, is part of the decision. Embedding stored bundles is
+   rejected as the only path: a bundle is a snapshot, and a dashboard that
+   cannot follow today's data is a report. Taken with the pilot's reading
+   in hand; recorded so it is not decided by default.
 
 ---
 
@@ -784,7 +920,11 @@ issue for the owner in the Linear project.
    is phase 5's question.
 5. **How much of peaky's clustering becomes a view here** (tier 3
    `covariation`): port the method, or shell out. The AI layer's leaning,
-   patterns not code, applies until the pilot asks for it.
+   patterns not code, applies until the pilot asks for it. Under the
+   shell framing the method moves here as the implementation (section 3).
+6. **Where do a user's saved recipes live?** Per user, per workspace, or
+   both; who may edit a shared one; whether a saved recipe pins a package
+   version or follows the server's. Part of decision 8 (section 2.8).
 
 ---
 

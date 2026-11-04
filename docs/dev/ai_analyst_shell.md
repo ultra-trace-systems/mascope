@@ -231,7 +231,9 @@ Where each thing lives:
 |---|---|---|
 | The toolkit, the MCP server, `Frame`, plan/apply | Mascope, `libraries/ai` (`mascope-ai` on PyPI) | computation and the API client, versioned with the server |
 | Recipe step implementations: normalisation, background, Van Krevelen, clustering, report rendering | Mascope (`mascope_ai`, `mascope_tools`, `mascope_viz`) | computations; every rule a result rests on is Mascope's |
+| Figures: the Figure spec, the chart kinds, the renderers | Mascope (`mascope_viz`) | step implementations; peaky's figure modules move as chart kinds, mapped in [`visual_digest.md`](visual_digest.md) section 3; one spec that the shell, the web app and the notebooks all render |
 | Recipe compositions: which steps, which parameters, the narrative template | Peaky, as data files run by the toolkit's `run_recipe` | the product; a composition carries parameters, not rules; guarded by peaky's golden runs (PKY-33) |
+| Saved dashboards and report recipes a user authors in conversation | the server, per user or per workspace: `visual_digest.md` decision 8 (MAS-218), drafted, not decided | a saved recipe is data a user owns, as a collection is; the shipped catalogue stays Peaky's |
 | The base skill that documents the tool surface (`mascope_ai/SKILL.md`) | Mascope, shipped in `mascope_ai` | it describes the tools and changes with them |
 | Domain skills: reagent chemistry, which recipe for which question, report style | Peaky | the science guidance its owner authors |
 | The Goose bundle: extension registration, provider presets, the admitted model per class, `peaky setup`, the installer | Peaky | the shell |
@@ -503,6 +505,10 @@ on it.
   plan/apply with approval cards. Its prerequisites are the layer's:
   per-session tokens, the sandbox decision (MAS-141), cost attribution
   (MAS-140).
+- The panel renders `chart` and `digest` artifacts with the web app's
+  Figure spec renderer (`visual_digest.md` section 2.8), the component a
+  saved dashboard uses, so a figure looks the same in the panel, the
+  shell and a report.
 - Whether its backend is the same ACP runtime as the desktop, `goose serve`
   behind the backend with one sandboxed session per user, is decided here
   with milestone 3's usage in hand. The security questions are real: an
@@ -598,7 +604,9 @@ desktop's runtime (milestone 5).
 - [`peaky_mascope_boundary.md`](peaky_mascope_boundary.md): peaky's role and
   the move protocol; its D2 catalogue is milestone 2's source.
 - [`visual_digest.md`](visual_digest.md): the `mascope_viz` artifacts
-  `chart` and `table` wait for.
+  `chart` and `table` wait for; its section 2.5 maps peaky's figures onto
+  the catalogue under this note's framing, and its section 2.8 and
+  decision 8 carry dashboards, reports and the app.
 - [`isolated_deployment_plan.md`](isolated_deployment_plan.md): the server
   with no internet route that a local model endpoint sits beside.
 - The autonomous-operation discussion of 2026-10-26 (no note yet): the
