@@ -441,6 +441,33 @@ MS2_SPECTRUM_FIELDS = {
 }
 
 
+# What every record of ``get_window()`` carries beside its centroids.
+MS2_WINDOW_FIELDS = {
+    "group",
+    "polarity",
+    "parent_peak_mz",
+    "activation",
+    "width",
+    "note",
+    "located_precursor_mz",
+    "located_precursor_intensity",
+    "located_precursor_activation",
+    "precursor_mz",
+    "precursor_intensity",
+    "centroids",
+}
+# The columns of a window's ``centroids``, one entry per centroid listed.
+MS2_WINDOW_COLUMNS = {
+    "mz",
+    "offset",
+    "intensity",
+    "share",
+    "resolution",
+    "signal_to_noise",
+    "is_parent",
+}
+
+
 @requires_stack
 class TestMs2Contract:
     """MS2 read paths (`/api/samples/{id}/ms2/*`).
@@ -518,6 +545,40 @@ class TestMs2Contract:
             parent_mz, _, activation = key.partition("@")
             assert float(parent_mz) == spectrum["parent_peak_mz"]
             assert activation == spectrum["activation"]
+
+    def test_window_lists_one_record_per_group(self, mascope, ms2_sample_id):
+        ms2 = mascope.samples.ms2(ms2_sample_id)
+        _skip_unless_attr(ms2, "get_window")
+
+        window = ms2.get_window()
+        groups = ms2.get_summary()["groups"]
+
+        assert window["source"] in {"store", "raw"}
+        assert window["reason"] in {None, "no_ms1_scans"}
+        # One record per group, in the summary's order.
+        assert [(w["parent_peak_mz"], w["activation"]) for w in window["data"]] == [
+            (g["parent_peak_mz"], g["activation"]) for g in groups
+        ]
+        for record in window["data"]:
+            assert MS2_WINDOW_FIELDS <= set(record)
+            columns = record["centroids"]
+            assert MS2_WINDOW_COLUMNS <= set(columns)
+            assert len({len(columns[name]) for name in MS2_WINDOW_COLUMNS}) == 1
+            # The precursor's own centroid, if the window holds one, is one.
+            assert sum(columns["is_parent"]) <= 1
+
+    def test_window_width_draws_every_group_at_it(self, mascope, ms2_sample_id):
+        ms2 = mascope.samples.ms2(ms2_sample_id)
+        _skip_unless_attr(ms2, "get_window")
+
+        window = ms2.get_window(width=0.5)
+
+        assert window["data"]
+        for record in window["data"]:
+            assert record["width"] == 0.5
+            assert record["note"] is None
+            reach = 0.5 / 2 + window["window_pad"]
+            assert all(abs(o) <= reach + 1e-9 for o in record["centroids"]["offset"])
 
 
 @requires_stack

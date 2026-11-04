@@ -262,7 +262,13 @@ ms2 = mascope.samples.ms2(samples["sample_item_id"].iloc[0])
 for group in ms2.get_summary()["groups"]:
     print(group["parent_peak_mz"], group["activation"], group["scan_count"])
 spectra = ms2.get_averaged_centroids(by_activation=True)
+windows = ms2.get_window()
 ```
+
+`get_window()` lists each group's isolation window: the MS1 centroids
+isolated together with the precursor, each with its share of the
+window, and the precursor as the group's MS2 spectra locate it. Pass
+`width=` to draw every window at one width instead of each group's own.
 
 Which sample that is depends on whether the file records MS1 scans:
 
