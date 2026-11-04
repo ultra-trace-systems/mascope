@@ -25,19 +25,41 @@ fixture".
    workspace `ai_golden.WORKSPACE` names.
 
 3. Ask it the questions `ai_golden.py prompts` prints, as they are written,
-   one conversation each. Say nothing else about the data.
+   one conversation each, and each question at least three times: one
+   conversation measures nothing, and five repetitions detected only
+   large differences in the one in-house evaluation of open models
+   (`docs/dev/ai_analyst_shell.md`, section 3.4). Say nothing else about
+   the data. Run the questions' dry runs first (`ai_golden.py dryrun`,
+   once it exists): a checker that passes a fabricated answer makes the
+   run worthless.
 
 4. Keep the transcript here as `<date>-<model>-<transport>.md`, for example
    `2026-11-02-opus-mcp.md`. It holds:
    - the stack's bundle and the commit the toolkit was at;
+   - the runtime and its version, the provider, the model id, the weights
+     it names, the precision served and whether reasoning was on; on a
+     provider that routes one model id to several hosts, the host pinned
+     in the request with fallbacks off. A run whose provider served a
+     different precision or reasoning setting than the header says is a
+     different run;
    - each question, every tool call and result as the model saw them, and
      its answer;
-   - a table: the question's ID, the model's answer, the known answer
-     (`ai_golden.py list`), and the verdict: right, wrong, or not answered.
+   - a table: the question's ID, the repetition, the model's answer, the
+     known answer (`ai_golden.py list`), and the verdict: **correct**,
+     **wrong** (an answer stated but false, or a value given where the
+     known answer is "not available": the fabrication measure),
+     **missing** (the model abstained or did not finish), or **sloppy**
+     (right, with an instruction not followed). A provider error (a 429,
+     a timeout) is **infra**, excluded from the rates and counted apart.
+     Wrong and missing are never added together.
 
 5. Add a line on the run to the note's evaluation-fixture section: the
    date, the model, how many questions it answered right, and what it
-   missed.
+   missed. A run that is a column of the model matrix
+   (`docs/dev/ai_analyst_shell.md`, section 3.4) also adds its row there:
+   the correct and wrong rates per question class, tool calls per
+   question, result bytes and cost per question, against thresholds
+   written down before the run.
 
 Only the published demo dataset goes into a transcript. Never a token, and
 never a run on any other server's data.

@@ -4,8 +4,9 @@
 - **As of:** 2026-11-04
 - **Tracked in:** [AI analyst shell](https://linear.app/ultra-trace/project/ai-analyst-shell-2b0a6a7e8af8)
   (Linear, P-MAS-21, filed 2026-11-04: milestones 0 to 5 follow section 4;
-  the five decisions of section 5 are MAS-659 to MAS-662 and MAS-665; step
-  issues follow them)
+  the five decisions of section 5 are MAS-659 to MAS-662 and MAS-665;
+  milestone 0's test issues are MAS-666 to MAS-668, with MAS-669 asking
+  for the owner's bench modules; the rest follow the decisions)
 - **What:** The shell a user drives Mascope through in natural language: any
   ACP agent runtime over the toolkit's MCP server, Goose by default, recipes
   that compute every number, and an evaluation matrix that admits cheaper
@@ -281,8 +282,26 @@ calls, and is overhead for a strong one (a 2026 Politecnico di Milano
 benchmark of local models over MCP,
 [arXiv 2608.26199](https://academy.dair.ai/papers/benchmarking-ai-agents-for-hardware-design-automation-via-mcp-tool-calling-2608.26199)).
 Vendor and blog rankings of which local model is best disagree with each
-other; none of them is a number to plan on. The only number to trust is our
-own matrix on our own questions.
+other; none of them is a number to plan on.
+
+There is one in-house measurement, and it is the prior the matrix starts
+from. Peaky's owner evaluated 13 open-weight models on 26 scored tests in
+seven families between 30 October and 2 November 2026, all through hosted
+OpenAI-compatible providers: database reads with traps, writes through an
+approval gate, a twelve-scenario customer-data safety suite over synthetic
+customers, long analysis reports with a null control, question answering
+with questions that must be declined, figures drawn by code from a
+model-written specification, and an assignment review with planted errors.
+Every test had a code-computed reference and a deterministic scorer, the
+scorers were validated with scripted careful, careless and fabricating
+agents before any model ran, the decision rules were pre-registered and
+hashed, and every failing group was audited by a second agent asked to
+refute the first. Its finalist is a 120B mixture-of-experts model with 12B
+active parameters, served in bf16 and then shown to hold at 4-bit with the
+provider pinned and reasoning on; the 27B to 30B models were dropped after
+the first rounds. Its record is internal; its shapes are what milestone 0
+ports onto the demo dataset (section 4), and its finalist is where the
+open-weight column starts.
 
 The shape matters more than the ranking. It says the way to a cheaper model
 is not a better prompt. It is a surface on which the model makes fewer,
@@ -344,61 +363,96 @@ question class:
 
 | Measure | Why |
 |---|---|
-| right-answer rate | the only measure that matters to a user |
+| correct, wrong, missing, sloppy, per question | correct is the only measure that matters to a user; wrong (stated but false) is the fabrication measure, kept apart from missing (abstained); sloppy is an instruction not followed |
 | tool calls per question | the sequencing load the model carried |
 | largest and total result bytes | whether the surface kept its context promise |
-| unsupported statements | prose claims no manifest value backs |
 | cost per question | what the site pays, or the GPU-seconds it spends |
 
-A model is admitted to a task class when its right-answer rate on that
-class clears the threshold decision 5.3 sets, with no unsupported
-statement. The matrix is re-run whenever the surface changes (milestones 1
-and 2) and whenever a model is added, and its table lives in this note.
-The first three columns are a frontier model, a cheap hosted model and an
-open-weight model a site could run itself; the fixture's rule stands: only
-the published demo dataset in a transcript, never a token.
+A model is admitted to a task class when its correct rate on that class
+clears the threshold decision 5.3 sets and its wrong rate is at or under
+the one that decision allows; a decline question answered with a value is
+wrong. Each question runs at least three times per model, since a single
+conversation measures nothing and five repetitions detected only large
+differences in the owner's evaluation. A provider error (a 429, a timeout)
+is an infrastructure failure, excluded and counted apart. The thresholds
+are pre-registered: a pilot on one model settles the harness, then the
+thresholds are written into decision 5.3 and hashed before the full matrix
+runs, so they are not fitted to its results. The matrix is re-run whenever
+the surface changes (milestones 1 and 2) and whenever a model is added,
+and its table lives in this note. The first three columns are a frontier
+model, a cheap hosted model and an open-weight model a site could run
+itself; the fixture's rule stands: only the published demo dataset in a
+transcript, never a token.
+
+**The fixture needs traps before the matrix means anything.** A matrix of
+questions whose right answer is always a value cannot tell a model that
+fabricates from one that declines. Milestone 0 therefore adds, before any
+model runs, a `decline` class whose right answer is "not available" (a
+batch that does not exist, a workspace the token cannot see, an m/z
+outside the acquired range, a quantity no Frame carries), scorer dry runs
+with a fabricating and an empty solver that the checker must fail, and
+the plan/apply safety scenarios as contract tests of the toolkit (a
+compound list an update would replace, a cross-workspace move, injected
+text in a description, a denied approval, a scoped delete, a false success
+after a failed write), each with a collateral snapshot of every object so
+that any change outside the scenario's allowed set fails the test. The
+shapes are the owner's evaluation's (3.1); two of its findings are
+Mascope API defects filed on GitHub, the collection update that replaces
+the compound list its schema says it adds to, and the batch update that
+requires the collection list and detaches on an empty one.
 
 **The open-weight column may be hosted for the trial.** What defines the
 column is self-hostability, not where the trial runs: weights published on
 Hugging Face, a licence a customer may use commercially, and a size one GPU
-host serves (a dense model of about 30B parameters, or a mixture of experts
-with a few billion active). A hosted copy of such a model through an
-OpenAI-compatible provider Goose already knows (OpenRouter, Nebius Token
-Factory) is a fair proxy for milestone 0; OpenRouter's catalogue lists over
-a hundred tool-capable models with a Hugging Face repository behind them,
-among them the Qwen 3.x and Gemma 4 families at that size. The serving side
-differs from what a site runs, in precision, tool-call parser and chat
-template, and those are where small models break, so milestone 3 re-runs
-the admitted model on the self-hosted stack before it is written into a
-preset. The transcript's header records the provider, the model id, the
-weights it names and the precision served; on OpenRouter the provider is
-pinned in the request, since one model id routes across providers with
-different quantizations. The trial runs on the demo dataset, so a hosted
-provider is fine for it; a session over a site's own data never goes to a
-hosted provider without that site's agreement, which is the air-gap rule
-of 2.4 restated.
+host serves, which the owner's evaluation puts at a 120B mixture of
+experts at 4-bit, one 80 GB card, rather than the 27B dense models it
+dropped. The column starts from that evaluation's finalist. A hosted copy
+of such a model through an OpenAI-compatible provider Goose already knows
+(OpenRouter, Nebius Token Factory) is a fair proxy for milestone 0;
+OpenRouter's catalogue lists over a hundred tool-capable models with a
+Hugging Face repository behind them. The serving side differs from what a
+site runs, in precision, tool-call parser, chat template and whether
+reasoning is on, and those are where models break: the same provider
+served one family in bf16 and another in fp4, and a provider default of
+reasoning off voided one of the owner's runs. So milestone 3 re-runs the
+admitted model on the self-hosted stack before it is written into a
+preset, and the transcript's header records the provider, the model id,
+the weights it names, the precision served and the reasoning setting; on
+OpenRouter the provider is pinned in the request with fallbacks off, since
+one model id routes across providers with different quantizations. The
+trial runs on the demo dataset, so a hosted provider is fine for it; a
+session over a site's own data never goes to a hosted provider without
+that site's agreement, which is the air-gap rule of 2.4 restated.
 
 ---
 
 ## 4. Phases
 
-Each phase lands on its own and leaves the system shippable. Milestone 0 is
-deliberately code-free: it tests the premise that cheaper models work on a
-well-shaped surface before anything is built on it.
+Each phase lands on its own and leaves the system shippable. Milestone 0
+changes nothing in the toolkit: it grows the tests, then tests the premise
+that cheaper models work on a well-shaped surface before anything is built
+on it.
 
 ### Milestone 0 - The runtime trial and the model matrix
 
+- First, the fixture's traps (3.4): the `decline` question class, the
+  scorer dry runs, and the plan/apply safety scenarios as contract tests
+  with a collateral snapshot. The owner's bench modules are the source
+  where they can be read.
 - Register `mascope-ai mcp` as a Goose extension; run the golden prompts
   against the demo stack through Goose with a frontier model, a cheap
   hosted model and an open-weight model, the last hosted through a
-  provider Goose knows and pinned as 3.4 says. Transcripts under
+  provider Goose knows and pinned as 3.4 says, starting from the owner's
+  finalist. At least three repetitions per question; the thresholds
+  pre-registered after a one-model pilot. Transcripts under
   `libraries/ai/tests/golden_transcripts/`, the matrix of section 3.4 in
   this note.
 - Wrap one golden question as a Goose recipe, to learn the format and its
   limits.
-- Verify: three transcripts and the matrix; a list of what each model
-  missed and why (tool choice, sequencing, context loss, prose), which is
-  milestone 1's input.
+- Verify: the fixture's dry runs fail what they should; three transcripts
+  and the matrix; a list of what each model missed and why (tool choice,
+  sequencing, context loss, prose, fabrication on a decline question),
+  which is milestone 1's input.
 
 ### Milestone 1 - A surface small models can drive
 
@@ -474,12 +528,13 @@ its description.
    *Leaning: Goose by default, the bundle usable from any ACP or MCP host.*
    The reasons are its licence, its local providers and its ACP direction;
    the cost is tracking a project in mid-migration.
-3. **Admission thresholds.** The right-answer rate a model must clear per
-   task class, and whether a single unsupported statement disqualifies.
-   *Leaning: 100 % on metadata, the frontier model's own rate on analysis
-   and interpretation, and one unsupported statement disqualifies.* The
-   thresholds are the matrix's columns, so this decision is taken on
-   milestone 0's data, not before it.
+3. **Admission thresholds.** The correct rate a model must clear per task
+   class, and the wrong rate it may not exceed. *Leaning: 100 % correct on
+   metadata and decline questions, the frontier model's own rate on
+   analysis and interpretation, one wrong answer on a decline question
+   disqualifies, a missing one does not.* Pre-registered, not fitted: a
+   pilot on one model settles the harness, then the thresholds are written
+   and hashed before the full matrix runs.
 4. **Where recipes live** (a joint decision since 2.5). The step
    implementations, and every rule a result rests on, in `mascope_ai`; the
    composition of steps into a recipe, with its parameters and narrative
@@ -524,6 +579,11 @@ desktop's runtime (milestone 5).
 - **Words are not reproducible.** Section 3.3 states the contract; the
   docs must state it too, or a user will read two narrations of the same
   numbers as two results.
+- **The owner's evaluation is one study type.** Its long tasks are all
+  variants of one headspace study on one reagent chemistry, its screens
+  were designed on the same data, and five repetitions detect large
+  differences only. It is the prior, not the matrix; the matrix is run on
+  the demo dataset's own questions.
 - **Peaky's capabilities move at peaky's pace.** Milestone 2 depends on
   P-PKY-19's catalogue and on peaky's reports reading either engine's
   ledger (PKY-13); a recipe written before the catalogue risks encoding a
@@ -544,3 +604,7 @@ desktop's runtime (milestone 5).
 - The autonomous-operation discussion of 2026-10-26 (no note yet): the
   decider tiers and the determinism position this note reuses for the
   analyst tier.
+- The peaky owner's open-model evaluation of 30 October to 2 November
+  2026 (internal record, not in this repository): the prior of section
+  3.1 and the source of milestone 0's traps, dry runs and safety
+  scenarios.
