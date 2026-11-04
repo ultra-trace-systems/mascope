@@ -45,7 +45,9 @@
 # through the CDN, from a local copy as the CDN vantage runs. Those controls
 # sign in to no account, spend no budget and write nothing, so the run needs
 # no credential but the operator header and touches none of the triggers'
-# state. It shares the lock, so it never runs inside another run, and the same
+# state. The one exception is AUTHN-06: on a site with Turnstile on it sends
+# one login with no token, for an account that does not exist, which costs
+# one request of the per-address login budget and no real account's. It shares the lock, so it never runs inside another run, and the same
 # suite copy and its report directory are never written by two at once.
 #
 # Runs never overlap and are spaced: a lock is held for the whole run, and the
