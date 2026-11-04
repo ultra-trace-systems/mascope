@@ -20,6 +20,10 @@ The summary's groups are read from the group inventory where it can answer
 for the sample (``source: "inventory"``, :mod:`.inventory`), which is also
 what lists the groups of every sample of a batch in one query.
 
+The isolation-window inventory (:func:`get_ms2_window`) lists, per group,
+the sample's MS1 centroids in its isolation window beside the precursor the
+store located for it.
+
 Compute functions (in mascope_signal) use asyncio.to_thread internally, so the
 event loop is not blocked; however, each request still awaits the result
 synchronously—long-running operations may exceed client-side timeouts.
@@ -30,6 +34,8 @@ waits: if the computation exceeds the limit, the server responds with 504.
 
 import asyncio
 from typing import Literal
+
+import numpy as np
 
 import mascope_signal.compute as m_compute
 from mascope_backend.api.controllers.sample.files.process.census import (
@@ -46,8 +52,13 @@ from mascope_backend.api.new.ms2.inventory import (
     sample_ms2_inventory,
 )
 from mascope_file.name import get_sample_file_type
-from mascope_signal.ms2_store import Ms2Store, group_key, parse_group_key
-from mascope_thermo.thermo import NoScansFoundError, ms2_summary
+from mascope_signal.ms2_store import (
+    PRECURSOR_FIELDS,
+    Ms2Store,
+    group_key,
+    parse_group_key,
+)
+from mascope_thermo.thermo import NoScansFoundError, locate_precursors, ms2_summary
 
 
 DEFAULT_TIMEOUT = 120  # seconds
@@ -63,6 +74,14 @@ SOURCE_INVENTORY = "inventory"
 #: and a file whose MS2 scans are not read, which is any other (a TOF one).
 REASON_NONE = "none"
 REASON_UNSUPPORTED = "unsupported"
+#: Why the isolation windows list no MS1 centroid: the sample has no MS1
+#: scans, an acquisition of fragmentation scans alone.
+REASON_NO_MS1_SCANS = "no_ms1_scans"
+#: What a group's window says when there is none to draw.
+NO_WIDTH_NOTE = (
+    "Its scans store no isolation width and none was asked for, so its window "
+    "lists the target alone."
+)
 
 #: A group's fields in the summary, as ``mascope_thermo.thermo.ms2_group_summary``
 #: makes them.
@@ -691,6 +710,238 @@ async def get_ms2_scans(
             "activation": described["activation"],
             "scans": served,
         },
+    }
+
+
+def _widest(group: dict) -> float | None:
+    """The width a group's window is drawn at: the widest its scans used, so
+    a group isolated at two widths lists every centroid either took."""
+    widths = [entry["isolation_width"] for entry in group["isolation_widths"]]
+    return max(widths) if widths else None
+
+
+def _on_file_axis(precursor: dict, factor: float | None) -> dict:
+    """A group's precursor (``PRECURSOR_FIELDS``) on the file's calibrated
+    axis, as every MS2 m/z is served."""
+    if factor is None:
+        return precursor
+    return {
+        **precursor,
+        **{
+            field: None if precursor[field] is None else precursor[field] * factor
+            for field in ("located_precursor_mz", "precursor_mz")
+        },
+    }
+
+
+async def _window_groups(
+    sample, parent_peak_tolerance: float
+) -> tuple[list[dict] | None, dict | None, str | None, float]:
+    """The sample's groups, each group's precursor, and where they were read.
+
+    From the store, which located each group's precursor when it was written,
+    over all of the group's scans; for a file with none, from the raw file,
+    located in the same way over the sample's own scans.
+
+    :return: The groups as the summary lists them, their precursors keyed by
+        (parent peak m/z, activation) on the file's calibrated axis,
+        ``source``, and the tolerance the groups were made at; the groups and
+        ``source`` None for a file whose MS2 scans are not read.
+    """
+    store = await _open_store(sample.filename)
+    if store is not None:
+        groups = await asyncio.to_thread(
+            store.groups, sample.t0, sample.t1, sample.polarity
+        )
+        if groups is not None:
+            factor = await asyncio.to_thread(
+                m_compute.ms2_calibration_factor, sample.filename
+            )
+            precursors = {
+                key: _on_file_axis(precursor, factor)
+                for key, precursor in store.precursors(sample.polarity).items()
+            }
+            return groups, precursors, SOURCE_STORE, store.parent_peak_tolerance
+    if await _unsupported(sample.filename):
+        return None, None, None, parent_peak_tolerance
+    spectra = await m_compute.get_orbi_ms2_centroids_by_parent(
+        sample.filename,
+        t_min=sample.t0,
+        t_max=sample.t1,
+        polarity=sample.polarity,
+        parent_peak_tolerance=parent_peak_tolerance,
+        by_activation=True,
+        # Located on the instrument's axis, around the parent keys, as the
+        # store locates them; put on the file's axis after
+        on_file_axis=False,
+    )
+    try:
+        summary = await m_compute.get_ms2_summary(
+            sample.filename,
+            t_min=sample.t0,
+            t_max=sample.t1,
+            polarity=sample.polarity,
+            parent_peak_tolerance=parent_peak_tolerance,
+        )
+        groups = summary["groups"]
+    except ValueError:
+        # No MS2 scan stores a width, and there is no summary: the groups
+        # are the spectra's, each with no width
+        groups = [
+            {"parent_peak_mz": pp, "activation": activation, "isolation_widths": []}
+            for pp, activation in spectra
+        ]
+    factor = await asyncio.to_thread(m_compute.ms2_calibration_factor, sample.filename)
+    precursors = {
+        key: _on_file_axis(precursor, factor)
+        for key, precursor in locate_precursors(spectra).items()
+    }
+    return groups, precursors, SOURCE_RAW, parent_peak_tolerance
+
+
+async def _ms1_centroids(sample) -> tuple | None:
+    """The sample's averaged MS1 centroids, as ``ms2/ms1_centroids`` reads
+    them; None for the sample of an acquisition of fragmentation scans alone,
+    which has none."""
+    try:
+        return await m_compute.get_orbi_centroids(
+            sample.filename,
+            t_min=sample.t0,
+            t_max=sample.t1,
+            polarity=sample.polarity,
+            ppm=1,
+            average=True,
+        )
+    except NoScansFoundError:
+        # As the MS1 centroids route tells the two apart
+        if not await holds_only_fragmentation_scans(sample.filename):
+            raise
+        return None
+
+
+@api_controller()
+async def get_ms2_window(
+    sample_item_id: str,
+    width: float | None = None,
+    parent_peak_tolerance: float = 0.001,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict:
+    """Retrieve the isolation-window inventory of a sample's MS2 groups.
+
+    Per group, the MS1 centroids of the sample within +/-(width / 2 + 5 mDa)
+    of its parent key (:func:`mascope_signal.compute.ms2_isolation_window`):
+    each with its offset from the key, intensity, share of the window,
+    resolution, S/N and ``is_parent``, the one that is the precursor. The
+    width is ``width`` when asked for, else the widest the group's scans
+    used; a group with neither lists only its target, with no share, and a
+    ``note`` that says so. Overlapping windows list a centroid under each
+    group. Every centroid is listed, whatever its S/N.
+
+    Beside them, the group's precursor as its MS2 spectra locate it
+    (:func:`mascope_thermo.thermo.locate_precursors`): once per parent peak,
+    in its lowest-energy spectrum that holds one, and the group's own peak
+    followed from there, None where the precursor is spent. The store
+    located it when written, over each group's every scan; a file with no
+    store is located over the sample's own scans. All m/z are on the file's
+    calibrated axis.
+
+    :param sample_item_id: Unique identifier for the sample.
+    :param width: The isolation width [Da] to draw every window at, instead
+        of each group's own.
+    :param parent_peak_tolerance: Tolerance in Da for merging parent peaks,
+        for a file read raw; a file's MS2 store answers from its own grouping.
+    :param timeout: Maximum seconds to wait for the computation.
+    :return: One record per group in the summary's order: ``group`` (its
+        key), ``polarity``, ``parent_peak_mz``, ``activation``, ``width``
+        (the one its window was drawn at, None for none), ``note``, the
+        precursor (``located_precursor_mz``, ``located_precursor_intensity``,
+        ``located_precursor_activation``, ``precursor_mz``,
+        ``precursor_intensity``) and ``centroids``; with ``source``, the
+        ``parent_peak_tolerance`` the groups were made at, ``window_pad`` and
+        ``reason``: ``"unsupported"`` for a file whose MS2 scans are not read,
+        ``"none"`` for a sample that holds no group, ``"no_ms1_scans"`` for
+        one with no MS1 scans, whose windows are empty, else None.
+    """
+    sample = await fetch_sample(sample_item_id)
+
+    async def read():
+        groups, precursors, source, tolerance = await _window_groups(
+            sample, parent_peak_tolerance
+        )
+        if not groups:
+            return groups, precursors, None, source, tolerance
+        return groups, precursors, await _ms1_centroids(sample), source, tolerance
+
+    try:
+        groups, precursors, ms1, source, tolerance = await asyncio.wait_for(
+            read(), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        raise ApiException(
+            f"MS2 isolation-window read timed out after {timeout}s for sample",
+            f"asyncio.TimeoutError in get_ms2_window (timeout={timeout}s)",
+            504,
+        )
+    answer = {
+        "source": source,
+        "parent_peak_tolerance": tolerance,
+        "window_pad": m_compute.MS2_WINDOW_PAD,
+    }
+    if source is None:
+        return {
+            "message": (
+                f"Sample '{sample.sample_item_name}' is not of a raw Orbitrap "
+                "file, so its MS2 scans are not read."
+            ),
+            **answer,
+            "reason": REASON_UNSUPPORTED,
+            "data": [],
+        }
+    if not groups:
+        return {
+            "message": f"Sample '{sample.sample_item_name}' holds no MS2 group.",
+            **answer,
+            "reason": REASON_NONE,
+            "data": [],
+        }
+
+    no_ms1 = (np.array([]),) * 4
+    windows = []
+    for group in groups:
+        key = (group["parent_peak_mz"], group["activation"])
+        group_width = width if width is not None else _widest(group)
+        windows.append(
+            {
+                "group": group_key(*key),
+                "polarity": sample.polarity,
+                "parent_peak_mz": group["parent_peak_mz"],
+                "activation": group["activation"],
+                "width": group_width,
+                "note": None if group_width is not None else NO_WIDTH_NOTE,
+                **{field: precursors[key][field] for field in PRECURSOR_FIELDS},
+                "centroids": m_compute.ms2_isolation_window(
+                    no_ms1 if ms1 is None else ms1, group["parent_peak_mz"], group_width
+                ),
+            }
+        )
+    if ms1 is None:
+        return {
+            "message": (
+                f"Sample '{sample.sample_item_name}' has no MS1 scans, so its "
+                "isolation windows hold no MS1 centroid."
+            ),
+            **answer,
+            "reason": REASON_NO_MS1_SCANS,
+            "data": windows,
+        }
+    return {
+        "message": (
+            f"The isolation windows of {len(windows)} MS2 groups"
+            f" in sample '{sample.sample_item_name}'."
+        ),
+        **answer,
+        "reason": None,
+        "data": windows,
     }
 
 

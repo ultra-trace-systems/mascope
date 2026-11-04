@@ -1896,6 +1896,7 @@ async def get_orbi_ms2_centroids_by_parent(
     ppm: int = 1,
     average: bool = True,
     by_activation: bool = True,
+    on_file_axis: bool = True,
 ) -> dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     """Extract averaged MS2 centroids per (parent peak, activation) group.
 
@@ -1924,6 +1925,10 @@ async def get_orbi_ms2_centroids_by_parent(
     :param by_activation: If True (the default), group by activation as well as
                           parent peak; if False, one group per parent peak.
     :type by_activation: bool, optional
+    :param on_file_axis: If True (the default), the masses on the file's
+                         calibrated axis (:func:`ms2_centroids_on_file_axis`);
+                         if False, on the instrument's, as the parent keys are.
+    :type on_file_axis: bool, optional
     :return: Mapping of (parent peak m/z, activation) to
              (masses, intensities, resolutions, signal_to_noise).
     :rtype: dict[tuple[float, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
@@ -1945,6 +1950,8 @@ async def get_orbi_ms2_centroids_by_parent(
                 average=average,
                 by_activation=by_activation,
             )
+            if not on_file_axis:
+                return mapped_ms2_centroids
             return ms2_centroids_on_file_axis(base_filename, mapped_ms2_centroids)
         case _:
             raise NotImplementedError(
@@ -1995,6 +2002,74 @@ def ms2_centroids_on_file_axis(
             resolutions,
             signal_to_noise,
         ) in mapped_ms2_centroids.items()
+    }
+
+
+#: How far past an isolation window's nominal edge its inventory reaches
+#: [Da]. A quadrupole's transmission edge is a slope, not a step, so a
+#: centroid just outside the nominal half-width is listed, its share saying
+#: whether it matters, rather than dropped. A margin, not a fit: peaky's
+#: ``WINDOW_PAD_DA``.
+MS2_WINDOW_PAD = 0.005
+
+
+def ms2_isolation_window(
+    centroids: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    parent_peak_mz: float,
+    width: float | None,
+) -> dict[str, list]:
+    """The MS1 centroids in one MS2 group's isolation window.
+
+    Every centroid within +/-(``width`` / 2 + :data:`MS2_WINDOW_PAD`) of the
+    parent key, whatever its S/N, in m/z order, with its offset from the key,
+    its share of the window's summed intensity and ``is_parent`` on the one
+    :func:`mascope_thermo.thermo.locate_precursor` picks among them. Windows
+    are drawn one group at a time, so a centroid in two groups' windows is in
+    both.
+
+    With no ``width`` there is no window to draw, and only the target is
+    listed: the centroid :func:`~mascope_thermo.thermo.locate_precursor` picks
+    near the key, with no share.
+
+    :param centroids: The sample's averaged MS1 centroids, ``(masses,
+        intensities, resolutions, signal_to_noise)``.
+    :param parent_peak_mz: The group's parent key, the window's centre.
+    :param width: The isolation width [Da], or None for none.
+    :return: ``mz``, ``offset`` (from the key, Da), ``intensity``, ``share``
+        (None with no ``width``), ``resolution``, ``signal_to_noise`` and
+        ``is_parent``, one entry per centroid listed.
+    """
+    masses, intensities, resolutions, signal_to_noise = (
+        np.asarray(values, dtype=np.float64) for values in centroids
+    )
+    if width is None:
+        found = m_thermo.locate_precursor(masses, intensities, parent_peak_mz)
+        listed = np.array([] if found is None else [found], dtype=np.intp)
+    else:
+        listed = np.flatnonzero(
+            np.abs(masses - parent_peak_mz) <= width / 2 + MS2_WINDOW_PAD
+        )
+        listed = listed[np.argsort(masses[listed], kind="stable")]
+    mz = masses[listed]
+    intensity = intensities[listed]
+    parent = (
+        m_thermo.locate_precursor(mz, intensity, parent_peak_mz) if mz.size else None
+    )
+    total = float(np.nansum(intensity))
+    if width is None:
+        share = [None] * mz.size
+    elif total > 0:
+        share = (intensity / total).tolist()
+    else:
+        share = [None] * mz.size
+    return {
+        "mz": mz.tolist(),
+        "offset": (mz - parent_peak_mz).tolist(),
+        "intensity": intensity.tolist(),
+        "share": share,
+        "resolution": resolutions[listed].tolist(),
+        "signal_to_noise": signal_to_noise[listed].tolist(),
+        "is_parent": [i == parent for i in range(mz.size)],
     }
 
 
