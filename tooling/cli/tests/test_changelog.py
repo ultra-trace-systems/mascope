@@ -366,11 +366,35 @@ def test_a_release_the_same_day_as_the_last_takes_a_newer_cli_version(
     assert f"version {expected} " in summary
 
 
-def test_a_cli_version_that_is_no_plain_release_is_replaced(tmp_path):
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        # A pre-release or a dev release of the day sorts below its calver.
+        ("2026.10.20rc1", "2026.10.20"),
+        ("2026.10.20.dev3", "2026.10.20"),
+        # A post-release of the day sorts above it: the next fourth part.
+        ("2026.10.20.post1", "2026.10.20.1"),
+        ("2026.10.20.1.post1", "2026.10.20.2"),
+        # Of an earlier day, any suffix is below the day's calver.
+        ("2026.10.19.post1", "2026.10.20"),
+    ],
+)
+def test_a_cli_version_that_is_no_plain_release_is_replaced(
+    tmp_path, current, expected
+):
     root = make_root(tmp_path, fragments={"mas-1-x.fixed.md": FIXED})
-    _set_cli_version(root, "2026.10.20rc1")
+    _set_cli_version(root, current)
     changelog.compile_release(root, "1.3.0", datetime.date(2026, 10, 20))
-    assert _cli_version(root) == "2026.10.20"
+    assert _cli_version(root) == expected
+
+
+@pytest.mark.parametrize("current", ["2026.10.25.post1", "2026.10.21rc1"])
+def test_a_suffixed_cli_version_of_a_later_day_is_refused(tmp_path, current):
+    root = make_root(tmp_path, fragments={"mas-1-x.fixed.md": FIXED})
+    _set_cli_version(root, current)
+    with pytest.raises(changelog.ChangelogError, match="later than 2026.10.20"):
+        changelog.compile_release(root, "1.3.0", datetime.date(2026, 10, 20))
+    assert _cli_version(root) == current
 
 
 def test_a_cli_version_later_than_the_release_date_is_refused(tmp_path):
