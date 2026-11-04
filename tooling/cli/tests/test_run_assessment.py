@@ -20,6 +20,7 @@ import json
 import os
 import shutil
 import subprocess
+import tarfile
 import time
 from pathlib import Path
 
@@ -53,17 +54,31 @@ for last; do :; done
 exec bash -c "$last"
 """
 
+# What every stubbed suite writes on a run that reports, as the suite does: the
+# report as JSON ($1 holds it) and Markdown, and a history entry ($2 names it)
+# that stays in report/history/ after the run, as the suite's trail does.
+WRITE_REPORT = """#!/usr/bin/env bash
+write_report() {
+  cp "$1" report/pentest-report.json
+  echo "# report" > report/pentest-report.md
+  mkdir -p report/history
+  cp "$1" "report/history/$(date +%s%N)-$2.json"
+}
+"""
+
 # The target's suite interpreter: records the release it was given and whether
 # the runner's lock was free while it ran, writes the report bytes
 # STUB_ORIGIN_REPORT names, as the suite would, and exits STUB_SUITE_RC.
-ORIGIN_PYTHON_STUB = """#!/usr/bin/env bash
-echo "suite output"
+ORIGIN_PYTHON_STUB = (
+    WRITE_REPORT
+    + """echo "suite output"
 echo "release=${MASCOPE_PENTEST_CURRENT_RELEASE-<unset>}" > "$STUB_ORIGIN_ENV"
 if flock -n "$STUB_LOCK" true; then echo free; else echo held; fi > "$STUB_LOCK_STATE"
 mkdir -p report
-[ -n "$STUB_ORIGIN_REPORT" ] && cp "$STUB_ORIGIN_REPORT" report/pentest-report.json
+[ -n "$STUB_ORIGIN_REPORT" ] && write_report "$STUB_ORIGIN_REPORT" origin
 exit "${STUB_SUITE_RC:-0}"
 """
+)
 
 # curl: the release lookup answers STUB_RELEASE (or fails when unset), the
 # target's version route STUB_DEPLOYED (or fails when unset); every heartbeat
@@ -89,8 +104,9 @@ esac
 # The CDN vantage's suite runs on this host from CDN_SUITE_DIR. Its interpreter
 # is stubbed: it records the environment it was given and writes the report
 # STUB_CDN_REPORT names, as the suite would.
-CDN_PYTHON_STUB = """#!/usr/bin/env bash
-{
+CDN_PYTHON_STUB = (
+    WRITE_REPORT
+    + """{
   echo "target=$MASCOPE_PENTEST_TARGET"
   echo "vantage=$MASCOPE_PENTEST_VANTAGE"
   echo "verify=$MASCOPE_PENTEST_VERIFY_TLS"
@@ -99,9 +115,10 @@ CDN_PYTHON_STUB = """#!/usr/bin/env bash
   echo "args=$*"
 } > "$STUB_CDN_ENV"
 mkdir -p report
-[ -n "$STUB_CDN_REPORT" ] && cp "$STUB_CDN_REPORT" report/pentest-report.json
+[ -n "$STUB_CDN_REPORT" ] && write_report "$STUB_CDN_REPORT" cdn
 exit "${STUB_CDN_RC:-0}"
 """
+)
 
 # sleep: the gap between the two vantages, recorded instead of waited out.
 SLEEP_STUB = """#!/usr/bin/env bash
@@ -560,6 +577,30 @@ def test_an_aborted_run_does_not_archive_the_previous_report(tmp_path):
     )
 
 
+#: What a record's archive holds: the run's own report, and nothing else.
+OWN_REPORT = {"report/pentest-report.json", "report/pentest-report.md"}
+
+
+def _members(archive):
+    with tarfile.open(archive) as tar:
+        return set(tar.getnames())
+
+
+def test_each_vantage_archives_its_own_report_and_not_the_history(tmp_path):
+    # An entry from an earlier run in each copy's report/history/, beside this run's.
+    for copy in ("target", "suite"):
+        (tmp_path / copy / "report" / "history").mkdir(parents=True)
+        (tmp_path / copy / "report" / "history" / "earlier.json").write_text("{}")
+    rc, _, _ = _run(tmp_path, report=_report(), release=_tag("v1.7.2"), cdn=_report())
+    records = tmp_path / "records"
+    assert rc == 0
+    for vantage in ("origin", "cdn"):
+        assert _members(next(records.glob(f"*-{vantage}.tar.gz"))) == OWN_REPORT
+    # The suite's history stays where it is, this run's entry added.
+    for copy in ("target", "suite"):
+        assert len(list((tmp_path / copy / "report" / "history").iterdir())) == 2
+
+
 def test_without_a_cdn_target_only_the_origin_runs(tmp_path):
     rc, _, _ = _run(tmp_path, report=_report(), release=_tag("v1.7.2"))
     records = tmp_path / "records"
@@ -927,8 +968,9 @@ PRODUCTION_HC = "https://heartbeat.invalid/production"
 # deployment. Its interpreter appends the environment and arguments each run
 # was given to STUB_PROD_ENV, and writes the report and exits with the code
 # STUB_PROD_DIR holds for the deployment it was pointed at, as the suite would.
-PRODUCTION_PYTHON_STUB = """#!/usr/bin/env bash
-host="${MASCOPE_PENTEST_TARGET#https://}"
+PRODUCTION_PYTHON_STUB = (
+    WRITE_REPORT
+    + """host="${MASCOPE_PENTEST_TARGET#https://}"
 {
   echo "target=$MASCOPE_PENTEST_TARGET"
   echo "vantage=$MASCOPE_PENTEST_VANTAGE"
@@ -942,9 +984,10 @@ host="${MASCOPE_PENTEST_TARGET#https://}"
   if flock -n "$STUB_LOCK" true; then echo lock=free; else echo lock=held; fi
 } >> "$STUB_PROD_ENV"
 mkdir -p report
-[ -f "$STUB_PROD_DIR/$host.json" ] && cp "$STUB_PROD_DIR/$host.json" report/pentest-report.json
+[ -f "$STUB_PROD_DIR/$host.json" ] && write_report "$STUB_PROD_DIR/$host.json" "$host"
 exit "$(cat "$STUB_PROD_DIR/$host.rc" 2>/dev/null || echo 0)"
 """
+)
 
 
 def _run_production(
@@ -1093,6 +1136,24 @@ def test_production_runs_the_non_mutating_subset_against_each_deployment(tmp_pat
     }
     # Nothing of it reaches the staging host.
     assert not (tmp_path / "ssh-args").exists()
+
+
+def test_each_deployment_archives_its_own_report_and_not_the_others(tmp_path):
+    # The deployments share one suite copy, whose trail holds every run's
+    # report: a record names one deployment and holds that one's alone.
+    rc, _, _ = _run_production(
+        tmp_path, {"a": (_report(), 0), "b": (_report(build="v1.7.1"), 0)}
+    )
+    records = tmp_path / "records"
+    assert rc == 0
+    for name, build in (("a", "v1.7.2"), ("b", "v1.7.1")):
+        archive = next(records.glob(f"*-prod-{name}.tar.gz"))
+        assert _members(archive) == OWN_REPORT
+        with tarfile.open(archive) as tar:
+            report = json.load(tar.extractfile("report/pentest-report.json"))
+        assert report["build"]["identity"] == build
+    history = tmp_path / "suite" / "report" / "history"
+    assert len(list(history.iterdir())) == 2
 
 
 def test_a_failing_deployment_fails_the_run_and_the_rest_are_still_assessed(
