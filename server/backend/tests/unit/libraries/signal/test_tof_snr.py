@@ -21,6 +21,7 @@ from scipy.stats import median_abs_deviation, spearmanr
 from mascope_backend.api.models.calibration.config import calibration_config
 from mascope_signal.peak import (
     SNR_CORE_WIDTHS,
+    SNR_EVENT_MIN_RUNS,
     SNR_WINDOW_DMZ,
     OrbiZarrPeakDetector,
     TofPeakDetector,
@@ -193,6 +194,26 @@ def _counted_spectrum(seed, peak_mzs, peak_ions, ions_per_unit=4.0):
     return mz_axis, _ions(mz_axis, ion_mzs)
 
 
+def _with_an_empty_stretch(mz_axis, signal, peak_mzs, peak_ions, singles=32):
+    """A counted spectrum followed by eight unit masses of mostly empty
+    baseline, as a real TOF axis has toward its high-mass end: at each a
+    fitted peak of three ions, and ``singles`` single ions in all, up to
+    four a unit, each clear of the peaks' cores. One ion's height is read
+    from those ions, every one of them a run of its own."""
+    start = np.floor(mz_axis[-1]) + 2.0
+    empty_peaks = np.arange(start, start + 8.0)
+    ions = [u + d for u in empty_peaks for d in (-0.3, -0.15, 0.15, 0.3)]
+    assert singles <= len(ions)
+    tail = np.arange(mz_axis[-1] + STEP, empty_peaks[-1] + 1.0, STEP)
+    added = _ions(tail, ions[:singles] + list(np.repeat(empty_peaks, 3)))
+    return (
+        np.concatenate([mz_axis, tail]),
+        np.concatenate([signal, added]),
+        np.concatenate([peak_mzs, empty_peaks]),
+        np.concatenate([peak_ions, np.full(empty_peaks.size, 3)]),
+    )
+
+
 def test_a_peak_of_a_few_ions_over_an_empty_baseline_is_not_strong():
     """Over a counted baseline (:func:`_counted_spectrum`) the noise is the
     height one ion leaves, so a peak scores about the ions it holds. The
@@ -231,19 +252,86 @@ def test_a_peak_of_a_few_ions_over_a_half_filled_baseline_is_not_strong(
     but far below one ion's height, and no peak stands less than one ion
     above its baseline: one ion floors every window's noise, not only an
     empty one's. Divided by the MAD alone, peaks of three and four ions
-    scored 14 to 209, past the TOF calibration's gate of ten."""
+    scored 14 to 209, past the TOF calibration's gate of ten. The height
+    is read from the mostly empty stretch beside them
+    (:func:`_with_an_empty_stretch`): the half-filled windows alone hold
+    too few single ions for it to floor theirs."""
     peak_mzs = np.array([100.0, 101.0, 102.0, 103.0])
     peak_ions = np.array([3, 3, 4, 300])
     mz_axis, signal = _counted_spectrum(seed, peak_mzs, peak_ions, ions_per_unit)
     assert 0 < median_abs_deviation(signal, scale="normal") < 0.5
+    mz_axis, signal, all_mzs, all_ions = _with_an_empty_stretch(
+        mz_axis, signal, peak_mzs, peak_ions
+    )
 
-    snr = _snr(mz_axis, signal, peak_mzs, peak_ions.astype(float))
+    snr = _snr(mz_axis, signal, all_mzs, all_ions.astype(float))
 
     noise_peaks, real = snr[:3], snr[3]
     assert np.all(noise_peaks < 6)
     assert np.all(noise_peaks > 1)
     assert real >= calibration_config.TOF_SNR_THRESHOLD * 10
     assert real <= 400
+
+
+def test_one_ions_height_from_a_few_runs_floors_only_the_empty_windows():
+    """One ion's height read from a few runs is no floor for the peaks over
+    a dense baseline. Here its only run is a cluster of eight ions too weak
+    to be fitted, in the one mostly empty window: as a floor under every
+    peak it read eight ions high, and the peaks over the dense baseline
+    scored 37.5, 37.5 and 1.9 instead of 202, 202 and 10.1 (#2810). They
+    keep their spread, and the empty window's own peak keeps the floor."""
+    rng = np.random.default_rng(3)
+    mz_axis = np.arange(98.0, 106.0, STEP)
+    peak_mzs = np.array([100.0, 101.0, 102.0])
+    peak_heights = np.array([300.0, 300.0, 15.0])
+    level = np.where(mz_axis < 103.5, 1.0, 0.0)
+    signal = rng.poisson(_spectrum(mz_axis, peak_mzs, peak_heights) + level)
+    signal = signal + np.round(_spectrum(mz_axis, [105.0], [8.0]))
+
+    snr = _snr(
+        mz_axis, signal, np.append(peak_mzs, 104.8), np.append(peak_heights, 1.0)
+    )
+
+    for i, mz in enumerate(peak_mzs):
+        window = np.abs(mz_axis - mz) <= max(SNR_WINDOW_DMZ, 10 * _width(mz))
+        cores = np.zeros(mz_axis.size, dtype=bool)
+        for other in np.append(peak_mzs, 104.8):
+            cores |= np.abs(mz_axis - other) <= SNR_CORE_WIDTHS * _width(other)
+        spread = median_abs_deviation(signal[window & ~cores], scale="normal")
+        assert snr[i] == pytest.approx(peak_heights[i] / spread, rel=1e-6)
+    assert snr[2] >= 3
+    # The cluster's window is mostly empty, and its spread is wider than
+    # the eight-ion floor: its peak divides by the larger of the two
+    assert snr[3] < 1
+
+
+@pytest.mark.parametrize(
+    "singles, floored",
+    [
+        pytest.param(SNR_EVENT_MIN_RUNS - 1, False, id="one-too-few"),
+        pytest.param(SNR_EVENT_MIN_RUNS, True, id="enough"),
+    ],
+)
+def test_one_ions_height_floors_every_peak_from_enough_runs(singles, floored):
+    """One ion's height floors the peaks over a half-filled baseline once
+    it is read from :data:`SNR_EVENT_MIN_RUNS` single ions, and not from
+    one fewer: a peak of three ions there scores about three with the
+    floor, and its ions over the MAD without."""
+    rng = np.random.default_rng(4)
+    mz_axis = np.arange(99.0, 101.0 + STEP / 2, STEP)
+    stray = list(rng.uniform(99.0, 101.0, 40))
+    signal = _ions(mz_axis, stray + [100.0] * 3)
+    mz_axis, signal, peak_mzs, peak_ions = _with_an_empty_stretch(
+        mz_axis, signal, np.array([100.0]), np.array([3]), singles
+    )
+
+    snr = _snr(mz_axis, signal, peak_mzs, peak_ions.astype(float))
+
+    assert snr[1:] == pytest.approx(3.0, rel=0.1)
+    if floored:
+        assert snr[0] == pytest.approx(3.0, rel=0.1)
+    else:
+        assert snr[0] > 6
 
 
 def test_one_ions_height_is_measured_over_the_whole_spectrum():

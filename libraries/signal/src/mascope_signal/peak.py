@@ -71,6 +71,13 @@ SNR_CORE_WIDTHS = 3.0
 #: wide enough to reach past the peaks of its unit mass into the gaps between
 #: unit masses, where the baseline is.
 SNR_WINDOW_DMZ = DMZ
+#: The fewest single ions one ion's height (:func:`_event_height`) must be
+#: read from before it floors the noise of every TOF peak, not only of those
+#: over a mostly empty baseline. Over the regression corpus and production
+#: TOF files the median of 30 runs drawn at random stays within 1.5 times
+#: that of all of them in 99 draws of 100, and it holds against 14 runs that
+#: are clusters of several ions rather than one.
+SNR_EVENT_MIN_RUNS = 30
 #: The half-width, in ppm of a peak's m/z, of the window an Orbitrap peak is
 #: measured against when its spectrum is dense there (:func:`below_local_floor`).
 #: Wide enough that the comb a few hundred ppm either side of a reagent ion,
@@ -754,7 +761,9 @@ class OrbiPeakDetector(BasePeakDetector):
         )
 
 
-def _event_height(signal: np.ndarray, in_core: np.ndarray, sparse: np.ndarray) -> float:
+def _event_height(
+    signal: np.ndarray, in_core: np.ndarray, sparse: np.ndarray
+) -> tuple[float, int]:
     """The height one counting event leaves in a mostly empty baseline
 
     Where a summed TOF spectrum is mostly zeros, what lies between its peaks
@@ -765,7 +774,9 @@ def _event_height(signal: np.ndarray, in_core: np.ndarray, sparse: np.ndarray) -
     Only runs wholly within ``sparse`` count, where the baseline is mostly
     empty and a run is one ion, not a stretch of baseline; and a run that
     reaches into a fitted peak's core does not, since part of it is the
-    peak's. Zero where no run is left.
+    peak's. Zero where no run is left. How many runs it rests on is returned
+    beside it: a median of a few runs, one of them a small cluster too weak
+    to be fitted, can read several ions high.
 
     :param signal: The summed spectrum, in m/z order
     :type signal: np.ndarray
@@ -773,8 +784,9 @@ def _event_height(signal: np.ndarray, in_core: np.ndarray, sparse: np.ndarray) -
     :type in_core: np.ndarray
     :param sparse: Whether each point lies in a mostly empty baseline
     :type sparse: np.ndarray
-    :return: The median height of a run of points above zero
-    :rtype: float
+    :return: The median height of a run of points above zero, and the
+        number of runs it is the median of
+    :rtype: tuple[float, int]
     """
     above = signal > 0
     # Each run's maximum, and whether a point of it is in a core or outside
@@ -783,7 +795,8 @@ def _event_height(signal: np.ndarray, in_core: np.ndarray, sparse: np.ndarray) -
     starts = np.flatnonzero(np.diff(above.astype(np.int8), prepend=0) == 1)
     maxima = np.maximum.reduceat(signal, starts)
     clear = ~np.logical_or.reduceat(above & (in_core | ~sparse), starts)
-    return float(np.median(maxima[clear])) if clear.any() else 0.0
+    runs = int(clear.sum())
+    return (float(np.median(maxima[clear])) if runs else 0.0), runs
 
 
 class TofPeakDetector(BasePeakDetector):
@@ -937,7 +950,12 @@ class TofPeakDetector(BasePeakDetector):
         an ion, so without the floor a peak of a few ions scored ten or more,
         as a strong peak does, and over a window with no ion in it had no
         ratio at all. A spectrum with no mostly empty baseline has no ion to
-        measure and keeps the MAD.
+        measure and keeps the MAD. One ion's height read from fewer than
+        :data:`SNR_EVENT_MIN_RUNS` runs floors only the mostly empty
+        windows' own peaks: a median of a few runs, one of them a small
+        cluster too weak to be fitted, reads several ions high, and as a
+        floor under every peak it cut the ratio of the peaks over a dense
+        baseline, calibrants included, by that much.
         A peak with no baseline left has no ratio (NaN), nor has one over a
         flat baseline in a spectrum with no single ion to measure.
 
@@ -971,7 +989,8 @@ class TofPeakDetector(BasePeakDetector):
 
         # Every noise is read after every window is seen: one ion's height is
         # measured over the windows whose baseline is mostly empty, and it
-        # floors the noise of all of them
+        # floors the noise of all of them, or of those windows alone when it
+        # rests on too few runs to be trusted elsewhere
         spreads = []
         sparse = np.zeros(mz_axis.size, dtype=bool)
         for i in range(len(peak_mzs)):
@@ -980,14 +999,16 @@ class TofPeakDetector(BasePeakDetector):
             if baseline.size == 0:
                 continue
             spread = median_abs_deviation(baseline, scale="normal")
-            if spread == 0:
+            empty = spread == 0
+            if empty:
                 spread = np.std(baseline)
                 sparse[window] = True
-            spreads.append((i, spread))
+            spreads.append((i, spread, empty))
 
-        event = _event_height(signal, in_core, sparse)
-        for i, spread in spreads:
-            noise = max(spread, event)
+        event, runs = _event_height(signal, in_core, sparse)
+        everywhere = runs >= SNR_EVENT_MIN_RUNS
+        for i, spread, empty in spreads:
+            noise = max(spread, event) if everywhere or empty else spread
             if noise > 0:
                 snr[i] = peak_heights[i] / noise
 
