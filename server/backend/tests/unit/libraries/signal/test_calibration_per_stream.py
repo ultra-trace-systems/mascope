@@ -701,38 +701,61 @@ async def test_the_statistics_are_every_streams_calibrants_under_one_summary(fit
     assert summary["match_mz_error"] == pytest.approx((2 + 1 + 3) / 3, abs=1e-4)
 
 
-def _tic(stream=None):
-    return float(np.sum(m_compute.get_tic_per_scan(SAMPLE_FILENAME, stream=stream)[1]))
+def _tic_per_scan(stream=None):
+    return m_compute.get_tic_per_scan(SAMPLE_FILENAME, stream=stream)[1]
 
 
 @pytest.mark.asyncio
 async def test_a_streams_calibrants_are_measured_against_its_own_scans(fitted):
     """A calibrant's intensity is averaged over its stream's scans, and its
-    share is of the ion current of those scans. Against the file's, a narrow
-    window's calibrants would be measured by scans that are mostly other
-    streams', and its block held to a bar by them."""
+    share is of the mean ion current of those scans. Against the file's, a
+    narrow window's calibrants would be measured by scans that are mostly
+    other streams', and its block held to a bar by them; against their sum,
+    by how many scans the stream has."""
     handler = await fitted()
 
     *points, summary = handler.stats
     by_segment = {segment["index"]: segment for segment in handler.segments}
     for point in points:
-        own = _tic(KEYS[point["segment"]])
-        assert own < _tic()
+        own = _tic_per_scan(KEYS[point["segment"]])
+        assert own.size > 1
         assert point["calibrant_to_tic"] == pytest.approx(
-            point["sample_peak_intensity"] / own, rel=1e-12
+            point["sample_peak_intensity"] / np.mean(own), rel=1e-12
         )
         assert by_segment[point["segment"]]["quality"]["calibrant_to_tic"] == (
             pytest.approx(point["calibrant_to_tic"], rel=1e-12)
         )
-    # The file's is over the scans its calibrants were kept in: no sum of
-    # shares of three different ion currents
-    kept_in = sum(_tic(KEYS[index]) for index in ASKED)
+
+
+@pytest.mark.asyncio
+async def test_the_files_share_weighs_each_streams_by_its_summed_ion_current(
+    fitted,
+):
+    """No sum of shares of three different ion currents: the file's is each
+    stream's share, weighed by the ion current summed over the stream's
+    scans, so a stream of more scans counts for more."""
+    handler = await fitted()
+
+    *points, summary = handler.stats
+    shares = {}
+    for point in points:
+        shares[point["segment"]] = (
+            shares.get(point["segment"], 0.0) + point["calibrant_to_tic"]
+        )
+    totals = {index: float(np.sum(_tic_per_scan(KEYS[index]))) for index in shares}
+    # The weights differ from the streams' mean ion currents, so a summary
+    # weighed by the mean would not land here
+    means = {index: float(np.mean(_tic_per_scan(KEYS[index]))) for index in shares}
+    assert len(set(totals.values())) == len(totals)
+    assert not np.allclose(
+        np.array(list(totals.values())) / sum(totals.values()),
+        np.array(list(means.values())) / sum(means.values()),
+    )
     assert summary["calibrant_to_tic"] == pytest.approx(
-        sum(point["sample_peak_intensity"] for point in points) / kept_in, rel=1e-12
+        sum(shares[index] * totals[index] for index in shares) / sum(totals.values()),
+        rel=1e-12,
     )
-    assert summary["calibrant_to_tic"] < sum(
-        point["calibrant_to_tic"] for point in points
-    )
+    assert summary["calibrant_to_tic"] < sum(shares.values())
 
 
 @pytest.mark.asyncio

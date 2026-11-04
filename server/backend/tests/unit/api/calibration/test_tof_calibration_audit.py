@@ -23,6 +23,7 @@ from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     TofCalibrationHandler,
 )
 from mascope_backend.db import IonizationMechanism
+from mascope_signal.peak import DEFAULT_SAMPLE_INTERVAL_NS
 from mascope_tools.composition.utils import composition_mass, parse_composition
 
 
@@ -536,11 +537,15 @@ def test_a_spread_is_median_quartiles_rms_and_count():
     assert audit.spread([]) is None
 
 
-def test_the_node_takes_calibrant_shares_of_the_total_ion_current():
-    """What the audit leaves out: the sum of the file's TIC per scan."""
-    handler = TofCalibrationHandler(support.FILENAME, support.params())
+def test_the_node_takes_calibrant_shares_of_the_total_ion_current(filestore):
+    """What the audit leaves out: the file's mean TIC per scan, times the
+    sample interval its peak areas were integrated over."""
+    filename = support.write_file(filestore, support.calibrant_peaks())
+    handler = TofCalibrationHandler(filename, support.params())
     with patch(
         f"{NODE}.m_compute.get_tic_per_scan",
         return_value=(np.arange(3), np.array([1.0, 2.0, 4.0])),
     ):
-        assert handler._total_ion_current() == 7.0
+        assert handler._total_ion_current() == pytest.approx(
+            7.0 / 3 * DEFAULT_SAMPLE_INTERVAL_NS
+        )

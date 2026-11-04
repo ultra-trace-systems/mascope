@@ -70,9 +70,13 @@ class CalibrationConfig(BaseModel):
     # from this many ions, or it is one ion's isotopes agreeing with each
     # other.
     MIN_VERIFIED_CALIBRATION_IONS: int = 2
-    # Summed calibrant intensity as a fraction of the TIC, None disabling the
-    # check. Off for both: in production it only ever flagged fits that were
-    # otherwise healthy, down to 3e-5 of the TIC on Orbitrap and 5e-7 on TOF.
+    # Summed calibrant intensity as a fraction of the mean TIC per scan, None
+    # disabling the check. Off for both: in production it only ever flagged
+    # fits that were otherwise healthy, down to 3e-5 on Orbitrap and 5e-7 on
+    # TOF. Those were shares of the TIC summed over the file's scans, which
+    # the share is no longer taken of: against the mean they are larger by
+    # the file's number of scans, and a TOF one by a further 1 / the sample
+    # interval in ns. A floor has to be read off fits made since.
     ORBI_MIN_CALIBRANT_TO_TIC: float | None = None
     TOF_MIN_CALIBRANT_TO_TIC: float | None = None
 
