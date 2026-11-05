@@ -102,6 +102,8 @@ class BatchPeaksResource(BaseResource):
         tier: str | None = None,
         min_n_present: int = 1,
         run_id: str | None = None,
+        engine_tier: str | None = None,
+        tier_disagrees: bool | None = None,
     ) -> pd.DataFrame | None:
         """List a batch's batch peaks, one row per anchor, in m/z order.
 
@@ -117,6 +119,15 @@ class BatchPeaksResource(BaseResource):
                        :meth:`runs`); the current run, or none, is the live
                        ledger.
         :type run_id: str, optional
+        :param engine_tier: Filter by the tier an importing engine stated for
+                            the batch peak's identity (see :meth:`import_run`).
+        :type engine_tier: str, optional
+        :param tier_disagrees: With ``True``, keep only the batch peaks whose
+                               engine tier differs from the consensus tier;
+                               with ``False``, only those where the two agree.
+                               A batch peak with no engine tier is left out
+                               either way: absence is not agreement.
+        :type tier_disagrees: bool, optional
         :return: A DataFrame with one row per batch peak: ``batch_peak_id``,
                  ``mz``, ``consensus_formula``, ``consensus_ion_formula``,
                  ``ionization_mechanism_id``, ``consensus_tier``,
@@ -127,10 +138,14 @@ class BatchPeaksResource(BaseResource):
                  ``is_ambiguous``, ``max_intensity`` (in
                  ``intensity_variable``), ``isotopologue_of`` (the batch peak
                  this one is an isotopologue of, or null), ``curated``
-                 (pinned by hand for the whole batch) and
+                 (pinned by hand for the whole batch),
                  ``reference_listing`` (what a reference list calls the
                  consensus formula where a member matched it from one:
-                 ``name``, ``source``, ``tags``, ``total``; null otherwise).
+                 ``name``, ``source``, ``tags``, ``total``; null otherwise),
+                 and ``engine_tier`` and ``engine_claim`` (what an importing
+                 engine said of the consensus identity; null on every batch
+                 peak no import gave a verdict for). ``consensus_tier`` is
+                 always this server's: the engine's tier stands beside it.
                  None when the batch has no ledger yet.
         :rtype: pd.DataFrame | None
         """
@@ -139,6 +154,11 @@ class BatchPeaksResource(BaseResource):
             params["tier"] = tier
         if run_id is not None:
             params["batch_peak_run_id"] = run_id
+        if engine_tier is not None:
+            params["engine_tier"] = engine_tier
+        # A tri-state: False is a filter too, so only None stays off the wire.
+        if tier_disagrees is not None:
+            params["tier_disagrees"] = tier_disagrees
         data = self._get(f"batch-peaks/batch/{sample_batch_id}", params=params)
         if not data:
             logger.info("Batch '{}' has no batch peaks", sample_batch_id)
@@ -486,6 +506,24 @@ class BatchPeaksResource(BaseResource):
         name. Curated and isotopologue batch peaks are left alone. The run's
         ``summary`` counts what landed and, by reason, what did not.
 
+        The engine's own verdict rides along when the rows carry it:
+        ``engine_tier`` (``assigned`` | ``candidate`` | ``below_assignability``
+        | ``unassigned``, the vocabulary of the per-sample import) and
+        ``engine_claim`` (free text, up to 1024 characters: an evidence level,
+        the rule that decided). Both are kept on the batch peak the row landed
+        on, beside the consensus tier the server derives, wherever the
+        consensus then names the row's identity; :meth:`list` reads them back
+        and filters on them. The consensus tier stays the server's, and an
+        earlier import's verdicts come off the ledger when this one lands. The
+        summary counts the verdicts shown (``engine_verdicts``) and those whose
+        batch peak's consensus names another identity
+        (``engine_verdicts_withheld``).
+
+        A mechanism id names what this deployment can measure, not a channel
+        the engine has to search: the mechanism table is a catalogue, so send
+        the id of the adduct the engine found and leave the rest of the table
+        alone.
+
         :param sample_batch_id: The ID of the sample batch.
         :type sample_batch_id: str
         :param rows: The engine's rows, as a DataFrame or a list of dicts.
@@ -514,7 +552,14 @@ class BatchPeaksResource(BaseResource):
         if isinstance(rows, pd.DataFrame):
             keep = [
                 c
-                for c in ("mz", "formula", "ion_formula", "ionization_mechanism_id")
+                for c in (
+                    "mz",
+                    "formula",
+                    "ion_formula",
+                    "ionization_mechanism_id",
+                    "engine_tier",
+                    "engine_claim",
+                )
                 if c in rows.columns
             ]
             rows = rows[keep].astype(object).where(rows[keep].notna(), None)
