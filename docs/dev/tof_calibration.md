@@ -1,7 +1,7 @@
 # TOF mass calibration
 
 - **Status:** building
-- **As of:** 2026-10-29
+- **As of:** 2026-11-05
 - **Tracked in:** [TOF mass calibration](https://linear.app/ultra-trace/project/tof-mass-calibration-8271ef05d142) (Linear, MAS-171 to MAS-197)
 - **What:** TOF mass calibration across the analysed range: measure, fix calibrants, model, re-calibrate.
 
@@ -15,9 +15,9 @@ this note is its record.*
 **Status.** Milestone 0 (measure) is done: the assessment that started the project, the audit
 tool and the fleet baseline (section 2). Of the calibrant sets (milestone 1), TOF H's has been
 corrected, and TOF M's and site B's were measured and kept. Of the node's changes (milestone 2),
-the record that says what a fit was made on is in (MAS-182); the rest are still to come. Sites
-are named by letter and instruments by neutral labels (TOF H, TOF M, B1–B3) throughout, as
-everywhere in this repository.
+the record that says what a fit was made on is in (MAS-182); the rest are still to come. How the
+existing data is re-calibrated is decided (MAS-192, section 6). Sites are named by letter and
+instruments by neutral labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this repository.
 
 ## 1. The problem
 
@@ -738,13 +738,13 @@ the answers.
   files) (MAS-178). Options: (a) a calibrant list per such mode from ions ambient or zero spectra
   reliably show (NO3−, HSO4− and their clusters), which needs the customer's chemistry and measured
   presence; (b) transfer from the nearest reagent-mode files of the same instrument; (c) leave them
-  uncalibrated and say so in the UI and exports. *Leaning:* (b) for multi-scheme instruments, (a)
+  uncalibrated and say so in the UI and exports. *Decided:* (b) for multi-scheme instruments, (a)
   where an ambient spectrum carries enough known ions across the range, (c) only as the visible
   interim state. Also open: whether a transferred calibration is marked as such in the record and
   the badge.
 - **How existing data is re-calibrated** (MAS-192): scope, who runs it, what happens to assignment
   runs and exports made on the old axis, what customers hear and when, and how long the previous
-  parameters are kept. *Leaning:* section 6.
+  parameters are kept. *Decided:* section 6.
 - **Calibrant sets per instrument** (milestone 1) are applied on the plan owner's word, one
   instrument at a time. *Decided* for site B: keep all five nitrate and bromide sets (MAS-584).
 - Related, in the assignment quality plan ([`assignment_quality_plan.md`](assignment_quality_plan.md)):
@@ -774,25 +774,53 @@ they wait for calibration transfer (MAS-187).
 re-process driver of the composite-cut rollout (MAS-90: 7,358 files on one site in ten hours):
 
 1. Refit and apply with the node's own handler, under the instrument's current calibrant set and
-   model, newest first, in batches with a gap between them and a backlog guard.
-2. A per-file ledger: old and new parameters, record version, residuals.
+   model, newest first, in batches with a gap between them and a backlog guard. It applies what
+   the node would apply at ingest under the site's gate, but never replaces an `ok` fit with a
+   `poor` or failed one: such a file keeps its record and is listed in the ledger.
+2. A per-file ledger: old and new parameters, record version, residuals. It is kept for good,
+   where the site's backup covers it.
 3. Idempotent: a file whose record already carries the target collection version and node version
    (from MAS-182's record) is skipped, so a stopped run resumes.
 4. A dry run that only reports the axis change per mass band each file would get.
 5. Roll back a file or a batch from the ledger.
-6. Rematch follows by itself, because apply clears the file's matches; assignment runs are flagged
-   as the decision says.
+6. Rematch what it applied, in the same pass, a batch at a time and under the same backlog guard.
+   Applying a fit clears the file's matches and only flags its batches `rematch` (section 3);
+   nothing refreshes them by itself. The runner touches no peak-assignment runs; it lists those on
+   the files it applied.
 
 **The run** (MAS-196), on the plan owner's word, one site at a time: site A first as the canary,
-then site B, the internal server last, each measured with the audit tool before and after.
+then site B, the internal server last, each measured with the audit tool before and after. Within
+an instrument the reagent modes go first. Its modes without calibrants follow as a second step
+once calibration transfer (MAS-187) is released, so that a transfer reads the new parameters. The
+internal server's legacy test files are refit only where the readiness census classes them
+refit-ready. An instrument is done when no batch the runner touched is left at `rematch`.
 
-**What customers hear** (MAS-197): per instrument, a short note through the plan owner on what
-changed, over which dates, how far each mass band moved, and what to re-check.
+**What customers hear** (MAS-197): per instrument, a short note through the plan owner before the
+run, from its dry run: what changes, over which acquisition dates, how far each mass band moves,
+the run window during which matches are rebuilt, and what to re-check. After the run, one line
+that it is done, with the ledger's numbers where they differ from the dry run.
 
-**The plan's leaning on MAS-192**, pending the plan owner's answer:
+**Decided** (MAS-192, 2026-11-05):
 
-- an operator runs it per site with the runner, over all files with a fittable mode;
-- rematch stays automatic, and peak-assignment runs made on the old axis are flagged stale, not
-  re-run;
-- exports are left alone, and the customer note lists the dates and the shift per mass band;
-- previous parameters are kept for 90 days.
+- **Scope:** every TOF file with a fittable mode, with no ppm threshold. The dry run computes each
+  file's shift anyway, so a threshold would only skip the apply and the rematch, and it would leave
+  files on records without MAS-182's block, which the runner's skip key would offer again on every
+  run. Legacy files, with the acquisition software's calibration only, are in. One pass, after the
+  release that carries milestone 2; a later node version does not start another.
+- **Who:** the plan owner, per site, with the runner; not automatically after a release.
+- **Matches** are rebuilt by the runner (item 6 above).
+- **Peak-assignment runs** are not flagged by the runner. A run stores what its own ledger measured
+  (`mass_calibration`), not the calibration of the file it read, so there is nothing to compare,
+  and peak assignment is off by default since v1.8.0. The readiness census counts the runs on TOF
+  files per site. If a customer site has any, a derived check lands before that site's run: a run
+  stores a hash of its file's calibration parameters and shows as made on an earlier calibration
+  when the hash differs. Derived rather than written by the runner, because a manual
+  re-calibration or a collection edit makes a run stale the same way.
+- **Exports** are left alone; the customer note names the dates covered.
+- **Corpus specimens** taken from a site before its run carry the old axis, and are re-taken or
+  re-baselined after it. The TOF specimens of the regression coverage (MAS-191) are taken after
+  the run.
+- **Previous parameters** are kept for good in the ledger, not for 90 days. A TOF fit's parameters
+  stay valid indefinitely (the axis is recomputed from the TOF index, and re-detection does not
+  change that), the ledger holds a few kilobytes per file at most, and it is the only record of
+  what a file read before.
