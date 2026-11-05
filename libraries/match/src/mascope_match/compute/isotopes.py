@@ -7,6 +7,7 @@ import pandas as pd
 import mascope_file.io as m_io
 import mascope_signal.compute as m_compute
 from mascope_file.name import get_instrument_type, get_sample_file_type
+from mascope_match.compute.axis import current_mz_shift, shift_mz
 from mascope_match.id import generate_id
 from mascope_match.params import BaseMatchParams, unmatched_isotope_params
 from mascope_match.runtime import runtime
@@ -234,8 +235,12 @@ async def load_peaks(
     # to not compute them later in Match tab visualization.
     # A peak qualifies if its nearest target is within the window. Found via
     # binary search on sorted targets - O((n+m) log m) time and O(n) memory.
+    # Inside a shifted axis (`axis.shifted_mz_axis`) a peak qualifies where it
+    # reads, and is loaded where it is stored.
     all_mzs = peak_data.mz.values
-    mz_to_compute = all_mzs[_within_window_mask(all_mzs, target_mzs, MATCH_WINDOW_AMU)]
+    mz_to_compute = all_mzs[
+        _within_window_mask(shift_mz(all_mzs), target_mzs, MATCH_WINDOW_AMU)
+    ]
 
     peak_timeseries = await m_compute.load_peak_timeseries(filename, mz_to_compute)
 
@@ -264,6 +269,11 @@ async def load_peaks(
                 peaks = peaks.assign_coords({_var: ("mz", vals)})
     except Exception:  # noqa: BLE001 — best-effort; degrades to no-SNR / v2 proxy
         pass
+
+    # Every coordinate above was read on the stored axis; the matcher reads
+    # the peaks where the block's axis puts them.
+    if current_mz_shift() is not None:
+        peaks = peaks.assign_coords(mz=shift_mz(peaks["mz"].values))
 
     return peaks
 
