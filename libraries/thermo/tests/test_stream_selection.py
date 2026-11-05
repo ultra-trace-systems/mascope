@@ -688,6 +688,31 @@ def test_a_first_scan_of_a_rare_experiment_is_judged_among_its_own(scripted):
     assert reader.scan_indices(stream=f"{LOW} event=1") == [1, 5, 9]
 
 
+def test_a_first_scan_of_a_rare_filter_is_judged_among_its_own(scripted):
+    """A file acquired with no method loaded records no scan event, and its
+    filter is all that tells its experiments apart: two ranges of one
+    polarity, the first scan opening the one run once in four, at 1.6 times
+    the other's. Among its own range's scans it is ordinary."""
+    rare = _scan(NEG_LOW, tic=1600.0)
+    reader = scripted(([rare] + [_scan(NEG_HIGH, tic=t) for t in _STEADY[:3]]) * 3)
+
+    assert reader.scan_indices()[0] == 1
+    assert reader.scan_indices(stream=LOW) == [1, 5, 9]
+
+
+def test_a_first_scan_alone_in_its_segment_is_not_judged_by_the_next(scripted):
+    """A method segment that opens the acquisition on a single scan, then
+    one that runs the same scan event under the same filter: the segment
+    tells the two experiments apart. Its own experiment holds no other scan
+    to judge it by, and the next segment's do not."""
+    reader = scripted(
+        [_scan(NEG_LOW, 1, tic=1600.0, segment=1)]
+        + [_scan(NEG_LOW, 1, tic=t, segment=2) for t in _STEADY]
+    )
+
+    assert reader.scan_indices()[0] == 1
+
+
 # -- every selecting method hands the stream on ----------------------------------
 
 

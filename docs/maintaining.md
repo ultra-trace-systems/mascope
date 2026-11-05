@@ -2308,8 +2308,10 @@ mascope prod db script run rebuild_stale_peak_stores
   workspace, so a file copied into a workspace's batch, which a
   re-processing refuses, is rebuilt like any other. No calibration is refit.
 - Before the store is written, every batch holding one of the file's samples
-  is set to **rematch**, every match of those samples is removed and the
-  batch's aligned peaks are dropped: the new peak list has new peak ids.
+  is set to **rematch** (one already waiting on **recalibrate** keeps it, as
+  its recalibration rematches it too), every match of those samples is
+  removed and the batch's aligned peaks are dropped: the new peak list has
+  new peak ids.
   Each sample's TIC is read again from the file, and a file with an MS2 store
   has it written again with its group inventory. The peak store is written
   last, so a run that stops partway leaves the file stale for the next run.

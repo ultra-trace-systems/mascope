@@ -34,8 +34,10 @@ file that needs it:
   batch and every workspace: nothing is deleted or made anew, and no
   calibration is refit.
 - **Before the store is written**, every batch holding one of the file's
-  samples is set to ``rematch``, every match of those samples is removed and
-  the batch's aligned-peak cache is dropped: the new peak list has new peak
+  samples is set to ``rematch`` - one already waiting on ``recalibrate``
+  keeps it, as its recalibration rematches it too - every match of those
+  samples is removed and the batch's aligned-peak cache is dropped: the new
+  peak list has new peak
   ids, which nothing made on the old one finds. Each sample's TIC is read
   again from the file, as a new sample's is (``fix_sample_item_tic``), and a
   file with an MS2 store has it written again with its group inventory, as a
@@ -418,8 +420,14 @@ async def _samples_of(sample_file_id: str) -> tuple[list[str], list[str]]:
 
 
 async def _queue_rematch(sample_batch_ids: list[str]) -> None:
-    """Set batches to ``rematch``, as ``set_batches_to_rematch_status`` does,
-    and drop the peaks each aligned: they name the peak ids being replaced."""
+    """Set batches to ``rematch``, and drop the peaks each aligned: they name
+    the peak ids being replaced.
+
+    A request for work, as the ionization-mode and target-collection
+    flaggers make: a batch already waiting on a stronger one, a
+    ``recalibrate``, keeps it (``never_lower``), since its recalibration
+    rematches it as well. Its aligned peaks go all the same.
+    """
     from mascope_backend.api.controllers.sample.batches.status.service import (
         update_sample_batch_status,
     )
@@ -428,6 +436,7 @@ async def _queue_rematch(sample_batch_ids: list[str]) -> None:
         sample_batch_ids=sample_batch_ids,
         status="rematch",
         independent_transaction=False,
+        never_lower=True,
     )
     for sample_batch_id in sample_batch_ids:
         await asyncio.to_thread(m_io.delete_batch_cache, sample_batch_id)

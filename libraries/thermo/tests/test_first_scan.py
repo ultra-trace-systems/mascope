@@ -64,11 +64,28 @@ def test_a_first_scan_under_the_floor_is_kept(ratio):
     assert not is_outlier(tic, _alike(tic))
 
 
-def test_a_signal_that_moves_raises_the_bar():
-    """A first scan 1.45 times the median of scans that move by a quarter
-    from one to the next is one of them."""
-    tic = [1.45, 0.95, 1.0, 1.05, 1.04, 0.73, 1.12, 0.93]
-    assert not is_outlier(tic, _alike(tic))
+# Scans that move by 10 to 12% from one to the next: their robust relative
+# spread is 1.4826 times a median deviation of 0.1, about 0.15, so ten of it
+# puts the bar near 2.5 times their median, well above the floor.
+_MOVING = [1.0, 0.9, 1.1, 0.88, 1.12, 0.9, 1.1]
+
+
+def test_a_signal_that_moves_raises_the_bar_above_the_floor():
+    """Twice the median of scans that move is one of them; twice the median
+    of scans that agree to a percent is the quirk. The spread alone tells
+    the two apart: both stand above the floor."""
+    moving = [2.0, *_MOVING]
+    steady = _flat(2.0)
+
+    assert not is_outlier(moving, _alike(moving))
+    assert is_outlier(steady, _alike(steady))
+
+
+def test_a_first_scan_far_above_a_moving_signal_is_still_left_out():
+    """The bar rises with the spread, by ten of it and no more: three times
+    the median of scans that move by a tenth stands out of them."""
+    tic = [3.0, *_MOVING]
+    assert is_outlier(tic, _alike(tic))
 
 
 def test_a_signal_that_starts_on_a_plateau_keeps_its_first_scan():
