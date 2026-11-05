@@ -168,11 +168,11 @@ def _adduct_charge_sign(adduct: str) -> str | None:
 def adduct_notation(text: str | None) -> str | None:
     """Write a precursor ion type the way Mascope compares one.
 
-    Mascope's standard adduct notation is used wherever it can say the ion (one
-    molecule, one charge, terms all added or all removed), so a library's
-    ``[M+H]+`` is the spelling a ledger row's mechanism has. Any other ion
-    (``[2M+H]+``, ``[M+2H]2+``, ``[M+H-H2O]+``) is kept as written, blanks
-    aside. A type without brackets is kept as written too: only its adapter
+    Mascope's standard adduct notation is used wherever it can say the ion,
+    a multimer, a charge above one and a neutral loss included (``[2M+H]+``,
+    ``[M+2H]2+``, ``[M+H-H2O]+``), so a library's ``[M+H]+`` is the spelling a
+    ledger row's mechanism has. Any other ion (``[M+Na-2H]-``) is kept as
+    written, blanks aside. A type without brackets is kept as written too: only its adapter
     knows the charge to bracket it with.
 
     :param text: The ion type as the source wrote it.

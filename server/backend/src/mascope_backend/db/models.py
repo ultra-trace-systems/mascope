@@ -1925,8 +1925,39 @@ def _read_mechanism(value: str) -> str:
     return mechanism_key(value)
 
 
+def _adduct_row(value: str | None):
+    """A mechanism's structured row, or None where it reads as neither
+    notation."""
+    from mascope_tools.composition.mechanism_notation import (
+        MechanismNotationError,
+        to_row,
+    )
+
+    if value is None:
+        return None
+    try:
+        return to_row(value)
+    except MechanismNotationError:
+        return None
+
+
 class IonizationMechanism(Base):
-    """Ionization mechanism table."""
+    """Ionization mechanism table.
+
+    A mechanism is its notation string, ``[M+H]+``, and beside it the same
+    mechanism as a structured row (``mascope_tools.composition.
+    mechanism_notation.AdductRow``): whether a species is added or removed,
+    its formula and charge, how many molecules the ion holds, the neutral it
+    loses. The string decides: setting it writes the row's columns from it
+    (:meth:`_write_row`), so the two cannot disagree. What follows from the
+    row - the ion's polarity and charge, its mass shift, the display form and
+    the legacy spelling - is derived rather than stored. Only ``name`` is
+    stored and not derived: what people call the mechanism.
+
+    The row's columns are NULL only on a row whose string reads as neither
+    notation; the migration that added them refuses to run on such a row,
+    and the write validator never stores one.
+    """
 
     __tablename__ = "ionization_mechanism"
 
@@ -1935,6 +1966,75 @@ class IonizationMechanism(Base):
     ionization_mechanism: Mapped[str] = mapped_column(
         StandardMechanism(256), unique=True
     )
+    # "add" or "remove": what the mechanism does with its species.
+    operation: Mapped[Optional[str]] = mapped_column(String(6), nullable=True)
+    # The species added or removed, a formula ("H", "(CH4N2O)H", "(H)2" for
+    # the two protons of [M+2H]2+); empty for the electron of [M]+.
+    species: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # The charge the species carries, all of it: +1 for a proton, -1 for
+    # bromide or the electron, +2 for [M+2H]2+.
+    species_charge: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # How many molecules the ion holds: 2 for [2M+H]+.
+    multimer_n: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # The neutral the ion loses, a formula: "H2O" for [M+H-H2O]+.
+    neutral_loss: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # What people call the mechanism, "protonation"; not derived.
+    name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+
+    @validates("ionization_mechanism")
+    def _write_row(self, key, value):
+        """Write the row's columns from the mechanism as it is set."""
+        row = _adduct_row(value)
+        self.operation = row.operation if row else None
+        self.species = row.species if row else None
+        self.species_charge = row.species_charge if row else None
+        self.multimer_n = row.multimer_n if row else 1
+        self.neutral_loss = row.neutral_loss if row else None
+        return value
+
+    @property
+    def adduct_row(self):
+        """The mechanism as a structured row, read from its columns; None for
+        a row whose string reads as neither notation."""
+        from mascope_tools.composition.mechanism_notation import AdductRow
+
+        if self.operation is None or self.species_charge is None:
+            return None
+        return AdductRow(
+            operation=self.operation,
+            species=self.species or "",
+            species_charge=self.species_charge,
+            multimer_n=self.multimer_n or 1,
+            neutral_loss=self.neutral_loss,
+            name=self.name,
+        )
+
+    @property
+    def ion_charge(self) -> int | None:
+        """The charge of the ion the mechanism makes, derived from the row."""
+        row = self.adduct_row
+        return row.ion_charge if row else None
+
+    @property
+    def mass_shift(self) -> float | None:
+        """What the mechanism adds to its molecules' mass, in Da, derived
+        from the row (``mascope_tools.composition.utils.mass_shift``)."""
+        from mascope_tools.composition.utils import mass_shift
+
+        row = self.adduct_row
+        if row is None:
+            return None
+        try:
+            return mass_shift(row)
+        except Exception:  # noqa: BLE001 - a row older rules let through has no mass
+            return None
+
+    @property
+    def legacy_notation(self) -> str | None:
+        """The mechanism in the legacy notation, derived from the row; None
+        for what that notation cannot say."""
+        row = self.adduct_row
+        return row.legacy if row else None
 
     # Relationships
     target_ion = relationship(

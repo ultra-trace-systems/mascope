@@ -24,18 +24,27 @@ from mascope_backend.ionization_catalogue import is_shipped_mechanism
 from mascope_tools.composition.mechanism_notation import (
     MechanismNotationError,
     parse_mechanism,
+    to_row,
 )
-from mascope_tools.composition.utils import assert_valid_formula, parse_composition
+from mascope_tools.composition.utils import (
+    assert_valid_formula,
+    mass_shift,
+    parse_composition,
+)
 
 
 #: The mechanism field's description, on the model a request is read into and
 #: on the one a stored row is reported through.
 _MECHANISM_DESCRIPTION = (
     "The ionization mechanism in the standard adduct notation: '[M+H]+', "
-    "'[M-H]-', '[M+Br]-', '[M]+.' for electron transfer. The legacy "
-    "spelling ('+H+', '-H+', '+Br-', '+') is accepted on input and "
-    "stored in the standard one."
+    "'[M-H]-', '[M+Br]-', '[M]+.' for electron transfer, '[2M+H]+' for a "
+    "dimer, '[M+2H]2+' for a doubly charged ion, '[M+H-H2O]+' for a neutral "
+    "loss. The legacy spelling ('+H+', '-H+', '+Br-', '+') is accepted on "
+    "input and stored in the standard one."
 )
+
+#: The longest name a mechanism may be given: the column's.
+_NAME_MAX_LENGTH = 256
 
 
 class IonizationMechanismBaseValidator:
@@ -48,9 +57,9 @@ class IonizationMechanismBaseValidator:
 
         Either notation is accepted - ``[M-H]-`` or its legacy spelling ``-H+``
         - and the standard one is what is stored (see
-        :mod:`mascope_tools.composition.mechanism_notation`). Each term must be
-        a formula of real elements: an unknown element or a stray character is
-        refused rather than skipped.
+        :mod:`mascope_tools.composition.mechanism_notation`). Each term, the
+        neutral loss's included, must be a formula of real elements: an
+        unknown element or a stray character is refused rather than skipped.
 
         The field's ``max_length`` refuses an over-long value before this runs,
         so the parse never reads one. That bounds the text as sent; the
@@ -72,7 +81,7 @@ class IonizationMechanismBaseValidator:
                 f"{limit} fit."
             )
 
-        for term in parts.terms:
+        for term in parts.formulas:
             try:
                 assert_valid_formula(term)
             except ValueError as e:
@@ -124,6 +133,10 @@ class IonizationMechanismBase(BaseModel):
         ..., description="Polarity of the ionization mechanism ('+' or '-')"
     )
     ionization_mechanism: str = Field(..., description=_MECHANISM_DESCRIPTION)
+    name: str | None = Field(
+        None,
+        description="What people call the mechanism, 'protonation'; not part of it.",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -145,6 +158,23 @@ class IonizationMechanismCreate(
             "characters, both as sent and in the standard notation."
         ),
     )
+
+    name: str | None = Field(
+        None,
+        max_length=_NAME_MAX_LENGTH,
+        description=(
+            "What people call the mechanism, 'protonation'; not part of it. "
+            f"At most {_NAME_MAX_LENGTH} characters; blank is no name."
+        ),
+    )
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str | None) -> str | None:
+        """A name as it is shown: stripped, and none where it is blank."""
+        if value is None:
+            return None
+        return value.strip() or None
 
     @model_validator(mode="before")
     @classmethod
@@ -202,6 +232,36 @@ class IonizationMechanismRead(IonizationMechanismBase):
     ionization_mechanism_id: str = Field(
         ..., description="Unique identifier for the ionization mechanism"
     )
+    operation: str | None = Field(
+        None,
+        description=(
+            "The mechanism as a row: 'add' or 'remove', what it does with its "
+            "species. Written from the mechanism, as are the row's other "
+            "fields; null on a stored row that reads as neither notation."
+        ),
+    )
+    species: str | None = Field(
+        None,
+        description=(
+            "The species added or removed, a formula: 'H', '(CH4N2O)H' for "
+            "two terms, '(H)2' for the two protons of '[M+2H]2+'; empty for "
+            "the electron of '[M]+.'."
+        ),
+    )
+    species_charge: int | None = Field(
+        None,
+        description=(
+            "The charge the species carries, all of it: 1 for a proton, -1 "
+            "for bromide or the electron, 2 for '[M+2H]2+'."
+        ),
+    )
+    multimer_n: int = Field(
+        1, description="How many molecules the ion holds: 2 for '[2M+H]+'."
+    )
+    neutral_loss: str | None = Field(
+        None,
+        description="The neutral the ion loses, a formula: 'H2O' for '[M+H-H2O]+'.",
+    )
 
     @computed_field(
         description=(
@@ -215,6 +275,37 @@ class IonizationMechanismRead(IonizationMechanismBase):
         return is_shipped_mechanism(
             self.ionization_mechanism, self.ionization_mechanism_polarity
         )
+
+    @computed_field(
+        description=(
+            "The charge of the ion the mechanism makes, derived from it: 1 "
+            "for '[M+H]+', -1 for '[M-H]-', 2 for '[M+2H]2+'. Null for a "
+            "stored row that reads as neither notation."
+        )
+    )
+    @property
+    def ion_charge(self) -> int | None:
+        """The ion's charge, read from the mechanism."""
+        try:
+            return parse_mechanism(self.ionization_mechanism).charge
+        except MechanismNotationError:
+            return None
+
+    @computed_field(
+        description=(
+            "What the mechanism adds to the mass of its molecules, in Da, "
+            "derived from it: the ion of n molecules M has the m/z "
+            "(n * M + mass_shift) / |ion_charge|. Null for a stored row that "
+            "reads as neither notation."
+        )
+    )
+    @property
+    def mass_shift(self) -> float | None:
+        """The mass shift, read from the mechanism's row."""
+        try:
+            return mass_shift(to_row(self.ionization_mechanism))
+        except Exception:  # noqa: BLE001 - a row older rules let through has no mass
+            return None
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).

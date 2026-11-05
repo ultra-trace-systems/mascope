@@ -8,8 +8,9 @@ from mascope_tools.composition.config import ELECTRON_MASS
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.exceptions import CompositionFinderException
 from mascope_tools.composition.mechanism_notation import (
+    AdductRow,
     MechanismNotationError,
-    parse_mechanism,
+    to_row,
 )
 from mascope_tools.composition.models import (
     Atom,
@@ -477,6 +478,35 @@ def _caret_labelled(moiety: str) -> str:
     return _BRACKET_ISOTOPE.sub(replace, moiety)
 
 
+def _species_mass(formula: str) -> float:
+    """The monoisotopic mass of a row's species or neutral loss, labelled
+    isotopes in either form; nothing for the electron's empty species."""
+    if not formula:
+        return 0.0
+    return composition_mass(parse_composition(_caret_labelled(formula)))
+
+
+def mass_shift(row: AdductRow) -> float:
+    """What a mechanism adds to the mass of the molecules it ionizes.
+
+    The ion's mass is ``multimer_n`` molecules plus this shift, and its m/z
+    that over the ion's charge: ``(n * M + shift) / |z|``. For a singly
+    charged ion of one molecule the shift is the m/z less the neutral's mass,
+    the signed ``mass`` :func:`parse_ionization` answers. The species' mass
+    accounts for the electrons its own charge stands for - the proton in
+    ``[M+H]+`` and ``[M-H]-``, the bromide in ``[M+Br]-``, the electron
+    itself in ``[M]+.`` - and a neutral loss takes its whole mass off.
+
+    :param row: The mechanism's row (:func:`~mascope_tools.composition.mechanism_notation.to_row`).
+    :raises CompositionFinderException: A labelled isotope there is no mass
+        for.
+    :return: The mass shift in Da.
+    """
+    sign = 1 if row.operation == "add" else -1
+    shift = sign * (_species_mass(row.species) - ELECTRON_MASS * row.species_charge)
+    return shift - _species_mass(row.neutral_loss or "")
+
+
 def parse_ionization(ionization_string: str) -> IonizationMechanism:
     """Parse an ionization mechanism, written in either notation.
 
@@ -488,6 +518,12 @@ def parse_ionization(ionization_string: str) -> IonizationMechanism:
     ``+Br-``, ``-H-``, ``+``, ``-``) reads the same; see
     :mod:`mascope_tools.composition.mechanism_notation`.
 
+    Read through the mechanism's row (``to_row``): the species is the
+    formula, its charge the electrons the mass accounts for. The finder
+    searches a singly charged ion of one molecule with no neutral loss, so a
+    multimer (``[2M+H]+``), a charge above one (``[M+2H]2+``) and a neutral
+    loss (``[M+H-H2O]+``) are refused rather than searched as some other ion.
+
     :param ionization_string: String representing the ionization mechanism.
     :type ionization_string: str
     :raises CompositionFinderException: If the ionization is unsupported.
@@ -496,30 +532,37 @@ def parse_ionization(ionization_string: str) -> IonizationMechanism:
     """
     ionization_string = ionization_string.strip()
     try:
-        parts = parse_mechanism(ionization_string)
+        row = to_row(ionization_string)
     except MechanismNotationError as error:
         raise CompositionFinderException(
             f"Unsupported ionization mechanism: '{ionization_string}'. {error}"
         ) from error
+    if not row.parts.simple:
+        raise CompositionFinderException(
+            f"Unsupported ionization mechanism: '{ionization_string}'. The "
+            "composition finder searches singly charged ions of one molecule "
+            "with no neutral loss."
+        )
 
-    if parts.electron_transfer:
+    if not row.species:
+        # Electron transfer: the electron's own mass, attached or removed.
         formula = ""
         mass = ELECTRON_MASS
     else:
-        composition = parse_composition(_caret_labelled(parts.moiety))
+        composition = parse_composition(_caret_labelled(row.species))
         formula = to_hill_order(composition)
         # The moiety's mass accounts for its own charge's electron - the
         # proton in "[M+H]+" and "[M-H]-", the bromide in "[M+Br]-". The ion
         # a removed proton leaves is the anion, one electron heavier than a
         # cation would be, and the ion a removed hydride leaves is the cation.
-        mass = composition_mass(composition) - ELECTRON_MASS * parts.moiety_charge
+        mass = composition_mass(composition) - ELECTRON_MASS * row.species_charge
 
     return IonizationMechanism(
         mascope_notation=ionization_string,
-        addition=parts.addition,
+        addition=row.operation == "add",
         formula=formula,
         mass=mass,
-        charge=parts.charge,
+        charge=row.ion_charge,
     )
 
 

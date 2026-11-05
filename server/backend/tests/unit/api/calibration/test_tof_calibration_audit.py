@@ -492,8 +492,16 @@ def test_a_shift_is_the_mechanism_adduct():
     ]
 
 
-def test_a_mechanism_of_two_neutrals_has_no_family():
-    assert audit.mechanism_shifts(_mechanism("[2M+H]+")) is None
+@pytest.mark.parametrize("notation", ["[2M+H]+", "[2M-H]-", "[M+2H]2+", "[M-2H]2-"])
+def test_a_mechanism_of_two_neutrals_or_two_charges_has_no_family(notation):
+    # Its m/z is no neutral's mass plus a shift, so no lattice of shifts holds it.
+    assert audit.mechanism_shifts(_mechanism(notation)) is None
+
+
+def test_a_neutral_loss_shifts_like_any_other_term():
+    assert audit.mechanism_shifts(_mechanism("[M+H-H2O]+")) == [
+        pytest.approx(1.00728 - 18.01056, abs=1e-5)
+    ]
 
 
 def test_the_lattice_is_spaced_by_o_against_ch4():

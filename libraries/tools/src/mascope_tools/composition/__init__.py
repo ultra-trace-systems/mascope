@@ -18,10 +18,13 @@ from .mass_accuracy import (
     scoring_sigma_ppm,
 )
 from .mechanism_notation import (
+    AdductRow,
+    from_row,
     legacy_notation,
     mechanism_key,
     parse_mechanism,
     standard_notation,
+    to_row,
 )
 from .models import CompositionSearchConfig, HeuristicFilterConfig, PatternScoring
 from .profiles import resolve_fallback_sigma_ppm, resolve_match_tolerance_ppm
@@ -80,8 +83,10 @@ from .scoring import pattern_scoring_for_sample, score_candidates
 # mechanism is the one string an engine publishing into Mascope and Mascope
 # itself must spell alike. Mascope stores and shows the standard adduct notation
 # (`[M-H]-`), and an engine that still writes the legacy `-H+` converts with
-# these rather than restating a grammar that has been read wrong once already.
+# these rather than restating a grammar that has been read wrong once already;
+# one that holds a mechanism as fields maps them with `to_row` and `from_row`.
 __all__ = [
+    "AdductRow",
     "assign_compositions",
     "CompositionSearchConfig",
     "EnvelopeFit",
@@ -91,6 +96,7 @@ __all__ = [
     "fit_mass_accuracy",
     "fit_sample_mass_accuracy",
     "formula_plausibility",
+    "from_row",
     "HeuristicFilterConfig",
     "legacy_notation",
     "mass_accuracy_anchors",
@@ -108,4 +114,5 @@ __all__ = [
     "score_candidates",
     "scoring_sigma_ppm",
     "standard_notation",
+    "to_row",
 ]

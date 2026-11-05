@@ -12,7 +12,13 @@ What is pinned:
 - one mechanism has one spelling: its terms are written in alphabetical order
   whichever order they were typed in, and every spelling the fleet stores is
   already written so;
-- what neither notation can say is refused with the reason, not approximated.
+- what neither notation can say is refused with the reason, not approximated;
+- the three shapes only the standard notation says - a multimer, a charge
+  above one and a neutral loss - are read and written back as they are, and
+  have no legacy spelling;
+- a mechanism and its structured row map onto each other exactly, for every
+  spelling the fleet stores, the library's tables and the new shapes, and the
+  row derives the ion's charge and polarity rather than storing them.
 """
 
 import itertools
@@ -21,12 +27,16 @@ import pytest
 
 from mascope_tools.composition.calibration import PROVISIONAL_ORBITRAP_CORROBORATION
 from mascope_tools.composition.mechanism_notation import (
+    AdductRow,
     MechanismNotationError,
     MechanismParts,
+    from_row,
     legacy_notation,
     mechanism_key,
+    mechanism_spellings,
     parse_mechanism,
     standard_notation,
+    to_row,
 )
 from mascope_tools.composition.profiles import REAGENT_PROFILES
 from mascope_tools.composition.reagents import SECONDARY_CHANNELS
@@ -200,10 +210,20 @@ def test_a_standard_spelling_is_stored_as_its_round_trip_writes_it(typed, stored
     [
         ("[M]+", "radical"),
         ("[M+H]+.", "only electron transfer"),
-        ("[2M+H]+", "one"),
-        ("[M+2H]2+", "singly charged"),
-        ("[M+H]", "singly charged"),
-        ("[M+Na-2H]-", "both adds and removes"),
+        ("[1M+H]+", "one molecule is written '\\[M'"),
+        ("[02M+H]+", "one molecule"),
+        ("[M+H]1+", "single charge is written"),
+        ("[M+H]", "must end in the ion's charge"),
+        ("[M+H]2", "must end in the ion's charge"),
+        ("[M]2+.", "one electron"),
+        ("[M-H2O]+.", "only electron transfer"),
+        ("[M+2H]+", "as a formula"),
+        ("[M+2H+Na]3+", "only term"),
+        ("[M+3H]2+", "is the ion's charge"),
+        ("[M+2]2+", "is the ion's charge"),
+        ("[M+Na-2H]-", "neutral loss '2H' as a formula"),
+        ("[M+H-2H2O]+", "neutral loss '2H2O' as a formula"),
+        ("[M+H-H 2O]+", "not a formula"),
         ("[M+2H2O+H]+", "as a formula"),
         ("[M++H]+", "added with"),
         ("[M+ H]+", "not a formula"),
@@ -226,3 +246,160 @@ def test_a_key_leaves_unreadable_text_as_it_is():
     assert mechanism_key("  not a mechanism ") == "not a mechanism"
     assert mechanism_key("+Br-") == mechanism_key("[M+Br]-")
     assert mechanism_key("+Br-") != mechanism_key("+I-")
+
+
+#: The shapes only the standard notation says, as typed, as stored, and as a
+#: row: a multimer, a charge above one, a neutral loss, and their mixtures.
+NEW_SHAPES = [
+    ("[2M+H]+", "[2M+H]+", AdductRow("add", "H", 1, multimer_n=2)),
+    ("[3M+Na]+", "[3M+Na]+", AdductRow("add", "Na", 1, multimer_n=3)),
+    ("[2M-H]-", "[2M-H]-", AdductRow("remove", "H", 1, multimer_n=2)),
+    ("[2M+Br]-", "[2M+Br]-", AdductRow("add", "Br", -1, multimer_n=2)),
+    ("[2M]+.", "[2M]+.", AdductRow("remove", "", -1, multimer_n=2)),
+    ("[M+2H]2+", "[M+2H]2+", AdductRow("add", "(H)2", 2)),
+    ("[M+(H)2]2+", "[M+2H]2+", AdductRow("add", "(H)2", 2)),
+    ("[M+3H]3+", "[M+3H]3+", AdductRow("add", "(H)3", 3)),
+    ("[M-2H]2-", "[M-2H]2-", AdductRow("remove", "(H)2", 2)),
+    ("[M+2NH4]2+", "[M+2NH4]2+", AdductRow("add", "(NH4)2", 2)),
+    ("[M+Ca]2+", "[M+Ca]2+", AdductRow("add", "Ca", 2)),
+    ("[M+H+Na]2+", "[M+H+Na]2+", AdductRow("add", "(H)Na", 2)),
+    ("[M+Na+H]2+", "[M+H+Na]2+", AdductRow("add", "(H)Na", 2)),
+    ("[M+H2]2+", "[M+H2]2+", AdductRow("add", "H2", 2)),
+    # A group multiplied by anything but the ion's charge is no coefficient.
+    ("[M+(H)3]2+", "[M+(H)3]2+", AdductRow("add", "(H)3", 2)),
+    ("[M+H-H2O]+", "[M+H-H2O]+", AdductRow("add", "H", 1, neutral_loss="H2O")),
+    ("[M-H2O+H]+", "[M+H-H2O]+", AdductRow("add", "H", 1, neutral_loss="H2O")),
+    ("[M+Na-CO2]+", "[M+Na-CO2]+", AdductRow("add", "Na", 1, neutral_loss="CO2")),
+    (
+        "[M+H-NH3-H2O]+",
+        "[M+H-H2O-NH3]+",
+        AdductRow("add", "H", 1, neutral_loss="(H2O)NH3"),
+    ),
+    (
+        "[M+H-(H2O)2]+",
+        "[M+H-(H2O)2]+",
+        AdductRow("add", "H", 1, neutral_loss="(H2O)2"),
+    ),
+    (
+        "[2M+2H-H2O]2+",
+        "[2M+2H-H2O]2+",
+        AdductRow("add", "(H)2", 2, multimer_n=2, neutral_loss="H2O"),
+    ),
+]
+
+
+@pytest.mark.parametrize(("typed", "stored", "row"), NEW_SHAPES)
+def test_the_new_shapes_read_and_are_written_back_as_stored(typed, stored, row):
+    assert standard_notation(typed) == stored
+    assert standard_notation(stored) == stored
+    assert mechanism_key(typed) == stored
+    assert to_row(typed) == row
+    assert from_row(row) == stored
+    assert row.display == stored
+
+
+@pytest.mark.parametrize(("typed", "stored", "row"), NEW_SHAPES)
+def test_the_new_shapes_have_no_legacy_spelling(typed, stored, row):
+    parts = parse_mechanism(typed)
+    assert not parts.simple
+    assert parts.legacy is None
+    assert row.legacy is None
+    with pytest.raises(MechanismNotationError, match="no legacy spelling"):
+        legacy_notation(typed)
+    assert mechanism_spellings([typed]) == list(dict.fromkeys([typed, stored]))
+
+
+def _every_spelling():
+    yield from (standard for _, standard in STORED + UNUSUAL)
+    yield from (stored for _, stored in OUT_OF_ORDER)
+    yield from _table_notations()
+    yield from (stored for _, stored, _ in NEW_SHAPES)
+
+
+@pytest.mark.parametrize("notation", sorted(set(_every_spelling())))
+def test_a_mechanism_and_its_row_map_onto_each_other(notation):
+    row = to_row(notation)
+    assert from_row(row) == notation
+    assert to_row(from_row(row)) == row
+    assert to_row(notation, name="a name") == AdductRow(
+        **{**row.__dict__, "name": "a name"}
+    )
+
+
+@pytest.mark.parametrize(("legacy", "standard"), STORED + UNUSUAL)
+def test_a_legacy_spelling_has_the_row_of_its_standard_one(legacy, standard):
+    row = to_row(legacy)
+    assert row == to_row(standard)
+    assert row.legacy == legacy
+    assert row.parts.simple
+    assert row.multimer_n == 1
+    assert row.neutral_loss is None
+
+
+@pytest.mark.parametrize(
+    ("notation", "operation", "species", "species_charge", "ion_charge"),
+    [
+        ("[M+H]+", "add", "H", 1, 1),
+        ("[M-H]-", "remove", "H", 1, -1),
+        ("[M-H]+", "remove", "H", -1, 1),
+        ("[M+Br]-", "add", "Br", -1, -1),
+        ("[M+NH4]+", "add", "NH4", 1, 1),
+        ("[M+CH4N2O+H]+", "add", "(CH4N2O)H", 1, 1),
+        ("[M]+.", "remove", "", -1, 1),
+        ("[M]-.", "add", "", -1, -1),
+        ("[M+2H]2+", "add", "(H)2", 2, 2),
+        ("[M-2H]2-", "remove", "(H)2", 2, -2),
+        ("[M+Ca]2+", "add", "Ca", 2, 2),
+    ],
+)
+def test_a_row_derives_the_ions_charge_and_polarity(
+    notation, operation, species, species_charge, ion_charge
+):
+    row = to_row(notation)
+    assert (row.operation, row.species, row.species_charge) == (
+        operation,
+        species,
+        species_charge,
+    )
+    assert row.ion_charge == ion_charge
+    assert row.ion_polarity == ("+" if ion_charge > 0 else "-")
+    assert row.ion_polarity == parse_mechanism(notation).polarity
+
+
+@pytest.mark.parametrize(
+    ("row", "reason"),
+    [
+        (AdductRow("attach", "H", 1), "'add' or 'remove'"),
+        (AdductRow("add", "H", 0), "carries a charge"),
+        (AdductRow("add", "H", 1, multimer_n=0), "at least one molecule"),
+        # Terms out of order, and a group that would split: another spelling
+        # of a mechanism the row would then not round-trip to.
+        (AdductRow("add", "(H)CH4N2O", 1), "not written as a mechanism reads"),
+        (AdductRow("add", "H2", 2, neutral_loss="(NH3)H2O"), "not written as"),
+        # A mechanism that removes loses no neutral: written out, the loss
+        # reads as part of what is removed.
+        (AdductRow("remove", "H", 1, neutral_loss="H2O"), "not written as"),
+        # The electron is one charge.
+        (AdductRow("remove", "", -2), "one electron"),
+        (AdductRow("add", "H!", 1), "not a formula"),
+    ],
+)
+def test_a_row_no_mechanism_reads_as_is_refused(row, reason):
+    with pytest.raises(MechanismNotationError, match=reason):
+        from_row(row)
+
+
+@pytest.mark.parametrize(
+    ("notation", "formulas"),
+    [
+        ("[M+CH4N2O+H]+", ("CH4N2O", "H")),
+        ("[M+2H]2+", ("(H)2",)),
+        ("[M+H-H2O-NH3]+", ("H", "H2O", "NH3")),
+        ("[2M+Na-CO2]+", ("Na", "CO2")),
+        ("[M]+.", ()),
+    ],
+)
+def test_every_formula_a_mechanism_moves_is_listed(notation, formulas):
+    # What the write validator checks for real elements, the neutral loss's
+    # included.
+    assert parse_mechanism(notation).formulas == formulas

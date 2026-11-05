@@ -1481,6 +1481,28 @@ class TestEachMechanismIsSearchedOnce:
         assert [m.ionization_mechanism_id for m in mechanisms] == ["im-h"]
         assert mechanisms[0] is not self.PROTON
 
+    @pytest.mark.parametrize("notation", ["[2M+H]+", "[M+2H]2+", "[M+H-H2O]+"])
+    def test_a_shape_the_finder_does_not_search_leaves_with_its_id(
+        self, monkeypatch, notation
+    ):
+        # A multimer, a charge above one or a neutral loss reads, but the
+        # finder refuses it: a run leaves it out, once reported, rather than
+        # failing every search of the sample.
+        warnings = []
+        monkeypatch.setattr(service_module.runtime.logger, "warning", warnings.append)
+        monkeypatch.setattr(service_module, "_reported_unreadable", set())
+        shape = _mechanism("im-shape", notation)
+
+        mechanism_ids, mechanisms = _without_unreadable(
+            ["im-h", "im-shape"], [self.PROTON, shape]
+        )
+
+        assert mechanism_ids == ["im-h"]
+        assert [m.ionization_mechanism_id for m in mechanisms] == ["im-h"]
+        assert not _readable(shape)
+        assert len(warnings) == 1
+        assert "does not search yet" in warnings[0]
+
 
 #: A charge-transfer source that opened methyl loss and proton transfer for
 #: itself, and a nitrate source that declares carbonate and opened formate.

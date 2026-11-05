@@ -445,3 +445,49 @@ def test_one_reading_per_ion_keeps_the_closest_and_then_the_line_reading():
     )
 
     assert kept == [closer, other_mechanism, at_a_line]
+
+
+@pytest.mark.asyncio
+async def test_a_shape_the_finder_does_not_search_is_left_out_of_the_search(
+    test_ionization_mechanisms: list, async_session_factory
+):
+    """A dimer among the asked mechanisms leaves the rest searched; alone, it
+    is refused with the reason rather than searched as the monomer."""
+    from sqlalchemy import delete
+
+    from mascope_backend.db import IonizationMechanism
+
+    dimer = IonizationMechanism(
+        ionization_mechanism_id="unit-dimer-br",
+        ionization_mechanism_polarity="-",
+        ionization_mechanism="[2M+Br]-",
+    )
+    async with async_session_factory() as session:
+        session.add(dimer)
+        await session.commit()
+    try:
+        bromide = _ids(test_ionization_mechanisms, "[M+Br]-")
+        both = await retrieve_compositions_by_mz(
+            mz=168.9506,
+            ionization_mechanism_ids=[*bromide, "unit-dimer-br"],
+            formula_ranges="C0-10 H0-20 O0-10",
+        )
+        assert _rows_of("C3H6O3", both)
+        assert {
+            row["ionization_mechanism"]["ionization_mechanism"] for row in both["data"]
+        } == {"[M+Br]-"}
+
+        with pytest.raises(Exception, match="singly charged ions of one molecule"):
+            await retrieve_compositions_by_mz(
+                mz=168.9506,
+                ionization_mechanism_ids=["unit-dimer-br"],
+                formula_ranges="C0-10 H0-20 O0-10",
+            )
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(IonizationMechanism).where(
+                    IonizationMechanism.ionization_mechanism_id == "unit-dimer-br"
+                )
+            )
+            await session.commit()
