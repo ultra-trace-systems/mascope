@@ -24,6 +24,9 @@ A run folder (``--runs-root``, default ``~/mascope-bench/runs``) holds:
 - ``PREREG.sha256``: the hashes of the fixture, this driver, the recipe and
   the note, written before the first model call;
 - ``transcripts/<question>-rep<n>.json`` and ``.md``: Goose's session export,
+  which also stands in for the stdout document of an episode killed at the
+  wall clock (Goose writes that document only when a run ends): its tool
+  calls, tokens and, as ``silent_s``, how long the model had been silent,
   every tool call and result as the model saw them;
 - ``results.jsonl``: one record per episode: question, repetition, the
   model's answer, the checker's verdict and problems, tool calls, seconds,
@@ -398,9 +401,21 @@ def _parse_answer(stdout: str) -> tuple[Any, dict[str, Any]]:
     doc = _goose_output(stdout)
     if doc is None:
         return None, {"tool_calls": 0, "tools": {}, "tokens": {}}
+    answer, tools = _read_messages(doc.get("messages", ()))
+    tokens = {
+        key: doc.get("metadata", {}).get(key)
+        for key in ("input_tokens", "output_tokens", "total_tokens")
+    }
+    return answer, {"tool_calls": sum(tools.values()), "tools": tools, "tokens": tokens}
+
+
+def _read_messages(messages: Any) -> tuple[Any, dict[str, int]]:
+    """The answer given in *messages*, if any, and the tool calls made, by
+    tool: the same reading of Goose's stdout document and of its session
+    export, whose messages have the same shape."""
     answer = None
     tools: dict[str, int] = {}
-    for message in doc.get("messages", ()):
+    for message in messages or ():
         for part in message.get("content", ()):
             if part.get("type") == "toolRequest":
                 call = (part.get("toolCall") or {}).get("value") or {}
@@ -416,11 +431,37 @@ def _parse_answer(stdout: str) -> tuple[Any, dict[str, Any]]:
                     continue
                 if isinstance(final, dict) and "answer" in final:
                     answer = _as_json(final["answer"])
+    return answer, tools
+
+
+def _parse_export(path: Path) -> tuple[Any, dict[str, Any]] | None:
+    """What the session export at *path* says of an episode Goose never
+    finished: the answer, if one was given, the tool calls made, the tokens
+    accumulated over its turns, and ``last_message`` (epoch seconds of the
+    last message, so the record can say how long the model was silent before
+    the wall clock). Goose writes its stdout document only when a run ends,
+    so an episode killed at the wall clock has none, and without the export
+    it would read as one of no calls at all. None when there is no export."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or "conversation" not in doc:
+        return None
+    answer, tools = _read_messages(doc.get("conversation"))
+    usage = doc.get("accumulated_usage") or {}
     tokens = {
-        key: doc.get("metadata", {}).get(key)
-        for key in ("input_tokens", "output_tokens", "total_tokens")
+        key: usage.get(key) for key in ("input_tokens", "output_tokens", "total_tokens")
     }
-    return answer, {"tool_calls": sum(tools.values()), "tools": tools, "tokens": tokens}
+    created = [
+        m.get("created") for m in doc.get("conversation") or () if m.get("created")
+    ]
+    return answer, {
+        "tool_calls": sum(tools.values()),
+        "tools": tools,
+        "tokens": tokens,
+        "last_message": max(created) if created else None,
+    }
 
 
 #: An m/z a model reports is held to this, not the bundle's 0.1 ppm: a model
@@ -744,7 +785,16 @@ def run(args: argparse.Namespace) -> int:
                         if record.get("readings")
                         else ""
                     )
-                    + ("  TIMEOUT" if record.get("timed_out") else "")
+                    + (
+                        "  TIMEOUT"
+                        + (
+                            f" after {record['silent_s']}s of silence"
+                            if record.get("silent_s") is not None
+                            else ""
+                        )
+                        if record.get("timed_out")
+                        else ""
+                    )
                     + (f"  {record['problems'][:2]}" if record["problems"] else "")
                     + (f"  {record['error'][-120:]!r}" if record["error"] else ""),
                     flush=True,
@@ -841,6 +891,7 @@ def episode(
         timed_out = True
     except OSError as e:
         stdout, stderr, code = "", f"goose could not be run: {e}", -2
+    ended = time.time()
     seconds = time.monotonic() - started
     where = folder / "transcripts" / f"{question.id}-rep{rep}"
     where.with_suffix(".stdout.txt").write_text(
@@ -872,6 +923,14 @@ def episode(
         except (subprocess.TimeoutExpired, OSError) as e:
             export_error = f"{type(e).__name__}: {e}"[:200]
     raw, about = _parse_answer(stdout)
+    silent = None
+    if _goose_output(stdout) is None:
+        # Killed before Goose wrote its document: the export has the turns
+        exported = _parse_export(where.with_suffix(".json"))
+        if exported is not None:
+            raw, about = exported
+            if about["last_message"]:
+                silent = round(ended - about["last_message"])
     scored = score(question, raw)
     cost = cost_of(about["tokens"], args.model)
     with SPEND["lock"]:
@@ -897,6 +956,7 @@ def episode(
         "infra": infra,
         "stdout_bytes": len(stdout.encode()),
         "timed_out": timed_out,
+        "silent_s": silent,
         "export_error": export_error,
         "error": stderr.strip()[-500:] if (infra or timed_out) else "",
         "provider_error": bool(INFRA.search(stderr + stdout)) if infra else False,
@@ -923,6 +983,10 @@ def recover(folder: Path) -> None:
             else ""
         )
         raw, about = _parse_answer(stdout)
+        if _goose_output(stdout) is None:
+            exported = _parse_export(stdout_file.with_name(f"{qid}-rep{rep}.json"))
+            if exported is not None:
+                raw, about = exported
         scored = score(questions[qid], raw)
         timed_out = "TIMEOUT" in stderr
         if raw is None and not timed_out and not stdout.strip():
