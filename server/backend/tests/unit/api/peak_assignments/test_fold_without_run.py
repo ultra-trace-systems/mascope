@@ -15,10 +15,18 @@ import pandas as pd
 import pytest
 
 from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
+from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
+from mascope_tools.composition.envelope_tolerance import (
+    FORM_DEFAULT,
+    EnvelopeLines,
+    fit_envelope_tolerance,
+)
 
 
 _SVC = "mascope_backend.api.new.peak_assignments.service"
+#: What Stage A hands on of a tolerance it fitted nothing for: today's numbers.
+NO_ENVELOPE_FIT = RunEnvelopeFit(fit_envelope_tolerance(FORM_DEFAULT, EnvelopeLines()))
 _CTL = "mascope_backend.api.new.peak_assignments.batch_peaks_controller"
 
 
@@ -147,6 +155,7 @@ def _patched(
         [_stage_a_row("si-1", fold_run_id("si-1"))],
         None,
         SampleMassAccuracy(),
+        NO_ENVELOPE_FIT,
     )
     return stack, mocks
 
@@ -318,7 +327,12 @@ async def test_the_fold_gates_its_stage_a_rows_as_a_run_does():
     ]
 
     stack, mocks = _patched()
-    mocks["stage_a"].return_value = (rows, None, SampleMassAccuracy(0.0, 0.1, 12))
+    mocks["stage_a"].return_value = (
+        rows,
+        None,
+        SampleMassAccuracy(0.0, 0.1, 12),
+        NO_ENVELOPE_FIT,
+    )
     with stack:
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
 
@@ -380,7 +394,12 @@ async def test_the_fold_anchors_its_gate_on_the_source_s_lines_as_a_run_does(
             )
         ],
     )
-    mocks["stage_a"].return_value = (rows, None, SampleMassAccuracy())
+    mocks["stage_a"].return_value = (
+        rows,
+        None,
+        SampleMassAccuracy(),
+        NO_ENVELOPE_FIT,
+    )
     with stack:
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
 
@@ -455,7 +474,12 @@ async def test_the_fold_reads_an_isotopologue_s_line_as_a_run_does(
     stack, mocks = _patched()
     # An Orbitrap, whose lines track their parents within 0.9 ppm.
     stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
-    mocks["stage_a"].return_value = (rows, None, SampleMassAccuracy(0.0, 0.1, 12))
+    mocks["stage_a"].return_value = (
+        rows,
+        None,
+        SampleMassAccuracy(0.0, 0.1, 12),
+        NO_ENVELOPE_FIT,
+    )
     mocks["peaks"].return_value = pd.DataFrame(peaks)
     # Twenty-ppm lines, so the neighbour 30 ppm off sits 1.5 of them away and
     # pushes by a quarter width, 5 ppm.
@@ -512,7 +536,12 @@ async def test_the_fold_asks_a_mirror_rows_nitrogen_count_as_a_run_does(
         )
 
     stack, mocks = _patched()
-    mocks["stage_a"].return_value = ([dimethylformamide], None, SampleMassAccuracy())
+    mocks["stage_a"].return_value = (
+        [dimethylformamide],
+        None,
+        SampleMassAccuracy(),
+        NO_ENVELOPE_FIT,
+    )
     mocks["peaks"].return_value = pd.DataFrame(peaks)
     mocks["mechanisms"].return_value = (
         ["m-h", "m-urea"],
@@ -554,7 +583,12 @@ async def test_the_fold_reads_a_list_through_the_channels_a_run_opens():
         "ionization_mechanism_id": "m-me",
     }
     stack, mocks = _patched()
-    mocks["stage_a"].return_value = ([d4], None, SampleMassAccuracy())
+    mocks["stage_a"].return_value = (
+        [d4],
+        None,
+        SampleMassAccuracy(),
+        NO_ENVELOPE_FIT,
+    )
     # The window starts above every probe of the source's channels, so its
     # silence there is the window's and the channels are opened.
     mocks["peaks"].return_value = pd.DataFrame(

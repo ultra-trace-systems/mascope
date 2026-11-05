@@ -13,14 +13,16 @@ ways that must not diverge between them: the resolution filter is the
 instrument's, the abundance floor is the sample's own match-params floor, the
 width a seed list too short to fit one is scored at is the instrument class's,
 its offset is the one a run of the sample scores at, and the synthetic ion
-ids exist only to group the scored frame back to its seeds.
+ids exist only to group the scored frame back to its seeds, and a line's share
+is read at the envelope tolerance a run of the sample fitted.
 A second copy of that would drift, and the two callers would then measure the
 same composition differently.
 
 Nothing here writes. The ids are synthetic, the frames are in memory, and the
 only database access is reading the mechanism rows the seeds name and, for a
-caller outside a run, the centre the sample's latest run recorded, or the
-sample's own mechanisms its reagent profile is resolved from.
+caller outside a run, the centre and the envelope tolerance the sample's latest
+run recorded, or the sample's own mechanisms its reagent profile is resolved
+from.
 """
 
 import asyncio
@@ -37,11 +39,15 @@ from mascope_backend.api.new.ionization.modes.versions import sample_label_purit
 from mascope_backend.api.new.match.params.lib import apply_match_params
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import score_ions_by_fit
+from mascope_backend.api.new.peak_assignments.envelope_fit import (
+    recorded_envelope_tolerance,
+)
 from mascope_backend.db import IonizationMechanism, async_session
 from mascope_backend.runtime import runtime
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
 from mascope_tools.composition.custom_elements import labelled_purity
+from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.mass_accuracy import (
     MASS_ACCURACY_MIN_ANCHORS,
     ReagentOffset,
@@ -207,6 +213,7 @@ def gate_and_score(
     *,
     fallback_sigma_ppm: float,
     reagent_offset: ReagentOffset | None,
+    envelope_tolerance: EnvelopeTolerance | None = None,
 ) -> pd.DataFrame:
     """Gate and fit-score a seeded match frame, exactly as Stage A does.
 
@@ -237,6 +244,11 @@ def gate_and_score(
         latest run recorded, else where its reagent lines put the axis
         (``service.sample_reagent_offset``); None where the run scored
         uncorrected, or with no run, where its profile has no reagent library.
+    :param envelope_tolerance: How well a run of the sample measures a line's
+        share: inside a run the one its Stage A fitted, outside one what its
+        latest run recorded (``envelope_fit.recorded_envelope_tolerance``).
+        A seed list is no set of committed envelopes to fit one on. None is
+        today's numbers.
     """
     gated = apply_match_params(match_isotope_df, match_params)
     return score_ions_by_fit(
@@ -244,6 +256,7 @@ def gate_and_score(
         fallback_sigma_ppm=fallback_sigma_ppm,
         reagent_offset=reagent_offset,
         min_anchor_ions=SEEDED_FIT_MIN_IONS,
+        envelope_tolerance=envelope_tolerance,
     )
 
 
@@ -299,6 +312,10 @@ def scored_maps(
 #: library.
 RESOLVE_REAGENT_OFFSET = object()
 
+#: :func:`score_seeds` was handed no envelope tolerance and reads the one the
+#: sample's latest run recorded. Distinct from None, today's numbers.
+RESOLVE_ENVELOPE_TOLERANCE = object()
+
 
 async def score_seeds(
     sample,
@@ -307,6 +324,9 @@ async def score_seeds(
     *,
     reagent_offset: ReagentOffset | None | object = RESOLVE_REAGENT_OFFSET,
     config: PeakAssignmentConfig | None = None,
+    envelope_tolerance: EnvelopeTolerance | None | object = (
+        RESOLVE_ENVELOPE_TOLERANCE
+    ),
 ) -> tuple[
     dict[tuple[str, str], str],
     dict[str, float | None],
@@ -338,13 +358,22 @@ async def score_seeds(
         under where no run recorded a centre: the batch search's for its
         propagation, whose ``profile`` or ``mz_precision_ppm`` may override
         the default's. None resolves under the default configuration.
+    :param envelope_tolerance: The tolerance of the run the caller is part of.
+        Left out, the one the sample's latest run recorded is read
+        (``envelope_fit.recorded_envelope_tolerance``), which is what every
+        caller outside a run wants.
     :return: ``(ion by seed, fit by ion, errors by pairing, the scored frame)``.
     """
     if not seeds:
         return {}, {}, {}, pd.DataFrame()
     with labelled_purity(await sample_label_purity(sample.sample_item_id)):
         return await _score_seeds(
-            sample, seeds, match_params, reagent_offset=reagent_offset, config=config
+            sample,
+            seeds,
+            match_params,
+            reagent_offset=reagent_offset,
+            config=config,
+            envelope_tolerance=envelope_tolerance,
         )
 
 
@@ -355,6 +384,7 @@ async def _score_seeds(
     *,
     reagent_offset: ReagentOffset | None | object,
     config: PeakAssignmentConfig | None,
+    envelope_tolerance: EnvelopeTolerance | None | object,
 ) -> tuple[
     dict[tuple[str, str], str],
     dict[str, float | None],
@@ -388,6 +418,8 @@ async def _score_seeds(
         from mascope_backend.api.new.peak_assignments import service
 
         reagent_offset = await service.sample_reagent_offset(sample, config)
+    if envelope_tolerance is RESOLVE_ENVELOPE_TOLERANCE:
+        envelope_tolerance = await recorded_envelope_tolerance(sample.sample_item_id)
 
     scored_df = await asyncio.to_thread(
         gate_and_score,
@@ -397,6 +429,7 @@ async def _score_seeds(
             get_instrument_type(sample.filename)
         ),
         reagent_offset=reagent_offset,
+        envelope_tolerance=envelope_tolerance,
     )
     fit_by_ion, errors_by_pairing = scored_maps(scored_df)
     return ion_by_seed, fit_by_ion, errors_by_pairing, scored_df

@@ -34,6 +34,7 @@ from mascope_match.params import (
     OrbiMatchParams,
 )
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
+from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.mass_accuracy import fit_sample_mass_accuracy
 from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
@@ -161,6 +162,16 @@ def stubbed(monkeypatch, reagent):
     monkeypatch.setattr(seeded_scoring, "sample_label_purity", setup_purity)
     monkeypatch.setattr(seeded_scoring, "build_seeded_isotopes_df", build)
     monkeypatch.setattr(seeded_scoring, "get_instrument_type", lambda name: "orbi")
+
+    async def recorded(sample_item_id):
+        # What the sample's latest run recorded of a line's tolerance: today's
+        # unless a test says.
+        frames.recorded_for.append(sample_item_id)
+        return frames.recorded_tolerance
+
+    frames.recorded_for = []
+    frames.recorded_tolerance = EnvelopeTolerance()
+    monkeypatch.setattr(seeded_scoring, "recorded_envelope_tolerance", recorded)
     return frames
 
 
@@ -337,7 +348,11 @@ async def test_a_runs_seeded_re_score_is_handed_the_runs_offset(stubbed, reagent
     offset = ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=True)
 
     fits = await service._seeded_fits(
-        SAMPLE, OrbiMatchParams(), {TARGET}, reagent_offset=offset
+        SAMPLE,
+        OrbiMatchParams(),
+        {TARGET},
+        reagent_offset=offset,
+        envelope_tolerance=None,
     )
 
     assert reagent.calls == []
@@ -379,3 +394,45 @@ async def test_the_seeds_are_read_at_the_purity_of_the_samples_setup(stubbed):
 
     assert stubbed.purities == [CUSTOM_ELEMENTS["^N"].default_purity, 0.9]
     assert label_purity("^N") == CUSTOM_ELEMENTS["^N"].default_purity
+
+
+#: A run's fitted tolerance that reads a line 10% under its share as centred:
+#: the TOF's form, which the stub's lines (no S/N, found at their share) feel.
+CENTRED_LOW = EnvelopeTolerance(centre=-0.1, floor=0.05)
+
+
+async def test_a_seed_list_outside_a_run_is_read_at_its_latest_runs_tolerance(
+    stubbed,
+):
+    """A pin, the inspector, the batch ledger's propagation: none of them is a
+    run, and each reads a line at the tolerance the sample's latest run fitted,
+    as that run read its own rows."""
+    stubbed.recorded_tolerance = CENTRED_LOW
+
+    resolved = await _fit({TARGET})
+
+    assert stubbed.recorded_for == ["si-1"]
+    assert resolved == pytest.approx(
+        await _fit({TARGET}, envelope_tolerance=CENTRED_LOW)
+    )
+    assert resolved < await _fit({TARGET}, envelope_tolerance=None) - 0.05
+
+
+async def test_a_runs_seeded_re_score_is_handed_the_runs_tolerance(stubbed):
+    """The search's commits are measured again at the tolerance Stage A fitted,
+    not at what an earlier run recorded."""
+    stubbed.recorded_tolerance = EnvelopeTolerance()
+
+    fits = await service._seeded_fits(
+        SAMPLE,
+        OrbiMatchParams(),
+        {TARGET},
+        reagent_offset=None,
+        envelope_tolerance=CENTRED_LOW,
+    )
+
+    assert stubbed.recorded_for == []
+    assert fits[TARGET] == pytest.approx(
+        await _fit({TARGET}, reagent_offset=None, envelope_tolerance=CENTRED_LOW)
+    )
+    assert fits[TARGET] < await _fit({TARGET}, envelope_tolerance=None) - 0.05

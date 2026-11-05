@@ -433,6 +433,27 @@ class's width and at the centre the sample's latest run in Mascope scored at, wh
 that was your library's offset or the reagent ions'. An imported run does not count. A
 sample with no such run is centred on its own reagent ions, as a run would be.
 
+How closely a line's height must follow its predicted share is the run's own, too. By
+default a clean line is held to 5% of its share, and a missing line counts against the
+formula wherever its expected signal-to-noise - the main line's times the share - is at
+least 3. On an Orbitrap that is too strict for a weak line. Each scan keeps a peak only
+where it clears that scan's noise, and the file's peak list averages the scans, so a
+faint 13C line reads low or is missing altogether. How much depends on the file and on
+how it was acquired, its number of microscans among them. So each run measures it on
+the envelopes its lists confirmed: for every range of expected signal-to-noise, how far
+below its share a 13C line reads in that file, and how often it is there at all
+([Barlow et al. 1972][ba72] for the monotone fit). A line then costs nothing anywhere
+between that low reading and its full share, and a missing line counts only where that
+file's lines are usually present. A file with too few confirmed lines takes the
+measurement pooled with the other files of its batch acquired at the same settings, and
+failing that the defaults. On a TOF the run measures one offset and one spread of how
+its lines read against their shares, since a TOF's signal-to-noise column is not read
+that way yet. The run records which of these it used, and a formula measured on its own
+afterwards - *Use this*, the inspector's evidence - is read at the tolerance the
+sample's latest run in Mascope recorded. A sample with no such run, one only folded into
+the batch ledger, is measured at the defaults, though its folded rows were scored at a
+tolerance fitted on the spot.
+
 A predicted line is a peak your instrument can resolve, not a single isotopologue. On a
 TOF, the peak one mass unit above a compound holds its 13C line and also its 15N, 2H and
 17O lines, a few mDa apart. The untargeted search reads that peak against the sum of all
@@ -1114,6 +1135,9 @@ batch ledger* puts Mascope's own view back.
 - <a id="sch17"></a>Scheubert, K. et al. *Significance estimation for large-scale
   metabolomics annotations by spectral matching.* Nature Communications 2017, 8:1494.
   [link](https://www.nature.com/articles/s41467-017-01318-5)
+- <a id="ba72"></a>Barlow, R. E.; Bartholomew, D. J.; Bremner, J. M.; Brunk, H. D.
+  *Statistical inference under order restrictions: the theory and application of
+  isotonic regression.* Wiley, 1972.
 - <a id="platt"></a>Platt, J. *Probabilistic outputs for support vector machines and
   comparisons to regularized likelihood methods.* Advances in Large Margin Classifiers,
   1999. [link](https://en.wikipedia.org/wiki/Platt_scaling)
@@ -1309,6 +1333,7 @@ batch ledger* puts Mascope's own view back.
 [hy15]: #hy15
 [wa21]: #wa21
 [platt]: #platt
+[ba72]: #ba72
 [good70]: #good70
 [good70b]: #good70b
 [sha66]: #sha66

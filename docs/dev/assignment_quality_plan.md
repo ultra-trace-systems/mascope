@@ -86,7 +86,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.4g - the chart draws each peak in the trace's unit, and a lone M0 | #2379 | 2026-10-19 | built: the lone M0 drawn, the envelope in the trace's unit; engine and tiers untouched |
 | 3.4h - the inspector links the other channels, and the listing column folds | - |  | planned, from the same notes |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | #2593 (the gate's anchors) |  | in two PRs (decided 2026-10-22). Built: the mass gate's fit takes the reagent pass's monoisotopic lines beside its commits; estimated on the pass-10 ledgers, all seven K3 files fit a calibration. Planned: the cap and the offset report (MAS-469), landing with 3.5b |
-| 3.5b - the envelope's tolerance, fitted per run | - |  | planned, from the plan owner's reading of 2026-09-25 and the pass-9 ledgers |
+| 3.5b - the envelope's tolerance, fitted per run | #2978 |  | built: Stage A fits a response curve per Orbitrap file (pooled with its batch siblings at the same settings, then the defaults) and a centre and width per TOF run; every fit score of the run reads it; pass 11 measures it |
 | 3.5c - the targeted matcher reads an isotope line over the scans that hold its anchor | - |  | built: an Orbitrap line's ratio is read over the scans it shares with its anchor, the count stored and shown in the Match tab; TOF unchanged |
 | 3.6 - priors and the dataset's context | - |  | planned; two riders from the reference's 0.10 line (the review section) |
 | 3.7 - stage 3 gate, engine 0.6.0 | - |  | planned; read against the literature and chemical reasoning, not the reference (decision 27) |
@@ -782,6 +782,99 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   rest, which is the cylinder's own certified components. Both re-base
   every set, so one pass measures them. Landing it next also makes the
   open call above moot: the band is left as it is.
+- **As built (MAS-52).** The library holds the form and the score
+  (`mascope_tools.composition.envelope_tolerance`, and `score_pattern_v2`'s
+  and `score_patterns_v2`'s `tolerance`); the engine holds the fit
+  (`peak_assignments/envelope_fit.py`). Today's tolerance scores exactly as
+  before, so the score_eval goldens, which call the score at its defaults,
+  do not move.
+  - **Where the fit runs: after Stage A, before the search is scored.**
+    Stage A scores its frame at today's numbers, builds its rows, and the
+    run fits on what it committed; Stage A's frame is then scored again at
+    the fitted tolerance and its peaks arbitrated on that, and the search's
+    ranking (`PatternScoring.envelope_tolerance`) and the seeded re-score
+    its rows are tiered on read the same tolerance, as all three read Stage
+    A's width. So the envelopes read are list readings (the library's and
+    the reference lists'), the "or a list" half of the criteria; a search
+    row that a second channel corroborates is not read, since that is known
+    only after the judging passes, and reading it there would have meant
+    deriving every committed row's fit, evidence, tier and arbitration a
+    second time. On the testbed copy's latest runs the list readings carry
+    72,865 of the 162,542 tracking 13C lines that the full criteria would
+    read.
+  - **What is read.** A committed Stage A monoisotopic row whose line sits
+    within `OFF_CALIBRATION_Z` (3) of the width Stage A scored at, about
+    the centre it scored at; of its lines, those within `TRACKING_SIGMAS`
+    of the class's precision of the ion's own line (the gate's "tracks");
+    a predicted line with no intensity after the match parameters' gating
+    counts as absent, unless its expected S/N is under 3, where no bin reads
+    it and nothing charges it; a line that is present and does not track is
+    not read. On an Orbitrap only lines that substitute 13C and nothing else
+    (a labelled reagent's atom taken off), on a TOF every line. A line is
+    read as the score reads it: against the most abundant predicted line,
+    at its share of that line's S/N.
+  - **The curve.** Bins at expected S/N 3, 10, 20, 50 and 100 up; a curve
+    needs 20 tracking lines in them, a bin 5 for its median and 20th
+    percentile; each made non-decreasing by pool adjacent violators,
+    weighted by line count, and capped at 1.0. A bin with too few lines
+    takes the lower end of the nearest read bin above it, and above the
+    last read bin the band is the share alone. A line whose anchor has no
+    S/N gets no allowance.
+  - **The absent line's threshold.** A bin with at least 5 predicted 13C
+    lines is judged, and falls short where fewer than half of them are in
+    the list. Counted from the bottom: the threshold is the lower edge of
+    the lowest judged bin that holds at least half, where a judged bin
+    below it falls short, and 3 where none below it does, so a short bin
+    above one that holds its lines is charged as today (a few bright lines
+    the ratio window turned away free nothing under them). Where every
+    judged bin falls short, the upper edge of the highest (the open top bin
+    gives its lower edge, 100).
+  - **The pooled level.** A run is one file. A file whose own lines are too
+    few pools them with the lines its batch siblings' latest completed
+    in-app runs recorded (`config.envelope_tolerance.observations`) under
+    the same acquisition settings: polarity, microscan count and FT
+    resolution, read off the sample's stream where it points at one, else
+    the file's `.props`. A sibling with no run yet adds nothing, so the
+    first file of a batch to be run reads its own lines only; a file that
+    records neither count pools nothing. The testbed copy has no stream
+    rows; of 2,000 of its files' `.props`, the 1,263 that hold an
+    Orbitrap's scan trailer carry both counts.
+  - **The TOF.** The median and the scaled MAD of a tracking line's
+    relative error, on at least 20 lines; the width floors at 5%, never
+    tighter than today; nothing pooled, and the threshold stays at 3.
+  - **Outside a run.** A formula measured on its own (a pin, the inspector,
+    the batch search and its propagation) is read at the tolerance its
+    sample's latest completed in-app run recorded, as it is read at that
+    run's centre. A sample with no such run reads at today's numbers. That
+    includes one only folded into the batch ledger (at ingest, or by a
+    rebuild): the fold's Stage A fits and scores at a tolerance of its own,
+    but there is no run to record it on, so its readers and its siblings'
+    pools do not see it (#2989).
+  - **The record** (`config.envelope_tolerance`): the form, the level, the
+    file's own lines in the list and absent, the threshold; for a curve the
+    bins (lines, median and 20th percentile as read and as fitted, the
+    lower end scored at, predicted lines), the counts the fit asks for, the
+    settings, the file's own lines for a sibling to pool, and at the pooled
+    level the files and lines pooled; for a TOF the centre, the width and
+    the floor. The score reads the record's own rounded numbers, so
+    `EnvelopeTolerance.from_record` rebuilds exactly what the run scored at.
+  - **Read on the demo dataset** (Stage A alone, read-only, on two bromide
+    and two uronium samples of the public demo bundle 1.3; the gate sets are
+    pass 11's). Each file fits a curve of its own on 22 to 136 tracking 13C
+    lines; the 20th percentile at an expected S/N of 3 to 10 is 0.76 to
+    0.87 and from 50 up 0.95 where read, and at 3 to 10 only 29 to 39% of the
+    predicted 13C lines are in the list, so all four count an absent line
+    from 10. D4 `[M+H]+` on the two uronium samples goes from a fit of 0.45
+    (below assignability) and 0.61 (candidate) to 0.81 and 0.81 (assigned)
+    at Stage A, before the judging passes. Stage A's assigned rows go from
+    96, 128, 229 and 264 to 119, 172, 239 and 278. Scoring the frame again
+    and arbitrating it adds about 3 s to a Stage A pass of some 65,000
+    predicted lines.
+  - **Not done here.** The finder's list election still counts a line as
+    evidence from an expected S/N of 3 (`finder._tracking_lines`), and the
+    envelope predictor's depth stays at 3: the threshold moves what an
+    absent line costs, not which lines are predicted or which present ones
+    count.
 
 ### 3.5c The targeted matcher reads an isotope line over the scans that hold its anchor
 

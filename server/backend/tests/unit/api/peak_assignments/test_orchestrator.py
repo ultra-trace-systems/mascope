@@ -226,6 +226,16 @@ def _patches(
         "resolution": patch(
             f"{_MOD}._resolution_of", new_callable=AsyncMock, return_value=None
         ),
+        # What the file was acquired at, which a thin Orbitrap file's pooled
+        # curve is matched on, is read off its stream row and its .props:
+        # neither exists here, as for a file converted before either kept it,
+        # so no sibling is pooled.
+        "acquisition": patch(
+            "mascope_backend.api.new.peak_assignments.envelope_fit."
+            "acquisition_settings",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
         "claim": patch(f"{_MOD}.assignment_claim", _claim_stub()),
         "session": patch(f"{_MOD}.async_session", side_effect=recorder.session_factory),
         "progress": patch(
@@ -1952,6 +1962,179 @@ class TestStageAFitsOnIons:
         assert recorded["sigma_source"] == "instrument_class"
         assert recorded["mu_source"] == "none"
         assert (recorded["fitted_anchors"], recorded["fitted_anchor_ions"]) == (10, 7)
+
+
+def _censored_library(
+    ions: int = 25, *, ratio: float = 0.8, error_ppm: float = 2.0
+) -> list[dict]:
+    """``ions`` library compounds, each committed with its 13C line ``ratio``
+    of its share at an expected S/N of 15, every line ``error_ppm`` off.
+
+    Plus one more whose 13C line the match parameters turned away (a zero
+    match score), which the fit reads as absent: the frame it reads is the
+    scored one, where that line's intensity is zeroed, not the gated one.
+    """
+    rows = []
+    for index in range(ions + 1):
+        carbons = 10 + index
+        hydrogens = 2 * carbons - 4
+        compound = f"C{carbons}H{hydrogens}O4"
+        ion = f"C{carbons}H{hydrogens + 1}O4+"
+        mz = 199.0 + 14.01565 * index
+        share = 0.11
+        for position, (isotope, abundance, intensity) in enumerate(
+            [
+                (ion, 1.0, 1e5),
+                (f"C{carbons - 1}[13C]H{hydrogens + 1}O4+", share, 1e5 * share * ratio),
+            ]
+        ):
+            row = _isotope_row(
+                target_isotope_id=f"ti-{index}-{position}",
+                target_ion_id=f"ion-{index}",
+                target_compound_id=f"tc-{index}",
+                compound_formula=compound,
+                ion_formula=ion,
+                mz=mz + 1.00335 * position,
+                relative_abundance=abundance,
+                sample_peak_id=f"c{index}-{position}",
+                sample_peak_intensity=intensity,
+                match_mz_error=error_ppm,
+            )
+            row["target_isotope_formula"] = isotope
+            row["signal_to_noise"] = 15.0 / share * intensity / 1e5
+            if index == ions and position == 1:
+                row["match_score"] = 0.0
+            rows.append(row)
+    return rows
+
+
+class TestTheRunFitsItsEnvelopeTolerance:
+    """Stage A fits the tolerance on what it committed, and every score of the
+    run reads it: Stage A's own rows, the search's ranking, the seeded
+    re-score of the search's rows. The run records it."""
+
+    @staticmethod
+    async def _run_on(rows):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df(
+            [
+                (row["sample_peak_id"], row["mz"], row["sample_peak_intensity"])
+                for row in rows
+            ]
+            + [("p-rest", 600.5678, 500.0)]
+        )
+        recorder = _Recorder()
+        patches = _patches(recorder, peaks, rows)
+        patches.pop("fit")  # Stage A's own fit, at both tolerances, is under test
+        mocks = _start(patches)
+
+        await _run(PeakAssignmentConfig())
+
+        return recorder, mocks
+
+    @pytest.mark.asyncio
+    async def test_a_censored_library_fits_a_curve_every_score_reads(self):
+        from mascope_backend.api.new.peak_assignments.engine import (
+            STAGE_A_FIT_MIN_IONS,
+            score_ions_by_fit,
+        )
+        from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
+
+        rows = _censored_library()
+        recorder, mocks = await self._run_on(rows)
+
+        recorded = recorder.recorded_configs()[-1]["envelope_tolerance"]
+        # Every library line 2 ppm off: Stage A's own centre, which the gate
+        # is read about, takes them in.
+        assert (recorded["form"], recorded["level"]) == ("curve", "own")
+        assert (recorded["lines"], recorded["absent"]) == (25, 1)
+        assert recorded["bins"][1]["lower"] == pytest.approx(0.8)
+        assert recorded["acquisition"] is None
+        tolerance = EnvelopeTolerance.from_record(recorded)
+
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        assert scoring.envelope_tolerance == tolerance
+        assert mocks["seeded"].await_args.kwargs["envelope_tolerance"] == tolerance
+
+        frame = pd.DataFrame(rows)
+        fitted, today = (
+            score_ions_by_fit(
+                frame,
+                fallback_sigma_ppm=0.3,
+                min_anchor_ions=STAGE_A_FIT_MIN_IONS,
+                envelope_tolerance=at,
+            )
+            for at in (tolerance, None)
+        )
+        m0 = next(row for row in recorder.rows if row["sample_peak_id"] == "c0-0")
+        assert m0["fit_score"] == pytest.approx(
+            float(fitted["match_score"].iloc[0]), abs=1e-4
+        )
+        assert m0["fit_score"] > float(today["match_score"].iloc[0]) + 0.2
+
+    @pytest.mark.asyncio
+    async def test_a_sample_no_library_matched_can_take_its_siblings_curve(self):
+        # Stage A committed nothing, so there is nothing of its own to score
+        # again; the pooled curve still reaches the search and is recorded.
+        import numpy as np
+
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.envelope_fit import (
+            RunEnvelopeFit,
+        )
+        from mascope_tools.composition.envelope_tolerance import (
+            FORM_CURVE,
+            EnvelopeLines,
+            fit_envelope_tolerance,
+        )
+
+        settings = {"polarity": "+", "microscans": 10.0, "resolution": 120000.0}
+        pooled = RunEnvelopeFit(
+            fit_envelope_tolerance(
+                FORM_CURVE,
+                EnvelopeLines(),
+                [EnvelopeLines(np.full(30, 15.0), np.full(30, 0.75))],
+            ),
+            settings,
+        )
+        peaks = _peaks_df([("p-rest", 600.5678, 500.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, []))
+        patch(
+            f"{_MOD}.fit_run_envelope_tolerance",
+            new_callable=AsyncMock,
+            return_value=pooled,
+        ).start()
+
+        await _run(PeakAssignmentConfig())
+
+        recorded = recorder.recorded_configs()[-1]["envelope_tolerance"]
+        assert (recorded["level"], recorded["pooled_files"]) == ("pooled", 2)
+        assert recorded["acquisition"] == settings
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        assert scoring.envelope_tolerance == pooled.tolerance
+        assert mocks["finalize"].await_args.args[1] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_a_thin_library_scores_at_today_s_numbers(self):
+        from mascope_tools.composition.envelope_tolerance import DEFAULT_TOLERANCE
+
+        rows = _censored_library(ions=8)
+        recorder, mocks = await self._run_on(rows)
+
+        recorded = recorder.recorded_configs()[-1]["envelope_tolerance"]
+        assert (recorded["level"], recorded["lines"]) == ("default", 8)
+        assert recorded["detect_snr"] == 3.0
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        assert scoring.envelope_tolerance == DEFAULT_TOLERANCE
+        assert mocks["seeded"].await_args.kwargs["envelope_tolerance"] == (
+            DEFAULT_TOLERANCE
+        )
 
 
 class TestEligibilityGate:

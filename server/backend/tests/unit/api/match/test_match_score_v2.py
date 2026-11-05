@@ -18,6 +18,10 @@ from mascope_backend.api.controllers.match.lib.match_score_v2 import (
     ion_scores_v2,
     match_score_version,
 )
+from mascope_tools.composition.envelope_tolerance import (
+    RESPONSE_SNR_EDGES,
+    EnvelopeTolerance,
+)
 from mascope_tools.composition.heuristic_filter import DEFAULT_CALIBRATION_V2
 
 
@@ -315,3 +319,51 @@ def test_no_rows_scores_nothing():
     )
 
     assert ion_scores_v2(frame, "target_ion_id").empty
+
+
+#: A run's fitted curve: a line at an expected S/N of 3 to 50 may read 20%
+#: under its share and still match.
+_CURVE = EnvelopeTolerance(
+    snr_edges=RESPONSE_SNR_EDGES, lower=(0.8, 0.8, 0.8, 1.0, 1.0)
+)
+
+
+def test_one_ion_is_read_at_the_run_s_envelope_tolerance():
+    # The M+1 15% under its share at an expected S/N of 0.11 x 150, inside
+    # the curve's band: a match there, a three-sigma miss at today's 5%.
+    ion = _ion(1000.0 * 0.11 * 0.85, snr=[150.0, 14.0], me=(0.0, 0.0))
+
+    fitted = ion_score_v2(ion, sigma_ppm=0.5, tolerance=_CURVE)
+
+    assert fitted == pytest.approx(1.0)
+    assert ion_score_v2(ion, sigma_ppm=0.5) < 0.75
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_every_ion_at_once_is_read_at_it_as_each_is_alone(seed):
+    frame = _ions_frame(np.random.default_rng(seed))
+
+    by_ion = frame.groupby("target_ion_id", sort=False, dropna=False).apply(
+        lambda g: ion_score_v2(g, sigma_ppm=0.3, tolerance=_CURVE),
+        include_groups=False,
+    )
+    scored = ion_scores_v2(frame, "target_ion_id", sigma_ppm=0.3, tolerance=_CURVE)
+
+    np.testing.assert_allclose(
+        scored, frame["target_ion_id"].map(by_ion).astype(float), rtol=0, atol=1e-12
+    )
+
+
+def test_every_ion_at_once_is_read_at_the_run_s_envelope_tolerance():
+    ions = [
+        _ion(1000.0 * 0.11 * 0.85, snr=[150.0, 14.0], me=(0.0, 0.0)).assign(
+            target_ion_id=f"ion-{index}"
+        )
+        for index in range(3)
+    ]
+    frame = pd.concat(ions, ignore_index=True)
+
+    scored = ion_scores_v2(frame, "target_ion_id", sigma_ppm=0.5, tolerance=_CURVE)
+
+    np.testing.assert_allclose(scored, 1.0)
+    assert (ion_scores_v2(frame, "target_ion_id", sigma_ppm=0.5) < 0.75).all()
