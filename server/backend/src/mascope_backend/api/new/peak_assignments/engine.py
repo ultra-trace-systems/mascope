@@ -47,6 +47,7 @@ from mascope_tools.composition.calibration import (
     corroboration_by_mechanism,
 )
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
+from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.finder import (
     HELD_BY_LIBRARY,
     HELD_BY_LINES,
@@ -177,6 +178,15 @@ PARTNER_GATE_KEY = "partner_gate"
 #: two runs together with the rules that produced it, and these rules will
 #: change while old ledgers stay readable.
 TIERING_KEY = "tiering"
+
+#: Key under which a run records how well it measured an isotope line's share:
+#: the tolerance Stage A fitted on its committed envelopes, in the form the
+#: instrument class takes (a response curve against expected signal-to-noise on
+#: an Orbitrap, a centre and a width on a TOF), the level it reached (the file's
+#: own lines, pooled with its siblings', or today's numbers), and the lines it
+#: read. Every fit score of the run - Stage A's rows, the search's ranking, the
+#: seeded re-score - was read at it (``envelope_fit``).
+ENVELOPE_TOLERANCE_KEY = "envelope_tolerance"
 
 #: Key under which a run records how much of its spectrum the untargeted stage
 #: was actually offered. On the run's config beside the resolved profile, and for
@@ -380,6 +390,7 @@ def pattern_scoring_for(
     mass_accuracy: SampleMassAccuracy,
     instrument_type: str | None,
     resolution: Callable[[float], float] | None = None,
+    envelope_tolerance: EnvelopeTolerance | None = None,
 ) -> PatternScoring:
     """How the untargeted stage scores this sample's isotope envelopes.
 
@@ -418,10 +429,18 @@ def pattern_scoring_for(
         where the run could not read one. With it, the predicted lines one peak
         of the file cannot separate are scored as one line, the sum of their
         shares: on a TOF the 13C peak also holds the 15N, 2H and 17O lines.
+    :param envelope_tolerance: How well the run measures an isotope line's
+        share, which Stage A fitted on its committed envelopes, so the search
+        ranks a candidate's lines at the tolerance its row is then tiered at;
+        None scores at today's numbers.
     :return: The scoring parameters for this sample's search.
     """
     return pattern_scoring_for_sample(
-        mass_accuracy, instrument_type, match_params, resolution
+        mass_accuracy,
+        instrument_type,
+        match_params,
+        resolution,
+        envelope_tolerance=envelope_tolerance,
     )
 
 
@@ -830,6 +849,7 @@ def score_ions_by_fit(
     fallback_sigma_ppm: float | None = None,
     reagent_offset: ReagentOffset | None = None,
     min_anchor_ions: int | None = None,
+    envelope_tolerance: EnvelopeTolerance | None = None,
 ) -> pd.DataFrame:
     """Set each isotopologue's ``match_score`` to its ion's fit score (Stage A).
 
@@ -901,6 +921,11 @@ def score_ions_by_fit(
         (:func:`sample_mass_accuracy`); a frame with fewer is scored at the two
         stand-ins above. Stage A passes :data:`STAGE_A_FIT_MIN_IONS`. None
         counts lines alone.
+    :param envelope_tolerance: How well the run measures an isotope line's
+        share, fitted on its own committed envelopes
+        (:mod:`~mascope_backend.api.new.peak_assignments.envelope_fit`); None
+        scores at today's 5% and threshold of 3, as Stage A's first pass does
+        before the fit exists.
     :return: The gated frame with every ion's fit as its rows' ``match_score``.
     """
     if match_isotope_df.empty or not _FIT_SCORE_COLS.issubset(match_isotope_df.columns):
@@ -929,7 +954,9 @@ def score_ions_by_fit(
     # Return the GATED frame (not a fresh copy of the input): the zeroed intensities
     # are the record of which pairings this scoring counted as absent, and the
     # ownership guard downstream reads exactly that.
-    df["match_score"] = ion_scores_v2(df, "target_ion_id", sigma_ppm=sigma, mu=mu)
+    df["match_score"] = ion_scores_v2(
+        df, "target_ion_id", sigma_ppm=sigma, mu=mu, tolerance=envelope_tolerance
+    )
     return df
 
 

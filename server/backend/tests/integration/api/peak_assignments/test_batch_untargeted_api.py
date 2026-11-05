@@ -13,6 +13,7 @@ unassigned, and the consensus follows. See ``batch_untargeted.py``.
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 import pytest_asyncio
@@ -46,6 +47,12 @@ from mascope_backend.db import (
     SampleItem,
 )
 from mascope_backend.db.id import gen_id
+from mascope_tools.composition.envelope_tolerance import (
+    FORM_CENTRE_WIDTH,
+    EnvelopeLines,
+    EnvelopeTolerance,
+    fit_envelope_tolerance,
+)
 from mascope_tools.composition.reagents import reagent_library
 
 
@@ -243,6 +250,7 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
         "seeded_fits": [],
         "scoring": [],
         "seeded_offsets": [],
+        "seeded_tolerances": [],
         "score_configs": [],
     }
 
@@ -273,12 +281,13 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
     async def match_params(sample_item_id):
         return SimpleNamespace(isotope_abundance_threshold=0.01, mz_tolerance=5)
 
-    async def seeded_fits(sample, params, seeds, *, reagent_offset):
+    async def seeded_fits(sample, params, seeds, *, reagent_offset, envelope_tolerance):
         # The search's own re-score: the finder's reading measured again as an
         # ion, which is what the rows are tiered on. Canned here for the same
         # reason the finder is - these tests are about the pass, not the fit.
         calls["seeded_fits"].append((by_id[sample.sample_item_id], set(seeds)))
         calls["seeded_offsets"].append(reagent_offset)
+        calls["seeded_tolerances"].append(envelope_tolerance)
         return {seed: 0.88 for seed in seeds}
 
     async def seeded(sample, seeds, params, *, config=None):
@@ -461,9 +470,18 @@ async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
 
 
 async def _record_run(
-    session_factory, sample_item_id, status, minutes_ago, scoring, engine=IN_APP_ENGINE
+    session_factory,
+    sample_item_id,
+    status,
+    minutes_ago,
+    scoring,
+    engine=IN_APP_ENGINE,
+    envelope_tolerance=None,
 ):
     now = datetime.now(timezone.utc)
+    config = {"run_untargeted": True, "pattern_scoring": scoring}
+    if envelope_tolerance is not None:
+        config["envelope_tolerance"] = envelope_tolerance
     async with session_factory() as session:
         session.add(
             PeakAssignmentRun(
@@ -472,7 +490,7 @@ async def _record_run(
                 engine=engine,
                 engine_version="0.1.0-test",
                 status=status,
-                config={"run_untargeted": True, "pattern_scoring": scoring},
+                config=config,
                 peak_assignment_run_utc_created=now - timedelta(minutes=minutes_ago),
             )
         )
@@ -561,6 +579,44 @@ async def test_a_sample_with_a_run_is_re_scored_where_that_run_scored(
         async_session_factory, samples["S2"], "completed", 1, _scoring(0.0, "none")
     )
     assert await service.sample_reagent_offset(sample, config) is None
+
+
+async def test_a_sample_with_a_run_is_searched_at_that_runs_line_tolerance(
+    async_session_factory, folded_batch, stubbed_engine
+):
+    # No Stage A runs on this path, so nothing commits an envelope to fit a
+    # line's tolerance on: the search ranks and re-scores the sample at the
+    # one its latest completed in-app run fitted, not an older run's.
+    samples = folded_batch["samples"]
+    fitted = fit_envelope_tolerance(
+        FORM_CENTRE_WIDTH,
+        EnvelopeLines(np.full(24, 10.0), np.array([0.9, 1.0, 1.1, 1.3] * 6)),
+    ).record()
+    older = dict(fitted, centre=0.5)
+    await _record_run(
+        async_session_factory,
+        samples["S1"],
+        "completed",
+        60,
+        _scoring(0.0, "none"),
+        envelope_tolerance=older,
+    )
+    await _record_run(
+        async_session_factory,
+        samples["S1"],
+        "completed",
+        30,
+        _scoring(0.0, "none"),
+        envelope_tolerance=fitted,
+    )
+
+    await run_batch_untargeted_search(folded_batch["batch_id"], PeakAssignmentConfig())
+
+    expected = EnvelopeTolerance.from_record(fitted)
+    assert expected != EnvelopeTolerance()
+    [scoring] = stubbed_engine["scoring"]
+    assert scoring.envelope_tolerance == expected
+    assert stubbed_engine["seeded_tolerances"] == [expected]
 
 
 async def test_the_other_sample_is_measured_and_takes_a_fit_of_its_own(

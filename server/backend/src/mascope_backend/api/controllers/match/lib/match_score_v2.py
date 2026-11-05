@@ -35,6 +35,7 @@ import os
 import numpy as np
 import pandas as pd
 
+from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.heuristic_filter import (
     calibrate_score,
     score_pattern_v2,
@@ -65,6 +66,7 @@ def ion_score_v2(
     mu: float | None = 0.0,
     calibrate: bool = False,
     calibration: tuple[float, float] | None = None,
+    tolerance: EnvelopeTolerance | None = None,
 ) -> float:
     """v2 match score for ONE ion: the FIT QUALITY of its isotopologue rows against the
     predicted pattern (matched + unmatched).
@@ -87,6 +89,10 @@ def ion_score_v2(
     it is stated here rather than at each call site so that the three of them cannot
     answer it differently, and so that a caller wanting to know whether an offset was
     measured has to ask the fit rather than read it off a zero.
+
+    `tolerance` is how well the sample's run measures an isotope line's share
+    (`mascope_tools.composition.envelope_tolerance`); None is today's 5% and the
+    threshold of 3.
 
     `calibrate=True` recasts the fit as a single-candidate P(correct) — a confidence-layer
     concern, not the headline match score — and REQUIRES `calibration`, the Platt `(a, b)`
@@ -129,7 +135,7 @@ def ion_score_v2(
         else None
     )
     sig = float(np.hypot(sigma_ppm, PRED_SIGMA_PPM)) if sigma_ppm is not None else None
-    raw = score_pattern_v2(me, oi, snr, pr, sigma_ppm=sig)
+    raw = score_pattern_v2(me, oi, snr, pr, sigma_ppm=sig, tolerance=tolerance)
     return float(calibrate_score(raw, calibration)) if calibrate else float(raw)
 
 
@@ -139,6 +145,7 @@ def ion_scores_v2(
     *,
     sigma_ppm: float | None = None,
     mu: float | None = 0.0,
+    tolerance: EnvelopeTolerance | None = None,
 ) -> pd.Series:
     """:func:`ion_score_v2` for every ion of a frame, scored together.
 
@@ -161,6 +168,7 @@ def ion_scores_v2(
         its own, as ``groupby(dropna=False)`` makes it.
     :param sigma_ppm: As :func:`ion_score_v2`.
     :param mu: As :func:`ion_score_v2`.
+    :param tolerance: As :func:`ion_score_v2`, one for every ion: the sample's.
     :return: Each row's ion's fit, on the frame's index.
     """
     if frame.empty:
@@ -220,6 +228,8 @@ def ion_scores_v2(
         else None
     )
     sig = float(np.hypot(sigma_ppm, PRED_SIGMA_PPM)) if sigma_ppm is not None else None
-    scores = score_patterns_v2(me, oi, snr, pr, offsets, sigma_ppm=sig)
+    scores = score_patterns_v2(
+        me, oi, snr, pr, offsets, sigma_ppm=sig, tolerance=tolerance
+    )
     scores = np.where(scored, scores, 0.0)
     return pd.Series(scores[codes], index=frame.index, dtype=float)

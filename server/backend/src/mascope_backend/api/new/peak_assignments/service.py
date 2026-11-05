@@ -96,6 +96,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     CROSS_CHANNEL_KEY,
+    ENVELOPE_TOLERANCE_KEY,
     FRAGMENTS_KEY,
     LIST_PRIOR_WEIGHT,
     MASS_CALIBRATION_KEY,
@@ -127,6 +128,10 @@ from mascope_backend.api.new.peak_assignments.engine import (
 from mascope_backend.api.new.peak_assignments.envelope_claims import (
     EnvelopeClaim,
     apply_claims,
+)
+from mascope_backend.api.new.peak_assignments.envelope_fit import (
+    RunEnvelopeFit,
+    fit_run_envelope_tolerance,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import (
     derived_ledger,
@@ -202,6 +207,10 @@ from mascope_tools.composition.custom_elements import (
     CUSTOM_ELEMENTS,
     label_purity,
     labelled_purity,
+)
+from mascope_tools.composition.envelope_tolerance import (
+    LEVEL_DEFAULT,
+    EnvelopeTolerance,
 )
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
@@ -2419,6 +2428,7 @@ def _stored_run_config(
     partner_gate: dict | None = None,
     fragments: dict | None = None,
     ionization_setup: dict | None = None,
+    envelope_tolerance: dict | None = None,
 ) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
@@ -2469,6 +2479,13 @@ def _stored_run_config(
     the version of the sample's ionization mode it searched under. Its key is
     always present, None for a sample bound under no mode.
 
+    The envelope tolerance is the tenth, beside the scoring it is the other
+    half of: how well the run measured an isotope line's share, fitted on its
+    own committed envelopes, in the form its instrument class takes and at the
+    level it reached. A fit score is only comparable across two runs together
+    with the tolerance it was read at, and a file beside this one pools the
+    lines it records.
+
     :param config: The validated client-supplied run configuration.
     :param resolved_profile: The chemistry the run resolved to, when known.
     :param search_scope: What the untargeted stage was offered, once it is known.
@@ -2481,6 +2498,8 @@ def _stored_run_config(
         ladder.
     :param ionization_setup: The setup the sample is bound under
         (:func:`~mascope_backend.api.new.ionization.modes.versions.sample_setup`).
+    :param envelope_tolerance: What the run fitted of a line's share
+        (:meth:`envelope_fit.RunEnvelopeFit.record`), once Stage A has run.
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
@@ -2502,6 +2521,8 @@ def _stored_run_config(
         stored[PARTNER_GATE_KEY] = partner_gate
     if fragments is not None:
         stored[FRAGMENTS_KEY] = fragments
+    if envelope_tolerance is not None:
+        stored[ENVELOPE_TOLERANCE_KEY] = envelope_tolerance
     return stored
 
 
@@ -2517,6 +2538,7 @@ async def _record_resolved_profile(
     partner_gate: dict | None = None,
     fragments: dict | None = None,
     ionization_setup: dict | None = None,
+    envelope_tolerance: dict | None = None,
 ) -> None:
     """Write the resolved chemistry onto a run that is about to use it.
 
@@ -2542,6 +2564,7 @@ async def _record_resolved_profile(
         ladder.
     :param ionization_setup: The setup the sample is bound under, kept as the
         run was created with it.
+    :param envelope_tolerance: What the run fitted of a line's share.
     """
     async with async_session() as session:
         await session.execute(
@@ -2559,6 +2582,7 @@ async def _record_resolved_profile(
                     partner_gate,
                     fragments,
                     ionization_setup,
+                    envelope_tolerance,
                 )
             )
         )
@@ -3108,6 +3132,7 @@ async def _seeded_fits(
     seeds: set[tuple[str, str]],
     *,
     reagent_offset: ReagentOffset | None,
+    envelope_tolerance: EnvelopeTolerance | None,
 ) -> dict[tuple[str, str], float | None]:
     """Measure the untargeted stage's readings the way Stage A measures one.
 
@@ -3129,13 +3154,20 @@ async def _seeded_fits(
         its own is scored at, where it is beyond the width: in a run, the one
         Stage A and the search were scored at (:func:`_run_scoring_centre`);
         in a batch search, which runs no Stage A, the reagent lines' own.
+    :param envelope_tolerance: How well the run measures a line's share: in a
+        run the one Stage A fitted, in a batch search the one the sample's
+        latest run recorded. None is today's numbers.
     :return: Fit per seed; a seed whose ion the pass could not score is absent,
         and its rows fall back to the finder's own number.
     """
     if not seeds:
         return {}
     ion_by_seed, fit_by_ion, _errors, _scored = await score_seeds(
-        sample, seeds, match_params, reagent_offset=reagent_offset
+        sample,
+        seeds,
+        match_params,
+        reagent_offset=reagent_offset,
+        envelope_tolerance=envelope_tolerance,
     )
     fits = {
         seed: fit_by_ion.get(ion_id)
@@ -3164,7 +3196,7 @@ async def _stage_a_assignments(
     known_window: KnownWindow | None,
     reagent_offset: ReagentOffset | None = None,
     ionization_setup: dict | None = None,
-) -> tuple[list[dict], dict | None, SampleMassAccuracy]:
+) -> tuple[list[dict], dict | None, SampleMassAccuracy, RunEnvelopeFit]:
     """Stage A: database-first assignment from the known composition set.
 
     The curated target library plus (when loaded) the reference mirror, matched
@@ -3218,11 +3250,17 @@ async def _stage_a_assignments(
         ``sigma_ppm`` is None when too few of the library's lines, or too few
         of its ions, matched to fit one, its ``anchors`` and ``anchor_ions``
         say how few, and its ``reagent`` is the pre-pass's reading, carried
-        even where the library matched nothing.
+        even where the library matched nothing. And last, the envelope
+        tolerance the run fitted on the envelopes Stage A committed
+        (:func:`envelope_fit.fit_run_envelope_tolerance`), which Stage A's own
+        rows are scored at, and the search and its seeded re-score after them.
+        Stage A first scores at today's numbers, since it is its commits that
+        the fit reads, and scores its frame again at the fitted tolerance.
     """
     stage_a_assignments: list[dict] = []
     confidence_calibration: dict | None = None
     mass_accuracy = SampleMassAccuracy(reagent=reagent_offset)
+    gated_df = match_isotope_df = pd.DataFrame()
     target_isotopes_df = await _fetch_known_target_isotopes(
         sample, match_params.isotope_abundance_threshold, mechanism_ids
     )
@@ -3251,7 +3289,7 @@ async def _stage_a_assignments(
         # tolerance. Without it a peak tens of ppm off a target would be
         # tiered "assigned" here while the Match tab reports no match.
         if not match_isotope_df.empty:
-            match_isotope_df = apply_match_params(match_isotope_df, match_params)
+            gated_df = apply_match_params(match_isotope_df, match_params)
             # Deliberately score Stage A with the fit score (score_pattern_v2):
             # the peak-centric engine's scoring engine is the ion-level fit
             # quality, not the targeted matcher's per-isotopologue term. Runs
@@ -3260,7 +3298,7 @@ async def _stage_a_assignments(
             # a few bright ions with many lines each would otherwise calibrate
             # the sample on their own mass error (STAGE_A_FIT_MIN_IONS).
             match_isotope_df = score_ions_by_fit(
-                match_isotope_df,
+                gated_df,
                 fallback_sigma_ppm=fallback_sigma_ppm,
                 reagent_offset=reagent_offset,
                 min_anchor_ions=STAGE_A_FIT_MIN_IONS,
@@ -3281,17 +3319,42 @@ async def _stage_a_assignments(
             instrument, SCORE_VERSION, ionization_setup=ionization_setup
         )
         confidence_calibration = calibration_meta(calibration, ionization_setup)
-        stage_a_assignments = invert_matches_to_peak_assignments(
-            match_isotope_df,
-            sample_item_id=sample.sample_item_id,
-            peak_assignment_run_id=peak_assignment_run_id,
-            candidate_threshold=config.candidate_threshold,
-            assigned_threshold=config.assigned_threshold,
-            max_alternatives=config.max_alternatives,
-            instrument=instrument,
-            calibration=calibration,
+
+        def assignments_of(scored_df: pd.DataFrame) -> list[dict]:
+            return invert_matches_to_peak_assignments(
+                scored_df,
+                sample_item_id=sample.sample_item_id,
+                peak_assignment_run_id=peak_assignment_run_id,
+                candidate_threshold=config.candidate_threshold,
+                assigned_threshold=config.assigned_threshold,
+                max_alternatives=config.max_alternatives,
+                instrument=instrument,
+                calibration=calibration,
+            )
+
+        stage_a_assignments = assignments_of(match_isotope_df)
+    # The tolerance is fitted on what Stage A committed, which a sample with no
+    # library match has nothing of: it can still take its siblings' curve.
+    envelope = await fit_run_envelope_tolerance(
+        sample,
+        match_isotope_df,
+        stage_a_assignments,
+        mass_accuracy=mass_accuracy,
+        fallback_sigma_ppm=fallback_sigma_ppm,
+    )
+    if envelope.fit.level != LEVEL_DEFAULT and not gated_df.empty:
+        # Scored again from the gated frame at the fitted tolerance, and the
+        # peaks arbitrated on that: the same width and offset, since those were
+        # read off the frame and the tolerance moves neither.
+        match_isotope_df = score_ions_by_fit(
+            gated_df,
+            fallback_sigma_ppm=fallback_sigma_ppm,
+            reagent_offset=reagent_offset,
+            min_anchor_ions=STAGE_A_FIT_MIN_IONS,
+            envelope_tolerance=envelope.tolerance,
         )
-    return stage_a_assignments, confidence_calibration, mass_accuracy
+        stage_a_assignments = assignments_of(match_isotope_df)
+    return stage_a_assignments, confidence_calibration, mass_accuracy, envelope
 
 
 async def _run_sample_assignment(
@@ -3508,6 +3571,7 @@ async def _assign_sample(
             stage_a_assignments,
             confidence_calibration,
             mass_accuracy,
+            envelope,
         ) = await _stage_a_assignments(
             sample,
             config,
@@ -3524,6 +3588,17 @@ async def _assign_sample(
         runtime.logger.info(
             f"Stage A assigned {len(stage_a_assignments)} of {len(peaks_df)} "
             f"peaks from the known target library"
+        )
+        runtime.logger.info(
+            f"Sample '{sample.sample_item_name}' reads an isotope line's share at "
+            f"the {envelope.fit.form} tolerance, level {envelope.fit.level}, over "
+            f"{envelope.fit.lines.lines} of its committed lines "
+            f"({envelope.fit.lines.absent} predicted lines absent)"
+            + (
+                f", pooled over {envelope.fit.pooled_files} files"
+                if envelope.fit.pooled_files
+                else ""
+            )
         )
         await send_progress_user_notification(notification, 0.4)
 
@@ -3543,7 +3618,11 @@ async def _assign_sample(
         # that branch ran: a run of Stage A alone still has committed rows whose
         # peaks a neighbour's envelope may already predict.
         scoring = pattern_scoring_for(
-            match_params, mass_accuracy, instrument_type, resolution
+            match_params,
+            mass_accuracy,
+            instrument_type,
+            resolution,
+            envelope_tolerance=envelope.tolerance,
         )
         if config.run_untargeted:
             eligible_df = peaks_df[
@@ -3689,6 +3768,7 @@ async def _assign_sample(
                         to_custom_element_format,
                     ),
                     reagent_offset=_run_scoring_centre(mass_accuracy),
+                    envelope_tolerance=envelope.tolerance,
                 )
                 stage_b_assignments = untargeted_matches_to_peak_assignments(
                     election.matches,
@@ -3889,6 +3969,7 @@ async def _assign_sample(
             partner_gate,
             fragments.summary if fragments.summary["ladders"] else None,
             ionization_setup,
+            envelope.record(),
         )
         await send_progress_user_notification(notification, 0.8)
 
@@ -4156,7 +4237,10 @@ async def _fold_sample_peaks_without_run(
     searched_mechanisms = _searched_mechanisms(
         mechanisms, secondary_mechanisms, resolved_profile
     )
-    stage_a, _, mass_accuracy = await _stage_a_assignments(
+    # Stage A's rows here are scored at the tolerance it fits, as a run's are,
+    # but there is no run to record it on: the sample's later readers read it
+    # at today's numbers, and its siblings' pools leave its lines out (#2989).
+    stage_a, _, mass_accuracy, _envelope = await _stage_a_assignments(
         sample,
         config,
         match_params,

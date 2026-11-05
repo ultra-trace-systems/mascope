@@ -78,6 +78,9 @@ from mascope_backend.api.new.peak_assignments.engine import (
     untargeted_seeds,
     untargeted_targets,
 )
+from mascope_backend.api.new.peak_assignments.envelope_fit import (
+    recorded_envelope_tolerance,
+)
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
 from mascope_backend.api.new.peak_assignments.profiles import (
     ResolvedProfile,
@@ -556,11 +559,17 @@ async def _search_sample_peaks(
     # the class's typical accuracy rather than this sample's own, which is the
     # honest state of it: the width is a measurement, and this path has not
     # made it.
+    # Nor has it committed any envelopes to fit a line's tolerance on: a line
+    # is read at the one the sample's latest run fitted, as the seeded
+    # re-score below reads it, so the search ranks a reading at the tolerance
+    # its row is tiered at.
+    envelope_tolerance = await recorded_envelope_tolerance(sample_item_id)
     scoring = pattern_scoring_for(
         match_params,
         SampleMassAccuracy(),
         get_instrument_type(sample.filename),
         await _resolution_of(sample),
+        envelope_tolerance=envelope_tolerance,
     )
     search_columns = [
         column
@@ -587,6 +596,7 @@ async def _search_sample_peaks(
         reagent_offset=await sample_reagent_offset(
             sample, peaks_df=peaks_df, resolved_profile=resolved_profile
         ),
+        envelope_tolerance=envelope_tolerance,
     )
     rows = untargeted_matches_to_peak_assignments(
         matches_df,
