@@ -244,10 +244,15 @@ Where each thing lives:
 | What a user meets of the shell | peaky's own docs; Mascope's `docs/user` says what Mascope serves and links to them | P-PKY-19 already says so |
 
 The rule behind the table: **a skill or a program that describes a tool
-ships with the tool; one that composes tools into an analysis, or guides
-the science, ships with Peaky.** The install line becomes `pip install
-peaky`, `peaky setup` checks Goose, the toolkit and the AI Agent token, and
-peaky pins `mascope-ai` the way it pins the SDK, under PKY-4's parity rule.
+ships in the package that provides the tool, so with Mascope; one that
+composes tools into an analysis, or guides the science, ships with
+Peaky.** A tool here is one operation an agent calls by name over MCP,
+such as `load` or `chart`, with typed inputs and outputs; it is not a
+program a person runs. The package that provides Mascope's tools is the
+toolkit, `mascope_ai`, and the set of tools it offers is its tool surface.
+The install line becomes `pip install peaky`, `peaky setup` checks Goose,
+the toolkit and the AI Agent token, and peaky pins `mascope-ai` the way it
+pins the SDK, under PKY-4's parity rule.
 
 Three things in the existing plan need an edit:
 
@@ -554,9 +559,10 @@ its description.
 5. **Peaky is the shell** (joint, 2.5). The AI frontend is called Peaky
    and lives in the peaky repository and package; every computation and
    reusable piece is Mascope's; milestones 3 and 4 are Peaky-team
-   deliverables. *Leaning: yes*, with the rule of 2.5 (a thing that
-   describes a tool ships with the tool; one that composes tools or guides
-   the science ships with Peaky) and the two Linear edits 2.5 names.
+   deliverables. *Leaning: yes*, with the rule of 2.5 (what describes a
+   tool ships in the package that provides the tool, so with Mascope; what
+   composes tools or guides the science ships with Peaky) and the two
+   Linear edits 2.5 names.
 
 Open questions the phases answer rather than decide now: which GPU host
 runs the self-hosted re-run of milestone 3; whether Goose's ACP custom
