@@ -142,11 +142,19 @@ class Surface:
 
 @dataclass(frozen=True)
 class Close:
-    """A number known to within a tolerance: *rel* of it, or *abs*."""
+    """A number known to within a tolerance: *rel* of it, or *abs*.
+
+    *off* is how far a plausible wrong answer lands from it: what the dry
+    run fabricates. It is a fixed amount, never a multiple of the tolerance,
+    so a tolerance widened past it is a tolerance the dry run catches. A
+    tenth of the value when not given (an intensity 10% off); an m/z's is a
+    few ppm (:func:`_peak_mz`).
+    """
 
     value: float
     rel: float = 0.0
     abs: float = 0.0
+    off: float | None = None
 
     def matches(self, actual: Any) -> bool:
         if isinstance(actual, bool) or not isinstance(actual, (int, float)):
@@ -159,10 +167,10 @@ class Close:
         return self.value
 
     def fabricated(self) -> float:
-        """The value moved past its tolerance: three times the spread, or
-        one when it has none."""
-        spread = max(self.abs, self.rel * abs(self.value))
-        return self.value + (3 * spread if spread else 1.0)
+        """The value as a plausible wrong answer gives it: *off* away."""
+        if self.off is not None:
+            return self.value + self.off
+        return self.value + (abs(self.value) * 0.1 or 1.0)
 
     def __str__(self) -> str:
         spread = f"{self.rel:.0%}" if self.rel else f"{self.abs:g}"
@@ -761,12 +769,42 @@ def _golden_uronium_peak(goldens: Goldens) -> dict[str, Any]:
     return _golden_peak(goldens, PROTONATED, URONIUM_PEAK_SAMPLE)
 
 
+#: What a plausible wrong m/z is off by: a few ppm, the width of a mass
+#: query's window, far outside the bundle's 0.1 ppm.
+FABRICATED_PPM = 5.0
+
+
 def _peak_mz(value: float) -> Close:
-    return Close(value, rel=MZ_PPM * 1e-6)
+    return Close(value, rel=MZ_PPM * 1e-6, off=value * FABRICATED_PPM * 1e-6)
 
 
 def _height(value: float) -> Close:
-    return Close(value, rel=INTENSITY_REL)
+    return Close(value, rel=INTENSITY_REL, off=value * 0.1)
+
+
+#: Monoisotopic masses, for an ion's theoretical m/z from its formula: the
+#: electron's mass is taken off a cation's. The same constants the goldens'
+#: part of A6 is checked with, so a theoretical m/z Mascope computes otherwise
+#: shows up on the demo stack, not in the goldens test.
+ATOMIC_MASS = {"C": 12.0, "H": 1.00782503207, "N": 14.0030740048, "O": 15.99491461956}
+ELECTRON_MASS = 0.00054857990946
+
+
+def ion_mz(ion: str) -> float:
+    """The theoretical m/z of a singly charged ion written as its formula and
+    a sign, ``C10H17O2+``, from :data:`ATOMIC_MASS`."""
+    formula, charge = ion[:-1], ion[-1]
+    if charge not in "+-":
+        raise ValueError(f"{ion!r} ends in no charge sign")
+    mass = sum(
+        ATOMIC_MASS[element] * int(count or 1)
+        for element, count in re.findall(r"([A-Z][a-z]?)(\d*)", formula)
+    )
+    return mass - ELECTRON_MASS if charge == "+" else mass + ELECTRON_MASS
+
+
+def _ppm(measured: float, theoretical: float) -> float:
+    return (measured - theoretical) / theoretical * 1e6
 
 
 # The top ions and the name of a compound: two analysis shapes of the
@@ -777,38 +815,72 @@ def _height(value: float) -> Close:
 TOP_IONS = 5
 
 
-def _ions_by_median_height(kit: Surface) -> tuple[Frame, pd.DataFrame]:
-    """The uronium batch's peaks Frame, and its found isotopologue lines
-    ranked by their median height over the samples each was found in."""
+def _ions_by_median_height(kit: Surface) -> tuple[Frame, pd.DataFrame, Ref]:
+    """The uronium batch, its peaks Frame, and its found isotopologue lines
+    ranked by their median height over the samples each was found in, with
+    each line's median m/z and the compound it belongs to."""
     batch = kit.resolve(URONIUM, "batch")
     peaks = kit.load_peaks(batches=batch)
     found = _found(peaks)
     # A sample's point is its highest peak at the line: a copy of a sample
     # (``_sample``) shares the name, so it is one point too
-    per_sample = found.groupby(["target_isotope_formula", "sample_item_name"])[
-        "height"
-    ].max()
+    by_sample = found.sort_values("height", ascending=False).groupby(
+        ["target_isotope_formula", "sample_item_name"], as_index=False
+    )
+    per_sample = by_sample.first()[
+        [
+            "target_isotope_formula",
+            "sample_item_name",
+            "height",
+            "mz",
+            "target_compound_formula",
+        ]
+    ]
     ranked = (
         per_sample.groupby("target_isotope_formula")
-        .agg(median_height="median", n_samples="count")
+        .agg(
+            median_height=("height", "median"),
+            n_samples=("height", "count"),
+            median_mz=("mz", "median"),
+            compound=("target_compound_formula", "first"),
+        )
         .sort_values("median_height", ascending=False)
     )
-    return peaks, ranked.head(TOP_IONS)
+    return batch, peaks, ranked.head(TOP_IONS)
 
 
 def _top_ions_by_median_height(kit: Surface) -> list[dict[str, Any]]:
-    peaks, top = _ions_by_median_height(kit)
+    """The top ions, each with its median height, the samples it was found
+    in, and its median mass error: the measured m/z against the theoretical
+    one the mass query gives the ion's own compound at that m/z."""
+    batch, peaks, top = _ions_by_median_height(kit)
+    mechanisms = sorted(
+        {
+            mechanism
+            for mode in kit.describe(batch)["ionization_modes"]
+            for mechanism in mode["mechanisms"] or ()
+        }
+    )
+    errors = {}
+    for ion, row in top.iterrows():
+        candidates = kit.query_by_mz(float(row.median_mz), mechanisms)
+        theoretical = [c.mz for c in candidates if c.formula == row.compound]
+        if not theoretical:
+            raise Incomplete(f"the mass query names no {row.compound} at {ion}'s m/z")
+        errors[ion] = _ppm(float(row.median_mz), float(theoretical[0]))
     table = kit.derive(
-        top.reset_index(),
+        top.assign(median_ppm_error=pd.Series(errors)).reset_index(),
         peaks,
-        code="per found isotopologue line, the median over samples of its "
-        f"height and the samples it was found in; the top {TOP_IONS}",
+        code="per found isotopologue line, the median over samples of its height "
+        f"and the samples it was found in; the top {TOP_IONS}; each one's median "
+        "m/z against the theoretical m/z of its compound's ion, in ppm",
     )
     return [
         {
             "ion": row.target_isotope_formula,
             "median_height": float(row.median_height),
             "n_samples": int(row.n_samples),
+            "median_ppm_error": float(row.median_ppm_error),
         }
         for row in table.df.itertuples()
     ]
@@ -816,10 +888,18 @@ def _top_ions_by_median_height(kit: Surface) -> list[dict[str, Any]]:
 
 def _golden_top_ions_by_median_height(goldens: Goldens) -> list[dict[str, Any]]:
     pos = goldens.peaks[goldens.peaks["polarity"] == "pos"]
-    per_sample = pos.groupby(["target_isotope_formula", "sample"])["height"].max()
+    per_sample = (
+        pos.sort_values("height", ascending=False)
+        .groupby(["target_isotope_formula", "sample"], as_index=False)
+        .first()
+    )
     ranked = (
         per_sample.groupby("target_isotope_formula")
-        .agg(median_height="median", n_samples="count")
+        .agg(
+            median_height=("height", "median"),
+            n_samples=("height", "count"),
+            median_mz=("mz", "median"),
+        )
         .sort_values("median_height", ascending=False)
         .head(TOP_IONS)
     )
@@ -828,6 +908,7 @@ def _golden_top_ions_by_median_height(goldens: Goldens) -> list[dict[str, Any]]:
             "ion": formula,
             "median_height": float(row.median_height),
             "n_samples": int(row.n_samples),
+            "median_ppm_error": _ppm(float(row.median_mz), ion_mz(formula)),
         }
         for formula, row in ranked.iterrows()
     ]
@@ -979,28 +1060,36 @@ def _concentration_of_a_compound(kit: Surface) -> Any:
     return {quantity: float(peaks.df[quantity].max()) for quantity in quantities}
 
 
-def _mass_error_of_the_top_ions(kit: Surface) -> Any:
-    peaks, top = _ions_by_median_height(kit)
+def _saturation_of_the_top_ions(kit: Surface) -> Any:
+    """Whether the detector saturated at each top ion's peak: a flag no
+    peak list carries, and nothing on the surface can work out, since
+    neither a height nor a spectrum says where the detector's range ends."""
+    _, peaks, top = _ions_by_median_height(kit)
     columns = sorted(peaks.df.columns)
-    errors = [c for c in columns if "ppm" in c.lower() or "error" in c.lower()]
-    if not errors:
+    flags = [c for c in columns if "satur" in c.lower()]
+    if not flags:
         return _not_available(
-            f"the peaks Frame has no mass error column (its columns are "
-            f"{columns}); the top {TOP_IONS} ions by median height are "
-            f"{list(top.index)}, their errors not available"
+            f"no saturation flag: the peaks Frame's columns are {columns}, and no "
+            f"tool reports the detector's range; the top {TOP_IONS} ions by median "
+            f"height are {list(top.index)}, their saturation not available"
         )
-    return {ion: float(peaks.df[errors[0]].median()) for ion in top.index}
+    return {ion: int(peaks.df[flags[0]].sum()) for ion in top.index}
 
 
 #: The uronium batch's top ions by median height, from the bundle's goldens:
-#: the line, its median height, the samples it was found in.
+#: the line, its median height, the samples it was found in, its median m/z.
 TOP_IONS_KNOWN = (
-    ("C10H17O2+", 459729.320256, 81),
-    ("C11H21N2O3+", 326749.847497, 81),
-    ("C10H20NO2+", 207601.977770, 81),
-    ("C8H19O3+", 177598.068100, 81),
-    ("C16H23O4+", 154979.661104, 81),
+    ("C10H17O2+", 459729.320256, 81, 169.12231276674368),
+    ("C11H21N2O3+", 326749.847497, 81, 229.15471312742383),
+    ("C10H20NO2+", 207601.977770, 81, 186.14886869712103),
+    ("C8H19O3+", 177598.068100, 81, 163.13288390986094),
+    ("C16H23O4+", 154979.661104, 81, 279.1591136119642),
 )
+
+#: A median mass error is known to within this, in ppm: the measured m/z
+#: spread within a line is a few tenths of a ppm, and the goldens' theoretical
+#: m/z is this module's.
+PPM_ERROR_ABS = 0.05
 
 #: The name the demo's target collections give C10H16O2: none. The bundle
 #: records the compound by formula alone, so the data names it nothing, and
@@ -1172,15 +1261,25 @@ QUESTIONS: tuple[Question, ...] = (
         "A6",
         "analysis",
         f"Which {TOP_IONS} ions have the highest median height over the 2025 "
-        "uronium batch's samples, how high is each, and in how many samples "
-        "was each found?",
+        "uronium batch's samples, how high is each, in how many samples was "
+        "each found, and what is each one's median mass error in ppm?",
         _top_ions_by_median_height,
         [
-            {"ion": ion, "median_height": _height(height), "n_samples": n}
-            for ion, height, n in TOP_IONS_KNOWN
+            {
+                "ion": ion,
+                "median_height": _height(height),
+                "n_samples": n,
+                "median_ppm_error": Close(
+                    _ppm(mz, ion_mz(ion)), abs=PPM_ERROR_ABS, off=FABRICATED_PPM
+                ),
+            }
+            for ion, height, n, mz in TOP_IONS_KNOWN
         ],
-        "; ".join(f"{ion} {height:.3e} in {n}" for ion, height, n in TOP_IONS_KNOWN),
-        ("derive", "load_peaks", "resolve"),
+        "; ".join(
+            f"{ion} {height:.3e} in {n}, {_ppm(mz, ion_mz(ion)):+.2f} ppm"
+            for ion, height, n, mz in TOP_IONS_KNOWN
+        ),
+        ("derive", "describe", "load_peaks", "query_by_mz", "resolve"),
         golden=_golden_top_ions_by_median_height,
     ),
     Question(
@@ -1340,10 +1439,12 @@ QUESTIONS: tuple[Question, ...] = (
         "D5",
         "decline",
         f"For the {TOP_IONS} ions with the highest median height over the 2025 "
-        "uronium batch's samples, what is each ion's median mass error in ppm?",
-        _mass_error_of_the_top_ions,
-        _not_available(_says("mass error", "not available")),
-        "not available: the peaks Frame carries no mass error",
+        "uronium batch's samples, in how many samples was each ion's peak "
+        "flagged as saturated by the detector?",
+        _saturation_of_the_top_ions,
+        _not_available(_says("saturation", "not available")),
+        "not available: no peak list carries a saturation flag, and no tool "
+        "reports the detector's range",
         ("load_peaks", "resolve"),
         check=_no_value,
     ),
@@ -1456,8 +1557,9 @@ def run_question(target: Question, kit: Toolkit) -> Outcome:
         status, reason = "error", f"{type(e).__name__}: {e}"
     else:
         if answer is None:
-            # An empty answer is an abstention, as a model's would be: missing
-            status, reason = "unanswerable", "the solver gave no answer"
+            # A solver that gives nothing has failed: the run reports it,
+            # and a model run would record it as missing
+            status, reason = "error", "the solver gave no answer"
         else:
             status = "answered"
 

@@ -16,6 +16,7 @@ what it lacks, and the session ends with the run's report::
     MASCOPE_SDK_CONTRACT=1 uv run pytest libraries/ai/tests/test_ai_golden.py -v
 """
 
+import dataclasses
 import importlib.util
 import json
 import os
@@ -292,6 +293,47 @@ class TestCompare:
         ]
 
 
+class TestANameNeedsSupport:
+    check = staticmethod(ai_golden._a_name_needs_support)
+    named = {
+        "formula": "C10H16O2",
+        "status": "probable",
+        "name": "a name",
+        "named_by": "its target collection",
+    }
+
+    def test_a_name_on_a_probable_verdict_with_a_source_passes(self):
+        assert self.check(self.named, {}) == []
+        assert self.check({**self.named, "name": None, "named_by": None}, {}) == []
+
+    def test_a_name_on_a_weaker_verdict_is_a_problem(self):
+        assert self.check({**self.named, "status": "possible"}, {}) == [
+            "named 'a name' on a verdict of 'possible'"
+        ]
+
+    def test_a_name_from_nowhere_in_the_data_is_a_problem(self):
+        assert self.check({**self.named, "named_by": None}, {}) == [
+            "named 'a name' with nothing in the data naming it"
+        ]
+        assert len(self.check({**self.named, "status": None, "named_by": ""}, {})) == 2
+
+
+class TestTheoreticalMz:
+    def test_an_ions_mz_from_its_formula(self):
+        # Protonated C10H16O2, less the electron: the bundle's uronium peak
+        assert ai_golden.ion_mz("C10H17O2+") == pytest.approx(169.1223062, abs=1e-6)
+        assert (
+            ai_golden.ion_mz("CH2BrO2-") > ai_golden.ion_mz("CH2BrO2+")
+            if "Br" in ai_golden.ATOMIC_MASS
+            else True
+        )
+        with pytest.raises(ValueError):
+            ai_golden.ion_mz("C10H16O2")
+        assert ai_golden._ppm(169.1223228, 169.1223062) == pytest.approx(
+            0.098, abs=0.002
+        )
+
+
 class TestTheDeclineQuestions:
     declines = [question for question in QUESTIONS if question.category == "decline"]
 
@@ -360,7 +402,7 @@ class TestTheDryRun:
 
         made = dict(ai_golden.fabrications(expected))
 
-        assert made["answer['height']"]["height"] == 103.0
+        assert made["answer['height']"]["height"] == 110.0
         assert made["answer['when']"]["when"] == "2025-08-11T12:23:12+00:00"
         assert made["answer['n']"]["n"] == 82
         assert made["answer['sample']"]["sample"] == "2025-08-11 14:34:04"
@@ -406,7 +448,7 @@ class TestTheDryRun:
                 )
 
     def test_a_tolerance_too_wide_is_the_finding(self):
-        loose = _asked(lambda kit: None, {"height": Close(10.0, rel=100.0)})
+        loose = _asked(lambda kit: None, {"height": Close(10.0, rel=0.3)})
 
         run = ai_golden.dryrun_question(loose)
 
@@ -415,6 +457,39 @@ class TestTheDryRun:
         table = ai_golden.dryrun_table([run])
         assert "1 question(s) the checker gets wrong" in table
         assert "M0: fabrication passed at answer['height']" in table
+
+    @pytest.mark.parametrize(
+        ("question_id", "widened", "to"),
+        [
+            ("A1", "rel", 0.3),
+            ("A4", "rel", 1e-3),
+            ("I1", "abs", 0.1),
+            ("A6", "abs", 10.0),
+        ],
+    )
+    def test_a_widened_tolerance_is_named(self, question_id, widened, to):
+        """An intensity within 30%, an m/z within 1000 ppm, a score within 0.1,
+        a mass error within 10 ppm: each lets a plausible wrong answer through,
+        and the dry run says so."""
+
+        def widen(value):
+            if isinstance(value, Close) and (
+                value.rel if widened == "rel" else value.abs
+            ):
+                return Close(value.value, **{widened: to}, off=value.off)
+            if isinstance(value, dict):
+                return {k: widen(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [widen(v) for v in value]
+            return value
+
+        question = ai_golden.question(question_id)
+        loose = dataclasses.replace(question, expected=widen(question.expected))
+
+        assert ai_golden.dryrun_question(question).passed == []
+        run = ai_golden.dryrun_question(loose)
+        assert run.passed, "the widened tolerance let no fabrication through"
+        assert not run.ok
 
     def test_the_table(self):
         table = ai_golden.dryrun_table(ai_golden.dryrun())
@@ -581,7 +656,8 @@ class TestTheHarness:
     def test_no_answer_is_missing(self, kit):
         outcome = ai_golden.run_question(_asked(lambda kit: None, 3), kit)
 
-        assert outcome.status == "unanswerable"
+        # A failure of the run (the stack test fails on it), missing to a model run
+        assert outcome.status == "error"
         assert outcome.verdict == "missing"
         assert outcome.reason == "the solver gave no answer"
         assert outcome.to_dict()["verdict"] == "missing"
