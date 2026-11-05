@@ -29,6 +29,7 @@ from mascope_thermo.backend import (
     open_backend,
 )
 from mascope_thermo.calibration import calibration_identity
+from mascope_thermo.first_scan import is_outlier as first_scan_is_outlier
 from mascope_thermo.lib import load_dotnet
 from mascope_thermo.runtime import runtime
 from mascope_thermo.scan_filter import parse_scan_filter
@@ -280,31 +281,30 @@ class ScanSelector:
         return np.array([kind == kinds[0] for kind in kinds], dtype=bool)
 
     def _bad_first_scan(self, among: np.ndarray) -> bool:
-        """Checks if the TIC in the first scan is 5 times higher than
-        the median TIC of the other scans it is compared with
-
-        This is a workaround for a common issue in Thermo raw files where the first scan
-        is an outlier with an abnormally high TIC.
-
-        #TODO: can be removed if Thermo releases a fix for this issue
+        """Whether the first scan is an outlier among the scans it is
+        compared with, by the rule both backends share
+        (:func:`mascope_thermo.first_scan.is_outlier`): a workaround for a
+        common quirk of Thermo raw files, a first scan whose spectrum is
+        scaled up as a whole.
 
         :param among: A boolean mask of the scans to compare the first scan
             with, itself included.
         """
-        tic_values = np.array([stats.TIC for stats in self.raw_scan_stats])[among]
-
-        # <= 1, not == 1: a file with no scans at all would otherwise index
-        # off an empty TIC array below, raising IndexError from what is only
-        # meant to be an outlier check - and masking the NoScansFoundError
-        # that scan_indices_1based raises for exactly that case. Mirrors
-        # OpenTFRawBackend._bad_first_scan.
-        if len(tic_values) <= 1:
-            return False
-
-        first_scan_tic = tic_values[0]
-        median_other_tic = np.median(tic_values[1:])
-
-        return first_scan_tic >= 5 * median_other_tic
+        indices = np.flatnonzero(among)
+        tic_values = [self.raw_scan_stats[i].TIC for i in indices]
+        # The experiment that recorded a scan: its filter, and its method
+        # segment and scan event, which tell apart two experiments one
+        # filter names (as the stream keys do), compared within this file
+        experiments = [
+            (
+                self.raw_scan_filters[i].ToString(),
+                self.raw_scan_stats[i].SegmentNumber,
+                self.raw_scan_stats[i].ScanEventNumber,
+            )
+            for i in indices
+        ]
+        alike = [experiment == experiments[0] for experiment in experiments]
+        return first_scan_is_outlier(tic_values, alike)
 
     @property
     def scan_indices_1based(self) -> list[int]:

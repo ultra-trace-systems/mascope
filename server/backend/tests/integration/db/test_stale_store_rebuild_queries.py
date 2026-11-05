@@ -1,19 +1,21 @@
 """
-Tests: the two queries of the report of outgrown peak stores.
+Tests: the queries of the rebuild of peak stores their files no longer read
+back.
 
-The rest of ``report_stale_peak_stores`` is decided in memory and tested
-hermetically (``tests/unit/db/test_report_stale_peak_stores.py``). Two
-things only a database can show: that it offers Orbitrap files and no
-others, and which of the files it lists are marked as holding a sample a
-person made. That mark sends a file to *Detect peaks* instead of a
-re-processing, which refuses such a file and nothing else.
+The rest of ``rebuild_stale_peak_stores`` is tested hermetically
+(``tests/unit/db/test_rebuild_stale_peak_stores.py`` and
+``tests/unit/libraries/signal/test_stale_store_rebuild.py``). Two things
+only a database can show: that it offers Orbitrap files and no others, and
+that a file's samples are found in every batch that holds one - the
+pipeline's and every copy a person made, which a re-processing refuses to
+touch and the rebuild keeps.
 """
 
 from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from mascope_backend.db import (
     Dataset,
@@ -23,7 +25,7 @@ from mascope_backend.db import (
     Workspace,
 )
 from mascope_backend.db.id import gen_id
-from mascope_backend.db.scripts import report_stale_peak_stores as script
+from mascope_backend.db.scripts import rebuild_stale_peak_stores as script
 
 
 @pytest_asyncio.fixture
@@ -43,7 +45,7 @@ async def files(async_session_factory):
             pipeline = kind == "pipeline"
             workspace = Workspace(
                 workspace_id=gen_id(),
-                workspace_name=f"Stale store report {kind} {gen_id(6)}",
+                workspace_name=f"Stale store rebuild {kind} {gen_id(6)}",
                 is_system=pipeline,
             )
             dataset = Dataset(
@@ -134,27 +136,34 @@ async def test_only_orbitrap_files_are_offered(files):
 
 
 @pytest.mark.asyncio
-async def test_a_file_with_a_sample_a_person_made_is_marked(files):
-    """Re-processing refuses it, so it is sent to *Detect peaks*; a file
-    holding only the pipeline's samples, or none, is re-processed, which
-    also calibrates it on the peaks detected again."""
-    pipeline_only = await files(samples=("pipeline",))
-    person_too = await files(samples=("pipeline", "person"))
-    person_only = await files(samples=("person",))
-    none = await files()
+async def test_every_sample_of_a_file_is_found_in_every_batch(
+    files, async_session_factory
+):
+    """The pipeline's sample and a person's copy of it, in a workspace of
+    their own: both had their matches made on the store being replaced."""
+    copied = await files(samples=("pipeline", "person"))
+    other = await files(samples=("pipeline",))
 
-    marked = await script._with_samples_a_person_made(
-        [
-            pipeline_only.sample_file_id,
-            person_too.sample_file_id,
-            person_only.sample_file_id,
-            none.sample_file_id,
-        ]
-    )
+    samples, batches = await script._samples_of(copied.sample_file_id)
 
-    assert marked == {person_too.sample_file_id, person_only.sample_file_id}
+    async with async_session_factory() as session:
+        items = (
+            await session.execute(
+                select(SampleItem.sample_item_id, SampleItem.sample_batch_id).where(
+                    SampleItem.sample_file_id == copied.sample_file_id
+                )
+            )
+        ).all()
+    assert sorted(samples) == sorted(item for item, _ in items)
+    assert sorted(batches) == sorted({batch for _, batch in items})
+    assert len(batches) == 2
+
+    others, _ = await script._samples_of(other.sample_file_id)
+    assert not set(others) & set(samples)
 
 
 @pytest.mark.asyncio
-async def test_no_files_ask_nothing():
-    assert await script._with_samples_a_person_made([]) == set()
+async def test_a_file_with_no_samples_has_none_to_rematch(files):
+    alone = await files()
+
+    assert await script._samples_of(alone.sample_file_id) == ([], [])
