@@ -111,6 +111,31 @@ $$\text{mzError}_{\text{ppm}} = \frac{m/z_{\text{measured}} - m/z_{\text{theoret
 An error of $\ge 100\text{ ppm}$ automatically forces the mass penalty term to 0.0, resulting in an isotope match score of 0.0.
 As the mass deviation decreases toward zero, the score linearly approaches its abundance-bounded maximum.
 
+### The tolerances: what a line keeps
+
+Each paired line is then checked against the match parameters of its instrument: the m/z tolerance (5 ppm on an Orbitrap and 15 ppm on a TOF by default), the isotope ratio tolerance (0.2 on an Orbitrap and 0.15 on a TOF) and the minimum peak intensity.
+An ion's own parameters, set per instrument on the target, replace the defaults.
+The checks do not all take the same thing from a line.
+
+- **Outside the m/z tolerance**, the peak is not taken as the line at all.
+  The line's score and its intensity are both set to 0.
+- **Outside the isotope ratio tolerance**, the line is on its mass but does not fit the ion's pattern in this file.
+  Its score is set to 0, so the ion's score and category drop.
+  Its intensity is kept.
+- **Under the minimum peak intensity**, the line's score is set to 0 and its intensity is kept.
+
+An ion's intensity is the sum of its lines' intensities, and it is what the batch overview chart plots for the ion in each file.
+So a line that misses the ratio in one file still counts towards the ion's intensity in that file.
+
+This matters most for an ion with two near-equal lines, such as a bromide adduct, whose 79Br and 81Br lines are about 51 % and 49 % of the ion.
+The ratio read from one file is noisier than its signal-to-noise suggests.
+On a customer's bromide Orbitrap data, the 81Br line missed the 0.2 tolerance in about one file in five, and in one in eight even at 0.5.
+When a miss also took the line's intensity, the ion read at half its intensity in each of those files, and its time series jumped between 1x and 2x from one file to the next.
+
+The trade-off is deliberate.
+A line that really carries an interference adds that interference to the ion's intensity, where before it would have taken half the ion away.
+The category still shows when the pattern did not fit.
+
 ### Target Ion Match Score
 The match score for a target ion (a molecular configuration under a specific ionization mechanism) is computed as the weighted sum of its constituent isotope scores, using the theoretical abundances as weights:
 

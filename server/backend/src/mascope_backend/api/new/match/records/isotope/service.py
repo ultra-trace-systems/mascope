@@ -379,16 +379,9 @@ def _apply_match_params(
     if not passes_filters:
         match_data["match_score"] = 0
 
-    # Filter sample_peak_intensity
-    intensity_passes_filters = all(
-        [
-            abs(match_data["match_mz_error"]) <= params["mz_tolerance"],
-            abs(match_data["match_abundance_error"])
-            <= params["isotope_ratio_tolerance"],
-        ]
-    )
-
-    if not intensity_passes_filters:
+    # Only the mass gate takes the intensity: a line on its mass keeps its
+    # signal when its ratio misses, as apply_match_params does
+    if abs(match_data["match_mz_error"]) > params["mz_tolerance"]:
         match_data["sample_peak_intensity"] = 0
 
     # Calculate match_category based on match_score
