@@ -52,7 +52,10 @@ Every peak is assigned in a two-stage engine:
   the polarity it is detected in; and it contributes radicals only if it allows them.
   The target library is read through the ionization mechanisms of the sample's mode; a
   reference list also through the channels the run opens for itself (*A list through
-  the channels a run opens*, below).
+  the channels a run opens*, below). Only mechanisms of one molecule, a single charge
+  and no neutral loss are read: a dimer (`[2M+H]+`), a doubly charged ion
+  (`[M+2H]2+`) or a neutral loss (`[M+H-H2O]+`) on the mode is left out of the run,
+  and the server logs it once.
 - **Stage B — untargeted.** Peaks that Stage A left unexplained are run through a
   bounded composition search that enumerates every elemental formula whose ion lands
   within the mass tolerance — the classic mass-decomposition problem

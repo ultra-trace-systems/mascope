@@ -95,6 +95,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.3 - calibration from verdicts, per profile | - |  | planned |
 | 4.4 - gate automation | - |  | planned |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
+| 4.6 - a structured adduct row beside the notation string | - |  | built: the row's columns on `ionization_mechanism`, filled by a migration that refuses an unreadable row; `[2M+H]+`, `[M+2H]2+` and `[M+H-H2O]+` read, written and given target ions; the finder and the engine leave them out; corroboration keys unchanged; moves no metric; MAS-318 |
 | 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below; readiness check against the reference's main on 2026-10-22: nothing new to bin, 0.10.0 still uncut |
 | 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | #2981 |  | built: a `decoy` block on the run config (`mz_shift_ppm`, `mz_shift_da`, `swap_adducts`), every stage at the control's calibration and envelope tolerance, the arm on the run row and out of the fold, the listing, the verdicts and the retention quota; `compare_runs.py --decoy` reports the share held below and above m/z 350; read in the next pass, no target until two gates have read them (decision 31) |
 | 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - |  | measured 2026-10-16 on the pass-9 ledgers; 3.5b's form decided 2026-10-22 (decision 32) |
@@ -1075,6 +1076,25 @@ who edits chemistry and stays last.
   `[M+H]+`, purity 0.98, no opportunistic channels on a labelled run; peaky
   #30); the first, EasyIC, moved forward to step 3.1.
 - **Size.** L. Decision D5.
+
+### 4.6 A structured adduct row beside the notation string
+
+- **What.** The ionization design's `Adduct` (`ingest_routing_and_splitting.md`,
+  4.4): `ionization_mechanism` gains `operation`, `species`, `species_charge`,
+  `multimer_n`, `neutral_loss` and `name`, and the notation module maps a
+  string and its row onto each other (`to_row`, `from_row`). The ion's
+  polarity and charge, its mass shift, the display form and the legacy
+  spelling are derived. The string still decides; the row is written from it.
+  The notation reads the three shapes it refused: a multimer (`[2M+H]+`), a
+  charge above one (`[M+2H]2+`, a coefficient only as the ion's charge on the
+  one term) and a neutral loss (`[M+H-H2O]+`, removed terms in a mechanism
+  that adds). They have no legacy spelling.
+- **As built.** Target ions are built for the new shapes. The composition
+  finder refuses them (`parse_ionization`), and a run leaves them out of the
+  sample's channels (`_readable`) with one warning, so no engine or gate
+  number moves; searching them is a follow-up. The corroboration weights are
+  keyed as before (pinned in `test_calibration_layer.py`).
+- **Size.** M.
 
 ## The reference's 0.10 line, reviewed (2026-10-13)
 

@@ -1974,6 +1974,31 @@ show the standard form. The old form is still accepted on input and converted.
 **The 2.0 release refuses it on input**: a client, a script or a list of your
 own that still writes `-H+` has to write `[M-H]-` before the update to 2.0.
 
+Beside the string, each mechanism row holds the same mechanism as a structured
+row: `operation` (`add` or `remove`), `species` (the formula, empty for the
+electron), `species_charge`, `multimer_n` (2 for `[2M+H]+`), `neutral_loss`
+(`H2O` for `[M+H-H2O]+`) and an optional `name`. The string decides: the
+backend writes the row from it whenever it is set, and the API reports the
+row with the ion's charge and mass shift derived from it. The migration that
+added the columns (alembic `c39f8f2c0b3b`) fills them by reading every stored
+string, and **stops the upgrade on a row that reads in neither notation**,
+listing each such row by id and text and writing nothing. Such a row is a
+free-text label an older validator let through (the notation migration left
+it in place and logged it). Correct it to a mechanism, or delete it, then
+apply the update again:
+
+```sql
+UPDATE ionization_mechanism SET ionization_mechanism = '[M+H]+'
+  WHERE ionization_mechanism_id = '<id>';
+-- or, when nothing should keep it:
+DELETE FROM ionization_mechanism WHERE ionization_mechanism_id = '<id>';
+```
+
+Deleting a mechanism deletes its target ions with it. A mechanism the
+composition finder does not search (a multimer, a charge above one, a neutral
+loss) is left out of peak assignment and logged once per process at WARNING:
+its target ions are built, but no run reads them yet.
+
 ### Reclaiming assignment runs
 
 Each assignment run writes **one row per observed peak** of its sample -
