@@ -122,6 +122,71 @@ class TestTheAnswerFromGoose:
         )
         assert driver._parse_answer("Error: Invalid recipe")[0] is None
 
+    def test_a_killed_episode_is_read_from_its_session_export(self, driver, tmp_path):
+        # Goose writes its stdout document only when a run ends: an episode
+        # killed at the wall clock has none, and read from stdout alone it
+        # would be one of no calls. Its session export has the turns.
+        export = tmp_path / "A6-rep0.json"
+        export.write_text(
+            json.dumps(
+                {
+                    "conversation": [
+                        {
+                            "role": "user",
+                            "created": 1000,
+                            "content": [{"type": "text", "text": "Q"}],
+                        },
+                        {
+                            "role": "assistant",
+                            "created": 1060,
+                            "content": [
+                                {
+                                    "type": "toolRequest",
+                                    "toolCall": {
+                                        "status": "success",
+                                        "value": {
+                                            "name": "mascope__find",
+                                            "arguments": {},
+                                        },
+                                    },
+                                },
+                                {
+                                    "type": "toolRequest",
+                                    "toolCall": {
+                                        "status": "success",
+                                        "value": {
+                                            "name": "mascope__reduce",
+                                            "arguments": {},
+                                        },
+                                    },
+                                },
+                            ],
+                        },
+                        {
+                            "role": "user",
+                            "created": 1070,
+                            "content": [{"type": "toolResponse"}],
+                        },
+                    ],
+                    "accumulated_usage": {
+                        "input_tokens": 77446,
+                        "output_tokens": 3543,
+                        "total_tokens": 80989,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        answer, about = driver._parse_export(export)
+
+        assert answer is None
+        assert about["tool_calls"] == 2
+        assert about["tools"] == {"mascope__find": 1, "mascope__reduce": 1}
+        assert about["tokens"]["input_tokens"] == 77446
+        assert about["last_message"] == 1070
+        assert driver._parse_export(tmp_path / "none.json") is None
+
     def test_the_checker_scores_what_was_parsed(self, driver):
         question = ai_golden.question("M2")
         right, _ = driver._parse_answer(
