@@ -32,10 +32,13 @@ graph LR
 | Table | One row is | SDK | Toolkit | Answers |
 | --- | --- | --- | --- | --- |
 | **Peak list** | one detected peak of one sample, or one peak and one isotope line it matched | `load_peaks`, `samples.get_peaks` | `load_peaks` | the sample's own values: how high a compound is in each sample of a batch, what was matched, what was not |
-| **Time series** | one peak's value in one scan of one sample | `load_peak_timeseries` | `load_timeseries` | what happens inside a sample: a rise, a plateau, a wash-out |
-| **Spectrum** | one point of the averaged profile | `samples.get_spectrum` | `load_spectrum` | the shape of the signal around an m/z: the apex, the width, a shoulder |
-| **Stages** | one peak of one sample, averaged over one time range | `load_peaks_by_stage` | `load_peaks_by_stage` | one sample read as consecutive phases: a blank, a signal, a wash |
+| **Time series** | one peak's value in one scan of one sample | `load_peak_timeseries` | `load_timeseries` | what happens inside a sample: a rise, a plateau, a wash-out, or the near-constant level a background peak holds |
+| **Spectrum** | one point of the averaged profile: the raw signal, before any peak is detected in it | `samples.get_spectrum` | `load_spectrum` | the shape of the signal around an m/z: the apex, the width, a shoulder |
+| **Stages** | one peak of one sample, averaged over one time range | `load_peaks_by_stage` | `load_peaks_by_stage` | one sample read as consecutive phases: a blank, a signal, a wash, or the concentration steps of a sensitivity calibration |
 | **Match tree** | one isotope line of one candidate formula, with Mascope's scores | `matching` | `match_compounds` | whether a formula is in a sample, and on which peaks |
+
+The spectrum is the raw signal; the peaks, or centroids, are the features
+Mascope detects in it, and every other table is about them.
 
 A batch's time series, as the app draws it, is **one point per sample**:
 the sample's averaged peak from the peak list. The time series table is
@@ -48,24 +51,40 @@ numbers.
 
 - **`height` in a peak list** is the peak's apex intensity in the sample's
   averaged spectrum: the mean over the window's scans of the peak's height
-  in each (the sum, when the peaks are loaded with `average=False`). Its
-  unit is the instrument's: counts on an Orbitrap, ions on a TOF. This is
-  the sample's own value, and the number behind the sample's point in a
+  in each (the sum, when the peaks are loaded with `average=False`). This
+  is the sample's own value, and the number behind the sample's point in a
   batch time series.
 - **`height` in a time series** is the same peak's height in **one scan**,
   at `time` seconds from the sample's start. Averaging a peak's series over
   the window gives back the peak list's height.
-- **`intensity` in a spectrum** is one point of the averaged profile, in
-  counts per second. The highest point in an m/z window is the window's
-  apex. It lies near the fitted peak's height, since peak detection fits the
-  apex from several profile points
-  ([Peak detection](../how-it-works/peak-detection.md)), but it is not the
-  same number, and a sharp peak can sit between two profile points.
+- **`intensity` in a spectrum** is one point of the averaged profile. The
+  highest point in an m/z window is the window's apex. It lies near the
+  fitted peak's height, since peak detection fits the apex from several
+  profile points ([Peak detection](../how-it-works/peak-detection.md)), but
+  it is not the same number, and a sharp peak can sit between two profile
+  points.
 - **`area`** is the peak's intensity integrated over its m/z extent,
   aggregated over the scans like `height`.
 
+**One unit.** Heights, time-series points and spectrum points are all
+read off the same averaged spectrum and share its unit, a count rate the
+server labels counts per second (`counts/s`) and the exports `cps`; on a
+TOF the counts are ions. An area is that intensity summed over the peak's
+m/z extent. A model that took a TOF height for a count of ions, and scaled
+it by the sample's length, would be wrong.
+
+**Which number Mascope calls the peak's intensity.** Where a result speaks
+of a peak's *intensity* rather than its height or area, as the matching
+and assignment results do (`sample_peak_intensity`, the intensity sums, the
+exports' "Total peak intensity"), it is the peak's **height on an
+Orbitrap** and its **area on a TOF**. The peak list carries both columns,
+so a computation of your own can pick either; what Mascope has already
+summed follows this rule.
+
 A **stage** is a peak list averaged over one time range of the sample
-only; its `height` and `area` are means over that range's scans.
+only; its `height` and `area` are means over that range's scans. Its other
+columns, `signal_to_noise` and `sparsity` among them, are the sample's
+whole-window values.
 
 | To know | Load | Read |
 | --- | --- | --- |
@@ -90,11 +109,11 @@ only; its `height` and `area` are means over that range's scans.
 
 | Column | Meaning |
 | --- | --- |
-| `mz` | The peak's centroid m/z after [calibration](../how-it-works/calibration.md). In a spectrum, the profile point's m/z; in a time series, the peak's m/z repeated on every point. |
+| `mz` | The peak's measured centroid m/z after [calibration](../how-it-works/calibration.md). In a spectrum, the profile point's m/z; in a time series, the peak's m/z repeated on every point. In the match tree, a theoretical value instead: see below. |
 | `height` | See above. |
 | `area` | See above. |
 | `signal_to_noise` | The peak's height over its noise estimate ([Peak detection](../how-it-works/peak-detection.md#quality-control-filtering)). `NaN` where the file stores no estimate: an absent value, never a peak measured to be clean. |
-| `sparsity` | The share of the sample's scans the peak is absent from; 0 means it was seen in every scan. |
+| `sparsity` | The share of the sample's scans the peak is absent from, known once the peak's time series has been computed. A peak whose series has not been computed yet, typically one no target matched, also reads 0, so a 0 is "seen in every scan" only for a peak with a series. |
 | `segment` | For a sample stitched from several scan streams, the stream the peak came from; intensities are not rescaled between streams. `None` for a sample that is not stitched. |
 | `is_satellite` | Whether the peak is a side-lobe artifact of a stronger peak nearby rather than a compound ([satellite peaks](../how-it-works/peak-detection.md#satellite-peak-identification)). |
 
@@ -145,16 +164,26 @@ scans only.
 ### Match tree
 
 The tree Mascope returns for candidate formulas, one row per isotope line
-it looked for. Every score and category in it is Mascope's.
+it looked for, each row carrying its ion's and its compound's columns
+beside its own. Every score, category and intensity in it is Mascope's,
+where a peak list's `match_score_ion` and `match_score_compound` are the
+SDK's roll-ups.
 
 | Column | Meaning |
 | --- | --- |
 | `candidate`, `origin` | The formula as it was asked about, and where it came from: `given`, `mass_query` (Mascope's own proposal for the m/z) or `model`. |
+| `mz` | The line's **theoretical** m/z. The measured one is `sample_peak_mz`. |
 | `match_score_compound`, `match_score_ion`, `match_score_isotope` | Mascope's score at each level. |
 | `match_category_compound`, `match_category_ion`, `match_category_isotope` | Mascope's category at each level: 2 probable, 1 possible, 0 unmatched. |
+| `match_isotope_id` | The ID of the match record for the line. |
 | `intensity_compound`, `intensity_ion` | Mascope's summed intensity of the peaks found at the compound's lines (all its ions) and at the ion's lines. |
-| `sample_peak_id`, `sample_peak_mz` | The sample's peak the line was found at, and its m/z; empty when none was. |
-| `target_isotope_mz`, `target_isotope_mz_error_ppm` | The line's theoretical m/z, and how far the peak's m/z is from it. |
+| `sample_peak_id`, `sample_peak_mz` | The sample's peak the line was found at, and its measured m/z; empty when none was. |
+| `sample_peak_intensity`, `sample_peak_intensity_relative` | That peak's intensity, the height on an Orbitrap and the area on a TOF, and the same relative to the peak of the ion's most abundant line. |
+| `match_mz_error`, `match_abundance_error` | How far the peak's m/z is from the line's theoretical m/z, and how far its relative intensity is from the line's theoretical abundance. |
+| `signal_to_noise`, `resolution`, `sample_peak_tof`, `is_satellite` | The found peak's own: its signal-to-noise ratio, its resolving power, its time-of-flight coordinate (TOF files only), and whether it is a satellite. |
+| `instrument` | The instrument whose match parameters scored the ion. |
+| `cas_number`, `inchi`, `inchikey`, `smiles` | The compound's identifiers, where its record has them. The match is on the formula and confirms no structure. |
+| `target_*`, `ionization_mechanism`, `relative_abundance` | As in the peak list. |
 
 ## Rows that repeat, and rows that are missing
 
@@ -180,7 +209,9 @@ missing series (`compute_timeseries` in the toolkit,
 The AI toolkit puts these meanings where the model reads them. Every Frame
 handle an MCP tool returns carries a `meanings` map beside its `columns`,
 one line per column: what the number is, its unit, and what it is not. In
-Python, `frame.column_meanings()` gives the same map. A column that a
-`derive` step computed says so and points to the code that made it; a
-column neither the toolkit nor this page knows is left out of the map, and
-is the first thing to document when a loader gains one.
+Python, `frame.column_meanings()` gives the same map. A table a `derive`
+step computed keeps, for each column it carried over, the meaning of the
+table it came from, so a time series filtered by time still says its
+height is one scan's; a column the step computed says so and points to the
+code that made it. A column neither the toolkit nor this page knows is left
+out of the map, and is the first thing to document when a loader gains one.

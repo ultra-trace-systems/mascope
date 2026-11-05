@@ -1413,6 +1413,9 @@ class Server:
                 "frame": tree.id,
                 "rows": tree.n_rows,
                 "rows_in_python": Own(f"{self.opener}.frame({tree.id!r}).df"),
+                "meanings_in_python": Own(
+                    f"{self.opener}.frame({tree.id!r}).column_meanings()"
+                ),
             },
             "note": "The scores are Mascope's; an unscored candidate is "
             "speculation, not a verdict.",
