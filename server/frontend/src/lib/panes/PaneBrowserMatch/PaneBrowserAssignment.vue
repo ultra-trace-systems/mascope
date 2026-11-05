@@ -31,7 +31,14 @@ import {
   listingTags,
   listingTooltip
 } from '@/lib/referenceListings'
-import { ROLE_BUCKETS, bucketOf as bucketFor, bucketRank, tierRank } from '@/lib/tiers'
+import {
+  ENGINE_UNSTATED,
+  ROLE_BUCKETS,
+  bucketOf as bucketFor,
+  bucketRank,
+  engineBucketOf,
+  tierRank
+} from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import { useApp } from '@/stores'
@@ -47,7 +54,64 @@ const launcher = useAssignmentLauncher()
 
 const runs = computed(() => app.data.peakAssignment.run)
 const assignments = computed(() => app.data.peakAssignment.peak)
-const tierCounts = computed(() => assignments.value.tierCounts)
+
+// Whether this run carries a tier of its producing engine's own. Only an
+// imported run does - an in-app row's engine tier IS its `tier` - so the column
+// is absent from every in-app ledger rather than sitting there empty. Read off
+// the loaded rows rather than the run's engine, because "peaky published this"
+// and "peaky stated a tier on these rows" are different claims: an engine may
+// publish without tiering anything.
+const hasEngineTiers = computed(() => assignments.value.list.some((row) => row.engine_tier != null))
+
+// The engine-tier view: the tier strip counts, and its chips filter, by the
+// producing engine's own tier rather than this server's, so an imported run can
+// be read in its engine's words. Off by default, offered only where the run
+// carries engine tiers, and a reading aid alone: the tier column, the sort and
+// everything rolled up across the batch stay on this server's tier.
+const engineView = ref(false)
+const readsEngineTiers = computed(() => engineView.value && hasEngineTiers.value)
+
+// The strip's counts in the engine's words: the store's histogram's population
+// (an isotopologue line counts with its compound, not on its own), bucketed by
+// `engineBucketOf`.
+function engineTierHistogram(records) {
+  const counts = {
+    assigned: 0,
+    candidate: 0,
+    below_assignability: 0,
+    unassigned: 0,
+    [ENGINE_UNSTATED]: 0,
+    reagent: 0,
+    artifact: 0
+  }
+  for (const record of records ?? []) {
+    if (record.role === 'iso_child') continue
+    counts[engineBucketOf(record.engine_tier, record.tier, record.role)] += 1
+  }
+  return counts
+}
+const tierCounts = computed(() =>
+  readsEngineTiers.value
+    ? engineTierHistogram(assignments.value.list)
+    : assignments.value.tierCounts
+)
+
+// One chip per tier in confidence order, then the engine view's "not stated",
+// then one per role.
+const tierChips = computed(() => {
+  const counts = tierCounts.value
+  return [
+    { key: 'assigned', label: 'assigned', count: counts.assigned },
+    { key: 'candidate', label: 'candidate', count: counts.candidate },
+    { key: 'below_assignability', label: 'below', count: counts.below_assignability },
+    { key: 'unassigned', label: 'unassigned', count: counts.unassigned },
+    ...(readsEngineTiers.value
+      ? [{ key: ENGINE_UNSTATED, label: 'not stated', count: counts[ENGINE_UNSTATED] }]
+      : []),
+    { key: 'reagent', label: 'reagent', count: counts.reagent },
+    { key: 'artifact', label: 'artifact', count: counts.artifact }
+  ]
+})
 
 // Map ionization_mechanism_id -> readable notation (e.g. "[M+H]+", "[M+Br]-"), for
 // the ledger's ionization column. The assignment carries only the id.
@@ -257,7 +321,13 @@ const rowClass = (row) => (isStale(row) ? 'stale-peak' : null)
 // counted and sorted apart from the peaks nothing explained. The buckets and
 // their ranks live in @/lib/tiers so this ledger and the batch-peak ledger
 // cannot drift.
-const bucketOf = (row) => bucketFor(row.tier, row.role)
+//
+// The chips filter on the bucket of the view the strip is in; the sort stays
+// on this server's tier in both.
+const bucketOf = (row) =>
+  readsEngineTiers.value
+    ? engineBucketOf(row.engine_tier, row.tier, row.role)
+    : bucketFor(row.tier, row.role)
 const rankOf = (row) => bucketRank(row.tier, row.role)
 
 // Active tier filters (empty = show all); clicking a histogram chip toggles it.
@@ -266,6 +336,9 @@ function toggleTier(key) {
   if (activeTiers.has(key)) activeTiers.delete(key)
   else activeTiers.add(key)
 }
+// A chip names a bucket of one view, so switching views drops the filter
+// rather than carrying "candidate" over to a tier it never meant.
+watch(readsEngineTiers, () => activeTiers.clear())
 
 // Fold isotopologues by default: one row per assigned formula (M0)
 // plus unassigned/reagent peaks, which keeps this a flat, fixed-height list
@@ -657,14 +730,6 @@ watch([() => selectedRow.value?.sample_peak_id, () => rows.value.length], scroll
   immediate: true
 })
 
-// Whether this run carries a tier of its producing engine's own. Only an
-// imported run does - an in-app row's engine tier IS its `tier` - so the column
-// is absent from every in-app ledger rather than sitting there empty. Read off
-// the loaded rows rather than the run's engine, because "peaky published this"
-// and "peaky stated a tier on these rows" are different claims: an engine may
-// publish without tiering anything.
-const hasEngineTiers = computed(() => assignments.value.list.some((row) => row.engine_tier != null))
-
 // Says which of the two tiers this chip is, and whether it agrees. Without it
 // two chips on one row read as one claim rendered twice.
 const engineTierTooltip = (row) =>
@@ -805,15 +870,17 @@ const breadcrumb = computed(() => {
         <!-- The four tiers count the sample's compounds and the peaks nothing
              explained; the two roles after them count the peaks the source and
              the instrument made, which are neither. -->
+        <!-- Says whose tiers the chips count while that is not this server's. -->
+        <span
+          v-if="readsEngineTiers"
+          class="engine-view-label"
+          v-tooltip.top="
+            'The chips count and filter by the producing engine\'s own tier. The tier column and the sort stay on this server\'s.'
+          "
+          >engine's tiers</span
+        >
         <button
-          v-for="t in [
-            { key: 'assigned', label: 'assigned', count: tierCounts.assigned },
-            { key: 'candidate', label: 'candidate', count: tierCounts.candidate },
-            { key: 'below_assignability', label: 'below', count: tierCounts.below_assignability },
-            { key: 'unassigned', label: 'unassigned', count: tierCounts.unassigned },
-            { key: 'reagent', label: 'reagent', count: tierCounts.reagent },
-            { key: 'artifact', label: 'artifact', count: tierCounts.artifact }
-          ]"
+          v-for="t in tierChips"
           :key="t.key"
           type="button"
           class="tier-stat"
@@ -869,6 +936,12 @@ const breadcrumb = computed(() => {
               <b>Verdict</b> narrows the table to one verification verdict.
               </p>
               <p>
+              On a run imported from another engine that states tiers of its
+              own, <b>Engine tier</b> makes the tier chips count and filter by
+              that engine's tier, with <b>not stated</b> for the formulas it
+              gave none. The tier column and the sort stay on Mascope's tier.
+              </p>
+              <p>
               Each keeps its setting while the menu is closed.
               </p>`,
               { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
@@ -920,6 +993,16 @@ const breadcrumb = computed(() => {
             >
               <ToggleSwitch v-model="listingColumn.full" inputId="listing-full" />
               <label for="listing-full">Listed as, in full</label>
+            </div>
+            <div
+              v-if="hasEngineTiers"
+              class="unfold-toggle"
+              v-tooltip.top="
+                'Count and filter the tier chips by the producing engine\'s own tier, not this server\'s'
+              "
+            >
+              <ToggleSwitch v-model="engineView" inputId="engine-tier-view" />
+              <label for="engine-tier-view">Engine tier</label>
             </div>
             <!-- Chips rather than a dropdown, and the same shape as the tier
                  chips this menu hangs off. A Select here would be a second
@@ -1397,8 +1480,14 @@ const breadcrumb = computed(() => {
   margin-left: 0.4rem;
 }
 .tier-stat.below b,
-.tier-stat.unassigned b {
+.tier-stat.unassigned b,
+.tier-stat.engine_unstated b {
   color: var(--p-surface-500, #6f7889);
+}
+.engine-view-label {
+  font-size: 0.72rem;
+  font-style: italic;
+  opacity: 0.7;
 }
 
 .formula {

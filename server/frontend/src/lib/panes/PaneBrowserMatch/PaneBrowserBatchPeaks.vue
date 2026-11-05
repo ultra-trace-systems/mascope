@@ -27,7 +27,17 @@ import {
   listingTags,
   listingTooltip
 } from '@/lib/referenceListings'
-import { ROLE_BUCKETS, TIERS, TIER_META, bucketOf, bucketRank } from '@/lib/tiers'
+import {
+  ENGINE_UNSTATED,
+  ENGINE_UNSTATED_META,
+  ROLE_BUCKETS,
+  TIERS,
+  TIER_META,
+  bucketOf,
+  bucketRank,
+  engineBucketOf,
+  tierRank
+} from '@/lib/tiers'
 import { VERDICT_META } from '@/lib/verification'
 import { prettyTrim } from '@/lib/utils'
 import { useApp } from '@/stores'
@@ -194,6 +204,38 @@ const formulaOf = (row) =>
   row.consensus_formula || (row.consensus_role ? row.consensus_ion_formula : null) || null
 const ION_TOOLTIP = 'Ion formula: the peak names an ion, and no compound of the sample'
 
+// --- The importing engine's own tier ------------------------------------------
+
+// A batch import can carry the engine's own verdict on each identity it lands,
+// kept beside the consensus tier this server measures rather than in its
+// place. Offered only where some batch peak carries one, as the sample
+// ledger's column is.
+const hasEngineTiers = computed(() => ledger.value.list.some((bp) => bp.engine_tier != null))
+
+// The engine-tier view: the strip counts, and its chips filter, by the engine's
+// tier, so an imported run can be read in its engine's words. Off by default
+// and a reading aid alone: the tier column, the sort and the fold stay on the
+// consensus tier.
+const engineView = ref(false)
+const readsEngineTiers = computed(() => engineView.value && hasEngineTiers.value)
+
+// The batch peaks where the engine's tier and the consensus tier differ - the
+// ones running two engines over a batch is meant to show. A batch peak with no
+// engine tier is not among them: absence is not agreement, as on the API's
+// `tier_disagrees`.
+const onlyDisagreements = ref(false)
+const engineDisagrees = (row) => row.engine_tier != null && row.engine_tier !== row.consensus_tier
+
+// Says which of the two tiers the chip is, and whether it agrees, as the
+// sample ledger's does.
+const engineTierTooltip = (row) => {
+  const said = row.engine_claim ? ` - "${row.engine_claim}"` : ''
+  return row.engine_tier === row.consensus_tier
+    ? `The importing engine's own tier: ${row.engine_tier} (agrees with the consensus)${said}`
+    : `The importing engine's own tier: ${row.engine_tier}, where the consensus of the ` +
+        `members' measurements says ${row.consensus_tier}${said}`
+}
+
 // The ledger's records with the tier's confidence rank attached, which is what
 // the tier column sorts on: the raw tier string sorts alphabetically, and
 // "below_assignability" before "candidate" is not an ordering anyone asked for.
@@ -208,7 +250,14 @@ const decorated = computed(() => {
     return {
       ...batchPeak,
       tierRank: bucketRank(batchPeak.consensus_tier, batchPeak.consensus_role),
-      bucket: bucketOf(batchPeak.consensus_tier, batchPeak.consensus_role),
+      // The bucket of the view the strip is in: the chips and the tier
+      // column's filter read it.
+      bucket: readsEngineTiers.value
+        ? engineBucketOf(batchPeak.engine_tier, batchPeak.consensus_tier, batchPeak.consensus_role)
+        : bucketOf(batchPeak.consensus_tier, batchPeak.consensus_role),
+      // Null rather than a rank where no engine stated one, so the column
+      // sorts those last in both directions.
+      engineTierRank: batchPeak.engine_tier != null ? tierRank(batchPeak.engine_tier) : null,
       verdictRank: verdictRank(batchPeak),
       parentId: rootParentId(batchPeak, index),
       listing,
@@ -390,7 +439,10 @@ const passesFilters = (row) => {
 // themselves: a family shares one formula and one tier, so a filter that kept
 // the parent kept the family.
 const rows = computed(() => {
-  const visible = parents.value.filter(passesFilters)
+  const disagreeing = onlyDisagreements.value && hasEngineTiers.value
+  const visible = parents.value.filter(
+    (row) => passesFilters(row) && (!disagreeing || engineDisagrees(row))
+  )
   const byColumn = sortField.value ? compareBy(sortField.value, sortOrder.value) : null
   visible.sort(byColumn ? (a, b) => byColumn(a, b) || byConfidence(a, b) : byConfidence)
   if (!showIsotopologues.value) return visible
@@ -551,6 +603,10 @@ const activeTier = computed(() => tierConstraint.value.value)
 const toggleTier = (tier) => {
   tierConstraint.value.value = activeTier.value === tier ? null : tier
 }
+// A chip names a bucket of one view, so switching views drops the filter.
+watch(readsEngineTiers, () => {
+  tierConstraint.value.value = null
+})
 
 // A chip is a filter control, so its number has to be the number of rows
 // clicking it produces: counted over `parents`, the same population the table
@@ -562,18 +618,25 @@ const toggleTier = (tier) => {
 // pane's are: a histogram that reacted to its own filter would collapse to one
 // non-zero bucket the moment it was used. An anchor a source role accounts for
 // counts under its role rather than as unassigned.
-const BUCKETS = [...TIERS, ...ROLE_BUCKETS]
+// The engine-tier view adds one bucket after the tiers, for the formulas the
+// engine stated no tier for.
+const BUCKETS = computed(() => [
+  ...TIERS,
+  ...(readsEngineTiers.value ? [ENGINE_UNSTATED] : []),
+  ...ROLE_BUCKETS
+])
+const BUCKET_LABELS = { ...TIER_META, [ENGINE_UNSTATED]: ENGINE_UNSTATED_META }
 const tierCounts = computed(() => {
-  const counts = Object.fromEntries(BUCKETS.map((bucket) => [bucket, 0]))
+  const counts = Object.fromEntries(BUCKETS.value.map((bucket) => [bucket, 0]))
   for (const row of parents.value) counts[row.bucket] += 1
   return counts
 })
 
 // One chip per tier in confidence order, then one per role, counts included.
 const tierChips = computed(() =>
-  BUCKETS.map((bucket) => ({
+  BUCKETS.value.map((bucket) => ({
     key: bucket,
-    label: TIER_META[bucket]?.label ?? bucket,
+    label: BUCKET_LABELS[bucket]?.label ?? bucket,
     count: tierCounts.value[bucket] ?? 0,
     role: ROLE_BUCKETS.includes(bucket)
   }))
@@ -616,6 +679,9 @@ const HEADER_TOOLTIPS = {
   tier:
     "Consensus tier: an evidence-weighted vote over the members' per-sample tiers, " +
     'assigned only when a weighted majority reach it',
+  engineTier:
+    'The tier the engine that imported this identity stated for it, beside the consensus ' +
+    'this server measured from the members. Nothing sorts, folds or rolls up on it',
   samples: 'Number of samples this species is seen in',
   verdict:
     'Batch-level verdict: one judgment per species, covering every sample without a ' +
@@ -701,6 +767,15 @@ watch(
           doc: app.ui.help.docUrl('how-it-works/peak-assignment/#confidence-tiers')
         }"
       >
+        <!-- Says whose tiers the chips count while that is not the consensus. -->
+        <span
+          v-if="readsEngineTiers"
+          class="engine-view-label"
+          v-tooltip.top="
+            'The chips count and filter by the importing engine\'s own tier. The tier column and the sort stay on the consensus.'
+          "
+          >engine's tiers</span
+        >
         <button
           v-for="chip in tierChips"
           :key="chip.key"
@@ -737,7 +812,11 @@ watch(
           aria-haspopup="dialog"
           :aria-controls="viewMenuOpen ? 'batch-peak-view-menu' : undefined"
           :aria-expanded="viewMenuOpen"
-          v-tooltip.top="'View options: isotopologue rows, the listing column'"
+          v-tooltip.top="
+            hasEngineTiers
+              ? 'View options: isotopologue rows, the listing column, the engine\'s tiers'
+              : 'View options: isotopologue rows, the listing column'
+          "
           @click="toggleViewMenu"
           :pt="
             app.ui.help.top(
@@ -762,6 +841,14 @@ watch(
               family of its own, so an isotopologue is one whose per-sample
               assignments agree, across the batch, that it belongs to another
               anchor's compound.
+              </p>
+              <p>
+              After an import that carried the engine's own tiers,
+              <b>Engine tier</b> makes the tier chips count and filter by that
+              engine's tier, with <b>not stated</b> for the formulas it gave
+              none, and <b>Engine disagrees</b> keeps the batch peaks where its
+              tier and the consensus differ. The tier column and the sort stay
+              on the consensus.
               </p>
               <p>
               Each setting keeps while the menu is closed.
@@ -807,6 +894,26 @@ watch(
               <ToggleSwitch v-model="listingColumn.full" inputId="batch-listing-full" />
               <label for="batch-listing-full">Listed as, in full</label>
             </div>
+            <template v-if="hasEngineTiers">
+              <div
+                class="unfold-toggle"
+                v-tooltip.top="
+                  'Count and filter the tier chips by the importing engine\'s own tier, not the consensus'
+                "
+              >
+                <ToggleSwitch v-model="engineView" inputId="batch-engine-tier-view" />
+                <label for="batch-engine-tier-view">Engine tier</label>
+              </div>
+              <div
+                class="unfold-toggle"
+                v-tooltip.top="
+                  'Only the batch peaks where the importing engine\'s tier differs from the consensus'
+                "
+              >
+                <ToggleSwitch v-model="onlyDisagreements" inputId="batch-engine-disagrees" />
+                <label for="batch-engine-disagrees">Engine disagrees</label>
+              </div>
+            </template>
             <!-- The whole ledger as a CSV: every batch peak with every
                  sample's member, one row per member. A background task; the
                  browser downloads the file when it is ready. -->
@@ -1064,6 +1171,23 @@ watch(
           </template>
         </Column>
 
+        <!-- The importing engine's own verdict, beside the consensus rather
+             than instead of it, as the sample ledger shows an imported run's.
+             The tier column is what this table sorts, filters and folds on. -->
+        <Column v-if="hasEngineTiers" field="engineTierRank" sortable style="min-width: 7rem">
+          <template #header>
+            <span v-tooltip.top="HEADER_TOOLTIPS.engineTier">Engine tier</span>
+          </template>
+          <template #body="{ data }">
+            <BaseTierTag
+              v-if="data.engine_tier && !data.parentId"
+              :tier="data.engine_tier"
+              :tooltip="engineTierTooltip(data)"
+            />
+            <span v-else-if="!data.parentId" class="no-engine-tier">&mdash;</span>
+          </template>
+        </Column>
+
         <Column field="n_present" sortable style="min-width: 6rem">
           <template #header>
             <span v-tooltip.top="HEADER_TOOLTIPS.samples">Samples</span>
@@ -1311,8 +1435,17 @@ watch(
   color: var(--state-warning);
 }
 .tier-stat.below_assignability b,
-.tier-stat.unassigned b {
+.tier-stat.unassigned b,
+.tier-stat.engine_unstated b {
   color: var(--p-surface-500, #6f7889);
+}
+.engine-view-label {
+  font-size: 0.72rem;
+  font-style: italic;
+  opacity: 0.7;
+}
+.no-engine-tier {
+  opacity: 0.4;
 }
 /* The source's and the instrument's peaks, in the colour their chips wear, and
    set off from the tiers: what follows is not a confidence. */

@@ -130,6 +130,39 @@ export const ROLE_BUCKETS = ['reagent', 'artifact']
 export const bucketOf = (tier, role) => (ROLE_BUCKETS.includes(role) ? role : tierBucket(tier))
 
 /**
+ * The bucket of the engine-tier view for a row whose formula the producing
+ * engine stated no tier for. Its own chip, after the tiers: such a row is not
+ * unassigned - this server gave it a formula - and counting it there would
+ * make the engine look as if it had rejected what it never judged.
+ */
+export const ENGINE_UNSTATED = 'engine_unstated'
+
+/** The chip of `ENGINE_UNSTATED`, with the one-line meaning a chip says on hover. */
+export const ENGINE_UNSTATED_META = Object.freeze({
+  key: ENGINE_UNSTATED,
+  label: 'not stated',
+  description: 'The producing engine stated no tier for this formula'
+})
+
+/**
+ * The bucket a row is filtered and counted in when a ledger is read in its
+ * producing engine's words: its role where one accounts for it, as in the
+ * default view, else the engine's own tier. A row the engine stated no tier
+ * for is `unassigned` where this server found no formula either, and
+ * `ENGINE_UNSTATED` where it did.
+ *
+ * @param {string|null} engineTier the engine's own tier, or null
+ * @param {string} tier this server's tier
+ * @param {string|null} role the role, or null
+ * @returns {string} one of `TIERS`, `ROLE_BUCKETS` or `ENGINE_UNSTATED`
+ */
+export const engineBucketOf = (engineTier, tier, role) => {
+  if (ROLE_BUCKETS.includes(role)) return role
+  if (isTier(engineTier)) return engineTier
+  return tierBucket(tier) === FALLBACK_TIER ? FALLBACK_TIER : ENGINE_UNSTATED
+}
+
+/**
  * Sort rank for a row: the tiers in confidence order, then the roles in the
  * strips' order, so the tier column groups the rows by the chip they show.
  *
