@@ -46,6 +46,12 @@ const BATCH = { sample_batch_id: 'sb-1', sample_batch_name: 'Batch 1' }
 let focusedSampleId
 // The peak focused elsewhere (spectrum, chart, jump), or null.
 let focusedPeak
+// The focused sample's peaks, as the peak store lists them, and whether that
+// list is still loading.
+let peakList
+let peaksPending
+// Whether the run's rows are still loading.
+let assignmentsPending
 let runList
 let runError
 let assignmentList
@@ -81,7 +87,13 @@ function makeApp() {
         unfocus: sampleUnfocus
       },
       batch: { focused: BATCH },
-      peak: { list: [], focused: focusedPeak, focus: vi.fn(), unfocus: peakUnfocus },
+      peak: {
+        list: peakList,
+        pending: peaksPending,
+        focused: focusedPeak,
+        focus: vi.fn(),
+        unfocus: peakUnfocus
+      },
       batchPeak: {
         list: [],
         selected: [],
@@ -102,7 +114,7 @@ function makeApp() {
         },
         peak: {
           list: assignmentList,
-          pending: false,
+          pending: assignmentsPending,
           tierCounts: tierCountsRecord,
           childrenOf: (id) => childrenByOwner.get(id) ?? [],
           // Stands in for the store's family resolution; the rule itself is
@@ -215,7 +227,8 @@ const GLOBAL_STUBS = {
       lazy: { type: Boolean, default: false },
       removableSort: { type: Boolean, default: false },
       sortField: { type: String, default: null },
-      sortOrder: { type: Number, default: null }
+      sortOrder: { type: Number, default: null },
+      rowClass: { type: Function, default: null }
     },
     inheritAttrs: false,
     template: '<div class="datatable"><slot /></div>'
@@ -377,6 +390,9 @@ beforeEach(() => {
   setActivePinia(createPinia())
   focusedSampleId = ref('si-1')
   focusedPeak = null
+  peakList = []
+  peaksPending = false
+  assignmentsPending = false
   scrollVirtualRowIntoView.mockClear()
   runList = []
   runError = null
@@ -1164,11 +1180,20 @@ describe('PaneBrowserAssignment reference-list column', () => {
   afterEach(() => vi.clearAllMocks())
 
   async function renderedListing(...families) {
+    return renderedListingAs(false, ...families)
+  }
+
+  // Writes each tooltip onto its element, so a test reads what a cell says on hover.
+  const recordTooltip = (el, binding) => el.setAttribute('data-tooltip', binding.value ?? '')
+  const RECORD_TOOLTIP = { mounted: recordTooltip, updated: recordTooltip }
+
+  async function renderedListingAs(full, ...families) {
     const tableRows = ref([])
     seed(...families)
+    if (full) localStorage.setItem('mascope.browser.match.ledgerListing', '{"full":true}')
     const wrapper = mount(PaneBrowserAssignment, {
       global: {
-        directives: { tooltip: {}, help: {} },
+        directives: { tooltip: RECORD_TOOLTIP, help: {} },
         stubs: {
           ...GLOBAL_STUBS,
           DataTable: {
@@ -1207,8 +1232,8 @@ describe('PaneBrowserAssignment reference-list column', () => {
   const listingColumn = (wrapper) =>
     wrapper.findAll('.stub-col').find((col) => col.attributes('data-field') === 'listing')
 
-  it('shows the name, the list and its tag beside the formula', async () => {
-    const wrapper = await renderedListing(listedFamily())
+  it('shows the name, the list and its tag beside the formula, in full', async () => {
+    const wrapper = await renderedListingAs(true, listedFamily())
     const column = listingColumn(wrapper)
     const cells = column.findAll('.stub-cell')
 
@@ -1223,6 +1248,47 @@ describe('PaneBrowserAssignment reference-list column', () => {
     expect(listed.find('[data-testid="list-tag-background"]').exists()).toBe(true)
     // The isotopologue line under it is the same formula again, and shows nothing.
     expect(cells[1].text()).toBe('')
+  })
+
+  // The plan owner's notes of 2026-09-26: the ledger was too wide with the
+  // column written out. Folded, the name and its list are in the tooltip.
+  it('folds to a flask and the tags by default, the rest on hover', async () => {
+    const wrapper = await renderedListing(listedFamily())
+    const column = listingColumn(wrapper)
+    const listed = column.findAll('.stub-cell')[0].find('[data-testid="listed-as"]')
+
+    expect(column.find('[aria-label="listed as"]').exists()).toBe(true)
+    expect(column.text()).not.toContain('listed as')
+    expect(listed.find('.listing-name').exists()).toBe(false)
+    expect(listed.find('.listing-source').exists()).toBe(false)
+    expect(listed.find('.listing-mark').attributes('aria-label')).toBe(
+      'decamethylcyclopentasiloxane +1'
+    )
+    expect(listed.find('[data-testid="list-tag-background"]').exists()).toBe(true)
+    // The tooltip carries the name, the list, the tag and the further name.
+    const tip = listed.attributes('data-tooltip')
+    expect(tip).toContain('decamethylcyclopentasiloxane (cyclic-siloxanes)')
+    expect(tip).toContain('and 1 more')
+    expect(tip).toContain('tags it background')
+  })
+
+  it("writes the column out from the view menu's switch, and folds it back", async () => {
+    const wrapper = await renderedListing(listedFamily())
+    const toggle = wrapper.find('#listing-full')
+    const cell = () => listingColumn(wrapper).findAll('.stub-cell')[0]
+
+    expect(toggle.text()).toBe('false')
+    await toggle.trigger('click')
+    expect(cell().find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
+    expect(listingColumn(wrapper).text()).toContain('listed as')
+    // One setting for both ledgers, and kept across a reload.
+    expect(JSON.parse(localStorage.getItem('mascope.browser.match.ledgerListing'))).toEqual({
+      full: true
+    })
+
+    await toggle.trigger('click')
+    expect(cell().find('.listing-name').exists()).toBe(false)
+    expect(cell().find('.listing-mark').exists()).toBe(true)
   })
 
   it('marks a row no list names with a recessive dash', async () => {
@@ -1243,6 +1309,81 @@ describe('PaneBrowserAssignment reference-list column', () => {
     wrapper.vm.sortOrder = 1
     await wrapper.vm.$nextTick()
     expect(wrapper.vm.rows.map((row) => row.peak_assignment_id)).toEqual(['p', 'd5', 'b'])
+  })
+})
+
+// A run keeps the peak ids it read, and a sample whose peaks were found again
+// since has none of them (#2025): the rows still render, off what the run
+// stored, but a click on one had nothing to focus and did nothing at all.
+describe('PaneBrowserAssignment rows whose peak the sample no longer has', () => {
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  const livePeaks = (...ids) => ids.map((id) => ({ peak_id: id, mz: 100 }))
+  const notice = (wrapper) => wrapper.find('[data-testid="stale-peaks"]')
+  const rowClassOf = (wrapper) => wrapper.findComponent({ name: 'DataTable' }).props('rowClass')
+
+  it('says so above the ledger and dims the rows', async () => {
+    seed(FAMILY_A, FAMILY_B)
+    // B's M0 is current; A's family and B's lines name peaks found before.
+    peakList = livePeaks('p-b')
+    const wrapper = await mountPane()
+
+    expect(notice(wrapper).text()).toContain(
+      "5 rows of this run name a peak the sample's peak list no longer has"
+    )
+    expect(notice(wrapper).text()).toContain('Run the assignment again')
+    const rowClass = rowClassOf(wrapper)
+    const rows = new Map(assignmentList.map((row) => [row.peak_assignment_id, row]))
+    expect(rowClass(rows.get('a'))).toBe('stale-peak')
+    expect(rowClass(rows.get('b'))).toBeNull()
+  })
+
+  it('names the whole run when none of its rows resolve', async () => {
+    seed(FAMILY_B)
+    peakList = livePeaks('p-other')
+    const wrapper = await mountPane()
+
+    expect(notice(wrapper).text()).toContain('Every row of this run names a peak')
+  })
+
+  it('says nothing while the peaks load, or before any are listed', async () => {
+    seed(FAMILY_B)
+    peaksPending = true
+    peakList = livePeaks('p-other')
+    let wrapper = await mountPane()
+    expect(notice(wrapper).exists()).toBe(false)
+    expect(rowClassOf(wrapper)(assignmentList[0])).toBeNull()
+
+    peaksPending = false
+    peakList = []
+    wrapper = await mountPane()
+    expect(notice(wrapper).exists()).toBe(false)
+
+    // Nor while the run's rows load: the rows on hand are another run's.
+    peakList = livePeaks('p-other')
+    assignmentsPending = true
+    wrapper = await mountPane()
+    expect(notice(wrapper).exists()).toBe(false)
+  })
+
+  it('leaves a run whose peaks are all current alone, ids of either type', async () => {
+    // The engine stringifies the peak id; the peak store may not, and a row
+    // from another source may carry a number. Either way round is one peak.
+    const stringRow = family({ id: '7', mz: 120.1, intensity: 50, formula: 'C3H8' })
+    stringRow.parent.sample_peak_id = '7'
+    const numberRow = family({ id: '8', mz: 130.1, intensity: 40, formula: 'C4H10' })
+    numberRow.parent.sample_peak_id = 8
+    seed(stringRow, numberRow)
+    peakList = [
+      { peak_id: 7, mz: 120.1 },
+      { peak_id: '8', mz: 130.1 }
+    ]
+    const wrapper = await mountPane()
+
+    expect(notice(wrapper).exists()).toBe(false)
   })
 })
 

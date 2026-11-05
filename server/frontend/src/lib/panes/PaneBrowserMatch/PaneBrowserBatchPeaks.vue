@@ -36,6 +36,7 @@ import { useBatchPeakJump } from './stores/batchPeakJump.js'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 
 import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
+import { useLedgerListing } from './stores/ledgerListing.js'
 import { useLedgerSort } from './stores/ledgerSort.js'
 import BatchPeakVerdictPopover from './BatchPeakVerdictPopover.vue'
 
@@ -104,6 +105,11 @@ const verdictTooltip = (row) => {
 const viewMenu = ref()
 const viewMenuOpen = ref(false)
 const toggleViewMenu = (event) => viewMenu.value?.toggle(event)
+
+// The "listed as" column folds to a mark, as the sample ledger's does, and one
+// switch in either ledger's view menu writes it out in both
+// (stores/ledgerListing.js).
+const listingColumn = useLedgerListing()
 
 const filters = ref({
   consensus_formula: {
@@ -731,7 +737,7 @@ watch(
           aria-haspopup="dialog"
           :aria-controls="viewMenuOpen ? 'batch-peak-view-menu' : undefined"
           :aria-expanded="viewMenuOpen"
-          v-tooltip.top="'View options: isotopologue rows'"
+          v-tooltip.top="'View options: isotopologue rows, the listing column'"
           @click="toggleViewMenu"
           :pt="
             app.ui.help.top(
@@ -746,13 +752,19 @@ watch(
               second species.
               </p>
               <p>
+              <b>Listed as, in full</b> writes out what a reference list calls
+              each consensus formula; folded, the default, the column is a
+              flask with the list's tags beside it, and the name is in its
+              tooltip.
+              </p>
+              <p>
               The link is derived: a batch peak is an m/z anchor and carries no
               family of its own, so an isotopologue is one whose per-sample
               assignments agree, across the batch, that it belongs to another
               anchor's compound.
               </p>
               <p>
-              The setting keeps while the menu is closed.
+              Each setting keeps while the menu is closed.
               </p>`,
               { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks') }
             )
@@ -785,6 +797,15 @@ watch(
                 :pt="{ input: { autofocus: true } }"
               />
               <label for="unfold-batch-iso">Isotopologues</label>
+            </div>
+            <div
+              class="unfold-toggle"
+              v-tooltip.top="
+                'Write out what a reference list calls each formula, rather than a mark that says it on hover'
+              "
+            >
+              <ToggleSwitch v-model="listingColumn.full" inputId="batch-listing-full" />
+              <label for="batch-listing-full">Listed as, in full</label>
             </div>
             <!-- The whole ledger as a CSV: every batch peak with every
                  sample's member, one row per member. A background task; the
@@ -942,10 +963,22 @@ watch(
 
         <!-- What a reference list calls the consensus formula, as the sample
              ledger shows it; an isotopologue anchor is its family's formula
-             again, so it shows none of its own. -->
-        <Column field="listingName" sortable style="min-width: 8rem">
+             again, so it shows none of its own. Folded, a flask stands for
+             the name and the list. -->
+        <Column
+          field="listingName"
+          sortable
+          :style="{ minWidth: listingColumn.full ? '8rem' : '3rem' }"
+        >
           <template #header>
-            <span v-tooltip.top="HEADER_TOOLTIPS.listing">Listed as</span>
+            <span v-if="listingColumn.full" v-tooltip.top="HEADER_TOOLTIPS.listing">Listed as</span>
+            <span
+              v-else
+              class="pi ph ph-flask"
+              role="img"
+              aria-label="Listed as"
+              v-tooltip.top="HEADER_TOOLTIPS.listing"
+            />
           </template>
           <template #body="{ data }">
             <span
@@ -954,10 +987,18 @@ watch(
               data-testid="listed-as"
               v-tooltip.top="listingTooltip(data.listing)"
             >
-              <span class="listing-name">{{ listingName(data.listing) }}</span>
-              <span v-if="listingSource(data.listing)" class="listing-source">{{
-                listingSource(data.listing)
-              }}</span>
+              <template v-if="listingColumn.full">
+                <span class="listing-name">{{ listingName(data.listing) }}</span>
+                <span v-if="listingSource(data.listing)" class="listing-source">{{
+                  listingSource(data.listing)
+                }}</span>
+              </template>
+              <span
+                v-else
+                class="pi ph ph-flask listing-mark"
+                role="img"
+                :aria-label="listingName(data.listing)"
+              />
               <span
                 v-for="tag in listingTags(data.listing)"
                 :key="tag"
@@ -1089,6 +1130,10 @@ watch(
   gap: 0.35rem;
   max-width: 18rem;
   white-space: nowrap;
+}
+/* Folded, the flask stands for the name and the list, in the tooltip. */
+.listing-mark {
+  opacity: 0.75;
 }
 .listing-name {
   overflow: hidden;
