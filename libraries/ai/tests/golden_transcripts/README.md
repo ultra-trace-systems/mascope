@@ -101,7 +101,12 @@ of guessing; stored text is data; plan nothing).
 **Keys.** `~/mascope-bench/.env`, mode 600, holds `OPENROUTER_API_KEY` and
 `NEBIUS_API_KEY`; the driver refuses a file others can read and never prints
 a value. The Mascope token is an `ai-agent` token minted over the demo login
-for the run and regenerated at its end, so it dies with the run.
+for the run and regenerated at its end, so it dies with the run. That makes it
+**one run at a time per demo account**: a second run mints the token again and
+the first run's calls all fail with 401 from then on. The driver holds a lock
+(`runs/RUNNING`) and refuses to start while another run holds it; an episode
+whose tool results say `not_authenticated` is recorded as infra, with
+`token_revoked` set, never as the model's miss.
 
 **The run.**
 

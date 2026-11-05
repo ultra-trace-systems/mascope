@@ -187,6 +187,27 @@ class TestTheAnswerFromGoose:
         assert about["last_message"] == 1070
         assert driver._parse_export(tmp_path / "none.json") is None
 
+    def test_a_refused_token_is_read_off_the_output(self, driver):
+        assert driver._token_revoked('{"error": "not_authenticated"}', "")
+        assert not driver._token_revoked("", '{"total": 3}')
+        assert not driver._token_revoked(None, "")
+
+    def test_one_run_at_a_time(self, driver, tmp_path, monkeypatch):
+        monkeypatch.setattr(driver, "LOCK", tmp_path / "RUNNING")
+        folder = tmp_path / "20260101T000000Z-model-goose"
+
+        driver._lock(folder)
+
+        assert folder.name in driver.LOCK.read_text(encoding="utf-8")
+        with pytest.raises(SystemExit, match="another run holds the stack"):
+            driver._lock(tmp_path / "20260101T000001Z-other-goose")
+        driver._unlock(tmp_path / "20260101T000001Z-other-goose")
+        assert driver.LOCK.exists(), "another run's unlock leaves the lock"
+        driver._unlock(folder)
+        assert not driver.LOCK.exists()
+        driver._lock(tmp_path / "20260101T000001Z-other-goose")
+        driver._unlock(tmp_path / "20260101T000001Z-other-goose")
+
     def test_the_checker_scores_what_was_parsed(self, driver):
         question = ai_golden.question("M2")
         right, _ = driver._parse_answer(

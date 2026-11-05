@@ -243,6 +243,59 @@ def _mint_token(url: str, email: str, password: str) -> tuple[str, Any]:
     return minted.json()["access_token"], session
 
 
+#: The one run at a time: a second run on the same demo account mints the
+#: account's ``ai-agent`` token again, and the first run's token dies with
+#: it, so every call its model makes from then on is a 401. The lock names
+#: the run holding the stack.
+LOCK = RUNS_ROOT / "RUNNING"
+
+
+def _lock(folder: Path) -> None:
+    """Take the lock for *folder*'s run, or exit naming the run that holds it.
+
+    A lock whose process is gone (a killed driver) is taken over, where the
+    platform can tell; elsewhere the file has to be removed by hand.
+    """
+    if LOCK.exists():
+        held = LOCK.read_text(encoding="utf-8").split()
+        pid = int(held[0]) if held and held[0].isdigit() else None
+        alive = True
+        if pid is not None and os.name == "posix":
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                alive = False
+            except PermissionError:
+                alive = True
+        if alive:
+            sys.exit(
+                f"another run holds the stack: {' '.join(held)} ({LOCK}). One run at a "
+                "time per demo account: a second run would mint the ai-agent token "
+                "again and kill the first run's token. Wait for it, or remove the lock "
+                "if its driver is gone."
+            )
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    LOCK.write_text(f"{os.getpid()} {folder.name}\n", encoding="utf-8")
+
+
+def _unlock(folder: Path) -> None:
+    try:
+        if folder.name in LOCK.read_text(encoding="utf-8"):
+            LOCK.unlink()
+    except OSError:
+        pass
+
+
+#: What a tool result says when the run's token is no longer the account's:
+#: the episode's calls fail from there on, which is the harness's fault.
+TOKEN_REVOKED = "not_authenticated"
+
+
+def _token_revoked(*texts: str) -> bool:
+    """Whether an episode's output or export shows the token refused."""
+    return any(TOKEN_REVOKED in text for text in texts if text)
+
+
 def _stack_header(url: str, token: str) -> dict[str, Any]:
     """What the demo stack says of itself: its version, the bundle."""
     headers = {"Authorization": f"Bearer {token}", "X-Service-Name": "ai-agent"}
@@ -679,6 +732,7 @@ def run(args: argparse.Namespace) -> int:
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     slug = re.sub(r"[^A-Za-z0-9.]+", "-", args.model).strip("-").lower()
     folder = RUNS_ROOT / f"{stamp}-{slug}-goose"
+    _lock(folder)
     (folder / "transcripts").mkdir(parents=True)
 
     token, session = _mint_token(args.url, args.email, args.password)
@@ -795,11 +849,13 @@ def run(args: argparse.Namespace) -> int:
                         if record.get("timed_out")
                         else ""
                     )
+                    + ("  TOKEN REVOKED" if record.get("token_revoked") else "")
                     + (f"  {record['problems'][:2]}" if record["problems"] else "")
                     + (f"  {record['error'][-120:]!r}" if record["error"] else ""),
                     flush=True,
                 )
     finally:
+        _unlock(folder)
         # The token dies with the run
         try:
             session.post(
@@ -940,6 +996,18 @@ def episode(
     # harness's own fault (a bad recipe, a missing extension): infra either
     # way, never the model's miss, and the stderr tail says which
     infra = code != 0 and raw is None and not timed_out
+    export = where.with_suffix(".json")
+    revoked = _token_revoked(
+        stdout,
+        export.read_text(encoding="utf-8", errors="replace")
+        if export.is_file()
+        else "",
+    )
+    if revoked:
+        # The token was refused: another run minted the account's token, or
+        # the stack lost it. Whatever the model then answered is not its doing
+        infra = True
+        stderr += "\nTOKEN REVOKED: a tool result says not_authenticated"
     if infra:
         scored["verdict"] = "infra"
     return {
@@ -960,6 +1028,7 @@ def episode(
         "export_error": export_error,
         "error": stderr.strip()[-500:] if (infra or timed_out) else "",
         "provider_error": bool(INFRA.search(stderr + stdout)) if infra else False,
+        "token_revoked": revoked,
         "cost_usd": cost,
     }
 
@@ -983,14 +1052,24 @@ def recover(folder: Path) -> None:
             else ""
         )
         raw, about = _parse_answer(stdout)
+        export = stdout_file.with_name(f"{qid}-rep{rep}.json")
         if _goose_output(stdout) is None:
-            exported = _parse_export(stdout_file.with_name(f"{qid}-rep{rep}.json"))
+            exported = _parse_export(export)
             if exported is not None:
                 raw, about = exported
         scored = score(questions[qid], raw)
         timed_out = "TIMEOUT" in stderr
         if raw is None and not timed_out and not stdout.strip():
             scored["verdict"] = "infra"
+        revoked = _token_revoked(
+            stdout,
+            export.read_text(encoding="utf-8", errors="replace")
+            if export.is_file()
+            else "",
+        )
+        if revoked:
+            scored["verdict"] = "infra"
+            stderr += "\nTOKEN REVOKED: a tool result says not_authenticated"
         records.append(
             {
                 "question": qid,
@@ -1011,6 +1090,7 @@ def recover(folder: Path) -> None:
                 if (scored["verdict"] == "infra" or timed_out)
                 else "",
                 "provider_error": bool(INFRA.search(stderr)),
+                "token_revoked": revoked,
                 "recovered": True,
             }
         )
