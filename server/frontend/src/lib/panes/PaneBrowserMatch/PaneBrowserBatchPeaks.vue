@@ -250,11 +250,14 @@ const decorated = computed(() => {
     return {
       ...batchPeak,
       tierRank: bucketRank(batchPeak.consensus_tier, batchPeak.consensus_role),
-      // The bucket of the view the strip is in: the chips and the tier
-      // column's filter read it.
-      bucket: readsEngineTiers.value
-        ? engineBucketOf(batchPeak.engine_tier, batchPeak.consensus_tier, batchPeak.consensus_role)
-        : bucketOf(batchPeak.consensus_tier, batchPeak.consensus_role),
+      // The consensus bucket, which the tier column's filter reads in either
+      // view, and the engine's, which the chips read in the engine-tier view.
+      bucket: bucketOf(batchPeak.consensus_tier, batchPeak.consensus_role),
+      engineBucket: engineBucketOf(
+        batchPeak.engine_tier,
+        batchPeak.consensus_tier,
+        batchPeak.consensus_role
+      ),
       // Null rather than a rank where no engine stated one, so the column
       // sorts those last in both directions.
       engineTierRank: batchPeak.engine_tier != null ? tierRank(batchPeak.engine_tier) : null,
@@ -371,8 +374,8 @@ const isBlank = (value) => value == null || value === ''
 // What a column sorts and filters on, where that is not the field it is named
 // by: the formula column shows a source ion's formula on an anchor with no
 // consensus formula, and sorts and searches what it shows; the tier column's
-// filter - the one the chips write - reads the bucket, so a role chip narrows
-// to its role.
+// filter - the one the chips write outside the engine-tier view - reads the
+// consensus bucket, so a role chip narrows to its role.
 const VALUES = {
   consensus_formula: (row) => formulaOf(row),
   consensus_tier: (row) => row.bucket
@@ -440,8 +443,13 @@ const passesFilters = (row) => {
 // the parent kept the family.
 const rows = computed(() => {
   const disagreeing = onlyDisagreements.value && hasEngineTiers.value
+  // Set only in the engine-tier view: leaving it clears the chip.
+  const engineBucket = engineChip.value
   const visible = parents.value.filter(
-    (row) => passesFilters(row) && (!disagreeing || engineDisagrees(row))
+    (row) =>
+      passesFilters(row) &&
+      (!disagreeing || engineDisagrees(row)) &&
+      (engineBucket == null || row.engineBucket === engineBucket)
   )
   const byColumn = sortField.value ? compareBy(sortField.value, sortOrder.value) : null
   visible.sort(byColumn ? (a, b) => byColumn(a, b) || byConfidence(a, b) : byConfidence)
@@ -598,14 +606,26 @@ watch(
 // is showing. That does make the chips single-select, unlike the sample
 // ledger's - one EQUALS constraint holds one tier - which is the price of the
 // two staying honest about each other.
+//
+// In the engine-tier view the chips name the engine's buckets, and the tier
+// column still shows the consensus, so there a chip writes a filter of its
+// own, on the engine's bucket, and the column's menu keeps filtering what the
+// column shows.
 const tierConstraint = computed(() => filters.value.consensus_tier.constraints[0])
-const activeTier = computed(() => tierConstraint.value.value)
+const engineChip = ref(null)
+const activeTier = computed(() =>
+  readsEngineTiers.value ? engineChip.value : tierConstraint.value.value
+)
 const toggleTier = (tier) => {
-  tierConstraint.value.value = activeTier.value === tier ? null : tier
+  const next = activeTier.value === tier ? null : tier
+  if (readsEngineTiers.value) engineChip.value = next
+  else tierConstraint.value.value = next
 }
-// A chip names a bucket of one view, so switching views drops the filter.
+// A chip names a bucket of one view, so switching views drops both filters:
+// left on, the one the strip no longer shows would empty the table unseen.
 watch(readsEngineTiers, () => {
   tierConstraint.value.value = null
+  engineChip.value = null
 })
 
 // A chip is a filter control, so its number has to be the number of rows
@@ -618,23 +638,24 @@ watch(readsEngineTiers, () => {
 // pane's are: a histogram that reacted to its own filter would collapse to one
 // non-zero bucket the moment it was used. An anchor a source role accounts for
 // counts under its role rather than as unassigned.
-// The engine-tier view adds one bucket after the tiers, for the formulas the
-// engine stated no tier for.
-const BUCKETS = computed(() => [
-  ...TIERS,
-  ...(readsEngineTiers.value ? [ENGINE_UNSTATED] : []),
-  ...ROLE_BUCKETS
-])
+// The engine-tier view adds one chip after the tiers, for the formulas the
+// engine stated no tier for. The tier column's menu offers the consensus
+// buckets alone, in either view: they are what the column shows.
+const BUCKETS = [...TIERS, ...ROLE_BUCKETS]
+const CHIP_BUCKETS = computed(() =>
+  readsEngineTiers.value ? [...TIERS, ENGINE_UNSTATED, ...ROLE_BUCKETS] : BUCKETS
+)
 const BUCKET_LABELS = { ...TIER_META, [ENGINE_UNSTATED]: ENGINE_UNSTATED_META }
+const chipBucketOf = (row) => (readsEngineTiers.value ? row.engineBucket : row.bucket)
 const tierCounts = computed(() => {
-  const counts = Object.fromEntries(BUCKETS.value.map((bucket) => [bucket, 0]))
-  for (const row of parents.value) counts[row.bucket] += 1
+  const counts = Object.fromEntries(CHIP_BUCKETS.value.map((bucket) => [bucket, 0]))
+  for (const row of parents.value) counts[chipBucketOf(row)] += 1
   return counts
 })
 
 // One chip per tier in confidence order, then one per role, counts included.
 const tierChips = computed(() =>
-  BUCKETS.value.map((bucket) => ({
+  CHIP_BUCKETS.value.map((bucket) => ({
     key: bucket,
     label: BUCKET_LABELS[bucket]?.label ?? bucket,
     count: tierCounts.value[bucket] ?? 0,
