@@ -11,6 +11,7 @@ from mascope_backend.api.new.auth.exceptions import (
     InvalidTokenException,
     TokenValidationUnavailableException,
 )
+from mascope_backend.redis_failures import log_socket_failure
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.auth.exceptions import (
     SocketAuthConfigError,
@@ -63,12 +64,15 @@ def socket_auth(minimum_role: str, service_name: Optional[str] = None):
                 # as a warning kept out of monitoring.
                 runtime.logger.info(f"Socket auth error for {sid}: {str(e)}")
 
-            except Exception:
+            except Exception as e:
                 # Not an auth rejection: this broad catch also swallows
                 # exceptions from the handler itself, so record the traceback
-                # or the bug would be invisible
-                runtime.logger.exception(
-                    f"Unexpected socket error in '{handler.__name__}' for {sid}"
+                # or the bug would be invisible. Redis out of reach (a room
+                # the handler could not record) is a warning kept out of
+                # monitoring instead: the event is dropped as before, and the
+                # worker heartbeat reports an outage that lasts.
+                log_socket_failure(
+                    f"Unexpected socket error in '{handler.__name__}' for {sid}", e
                 )
 
         return wrapper

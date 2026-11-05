@@ -17,7 +17,7 @@ from fastapi_users.jwt import decode_jwt, generate_jwt
 
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.mfa.exceptions import InvalidPendingTokenException
-from mascope_backend.runtime import runtime
+from mascope_backend.redis_failures import log_control_failure
 from mascope_backend.socket.storage import redis_storage_client
 
 
@@ -83,8 +83,8 @@ async def _is_burned(jti: str) -> bool:
     """
     try:
         return await redis_storage_client.client.exists(_burn_key(jti)) > 0
-    except Exception:
-        runtime.logger.exception("MFA pending token burn check failed")
+    except Exception as e:
+        log_control_failure("MFA pending token burn check failed; failed open", e)
         return False
 
 
@@ -101,8 +101,8 @@ async def burn_pending_token(jti: str) -> None:
             ex=mfa_settings.PENDING_TOKEN_LIFETIME_SECONDS,
         )
         await redis_storage_client.client.delete(_attempt_key(jti))
-    except Exception:
-        runtime.logger.exception("Failed to burn MFA pending token")
+    except Exception as e:
+        log_control_failure("Failed to burn MFA pending token", e)
 
 
 async def register_failed_attempt(jti: str) -> None:
@@ -125,8 +125,8 @@ async def register_failed_attempt(jti: str) -> None:
         )
         if attempts >= mfa_settings.PENDING_TOKEN_MAX_ATTEMPTS:
             await burn_pending_token(jti)
-    except Exception:
-        runtime.logger.exception("Failed to record MFA pending token attempt")
+    except Exception as e:
+        log_control_failure("Failed to record MFA pending token attempt", e)
 
 
 async def resolve_pending_token(token: str | None) -> tuple[int, str]:

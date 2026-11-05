@@ -16,32 +16,12 @@ Redis key namespaces:
 from redis.asyncio import Redis, from_url
 from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialWithJitterBackoff
-from redis.exceptions import AuthenticationError as RedisAuthenticationError
-from redis.exceptions import AuthorizationError as RedisAuthorizationError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage.config import storage_config
-from mascope_runtime.logging import SENTRY_SKIP
 
-
-#: Failures of the connection to Redis rather than of the code using it: a
-#: Redis restart, an idle connection the server closed, a host name that does
-#: not resolve yet while the stack restarts, a stall past the socket timeout.
-#: redis-py raises its own classes for these; the built-in ones are listed for
-#: a socket error it lets through unwrapped.
-TRANSIENT_REDIS_ERRORS = (
-    RedisConnectionError,
-    RedisTimeoutError,
-    ConnectionError,
-    TimeoutError,
-)
-
-#: redis-py's ``ConnectionError`` subclasses that no wait heals: a wrong or
-#: rotated password, an account the server refuses a command. They are a
-#: misconfiguration to report, not Redis out of reach.
-REDIS_CONFIGURATION_ERRORS = (RedisAuthenticationError, RedisAuthorizationError)
 
 #: Retries of a command that failed with a connection error or a timeout. One
 #: is enough to replace a pooled connection Redis or a proxy closed while it
@@ -51,43 +31,6 @@ COMMAND_RETRIES = 1
 
 #: Seconds one attempt waits to connect, or for a reply, before it fails.
 SOCKET_TIMEOUT = 5
-
-
-def is_transient_redis_error(error: BaseException) -> bool:
-    """
-    Whether a failed call met Redis briefly out of reach, not a fault.
-
-    :param error: The exception a Redis call raised.
-    :return: True for :data:`TRANSIENT_REDIS_ERRORS`, except the
-        :data:`REDIS_CONFIGURATION_ERRORS` that subclass them.
-    """
-    return isinstance(error, TRANSIENT_REDIS_ERRORS) and not isinstance(
-        error, REDIS_CONFIGURATION_ERRORS
-    )
-
-
-def log_storage_failure(message: str, error: BaseException) -> None:
-    """
-    Log a failed socket storage call, from inside its ``except`` block.
-
-    A transient failure (:func:`is_transient_redis_error`) is Redis being
-    briefly out of reach, which every caller already rides out (a refused call, a retry on the
-    next tick, a key that lapses on its own). It is logged as a warning with no
-    stack, and kept out of error monitoring. Any other exception is a fault and
-    is logged with its stack, as before.
-
-    The record is attributed to the caller, so the log line and the monitoring
-    group name the storage function that failed, not this helper.
-
-    :param message: What failed, naming the socket or service.
-    :param error: The exception being handled.
-    """
-    if is_transient_redis_error(error):
-        runtime.logger.bind(**{SENTRY_SKIP: True}).opt(depth=1).warning(
-            f"{message} (Redis out of reach)"
-        )
-    else:
-        runtime.logger.opt(depth=1, exception=True).error(message)
 
 
 class RedisStorageClient:
