@@ -34,8 +34,9 @@ pytestmark = [
 # docker: every call is appended to STUB_DOCKER with the variables a recreate
 # depends on; `up` fails when STUB_UP_FAIL is set.
 DOCKER_STUB = """#!/usr/bin/env bash
-printf '%s | port=%s weaken=[%s] version=%s\\n' "$*" "$MASCOPE_HTTP_PORT" \\
-  "$MASCOPE_PENTEST_WEAKEN" "$MASCOPE_VERSION" >> "$STUB_DOCKER"
+printf '%s | port=%s weaken=[%s] backend=[%s] version=%s\\n' "$*" \\
+  "$MASCOPE_HTTP_PORT" "$MASCOPE_PENTEST_WEAKEN" "$MASCOPE_PENTEST_WEAKEN_BACKEND" \\
+  "$MASCOPE_VERSION" >> "$STUB_DOCKER"
 case " $* " in *" up "*) [ -z "${STUB_UP_FAIL:-}" ] || exit 1 ;; esac
 exit 0
 """
@@ -64,7 +65,7 @@ GUARD_STUB = """#!/usr/bin/env bash
 {
   echo "args=$*"
   echo "email=[${MASCOPE_PENTEST_EMAIL-unset}] header=[${MASCOPE_PENTEST_HEADER_VALUE-unset}]"
-  echo "port=$MASCOPE_HTTP_PORT weaken=[$MASCOPE_PENTEST_WEAKEN]"
+  echo "port=$MASCOPE_HTTP_PORT weaken=[$MASCOPE_PENTEST_WEAKEN] backend=[$MASCOPE_PENTEST_WEAKEN_BACKEND]"
 } > "$STUB_GUARD_ENV"
 echo "${STUB_GUARD_VERDICT:-detected 8  missed 0  unproven 0}"
 exit "${STUB_GUARD_RC:-0}"
@@ -158,6 +159,7 @@ def test_the_stack_is_published_on_loopback_and_taken_down(tmp_path):
         extra_env={
             "WEAKENED_PORT": "18123",
             "MASCOPE_PENTEST_WEAKEN": "strip-referrer-policy",
+            "MASCOPE_PENTEST_WEAKEN_BACKEND": "raise-upload-cap",
         },
     )
     assert calls, "docker was never called"
@@ -165,15 +167,18 @@ def test_the_stack_is_published_on_loopback_and_taken_down(tmp_path):
         assert "-p mascope-weakened" in call
         assert f"-f {tmp_path}/docker-compose.demo.yaml" in call
         assert f"-f {tmp_path}/suite/mutations/weakened.compose.yaml" in call
-        # The guard recreates the frontend with the same environment, so the
-        # port and the empty weakening are exported, not given to one command.
-        assert call.endswith("| port=127.0.0.1:18123 weaken=[] version=latest")
+        # The guard recreates the frontend and the backend with the same
+        # environment, so the port and the empty weakenings are exported, not
+        # given to one command.
+        assert call.endswith(
+            "| port=127.0.0.1:18123 weaken=[] backend=[] version=latest"
+        )
     commands = [call.split(" | ")[0] for call in calls]
     assert commands[0].endswith(" pull -q")
     assert commands[1].endswith(" up -d")
     assert commands[-1].endswith(" down")
     guard = (tmp_path / "guard-env").read_text()
-    assert "port=127.0.0.1:18123 weaken=[]" in guard
+    assert "port=127.0.0.1:18123 weaken=[] backend=[]" in guard
     assert "--target http://127.0.0.1:18123" in guard
     assert "--project mascope-weakened" in guard
 

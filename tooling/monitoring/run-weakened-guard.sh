@@ -72,12 +72,13 @@ ts="$(date -u +%Y-%m-%dT%H%M%SZ)"
 log="${RECORDS}/${ts}-weakened.log"
 ping_hc "/start"
 
-# The guard recreates the frontend with these too, so they are exported rather
-# than given to the first command alone: a recreate without the port would
-# publish it on the demo's default, on every interface. Loopback only, because
-# the stack is weakened on purpose and its login is published.
+# The guard recreates the frontend and the backend with these too, so they are
+# exported rather than given to the first command alone: a recreate without the
+# port would publish it on the demo's default, on every interface. Loopback
+# only, because the stack is weakened on purpose and its login is published.
 export MASCOPE_HTTP_PORT="127.0.0.1:${WEAKENED_PORT}"
 export MASCOPE_PENTEST_WEAKEN=""
+export MASCOPE_PENTEST_WEAKEN_BACKEND=""
 export MASCOPE_VERSION="${MASCOPE_VERSION:-latest}"
 compose=(docker compose -p "$WEAKENED_PROJECT"
          -f "$WEAKENED_DEMO_COMPOSE"
@@ -86,8 +87,10 @@ target="http://127.0.0.1:${WEAKENED_PORT}"
 
 # Down, not down -v: the volumes keep the downloaded bundle and the restored
 # database, which the demo's init step reuses on the next start. Nothing in
-# them is weakened: every edit is made in the frontend container, which down
-# removes.
+# them stays weakened: the frontend's edits are made in its container, which
+# down removes, and the backend's to the env's config layer, which the guard
+# puts back when it restores the healthy stack and the backend's next start
+# puts back if a run was cut short.
 trap '"${compose[@]}" down >> "$log" 2>&1' EXIT
 
 finish() {  # $1 = exit code, $2 = summary
@@ -113,8 +116,9 @@ until curl -fsS -o /dev/null -m 10 "$target/"; do
 done
 
 # The staging credentials and the edge's header from the config file are not
-# this run's: the controls it runs sign in nowhere, and the demo is not behind
-# the edge. Cleared, so nothing of staging's reaches the demo stack.
+# this run's: the controls that sign in use the demo's published login (the
+# suite's default when these are empty), and the demo is not behind the edge.
+# Cleared, so nothing of staging's reaches the demo stack.
 (
     cd "$WEAKENED_SUITE_DIR" || exit 2
     MASCOPE_PENTEST_EMAIL= \
