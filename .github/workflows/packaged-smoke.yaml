@@ -1,0 +1,68 @@
+name: Packaged smoke
+run-name: "Packaged smoke: wheel install, init, prod up"
+
+# A production stack started from a wheel install, end to end: the built CLI
+# and runtime wheels in a clean environment, `mascope init`, `mascope cert
+# gen`, `mascope prod up` on the published release images, then
+# tooling/smoke-test.sh and `mascope prod down`. The cli-package job in
+# tests.yaml stops at `mascope init`; this catches a compose file, secret or
+# config layer the bundled copies get wrong. All of it is in
+# .github/scripts/packaged_smoke.sh, which says what it deploys.
+#
+# It needs Docker and pulls the release images, so it runs only where those
+# copies can change: pull requests touching the CLI, the runtime, the compose
+# files or the config layers, and each published release once its images
+# are built. A candidate's run starts the previous release's images, since a
+# candidate does not bump the CLI's RELEASE, and warns that the candidate's
+# own images went unsmoked. The release run is a job of
+# build-release-images.yaml that calls this file (`workflow_call`) after
+# build-images, so it checks out the tag that release event names. Not a
+# `workflow_run` trigger: that runs in the default branch's privileged context
+# on a commit it is handed, which CodeQL rightly flags as a cache-poisoning
+# path. `release` events run master's copy of the caller (developer guide,
+# "Cutting a pre-release"): the release run takes effect once both files are
+# on master.
+on:
+  pull_request:
+    branches: [develop, master, "epic/**"]
+    paths:
+      - "tooling/cli/**"
+      - "libraries/runtime/**"
+      - "docker-compose*.yaml"
+      - "*.mascope.toml"
+      - "tooling/smoke-test.sh"
+      - ".github/scripts/packaged_smoke.sh"
+      - ".github/workflows/packaged-smoke.yaml"
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packaged-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packaged-smoke:
+    name: Packaged smoke (wheel install, prod up)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.1"
+
+      - name: Build the CLI and runtime wheels
+        run: |
+          uv build --package mascope_cli --out-dir dist
+          uv build --package mascope_runtime --out-dir dist
+
+      - name: Start a stack from the wheels and smoke test it
+        run: bash .github/scripts/packaged_smoke.sh dist
