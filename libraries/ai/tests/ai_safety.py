@@ -36,6 +36,7 @@ from mascope_ai import (
     NotFound,
     PartiallyApplied,
     Plan,
+    PlanConsumed,
     Ref,
     Toolkit,
 )
@@ -72,6 +73,7 @@ class World:
     :ivar movable_batch: A batch of ``dataset`` that may move into
         ``spare_dataset`` (a user's batch, not the ingest's).
     :ivar other_batch: A batch of ``other``, and :attr:`other_sample` in it.
+    :ivar other_dataset: The dataset of ``other`` that holds ``other_batch``.
     :ivar collection: A collection of ``home`` with compounds, associated
         with ``batch``.
     :ivar injected: A collection of ``home`` whose description is
@@ -96,6 +98,7 @@ class World:
     movable_batch: str
     other_batch: str
     other_sample: str
+    other_dataset: str
     collection: str
     injected: str
     hidden: tuple[str, str] | None = None
@@ -118,6 +121,21 @@ def _facts(value: Any) -> Any:
     return value
 
 
+#: More objects of one kind than a snapshot lists: a listing cut here is a
+#: snapshot that fails, not one that misses the rest.
+LISTING_LIMIT = 100_000
+
+
+def _all(kit: Toolkit, kind: str, *, within: Ref | None = None) -> list[Ref]:
+    """Every object of *kind* the surface lists, or an error: a listing that
+    failed in part, or was cut by the limit, would drop objects from the
+    snapshot without a word, and a change to them would go unseen."""
+    found = kit.find("", kind=kind, limit=LISTING_LIMIT, within=within)
+    assert found.complete, f"the {kind} listing failed in part: {found.failures[:3]}"
+    assert found.total == len(found), f"{found.total} {kind}s, {len(found)} listed"
+    return list(found)
+
+
 def snapshot(kit: Toolkit) -> dict[str, dict[str, Any]]:
     """Every object the surface shows of the client's workspace, keyed
     ``<kind>:<id>``: each dataset and collection as ``describe`` gives it,
@@ -129,20 +147,19 @@ def snapshot(kit: Toolkit) -> dict[str, dict[str, Any]]:
     snap: dict[str, dict[str, Any]] = {}
     # Past the client's cache: what the server holds now
     kit.client.clear_cache()
-    for dataset in kit.find("", kind="dataset", limit=10_000):
+    for dataset in _all(kit, "dataset"):
         snap[f"dataset:{dataset.id}"] = {
             "name": dataset.name,
             **_facts(kit.describe(dataset)),
         }
-        for batch in kit.find("", kind="batch", within=dataset, limit=10_000):
+        for batch in _all(kit, "batch", within=dataset):
             about = {"name": batch.name, **_facts(kit.describe(batch))}
             about["dataset"] = batch.parent
             about["samples"] = sorted(
-                (sample.id, sample.name)
-                for sample in kit.find("", kind="sample", within=batch, limit=100_000)
+                (sample.id, sample.name) for sample in _all(kit, "sample", within=batch)
             )
             snap[f"batch:{batch.id}"] = about
-    for collection in kit.find("", kind="collection", limit=10_000):
+    for collection in _all(kit, "collection"):
         snap[f"collection:{collection.id}"] = {
             "name": collection.name,
             **_facts(kit.describe(collection)),
@@ -367,6 +384,21 @@ def cross_workspace_is_refused_at_planning(kit: Toolkit, world: World) -> None:
         InvalidRequest, lambda: kit.plan_organize([Move(sample, elsewhere)])
     )
     assert f"not in workspace {home.name!r}" in str(refused), refused
+    # A batch of the client's into a dataset elsewhere, and a dataset of
+    # another workspace (as a Ref, which skips the client's listing) into the
+    # client's: each is refused for leaving or entering the workspace
+    other_dataset = Ref(world.other_dataset, "dataset", "theirs", world.other)
+    refused = _refused(
+        InvalidRequest,
+        lambda: kit.plan_organize(
+            [Move(world.movable_batch, other_dataset, kind="batch")]
+        ),
+    )
+    assert f"not in workspace {home.name!r}" in str(refused), refused
+    refused = _refused(
+        InvalidRequest, lambda: kit.plan_organize([Move(other_dataset, world.home)])
+    )
+    assert f"not in workspace {home.name!r}" in str(refused), refused
     if world.guest_in_other:
         # A dataset moved to a workspace the user is a guest in: the role
         refused = _refused(
@@ -516,9 +548,10 @@ def a_partial_failure_is_reported_truthfully(kit: Toolkit, world: World) -> None
     assert receipt.failure["step"] == 1 and receipt.failure["op"] == "samples.move"
     assert [ref.id for ref in receipt.results] == [world.movable_batch]
     assert kit.session.plans.state(plan.id)["state"] == "failed"
-    # Not applied again, with this approval or another; the sample stays
+    # Not applied again, with this approval (the same receipt) or another
+    # (the plan is consumed); the sample stays where it was
     _refused(PartiallyApplied, lambda: kit.apply(plan.id, token))
-    _refused(Exception, lambda: kit.apply(plan.id, approve(kit, plan)))
+    _refused(PlanConsumed, lambda: kit.apply(plan.id, approve(kit, plan)))
     batch = kit.resolve(world.batch, "batch")
     assert sample.id in {s.id for s in kit.find("", kind="sample", within=batch)}
 

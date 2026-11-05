@@ -72,29 +72,25 @@ def _eventually(probe, timeout: float = 180):
         time.sleep(2)
 
 
-def _demo_batch(session) -> dict:
-    """A demo batch with samples, read over the session."""
+def _demo_batch() -> dict:
+    """The first demo batch outside the scratch workspaces, read with the
+    demo stack's SDK token (the one the other contract suites read with)."""
     import requests
 
     headers = {"Authorization": f"Bearer {TOKEN}", "X-Service-Name": "mascope_sdk"}
-    for workspace in requests.get(
-        f"{BASE_URL}/api/workspaces", headers=headers, timeout=30
-    ).json()["data"]:
+
+    def get(path: str, **params):
+        response = requests.get(
+            f"{BASE_URL}/api/{path}", headers=headers, params=params, timeout=30
+        )
+        response.raise_for_status()
+        return response.json().get("data") or ()
+
+    for workspace in get("workspaces"):
         if workspace["workspace_name"].startswith(SCRATCH_PREFIX):
             continue
-        datasets = requests.get(
-            f"{BASE_URL}/api/workspaces/{workspace['workspace_id']}/datasets",
-            headers=headers,
-            timeout=30,
-        ).json()
-        for dataset in datasets.get("data") or ():
-            batches = requests.get(
-                f"{BASE_URL}/api/sample/batches",
-                params={"dataset_id": dataset["dataset_id"]},
-                headers=headers,
-                timeout=30,
-            ).json()
-            for batch in batches.get("data") or ():
+        for dataset in get(f"workspaces/{workspace['workspace_id']}/datasets"):
+            for batch in get("sample/batches", dataset_id=dataset["dataset_id"]):
                 return batch
     pytest.fail("the demo stack has no batch")
 
@@ -153,7 +149,7 @@ def stack(tmp_path_factory):
             f"workspaces/{other}/datasets",
             json={"dataset_name": "theirs"},
         )["dataset_id"]
-        demo = _demo_batch(session)
+        demo = _demo_batch()
         for into in (dataset, elsewhere):
             session.post(
                 f"{BASE_URL}/api/sample/batches/{demo['sample_batch_id']}/copy",
@@ -231,6 +227,7 @@ def stack(tmp_path_factory):
             movable_batch=made["movable"],
             other_batch=other_copy["sample_batch_id"],
             other_sample=other_copy["samples"][0]["sample_item_id"],
+            other_dataset=elsewhere,
             collection=collection,
             injected=injected,
         )
