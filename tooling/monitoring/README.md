@@ -326,13 +326,17 @@ Setup:
    **not** in `sudo`, and deploy `security/pentest/` plus its venv into
    `SUITE_DIR`. A release does not update this copy — it is a copy, not a
    checkout, so sync it and verify by hashing against the tag. Sync it to the
-   tag the target runs, not ahead of it: `baseline.json` accepts findings a
-   given release produces, and an acceptance whose control passes fails the
-   run as stale. The `IDENT-02` acceptance, for one, matches only a target
-   that trusts the Docker gateway. On a release from before that trust, or on
-   a target running `MASCOPE_TRUST_DOCKER_GATEWAY=off`, `IDENT-02` passes: a
-   copy synced ahead of the target goes red until the target catches up, and
-   an `off` target's copy needs the entry removed.
+   tag the target runs, not ahead of it: `baseline-origin.json`, the origin
+   pass's baseline (step 5 of "Production"), accepts findings a given release
+   produces, and an acceptance whose control passes fails the run as stale.
+   The `IDENT-02` acceptance, for one, matches only a target that trusts the
+   Docker gateway. On a release from before that trust, or on a target
+   running `MASCOPE_TRUST_DOCKER_GATEWAY=off`, `IDENT-02` passes: a copy
+   synced ahead of the target goes red until the target catches up, and an
+   `off` target's copy needs the entry removed. Update this runner with the
+   suite: one from v1.16.0 or earlier names no baseline, so a later suite's
+   origin pass reads `baseline.json`, which no longer holds `IDENT-02`, and
+   fails on it.
 2. Give the monitoring box a dedicated key for that account. Use `restrict` in
    the target's `authorized_keys`, server-side, rather than relying on the
    client's `ForwardAgent no`.
@@ -504,12 +508,12 @@ the retention of a staging run's.
    falls back to `HC_URL`, whose weekly check its daily pings would keep green
    after the periodic run stopped.
 5. Accept a deployment's findings in a baseline of its own, never in
-   `baseline.json`. Each run reads the one the runner names in
+   staging's. Each run reads the one the runner names in
    `MASCOPE_PENTEST_BASELINE`:
 
    | Run | Baseline |
    | --- | --- |
-   | staging, origin vantage | `baseline.json` in `SUITE_DIR`, on the target |
+   | staging, origin vantage | `baseline-origin.json` in `SUITE_DIR`, on the target |
    | staging, CDN vantage | `baseline.json` in `CDN_SUITE_DIR` |
    | production deployment `NAME` | `PRODUCTION_BASELINE_DIR/prod-NAME.json` |
 
@@ -524,7 +528,7 @@ the retention of a staging run's.
 
    Only a suite released after v1.16.0 reads `MASCOPE_PENTEST_BASELINE`. A
    copy synced to v1.16.0 or earlier (step 2) ignores it and reads its own
-   `baseline.json`, so every deployment keeps staging's acceptances and
+   `baseline.json`, so every deployment keeps staging's acceptances, and
    nothing in the run says so. Sync the production copy to a later release
    before relying on these files.
 6. Cron it beside the others. It takes the same lock, so it never runs inside
