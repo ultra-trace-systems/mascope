@@ -259,3 +259,69 @@ class TestLeniency:
             ]
             == "correct"
         )
+
+
+class TestRobustness:
+    def test_a_subprocess_output_is_text_whatever_it_arrived_as(self, driver):
+        assert driver._text(None) == ""
+        assert driver._text(b"partial \xff output") == "partial \ufffd output"
+        assert driver._text("already text") == "already text"
+
+    def test_recover_rebuilds_the_results_from_the_transcripts(self, driver, tmp_path):
+        folder = tmp_path / "run"
+        (folder / "transcripts").mkdir(parents=True)
+        (folder / "header.json").write_text(
+            json.dumps(
+                {
+                    "run": "r",
+                    "started": "2026-11-05T13:00:00Z",
+                    "bundle": "1.4.3",
+                    "stack": {"build_tag": "t"},
+                    "toolkit_commit": "abcdef123456789",
+                    "toolkit_branch": "b",
+                    "runtime": {
+                        "version": "1.57.0",
+                        "recipe": "recipe.yaml",
+                        "max_turns": 30,
+                    },
+                    "provider": "nebius",
+                    "model": "m",
+                    "weights": "",
+                    "precision_served": "bf16",
+                    "reasoning": "d",
+                    "pin": "none needed",
+                    "sampling": "d",
+                    "repetitions": 1,
+                    "questions": ["M2"],
+                    "dryrun": "table",
+                    "prereg": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        known = ai_golden.recorded(ai_golden.question("M2").expected)
+        (folder / "transcripts" / "M2-rep0.stdout.txt").write_text(
+            _goose_json(known), encoding="utf-8"
+        )
+        (folder / "transcripts" / "M2-rep0.stderr.txt").write_text("", encoding="utf-8")
+        (folder / "transcripts" / "A1-rep0.stdout.txt").write_text("", encoding="utf-8")
+        (folder / "transcripts" / "A1-rep0.stderr.txt").write_text(
+            "...\nTIMEOUT", encoding="utf-8"
+        )
+
+        driver.recover(folder)
+
+        records = [
+            json.loads(line)
+            for line in (folder / "results.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert [
+            (r["question"], r["verdict"], r["timed_out"], r["recovered"])
+            for r in records
+        ] == [
+            ("M2", "correct", False, True),
+            ("A1", "missing", True, True),
+        ]
+        assert (folder / "summary.md").is_file()

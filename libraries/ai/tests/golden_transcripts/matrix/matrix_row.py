@@ -112,7 +112,7 @@ def _env_file() -> dict[str, str]:
     if mode & 0o077:
         sys.exit(f"{ENV_FILE} is mode {mode:o}; make it 600")
     values = {}
-    for line in ENV_FILE.read_text().splitlines():
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             key, _, value = line.partition("=")
@@ -223,6 +223,15 @@ def answer_shape(question: ai_golden.Question) -> str:
             "value": "<the value, when available>",
         }
     return json.dumps(shaped)
+
+
+def _text(output: Any) -> str:
+    """A subprocess's output as text: bytes decoded, None nothing."""
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return str(output)
 
 
 def _goose_env(
@@ -389,7 +398,7 @@ def rescore(folder: Path) -> None:
         shutil.copy(results, original)
     questions = {q.id: q for q in ai_golden.QUESTIONS}
     records = []
-    for line in results.read_text().splitlines():
+    for line in results.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         record = json.loads(line)
@@ -397,7 +406,9 @@ def rescore(folder: Path) -> None:
         if record.get("verdict") != "infra":
             record.update(score(questions[record["question"]], raw))
         records.append(record)
-    results.write_text("".join(json.dumps(r, default=str) + "\n" for r in records))
+    results.write_text(
+        "".join(json.dumps(r, default=str) + "\n" for r in records), encoding="utf-8"
+    )
     summarize(folder)
 
 
@@ -470,7 +481,9 @@ def run(args: argparse.Namespace) -> int:
         "dryrun": table,
         "prereg": {p.name: _sha256(p) for p in PREREG_FILES},
     }
-    (folder / "header.json").write_text(json.dumps(header, indent=1, default=str))
+    (folder / "header.json").write_text(
+        json.dumps(header, indent=1, default=str), encoding="utf-8"
+    )
     (folder / "PREREG.sha256").write_text(
         "".join(f"{_sha256(p)}  {p.relative_to(ROOT)}\n" for p in PREREG_FILES)
         + f"frozen {stamp} before the first model call\n"
@@ -483,21 +496,48 @@ def run(args: argparse.Namespace) -> int:
 
         jobs = [(question, rep) for rep in range(args.reps) for question in questions]
         with (
-            open(folder / "results.jsonl", "a") as out,
+            open(folder / "results.jsonl", "a", encoding="utf-8") as out,
             cf.ThreadPoolExecutor(args.parallel) as pool,
         ):
-            futures = [
-                pool.submit(episode, question, rep, folder, env, args)
+            futures = {
+                pool.submit(episode, question, rep, folder, env, args): (question, rep)
                 for question, rep in jobs
-            ]
-            for (question, rep), future in zip(jobs, futures):
-                record = future.result()
+            }
+            # In the order they finish: one slow question holds nothing back
+            for future in cf.as_completed(futures):
+                question, rep = futures[future]
+                try:
+                    record = future.result()
+                except Exception as e:  # the driver's own fault, recorded, not fatal
+                    record = {
+                        "question": question.id,
+                        "category": question.category,
+                        "rep": rep,
+                        "answer": None,
+                        "answer_raw": None,
+                        "coerced": False,
+                        "verdict": "infra",
+                        "problems": [],
+                        "known": ai_golden.recorded(question.expected),
+                        "tool_calls": 0,
+                        "tools": {},
+                        "tokens": {},
+                        "seconds": None,
+                        "exit_code": None,
+                        "infra": True,
+                        "stdout_bytes": 0,
+                        "timed_out": False,
+                        "export_error": "",
+                        "error": f"driver: {type(e).__name__}: {e}"[:500],
+                        "provider_error": False,
+                    }
                 out.write(json.dumps(record, default=str) + "\n")
                 out.flush()
                 print(
-                    f"{question.id:<4} rep{rep} {record['verdict']:<8} {record['seconds']:6.1f}s"
-                    f"  {record['tool_calls']} call(s)"
+                    f"{question.id:<4} rep{rep} {record['verdict']:<8} "
+                    f"{(record['seconds'] or 0):6.1f}s  {record['tool_calls']} call(s)"
                     + ("  (numbers read from text)" if record.get("coerced") else "")
+                    + ("  TIMEOUT" if record.get("timed_out") else "")
                     + (f"  {record['problems'][:2]}" if record["problems"] else "")
                     + (f"  {record['error'][-120:]!r}" if record["error"] else ""),
                     flush=True,
@@ -545,40 +585,56 @@ def episode(
         "--output-format",
         "json",
     ]
+    timed_out = False
     try:
         proc = subprocess.run(
             command, capture_output=True, text=True, env=env, timeout=args.timeout
         )
         stdout, stderr, code = proc.stdout, proc.stderr, proc.returncode
     except subprocess.TimeoutExpired as e:
-        stdout, stderr, code = (e.stdout or ""), (e.stderr or "") + "\nTIMEOUT", -1
+        # The partial output arrives as bytes here: the model did not finish
+        # within the wall clock, which the record says (the bench's CAP)
+        stdout, stderr, code = _text(e.stdout), _text(e.stderr) + "\nTIMEOUT", -1
+        timed_out = True
+    except OSError as e:
+        stdout, stderr, code = "", f"goose could not be run: {e}", -2
     seconds = time.monotonic() - started
-    (folder / "transcripts" / f"{question.id}-rep{rep}.stdout.txt").write_text(stdout)
-    (folder / "transcripts" / f"{question.id}-rep{rep}.stderr.txt").write_text(stderr)
+    where = folder / "transcripts" / f"{question.id}-rep{rep}"
+    where.with_suffix(".stdout.txt").write_text(
+        stdout, encoding="utf-8", errors="replace"
+    )
+    where.with_suffix(".stderr.txt").write_text(
+        stderr, encoding="utf-8", errors="replace"
+    )
+    export_error = ""
     for fmt, suffix in (("json", "json"), ("markdown", "md")):
-        subprocess.run(
-            [
-                "goose",
-                "session",
-                "export",
-                "--name",
-                name,
-                "--format",
-                fmt,
-                "-o",
-                str(folder / "transcripts" / f"{question.id}-rep{rep}.{suffix}"),
-            ],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=120,
-        )
+        try:
+            subprocess.run(
+                [
+                    "goose",
+                    "session",
+                    "export",
+                    "--name",
+                    name,
+                    "--format",
+                    fmt,
+                    "-o",
+                    str(where.with_suffix(f".{suffix}")),
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=300,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            export_error = f"{type(e).__name__}: {e}"[:200]
     raw, about = _parse_answer(stdout)
     scored = score(question, raw)
-    # Goose exited without an answer: a provider error, or the harness's own
-    # fault (a bad recipe, a missing extension): infra either way, never the
-    # model's miss, and the stderr tail says which
-    infra = code != 0 and raw is None
+    # Goose exited without an answer: a model that ran out of wall clock is
+    # missing (it did not finish); otherwise a provider error, or the
+    # harness's own fault (a bad recipe, a missing extension): infra either
+    # way, never the model's miss, and the stderr tail says which
+    infra = code != 0 and raw is None and not timed_out
     if infra:
         scored["verdict"] = "infra"
     return {
@@ -594,18 +650,77 @@ def episode(
         "exit_code": code,
         "infra": infra,
         "stdout_bytes": len(stdout.encode()),
-        "error": stderr.strip()[-500:] if infra else "",
+        "timed_out": timed_out,
+        "export_error": export_error,
+        "error": stderr.strip()[-500:] if (infra or timed_out) else "",
         "provider_error": bool(INFRA.search(stderr + stdout)) if infra else False,
     }
+
+
+def recover(folder: Path) -> None:
+    """Rebuild ``results.jsonl`` from the transcripts on disk: every
+    ``<question>-rep<n>.stdout.txt`` the episodes wrote, scored now. For a
+    run whose driver stopped before writing its records; an episode with no
+    transcript is not recovered, and the summary says how many were."""
+    questions = {q.id: q for q in ai_golden.QUESTIONS}
+    records = []
+    for stdout_file in sorted((folder / "transcripts").glob("*-rep*.stdout.txt")):
+        qid, _, rep = stdout_file.name[: -len(".stdout.txt")].rpartition("-rep")
+        if qid not in questions:
+            continue
+        stdout = stdout_file.read_text(encoding="utf-8", errors="replace")
+        stderr_file = stdout_file.with_name(f"{qid}-rep{rep}.stderr.txt")
+        stderr = (
+            stderr_file.read_text(encoding="utf-8", errors="replace")
+            if stderr_file.is_file()
+            else ""
+        )
+        raw, about = _parse_answer(stdout)
+        scored = score(questions[qid], raw)
+        timed_out = "TIMEOUT" in stderr
+        if raw is None and not timed_out and not stdout.strip():
+            scored["verdict"] = "infra"
+        records.append(
+            {
+                "question": qid,
+                "category": questions[qid].category,
+                "rep": int(rep),
+                **scored,
+                "known": ai_golden.recorded(questions[qid].expected),
+                "tool_calls": about["tool_calls"],
+                "tools": about["tools"],
+                "tokens": about["tokens"],
+                "seconds": None,
+                "exit_code": None,
+                "infra": scored["verdict"] == "infra",
+                "stdout_bytes": len(stdout.encode()),
+                "timed_out": timed_out,
+                "export_error": "",
+                "error": stderr.strip()[-500:]
+                if (scored["verdict"] == "infra" or timed_out)
+                else "",
+                "provider_error": bool(INFRA.search(stderr)),
+                "recovered": True,
+            }
+        )
+    records.sort(key=lambda r: (r["rep"], list(questions).index(r["question"])))
+    results = folder / "results.jsonl"
+    if results.exists():
+        shutil.copy(results, folder / "results.orig.jsonl")
+    results.write_text(
+        "".join(json.dumps(r, default=str) + "\n" for r in records), encoding="utf-8"
+    )
+    print(f"recovered {len(records)} episode(s) from transcripts")
+    summarize(folder)
 
 
 def summarize(folder: Path) -> None:
     records = [
         json.loads(line)
-        for line in (folder / "results.jsonl").read_text().splitlines()
+        for line in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    header = json.loads((folder / "header.json").read_text())
+    header = json.loads((folder / "header.json").read_text(encoding="utf-8"))
     lines = [
         f"# Matrix row: {header['model']} via {header['provider']} through goose {header['runtime']['version']}",
         "",
@@ -636,7 +751,7 @@ def summarize(folder: Path) -> None:
         lines.append(
             f"| {r['question']} | {r['rep']} | {r['verdict']} | {'; '.join(r['problems'][:3])} | {r['tool_calls']} | {r['seconds']} | {(r.get('tokens') or {}).get('total_tokens') or ''} |"
         )
-    (folder / "summary.md").write_text("\n".join(lines) + "\n")
+    (folder / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines[: 4 + len(ai_golden.CATEGORIES) + 2]))
 
 
@@ -664,10 +779,10 @@ def transcript(folder: Path, scrub: tuple[str, ...] = ()) -> str:
     verdict table, then every episode's tool calls and results as the model
     saw them, from Goose's output. Secrets are scrubbed; the reviewer's
     column (sloppy, a corrected verdict) is left for the reviewer."""
-    header = json.loads((folder / "header.json").read_text())
+    header = json.loads((folder / "header.json").read_text(encoding="utf-8"))
     records = [
         json.loads(line)
-        for line in (folder / "results.jsonl").read_text().splitlines()
+        for line in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     questions = {q.id: q for q in ai_golden.QUESTIONS}
@@ -726,7 +841,11 @@ def transcript(folder: Path, scrub: tuple[str, ...] = ()) -> str:
         stdout_file = (
             folder / "transcripts" / f"{r['question']}-rep{r['rep']}.stdout.txt"
         )
-        doc = _goose_output(stdout_file.read_text()) if stdout_file.is_file() else None
+        doc = (
+            _goose_output(stdout_file.read_text(encoding="utf-8"))
+            if stdout_file.is_file()
+            else None
+        )
         for message in (doc or {}).get("messages", ()):
             for part in message.get("content", ()):
                 kind = part.get("type")
@@ -796,7 +915,10 @@ def main(argv: list[str] | None = None) -> int:
         help="episodes run at once (each its own Goose session)",
     )
     runner.add_argument(
-        "--timeout", type=float, default=1800, help="seconds per episode"
+        "--timeout",
+        type=float,
+        default=3600,
+        help="wall clock per episode in seconds (the bench's 60 minutes); past it the episode is missing",
     )
     runner.add_argument(
         "--url", default=os.environ.get("MASCOPE_SDK_TEST_URL", "http://127.0.0.1:8080")
@@ -823,6 +945,10 @@ def main(argv: list[str] | None = None) -> int:
         "summarize", help="rebuild summary.md of a run folder"
     )
     summarizer.add_argument("folder", type=Path)
+    recoverer = commands.add_parser(
+        "recover", help="rebuild a run's results from the transcripts on disk"
+    )
+    recoverer.add_argument("folder", type=Path)
     rescorer = commands.add_parser(
         "rescore", help="score a run's stored answers again with the current checker"
     )
@@ -847,6 +973,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "summarize":
         summarize(args.folder)
+        return 0
+    if args.command == "recover":
+        recover(args.folder)
         return 0
     if args.command == "rescore":
         rescore(args.folder)
