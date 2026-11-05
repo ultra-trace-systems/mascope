@@ -191,6 +191,32 @@ def test_a_rebuild_that_does_not_take_is_named():
     assert outcome.counts["rebuilt"] == 1
 
 
+# --- which files are read -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "file_type, raw",
+    [("orbi_raw", True), ("orbi_zarr", False), ("tof_h5", False)],
+)
+def test_only_a_file_that_keeps_its_raw_orbitrap_file_is_read(
+    monkeypatch, file_type, raw
+):
+    """An Orbitrap file converted to zarr reads the scans its conversion
+    stored, and its store never goes stale this way."""
+    monkeypatch.setattr(script.m_name, "get_sample_file_type", lambda _: file_type)
+
+    assert script._is_raw("a-file") is raw
+
+
+def test_a_file_whose_type_cannot_be_told_is_not_read(monkeypatch):
+    def unknown(_filename):
+        raise ValueError("no such sample")
+
+    monkeypatch.setattr(script.m_name, "get_sample_file_type", unknown)
+
+    assert script._is_raw("a-file") is False
+
+
 # --- the bound ----------------------------------------------------------------
 
 
