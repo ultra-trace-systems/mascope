@@ -206,11 +206,11 @@ class TestList:
         assert server.list_calls[-1] == {
             "min_n_present": 1,
             "engine_tier": "candidate",
-            "tier_disagrees": True,
+            "tier_disagrees": "true",
         }
         # False is a filter of its own (the rows that agree), not "no filter".
         resource.list(BATCH_ID, tier_disagrees=False)
-        assert server.list_calls[-1] == {"min_n_present": 1, "tier_disagrees": False}
+        assert server.list_calls[-1] == {"min_n_present": 1, "tier_disagrees": "false"}
 
     def test_returns_none_without_a_ledger(self, server, resource):
         server.anchors = []
