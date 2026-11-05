@@ -91,6 +91,21 @@ ROWS_PER_SAMPLE_ESTIMATE = 100
 #: whole-acquisition stage of a demo sample leaves out 229 to 364 peaks.
 DEFAULT_MAX_PEAKS = 500
 
+#: The statistics :meth:`Toolkit.reduce` computes over a column, by group or
+#: over the whole Frame; ``argmax`` and ``argmin`` give the row the extreme is
+#: in rather than a number.
+REDUCE_STATS = ("median", "mean", "max", "min", "sum", "count", "argmax", "argmin")
+
+#: The comparisons a ``where`` clause of :meth:`Toolkit.reduce` may make.
+REDUCE_OPS = ("==", "!=", ">", ">=", "<", "<=", "in")
+
+#: The most rows a reduction answers with: a reduction is a few numbers, not
+#: a table; ``top`` picks which few.
+REDUCE_ROWS = 50
+
+#: The columns a reduction's rows show at most.
+HANDLE_COLUMNS_LISTED = 12
+
 #: The order ``find`` lists kinds in, among matches ranked alike.
 _KIND_ORDER = {kind: index for index, kind in enumerate(KINDS)}
 
@@ -1996,6 +2011,139 @@ class Toolkit:
         )
         self.session.save(frame, rows)
         return frame
+
+    @_recorded("reduce")
+    def reduce(
+        self,
+        frame: "Frame | str",
+        *,
+        value: str,
+        stat: str = "median",
+        by: "str | Sequence[str] | None" = None,
+        where: Sequence[Sequence[Any]] = (),
+        top: int | None = None,
+        ascending: bool = False,
+    ) -> dict[str, Any]:
+        """A statistic of one column of a Frame, over the whole Frame or by
+        group: the one computation a model can ask for without Python.
+
+        The result is a few numbers, never the table: with *by*, one row per
+        group (the group's keys, the statistic, the rows it is of), the
+        largest first unless *ascending*, at most *top* of them; without, the
+        statistic alone, or, for ``argmax`` and ``argmin``, the row the
+        extreme is in. The reduction is kept as a derived Frame too, so an
+        answer built on it names the objects behind it (:meth:`derive`).
+
+        :param frame: The Frame, or its ID in this session.
+        :param value: The column reduced.
+        :param stat: One of :data:`REDUCE_STATS`.
+        :param by: The column(s) grouped by, if any.
+        :param where: Rows kept before reducing: each ``[column, op, value]``
+            with *op* in :data:`REDUCE_OPS` (``in`` takes a list), all of
+            them holding.
+        :param top: How many groups to answer with; :data:`REDUCE_ROWS` at
+            most, and the default.
+        :param ascending: Smallest first.
+        :raises InvalidRequest: On an unknown column, statistic or
+            comparison, or a *top* past :data:`REDUCE_ROWS`.
+        :raises NotFound: When the session has no Frame of that ID.
+        """
+        if isinstance(frame, str):
+            try:
+                frame = self.session.frame(frame)
+            except KeyError as e:
+                raise NotFound(frame, "frame", "session() lists the frames.") from e
+        if not isinstance(frame, Frame):
+            raise InvalidRequest(f"reduce() takes a Frame or its ID, not {frame!r}")
+        if stat not in REDUCE_STATS:
+            raise InvalidRequest(f"stat is one of {REDUCE_STATS}, not {stat!r}")
+        if top is not None and not (isinstance(top, int) and 0 < top <= REDUCE_ROWS):
+            raise InvalidRequest(f"top is 1 to {REDUCE_ROWS}, not {top!r}")
+        keys = [by] if isinstance(by, str) else list(by or ())
+        df = frame.df
+        for column in [value, *keys]:
+            if column not in df.columns:
+                raise InvalidRequest(
+                    f"The Frame has no column {column!r}; its columns are "
+                    f"{list(df.columns)[:HANDLE_COLUMNS_LISTED]}"
+                )
+        kept = df
+        for clause in where:
+            if not isinstance(clause, (list, tuple)) or len(clause) != 3:
+                raise InvalidRequest(
+                    f"A where clause is [column, op, value], not {clause!r}"
+                )
+            column, op, operand = clause
+            if column not in df.columns:
+                raise InvalidRequest(f"The Frame has no column {column!r} to filter on")
+            if op not in REDUCE_OPS:
+                raise InvalidRequest(f"op is one of {REDUCE_OPS}, not {op!r}")
+            series = kept[column]
+            if op == "in":
+                mask = series.isin(
+                    list(operand) if isinstance(operand, (list, tuple)) else [operand]
+                )
+            else:
+                mask = {
+                    "==": series == operand,
+                    "!=": series != operand,
+                    ">": series > operand,
+                    ">=": series >= operand,
+                    "<": series < operand,
+                    "<=": series <= operand,
+                }[op]
+            kept = kept[mask.fillna(False)]
+        code = (
+            f"reduce {stat} of {value!r}"
+            + (f" by {keys}" if keys else "")
+            + (f" where {list(where)}" if where else "")
+        )
+        out: dict[str, Any] = {
+            "stat": stat,
+            "value": value,
+            "by": keys,
+            "where": [list(c) for c in where],
+            "rows_in": int(len(kept)),
+            "rows_of_frame": int(len(df)),
+        }
+        if kept.empty:
+            out.update(rows=[], n_groups=0, result=None)
+            table = pd.DataFrame(columns=[*keys, value])
+        elif stat in ("argmax", "argmin"):
+            if keys:
+                index = kept.groupby(keys, sort=False)[value].agg(
+                    "idxmax" if stat == "argmax" else "idxmin"
+                )
+                table = kept.loc[index.dropna()]
+                table = table.sort_values(value, ascending=ascending)
+            else:
+                at = kept[value].idxmax() if stat == "argmax" else kept[value].idxmin()
+                table = kept.loc[[at]]
+            shown = table.head(top or REDUCE_ROWS)
+            columns = list(shown.columns)[:HANDLE_COLUMNS_LISTED]
+            out["rows"] = jsonable(shown[columns].to_dict("records"))
+            out["n_groups"] = int(len(table)) if keys else 1
+            if not keys:
+                out["result"] = jsonable(shown.iloc[0][value])
+        elif keys:
+            grouped = kept.groupby(keys, sort=False)[value]
+            table = grouped.agg(stat).to_frame(value)
+            table["n"] = grouped.size()
+            table = table.reset_index().sort_values(value, ascending=ascending)
+            shown = table.head(top or REDUCE_ROWS)
+            out["rows"] = jsonable(shown.to_dict("records"))
+            out["n_groups"] = int(len(table))
+        else:
+            result = kept[value].agg(stat)
+            table = pd.DataFrame({value: [result], "n": [int(len(kept))]})
+            out["rows"] = jsonable(table.to_dict("records"))
+            out["n_groups"] = 1
+            out["result"] = jsonable(result)
+        if out.get("n_groups", 0) > len(out["rows"]):
+            out["rows_omitted"] = out["n_groups"] - len(out["rows"])
+        derived = self.derive(table, frame, code=code, computed=[value])
+        out["frame"] = derived.id
+        return out
 
     # --- writes: plan, then apply ---------------------------------------------
 

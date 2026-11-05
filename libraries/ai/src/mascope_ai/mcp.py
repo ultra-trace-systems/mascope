@@ -48,7 +48,14 @@ from .oracle import Candidate, MatchResult, formula_key
 from .plans import Change, Move, Plan, Receipt
 from .refs import KINDS, Ref
 from .session import Session
-from .toolkit import DEFAULT_MAX_PEAKS, DEFAULT_MAX_ROWS, Toolkit
+from .toolkit import (
+    DEFAULT_MAX_PEAKS,
+    DEFAULT_MAX_ROWS,
+    REDUCE_OPS,
+    REDUCE_ROWS,
+    REDUCE_STATS,
+    Toolkit,
+)
 
 
 #: The protocol revisions the server speaks, oldest first: those reached
@@ -474,7 +481,8 @@ _FRAME = (
     "Returns a Frame's handle: its ID, rows, columns, whether it is complete "
     "(a read that failed is listed), a few rows, and rows_in_python, the "
     "Python that gives its rows as a pandas DataFrame on this machine. "
-    "Compute there; the table never comes back here."
+    "Compute there, or ask reduce for a statistic of it by the Frame's ID; the "
+    "table never comes back here, and the few rows shown are not an answer."
 )
 _PLAN = (
     "Writes nothing: returns a plan, with its ID, its summary, each change, "
@@ -674,6 +682,44 @@ TOOLS: tuple[Tool, ...] = (
         },
         "_compute_timeseries",
         required=("sample",),
+    ),
+    Tool(
+        "reduce",
+        "A statistic of one column of a Frame, over the whole Frame or by group: "
+        "median, mean, max, min, sum, count, or argmax / argmin (the row the "
+        "extreme is in). Optional where-clauses keep rows first. Answers with a few "
+        "numbers, the largest first, never the table: this is how to compute over a "
+        "Frame here. The reduction is kept as a derived Frame for provenance.",
+        {
+            "frame": {"type": "string", "description": "The Frame's ID (from a load)."},
+            "value": {"type": "string", "description": "The column reduced."},
+            "stat": {
+                "type": "string",
+                "enum": list(REDUCE_STATS),
+                "description": "The statistic; median when left out.",
+            },
+            "by": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Column(s) to group by; one row per group.",
+            },
+            "where": {
+                "type": "array",
+                "items": {"type": "array", "minItems": 3, "maxItems": 3},
+                "description": "Rows kept first: each [column, op, value], op one of "
+                + ", ".join(REDUCE_OPS)
+                + " ('in' takes a list).",
+            },
+            "top": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": REDUCE_ROWS,
+                "description": f"How many groups to answer with; {REDUCE_ROWS} at most.",
+            },
+            "ascending": {"type": "boolean", "description": "Smallest first."},
+        },
+        "_reduce",
+        required=("frame", "value"),
     ),
     Tool(
         "query_by_mz",
@@ -1258,6 +1304,18 @@ class Server:
         )
         out["ref"] = _ref(Ref.from_dict(out["ref"]))
         return out
+
+    def _reduce(self, args: _Args) -> dict[str, Any]:
+        where = args._get("where") or ()
+        return self.kit.reduce(
+            args.str("frame"),
+            value=args.str("value"),
+            stat=args.str("stat") or "median",
+            by=args.strs("by"),
+            where=where if isinstance(where, (list, tuple)) else (),
+            top=args.int("top", REDUCE_ROWS, high=REDUCE_ROWS),
+            ascending=args.bool("ascending", False),
+        )
 
     def _query_by_mz(self, args: _Args) -> dict[str, Any]:
         mz = args.number("mz")
