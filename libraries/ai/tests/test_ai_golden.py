@@ -356,6 +356,27 @@ class TestTheDeclineQuestions:
         assert ai_golden._no_value({**declined, "flag": True}, {}) == []
         assert ai_golden._numbers_in({"a": [1, {"b": 2.5}], "c": "3"}) == [1, 2.5]
 
+    @pytest.mark.parametrize(
+        ("question_id", "reason"),
+        [
+            ("D1", "There is no such batch in this workspace."),
+            ("D2", "No workspace named 'Acquisitions Archive' exists."),
+            ("D3", "That m/z is below the scan range of the sample."),
+            ("D4", "No concentration is stored for any compound."),
+            ("D5", "Saturation is not recorded anywhere I can read."),
+        ],
+    )
+    def test_a_decline_in_a_models_own_words_passes(self, question_id, reason):
+        """The first pilot declined D2 as 'No workspace named ... exists' where
+        the solver's reason named the token too: a known reason asks for the
+        missing thing alone, so a model's wording of it passes."""
+        question = ai_golden.question(question_id)
+        answer = {"available": False, "reason": reason}
+
+        assert compare(question.expected, answer) == []
+        assert question.check(answer, {}) == []
+        assert ai_golden.verdict_of(question, answer) == "correct"
+
     @pytest.mark.parametrize("question_id", ["D1", "D2"])
     def test_the_fake_server_has_neither_and_the_solver_declines(
         self, kit, question_id
