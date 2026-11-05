@@ -907,11 +907,18 @@ who edits chemistry and stays last.
 
 ### 4.2 Time-series coherence
 
-- **What.** For a neutral seen in two channels, the channels' batch time
-  series (the records series endpoint) must correlate; r >= 0.6 corroborates,
-  anti-correlation demotes to candidate with a reason. A channel holding a
-  constant ratio to a bright parent across the batch is a sidelobe and
-  becomes `artifact`.
+- **What.** For a neutral seen in two channels, read the channels' batch
+  time series (the records series endpoint): log heights, reagent-
+  normalised, the batch's common mode removed, Pearson r over the spectra
+  both channels hold, recorded on the row as a co-variation fact with its
+  r and the spectra counted (at or above 0.6 co-varying, below not, a
+  flat partner untestable), shown in the ledger and the inspector, moving
+  no tier until 4.13's null model gives it a likelihood ratio (decision
+  35). Anti-correlation does not demote: a correct composition can be
+  anti-correlated with its own parent channel when the source state
+  moves. The within-sample ratio series is 4.11's diagnostic, built after
+  this step; the sidelobe reading (a constant ratio to a bright parent)
+  is 5.4's, read in the parent's own line width.
   - **Persistence is admission, not evidence** (peaky #34). A peak
     present in more of the batch's spectra than the batch's own split of
     the occurrence distribution is searched however faint, and an M0
@@ -1556,7 +1563,7 @@ with the averaged profile kept as measured.
 - Its known-species registry and certified-neutral passes (the note's
   "Not in this plan").
 
-### Decisions proposed to the plan owner (30 taken 2026-10-14, 29 and 31 on 2026-10-23, 32 on 2026-10-22, 33 on 2026-10-30, 34 on 2026-11-05)
+### Decisions proposed to the plan owner (30 taken 2026-10-14, 29 and 31 on 2026-10-23, 32 on 2026-10-22, 33 on 2026-10-30, 34 and 35 on 2026-11-05)
 
 29. **The reference is pinned at a release, and each peaky minor gets a
     boundary review** (step 5.1). Taken 2026-10-23 by the plan owner
@@ -1605,6 +1612,28 @@ with the averaged profile kept as measured.
     peaky's owner's time and changes nothing the open steps build;
     waiting would have left 3.5b idle while six steps wait on its
     tolerance, and stage 4 unstarted.
+35. **The batch time series is read by co-variation, display-only until
+    measured; the ratio series is its diagnostic** (taken 2026-11-05 by
+    the plan owner; Linear MAS-709). Steps 4.2 and 4.11 had stated
+    opposite rules for one reading. The reference's current main was read
+    first: every time-series test there is Pearson r of log heights on
+    reagent-normalised traces (the clustering with the diel common mode
+    removed), no module tests a within-sample ratio series, co-variation
+    moves a level only on narrow adduct-versus-alternative questions, and
+    its two-route co-variation measured a likelihood ratio near 1. Its
+    electron-attachment rows, an acid's composition as a radical anion
+    beside its deprotonated ion, are correct and anti-correlated with the
+    parent channel at r -0.8 to -0.9 over a multi-day batch: a source
+    state favouring one ionization channel while the assignment stands.
+    So: co-variation of the log traces after common-mode removal is the
+    primary reading (4.2's mechanism), a constant change in channel
+    favourability being a constant factor in log space; it is display-
+    only until 4.13's null model gives it a likelihood ratio that clears
+    a bar on two reagents (4.11's posture); the ratio series, its spread
+    and drift are a diagnostic of channel chemistry (a smooth drift, the
+    source moved; a jump uncorrelated with either trace, two species),
+    never a veto; anti-correlation does not demote; the sidelobe clause
+    moves to 5.4. Order: 4.2, then 4.11 on its trace plumbing.
 
 ### Worth watching
 
