@@ -708,9 +708,14 @@ jobs:
           # The mascope_ai toolkit's contract tests
           # (libraries/ai/tests/test_ai_contract.py) read through the SDK
           # against the same stack, under the same MASCOPE_SDK_CONTRACT=1
-          # switch and settings.
+          # switch and settings. So do mascope_viz's: resolve on the demo
+          # dataset and the campaign store's sync of it. Only those two files
+          # are named: the rest of libraries/viz/tests/ is hermetic, runs in
+          # the library job, and spends minutes building its synthetic month.
           uv sync --group dev
-          uv run pytest libraries/sdk/tests/ libraries/ai/tests/ -v
+          uv run pytest libraries/sdk/tests/ libraries/ai/tests/ \
+            libraries/viz/tests/test_viz_scope_contract.py \
+            libraries/viz/tests/test_viz_store_contract.py -v
 
       - name: Dump stack logs on failure
         if: failure()
