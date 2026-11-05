@@ -469,17 +469,19 @@ const corroborationLabel = computed(() => {
 const corroborationTooltip = computed(() => {
   const c = corroboration.value
   if (!c) return ''
+  const click = otherReadings.value.length ? '\nClick for the peaks the other channels read.' : ''
   if (c.inherited) {
     return (
       `This isotopologue's M0 was seen through ${c.n} ionization channels: ` +
-      'independent evidence for the formula.'
+      'independent evidence for the formula.' +
+      click
     )
   }
   const channels = (c.names ?? []).join(', ')
   return (
     `Seen through ${c.n} ionization channels${channels ? ` (${channels})` : ''}: ` +
     'independent evidence for the formula.' +
-    (otherReadings.value.length ? '\nClick for the peaks the other channels read.' : '')
+    click
   )
 })
 
@@ -1416,13 +1418,19 @@ const demotedCount = computed(() => {
         <div class="other-readings">
           <div class="alts-label">The same neutral, through the other channels</div>
           <ul class="readings">
-            <li v-for="reading in otherReadings" :key="reading.row.peak_assignment_id">
+            <!-- The tooltip hangs on the item, not the button: a disabled
+                 button gets no hover or focus, and a gone reading's tooltip is
+                 the one place that says why it is not a link. -->
+            <li
+              v-for="reading in otherReadings"
+              :key="reading.row.peak_assignment_id"
+              v-tooltip.left="readingTooltip(reading)"
+            >
               <button
                 type="button"
                 class="reading-link"
                 data-testid="other-reading"
                 :disabled="!reading.peak"
-                v-tooltip.left="readingTooltip(reading)"
                 @click="focusReading(reading)"
               >
                 <span class="reading-channel">{{ reading.channel ?? 'another channel' }}</span>

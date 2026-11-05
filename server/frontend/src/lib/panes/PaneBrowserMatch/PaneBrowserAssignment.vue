@@ -218,10 +218,12 @@ function focusPeak(assignment) {
 // the run stored, but there is no peak for a click to focus, and a click that
 // did nothing at all read as a broken ledger (#2025). The rows are dimmed and
 // the ledger says why above them. Read only once the sample's peaks are in:
-// while they load, or for a sample with none listed, nothing is known yet.
+// while they load, or for a sample with none listed, nothing is known yet. Nor
+// when they failed to load: the store keeps the previous sample's list then,
+// and every row would read as stale against it.
 const livePeakIds = computed(() => {
   const list = app.data.peak.list
-  if (app.data.peak.pending || !list?.length) return null
+  if (app.data.peak.pending || app.data.peak.error || !list?.length) return null
   return new Set(list.map((peak) => String(peak.peak_id)))
 })
 const isStale = (row) =>
@@ -948,7 +950,7 @@ const breadcrumb = computed(() => {
       </div>
 
       <Message
-        v-if="staleNotice && !assignments.pending"
+        v-if="staleNotice && !assignments.pending && !assignments.error"
         severity="warn"
         class="stale-notice"
         data-testid="stale-peaks"

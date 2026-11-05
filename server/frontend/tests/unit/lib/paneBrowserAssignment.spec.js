@@ -50,8 +50,11 @@ let focusedPeak
 // list is still loading.
 let peakList
 let peaksPending
-// Whether the run's rows are still loading.
+// The peak list's load error, or null.
+let peaksError
+// Whether the run's rows are still loading, and their load error, or null.
 let assignmentsPending
+let assignmentsError
 let runList
 let runError
 let assignmentList
@@ -90,6 +93,7 @@ function makeApp() {
       peak: {
         list: peakList,
         pending: peaksPending,
+        error: peaksError,
         focused: focusedPeak,
         focus: vi.fn(),
         unfocus: peakUnfocus
@@ -115,6 +119,7 @@ function makeApp() {
         peak: {
           list: assignmentList,
           pending: assignmentsPending,
+          error: assignmentsError,
           tierCounts: tierCountsRecord,
           childrenOf: (id) => childrenByOwner.get(id) ?? [],
           // Stands in for the store's family resolution; the rule itself is
@@ -392,7 +397,9 @@ beforeEach(() => {
   focusedPeak = null
   peakList = []
   peaksPending = false
+  peaksError = null
   assignmentsPending = false
+  assignmentsError = null
   scrollVirtualRowIntoView.mockClear()
   runList = []
   runError = null
@@ -1365,6 +1372,22 @@ describe('PaneBrowserAssignment rows whose peak the sample no longer has', () =>
     // Nor while the run's rows load: the rows on hand are another run's.
     peakList = livePeaks('p-other')
     assignmentsPending = true
+    wrapper = await mountPane()
+    expect(notice(wrapper).exists()).toBe(false)
+  })
+
+  // A failed load keeps the rows the store held before: another sample's peaks,
+  // or another run's rows. Neither says anything about this run.
+  it('says nothing when the peaks or the run failed to load', async () => {
+    seed(FAMILY_B)
+    peakList = livePeaks('p-other')
+    peaksError = new Error('nope')
+    let wrapper = await mountPane()
+    expect(notice(wrapper).exists()).toBe(false)
+    expect(rowClassOf(wrapper)(assignmentList[0])).toBeNull()
+
+    peaksError = null
+    assignmentsError = new Error('nope')
     wrapper = await mountPane()
     expect(notice(wrapper).exists()).toBe(false)
   })

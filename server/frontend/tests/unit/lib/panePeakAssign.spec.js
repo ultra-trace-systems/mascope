@@ -857,7 +857,9 @@ describe("PanePeakAssign the other channels' peaks", () => {
     expect(first.text()).toContain('[M+Na]+')
     expect(first.text()).toContain(`m/z ${num.mz.format(SODIATED.sample_peak_mz)}`)
     expect(second.text()).toContain('[M+NH4]+')
-    expect(first.attributes('data-tooltip')).toBe('Focus this peak: C10H16 through [M+Na]+')
+    expect(first.element.parentElement.dataset.tooltip).toBe(
+      'Focus this peak: C10H16 through [M+Na]+'
+    )
     expect(wrapper.find('button.corroboration').attributes('data-tooltip')).toContain(
       'Click for the peaks the other channels read.'
     )
@@ -892,6 +894,12 @@ describe("PanePeakAssign the other channels' peaks", () => {
       '[M+Na]+',
       '[M+NH4]+'
     ])
+    // The inherited badge opens them too, and says so.
+    const badge = wrapper.find('button.corroboration')
+    expect(badge.text()).toContain('via M0')
+    expect(badge.attributes('data-tooltip')).toContain(
+      'Click for the peaks the other channels read.'
+    )
   })
 
   // #2025: a run from before the sample's peaks were found again names peaks the
@@ -902,7 +910,9 @@ describe("PanePeakAssign the other channels' peaks", () => {
     const gone = links(wrapper)[0]
 
     expect(gone.attributes('disabled')).toBeDefined()
-    expect(gone.attributes('data-tooltip')).toContain('no longer in the sample')
+    // On the item: the disabled button itself gets no hover or focus.
+    expect(gone.attributes('data-tooltip')).toBeUndefined()
+    expect(gone.element.parentElement.dataset.tooltip).toContain('no longer in the sample')
     await gone.trigger('click')
     expect(peakFocus).not.toHaveBeenCalled()
   })
