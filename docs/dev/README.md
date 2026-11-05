@@ -68,15 +68,6 @@ days old. Roadmap work is planned in Linear and defects are GitHub issues:
 | [`ux_review_2026_10.md`](ux_review_2026_10.md) | building | [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) (Linear, MAS-148 to MAS-163, MAS-314 to MAS-317, MAS-712 and MAS-713) | The dashboard UX review of October 2026 and its three tiers of fixes. |
 | [`verification_calibration_loop.md`](verification_calibration_loop.md) | building | [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-63 covers V2 activation and the corroboration refit; the V3 active-learning queue is MAS-329, with the three section 7 decisions recorded inside it) | Human verdicts on assignments feeding the confidence calibration. |
 | [`visual_digest.md`](visual_digest.md) | building | [Visual digests](https://linear.app/ultra-trace/project/visual-digests-51cecff8f790) (Linear, MAS-217 to MAS-244) | Charts, dashboards and reports over the SDK for campaign-scale questions. |
-<<<<<<< HEAD
-| [`ui_state_persistence.md`](ui_state_persistence.md) | built | closed; continuous URL mirroring, the phase 4 leftover, has no issue | UI state that survives a reload, and shareable locations. |
-| [`ux_review_2026_10.md`](ux_review_2026_10.md) | building | [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) (Linear, MAS-148 to MAS-163, MAS-314 to MAS-317, MAS-712 and MAS-713) | The dashboard UX review of October 2026 and its three tiers of fixes. |
-=======
-| [`ui_state_persistence.md`](ui_state_persistence.md) | built | [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) (Linear, MAS-717: continuous URL mirroring, the phase 4 leftover, filed 2026-11-05 for the navigation sidebar) | UI state that survives a reload, and shareable locations. |
-| [`ux_review_2026_10.md`](ux_review_2026_10.md) | building | [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) (Linear, MAS-148 to MAS-163) | The dashboard UX review of October 2026 and its three tiers of fixes. |
->>>>>>> 67cf95fd4 (docs(dev): the URL mirroring leftover has an issue)
-| [`verification_calibration_loop.md`](verification_calibration_loop.md) | building | [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-63 covers V2 activation and the corroboration refit; the V3 active-learning queue is MAS-329, with the three section 7 decisions recorded inside it) | Human verdicts on assignments feeding the confidence calibration. |
-| [`visual_digest.md`](visual_digest.md) | building | [Visual digests](https://linear.app/ultra-trace/project/visual-digests-51cecff8f790) (Linear, MAS-217 to MAS-244) | Charts, dashboards and reports over the SDK for campaign-scale questions. |
 
 ## Retired on 2026-10-22
 
