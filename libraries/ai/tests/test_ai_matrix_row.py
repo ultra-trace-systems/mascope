@@ -149,7 +149,6 @@ class TestTheShape:
         assert set(json.loads(driver.answer_shape(ai_golden.question("D1")))) == {
             "available",
             "reason",
-            "value",
         }
         assert json.loads(driver.answer_shape(ai_golden.question("A6")))[1] == "..."
 
@@ -227,14 +226,56 @@ class TestTheTranscript:
 
 class TestLeniency:
     def test_numbers_written_as_text_are_read_and_the_reading_recorded(self, driver):
-        answer, coerced = driver.lenient(
-            {"2025": "2", "2026": "3", "name": "x", "list": ["1.5", None]}
+        answer, readings = driver.lenient(
+            {"2025": "2", "2026": "3", "name": "x", "list": ["1.5", None]},
+            {"2025": 2, "2026": 3, "name": "x", "list": [1.5, None]},
         )
 
         assert answer == {"2025": 2, "2026": 3, "name": "x", "list": [1.5, None]}
-        assert coerced
-        assert driver.lenient({"2025": 2}) == ({"2025": 2}, False)
-        assert driver.lenient(None) == (None, False)
+        assert readings == ["text_number"]
+        assert driver.lenient({"2025": 2}, {"2025": 2}) == ({"2025": 2}, [])
+        assert driver.lenient(None, {"a": 1}) == (None, [])
+
+    def test_a_null_key_the_known_answer_lacks_is_dropped(self, driver):
+        answer, readings = driver.lenient(
+            {"available": False, "reason": "no such batch", "value": None},
+            {"available": False, "reason": "..."},
+        )
+
+        assert answer == {"available": False, "reason": "no such batch"}
+        assert readings == ["null_extra"]
+
+    def test_a_list_of_names_in_another_order_is_the_list(self, driver):
+        answer, readings = driver.lenient(
+            {"candidates": ["b", "a"]}, {"candidates": ["a", "b"]}
+        )
+
+        assert answer == {"candidates": ["a", "b"]} and readings == ["reordered"]
+        # Another list is another list
+        assert driver.lenient({"candidates": ["c", "a"]}, {"candidates": ["a", "b"]})[
+            0
+        ] == {"candidates": ["c", "a"]}
+
+    def test_the_solvers_own_suggestions_are_not_asked_of_the_model(self, driver):
+        question = ai_golden.question("I1")
+        known = ai_golden.recorded(question.expected)
+        model = {**known, "unscored": [], "scored": {"CH2O2": "probable"}}
+
+        scored = driver.score(question, model)
+
+        assert scored["verdict"] == "correct", scored["problems"]
+        assert "suggestions" in scored["readings"]
+
+    def test_an_mz_a_model_rounded_is_the_peak(self, driver):
+        question = ai_golden.question("I2")
+        known = ai_golden.recorded(question.expected)
+
+        scored = driver.score(question, {**known, "peak_mz": 169.1223})
+
+        assert scored["verdict"] == "correct", scored["problems"]
+        assert "rounded_mz" in scored["readings"]
+        wrong = driver.score(question, {**known, "peak_mz": 169.1230})
+        assert wrong["verdict"] == "wrong"
 
     def test_a_text_number_scores_as_the_number_but_says_so(self, driver):
         question = ai_golden.question("M1")
@@ -242,9 +283,20 @@ class TestLeniency:
         scored = driver.score(question, {"2025": "2", "2026": "3"})
 
         assert scored["verdict"] == "correct" and scored["coerced"]
+        assert scored["readings"] == ["text_number"]
         assert scored["answer_raw"] == {"2025": "2", "2026": "3"}
         assert driver.score(question, {"2025": "3", "2026": "3"})["verdict"] == "wrong"
         assert driver.score(question, None)["verdict"] == "missing"
+
+    def test_a_decline_given_to_an_available_answer_is_missing(self, driver):
+        question = ai_golden.question("A6")
+
+        scored = driver.score(
+            question, {"available": False, "reason": "no tool aggregates"}
+        )
+
+        assert scored["verdict"] == "missing"
+        assert scored["problems"] == ["declined a question the surface answers"]
 
     def test_a_decline_answered_with_a_text_number_is_still_wrong(self, driver):
         question = ai_golden.question("D1")
@@ -257,6 +309,13 @@ class TestLeniency:
             driver.score(question, {"available": False, "reason": "no batch named so"})[
                 "verdict"
             ]
+            == "correct"
+        )
+        assert (
+            driver.score(
+                question,
+                {"available": False, "reason": "no batch named so", "value": None},
+            )["verdict"]
             == "correct"
         )
 

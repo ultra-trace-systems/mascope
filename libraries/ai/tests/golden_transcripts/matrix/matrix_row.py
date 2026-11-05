@@ -217,11 +217,7 @@ def answer_shape(question: ai_golden.Question) -> str:
 
     shaped = blank(question.expected)
     if question.category == "decline":
-        shaped = {
-            "available": "<true/false>",
-            "reason": "<why, when not available>",
-            "value": "<the value, when available>",
-        }
+        shaped = {"available": "<true/false>", "reason": "<why, when not available>"}
     return json.dumps(shaped)
 
 
@@ -349,42 +345,159 @@ def _parse_answer(stdout: str) -> tuple[Any, dict[str, Any]]:
     return answer, {"tool_calls": sum(tools.values()), "tools": tools, "tokens": tokens}
 
 
-def lenient(answer: Any) -> tuple[Any, bool]:
-    """*answer* with every number written as text read as the number, and
-    whether anything was read so.
+#: An m/z a model reports is held to this, not the bundle's 0.1 ppm: a model
+#: that answers the m/z it queried (four decimals) names the right peak with
+#: the wrong precision, which is the reviewer's call (sloppy), not a wrong peak.
+MODEL_MZ_PPM = 1.0
 
-    The fixture's checker holds a solver to the type it asked for; a model
-    that writes 2 as "2" has the value right and the shape wrong. The bench
-    scored such answers correct by reading the number, so the driver does
-    the same before the checker, and records that it did: the reviewer's
-    call whether that is sloppy.
+
+def lenient(answer: Any, expected: Any = None) -> tuple[Any, list[str]]:
+    """*answer* read as a reviewer would before the checker sees it, and the
+    readings made, each named.
+
+    The fixture's checker holds a solver to the shape it asked for. A model
+    run is scored on the substance, as the bench scored its: a number written
+    as text is the number (``text_number``); a key the known answer lacks,
+    given as null, is not an extra (``null_extra``); a list of names is
+    compared whatever its order (``reordered``); an interpretation's
+    ``scored`` and ``unscored`` are compared without the suggestions the
+    fixture's own solver made, which a model never saw (``suggestions``).
+    Each reading is recorded, so the reviewer can call it sloppy.
     """
-    coerced = False
+    readings: list[str] = []
 
-    def walk(value: Any) -> Any:
-        nonlocal coerced
-        if isinstance(value, str) and _NUMBER.fullmatch(value.strip()):
-            coerced = True
+    def note(reading: str) -> None:
+        if reading not in readings:
+            readings.append(reading)
+
+    def walk(value: Any, known: Any) -> Any:
+        if (
+            isinstance(value, str)
+            and _NUMBER.fullmatch(value.strip())
+            and not isinstance(
+                known, str
+            )  # a text the known answer has as text stays one
+        ):
+            note("text_number")
             number = float(value)
             return int(number) if number.is_integer() and "." not in value else number
         if isinstance(value, dict):
-            return {key: walk(inner) for key, inner in value.items()}
+            known_dict = known if isinstance(known, dict) else {}
+            out = {}
+            for key, inner in value.items():
+                if inner is None and known_dict and key not in known_dict:
+                    note("null_extra")
+                    continue
+                out[key] = walk(inner, known_dict.get(key))
+            return out
         if isinstance(value, list):
-            return [walk(inner) for inner in value]
+            known_list = known if isinstance(known, (list, tuple)) else []
+            items = [
+                walk(inner, known_list[i] if i < len(known_list) else None)
+                for i, inner in enumerate(value)
+            ]
+            if (
+                known_list
+                and all(isinstance(k, str) for k in known_list)
+                and all(isinstance(i, str) for i in items)
+                and sorted(items) == sorted(known_list)
+                and items != list(known_list)
+            ):
+                note("reordered")
+                return list(known_list)
+            return items
         return value
 
-    return walk(answer), coerced
+    read = walk(answer, expected)
+    if (
+        isinstance(read, dict)
+        and isinstance(expected, dict)
+        and {"candidates", "scored", "unscored"} <= set(expected)
+    ):
+        # The fixture's solver suggested candidates of its own; what Mascope
+        # said of them is the solver's answer, not the model's to give
+        read = dict(read)
+        if read.get("unscored") == [] and expected.get("unscored"):
+            note("suggestions")
+            read["unscored"] = list(expected["unscored"])
+        if isinstance(read.get("scored"), dict) and isinstance(
+            expected.get("scored"), dict
+        ):
+            own = {
+                f for f in expected["scored"] if f not in expected.get("candidates", ())
+            }
+            if own and not own & set(read["scored"]):
+                note("suggestions")
+                read["scored"] = {
+                    **read["scored"],
+                    **{f: expected["scored"][f] for f in own},
+                }
+    return read, readings
+
+
+def _mz_within_a_ppm(expected: Any) -> Any:
+    """The known answer with every ppm-level tolerance widened to
+    :data:`MODEL_MZ_PPM`, for a model's answer."""
+    if isinstance(expected, ai_golden.Close) and 0 < expected.rel < 1e-5:
+        return ai_golden.Close(
+            expected.value, rel=MODEL_MZ_PPM * 1e-6, off=expected.off
+        )
+    if isinstance(expected, dict):
+        return {k: _mz_within_a_ppm(v) for k, v in expected.items()}
+    if isinstance(expected, (list, tuple)):
+        return [_mz_within_a_ppm(v) for v in expected]
+    return expected
 
 
 def score(question: ai_golden.Question, raw: Any) -> dict[str, Any]:
-    """The checker's verdict on a model's *raw* answer, read leniently."""
-    answer, coerced = lenient(raw)
+    """The checker's verdict on a model's *raw* answer, read leniently.
+
+    A "not available" given to a question whose answer is available is an
+    abstention: missing, never wrong, as the bench scored its nulls. An m/z
+    is held to :data:`MODEL_MZ_PPM`; a wider reading is a ``rounded_mz``.
+    """
+    answer, readings = lenient(raw, ai_golden.recorded(question.expected))
+    declined = isinstance(answer, dict) and answer.get("available") is False
+    if declined and question.category != "decline":
+        return {
+            "answer": answer,
+            "answer_raw": raw,
+            "coerced": bool(readings),
+            "readings": readings,
+            "verdict": "missing",
+            "problems": ["declined a question the surface answers"],
+        }
+    problems = [] if answer is None else ai_golden.compare(question.expected, answer)
+    if problems and answer is not None:
+        looser = ai_golden.compare(_mz_within_a_ppm(question.expected), answer)
+        if len(looser) < len(problems):
+            readings.append("rounded_mz")
+            problems = looser
+    if (
+        answer is not None
+        and question.check is not None
+        and isinstance(answer, dict)
+        and not problems
+    ):
+        problems += question.check(
+            answer,
+            {
+                "values": {
+                    "unscored": [
+                        {"formula": f, "origin": "model"}
+                        for f in answer.get("unscored", ())
+                    ]
+                }
+            },
+        )
+    verdict = "missing" if answer is None else ("wrong" if problems else "correct")
     return {
         "answer": answer,
         "answer_raw": raw,
-        "coerced": coerced,
-        "verdict": ai_golden.verdict_of(question, answer),
-        "problems": [] if answer is None else ai_golden.check_answer(question, answer),
+        "coerced": bool(readings),
+        "readings": readings,
+        "verdict": verdict,
+        "problems": problems,
     }
 
 
@@ -536,7 +649,11 @@ def run(args: argparse.Namespace) -> int:
                 print(
                     f"{question.id:<4} rep{rep} {record['verdict']:<8} "
                     f"{(record['seconds'] or 0):6.1f}s  {record['tool_calls']} call(s)"
-                    + ("  (numbers read from text)" if record.get("coerced") else "")
+                    + (
+                        f"  read: {','.join(record.get('readings', []))}"
+                        if record.get("readings")
+                        else ""
+                    )
                     + ("  TIMEOUT" if record.get("timed_out") else "")
                     + (f"  {record['problems'][:2]}" if record["problems"] else "")
                     + (f"  {record['error'][-120:]!r}" if record["error"] else ""),
@@ -824,7 +941,7 @@ def transcript(folder: Path, scrub: tuple[str, ...] = ()) -> str:
         lines.append(
             f"| {r['question']} | {r['rep']} | {_clipped(cell(r['answer']), 300)} | {_clipped(cell(r['known']), 300)} | "
             f"{r['verdict']}{' (' + '; '.join(r['problems'][:2]) + ')' if r['problems'] else ''}"
-            f"{' numbers read from text' if r.get('coerced') else ''} |  |"
+            f"{' read: ' + ', '.join(r['readings']) if r.get('readings') else ''} |  |"
         )
     lines += ["", "## Episodes", ""]
     for r in records:
