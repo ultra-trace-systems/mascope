@@ -394,6 +394,16 @@ jobs:
             throw "Failed to upload the versioned installer asset to $env:TAG"
           }
 
+  packaged-smoke:
+    # A production stack started from this release's own CLI and runtime
+    # wheels on the images build-images just pushed (packaged-smoke.yaml says
+    # what it checks). A called workflow runs in this event's context, so it
+    # checks out the release tag, and this job's permissions cap its token.
+    needs: build-images
+    permissions:
+      contents: read
+    uses: ./.github/workflows/packaged-smoke.yaml
+
   verify-zenodo:
     # Zenodo's GitHub bridge fails silently when its credentials rot (lapsed
     # OAuth link, revoked webhook token, a repo rename not re-enabled on

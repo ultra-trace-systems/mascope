@@ -40,7 +40,7 @@ of what the first plan delivered; section 2 is its inventory, re-read.
 ## 1. What the first plan delivered
 
 The plan was written for v1.2.0 (2026-07-07), and that release shipped it:
-every item of phases 0 to 4 except the two marked below.
+every item of phases 0 to 4 except the one marked below.
 
 | Phase | Item | State | Where |
 |---|---|---|---|
@@ -58,7 +58,7 @@ every item of phases 0 to 4 except the two marked below.
 | 3 | `pandas` / `requests` in a `demo` extra | shipped | `tooling/cli/pyproject.toml` |
 | 3 | Dependency set verified with `deptry` | **open** | `deptry` is in the root `dev` group (`pyproject.toml`) but nothing runs it; section 2.2 |
 | 4 | Trusted publishing on version bump | shipped | `.github/workflows/publish-pypi.yaml`; ten CLI releases since 2026.7.7 |
-| 4 | Wheel install smoke | partly | `tests.yaml` job `cli-package` and `.github/scripts/wheel_smoke.py` stop at `init` then `modules`; nothing runs `prod up` from a wheel (phase 8) |
+| 4 | Wheel install smoke | shipped | `tests.yaml` job `cli-package` and `.github/scripts/wheel_smoke.py` stop at `init` then `modules`; `packaged-smoke.yaml` and `.github/scripts/packaged_smoke.sh` go on to `prod up` from the wheels and `tooling/smoke-test.sh` (step 8.2) |
 
 ## 2. The entanglement inventory, re-read
 
@@ -354,7 +354,10 @@ What exists in `tooling/cli/tests/` for the seams above:
 Outside the suite, CI's `cli-package` job installs the built wheels in
 isolation and runs `wheel_smoke.py`, installs the workspace as a uv tool the
 way a server does, and imports the wheel against the oldest runtime its
-floor admits.
+floor admits. The `packaged-smoke.yaml` workflow (step 8.2) starts a
+production stack from the built wheels on the published release images and
+runs `tooling/smoke-test.sh` against it, on pull requests touching the CLI,
+the runtime, the compose files or the config layers, and on each release.
 
 What the open phases need first:
 
@@ -363,9 +366,7 @@ What the open phases need first:
   lapses;
 - phase 7: tests of the deployed-release record through `_deploy_version`,
   `update` and `doctor`, written against today's behaviour before it
-  changes; and, for the refresh, a test that the env overlay survives it;
-- phase 8: the packaged smoke of step 8.2, which needs Docker and so runs in
-  CI, not in the hermetic suite.
+  changes; and, for the refresh, a test that the env overlay survives it.
 
 ## Related
 
