@@ -1,3 +1,9 @@
+from .envelope_tolerance import (
+    EnvelopeFit,
+    EnvelopeLines,
+    EnvelopeTolerance,
+    fit_envelope_tolerance,
+)
 from .finder import assign_compositions
 from .heuristic_filter import formula_plausibility
 from .mass_accuracy import (
@@ -64,6 +70,12 @@ from .scoring import pattern_scoring_for_sample, score_candidates
 # `score_candidates` is the finder's ranking measurement for a whole candidate
 # list at once, which is what such an engine runs over a file's first pass.
 #
+# The envelope tolerance is exported beside `PatternScoring` for the same
+# reason as the mass width: it is the other half of what the sample is scored
+# at, fitted from the run's own envelopes, and an engine scoring a sample where
+# Mascope did rebuilds it from the run's record (`EnvelopeTolerance.from_record`)
+# rather than fitting a second copy.
+#
 # The mechanism notation readers are exported for the same kind of caller: a
 # mechanism is the one string an engine publishing into Mascope and Mascope
 # itself must spell alike. Mascope stores and shows the standard adduct notation
@@ -72,6 +84,10 @@ from .scoring import pattern_scoring_for_sample, score_candidates
 __all__ = [
     "assign_compositions",
     "CompositionSearchConfig",
+    "EnvelopeFit",
+    "EnvelopeLines",
+    "EnvelopeTolerance",
+    "fit_envelope_tolerance",
     "fit_mass_accuracy",
     "fit_sample_mass_accuracy",
     "formula_plausibility",

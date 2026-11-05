@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.mass_accuracy import (
     PRED_SIGMA_PPM,
     ReagentOffset,
@@ -85,5 +86,20 @@ class TestTheSampleIsScoredAtWhatWasMeasuredOfIt:
             pattern_scoring_for_sample(
                 SampleMassAccuracy(), "tof", _params()
             ).resolution
+            is None
+        )
+
+    def test_the_run_s_envelope_tolerance_rides_along(self):
+        tolerance = EnvelopeTolerance(centre=-0.03, floor=0.12)
+
+        scoring = pattern_scoring_for_sample(
+            SampleMassAccuracy(), "tof", _params(), envelope_tolerance=tolerance
+        )
+
+        assert scoring.envelope_tolerance is tolerance
+        assert (
+            pattern_scoring_for_sample(
+                SampleMassAccuracy(), "tof", _params()
+            ).envelope_tolerance
             is None
         )

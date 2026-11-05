@@ -208,8 +208,62 @@ So a weak, noisy isotopologue is judged loosely (its ratio is uncertain) while a
 clean one is judged tightly — rather than a single global intensity tolerance. The floors
 ($5\%$ of predicted abundance, and $10^{-3}$) prevent over-confident penalties.
 
+**The run's own tolerance (§3.2a).** The equations above are the score at today's
+tolerance. A run of the peak-assignment engine fits how well it measures a share and
+passes it as `tolerance`; then $p_i$ in the numerator is replaced by the nearer end of
+an admitted band and the $5\%$ floor by the tolerance's floor. See §3.2a.
+
 The base peak carries only mass evidence ($L_0 = L^{\text{mass}}_0$, since $r_0 \equiv 1$);
 every other **matched** peak contributes $L_i = L^{\text{mass}}_i \cdot L^{\text{int}}_i$.
+
+### 3.2a The envelope tolerance, fitted per run
+
+The $5\%$ floor says an instrument reads a clean line's share to $5\%$. On an Orbitrap
+that does not hold for a dim line. A scan keeps a centroid only where it clears that
+scan's floor, and the file's peak list averages the scans, so a minor line near the
+floor is read diluted by the scans it missed, or not found at all. Measured on the gate
+sets' committed 13C lines (`docs/dev/assignment_quality_plan.md`, step 5.3), by height:
+a median $0.72$ to $0.92$ of the share at an expected SNR of 3 to 10, $0.87$ to $0.92$
+at 10 to 20, $0.97$ from 50 up, and at 3 to 10 most of the predicted lines absent from
+the list. The reference engine's 0.10 line reads the same censoring and fits a response
+per file; this is its form (decision 32).
+
+`tolerance` (`mascope_tools.composition.envelope_tolerance.EnvelopeTolerance`) carries
+a band of admitted share per bin of expected SNR $p_i s_0$, a centre $c$, a floor $f$
+and a detectability threshold. A matched line is charged only for how far its share
+lies outside the band $[\ell(p_i s_0),\, 1 + c]\, p_i$:
+
+$$ d_i = \begin{cases} r_i - \ell_i p_i & r_i < \ell_i p_i \\ r_i - (1+c)\,p_i & r_i > (1+c)\,p_i \\ 0 & \text{otherwise} \end{cases},
+\qquad \sigma^{\text{rel}}_i = \max\!\left( r_i\sqrt{\tfrac{1}{s_i^2} + \tfrac{1}{s_0^2}},\; f\,p_i,\; 10^{-3}\right),
+\qquad L^{\text{int}}_i = \exp\!\left(-\tfrac{1}{2}\left(\frac{d_i}{\sigma^{\text{rel}}_i}\right)^2\right) $$
+
+The run fits it on its own committed envelopes, in the form its instrument class takes:
+
+- **Orbitrap-class: a response curve per file.** The 13C lines' observed / predicted
+  share, binned by expected SNR (3, 10, 20, 50, 100 and up); per bin the median and the
+  20th percentile, made non-decreasing in SNR by pool-adjacent-violators and capped at
+  $1$. $\ell$ is the 20th percentile, $c = 0$, $f = 5\%$. A bin with too few lines
+  takes the end of the nearest bin above it that has one, and above the last such bin
+  the band is the share alone. The same lines set the detectability threshold, in
+  place of $k_{\text{detect}}$: an absent line is charged from the lowest bin in which
+  at least half the predicted 13C lines are in the list, where a bin below it falls
+  short of that. Counted from the bottom, a short bin above one that holds its lines
+  is charged as today. Where every bin falls short, the threshold is above the
+  highest.
+- **TOF: a centre and a width per run** of the committed lines' relative error
+  $r_i/p_i - 1$ (median and scaled MAD). $\ell = 1 + c$, so the band is the single
+  point the centre moves the share to, and $f$ is the width where it is wider than
+  $5\%$. A line $15\%$ under its share with the centre $3\%$ under at a fitted $12\%$
+  width is a one-sigma miss. $k_{\text{detect}}$ stays at 3.
+
+A file with too few lines for a curve of its own takes the curve fitted over its lines
+and those of its batch's files that share its acquisition settings, then today's
+numbers. The SNR terms stay as they are: they only ever widen. Without a base SNR a
+line has no place on the curve and is read at today's band. With `tolerance=None` (or
+the default `EnvelopeTolerance()`) the score is exactly the one above. The engine's side
+is `server/backend/.../peak_assignments/envelope_fit.py`; the run records what it
+fitted under `config.envelope_tolerance`, and `EnvelopeTolerance.from_record` rebuilds
+it from that record.
 
 ### 3.3 Detectability gate (censoring at the detection limit)
 
@@ -225,7 +279,8 @@ the base peak, times the base peak's SNR), so:
 
 This is a censored-data treatment: missing low-abundance isotopologues do not punish
 genuine low-intensity ions, but a missing $^{81}$Br twin of a bromine ion does. Defaults
-$k_{\text{detect}} = 3$, $\text{miss\_penalty} = 0.3$.
+$k_{\text{detect}} = 3$, $\text{miss\_penalty} = 0.3$. A run's fitted curve raises the
+threshold to where that file's lines are actually present (§3.2a).
 
 ### 3.3a No-SNR mode (callers without per-peak signal-to-noise)
 
@@ -276,6 +331,7 @@ proportionally less. The result is in $[0,1]$, equals $1$ only for a flawless fi
 | `k_detect` | `3.0` | expected-SNR threshold above which an absent peak is penalised |
 | `miss_penalty` | `0.3` | likelihood assigned to a detectable-but-absent peak |
 | `rel_detect_no_snr` | `0.10` | no-SNR fallback (§3.3a): predicted abundance above which an absent peak is penalised when the base peak's SNR is unknown |
+| `tolerance` | `None` (today's: band the share itself, floor `0.05`, `k_detect`) | the run's fitted envelope tolerance (§3.2a): the admitted band per bin of expected SNR, the centre, the floor, and the detectability threshold |
 | `PRED_SIGMA_PPM` | `0.5` (`composition.mass_accuracy`) | prediction/centroiding term added to $\sigma$ in quadrature by `scoring_sigma_ppm` |
 
 ## 5. Properties (validated on the demo)
@@ -318,6 +374,11 @@ proportionally less. The result is in $[0,1]$, equals $1$ only for a flawless fi
   than penalised — a score deviation of at most ≈ 0.085 versus the real-SNR path. The
   Platt calibration is fitted on the real-SNR path, so no-SNR callers report the raw fit
   without a calibrated $P(\text{correct})$.
+- **A fitted band concedes on the low side (§3.2a).** A formula that predicts more of
+  a dim 13C line than the spectrum holds - an over-claimed carbon count - is no longer
+  told apart by that line where the file's curve admits the shortfall; the reference
+  engine reports the same limit of the same form. The band never opens above the
+  share, so an under-claim is charged as before.
 - **Depends on isotopologue matching completeness:** a *missed* match looks like a missing
   predicted peak, so the score is only as good as the upstream peak matching.
 - **Single-ion:** it scores one ion's isotope envelope; cross-peak corroboration (adducts,
@@ -327,6 +388,10 @@ proportionally less. The result is in $[0,1]$, equals $1$ only for a flawless fi
   workstream), not the fit score.
 
 ## References
+
+- Barlow, R. E.; Bartholomew, D. J.; Bremner, J. M.; Brunk, H. D. *Statistical
+  inference under order restrictions: the theory and application of isotonic
+  regression.* Wiley, 1972. (The pool-adjacent-violators fit of §3.2a.)
 
 - Kind, T.; Fiehn, O. *Metabolomic database annotations via query of elemental
   compositions: mass accuracy is insufficient even at less than 1 ppm.* **BMC

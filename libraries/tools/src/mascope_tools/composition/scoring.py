@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
+from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.heuristic_filter import (
     PATTERN_BASE_SNR,
     PATTERN_REQUIRED_LINES,
@@ -63,6 +64,7 @@ def pattern_scoring_for_sample(
     instrument_type: str | None,
     match_params: MatchParams,
     resolution: Callable[[float], float] | None = None,
+    envelope_tolerance: EnvelopeTolerance | None = None,
 ) -> PatternScoring:
     """How a sample's isotope envelopes are scored, from what was measured of it.
 
@@ -73,6 +75,9 @@ def pattern_scoring_for_sample(
     reagent lines' where they are beyond the width, else none, scored as zero.
     The window and the floor are the sample's match parameters, the ones Stage
     A matched and generated its isotopes at, so both stages read a line alike.
+    The envelope tolerance is the one Stage A fitted on its committed
+    envelopes; an outside engine rebuilds it from the run's record
+    (:meth:`EnvelopeTolerance.from_record`).
 
     :param mass_accuracy: What Stage A measured of the sample's mass error. An
         empty :class:`SampleMassAccuracy` is a sample nothing measured, scored
@@ -84,6 +89,8 @@ def pattern_scoring_for_sample(
     :param resolution: The file's resolving power as a function of m/z, or
         None where it could not be read; with it, lines one peak cannot
         separate are scored as one.
+    :param envelope_tolerance: How well the run measures a line's share, or
+        None for today's numbers.
     :return: The scoring parameters for the sample's search.
     """
     return PatternScoring(
@@ -94,6 +101,7 @@ def pattern_scoring_for_sample(
         mz_tolerance_ppm=float(match_params.mz_tolerance),
         abundance_floor=float(match_params.isotope_abundance_threshold),
         resolution=resolution,
+        envelope_tolerance=envelope_tolerance,
     )
 
 

@@ -20,6 +20,10 @@ from mascope_tools.composition.config import (
     UNRESOLVED_MEMBER_DEPTH,
 )
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
+from mascope_tools.composition.envelope_tolerance import (
+    DEFAULT_TOLERANCE,
+    EnvelopeTolerance,
+)
 from mascope_tools.composition.grid import admits
 from mascope_tools.composition.models import (
     CompositionSearchConfig,
@@ -1530,6 +1534,7 @@ def score_ion_envelope(
         predicted_rel,
         sigma_ppm=scoring.sigma_ppm,
         k_detect=DETECT_SNR_K,
+        tolerance=scoring.envelope_tolerance,
     )
     return (
         score,
@@ -1697,6 +1702,7 @@ def score_ion_envelopes(
         offsets,
         sigma_ppm=scoring.sigma_ppm,
         k_detect=DETECT_SNR_K,
+        tolerance=scoring.envelope_tolerance,
     )
 
     isotopes = []
@@ -2190,6 +2196,26 @@ def calibrate_score(raw, calibration=None):
     return 1.0 / (1.0 + np.exp(-(a * np.asarray(raw, float) + b)))
 
 
+def _outside_band(
+    rel_obs: np.ndarray,
+    pr: np.ndarray,
+    expected_snr: np.ndarray,
+    tolerance: EnvelopeTolerance,
+) -> np.ndarray:
+    """How far each line's observed share sits outside the band the tolerance
+    admits for it, signed; zero inside.
+
+    The band is :meth:`EnvelopeTolerance.admitted` at the line's expected SNR,
+    in units of the predicted share. Today's tolerance admits the predicted
+    share alone, so this is ``rel_obs - pr`` exactly.
+    """
+    lower, upper = tolerance.admitted(expected_snr)
+    low, high = lower * pr, upper * pr
+    return np.where(
+        rel_obs < low, rel_obs - low, np.where(rel_obs > high, rel_obs - high, 0.0)
+    )
+
+
 def score_pattern_v2(
     observed_mass_errors_ppm: np.ndarray,
     observed_intensities: np.ndarray,
@@ -2200,6 +2226,7 @@ def score_pattern_v2(
     miss_penalty: float = 0.3,
     sigma_ppm: float | None = None,
     rel_detect_no_snr: float = REL_DETECT_NO_SNR,
+    tolerance: EnvelopeTolerance | None = None,
 ) -> float:
     """Detectability-gated, SNR-aware match score in [0, 1].
 
@@ -2238,10 +2265,20 @@ def score_pattern_v2(
     `observed_mass_errors_ppm` should be offset-centred (subtract the fitted mu).
     When `sigma_ppm` is None, `FALLBACK_SIGMA_PPM` is used — Orbitrap-only; see it.
 
+    `tolerance` is how well the run measures a line's share
+    (:mod:`envelope_tolerance`), fitted on its own committed envelopes: a matched
+    line costs nothing anywhere inside the band it admits at the line's expected
+    SNR (`predicted_rel[i]*SNR_base`) and is charged from the band's nearer end
+    outside it, at the larger of its noise and the tolerance's floor; an absent
+    line is charged from the tolerance's threshold where it fitted one, else from
+    `k_detect`. None is today's score: the band the predicted share itself, a 5%
+    floor, `k_detect`.
+
     :raises ValueError: if the input arrays do not all have one entry per predicted
         isotopologue."""
     if sigma_ppm is None:
         sigma_ppm = FALLBACK_SIGMA_PPM
+    tolerance = tolerance or DEFAULT_TOLERANCE
     oi = np.asarray(observed_intensities, float)
     me = np.asarray(observed_mass_errors_ppm, float)
     pr = np.asarray(predicted_rel, float)
@@ -2297,11 +2334,15 @@ def score_pattern_v2(
         [
             # Unknown SNR contributes 0 here, so the abundance floors below decide.
             rel_obs * np.sqrt(inv_snr**2 + inv_snr[0] ** 2),
-            0.05 * pr,
+            tolerance.floor * pr,
             np.full(n, 1e-3),
         ]
     )
-    int_L = np.exp(-0.5 * ((rel_obs - pr) / sigma_rel) ** 2)
+    expected_snr = pr * snr[0] if snr_known[0] else np.full(n, np.nan)
+    int_L = np.exp(
+        -0.5 * (_outside_band(rel_obs, pr, expected_snr, tolerance) / sigma_rel) ** 2
+    )
+    k_detect = k_detect if tolerance.detect_snr is None else tolerance.detect_snr
 
     L = np.full(n, np.nan)
     L[0] = mass_L[0]
@@ -2337,6 +2378,7 @@ def score_patterns_v2(
     miss_penalty: float = 0.3,
     sigma_ppm: float | None = None,
     rel_detect_no_snr: float = REL_DETECT_NO_SNR,
+    tolerance: EnvelopeTolerance | None = None,
 ) -> np.ndarray:
     """:func:`score_pattern_v2` for many envelopes at once.
 
@@ -2354,12 +2396,15 @@ def score_patterns_v2(
     :param offsets: Where each envelope starts, and the end of the last one:
         one more entry than there are envelopes. An empty envelope scores 0,
         as the one-envelope function scores it.
+    :param tolerance: As :func:`score_pattern_v2`, one for every envelope: it
+        is the sample's.
     :raises ValueError: if the arrays do not all have one entry per line, or
         the offsets do not end where they do.
     :return: One score per envelope.
     """
     if sigma_ppm is None:
         sigma_ppm = FALLBACK_SIGMA_PPM
+    tolerance = tolerance or DEFAULT_TOLERANCE
     oi = np.asarray(observed_intensities, float)
     me = np.asarray(observed_mass_errors_ppm, float)
     pr = np.asarray(predicted_rel, float)
@@ -2411,11 +2456,16 @@ def score_patterns_v2(
         sigma_rel = np.maximum.reduce(
             [
                 rel_obs * np.sqrt(inv_snr**2 + inv_snr[first] ** 2),
-                0.05 * pr,
+                tolerance.floor * pr,
                 np.full(n, 1e-3),
             ]
         )
-        int_L = np.exp(-0.5 * ((rel_obs - pr) / sigma_rel) ** 2)
+        expected_snr = np.where(snr_known[first], pr * snr[first], np.nan)
+        int_L = np.exp(
+            -0.5
+            * (_outside_band(rel_obs, pr, expected_snr, tolerance) / sigma_rel) ** 2
+        )
+    k_detect = k_detect if tolerance.detect_snr is None else tolerance.detect_snr
 
     L = np.full(n, np.nan)
     L[anchor] = mass_L[anchor]
