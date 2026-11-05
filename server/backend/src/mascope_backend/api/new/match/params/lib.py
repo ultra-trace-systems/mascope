@@ -173,15 +173,21 @@ def apply_match_params(
         | df["relative_abundance"].isna()
     )
 
-    within_tolerance = (df["match_mz_error"].abs() <= params_df["mz_tolerance"]) & (
-        df["match_abundance_error"].abs() <= params_df["isotope_ratio_tolerance"]
-    )
-    score_accepted = within_tolerance & (
-        df["sample_peak_intensity"] >= params_df["peak_min_intensity"]
+    # The mass gate says whether the peak is the line at all; the ratio gate
+    # says whether the line fits the ion's pattern in this file. Only the mass
+    # gate takes the intensity: a line on its mass still carries its signal
+    # into the ion's sum when its per-file ratio misses, which is noisy on a
+    # mid-intensity line, while its score (and so the category) still says
+    # that the pattern did not fit.
+    within_mz = df["match_mz_error"].abs() <= params_df["mz_tolerance"]
+    score_accepted = (
+        within_mz
+        & (df["match_abundance_error"].abs() <= params_df["isotope_ratio_tolerance"])
+        & (df["sample_peak_intensity"] >= params_df["peak_min_intensity"])
     )
 
     df.loc[valid & ~score_accepted, "match_score"] = 0
-    df.loc[valid & ~within_tolerance, "sample_peak_intensity"] = 0
+    df.loc[valid & ~within_mz, "sample_peak_intensity"] = 0
 
     # Determine match category based on the (filtered) match_score
     match_category = pd.Series(0, index=df.index, dtype=object)
