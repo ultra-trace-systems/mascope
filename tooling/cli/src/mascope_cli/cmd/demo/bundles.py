@@ -121,9 +121,15 @@ BUNDLES: dict[str, Bundle] = {
         archive_md5="5205e03d19aa4d9e5e417d55b5a603ce",
         doi="10.5281/zenodo.23939336",
     ),
+    "1.4.4": Bundle(
+        version="1.4.4",
+        url="https://zenodo.org/records/23984343/files/mascope-demo-dataset-v1.4.4.zip",
+        archive_md5="04095b5b5ae524fc219aa7e0e313c4d9",
+        doi="10.5281/zenodo.23984343",
+    ),
 }
 
-DEFAULT_BUNDLE_VERSION = "1.4.3"
+DEFAULT_BUNDLE_VERSION = "1.4.4"
 
 
 def get_bundle(version: Optional[str] = None) -> Bundle:

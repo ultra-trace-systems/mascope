@@ -617,7 +617,22 @@ peak flagged, moved onto theirs. 87 isotope lines match another peak and 171
 new lines score, for 43,004 golden peaks against 1.4.2's 43,070; the other
 42,746 keep their m/z and height, and all but one their score. 58
 probable-match ion rows whose monoisotopic peak is now a satellite are gone,
-for 17,395 ions against 17,453. The MS2 spectra are identical. The four MS2
+for 17,395 ions against 17,453. The MS2 spectra are identical. 1.4.4 is the
+same raw set and seed again, rebuilt once matching read an Orbitrap isotope
+line's ratio over the scans the line shares with its ion's most abundant
+line (see
+[matching](user/how-it-works/matching.md#what-an-isotope-ratio-is-read-over))
+and the reader capped an averaged centroid's label resolutions at twice the
+scan's. The 42,397 golden peaks the two bundles share keep their m/z and
+height, and 3,430 of them are rescored. 607 dim isotope lines (18O, 2H, 13C,
+15N, in 158 files) now read outside the isotope ratio tolerance and are gone.
+27 lines score anew: 23 lines of bromide ions whose ratio now reads within
+it, and a 13C line of two isomeric uronium ions in two files, on a peak the
+cap no longer flags satellite. That is 42,424 golden peaks against 1.4.3's
+43,004. 56 ion rows change category, 39 up and 17 down, and all but two of
+them are bromide ions; one row is gone, for 17,394 ions. The MS2 spectra keep
+their m/z and intensity, and the cap lowers the resolution of 246 of their
+centroids in three files, which the comparison does not assert. The four MS2
 files are hand-started, stepped-energy
 acquisitions of alpha-pinene oxidation products from a chamber oxidation
 experiment, on a second Orbitrap of the same model whose label was aliased
