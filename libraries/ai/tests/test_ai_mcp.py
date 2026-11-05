@@ -114,6 +114,7 @@ class TestProtocol:
             "load_spectrum",
             "load_peaks_by_stage",
             "compute_timeseries",
+            "reduce",
             "query_by_mz",
             "match_compounds",
             "plan_organize",

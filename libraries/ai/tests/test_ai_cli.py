@@ -336,7 +336,7 @@ def test_the_server_speaks_over_stdio(tmp_path):
     answers = [json.loads(line) for line in done.stdout.splitlines()]
     assert [a["id"] for a in answers] == [1, 2, 3, 4]
     assert answers[0]["result"]["protocolVersion"] == "2025-06-18"
-    assert len(answers[1]["result"]["tools"]) == 16
+    assert len(answers[1]["result"]["tools"]) == 17
     # Not configured: a result the model reads, and the server carries on
     found = answers[2]["result"]
     assert found["isError"] is True

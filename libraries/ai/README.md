@@ -60,6 +60,7 @@ global collections).
 | `load_spectrum(sample, mz_range=, t_range=, max_rows=)` | `Frame` |
 | `load_peaks_by_stage(sample, stages, max_rows=)` | `Frame` |
 | `compute_timeseries(sample, mz_range=None, max_peaks=)` | a small dict: the peaks in range, how many had a time series, how many were computed |
+| `reduce(frame, value=, stat='median', by=None, where=(), top=None, ascending=False)` | a few numbers: a statistic of one column of a Frame, over the whole Frame or by group (`median`, `mean`, `max`, `min`, `sum`, `count`, or `argmax` / `argmin`: the row the extreme is in), rows kept first by `where` clauses `[column, op, value]`; the reduction is kept as a derived Frame. The one computation a model can ask for without Python |
 | `query_by_mz(mz, mechanisms, tolerance_ppm=5.0, formula_ranges=, limit=20, isotopologues=True, known_only=False)` | `Candidates`: Mascope's formulas for an m/z, the closest first |
 | `match_compounds(sample, formulas, params=None, suggested=, mechanisms=)` | `MatchResult`: one verdict per candidate, the tree as a `Frame` |
 | `derive(df, inputs, code=)` | `Frame` of a table computed from Frames, their sources kept |
@@ -283,6 +284,7 @@ variant.
 | `describe` | the small dict `describe()` gives |
 | `load_peaks`, `load_timeseries`, `load_spectrum`, `load_peaks_by_stage` | a Frame's handle |
 | `compute_timeseries` | the peaks in range, how many had a time series, how many were computed |
+| `reduce` | a statistic of a Frame's column, whole or by group, as a few numbers; `argmax` gives the row |
 | `query_by_mz` | Mascope's candidates for an m/z |
 | `match_compounds` | one condensed verdict per candidate, the unscored apart, the tree's handle |
 | `plan_organize`, `plan_collection`, `plan_associate`, `plan_match` | a plan: its ID, summary, changes, role, gate, reversibility, cost and expiry; nothing is written |
