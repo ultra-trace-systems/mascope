@@ -874,6 +874,10 @@ other column is left out with a warning.
 - **An `adduct` is resolved by its exact notation**: the one mechanism of
   `mascope.ionization.list()` written that way, and null when no single one
   is. A null loses nothing but the join: the adduct is in `ion_formula`.
+  The mechanism table is a catalogue of the adducts the server can name,
+  not a configuration of the channels an engine should search: choose those
+  by the engine's own chemistry, as Mascope's engine opens them by the
+  ionization profile and the file's fingerprint.
 - **The rows go in as many requests as the server's caps call for**, by row
   count and by bytes. The first request and the last are sent once, like
   `assign`: if an answer is lost, the error says where to look before sending
@@ -1206,12 +1210,12 @@ The compound list is shared by every workspace, so `add`, `update` and `remove` 
 
 | Method                                           | Description                                                    | Returns             |
 | ------------------------------------------------ | -------------------------------------------------------------- | ------------------- |
-| `list(batch_id, tier=, min_n_present=, run_id=)` | The batch's species table, one row per batch peak              | `pd.DataFrame│None` |
+| `list(batch_id, tier=, min_n_present=, run_id=, engine_tier=, tier_disagrees=)` | The batch's species table, one row per batch peak; an imported engine's own tier and claim beside the consensus | `pd.DataFrame│None` |
 | `members(batch_id, sample_id=)`                  | The whole ledger, one row per member                           | `pd.DataFrame│None` |
 | `series(batch_id, tier=, min_n_present=2, run_id=)` | Each sample's intensity of each batch peak, in one read per batch | `pd.DataFrame` |
 | `verdicts(batch_id)`                             | The batch-level verdicts on its species                        | `pd.DataFrame│None` |
 | `runs(batch_id)`                                 | The batch runs that rewrote its ledger, newest first           | `pd.DataFrame│None` |
-| `import_run(batch_id, rows, engine=, engine_version=)` | Land an external engine's batch-level result as a run    | `dict│None`         |
+| `import_run(batch_id, rows, engine=, engine_version=)` | Land an external engine's batch-level result as a run; rows may carry the engine's own `engine_tier` and `engine_claim` | `dict│None`         |
 | `peak_lists(batch_id, samples=None, matches=False, satellites=False, average=True)` | Every peak of every sample of the batch, or of the samples named, in one read | `pd.DataFrame` |
 
 `peak_lists` is the batch's peak lists, not its ledger: every sample read as `samples.get_peaks` reads it with no range, sent by the server as one Parquet table. It needs no ledger and is what `load_peaks` reads. Its columns are `sample_item_id`, `sample_item_name`, `datetime_utc`, `peak_id`, `mz`, `sparsity`, `signal_to_noise`, `segment`, `area`, `height` and `is_satellite`. With `matches=True` it adds the match columns as the server keeps them, `ionization_mechanism_id` among them, with no ion or compound score. `satellites=True` keeps the satellite peaks, sidelobes of a stronger peak that `get_peaks` leaves out, with `is_satellite` True. `samples=` takes a list of `sample_item_id`s and reads only those; an ID that is no sample of the batch is a failure with status 404. Each ID goes in the request's URL, so name at most a hundred or so per call. `df.attrs["failures"]` names each sample the server could not read (`status_code`, `error`). `df.attrs["complete"]` is then False, and the rest of the batch is answered without it.

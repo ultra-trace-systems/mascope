@@ -26,7 +26,11 @@ A run imported from another engine can also carry that engine's own tier, in an
 **engine tier** column beside Mascope's. Where the two differ, the peak is worth
 a look: the other engine weighs things Mascope's tier does not. A dash there is
 usual: an engine tiers only the peaks it committed a formula to. Only Mascope's
-tier is used when peaks are rolled up across a batch.
+tier is used when peaks are rolled up across a batch. The ledger's view options
+then offer **Engine tier**, which makes the tier chips count and filter by the
+other engine's tier, with **not stated** for the formulas it gave none; a batch
+import that carried the engine's tiers adds the same switch, and **Engine
+disagrees**, to the *Batch peaks* ledger.
 
 Beside its tier, a peak can carry a role: **reagent** (an ion the ionization
 source made: of its reagent, the air it ionizes or its calibrant, or by

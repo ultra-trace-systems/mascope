@@ -1190,6 +1190,34 @@ summary counts what landed and why the rest did not. The ledger as it was stays 
 the previous run in the run selector, so the two views can be compared, and *Rebuild
 batch ledger* puts Mascope's own view back.
 
+A row can also carry the engine's own verdict on its identity: `engine_tier`, in the
+tier vocabulary of the per-sample import, and `engine_claim`, free text such as an
+evidence level. Mascope keeps both on the batch peak beside its own consensus tier,
+never in its place: the consensus tier is still measured from the members, and it is
+the only tier the batch ledger sorts on and the fold reads. The verdict is shown only
+where the consensus names the identity the engine gave it for. A batch peak whose
+members did not take up the engine's formula shows none, and a later fold, curation or
+rebuild that moves the consensus to another formula takes it off. Each import replaces
+the verdicts of the one before, which stay readable under that import in the run
+selector. The run's summary counts the verdicts shown (`engine_verdicts`) and those
+held back because the consensus names another identity (`engine_verdicts_withheld`).
+
+After such an import the *Batch peaks* ledger has an **Engine tier** column beside
+**Tier**, and its view-options menu offers two switches. **Engine disagrees** keeps
+the batch peaks whose engine tier differs from the consensus tier. **Engine tier**
+makes the tier chips count and filter by the engine's tier, with a **not stated** chip
+for the formulas it gave no tier. Both are off by default. The sample ledger offers
+the same **Engine tier** switch on a run imported with engine tiers. The API and the
+SDK filter the same way (`engine_tier` and `tier_disagrees` on
+`GET /api/batch-peaks/batch/{id}`, and on `mascope.batch_peaks.list`). A batch peak
+with no engine tier is left out of either answer, because absence is not agreement.
+
+A row names its adduct by this server's mechanism id. The mechanism table
+(`mascope.ionization.list()`) is a catalogue of the adducts a deployment can name,
+not a list of channels an engine should search: Mascope's own engine opens channels
+by the ionization profile and the file's fingerprint. Send the id of the adduct the
+engine found, and leave the rest of the table alone.
+
 ## References
 
 - <a id="kf06"></a>Kind, T.; Fiehn, O. *Metabolomic database annotations via query of
