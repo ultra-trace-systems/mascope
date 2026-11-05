@@ -594,7 +594,7 @@ The fixture is [`libraries/ai/tests/ai_golden.py`](../../libraries/ai/tests/ai_g
 with its tests in `test_ai_golden.py` beside it. Each question has a known
 answer and a *solver*: a short program that answers it through the tool
 surface alone (`find`, `resolve`, `describe`, the four loaders,
-`query_by_mz`, `match_compounds`, `derive`), standing in for the model. The
+`query_by_mz`, `match_compounds`, `derive`, `reduce`), standing in for the model. The
 SDK client is not on that surface. The harness runs every solver and checks
 its answer against the known one. It reports each question as answered,
 answered wrongly, failed, or **not answerable**: a solver raises
@@ -686,10 +686,10 @@ answered wrongly, failed, or **not answerable**: a solver raises
 | M6 | metadata | Which batches have 'Uronium' in their name? | the 2025-08-11 uronium and the 2026-10-15 Uronium RI acquisitions | `find` |
 | M7 | metadata | How many compounds does the Uronium monitor collection have? | 50 | `describe`, `resolve` |
 | M8 | metadata | Which ionization mode and mechanisms do the 2025 bromide batch's samples use? | Bromide m/z 82-750: [M+Br]- and [M-H]- | `describe`, `resolve` |
-| A1 | analysis | When did C10H16O2's protonated ion (C10H17O2+) peak in the 2025 uronium batch's time series, and how high? | at the 14:34:03 sample, height 1.176e6 | `derive`, `load_timeseries`, `resolve` |
+| A1 | analysis | When did C10H16O2's protonated ion (C10H17O2+) peak in the 2025 uronium batch's time series, and how high? | at the 14:34:03 sample, height 1.176e6 | `load_timeseries`, `reduce`, `resolve` |
 | A2 | analysis | In the 2025 bromide batch, what is formic acid's signal (CH2BrO2-) normalised to the reagent ion Br3- (its [81Br]Br2- line): its mean, and its maximum and where? | mean 0.0959 over 80 samples, maximum 0.1074 at 15:21:13 | `derive`, `load_peaks`, `resolve` |
 | A3 | analysis | How far above its background did C10H17O2+ rise in the 2025 uronium batch, the background being the mean of the batch's first five samples? | 1.130e6 above a background of 4.59e4, at 14:34:03 | `derive`, `load_peaks`, `resolve` |
-| A4 | analysis | Where is the apex of the 14:34:03 uronium sample's spectrum between m/z 169.10 and 169.15, how intense is it, and how many points has the window? | m/z 169.1222 at 1.166e6, near the fitted peak; 102 points in the window | `find`, `load_spectrum`, `resolve` |
+| A4 | analysis | Where is the apex of the 14:34:03 uronium sample's spectrum between m/z 169.10 and 169.15, how intense is it, and how many points has the window? | m/z 169.1222 at 1.166e6, near the fitted peak; 102 points in the window | `find`, `load_spectrum`, `reduce`, `resolve` |
 | A5 | analysis | Read as one stage over its whole acquisition, how high is C10H17O2+ in the 14:34:03 uronium sample? | 1.176e6, the averaged peak list's height | `describe`, `find`, `load_peaks_by_stage`, `load_timeseries`, `resolve` |
 | A6 | analysis | Which 5 ions have the highest median height over the 2025 uronium batch's samples, how high is each, in how many samples was each found, and what is each one's median mass error in ppm? | C10H17O2+ 4.597e+05 in 81, +0.04 ppm; C11H21N2O3+ 3.267e+05 in 81, +0.19 ppm; C10H20NO2+ 2.076e+05 in 81, +0.07 ppm; C8H19O3+ 1.776e+05 in 81, +0.08 ppm; C16H23O4+ 1.550e+05 in 81, +0.10 ppm | `derive`, `describe`, `load_peaks`, `query_by_mz`, `resolve` |
 | I1 | interpretation | What is the peak at m/z 124.9244 in the bromide sample measured at 14:34:57? | formic acid, CH2O2 as CH2BrO2- [M+Br]-, probable; the 13C-labelled suggestion unscored | `describe`, `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |

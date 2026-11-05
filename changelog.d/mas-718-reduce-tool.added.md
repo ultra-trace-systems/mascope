@@ -6,4 +6,5 @@
   It is the first coarse tool of the analyst-shell plan: in the first row of the
   model matrix an open-weight model with the MCP server alone declined the top-ions
   question for want of any aggregate and read another answer off the first row of
-  a Frame handle's head, which the handle now says is not an answer.
+  a Frame handle's head, which the handle now says is not an answer. The golden
+  fixture's tool surface has it, and its brightest-peak and apex solvers use it.

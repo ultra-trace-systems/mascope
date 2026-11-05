@@ -96,6 +96,7 @@ SURFACE = (
     "query_by_mz",
     "match_compounds",
     "derive",
+    "reduce",
 )
 
 #: The bundle's tolerances (its ``manifest.json``): an intensity within 1%,
@@ -519,19 +520,16 @@ PROTONATED = "C10H17O2+"
 def _timeseries_maximum(kit: Surface) -> dict[str, Any]:
     batch = kit.resolve(URONIUM, "batch")
     series = _whole(kit.load_timeseries(isotope=PROTONATED, batches=batch))
-    # A sample's point is the mean of its scans: its averaged peak's height
-    points = series.df.groupby("sample_item_name", as_index=False)["height"].mean()
-    batch_series = kit.derive(
-        points,
-        series,
-        code="series.df.groupby('sample_item_name')['height'].mean()",
-        computed="height",
+    # A sample's point is the mean of its scans: its averaged peak's height;
+    # the samples' means, the largest first, and only the first of them
+    points = kit.reduce(
+        series, value="height", stat="mean", by="sample_item_name", top=1
     )
-    points = batch_series.df.set_index("sample_item_name")["height"]
+    highest = points["rows"][0]
     return {
-        "sample": points.idxmax(),
-        "height": float(points.max()),
-        "n_samples": len(points),
+        "sample": highest["sample_item_name"],
+        "height": float(highest["height"]),
+        "n_samples": points["n_groups"],
     }
 
 
@@ -626,14 +624,15 @@ URONIUM_PEAK_SAMPLE = "2025-08-11 14:34:03"
 
 def _spectrum_apex(kit: Surface) -> dict[str, Any]:
     sample = _sample(kit, URONIUM, URONIUM_PEAK_SAMPLE)
-    spectrum = kit.load_spectrum(sample, mz_range=(169.10, 169.15))
-    df = _whole(spectrum).df
-    apex = df.loc[df["intensity"].idxmax()]
-    # The window's points too: the apex alone is also the whole spectrum's
+    spectrum = _whole(kit.load_spectrum(sample, mz_range=(169.10, 169.15)))
+    # The row the maximum is in; the window's points too, since the apex
+    # alone is also the whole spectrum's
+    apex = kit.reduce(spectrum, value="intensity", stat="argmax")
+    row = apex["rows"][0]
     return {
-        "mz": float(apex["mz"]),
-        "intensity": float(apex["intensity"]),
-        "n_points": len(df),
+        "mz": float(row["mz"]),
+        "intensity": float(row["intensity"]),
+        "n_points": apex["rows_in"],
     }
 
 
@@ -1190,7 +1189,7 @@ QUESTIONS: tuple[Question, ...] = (
             "n_samples": 81,
         },
         "at the 14:34:03 sample, height 1.176e6",
-        ("derive", "load_timeseries", "resolve"),
+        ("load_timeseries", "reduce", "resolve"),
         golden=_golden_timeseries_maximum,
     ),
     Question(
@@ -1239,7 +1238,7 @@ QUESTIONS: tuple[Question, ...] = (
             "n_points": 102,
         },
         "m/z 169.1222 at 1.166e6, near the fitted peak; 102 points in the window",
-        ("find", "load_spectrum", "resolve"),
+        ("find", "load_spectrum", "reduce", "resolve"),
         golden=_golden_spectrum_apex,
         # The goldens hold the fitted peak, not the profile's highest point:
         # the apex is within 5 ppm and 2% of it
