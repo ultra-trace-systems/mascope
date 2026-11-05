@@ -1206,7 +1206,8 @@ After such an import the *Batch peaks* ledger has an **Engine tier** column besi
 **Tier**, and its view-options menu offers two switches. **Engine disagrees** keeps
 the batch peaks whose engine tier differs from the consensus tier. **Engine tier**
 makes the tier chips count and filter by the engine's tier, with a **not stated** chip
-for the formulas it gave no tier. Both are off by default. The sample ledger offers
+for the formulas it gave no tier; the **Tier** column, its own filter and the sort
+stay on the consensus. Both are off by default. The sample ledger offers
 the same **Engine tier** switch on a run imported with engine tiers. The API and the
 SDK filter the same way (`engine_tier` and `tier_disagrees` on
 `GET /api/batch-peaks/batch/{id}`, and on `mascope.batch_peaks.list`). A batch peak

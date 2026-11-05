@@ -1584,6 +1584,34 @@ describe('PaneBrowserBatchPeaks engine tier', () => {
     expect(ids()).toEqual(['bp-3'])
   })
 
+  // The tier column shows the consensus in either view, so its own filter
+  // filters the consensus; only the chips read the engine's tier.
+  it("keeps the tier column's filter on the consensus in the engine-tier view", async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    await toggle('batch-engine-tier-view').trigger('click')
+
+    expect(wrapper.vm.BUCKETS).not.toContain('engine_unstated')
+    wrapper.vm.filters.consensus_tier.constraints[0].value = 'assigned'
+    await wrapper.vm.$nextTick()
+    // bp-1 is the engine's candidate, but the consensus says assigned.
+    expect(ids()).toEqual(['bp-1', 'bp-2'])
+
+    // A chip filters the engine's tier on top, without rewriting the column's.
+    wrapper.vm.toggleTier('candidate')
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-1'])
+    expect(wrapper.vm.filters.consensus_tier.constraints[0].value).toBe('assigned')
+    expect(wrapper.find('.tier-stat.candidate').classes()).toContain('active')
+    expect(wrapper.find('.tier-stat.assigned').classes()).not.toContain('active')
+
+    // Leaving the view drops both, and coming back brings neither back.
+    await toggle('batch-engine-tier-view').trigger('click')
+    expect(ids()).toHaveLength(4)
+    expect(wrapper.vm.filters.consensus_tier.constraints[0].value).toBeNull()
+    await toggle('batch-engine-tier-view').trigger('click')
+    expect(ids()).toHaveLength(4)
+  })
+
   // Both switches outlive the ledger they were flipped on; one no engine tiered
   // has nothing to read in its words, and no switch left to turn them off.
   it('reads the consensus again on a ledger no engine tiered, whatever the switches', async () => {
