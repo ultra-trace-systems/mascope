@@ -201,6 +201,17 @@ class TestList:
         assert len(df) == 1
         assert server.list_calls[-1] == {"min_n_present": 2, "tier": "assigned"}
 
+    def test_forwards_the_engine_tier_filters(self, server, resource):
+        resource.list(BATCH_ID, engine_tier="candidate", tier_disagrees=True)
+        assert server.list_calls[-1] == {
+            "min_n_present": 1,
+            "engine_tier": "candidate",
+            "tier_disagrees": True,
+        }
+        # False is a filter of its own (the rows that agree), not "no filter".
+        resource.list(BATCH_ID, tier_disagrees=False)
+        assert server.list_calls[-1] == {"min_n_present": 1, "tier_disagrees": False}
+
     def test_returns_none_without_a_ledger(self, server, resource):
         server.anchors = []
         assert resource.list(BATCH_ID) is None
@@ -413,6 +424,25 @@ class TestImportRun:
         assert run["status"] == "completed"
         assert run["summary"] == {"anchors_matched": 1}
         assert posting["n"] == 2
+
+    def test_sends_the_engines_verdict_where_the_rows_carry_one(
+        self, server, resource, posting
+    ):
+        frame = pd.DataFrame(
+            {
+                "mz": [181.0707, 250.1],
+                "formula": ["C6H12O6", "C12H18O6"],
+                "ionization_mechanism_id": ["mech-h", "mech-h"],
+                "engine_tier": ["candidate", None],
+                "engine_claim": ["level 3", None],
+            }
+        )
+        resource.import_run(BATCH_ID, frame, engine="peaky", engine_version="0.10.0")
+        _, body = server.import_calls[-1]
+        assert [(r["engine_tier"], r["engine_claim"]) for r in body["rows"]] == [
+            ("candidate", "level 3"),
+            (None, None),
+        ]
 
     def test_returns_the_running_record_without_waiting(
         self, server, resource, posting
