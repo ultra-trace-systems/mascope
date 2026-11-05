@@ -3282,8 +3282,8 @@ and acquisition-method redesign of 2026-07, when that note was retired. Of its f
 `AcquisitionMethod` and `MethodBinding` have their first concrete pieces in
 `acquisition_stream` and `method_binding` (phase 2; section 13), with the routing order of
 4.5 revised by 2.4 and 5.7; `Instrument` and `IonizationSetup` are built (MAS-300, "As
-built" below each; MAS-255 is the decision that found the gap), and the structured `Adduct`
-is filed as MAS-318 in the assignment quality plan. The notation of 4.4 shipped as the
+built" below each; MAS-255 is the decision that found the gap), and so is the structured
+`Adduct` (MAS-318, the assignment quality plan's step 4.6). The notation of 4.4 shipped as the
 assignment plan's step 3.3b. The text is the proposal as written, with what was built
 after it.*
 
@@ -3440,6 +3440,20 @@ Adduct
 Derived, not stored: ion polarity and charge. That removes the exact confusion
 that caused the doc bugs - the user never types a sign whose meaning is
 ambiguous.
+
+*As built (MAS-318, the assignment plan's step 4.6).* Not a table of its own: the
+columns sit on `ionization_mechanism` beside the string, which still decides - setting
+it writes the row (`IonizationMechanism._write_row`), and alembic `c39f8f2c0b3b` filled
+every stored row by reading its string, refusing to run on one that reads in neither
+notation. The row is `mascope_tools.composition.mechanism_notation.AdductRow`, mapped
+to and from the string by `to_row` and `from_row`; a species of several terms is held
+as the legacy join (`(CH4N2O)H`), the electron as an empty species of charge -1, and
+the two protons of `[M+2H]2+` as `(H)2` of charge +2, written back with a coefficient
+that is always the ion's charge. A neutral loss is a removed term in a mechanism that
+adds; the losses of a mechanism that removes fold into what it removes, as before.
+Target ions are built for every shape; the composition finder and a run's channels
+read only singly charged ions of one molecule with no neutral loss, so allowed charge
+states stay +/-1 in the engine.
 
 ##### 4.5 `MethodBinding` - routing, decoupled from definition
 
@@ -4232,7 +4246,7 @@ through a short-lived stacked branch, merged as one unit.
 |---|---|
 | #749 chunk model (one `sample_file` per part) | Not adopted (3.4). Parts are streams and items. |
 | `multi_sample_items_per_file.md` | Its phase 1 is phase 3 here. Its segment API and chromatogram UI are phase 6. m/z-range splitting is covered by streams, because the scan range is in the signature. |
-| `ionization_method_config.md` (retired 2026-10-22) | Its Phase 0 items 3 (`method_file`, #2155) and 4 (the delete fan-out, #2156) are done. Its routing order (4.5) is revised by 2.4 and 5.7: a confirmed method identity above the token, a learned one below it, and no instrument-plus-polarity default. `acquisition_stream` and `method_binding` are the first concrete pieces of its `AcquisitionMethod` and `MethodBinding`. Its target model (section 4: `Instrument`, `AcquisitionMethod`, `IonizationSetup`, `Adduct`, `MethodBinding`) is carried into phase 8 here; its section 5 notation shipped as the assignment plan's step 3.3b; its section 7 was superseded by `fair_roadmap.md`; of its Phase 1, `Instrument` and `IonizationSetup` are built (MAS-300, after the Decisions MAS-350 and MAS-351) and `Adduct` is filed as MAS-318. |
+| `ionization_method_config.md` (retired 2026-10-22) | Its Phase 0 items 3 (`method_file`, #2155) and 4 (the delete fan-out, #2156) are done. Its routing order (4.5) is revised by 2.4 and 5.7: a confirmed method identity above the token, a learned one below it, and no instrument-plus-polarity default. `acquisition_stream` and `method_binding` are the first concrete pieces of its `AcquisitionMethod` and `MethodBinding`. Its target model (section 4: `Instrument`, `AcquisitionMethod`, `IonizationSetup`, `Adduct`, `MethodBinding`) is carried into phase 8 here; its section 5 notation shipped as the assignment plan's step 3.3b; its section 7 was superseded by `fair_roadmap.md`; of its Phase 1, `Instrument` and `IonizationSetup` are built (MAS-300, after the Decisions MAS-350 and MAS-351), and so is `Adduct` (MAS-318). |
 | `chemistry_profiles.md` and assignment quality plan step 3.5 | The profiles and their future rows stay there; the seeded profile of 5.1 is the interim form of its `reagent_profile` row, and `system_key` is the identity that migrates. Routing by detection moves here (phase 5), with the guards 2.3 shows it needs. |
 | Setup-simplification proposal (2026-09-03) | Its steps 1, 2 and 4 shipped (#2044, #2046, #2070). Step 3 (presets) shipped half in phase 2 - mechanisms and modes - and completes in phase 8 with the collections; step 5 (instrument-scoped modes) is phase 2; steps 6 and 7 (notifications, per-file status) are phase 1; step 8 (the profile's reagent ions as calibration anchors) is phase 8, its further tiers later; step 9 (detection with review) is split between phases 1 and 5. Its routing ladder gains the method rung and loses the implicit instrument-plus-polarity rule. Its "profiles as shipped data" is section 5.1 here. |
 

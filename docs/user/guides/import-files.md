@@ -103,17 +103,33 @@ notation: inside the brackets, what is added to or removed from the molecule
 - `[M+^NO3]-` — a labelled reagent, written as it is (negative)
 - `[M]+.` or `[M]-.` — electron transfer, the dot marking the radical ion
 
+Three more shapes are written in the same notation:
+
+- `[2M+H]+` — a dimer: the count of molecules before `M`
+- `[M+2H]2+`, `[M-2H]2-`, `[M+Ca]2+` — a doubly charged ion: the charge's size
+  before its sign. A count on the term itself is the ion's charge, one charge for
+  each species, and is written only on a mechanism's one term: `[M+3H]3+`, but
+  `[M+H+H+Na]3+` for three species
+- `[M+H-H2O]+` — a neutral loss: a term removed from a mechanism that adds. The
+  ion's charge comes with what is added, and what is removed is neutral
+
 The ion's polarity is the sign at the end, so a mechanism of the wrong polarity
-cannot be saved. One molecule and a single charge are what a mechanism
-describes: `[2M+H]+` and `[M+2H]2+` are refused, as is a mechanism that both adds
-and removes (`[M+Na-2H]-`). The terms are saved in alphabetical order, so a
-mechanism has one spelling however it is typed: `[M+H+CH4N2O]+` is saved as
-`[M+CH4N2O+H]+`, and cannot be added a second time in the other order.
+cannot be saved. Under the field, Mascope shows the ion the typed mechanism makes:
+its charge, and how many molecules it holds and what it loses where it has them.
+The terms are saved in alphabetical order, so a mechanism has one spelling however
+it is typed: `[M+H+CH4N2O]+` is saved as `[M+CH4N2O+H]+`, and cannot be added a
+second time in the other order. **Name** is optional: what you call the mechanism
+("protonation"), shown in the list beside it.
+
+Target ions are built for all of these shapes. The composition search and
+[peak assignment](../how-it-works/peak-assignment.md) read only ions of one
+molecule, a single charge and no neutral loss so far: they leave a dimer, a doubly
+charged ion and a neutral loss out of their search.
 
 The older spelling is still accepted and saved in the standard one: an operation,
 the formula, and the charge of the species moved rather than of the ion (`+H+`
 for `[M+H]+`, `-H+` for `[M-H]-`, `+Br-` for `[M+Br]-`, a bare `+` or `-` for
-electron transfer).
+electron transfer). It has no way to write the three shapes above.
 
 Mascope ships the mechanisms its own chemistry uses, so they are in the list from
 the first start: the nitrate, 15N-nitrate, bromide, iodide, urea, ammonium and
