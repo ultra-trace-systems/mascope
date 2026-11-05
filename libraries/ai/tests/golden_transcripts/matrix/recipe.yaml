@@ -37,6 +37,10 @@ parameters:
     input_type: string
     requirement: required
     description: the answer's JSON shape, values as placeholders
+  - key: mascope_ai
+    input_type: string
+    requirement: required
+    description: the mascope-ai executable that serves the MCP server
 extensions:
   - type: stdio
     name: mascope
