@@ -597,9 +597,11 @@ own deployment and the heartbeat is a third party.
 A green assessment is only evidence if its controls can fail.
 [`run-weakened-guard.sh`](run-weakened-guard.sh) checks that some of them can,
 weekly and unattended. It brings up a throwaway demo stack on this host and
-weakens it by configuration, one edit at a time. It strips a security header,
-turns the nginx version banner on, or adds a wildcard CORS header. Each control
-the edit should trip must then report a finding
+weakens it by configuration, one edit at a time. It strips a security header or
+the auth cookie's flags, turns the nginx version banner on, adds a wildcard CORS
+header, serves the API docs or schema, lets a client name its own address, or
+raises the upload cap. Each control the edit should trip must then report a
+finding
 (`security/pentest/mutations/README.md`, "The weakened target"). It touches no
 deployment, and spends nothing of the staging target's rate limits.
 
@@ -641,11 +643,13 @@ healthy stack, and the run says `2` rather than blaming a control. Each run
 leaves `<ts>-weakened.log` and `<ts>-weakened.summary` in `RECORDS`, pruned at
 400 days. The summary reads `detected N  missed N  unproven N version=TAG`.
 
-The guard covers 8 controls. The log's coverage line counts the others by
+The guard covers 13 controls. The log's coverage line counts the others by
 reason, and each control's marker gives its own (`weakening=` in
 `security/pentest/test_*.py`, which `mutations/weakened.py` reads):
 application code no configuration reaches, a missing test-only switch, a
-topology the demo does not have, or an edit not yet written.
+topology the demo does not have, or an edit not yet written. The guard
+itself takes about three minutes once the stack is up; the upload-cap edit is
+the slowest, since it restarts the backend twice.
 `tooling/cli/tests/test_run_weakened_guard.py` runs this script with `docker`,
 `curl` and the guard stubbed; CI runs it with the CLI tests.
 
