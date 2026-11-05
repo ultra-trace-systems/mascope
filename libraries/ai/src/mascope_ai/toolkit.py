@@ -40,6 +40,8 @@ from mascope_sdk.exceptions import ValidationError
 from mascope_sdk.resources.samples import _EMPTY_RANGE_UNEXPLAINED
 
 from . import writes
+from .columns import MIXED
+from .columns import meaning as column_meaning
 from .errors import (
     LISTED,
     AccessDenied,
@@ -1990,16 +1992,24 @@ class Toolkit:
         new += [c for f in frames for c in f.computed_columns]
         new = list(dict.fromkeys([*new, *recomputed]))
         client = [c for f in frames for c in f.client_columns if c not in new]
-        # A carried-over column means what it meant where it came from: the
-        # first input that has it, and that input's own source if derived
+        # A carried-over column means what it meant where it came from, that
+        # input's own source if derived. When the inputs that have it give
+        # it different meanings (a time series joined to its peak list both
+        # have a height), it has none: not the first input's, which the
+        # order of the inputs would decide
         inherited: dict[str, str] = {}
         for c in columns:
             if c in new:
                 continue
+            ops: list[str] = []
             for f in frames:
                 if c in f.columns:
-                    inherited[c] = f.inherited.get(c) or str(f.query.get("op"))
-                    break
+                    op = f.inherited.get(c) or str(f.query.get("op"))
+                    if op not in ops:
+                        ops.append(op)
+            if ops:
+                texts = {column_meaning(op, c) for op in ops}
+                inherited[c] = ops[0] if len(texts) == 1 else MIXED
         rows = df.copy()
         rows.attrs = {
             "complete": all(f.complete for f in frames),
