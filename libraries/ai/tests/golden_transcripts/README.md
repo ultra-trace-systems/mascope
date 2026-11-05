@@ -124,13 +124,20 @@ are written and hashed. A run folder under `~/mascope-bench/runs/<UTC
 stamp>-<model>-goose/` holds `header.json`, `PREREG.sha256` (the hashes of
 the fixture, the driver, the recipe and the note, written before the first
 model call), `transcripts/<question>-rep<n>.{json,md}` from `goose session
-export`, `results.jsonl` and `summary.md`; `summarize <folder>` rebuilds the
-summary after a checker change.
+export`, `results.jsonl` and `summary.md`; `rescore <folder>` scores the stored
+answers again after a checker change (the first scoring is kept as
+`results.orig.jsonl`) and `transcript <folder> -o <file>` renders the folder as
+the transcript this directory keeps, secrets scrubbed, with an empty reviewer
+column for the hand verdicts.
 
 **Scoring.** The driver scores each answer with the fixture's own checker
 (`ai_golden.check_answer`: the known answer's comparison and the question's
 check), the one the dry run validated: correct, wrong, missing, or infra when
-Goose exited on a provider error. **sloppy** is the reviewer's verdict, added
+Goose exited without an answer (a provider error, or the harness's own fault,
+which the record's `error` tells apart). One leniency the fixture's solvers
+are not given: a number the model wrote as text is read as the number before
+the check, and the record says so (`coerced`), since the first pilot answered
+`{"2025": "2"}` for 2 batches; whether that is sloppy is the reviewer's call. **sloppy** is the reviewer's verdict, added
 by hand. The transcript kept in this folder is rendered from the run folder
 and scrubbed: the token never appears in it (the recipe passes it to the
 extension through the environment, and `session export` shows tool calls,
