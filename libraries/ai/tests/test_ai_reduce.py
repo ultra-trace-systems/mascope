@@ -105,6 +105,25 @@ class TestReduce:
         # The row is the whole row the extreme is in, not the number alone
         assert all(r["mz"] for r in top["rows"])
 
+    def test_the_groups_extreme_rows_come_largest_first(self, kit, scored):
+        # The order decides "which sample has the brightest peak": argmax by
+        # sample with top=1. The fake's heights are alike; the score is not
+        by = dict(value="score", by="sample_item_name")
+        highs = scored.df.groupby("sample_item_name")["score"].max()
+        lows = scored.df.groupby("sample_item_name")["score"].min()
+
+        top = kit.reduce(scored, stat="argmax", **by)
+        up = kit.reduce(scored, stat="argmax", ascending=True, **by)
+        first = kit.reduce(scored, stat="argmax", top=1, **by)
+        bottom = kit.reduce(scored, stat="argmin", **by)
+
+        scores = [r["score"] for r in top["rows"]]
+        assert scores == sorted(highs, reverse=True) and scores[0] > scores[-1]
+        assert [r["score"] for r in up["rows"]] == sorted(highs)
+        assert first["rows"][0]["sample_item_name"] == highs.idxmax()
+        assert first["rows_omitted"] == len(highs) - 1
+        assert [r["score"] for r in bottom["rows"]] == sorted(lows, reverse=True)
+
     def test_ascending_puts_the_smallest_first(self, kit, scored):
         # The fake's samples have the same heights; a score tells them apart
         out = kit.reduce(
