@@ -227,17 +227,24 @@ async def get_batch_peak_ledger_route(
     tier: AssignmentTier | None = None,
     min_n_present: int = 2,
     batch_peak_run_id: str | None = None,
+    engine_tier: AssignmentTier | None = None,
+    tier_disagrees: bool | None = None,
     user: User = Depends(current_active_user),
 ) -> BatchPeakRecordsResponse:
     """List a batch's batch peaks (metadata only) -- the Assignments ledger feed.
 
     One row per batch peak (consensus m/z, formula, tier, prevalence), without the
     per-sample series, so a large ledger loads cheaply. The chart fetches series
-    only for the batch peaks the user selects.
+    only for the batch peaks the user selects. A batch peak an import landed on
+    also carries the importing engine's own ``engine_tier`` and ``engine_claim``.
 
     :param sample_batch_id: The unique identifier of the sample batch.
     :param tier: Optional filter by consensus tier.
     :param min_n_present: Occupancy floor (keep peaks seen in >= this many samples).
+    :param engine_tier: Optional filter by the importing engine's own tier.
+    :param tier_disagrees: True keeps the batch peaks whose engine tier differs
+        from the consensus tier, False those where the two agree; a batch peak
+        with no engine tier is left out either way.
     :param user: The current authenticated user. Requires workspace guest role.
     :return: Batch-peak metadata rows.
     """
@@ -247,6 +254,8 @@ async def get_batch_peak_ledger_route(
         tier=tier,
         min_n_present=min_n_present,
         batch_peak_run_id=batch_peak_run_id,
+        engine_tier=engine_tier,
+        tier_disagrees=tier_disagrees,
     )
     return BatchPeakRecordsResponse.model_validate(result)
 

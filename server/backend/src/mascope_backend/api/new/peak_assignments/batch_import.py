@@ -25,6 +25,14 @@ What the import does, and does not do, deliberately:
 - A row whose adduct resolved to no mechanism id cannot be measured and is
   skipped: the mechanism is what the seeded scorer builds the ion from.
 - Two rows nearest the same anchor: the closer one takes it.
+- It keeps the engine's verdict beside this server's, never in its place. A
+  row's ``engine_tier`` and ``engine_claim`` go onto the anchor it landed on
+  once the consensus is recomputed, and only where the consensus then names
+  the row's identity: a verdict beside another formula would be about nothing
+  the ledger shows. Every other anchor of the batch loses the verdict an
+  earlier import left there, which that import's run snapshot keeps. The
+  ledger's ``consensus_tier`` stays the derived one, and the fold reads it
+  alone.
 
 Every skipped row is counted by reason in the run's summary, so an import that
 landed fewer identities than it sent says why. The matching is pure and
@@ -43,6 +51,8 @@ from sqlalchemy import select
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.peak_assignments.batch_peaks import ROLE_M0, manual_pin_of
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    _acquire_batch_fold_lock,
+    clear_engine_verdicts_statement,
     recompute_batch_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import complete_run, fail_run
@@ -165,6 +175,89 @@ def match_rows_to_anchors(
         else:
             unmatched[index] = REASON_COLLISION
     return {anchor_id: index for anchor_id, (_, index) in best.items()}, unmatched
+
+
+@dataclass(frozen=True)
+class EngineVerdict:
+    """What the engine said about the identity a row landed on an anchor:
+    the identity itself, so the verdict can be kept to the anchors whose
+    consensus names it, and the tier and words the engine gave it."""
+
+    formula: str
+    ionization_mechanism_id: Optional[str]
+    engine_tier: Optional[str]
+    engine_claim: Optional[str]
+
+
+def verdict_on_anchor(
+    anchor: Any, verdict: Optional[EngineVerdict]
+) -> tuple[Optional[str], Optional[str]]:
+    """The engine tier and claim an anchor carries after the import.
+
+    Pure. The verdict where the anchor's consensus names the verdict's
+    identity - its neutral formula through its mechanism, the identity the
+    registry and the seeded scorer key on - and nothing otherwise: an anchor
+    the import did not land on, or one whose members the measurement did not
+    carry over to the engine's formula, shows no verdict of this engine's.
+
+    :param anchor: The anchor as recomputed (``consensus_formula``,
+        ``ionization_mechanism_id``).
+    :param verdict: The verdict of the row that landed on it, or None.
+    :return: ``(engine_tier, engine_claim)``.
+    """
+    if (
+        verdict is None
+        or anchor.consensus_formula != verdict.formula
+        or anchor.ionization_mechanism_id != verdict.ionization_mechanism_id
+    ):
+        return None, None
+    return verdict.engine_tier, verdict.engine_claim
+
+
+async def write_engine_verdicts(
+    sample_batch_id: str, verdicts: dict[str, EngineVerdict]
+) -> tuple[int, int]:
+    """Put the engine's verdicts on the batch's anchors, and take every other
+    verdict off.
+
+    Run after the consensus recompute, under the fold lock, so the identity
+    each anchor is checked against is the one the ledger shows.
+
+    :param sample_batch_id: The batch.
+    :param verdicts: Anchor id -> the verdict of the row that landed on it,
+        for the rows that carried a tier or a claim.
+    :return: ``(shown, withheld)``: anchors now carrying a verdict, and
+        anchors a verdict was sent for whose consensus names another identity.
+    """
+    shown = withheld = 0
+    async with async_session() as session:
+        await _acquire_batch_fold_lock(session, sample_batch_id)
+        # Every earlier verdict off first, in one statement: the ledger is
+        # this import's now, and an anchor it did not land on says nothing of
+        # this engine's.
+        await session.execute(clear_engine_verdicts_statement(sample_batch_id))
+        if verdicts:
+            anchors = (
+                (
+                    await session.execute(
+                        select(BatchPeak).where(
+                            BatchPeak.batch_peak_id.in_(list(verdicts))
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for anchor in anchors:
+                tier, claim = verdict_on_anchor(anchor, verdicts[anchor.batch_peak_id])
+                if tier is None and claim is None:
+                    withheld += 1
+                    continue
+                anchor.engine_tier = tier
+                anchor.engine_claim = claim
+                shown += 1
+        await session.commit()
+    return shown, withheld
 
 
 def _names(values, limit: int = 5) -> str:
@@ -301,6 +394,7 @@ async def run_batch_import(
     skipped: Counter = Counter(unmatched.values())
     by_id = {anchor.batch_peak_id: anchor for anchor in anchors}
     annotations: dict[str, Annotation] = {}
+    verdicts: dict[str, EngineVerdict] = {}
     for anchor_id, index in matched.items():
         anchor = by_id[anchor_id]
         if manual_pin_of(anchor) is not None:
@@ -317,6 +411,15 @@ async def run_batch_import(
             role=ROLE_M0,
             owner_batch_peak_id=None,
         )
+        engine_tier = getattr(row, "engine_tier", None)
+        engine_claim = getattr(row, "engine_claim", None)
+        if engine_tier is not None or engine_claim:
+            verdicts[anchor_id] = EngineVerdict(
+                formula=row.formula,
+                ionization_mechanism_id=row.ionization_mechanism_id,
+                engine_tier=engine_tier,
+                engine_claim=engine_claim or None,
+            )
     counts: dict[str, Any] = {
         "rows": len(rows),
         "anchors": len(anchors),
@@ -327,8 +430,13 @@ async def run_batch_import(
         "rows_skipped": sum(skipped.values()),
         "rows_skipped_by_reason": dict(sorted(skipped.items())),
         "mz_tolerance_ppm": tolerance_ppm,
+        "engine_verdicts": 0,
+        "engine_verdicts_withheld": 0,
     }
     if not annotations:
+        # Nothing landed, and still the ledger is this import's: an earlier
+        # import's verdicts come off.
+        await write_engine_verdicts(sample_batch_id, {})
         return counts
 
     async with async_session() as session:
@@ -403,6 +511,12 @@ async def run_batch_import(
                 "its committed samples touched still describe their previous "
                 "members; rebuilding the ledger recomputes them."
             )
+    # After the recompute, so each verdict is checked against the identity the
+    # ledger now shows for its anchor.
+    (
+        counts["engine_verdicts"],
+        counts["engine_verdicts_withheld"],
+    ) = await write_engine_verdicts(sample_batch_id, verdicts)
     return counts
 
 

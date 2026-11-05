@@ -150,3 +150,33 @@ def test_a_fresh_anchor_takes_its_first_consensus():
     assert anchor.n_present == 2
     assert anchor.alternatives == [{"formula": "C6H12O6", "share": 1.0}]
     assert anchor.batch_peak_utc_modified == _NOW
+
+
+def test_an_importing_engines_verdict_comes_off_when_the_identity_moves():
+    """The verdict is about the formula the import landed; once the consensus
+    names another, a verdict left standing would be about nothing shown."""
+    anchor = _anchor_holding(_consensus())
+    anchor.engine_tier, anchor.engine_claim = "candidate", "level 3"
+
+    assert _apply_consensus(anchor, _consensus(consensus_formula="C7H14O7"), _NOW)
+    assert (anchor.engine_tier, anchor.engine_claim) == (None, None)
+
+
+def test_a_new_channel_for_the_same_formula_is_another_identity_too():
+    anchor = _anchor_holding(_consensus())
+    anchor.engine_tier, anchor.engine_claim = "candidate", "level 3"
+
+    assert _apply_consensus(anchor, _consensus(ionization_mechanism_id="mech-2"), _NOW)
+    assert (anchor.engine_tier, anchor.engine_claim) == (None, None)
+
+
+def test_the_verdict_stays_while_the_identity_does():
+    """A new sample's vote moves the derived tier and the support, not what the
+    engine said about the formula."""
+    anchor = _anchor_holding(_consensus())
+    anchor.engine_tier, anchor.engine_claim = "candidate", "level 3"
+
+    assert _apply_consensus(
+        anchor, _consensus(consensus_tier="candidate", n_present=3), _NOW
+    )
+    assert (anchor.engine_tier, anchor.engine_claim) == ("candidate", "level 3")

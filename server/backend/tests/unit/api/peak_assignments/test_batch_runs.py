@@ -5,6 +5,9 @@ completion prunes. No DB. See ``batch_runs.py``."""
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
+    _batch_peak_meta,
+)
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     BATCH_RUN_KEEP,
     MEMBER_FIELDS,
@@ -53,6 +56,8 @@ def _anchor(**over):
         isotopologue_of=None,
         candidates=[{"formula": "C6H12O6"}],
         provenance={},
+        engine_tier=None,
+        engine_claim=None,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -93,6 +98,24 @@ def test_the_ledger_shape_off_a_snapshot_matches_the_live_ones():
     assert meta["curated"] is False
     assert meta["consensus_tier"] == "assigned"
     assert meta["max_intensity"] == 5000.0
+
+
+def test_a_snapshot_keeps_the_importing_engines_verdict():
+    # The run selector shows an import's verdicts as that run left them.
+    anchor = _anchor(engine_tier="candidate", engine_claim="level 3")
+    row = anchor_snapshot_row("run-1", anchor, [])
+    assert (row["engine_tier"], row["engine_claim"]) == ("candidate", "level 3")
+    meta = snapshot_anchor_meta(SimpleNamespace(**row), "sb-1")
+    assert (meta["engine_tier"], meta["engine_claim"]) == ("candidate", "level 3")
+
+
+def test_a_snapshot_row_serves_every_field_the_live_ledger_does():
+    anchor = _anchor(sample_batch_id="sb-1")
+    live = _batch_peak_meta(anchor)
+    snap = snapshot_anchor_meta(
+        SimpleNamespace(**anchor_snapshot_row("run-1", anchor, [])), "sb-1"
+    )
+    assert set(snap) - {"batch_peak_run_id"} == set(live)
 
 
 def test_the_series_off_a_snapshot_names_tiers_and_narrows_to_samples():

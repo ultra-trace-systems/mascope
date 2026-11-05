@@ -26,7 +26,7 @@ import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
@@ -585,6 +585,11 @@ def _apply_consensus(bp: BatchPeak, consensus: Consensus, now: datetime) -> bool
     eighteen times its compacted size. So the row is compared first and left
     alone when nothing moved; the modified stamp then means what it says.
 
+    An importing engine's verdict (``engine_tier``, ``engine_claim``) is about
+    the identity the consensus named when the import wrote it, so it comes off
+    when that identity moves - a new sample's vote, a curation, a re-fold -
+    rather than standing beside a formula the engine never judged.
+
     :param bp: The anchor row, as loaded in the caller's session.
     :param consensus: The freshly computed consensus for it.
     :param now: The stamp to record if something changed.
@@ -612,6 +617,8 @@ def _apply_consensus(bp: BatchPeak, consensus: Consensus, now: datetime) -> bool
     }
     if not changed:
         return False
+    if {"consensus_formula", "ionization_mechanism_id"} & changed.keys():
+        changed.update(engine_tier=None, engine_claim=None)
     for column, value in changed.items():
         setattr(bp, column, value)
     bp.batch_peak_utc_modified = now
@@ -972,6 +979,34 @@ def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
     }
 
 
+def clear_engine_verdicts_statement(sample_batch_id: str):
+    """The statement that takes every importing engine's verdict off a batch's
+    anchors, for the caller to run in its own transaction under the fold lock."""
+    return (
+        update(BatchPeak)
+        .where(
+            BatchPeak.sample_batch_id == sample_batch_id,
+            (BatchPeak.engine_tier.is_not(None))
+            | (BatchPeak.engine_claim.is_not(None)),
+        )
+        .values(engine_tier=None, engine_claim=None)
+    )
+
+
+async def clear_engine_verdicts(sample_batch_id: str) -> None:
+    """Take every importing engine's verdict off a batch's anchors.
+
+    A rebuild puts the ledger back to what the samples' own runs say, so an
+    import's verdict has nothing left to be about, even on an anchor whose
+    re-folded consensus happens to name the same identity; the import's run
+    snapshot keeps it.
+    """
+    async with async_session() as session:
+        await _acquire_batch_fold_lock(session, sample_batch_id)
+        await session.execute(clear_engine_verdicts_statement(sample_batch_id))
+        await session.commit()
+
+
 async def rebuild_batch_ledger(
     sample_batch_id: str,
     user_id: int | None = None,
@@ -984,6 +1019,7 @@ async def rebuild_batch_ledger(
     whatever the folds left."""
     run_id = await start_run(sample_batch_id, ACTION_REBUILD, user_id=user_id)
     try:
+        await clear_engine_verdicts(sample_batch_id)
         folded, failed = await backfill_sample_batch_peaks(
             sample_batch_id,
             user_id=user_id,

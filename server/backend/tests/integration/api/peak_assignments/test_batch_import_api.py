@@ -35,6 +35,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
+    rebuild_batch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     get_batch_peak_ledger,
@@ -512,3 +513,245 @@ async def test_a_cancellation_mid_import_still_recomputes_and_stays_a_cancellati
 
     anchors = await _anchors_by_mz(async_session_factory, batch_id)
     assert recomputed == [{anchors[181].batch_peak_id}]
+
+
+# --- The engine's own verdict --------------------------------------------------
+
+
+@pytest.fixture
+def two_identity_scorer(monkeypatch):
+    """The canned pairing of ``stubbed_scorer`` plus a second identity whose
+    envelope reaches the 250 of every sample, so two anchors can land."""
+
+    async def match_params(sample_item_id):
+        return SimpleNamespace(isotope_abundance_threshold=0.01)
+
+    async def seeded(sample, seeds, params, *, config=None):
+        ion_by_seed = {
+            ("C6H12O6", "mech-h"): "ion-glc",
+            ("C12H18O6", "mech-h"): "ion-b",
+        }
+        fit_by_ion = {"ion-glc": 0.81, "ion-b": 0.81}
+        errors = {
+            ("ion-glc", "p1"): {"mz_error_ppm": 0.9},
+            ("ion-b", "p3"): {"mz_error_ppm": 0.4},
+        }
+        return ion_by_seed, fit_by_ion, errors, pd.DataFrame({"x": [1]})
+
+    monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
+    monkeypatch.setattr(batch_untargeted, "score_seeds", seeded)
+
+
+def _verdict_rows(*specs):
+    """``(mz, formula, engine_tier, engine_claim)`` per row."""
+    return [
+        BatchImportRow(
+            mz=mz,
+            formula=formula,
+            ionization_mechanism_id="mech-h",
+            engine_tier=tier,
+            engine_claim=claim,
+        )
+        for mz, formula, tier, claim in specs
+    ]
+
+
+async def _ledger(batch_id, **filters):
+    result = await get_batch_peak_ledger(batch_id, min_n_present=1, **filters)
+    return {round(row["mz"]): row for row in result["data"]}
+
+
+_OTHER_TIER = {"assigned": "candidate"}
+
+
+async def test_the_engines_verdict_lands_beside_the_derived_tier_and_filters(
+    folded_batch, two_identity_scorer
+):
+    batch_id = folded_batch["batch_id"]
+    # An import without verdicts first: the ledger reads as it always did, and
+    # says which tier this server derives for each identity.
+    plain = await run_batch_import(
+        batch_id,
+        "peaky",
+        5.0,
+        _verdict_rows(
+            (181.0707, "C6H12O6", None, None), (250.1, "C12H18O6", None, None)
+        ),
+        POLARITY,
+    )
+    assert (plain["engine_verdicts"], plain["engine_verdicts_withheld"]) == (0, 0)
+    before = await _ledger(batch_id)
+    assert {row["engine_tier"] for row in before.values()} == {None}
+    assert {row["engine_claim"] for row in before.values()} == {None}
+    derived = {mz: row["consensus_tier"] for mz, row in before.items()}
+    assert derived[181] != "unassigned" and derived[250] != "unassigned"
+    dissent = _OTHER_TIER.get(derived[250], "assigned")
+
+    # The glucose verdict agrees with this server, the 250's does not.
+    counts = await run_batch_import(
+        batch_id,
+        "peaky",
+        5.0,
+        _verdict_rows(
+            (181.0707, "C6H12O6", derived[181], "level 2"),
+            (250.1, "C12H18O6", dissent, None),
+        ),
+        POLARITY,
+    )
+    assert (counts["engine_verdicts"], counts["engine_verdicts_withheld"]) == (2, 0)
+    ledger = await _ledger(batch_id)
+    assert (ledger[181]["engine_tier"], ledger[181]["engine_claim"]) == (
+        derived[181],
+        "level 2",
+    )
+    assert (ledger[250]["engine_tier"], ledger[250]["engine_claim"]) == (dissent, None)
+    # The derived tier is still the ledger's tier, and nothing landed on the 182.
+    assert {mz: row["consensus_tier"] for mz, row in ledger.items()} == derived
+    assert ledger[182]["engine_tier"] is None
+
+    assert set(await _ledger(batch_id, tier_disagrees=True)) == {250}
+    assert set(await _ledger(batch_id, tier_disagrees=False)) == {181}
+    assert set(await _ledger(batch_id, engine_tier=dissent)) == {250}
+
+    # The next import is the ledger's view now: a verdict it does not send
+    # comes off, here because it sends none at all.
+    await run_batch_import(
+        batch_id,
+        "other-engine",
+        5.0,
+        _verdict_rows((181.0707, "C6H12O6", None, None)),
+        POLARITY,
+    )
+    after = await _ledger(batch_id)
+    assert {row["engine_tier"] for row in after.values()} == {None}
+    assert {row["engine_claim"] for row in after.values()} == {None}
+
+
+async def test_a_verdict_beside_an_identity_the_ledger_does_not_show_is_withheld(
+    folded_batch, two_identity_scorer
+):
+    batch_id = folded_batch["batch_id"]
+    # The row lands on the 250, but no envelope of its formula reaches the
+    # members, so the consensus names nothing and the verdict has nothing to
+    # stand beside.
+    counts = await run_batch_import(
+        batch_id,
+        "peaky",
+        5.0,
+        _verdict_rows((250.1, "C20H30O2", "assigned", "level 1")),
+        POLARITY,
+    )
+    assert counts["anchors_matched"] == 1
+    assert counts["members_measured"] == 0
+    assert (counts["engine_verdicts"], counts["engine_verdicts_withheld"]) == (0, 1)
+    ledger = await _ledger(batch_id)
+    assert ledger[250]["consensus_formula"] is None
+    assert ledger[250]["engine_tier"] is None
+
+
+async def test_a_claim_alone_is_kept_and_an_import_that_lands_nothing_clears(
+    folded_batch, two_identity_scorer
+):
+    batch_id = folded_batch["batch_id"]
+    counts = await run_batch_import(
+        batch_id,
+        "peaky",
+        5.0,
+        _verdict_rows((181.0707, "C6H12O6", None, "unique in its window")),
+        POLARITY,
+    )
+    assert counts["engine_verdicts"] == 1
+    ledger = await _ledger(batch_id)
+    assert (ledger[181]["engine_tier"], ledger[181]["engine_claim"]) == (
+        None,
+        "unique in its window",
+    )
+
+    nothing = await run_batch_import(
+        batch_id,
+        "peaky",
+        5.0,
+        _verdict_rows((400.0, "C20H30O2", "assigned", None)),
+        POLARITY,
+    )
+    assert nothing["anchors_matched"] == 0
+    assert (await _ledger(batch_id))[181]["engine_claim"] is None
+
+
+async def test_an_imports_verdicts_stay_readable_in_its_run_snapshot(
+    folded_batch, two_identity_scorer
+):
+    batch_id = folded_batch["batch_id"]
+    run_id = await start_run(
+        batch_id, ACTION_IMPORT, engine="peaky", engine_version="0.10.0"
+    )
+    await perform_batch_import(
+        batch_id,
+        run_id,
+        "peaky",
+        5.0,
+        _verdict_rows((181.0707, "C6H12O6", "below_assignability", "level 4")),
+        POLARITY,
+    )
+    # The next run snapshots the import's ledger as it left it, then clears it.
+    next_id = await start_run(batch_id, ACTION_IMPORT, engine="other-engine")
+    await perform_batch_import(
+        batch_id,
+        next_id,
+        "other-engine",
+        5.0,
+        _verdict_rows((181.0707, "C6H12O6", None, None)),
+        POLARITY,
+    )
+    assert (await _ledger(batch_id))[181]["engine_tier"] is None
+
+    then = await _ledger(batch_id, batch_peak_run_id=run_id)
+    assert (then[181]["engine_tier"], then[181]["engine_claim"]) == (
+        "below_assignability",
+        "level 4",
+    )
+    assert set(
+        await _ledger(batch_id, batch_peak_run_id=run_id, tier_disagrees=True)
+    ) == {181}
+    assert not await _ledger(batch_id, batch_peak_run_id=run_id, tier_disagrees=False)
+
+
+async def test_a_rebuild_takes_every_verdict_off(folded_batch, two_identity_scorer):
+    batch_id = folded_batch["batch_id"]
+    await run_batch_import(
+        batch_id,
+        "peaky",
+        5.0,
+        _verdict_rows((181.0707, "C6H12O6", "candidate", "level 3")),
+        POLARITY,
+    )
+    assert (await _ledger(batch_id))[181]["engine_tier"] == "candidate"
+
+    await rebuild_batch_ledger(batch_id)
+
+    assert {row["engine_tier"] for row in (await _ledger(batch_id)).values()} == {None}
+
+
+async def test_the_ledger_route_filters_on_the_engines_tier(
+    guest_client, folded_batch, two_identity_scorer
+):
+    batch_id = folded_batch["batch_id"]
+    await run_batch_import(
+        batch_id,
+        "peaky",
+        5.0,
+        _verdict_rows((181.0707, "C6H12O6", "below_assignability", "level 4")),
+        POLARITY,
+    )
+    url = f"/api/batch-peaks/batch/{batch_id}"
+
+    async def mzs(**params):
+        response = await guest_client.get(url, params={"min_n_present": 1, **params})
+        assert response.status_code == 200, response.text
+        return {round(row["mz"]) for row in response.json()["data"]}
+
+    assert await mzs() == {181, 182, 250}
+    assert await mzs(tier_disagrees="true") == {181}
+    assert await mzs(tier_disagrees="false") == set()
+    assert await mzs(engine_tier="below_assignability") == {181}
+    assert await mzs(engine_tier="assigned") == set()
