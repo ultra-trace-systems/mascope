@@ -157,8 +157,10 @@ class BatchPeaksResource(BaseResource):
         if engine_tier is not None:
             params["engine_tier"] = engine_tier
         # A tri-state: False is a filter too, so only None stays off the wire.
+        # Lower-cased as `peak_assignments.get` sends it: "true" is the
+        # spelling HTTP clients and readers of a request log expect.
         if tier_disagrees is not None:
-            params["tier_disagrees"] = tier_disagrees
+            params["tier_disagrees"] = str(tier_disagrees).lower()
         data = self._get(f"batch-peaks/batch/{sample_batch_id}", params=params)
         if not data:
             logger.info("Batch '{}' has no batch peaks", sample_batch_id)
