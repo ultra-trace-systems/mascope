@@ -3,10 +3,14 @@
  * Component for managing ionization mechanisms
  *
  * Allows adding and removing mechanisms with validation. A mechanism is typed
- * in the standard adduct notation (`[M+H]+`, `[M-H]-`, `[M]+.`); the legacy
- * spelling (`+H+`, `-H+`, `+`) is accepted too, and the server stores either
- * in the standard one. The mechanisms Mascope ships are on every server from
- * its first start and are not offered for deletion (`shipped` on the row).
+ * in the standard adduct notation (`[M+H]+`, `[M-H]-`, `[M]+.`, and a dimer
+ * `[2M+H]+`, a doubly charged ion `[M+2H]2+` or a neutral loss `[M+H-H2O]+`);
+ * the legacy spelling (`+H+`, `-H+`, `+`) is accepted too, and the server
+ * stores either in the standard one. Under the field the ion it makes is
+ * shown as the server derives it: its charge, its molecules, its neutral
+ * loss. A name is optional. The mechanisms Mascope ships are on every server
+ * from its first start and are not offered for deletion (`shipped` on the
+ * row).
  */
 import { reactive, computed, watch } from 'vue'
 
@@ -19,18 +23,25 @@ import Message from 'primevue/message'
 import { useConfirm } from 'primevue/useconfirm'
 
 import { isValidChemicalFormula } from '@/lib/chem'
-import { mechanismProblem, mechanismTerms, standardMechanism } from '@/lib/mechanism'
+import {
+  describeMechanism,
+  mechanismFormulas,
+  mechanismProblem,
+  standardMechanism
+} from '@/lib/mechanism'
 import { useApp } from '@/stores'
 
 const app = useApp()
 const confirm = useConfirm()
 
 const add = reactive({
-  mechanism: ''
+  mechanism: '',
+  name: ''
 })
 
 const resetFields = () => {
   add.mechanism = ''
+  add.name = ''
 }
 
 // The server's mechanisms in the standard notation, worked out once per list
@@ -43,7 +54,9 @@ const existing = computed(
 )
 
 // Why the typed mechanism cannot be added, or null: the notation first, then
-// each term as a formula of element symbols, then whether the server already
+// each term, the neutral loss's too, as a formula of element symbols (a
+// coefficient, the 2 of [M+2H]2+, read as the group it multiplies), then
+// whether the server already
 // has it, compared in the standard notation so either spelling is caught. A
 // labelled atom is written with a caret (^N); the bracketed form ([15N]) is
 // refused here, as it always was, because target ions are built from the caret
@@ -53,7 +66,7 @@ const problem = computed(() => {
   if (!text) return null
   const notation = mechanismProblem(text)
   if (notation) return notation
-  const term = mechanismTerms(text).find((term) => !isValidChemicalFormula(term))
+  const term = mechanismFormulas(text).find((term) => !isValidChemicalFormula(term))
   if (term) return `'${term}' is not a formula; a labelled atom is written with a caret, ^N`
   const stored = standardMechanism(text)
   return existing.value.has(stored) ? `${stored} is already a mechanism` : null
@@ -68,6 +81,11 @@ const status = computed(() => {
   const stored = text ? standardMechanism(text) : text
   return stored !== text ? `Stored as ${stored}` : ''
 })
+
+// The ion the typed mechanism makes, as the server derives it from the row:
+// its charge, and its molecules and neutral loss where it has them. Nothing
+// while the mechanism does not read.
+const derived = computed(() => (problem.value ? '' : describeMechanism(add.mechanism.trim())))
 
 // The shipped mechanisms first, then the ones added on this server, each
 // group in the order the server lists it (the sort is stable).
@@ -100,10 +118,14 @@ defineExpose({
           v-model="add.mechanism"
           id="add-mechanism"
           :invalid="!!problem"
-          aria-describedby="add-mechanism-examples add-mechanism-status"
+          aria-describedby="add-mechanism-examples add-mechanism-status add-mechanism-derived"
           style="width: 100%"
         />
         <label for="add-mechanism">Mechanism*</label>
+      </FloatLabel>
+      <FloatLabel class="field name">
+        <InputText v-model="add.name" id="add-mechanism-name" style="width: 100%" />
+        <label for="add-mechanism-name">Name</label>
       </FloatLabel>
       <Button
         label="Add"
@@ -111,14 +133,16 @@ defineExpose({
         @click="
           () =>
             app.data.ionization.mechanism.create({
-              ionization_mechanism: add.mechanism.trim()
+              ionization_mechanism: add.mechanism.trim(),
+              name: add.name.trim() || null
             })
         "
         :disabled="!add.mechanism.trim() || !!problem"
       />
     </div>
     <Message id="add-mechanism-examples" severity="secondary" size="small" variant="simple">
-      For example [M+H]+, [M-H]-, [M+Br]-, or [M]+. for electron transfer
+      For example [M+H]+, [M-H]-, [M+Br]-, [M]+. for electron transfer, [2M+H]+, [M+2H]2+ or
+      [M+H-H2O]+
     </Message>
     <!-- Exactly a line tall, so the table does not move as the message comes and
       goes; a message longer than the line is cut short, whole in its title -->
@@ -133,12 +157,23 @@ defineExpose({
       <template v-if="status">{{ status }}</template>
       <template v-else>&nbsp;</template>
     </Message>
+    <Message
+      id="add-mechanism-derived"
+      class="status"
+      severity="secondary"
+      size="small"
+      variant="simple"
+    >
+      <template v-if="derived">{{ derived }}</template>
+      <template v-else>&nbsp;</template>
+    </Message>
   </menu>
   <!-- The table takes the height left in the tab, scrolling its rows within it -->
   <section class="list">
     <DataTable :value="mechanisms" tableStyle="width: 500px" scrollable scrollHeight="flex">
       <Column field="ionization_mechanism_polarity" header="Polarity" width="2rem" sortable />
       <Column field="ionization_mechanism" header="Mechanism" width="40%" sortable />
+      <Column field="name" header="Name" sortable />
       <Column field="ionization_mechanism_id" width="2rem">
         <template #body="{ data }">
           <span
@@ -206,8 +241,12 @@ section :deep(*) {
 /* The hints belong to the field, so keep them close under it rather than
    below a float label's usual bottom margin */
 .field {
-  flex-grow: 1;
+  flex-grow: 2;
   margin-bottom: 0.375rem;
+}
+
+.field.name {
+  flex-grow: 1;
 }
 
 /* A message is a grid, whose column would otherwise grow to the text */
