@@ -6,8 +6,8 @@ of batches, a time range) into charts, an interactive dashboard (HTML) and a
 report (PDF), for the long time series the app does not draw. The design is
 [`docs/dev/visual_digest.md`](../../docs/dev/visual_digest.md).
 
-The package is young: it has the first pieces of its data layer, the scope
-and the campaign store, and its test backbone.
+The package is young: it has its data layer, the scope, the campaign store
+and the views, and its test backbone.
 
 ## Scope
 
@@ -94,6 +94,70 @@ A store lives under `$MASCOPE_VIZ_STORE`, else the user's cache directory
 workspace and resolved scope key. It is a cache: `store.remove()` deletes it,
 and the next sync rebuilds it. Run one sync at a time per store.
 
+## Views
+
+The views are the only place the package aggregates. Each is a pandas
+function from a store's tables to a long frame, which a chart draws. A view
+takes series keys as the store spells them (`ion:<target_ion_id>`,
+`formula:<formula>|<mechanism>`), or `tic` for the samples' TIC.
+
+```python
+from mascope_viz.data import views
+
+views.series(store, ["ion:...", "tic"])  # each key over time, at the auto cadence
+views.series(store, keys, cadence="1h", normalise="ion:...")  # by a reagent ion
+views.diurnal(store, keys, by="weekday")  # the hour-of-day cycle
+views.periods(store, keys, "week")  # the distribution per week
+views.coverage(store).gaps  # stretches without a sample, and the files in them
+views.composition(store, "month", by="class")  # the formulas' budget by class
+views.spectrum(store, (start, end), other=(start2, end2))  # a period against another
+views.top(store, 10, "ratio", period="week")  # the biggest changers
+```
+
+| View | One row per |
+|---|---|
+| `series` | bin and key: `t`, `key`, `value`, `lo`, `hi`, `n` (values) and `n_samples` |
+| `diurnal` | hour of day and key, and group with `by=` (month, season, weekday): the median and quartiles |
+| `periods` | day, week or month and key: `n`, mean, min, p5, p25, median, p75, p95, max |
+| `coverage` | hour, polarity and mode: files, unfiled files and samples (a polarity-switching file counts under both polarities); also the gaps and the totals |
+| `composition` | period and formula, or class or carbon number with `by=`: median, mean, share, and the species' element counts, O/C, H/C and OSc |
+| `spectrum` | formula, by m/z: the mean over a period, and against another period the difference and ratio |
+| `top` | ranked key: by median, by the ratio of the last period to the first (up or down), or new in the last period |
+
+What every view does the same way:
+
+- **The auto cadence** is peaky's rule: the median spacing of the samples,
+  rounded up to whole minutes. A bin is then never narrower than the
+  spacing, so slightly irregular samples do not leave a comb of empty bins.
+  Over several keys it is the widest of theirs. `cadence=` also takes `raw`
+  (a row per sample) or a pandas offset (`10min`, `1h`, `1D`, `W`, `MS`).
+  A step of whole hours that divides a day, such as `1h` or `6h`, starts
+  its bins at the same local hours every day, so a bin across a clock
+  change is an hour shorter or longer. Any other step, and the auto cadence
+  always, keeps every bin the same length; `10min` bins still start on the
+  clock's tens of minutes. `W` weeks run Monday to Sunday, as in `periods`.
+  `ME`, `QE` and `YE` are calendar months, quarters and years.
+- **Gaps stay gaps.** A bin without a sample is NaN, never interpolated. A
+  value below detection, or an ion record without a match, is NaN, never 0.
+  At `raw`, a NaN row breaks the line where a bin would be empty.
+- **A sample's value of a key** is the sum of its values: two batch peaks
+  can carry one formula, and the SDK notebooks sum per sample the same way.
+- **Normalisation** is `none` by default, `tic`, or a series key such as a
+  reagent ion. Each value is divided by its own sample's normaliser before
+  any binning; a sample whose normaliser is missing or 0 is NaN.
+- **Time** is UTC in the store. A view shows it in the instrument's
+  acquisition zone, or the zone the scope named; `tz=` names another, and
+  `tz="instrument"` asks for the instrument's. Bins, hours of day, days,
+  weeks (Monday to Sunday) and months are that zone's, clock changes
+  included. `start=` and `end=` keep the samples in a window.
+- **Every frame says what it is** in its `attrs`: `view`, `tz`, `cadence`,
+  `normalise` and `normalise_name`, `keys`, the window, the store's
+  `provenance`, and `mixed_runs` and `run_changes`: whether the window's
+  formulas, the keys' or the one normalised by, come from more than one
+  engine run, and where the run changes.
+  A chart prints them; a run change is flagged, never joined silently. A
+  `spectrum` against another period flags a change between the two.
+
 ## The synthetic campaign
 
 `tests/fixtures/campaign.py` generates a month of one instrument at one
@@ -122,7 +186,8 @@ bytes on every platform: the generator draws uniforms only and computes with
 uv run pytest libraries/viz/tests/ -v
 ```
 
-`tests/test_viz_scope_contract.py` runs `resolve` on a demo stack, and
-`tests/test_viz_store_contract.py` syncs the demo dataset there, with the
-SDK contract tests' switch and settings (`MASCOPE_SDK_CONTRACT=1`); both are
-skipped without them.
+`tests/test_viz_scope_contract.py` runs `resolve` on a demo stack,
+`tests/test_viz_store_contract.py` syncs the demo dataset there, and
+`tests/test_viz_views_contract.py` checks that normalising by a reagent ion
+gives notebook 06's numbers on it, with the SDK contract tests' switch and
+settings (`MASCOPE_SDK_CONTRACT=1`); all three are skipped without them.
