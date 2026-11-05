@@ -74,7 +74,7 @@ from mascope_ai.oracle import STATUS
 
 
 #: The demo bundle whose data the known answers are.
-BUNDLE = "1.4.3"
+BUNDLE = "1.4.4"
 
 #: The demo stack's workspace the questions are about.
 WORKSPACE = "Acquisitions Orbion"
@@ -1355,20 +1355,6 @@ QUESTIONS: tuple[Question, ...] = (
             "resolve",
         ),
         golden=_golden_uronium_peak,
-        # The answer matches the compound afresh; the goldens hold the bundle's
-        # stored match, computed before an Orbitrap line's ratio was read over
-        # the scans it shares with its anchor (mascope#2772), which reads a
-        # line kept in only some scans a little higher
-        near_golden={
-            "peak_mz": _peak_mz(169.122318),
-            "assigned": [
-                {
-                    "status": "probable",
-                    "ion": PROTONATED,
-                    "ion_score": Close(0.995059, abs=1e-6),
-                }
-            ],
-        },
         check=_nothing_unscored_is_a_verdict,
     ),
     # A shape of the open-model bench: a compound named only if the data
