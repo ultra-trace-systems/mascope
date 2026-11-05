@@ -83,7 +83,10 @@ LAYOUT = "mascope.ms2_store"
 #: first-scan rule compares the first scan within its MS order and polarity:
 #: an index of version 1 can lack an ordinary first MS1 scan. Version 3
 #: records each group's located precursor (:data:`PRECURSOR_FIELDS`).
-VERSION = 3
+#: Version 4 holds the scans the reader selects since its first-scan rule
+#: also leaves out a first scan far above its own experiment's
+#: (``mascope_thermo.first_scan``): an index of version 3 can hold one.
+VERSION = 4
 #: The store's name in the sample directory: ``ms2.zarr``.
 STORE_NAME = "ms2"
 #: The tolerance [Da] near-duplicate parent peaks are merged at: the MS2

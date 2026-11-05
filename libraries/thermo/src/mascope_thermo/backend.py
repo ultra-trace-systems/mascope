@@ -33,6 +33,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 import numpy as np
 
+from mascope_thermo.first_scan import is_outlier as first_scan_is_outlier
 from mascope_thermo.run_header import records_no_run_header
 from mascope_thermo.scan_events import (
     refuse_misread_analyzers,
@@ -47,7 +48,10 @@ ENV_BACKEND = "MASCOPE_THERMO_BACKEND"
 # averaged_profile_signature names: bump it whenever average_profile returns a
 # different profile from the same samples, or a selection averages different
 # scans, or a cached profile computed the old way keeps being served as the
-# new one. Generation 6 averages the first scan the outlier rule kept once it
+# new one. Generation 7 leaves out a first scan the outlier rule finds far
+# above the other scans of its own experiment (mascope_thermo.first_scan): a
+# profile of generation 6 can hold one up to five times the rest.
+# Generation 6 averages the first scan the outlier rule kept once it
 # compared that scan within its own MS order and polarity: a profile of
 # generation 5 can lack an ordinary first scan of a file with MS2 scans or of
 # one that switches polarity. Generation 5 adds every scan to the
@@ -61,7 +65,7 @@ ENV_BACKEND = "MASCOPE_THERMO_BACKEND"
 # fitting the axis to the centroid labels. From generation 2 each grid point
 # sits at the mean of the real frequencies in its cell; generation 1 placed it
 # at the cell's centre.
-AVERAGED_PROFILE_GENERATION = 6
+AVERAGED_PROFILE_GENERATION = 7
 
 Polarity = Literal["+", "-"]
 MsType = Literal["Ms", "Ms2"]
@@ -2138,16 +2142,23 @@ class OpenTFRawBackend:
 
     @staticmethod
     def _bad_first_scan(scans: list[dict]) -> bool:
-        """Mirror the ThermoBackend first-scan-outlier workaround (thermo.py
-        ``_bad_first_scan``): a Mascope-side guard for a common Thermo raw-file
-        quirk where the first scan has an abnormally high TIC. True when the
-        first scan's TIC is >= 5x the median TIC of the rest of ``scans``, the
-        scans it is compared with, itself first. Replicated here so both
-        backends select the same scan set."""
-        if len(scans) <= 1:
+        """Whether the first of ``scans``, the scans it is compared with, is
+        an outlier among them, by the rule both backends share
+        (:func:`mascope_thermo.first_scan.is_outlier`), so they select the
+        same scans: a Mascope-side guard for a common Thermo raw-file quirk,
+        a first scan whose spectrum is scaled up as a whole."""
+        if not scans:
             return False
-        tic = np.array([s["total_ion_current"] for s in scans], dtype=np.float64)
-        return bool(tic[0] >= 5 * np.median(tic[1:]))
+        tic = [s["total_ion_current"] for s in scans]
+        # The experiment that recorded a scan: its filter, and its method
+        # segment and scan event, which tell apart two experiments one
+        # filter names (as the stream keys do)
+        experiments = [
+            (s.get("filter_string"), s.get("scan_segment"), s.get("scan_event"))
+            for s in scans
+        ]
+        alike = [experiment == experiments[0] for experiment in experiments]
+        return first_scan_is_outlier(tic, alike)
 
     def _scan_stream_keys(self) -> list[str]:
         """Every scan's stream key, in scan order, read once per open file."""

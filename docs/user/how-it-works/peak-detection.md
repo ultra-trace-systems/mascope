@@ -45,6 +45,32 @@ $$I_{\max} = \exp\left( Y_0 - \frac{\delta(Y_1 - Y_{-1})}{4} \right)$$
 
 $$\sigma = \Delta x \cdot \sqrt{\frac{1}{2Y_0 - Y_{-1} - Y_1}}$$
 
+### The First Scan (Orbitrap)
+A Thermo raw file often opens on a scan whose whole spectrum reads a fixed factor above the scans that follow: every ion of it, and so its total ion current (TIC), while the later scans agree with each other to a percent or two.
+The factor differs from file to file, from a few percent to twenty-five times, and some acquisition methods open nearly every file high.
+Such a scan is left out of everything read from the file: its summed spectrum, its peaks, their timeseries and its TIC.
+
+The first scan is compared with the scans that measure what it measures: those of its own scan stream when one stream is read, or else every scan of its MS order and polarity.
+It is left out when either holds:
+
+- its TIC is at least $5$ times the median TIC of those scans, or
+- among those recorded by its own experiment (the same scan filter, method segment and scan event), its TIC is at least $1 + \max(0.5,\ 10\,s)$ times both their median and the very next of them, where $s$ is their robust relative spread: $1.4826$ times the median absolute deviation of their TICs from the median, divided by the median ([Leys et al. 2013](#leys13); [Rousseeuw and Croux 1993](#rc93)).
+
+The second test reaches the spikes below five times.
+Its spread lets a first scan stand with a signal that moves from scan to scan; comparing with the next scan keeps the first scan of a signal that opens high and stays there for a while; and comparing within one experiment keeps the first scan of an experiment the method runs rarely from being judged against another's.
+Its floor of $1.5$ times lies above the 5 to 40% excess of the methods that open every file a little high, where a lower bound would keep the first scan of one file and leave out that of the next.
+A first scan with fewer than two other scans of its experiment is judged by the first test alone.
+
+#### References
+
+- <a id="leys13"></a>Leys, C.; Ley, C.; Klein, O.; Bernard, P.; Licata, L.
+  *Detecting outliers: Do not use standard deviation around the mean, use absolute
+  deviation around the median.* Journal of Experimental Social Psychology 2013,
+  49(4):764–766. [link](https://doi.org/10.1016/j.jesp.2013.03.013)
+- <a id="rc93"></a>Rousseeuw, P. J.; Croux, C. *Alternatives to the Median Absolute
+  Deviation.* Journal of the American Statistical Association 1993,
+  88(424):1273–1283. [link](https://doi.org/10.1080/01621459.1993.10476408)
+
 ## Time-of-Flight (TOF) Peak Detection
 
 TOF profiles are resolved through a localized multi-peak fitting routine applied across segmented sections of the continuous mass spectrum.

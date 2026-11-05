@@ -114,10 +114,12 @@ flag is read.
 `_selected(...)` filter scans by polarity (`+`/`-`), MS level (`Ms`/`Ms2`), a
 retention-time window `[t_min, t_max]` and, when one is asked for, a scan
 stream (`backend.md`, "Selecting one stream"). One subtlety: the pipeline drops
-a high-TIC outlier first scan when present (`thermo.py` `_bad_first_scan`), and
-both backends apply it, so scan counts agree. Asked for a stream, they compare
-the first scan with the other scans of its own stream rather than with the
-whole file.
+a high-TIC outlier first scan when present, by one rule both backends call
+(`first_scan.py` `is_outlier`), so scan counts agree. Asked for a stream, they
+compare the first scan with the other scans of its own stream, and otherwise
+with those of its MS order and polarity: left out at five times their median,
+or at 1.5 times (and ten robust standard deviations) above both the median and
+the next of its own experiment's scans.
 
 ---
 
@@ -990,7 +992,7 @@ a tolerance.
 | Step | Function (`mascope_thermo/backend.py` unless noted) |
 |---|---|
 | Backend selection | `open_backend`, `ReaderBackend` |
-| Scan selection / first-scan drop | `_selector`, `_selected`, `thermo.py:_bad_first_scan` |
+| Scan selection / first-scan drop | `_selector`, `_selected`, `thermo.py:_bad_first_scan`, `first_scan.py:is_outlier` |
 | Per-scan centroids + labels | `centroids_per_scan` |
 | Per-scan profile | `profile_per_scan` |
 | Frequency-domain averaging | `average_profile`, `_mz_to_freq` |

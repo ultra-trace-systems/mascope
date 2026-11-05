@@ -481,10 +481,12 @@ def test_a_first_scan_that_is_an_outlier_in_its_stream_is_left_out(scripted):
         + [_scan(NEG_HIGH, 2, tic=4000.0)] * 5
     )
 
-    # Among the negative MS1 scans it passes: 5000 against a median of 4000.
-    assert reader.scan_indices() == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     # Within its stream it is five times the others.
     assert reader.scan_indices(stream=LOW) == [2, 3, 4]
+    # Among the negative MS1 scans it would pass, 5000 against a median of
+    # 4000, but it is judged by its own experiment's scans as well, which
+    # agree with each other: read without a stream, it is left out too.
+    assert reader.scan_indices() == [2, 3, 4, 5, 6, 7, 8, 9]
 
 
 def test_fragmentation_scans_do_not_make_an_ordinary_first_scan_an_outlier(
@@ -644,6 +646,46 @@ def test_a_stream_of_one_scan_keeps_it(scripted):
     reader = scripted([_scan(NEG_LOW, 1, tic=9e9)] + [_scan(NEG_HIGH, 2)] * 3)
 
     assert reader.scan_indices(stream=LOW) == [1]
+
+
+# The other scans of one experiment, agreeing to a percent.
+_STEADY = [990.0, 1000.0, 1010.0, 1000.0, 995.0, 1005.0, 1000.0]
+
+
+def test_a_first_scan_under_five_times_scans_that_agree_is_left_out(scripted):
+    """The tail the old bound of five kept: a first scan three times scans
+    that agree to a percent is the quirk, not the signal
+    (``mascope_thermo.first_scan``)."""
+    reader = scripted(
+        [_scan(NEG_LOW, 1, tic=3000.0)] + [_scan(NEG_LOW, 1, tic=t) for t in _STEADY]
+    )
+
+    assert reader.scan_indices() == list(range(2, 9))
+    assert reader.scan_indices(stream=f"{LOW}") == list(range(2, 9))
+
+
+def test_a_first_scan_on_a_plateau_is_kept(scripted):
+    """A signal that opens high and stays high for a while: the first scan
+    is no higher than the next."""
+    reader = scripted(
+        [_scan(NEG_LOW, 1, tic=1500.0)] * 4
+        + [_scan(NEG_LOW, 1, tic=t) for t in _STEADY * 2]
+    )
+
+    assert reader.scan_indices()[0] == 1
+
+
+def test_a_first_scan_of_a_rare_experiment_is_judged_among_its_own(scripted):
+    """One filter, two scan events: the first scan opens an experiment the
+    method runs once in four, whose scans read 1.5 times the other's. Read
+    without a stream it is compared with every scan of its polarity, and
+    those of the other experiment agree with each other - but it is judged
+    by its own experiment's, among which it is ordinary."""
+    rare = _scan(NEG_LOW, 1, tic=1500.0)
+    reader = scripted(([rare] + [_scan(NEG_LOW, 2, tic=t) for t in _STEADY[:3]]) * 3)
+
+    assert reader.scan_indices()[0] == 1
+    assert reader.scan_indices(stream=f"{LOW} event=1") == [1, 5, 9]
 
 
 # -- every selecting method hands the stream on ----------------------------------

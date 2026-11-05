@@ -31,7 +31,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Package a dataset for a repository such as Zenodo | `mascope export package <dataset id>` |
 | What the method bindings would route, and where a file name disagrees | `mascope prod db script run report_method_binding_disagreements` |
 | Write the MS2 stores of files converted before them, and list their groups (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
-| List the files whose peak store lacks a scan they read, to re-process them | `mascope prod db script run report_stale_peak_stores` |
+| Rebuild the peak stores that disagree with the scans their files read, keeping every sample (dry run first) | `DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores`, then without `DRY_RUN` |
 | Flag the Orbitrap peaks under a local floor weak in stores written before the floor (dry run first) | `DRY_RUN=1 mascope prod db script run reflag_orbitrap_weak_peaks`, then without `DRY_RUN` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | Fill the model of instruments registered before it was read (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run backfill_instrument_model`, then without `DRY_RUN` |
@@ -2291,43 +2291,63 @@ MS2_STORE_MODE=run mascope prod db script run backfill_ms2_store  # write; again
   then those files' MS2 routes read the raw file, as before. Version 3
   records each group's located precursor, which the group inventory lists
   and `GET /api/samples/{id}/ms2/window` serves: until a file's store is
-  written again, its groups list none.
+  written again, its groups list none. Version 4 holds the scans the reader
+  selects since it leaves out a first scan far above the rest of its own
+  experiment (*Peak stores a file has outgrown*, below).
 
 ### Peak stores a file has outgrown
 
-A raw Orbitrap file's pooled peak store keeps the scans it was built on,
-while the reader selects a file's scans anew on every read. Until the reader
-compared a file's first scan with the scans of its own MS order and polarity,
-it left an ordinary first MS1 scan out as a TIC outlier in most files with
-MS2 scans, and in polarity-switching files whose other polarity is much
-weaker. Their stores lack that scan, and once a release with the corrected
-rule runs, every read that divides their sums by the file's scans refuses
-them as stale. Peak listings and batch alignments fail on such a file, and
-neither matching nor opening its spectrum repairs it. List them after
-updating:
+A raw Orbitrap file's peak store keeps the scans it was built on, while the
+reader selects a file's scans anew on every read. The rule that leaves a
+file's first scan out as an outlier is one of those choices
+(`docs/user/how-it-works/peak-detection.md`, *The First Scan (Orbitrap)*),
+and a release that changes it leaves some stores holding one scan more, or
+one fewer, than their files now read: 1.15.0 kept an ordinary first scan of
+files with MS2 scans that it used to leave out, and a later release leaves
+out first scans 1.5 to 5 times the rest of their experiment that it used to
+keep. Every read that divides such a store's sums by the file's scans
+refuses it as stale: the file's peak list fails, and so does the alignment
+of every batch that holds one of its samples. Matching and the sample's
+spectrum read the store otherwise, spike and all. After updating, see what is
+stale and rebuild it:
 
 ```sh
-mascope prod db script run report_stale_peak_stores
+DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores
+mascope prod db script run rebuild_stale_peak_stores
 ```
 
-- Only the files the old rule could misjudge are opened: raw Orbitrap files
-  whose scan-stream census holds MS2 scans or both polarities, and those
-  with no census. Each one's store is compared with the scans its file reads
-  now, from the raw file's scan index alone. Nothing is written, so no dump
-  is taken before it.
-- It counts per instrument and lists each file that has outgrown its store:
-  its `sample_file_id`, its name, and the scans stored against the scans it
-  reads.
-- **Re-process the files listed** (*Re-process* in Raw files, or
-  `POST /api/sample/files/reprocess`), 25 at a time as under
-  [Re-processing a site's older files under the cut](#re-processing-a-sites-older-files-under-the-cut).
-  A re-processing detects the peaks of a file that has outgrown its store,
-  then calibrates and matches its samples on them and writes its MS2 store
-  again.
-- A file marked as holding samples a person made is refused by a
-  re-processing. *Detect peaks* on that file rebuilds its store and matches
-  its samples again, keeping the calibration it had.
-- Run the report again afterwards: it should list nothing.
+- Every raw Orbitrap file whose store holds peaks is checked: its store's
+  scan axis against the scans its file reads now, from the raw file's scan
+  index alone, a per-stream store stream by stream: a few milliseconds a
+  file, read four at a time.
+- **The dry run writes nothing.** Per instrument it counts the stores that
+  are stale, current, empty or missing, and lists each stale one: its
+  `sample_file_id`, its name, the scans stored against the scans read, and
+  how many samples and batches hold it.
+- **A rebuild keeps every sample.** It detects the file's peaks again by the
+  decision its `.props` records, whole or per stream, on the m/z calibration
+  it has, as *Detect peaks* does. No sample is deleted or made anew, in any
+  workspace, so a file copied into a workspace's batch, which a
+  re-processing refuses, is rebuilt like any other. No calibration is refit.
+- Before the store is written, every batch holding one of the file's samples
+  is set to **rematch**, every match of those samples is removed and the
+  batch's aligned peaks are dropped: the new peak list has new peak ids.
+  Each sample's TIC is read again from the file, and a file with an MS2 store
+  has it written again with its group inventory. The peak store is written
+  last, so a run that stops partway leaves the file stale for the next run.
+- **Rematch those batches afterwards**: their status icon, **Refresh
+  matches**, or a dataset's rematch, which takes each of its batches in
+  turn. Until then their samples show no matches.
+- Files are rebuilt one at a time, on a server that keeps serving: a
+  detection takes as long as *Detect peaks* on the same file.
+  `REBUILD_LIMIT=<n>` caps how many one run rebuilds; run it again
+  until it reports nothing to rebuild. A file whose rebuild fails, or whose
+  rebuilt store still disagrees with its file, is named at the end and tried
+  again by the next run.
+- The `pg_dump` taken before it covers the batch statuses, the matches and
+  the TICs. The stores are in the filestore.
+- *Detect peaks* on one file does the same for that file alone, and
+  rematches its samples at once.
 
 ### Orbitrap peaks under a local floor
 

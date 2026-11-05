@@ -90,6 +90,8 @@ _FORWARDED_ENV_VARS = [
     # reflag_orbitrap_weak_peaks
     "REFLAG_LIMIT",
     "REFLAG_RETRY",
+    # rebuild_stale_peak_stores
+    "REBUILD_LIMIT",
     # report_method_binding_disagreements
     "BINDING_REPORT_FILES",
     "BINDING_REPORT_PER_KEY",

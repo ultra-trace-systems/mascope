@@ -342,7 +342,7 @@ async def test_a_store_written_before_the_precursor_was_located_is_not_read(stor
     finally:
         m_io.update_props(stored.filename, {"ms2_store": recorded})
 
-    assert recorded["version"] == ms2_store.VERSION == 3
+    assert recorded["version"] == ms2_store.VERSION >= 3
     assert body["source"] == "raw"
     assert all(w["located_precursor_mz"] is not None for w in body["data"])
 

@@ -9,8 +9,8 @@ at that moment, for the files where that can give another store than the
 one they have, and leaves every other file's store alone.
 
 It also detects them where the file has outgrown its pooled store: reads a
-scan the store lacks. ``report_stale_peak_stores`` lists those files, by
-the same check.
+scan the store lacks. ``rebuild_stale_peak_stores`` finds those files by
+the same check, and rebuilds them without a re-processing.
 
 On a scripted acquisition, as the detection's own tests are
 (``test_peak_streams``): no committed file holds more than one stream.
@@ -28,7 +28,7 @@ import mascope_file.io as m_io
 import mascope_signal.compute as m_compute
 import mascope_signal.peak as m_peak
 from mascope_backend.api.controllers.sample.files.process import peaks
-from mascope_backend.db.scripts import report_stale_peak_stores as report
+from mascope_backend.db.scripts import rebuild_stale_peak_stores as rebuild
 
 
 NEG = "FTMS - p NSI Full ms [40.0000-600.0000]"
@@ -349,29 +349,24 @@ def test_a_store_with_no_peaks_is_never_outgrown(acquire, setting):
     assert asyncio.run(peaks.redetection_decision(FILE)) is None
 
 
-def test_the_report_lists_what_a_re_processing_rebuilds(
+def test_the_rebuild_script_calls_stale_what_a_re_processing_rebuilds(
     acquire, instrument_functions, setting, redetect
 ):
-    """``report_stale_peak_stores`` asks each candidate what a
-    re-processing asks: a file it calls outgrown is one re-processing it
-    repairs."""
+    """``rebuild_stale_peak_stores`` asks of a pooled store what a
+    re-processing asks: a file it calls stale is one a re-processing
+    detects again, and after that it is current."""
     acquire(AS_ONE_EXPERIMENT[1:])
-    assert report.check(SAMPLE_FILENAME) == (report.NO_STORE, 0, 0)
+    assert rebuild.check(SAMPLE_FILENAME) == rebuild.Checked(rebuild.NO_STORE)
     _converted(instrument_functions, per_stream=False)
     acquire(AS_ONE_EXPERIMENT)
-    assert report.check(SAMPLE_FILENAME) == (
-        report.OUTGROWN,
-        len(AS_ONE_EXPERIMENT) - 1,
-        len(AS_ONE_EXPERIMENT),
+    assert rebuild.check(SAMPLE_FILENAME) == rebuild.Checked(
+        rebuild.STALE, len(AS_ONE_EXPERIMENT) - 1, len(AS_ONE_EXPERIMENT)
     )
+    assert peaks.outgrown(SAMPLE_FILENAME, _store())
 
     setting(False)
     assert redetect() is False
-    assert report.check(SAMPLE_FILENAME) == (report.CURRENT, 0, 0)
-
-    acquire(TWO_EXPERIMENTS, MICROSCANS)
-    _converted(instrument_functions, per_stream=True)
-    assert report.check(SAMPLE_FILENAME) == (report.PER_STREAM, 0, 0)
+    assert rebuild.check(SAMPLE_FILENAME) == rebuild.Checked(rebuild.CURRENT)
 
 
 # -- the files whose store stands -----------------------------------------------

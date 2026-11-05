@@ -836,10 +836,31 @@ be matched, is the same question from the store's side (4.3).
   sample already matched is not read again; a re-processing therefore checks a
   pooled store the same way and detects the peaks of a file that has outgrown
   it before calibrating and matching it (`process.peaks.outgrown`);
-  `report_stale_peak_stores` lists those files for an operator to re-process
-  (`docs/maintaining.md`, "Peak stores a file has outgrown"). Cached averaged
-  profiles moved to generation 6 with it, since one averaged before can lack
-  the first scan.
+  `rebuild_stale_peak_stores` rebuilds those files in place, keeping their
+  samples (`docs/maintaining.md`, "Peak stores a file has outgrown"). Cached
+  averaged profiles moved to generation 6 with it, since one averaged before
+  can lack the first scan.
+
+  **Below five times, the bound is the first scan's own experiment.** The
+  rule's factor of five left a tail. On one customer instrument's 92,600
+  acquisitions, over six months and a dozen methods, first scans stood
+  anywhere from 1.05 to 25 times the median of their experiment's other
+  scans, those agreeing to a percent or two among themselves. Some methods
+  open nearly every file high: one by a median of 21%, one by 89%. The 5x
+  bound left 494 first scans at four to five times the rest, plain spikes in
+  every peak timeseries of their files. The rule now also leaves out a first
+  scan that stands 1.5 times above both the median and the very next of its
+  own experiment's scans (the same filter, segment and scan event), and ten
+  robust standard deviations above them (`mascope_thermo.first_scan`). The
+  spread keeps a moving signal's first scan, the next scan keeps a signal
+  that opens on a plateau, and the experiment keeps a rarely run
+  experiment's first scan from being judged by another's. The floor of 1.5
+  sits above the broad 5-40% shoulder of the methods that open high, where
+  any bound would keep the first scan of one file and leave out the next. The
+  five-times test stays as it was, so no scan it left out comes back. On
+  those acquisitions it left out 3,188 first scans and the new test 4,669
+  more; applied to each file's second scan as a control, the rule left out
+  one of 92,620, a spike of its own. Profiles moved to generation 7.
 
   **That the rule stays a rule about the file's first scan is a choice the
   files in reach support and do not prove.** The other reading - leave out
