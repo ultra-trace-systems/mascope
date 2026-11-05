@@ -59,6 +59,7 @@ def world(api) -> World:
         movable_batch="b3",
         other_batch="b9",
         other_sample="s91",
+        other_dataset="d9",
         collection="c3",
         injected="c4",
         hidden=("d8", "Hidden campaign"),
