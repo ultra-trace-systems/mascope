@@ -40,6 +40,10 @@ from mascope_match.params import BaseMatchParams
 from mascope_tools.composition import CompositionSearchConfig
 from mascope_tools.composition.finder import find_compositions
 from mascope_tools.composition.heuristic_filter import formula_plausibility
+from mascope_tools.composition.mechanism_notation import (
+    MechanismNotationError,
+    parse_mechanism,
+)
 from mascope_tools.composition.utils import (
     normalize_formula_with_isotopes,
     parse_composition,
@@ -226,6 +230,16 @@ def _one_reading_per_ion(readings: list[tuple[dict, bool]]) -> list[dict]:
     return [result for index, (result, _) in enumerate(readings) if index in kept]
 
 
+def _searchable(mechanism: IonizationMechanism) -> bool:
+    """Whether the composition finder searches a mechanism: one that reads,
+    of a singly charged ion of one molecule with no neutral loss."""
+    try:
+        return parse_mechanism(mechanism.ionization_mechanism).simple
+    except MechanismNotationError:
+        # The finder says what is wrong with it.
+        return True
+
+
 @api_controller()
 async def retrieve_compositions_by_mz(
     mz: float,
@@ -291,14 +305,24 @@ async def retrieve_compositions_by_mz(
                 )
             )
         )
-        all_ionization_mechanisms = result.scalars().all()
-        ionization_mechanisms = [
-            i.ionization_mechanism for i in all_ionization_mechanisms
-        ]
-        if len(ionization_mechanisms) == 0:
+        found = result.scalars().all()
+        if len(found) == 0:
             raise ValueError(
                 f"No ionization mechanisms found with the provided IDs: {ionization_mechanism_ids}"
             )
+        # The finder searches singly charged ions of one molecule; a multimer,
+        # a charge above one or a neutral loss it refuses, and one of them
+        # among the asked would refuse the search of the rest.
+        all_ionization_mechanisms = [i for i in found if _searchable(i)]
+        if len(all_ionization_mechanisms) == 0:
+            raise ValueError(
+                "The composition search reads singly charged ions of one "
+                "molecule with no neutral loss, and none of the asked "
+                "ionization mechanisms is one."
+            )
+        ionization_mechanisms = [
+            i.ionization_mechanism for i in all_ionization_mechanisms
+        ]
 
     # Convert custom element notation to explicit isotope notation
     # for both formula ranges and ionization mechanisms

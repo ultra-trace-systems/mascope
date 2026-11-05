@@ -30,10 +30,12 @@ from mascope_tools.composition.finder import (
     replace_atom_with_isotope,
 )
 from mascope_tools.composition.heuristic_filter import predict_isotopes
+from mascope_tools.composition.mechanism_notation import to_row
 from mascope_tools.composition.utils import (
     calculate_mass,
     combine_formula_and_ionization,
     from_pyteomics_symbol,
+    mass_shift,
     parse_ionization,
     to_pyteomics,
 )
@@ -99,6 +101,79 @@ def test_the_standard_spelling_reads_as_the_legacy_one(standard, legacy):
 @pytest.mark.parametrize("notation", ["[M]+", "[M+Na-2H]-", "H+", "+H"])
 def test_a_mechanism_in_neither_notation_is_refused(notation):
     with pytest.raises(CompositionFinderException):
+        parse_ionization(notation)
+
+
+#: Every mechanism the finder searches, in both notations where it has two.
+SEARCHED = [
+    "[M+H]+",
+    "+H+",
+    "[M-H]-",
+    "-H+",
+    "[M-H]+",
+    "-H-",
+    "[M+Br]-",
+    "[M+Br3]-",
+    "[M+I]-",
+    "[M+NO3]-",
+    "[M+^NO3]-",
+    "[M+[15N]O3]-",
+    "[M+HNO3+NO3]-",
+    "[M+NH4]+",
+    "[M+^NH4]+",
+    "[M+Na]+",
+    "[M+CH4N2O+H]+",
+    "+(CH4N2O)H+",
+    "[M+(CH4N2O)2H]+",
+    "[M-CH3]+",
+    "[M]+.",
+    "[M]-.",
+    "+",
+    "-",
+]
+
+
+@pytest.mark.parametrize("notation", SEARCHED)
+def test_the_rows_mass_shift_is_the_one_the_string_parser_gives(notation):
+    # Exactly, not approximately: the row is read for the same masses.
+    mechanism = parse_ionization(notation)
+    shift = mechanism.mass if mechanism.addition else -mechanism.mass
+    assert mass_shift(to_row(notation)) == shift
+
+
+H2O = calculate_mass(formula="H2O")
+NA = calculate_mass(formula="Na")
+CA = calculate_mass(formula="Ca")
+
+
+@pytest.mark.parametrize(
+    ("notation", "shift"),
+    [
+        # Of n molecules M, the ion's mass is n * M + shift and its m/z that
+        # over the charge.
+        ("[2M+H]+", H - ELECTRON_MASS),
+        ("[2M-H]-", -(H - ELECTRON_MASS)),
+        ("[M+2H]2+", 2 * (H - ELECTRON_MASS)),
+        ("[M-2H]2-", -2 * (H - ELECTRON_MASS)),
+        ("[M+Ca]2+", CA - 2 * ELECTRON_MASS),
+        ("[M+H+Na]2+", H + NA - 2 * ELECTRON_MASS),
+        ("[M+H-H2O]+", H - ELECTRON_MASS - H2O),
+        ("[M+Na-CO2]+", NA - ELECTRON_MASS - calculate_mass(formula="CO2")),
+        ("[2M+2H-H2O]2+", 2 * (H - ELECTRON_MASS) - H2O),
+        ("[2M]+.", -ELECTRON_MASS),
+    ],
+)
+def test_the_new_shapes_mass_shift(notation, shift):
+    assert mass_shift(to_row(notation)) == pytest.approx(shift, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    "notation", ["[2M+H]+", "[M+2H]2+", "[M+Ca]2+", "[M+H-H2O]+", "[2M]+."]
+)
+def test_the_finder_refuses_what_it_does_not_search(notation):
+    # Searched as the singly charged monomer it is not, every candidate would
+    # be a formula of the wrong mass.
+    with pytest.raises(CompositionFinderException, match="singly charged"):
         parse_ionization(notation)
 
 

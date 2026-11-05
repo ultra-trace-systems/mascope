@@ -1562,7 +1562,7 @@ async def fetch_sample_mechanisms(
     :param sample: Sample model object
     :return: (the mechanism ids of the sample's ionization mode,
         polarity-matching mechanism rows as detached namespaces), both
-        without a row that reads as neither notation (:func:`_readable`)
+        without a row a run does not search (:func:`_readable`)
     """
     mechanism_ids = await fetch_sample_ionization_mechanism_ids(sample.sample_item_id)
     async with async_session() as session:
@@ -1585,8 +1585,9 @@ async def fetch_sample_mechanisms(
 def _without_unreadable(
     mechanism_ids: list[str], mechanisms: list
 ) -> tuple[list[str], list[SimpleNamespace]]:
-    """The mode's mechanism ids and this polarity's rows, less every row that
-    reads as neither notation, the rows detached into plain namespaces.
+    """The mode's mechanism ids and this polarity's rows, less every row a run
+    does not search (:func:`_readable`), the rows detached into plain
+    namespaces.
 
     The row's id goes as well as the row: Stage A fetches target ions by these
     ids, and ions an older version generated for such a row read its text as
@@ -1618,27 +1619,38 @@ _reported_unreadable: set[str] = set()
 
 
 def _readable(mechanism: IonizationMechanism) -> bool:
-    """Whether a mechanism row reads as a mechanism at all.
+    """Whether a mechanism row is one peak assignment searches.
 
     The column reads a row in the standard notation (``StandardMechanism``),
     and one that reads in neither notation as it is stored: a free-text label
     an older validator let through. The composition finder refuses such a
     row and target-ion generation skips it, so a run leaves it out rather
-    than failing on it, and reports it once.
+    than failing on it, and reports it once. So it does a multimer, a charge
+    above one and a neutral loss (``[2M+H]+``, ``[M+2H]2+``, ``[M+H-H2O]+``):
+    the finder searches singly charged ions of one molecule and refuses the
+    rest, and a run reads no channel its finder cannot.
     """
     try:
-        parse_mechanism(mechanism.ionization_mechanism)
+        parts = parse_mechanism(mechanism.ionization_mechanism)
     except MechanismNotationError:
-        if mechanism.ionization_mechanism_id not in _reported_unreadable:
-            _reported_unreadable.add(mechanism.ionization_mechanism_id)
-            runtime.logger.warning(
-                f"Ionization mechanism {mechanism.ionization_mechanism!r} "
-                f"({mechanism.ionization_mechanism_id}) reads as neither "
-                "notation, so peak assignment does not search it; correct or "
-                "remove it."
-            )
-        return False
-    return True
+        reason = (
+            "reads as neither notation, so peak assignment does not search "
+            "it; correct or remove it."
+        )
+    else:
+        if parts.simple:
+            return True
+        reason = (
+            "is a multimer, a charge above one or a neutral loss, which peak "
+            "assignment does not search yet."
+        )
+    if mechanism.ionization_mechanism_id not in _reported_unreadable:
+        _reported_unreadable.add(mechanism.ionization_mechanism_id)
+        runtime.logger.warning(
+            f"Ionization mechanism {mechanism.ionization_mechanism!r} "
+            f"({mechanism.ionization_mechanism_id}) {reason}"
+        )
+    return False
 
 
 async def fetch_mechanisms_by_notation(

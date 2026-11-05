@@ -15,6 +15,7 @@ from mascope_tools.composition.calibration import (
     INSTRUMENT_CALIBRATIONS,
     MIN_CALIBRATION_CLASS_LABELS,
     MIN_CALIBRATION_LABELS,
+    PROVISIONAL_ORBITRAP_CORROBORATION,
     Calibration,
     CalibrationRefused,
     DegenerateCalibration,
@@ -29,6 +30,11 @@ from mascope_tools.composition.calibration import (
     fit_calibration,
     holdout_split,
     recalibrate,
+)
+from mascope_tools.composition.mechanism_notation import (
+    from_row,
+    mechanism_key,
+    to_row,
 )
 
 
@@ -201,6 +207,33 @@ def test_corroboration_matches_an_adduct_to_its_weight_by_mechanism():
     assert apply_corroboration(0.6, ["[M+H+CH4N2O]+"], WEIGHTS) == pytest.approx(
         apply_corroboration(0.6, ["[M+CH4N2O+H]+"], WEIGHTS)
     )
+
+
+def test_the_adduct_row_leaves_the_corroboration_weights_as_they_were():
+    # The weights are keyed by the mechanism's standard spelling, and the row
+    # beside the string changes no spelling a weight is stored under: every
+    # shipped key, and its legacy spelling, keys as it did before.
+    keys = {
+        "[M+Br]-": "+Br-",
+        "[M+NH4]+": "+NH4+",
+        "[M+CH4N2O+H]+": "+(CH4N2O)H+",
+        "[M+H]+": "+H+",
+        "[M-H]-": "-H+",
+    }
+    assert set(keys) == set(PROVISIONAL_ORBITRAP_CORROBORATION)
+    for standard, legacy in keys.items():
+        assert mechanism_key(standard) == mechanism_key(legacy) == standard
+        assert from_row(to_row(standard)) == standard
+    weights = dict(PROVISIONAL_ORBITRAP_CORROBORATION)
+    assert corroboration_by_mechanism(weights) == weights
+    assert apply_corroboration(0.6, ["[M+Br]-"], weights) == pytest.approx(
+        1 / (1 + np.exp(-(np.log(0.6 / 0.4) + 2.28)))
+    )
+    # A multimer, a charge above one or a neutral loss of a weighted adduct is
+    # another mechanism, and takes none of its weight.
+    for other in ("[2M+Br]-", "[M+2NH4]2+", "[M+NH4-H2O]+"):
+        assert mechanism_key(other) not in weights
+        assert apply_corroboration(0.6, [other], weights) == 0.6
 
 
 @pytest.mark.parametrize(

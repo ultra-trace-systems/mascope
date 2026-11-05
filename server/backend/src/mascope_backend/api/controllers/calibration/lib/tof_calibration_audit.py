@@ -54,6 +54,10 @@ from mascope_backend.api.models.target.compounds.target_compound_pydantic_model 
 )
 from mascope_backend.db import IonizationMechanism
 from mascope_tofwerk.calibration import mz_calibrate, tof_to_mass
+from mascope_tools.composition.mechanism_notation import (
+    MechanismNotationError,
+    to_row,
+)
 from mascope_tools.composition.utils import composition_mass, parse_composition
 
 
@@ -534,8 +538,17 @@ def cho_neutral_masses(dbe_max: int, mz_max: float = _FAMILY_MZ_MAX) -> np.ndarr
 def mechanism_shifts(mechanism: IonizationMechanism) -> list[float] | None:
     """The m/z shifts a mechanism adds to a neutral, one per adduct line.
 
-    None for a mechanism that makes no ion of a CHO neutral.
+    None for a mechanism that makes no ion of a CHO neutral, and for one whose
+    ion's m/z is not one neutral's mass plus a shift: a multimer (``[2M+H]+``)
+    or a charge above one (``[M+2H]2+``). A neutral loss shifts like any
+    other term.
     """
+    try:
+        row = to_row(mechanism.ionization_mechanism)
+    except MechanismNotationError:
+        return None
+    if row.multimer_n != 1 or abs(row.ion_charge) != 1:
+        return None
     neutral = composition_mass(parse_composition(_FAMILY_REFERENCE))
     ions, isotopes = generate_target_ions_from_composition(
         TargetCompoundBase(target_compound_formula=_FAMILY_REFERENCE), [mechanism]

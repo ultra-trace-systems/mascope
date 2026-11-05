@@ -5,6 +5,7 @@ import pytest
 
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     TARGET_ISOTOPE_FORMULA_LENGTH,
+    charge_string,
     fit_isotope_names,
     generate_target_ions_from_composition,
     group_target_isotopes,
@@ -15,7 +16,9 @@ from mascope_backend.db import (
     TargetIon,
     TargetIsotope,
 )
+from mascope_tools.composition.config import ELECTRON_MASS
 from mascope_tools.composition.mechanism_notation import parse_mechanism
+from mascope_tools.composition.utils import calculate_mass
 
 
 HERE = os.path.dirname(__file__)
@@ -334,3 +337,86 @@ def test_the_silicon_phosphorus_and_halogen_families_generate_their_lines(
     assert high[ion_formula] == pytest.approx(mz_m0, abs=1e-4)
     for line, mz in lines.items():
         assert high[line] == pytest.approx(mz, abs=1e-4)
+
+
+def _ions_of(compound_formula: str, notation: str):
+    compound = TargetCompound(
+        target_compound_id="unit-shapes", target_compound_formula=compound_formula
+    )
+    mechanism = IonizationMechanism(
+        ionization_mechanism_id="unit-mech",
+        ionization_mechanism_polarity=parse_mechanism(notation).polarity,
+        ionization_mechanism=notation,
+    )
+    return generate_target_ions_from_composition(compound, [mechanism])
+
+
+_GLUCOSE = calculate_mass(formula="C6H12O6")
+_H = calculate_mass(formula="H")
+
+
+@pytest.mark.parametrize(
+    ("notation", "ion_formula", "mz"),
+    [
+        # Of n molecules M, the ion holds n M and its m/z is its mass over
+        # its charge.
+        ("[2M+H]+", "C12H25O12+", 2 * _GLUCOSE + _H - ELECTRON_MASS),
+        ("[2M-H]-", "C12H23O12-", 2 * _GLUCOSE - _H + ELECTRON_MASS),
+        ("[M+2H]2+", "C6H14O6++", (_GLUCOSE + 2 * _H - 2 * ELECTRON_MASS) / 2),
+        ("[M-2H]2-", "C6H10O6--", (_GLUCOSE - 2 * _H + 2 * ELECTRON_MASS) / 2),
+        (
+            "[M+H-H2O]+",
+            "C6H11O5+",
+            _GLUCOSE + _H - ELECTRON_MASS - calculate_mass(formula="H2O"),
+        ),
+        (
+            "[2M+2H-H2O]2+",
+            "C12H24O11++",
+            (2 * _GLUCOSE + 2 * _H - 2 * ELECTRON_MASS - calculate_mass(formula="H2O"))
+            / 2,
+        ),
+    ],
+)
+def test_the_new_shapes_make_their_ions(notation, ion_formula, mz):
+    target_ions, target_isotopes = _ions_of("C6H12O6", notation)
+    assert [ion.target_ion_formula for ion in target_ions] == [ion_formula]
+    monoisotopic = min(
+        (isotope for isotope in target_isotopes if isotope.resolution == "HIGH"),
+        key=lambda isotope: isotope.mz,
+    )
+    assert monoisotopic.mz == pytest.approx(mz, abs=1e-6)
+    assert monoisotopic.target_isotope_formula.endswith(ion_formula[-2:])
+    assert_isotope_links(target_ions, target_isotopes)
+
+
+def test_the_ion_formula_of_a_doubly_charged_ion_strips_back_to_its_atoms():
+    # A count before the sign would read as the last element's: C6H14O62+.
+    (ion,), _ = _ions_of("C6H12O6", "[M+2H]2+")
+    assert ion.target_ion_formula.rstrip("+-") == "C6H14O6"
+    assert charge_string(2) == "++"
+    assert charge_string(-3) == "---"
+
+
+@pytest.mark.parametrize(
+    ("compound_formula", "notation"),
+    [
+        # A removal or a neutral loss the molecule has not the atoms for.
+        ("H2O", "[M-CH3]+"),
+        ("CO2", "[M-2H]2-"),
+        ("C7H8", "[M+H-H2O]+"),
+        ("CH4", "[M+Na-CO2]+"),
+        # The empty formula is the reagent alone: no molecule to multiply
+        # or to lose a neutral from.
+        ("()", "[2M+H]+"),
+        ("()", "[M+H-H2O]+"),
+    ],
+)
+def test_a_shape_that_cannot_apply_makes_no_ion(compound_formula, notation):
+    assert _ions_of(compound_formula, notation) == ([], [])
+
+
+def test_a_neutral_loss_is_taken_from_the_ion_the_species_made():
+    # The water of [M+H-H2O]+ needs one H more than the molecule holds,
+    # which the proton brings: H2O from HO plus H.
+    (ion,), _ = _ions_of("CO2H", "[M+H-H2O]+")
+    assert ion.target_ion_formula == "CO+"

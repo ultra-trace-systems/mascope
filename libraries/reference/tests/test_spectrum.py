@@ -65,10 +65,14 @@ def test_polarity_of_reads_every_source_spelling(text, expected):
         (" [M-H]- ", "[M-H]-"),
         # Mascope's standard notation puts the terms in order.
         ("[M+H+CH4N2O]+", "[M+CH4N2O+H]+"),
-        # Ions the standard notation cannot say are kept as written.
+        # A multimer, a charge above one and a neutral loss, read and written
+        # in the one spelling.
         ("[2M+Na]+", "[2M+Na]+"),
         ("[M+2H]2+", "[M+2H]2+"),
         ("[M+H-H2O]+", "[M+H-H2O]+"),
+        ("[M-H2O+H]+", "[M+H-H2O]+"),
+        # Ions the standard notation cannot say are kept as written.
+        ("[M+Na-2H]-", "[M+Na-2H]-"),
         ("[M]+*", "[M]+*"),
         # A bare type is its adapter's to bracket.
         ("M+H", "M+H"),

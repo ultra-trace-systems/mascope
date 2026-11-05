@@ -8,6 +8,7 @@ ignoring them. A mechanism longer than its column is refused before anything
 parses it.
 """
 
+import contextlib
 from types import SimpleNamespace
 
 import pytest
@@ -25,7 +26,11 @@ from mascope_backend.api.models.ionization_mechanisms.ionization_mechanism_pydan
     IonizationMechanismRead,
 )
 from mascope_backend.db import IonizationMechanism
-from mascope_tools.composition.mechanism_notation import parse_mechanism
+from mascope_tools.composition.mechanism_notation import (
+    MechanismNotationError,
+    parse_mechanism,
+)
+from mascope_tools.composition.utils import mass_shift
 
 
 #: The longest mechanism a create accepts.
@@ -59,6 +64,14 @@ def _mechanism(length: int) -> str:
         ("+", "[M]+.", "+"),
         ("[M]-.", "[M]-.", "-"),  # electron capture
         ("-", "[M]-.", "-"),
+        # What only the standard notation says.
+        ("[2M+H]+", "[2M+H]+", "+"),  # a dimer
+        ("[M+2H]2+", "[M+2H]2+", "+"),  # a doubly charged ion
+        ("[M-2H]2-", "[M-2H]2-", "-"),
+        ("[M+Ca]2+", "[M+Ca]2+", "+"),
+        ("[M+H-H2O]+", "[M+H-H2O]+", "+"),  # a neutral loss
+        ("[M-H2O+H]+", "[M+H-H2O]+", "+"),
+        ("[2M+2H-H2O]2+", "[2M+2H-H2O]2+", "+"),
     ],
 )
 def test_either_notation_is_accepted_and_stored_in_the_standard_one(
@@ -85,9 +98,14 @@ def test_either_notation_is_accepted_and_stored_in_the_standard_one(
         "[M+Zz]+",  # unknown element
         "[M]+",  # electron transfer without its radical dot
         "[M+H]+.",  # a radical dot on a closed-shell ion
-        "[2M+H]+",  # a dimer
-        "[M+2H]2+",  # a doubly charged ion
-        "[M+Na-2H]-",  # terms added and removed at once
+        "[1M+H]+",  # one molecule written with a count
+        "[M+H]1+",  # a single charge written with a count
+        "[M+3H]2+",  # a coefficient that is not the ion's charge
+        "[M]2+.",  # electron transfer of two electrons
+        "[M+Na-2H]-",  # a neutral loss written with a coefficient
+        "[M+H-Zz]+",  # a neutral loss of an unknown element
+        "[M+H-()]+",  # a neutral loss with no atoms
+        "[M+2Zz]2+",  # a coefficient of an unknown element
         "[M+()]+",  # a term with no atoms
     ],
 )
@@ -181,8 +199,24 @@ def test_stored_row_is_read_as_it_is(polarity, mechanism):
     }
     read = IonizationMechanismRead.model_validate(row)
     # None of them is a mechanism Mascope ships: "-H-" is hydride abstraction,
-    # which makes a cation, stored here under the anion's polarity.
-    assert read.model_dump() == {**row, "shipped": False}
+    # which makes a cation, stored here under the anion's polarity. What is
+    # derived is derived from the mechanism, where it reads as one.
+    parts = None
+    with contextlib.suppress(MechanismNotationError):
+        parts = parse_mechanism(mechanism)
+    dumped = read.model_dump()
+    assert dumped.pop("ion_charge") == (parts.charge if parts else None)
+    assert (dumped.pop("mass_shift") is None) is (parts is None or "Zz" in mechanism)
+    assert dumped == {
+        **row,
+        "shipped": False,
+        "name": None,
+        "operation": None,
+        "species": None,
+        "species_charge": None,
+        "multimer_n": 1,
+        "neutral_loss": None,
+    }
 
     with pytest.raises(ValidationError):
         IonizationMechanismCreate(
@@ -273,5 +307,89 @@ def test_reading_a_row_reports_it_and_returns_it(monkeypatch):
         "ionization_mechanism_polarity": "+",
         "ionization_mechanism": "++",
         "shipped": False,
+        "name": None,
+        "operation": None,
+        "species": None,
+        "species_charge": None,
+        "multimer_n": 1,
+        "neutral_loss": None,
+        "ion_charge": None,
+        "mass_shift": None,
     }
     assert len(warnings) == 1
+
+
+@pytest.mark.parametrize(
+    ("mechanism", "columns", "ion_charge"),
+    [
+        ("[M+H]+", ("add", "H", 1, 1, None), 1),
+        ("-H+", ("remove", "H", 1, 1, None), -1),
+        ("[M+Br]-", ("add", "Br", -1, 1, None), -1),
+        ("[M]+.", ("remove", "", -1, 1, None), 1),
+        ("[2M+H]+", ("add", "H", 1, 2, None), 1),
+        ("[M+2H]2+", ("add", "(H)2", 2, 1, None), 2),
+        ("[M+H-H2O]+", ("add", "H", 1, 1, "H2O"), 1),
+    ],
+)
+def test_a_stored_row_writes_and_reports_its_structured_row(
+    mechanism, columns, ion_charge
+):
+    """Setting the mechanism writes the row's columns; the read model reports
+    them and what is derived from them."""
+    created = IonizationMechanismCreate(
+        ionization_mechanism=mechanism, name="  a name  "
+    )
+    row = IonizationMechanism(
+        ionization_mechanism_id="unit-row", **created.model_dump()
+    )
+    assert (
+        row.operation,
+        row.species,
+        row.species_charge,
+        row.multimer_n,
+        row.neutral_loss,
+    ) == columns
+    assert row.name == "a name"
+    assert row.adduct_row.display == created.ionization_mechanism
+    assert row.ion_charge == ion_charge
+    assert row.mass_shift == mass_shift(row.adduct_row)
+    assert row.legacy_notation == parse_mechanism(mechanism).legacy
+    read = IonizationMechanismRead.model_validate(row).model_dump()
+    assert (
+        read["operation"],
+        read["species"],
+        read["species_charge"],
+        read["multimer_n"],
+        read["neutral_loss"],
+    ) == columns
+    assert read["name"] == "a name"
+    assert read["ion_charge"] == ion_charge
+    assert read["mass_shift"] == row.mass_shift
+
+
+def test_setting_the_mechanism_again_rewrites_the_row():
+    row = IonizationMechanism(
+        ionization_mechanism_id="unit-row",
+        ionization_mechanism_polarity="+",
+        ionization_mechanism="[2M+H-H2O]+",
+    )
+    assert row.legacy_notation is None
+    row.ionization_mechanism = "[M+Na]+"
+    assert (row.species, row.multimer_n, row.neutral_loss) == ("Na", 1, None)
+    assert row.legacy_notation == "+Na+"
+    row.ionization_mechanism = "++"
+    assert row.adduct_row is None
+    assert (row.operation, row.species, row.species_charge) == (None, None, None)
+    assert row.ion_charge is None
+    assert row.mass_shift is None
+
+
+@pytest.mark.parametrize("name", [None, "", "   "])
+def test_a_blank_name_is_no_name(name):
+    created = IonizationMechanismCreate(ionization_mechanism="[M+H]+", name=name)
+    assert created.name is None
+
+
+def test_a_name_longer_than_the_column_is_refused():
+    with pytest.raises(ValidationError):
+        IonizationMechanismCreate(ionization_mechanism="[M+H]+", name="x" * 257)
