@@ -265,11 +265,6 @@ spectra = ms2.get_averaged_centroids(by_activation=True)
 windows = ms2.get_window()
 ```
 
-`get_window()` lists each group's isolation window: the MS1 centroids
-isolated together with the precursor, each with its share of the
-window, and the precursor as the group's MS2 spectra locate it. Pass
-`width=` to draw every window at one width instead of each group's own.
-
 Which sample that is depends on whether the file records MS1 scans:
 
 - **A file with MS1 scans** gets its sample when it is bound to an
@@ -287,6 +282,15 @@ Which sample that is depends on whether the file records MS1 scans:
   `<date> MS2 acquisition (no chemistry)` of the instrument's year
   dataset, and ends
   **Done**.
+
+`get_window()` lists each group's isolation window. It answers a
+dictionary: the records are under `windows["data"]`, one per group, beside
+`reason`. A record holds the MS1 centroids isolated together with the
+precursor, each with its share of the window, and the precursor as the
+group's MS2 spectra locate it. Pass `width=` to draw every window at one
+width instead of each group's own. A file with no MS1 scans has no
+centroids to list: its windows are empty, and `reason` is
+`"no_ms1_scans"`.
 
 ### Files stored as centroids
 
