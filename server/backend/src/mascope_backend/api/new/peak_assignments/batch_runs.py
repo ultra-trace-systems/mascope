@@ -163,6 +163,8 @@ def anchor_snapshot_row(run_id: str, anchor: Any, members: Iterable[Any]) -> dic
         "max_intensity": anchor.max_intensity,
         "isotopologue_of": anchor.isotopologue_of,
         "curated": int(manual_pin_of(anchor) is not None),
+        "engine_tier": anchor.engine_tier,
+        "engine_claim": anchor.engine_claim,
         "candidates": list(anchor.candidates or []),
         "members": member_arrays(members),
     }
@@ -188,6 +190,8 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "max_intensity": row.max_intensity,
         "isotopologue_of": row.isotopologue_of,
         "curated": bool(row.curated),
+        "engine_tier": row.engine_tier,
+        "engine_claim": row.engine_claim,
         "reference_listing": consensus_listing(
             row.candidates,
             row.consensus_formula,
@@ -214,6 +218,31 @@ def snapshot_series(row: Any, sample_item_ids: Optional[Iterable[str]] = None) -
         "intensities": [intensities[i] for i in picked],
         "tiers": [tier_name(tiers[i]) for i in picked],
     }
+
+
+def engine_tier_filters(
+    table: Any, engine_tier: Optional[str], tier_disagrees: Optional[bool]
+) -> list:
+    """The ledger read's filters on the importing engine's own tier, for the
+    live anchors (``BatchPeak``) or a snapshot's (``BatchPeakRunAnchor``).
+
+    ``tier_disagrees`` keeps the anchors whose engine tier differs from the
+    consensus tier (True) or equals it (False); an anchor with no engine tier
+    is out either way, because absence is not agreement - the sample ledger's
+    rule (``service.get_peaks_with_assignments``).
+    """
+    filters = []
+    if engine_tier:
+        filters.append(table.engine_tier == engine_tier)
+    if tier_disagrees is not None:
+        # No IS NOT NULL beside it: either comparison with a NULL engine tier
+        # is NULL in SQL, which a WHERE drops, so the anchor is out both ways.
+        filters.append(
+            table.engine_tier != table.consensus_tier
+            if tier_disagrees
+            else table.engine_tier == table.consensus_tier
+        )
+    return filters
 
 
 def run_record(run: Any) -> dict:
@@ -503,6 +532,8 @@ async def snapshot_rows(
     batch_peak_ids: Optional[Iterable[str]] = None,
     tier: Optional[str] = None,
     min_n_present: int = 1,
+    engine_tier: Optional[str] = None,
+    tier_disagrees: Optional[bool] = None,
 ) -> list:
     """The anchors a run's snapshot holds, filtered as the ledger reads filter,
     in m/z order."""
@@ -513,6 +544,9 @@ async def snapshot_rows(
         query = query.where(BatchPeakRunAnchor.batch_peak_id.in_(list(batch_peak_ids)))
     if tier:
         query = query.where(BatchPeakRunAnchor.consensus_tier == tier)
+    query = query.where(
+        *engine_tier_filters(BatchPeakRunAnchor, engine_tier, tier_disagrees)
+    )
     if min_n_present and min_n_present > 1:
         query = query.where(BatchPeakRunAnchor.n_present >= min_n_present)
     return (
@@ -537,6 +571,7 @@ __all__ = [
     "check_no_run_in_flight",
     "complete_run",
     "current_run",
+    "engine_tier_filters",
     "ensure_current_run",
     "fail_run",
     "list_batch_runs",

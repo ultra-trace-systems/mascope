@@ -20,6 +20,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     tier_name,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
+    engine_tier_filters,
     resolve_run,
     snapshot_anchor_meta,
     snapshot_rows,
@@ -54,6 +55,8 @@ def _batch_peak_meta(bp) -> dict:
     instrument type). ``reference_listing`` is what a list calls the consensus
     formula, read off the registry entries the members brought
     (:func:`~mascope_backend.api.new.peak_assignments.listing.consensus_listing`).
+    ``engine_tier`` and ``engine_claim`` are what an importing engine said of
+    the consensus identity (``batch_import``), None on every other anchor.
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -76,6 +79,8 @@ def _batch_peak_meta(bp) -> dict:
         "isotopologue_of": bp.isotopologue_of,
         # Pinned by hand for the whole batch (batch_curation.py).
         "curated": manual_pin_of(bp) is not None,
+        "engine_tier": bp.engine_tier,
+        "engine_claim": bp.engine_claim,
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,
@@ -230,6 +235,8 @@ async def get_batch_peak_ledger(
     tier: str | None = None,
     min_n_present: int = 2,
     batch_peak_run_id: str | None = None,
+    engine_tier: str | None = None,
+    tier_disagrees: bool | None = None,
 ) -> dict:
     """Metadata-only list of a batch's batch peaks -- the ledger table feed.
 
@@ -243,13 +250,21 @@ async def get_batch_peak_ledger(
     itself an isotopologue is left as observed, and a parent this call filtered out
     (by tier, or by the occupancy floor) is simply not in the response -- both
     are the reader's to resolve, which it can because it holds the whole list.
+
+    ``engine_tier`` and ``tier_disagrees`` filter on an importing engine's own
+    tier as the sample ledger's read does (:func:`batch_runs.engine_tier_filters`).
     """
     async with async_session() as session:
         # An earlier run's ledger comes off its snapshot, in the same shape.
         run = await resolve_run(session, sample_batch_id, batch_peak_run_id)
         if run is not None:
             rows = await snapshot_rows(
-                session, run, tier=tier, min_n_present=min_n_present
+                session,
+                run,
+                tier=tier,
+                min_n_present=min_n_present,
+                engine_tier=engine_tier,
+                tier_disagrees=tier_disagrees,
             )
             data = [snapshot_anchor_meta(row, sample_batch_id) for row in rows]
             return {
@@ -266,6 +281,9 @@ async def get_batch_peak_ledger(
             query = query.where(BatchPeak.consensus_tier == tier)
         if min_n_present and min_n_present > 1:
             query = query.where(BatchPeak.n_present >= min_n_present)
+        query = query.where(
+            *engine_tier_filters(BatchPeak, engine_tier, tier_disagrees)
+        )
         bp_rows = (await session.execute(query.order_by(BatchPeak.mz))).scalars().all()
 
     data = [_batch_peak_meta(bp) for bp in bp_rows]

@@ -3076,6 +3076,13 @@ class BatchPeak(Base):
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     alternatives: Mapped[Optional[list]] = mapped_column(JSON)
     provenance: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The importing engine's own verdict on the identity the consensus names:
+    # its tier, in the tier vocabulary, and its words about it. Written by a
+    # batch import alone (``batch_import.write_engine_verdicts``), cleared when
+    # the consensus identity moves (``_apply_consensus``) and by a rebuild.
+    # Read by no roll-up and no fold: ``consensus_tier`` stays the tier.
+    engine_tier: Mapped[Optional[str]] = mapped_column(String(24))
+    engine_claim: Mapped[Optional[str]] = mapped_column(String(1024))
     batch_peak_utc_created: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True)
     )
@@ -3549,6 +3556,8 @@ class BatchPeakRunAnchor(Base):
     max_intensity: Mapped[Optional[float]] = mapped_column(Float)
     isotopologue_of: Mapped[Optional[str]] = mapped_column(String(16))
     curated: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
+    engine_tier: Mapped[Optional[str]] = mapped_column(String(24))
+    engine_claim: Mapped[Optional[str]] = mapped_column(String(1024))
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 

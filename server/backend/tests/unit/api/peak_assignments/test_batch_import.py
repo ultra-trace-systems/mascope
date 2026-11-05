@@ -9,8 +9,10 @@ from mascope_backend.api.new.peak_assignments.batch_import import (
     REASON_NO_ANCHOR,
     REASON_NO_MECHANISM,
     AnchorRef,
+    EngineVerdict,
     import_outcome,
     match_rows_to_anchors,
+    verdict_on_anchor,
 )
 
 
@@ -129,3 +131,34 @@ def test_the_outcome_names_the_samples_it_could_not_measure():
     two = import_outcome({**counts, "samples_failed": 2}, "sb-1", "peaky")
     assert two["status"] == "partial"
     assert two["message"].endswith("2 samples could not be measured and were skipped.")
+
+
+VERDICT = EngineVerdict(
+    formula="C6H12O6",
+    ionization_mechanism_id="mech-h",
+    engine_tier="candidate",
+    engine_claim="level 3",
+)
+
+
+def recomputed(formula="C6H12O6", mechanism="mech-h"):
+    return SimpleNamespace(consensus_formula=formula, ionization_mechanism_id=mechanism)
+
+
+def test_the_verdict_goes_on_an_anchor_whose_consensus_names_its_identity():
+    assert verdict_on_anchor(recomputed(), VERDICT) == ("candidate", "level 3")
+
+
+def test_no_verdict_beside_a_formula_the_engine_did_not_give_it_for():
+    # The measurement did not carry the members over: the consensus is another
+    # formula, or none.
+    assert verdict_on_anchor(recomputed(formula="C7H14O7"), VERDICT) == (None, None)
+    assert verdict_on_anchor(recomputed(formula=None), VERDICT) == (None, None)
+
+
+def test_no_verdict_beside_the_formula_through_another_channel():
+    assert verdict_on_anchor(recomputed(mechanism="mech-na"), VERDICT) == (None, None)
+
+
+def test_an_anchor_no_verdict_was_sent_for_carries_none():
+    assert verdict_on_anchor(recomputed(), None) == (None, None)

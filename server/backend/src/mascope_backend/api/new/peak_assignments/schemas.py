@@ -1108,7 +1108,9 @@ class BatchImportRow(BaseModel):
     found at and the composition it was given. Matched to the batch peak nearest
     the m/z and measured against that peak's members by this server, so the
     engine's own scores are not part of the row - send them, and they are
-    ignored; keep them client-side as the engine's provenance.
+    ignored; keep them client-side as the engine's provenance. The engine's
+    verdict is: ``engine_tier`` and ``engine_claim`` are kept on the batch peak
+    beside the tier this server derives, never in place of it.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -1120,6 +1122,25 @@ class BatchImportRow(BaseModel):
     #: The adduct, as this deployment's mechanism id. A row without one cannot
     #: be measured and is counted as skipped rather than refused.
     ionization_mechanism_id: str | None = Field(None, max_length=16)
+    engine_tier: AssignmentTier | None = Field(
+        None,
+        description=(
+            "Optional: the tier THIS ENGINE concluded for the identity, in the "
+            "sample import's vocabulary. Stored on the batch peak the row lands "
+            "on, beside the consensus tier this server measures from the "
+            "members, and read by no roll-up and no fold. Omit it where the "
+            "engine stated no tier; absence is not agreement."
+        ),
+    )
+    engine_claim: str | None = Field(
+        None,
+        max_length=1024,
+        description=(
+            "Optional: the engine's own words about the identity - its "
+            "evidence level, the rule that decided it - kept verbatim beside "
+            "`engine_tier` for a reader. Free text; nothing reads it."
+        ),
+    )
 
 
 class ImportBatchRunBody(BaseModel):
