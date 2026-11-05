@@ -657,6 +657,20 @@ class TestFrames:
         assert out["meanings_omitted"] == len(frame.column_meanings())
         assert out["meanings_in_python"].endswith(".column_meanings()")
 
+    def test_every_budget_holds_with_the_count_and_the_pointer(self, server, kit):
+        # The omitted count and the pointer are added with the meanings they
+        # measure against: at no budget between none and all does the
+        # handle go over, which a count added after the check would do
+        frame = self._as_the_server_orders_it(kit, batches=1)
+        whole = _size(inert(server._handle(frame, limit=10**6)))
+        bare = _size(inert(server._handle(frame, limit=0)))
+        over = [
+            limit
+            for limit in range(bare, whole)
+            if _size(inert(server._handle(frame, limit=limit))) > limit
+        ]
+        assert not over
+
     def test_rows_in_python_opens_the_frame_in_another_process_s_session(
         self, server, kit
     ):

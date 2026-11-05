@@ -121,12 +121,12 @@ _TREE: dict[str, str] = {
     "match_category_isotope": "Mascope's category for the line: 2, 1 or 0",
     "match_isotope_id": "the ID of this match record",
     "intensity_compound": (
-        "Mascope's sum of the compound's lines' peak intensities: heights on an "
-        "Orbitrap, areas on a TOF"
+        "Mascope's sum of the compound's lines' peak intensities, heights "
+        "(Orbitrap) or areas (TOF); m/z-gated lines count 0"
     ),
     "intensity_ion": (
-        "Mascope's sum of the ion's lines' peak intensities: heights on an "
-        "Orbitrap, areas on a TOF; the app's batch point"
+        "sum of the ion's lines' intensities, heights (Orbitrap) or areas (TOF), "
+        "m/z-gated lines 0; the app's batch point"
     ),
     "sample_peak_id": (
         "the nearest peak's ID, kept even when it failed the tolerances; empty "
@@ -137,8 +137,8 @@ _TREE: dict[str, str] = {
         "theoretical mz again, a placeholder"
     ),
     "sample_peak_intensity": (
-        "that peak's intensity: height on an Orbitrap, area on a TOF; 0 when "
-        "the line has no peak"
+        "that peak's height (Orbitrap) or area (TOF); 0 when no peak or outside "
+        "the m/z tolerance; a ratio miss keeps it, score 0"
     ),
     "sample_peak_intensity_relative": (
         "that intensity relative to the ion's most abundant line's peak; 0 when no peak"
