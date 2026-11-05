@@ -2026,7 +2026,13 @@ pass. `MASCOPE_PRUNE_KEEP_PER_SAMPLE_TOTAL` caps how many completed runs a
 sample keeps across all engines. The in-app engine is exempt from that cap -
 otherwise a burst of imports would fill it and start evicting exactly the
 history the per-engine quota exists to protect - so a sample keeps at most the
-total plus the in-app engine's own quota.
+total plus the in-app engine's own quota. A decoy run (the in-app engine
+re-run with the sample's chemistry made wrong on purpose, to bound its false
+assignments; `docs/user/how-it-works/peak-assignment.md`, *Decoy runs*) is
+stamped with the in-app engine too, but is no part of that history: each of a
+sample's decoy arms ages out of a quota of its own, so its decoys never evict
+the run they are decoys of, and they count against the total as an import's
+runs do.
 `MASCOPE_PRUNE_KEEP_IMPORTING_HOURS` covers a different case - an import that
 was started and never finished. Such a run holds staged rows *and* blocks new
 assignment work on its sample, so it is reclaimed on its own, shorter grace; a

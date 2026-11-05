@@ -84,6 +84,7 @@ class FakeServer:
             if self.refuse is not None:
                 return self.refuse
             run_id = f"run-{len(self.runs) + 1}"
+            config = json.get("config") if json else None
             self.runs.append(
                 {
                     "peak_assignment_run_id": run_id,
@@ -91,7 +92,8 @@ class FakeServer:
                     "engine": "mascope",
                     "engine_version": "1.0.0",
                     "status": "pending",
-                    "config": json.get("config") if json else None,
+                    "config": config,
+                    "decoy": "swap_adducts" if (config or {}).get("decoy") else None,
                     "error": None,
                     "peak_assignment_run_utc_created": "2026-10-28T10:00:00Z",
                     "peak_assignment_run_utc_completed": None,
@@ -160,7 +162,10 @@ class FakeServer:
                 status = self.statuses[min(self.listings - 1, len(self.statuses) - 1)]
                 run["status"] = status
                 run["error"] = self.run_error if status == "failed" else None
-            return _response(200, {"message": "runs", "data": self.runs})
+            # A decoy run is listed only on request, as the server does it
+            decoys = (params or {}).get("include_decoys") == "true"
+            runs = [run for run in self.runs if decoys or not run["decoy"]]
+            return _response(200, {"message": "runs", "data": runs})
         if path.endswith("/verifications"):
             return _response(200, {"message": "ok", "data": self.verifications})
         # The paged ledger of a run.
@@ -411,6 +416,16 @@ class TestAssignLaunch:
         assert ledger.attrs["run"]["status"] == "completed"
         # Two looks found it going, each followed by one pause.
         assert clock.sleeps == [2.0, 2.0]
+
+    def test_it_waits_for_a_decoy_run(self, resource, server):
+        server.statuses = ["running", "completed"]
+
+        ledger = resource.assign(
+            SAMPLE_ID, config={"decoy": {"swap_adducts": True}}, poll_interval=1.0
+        )
+
+        assert set(ledger["peak_assignment_run_id"]) == {"run-1"}
+        assert ledger.attrs["run"]["decoy"] == "swap_adducts"
 
     def test_a_failed_run_raises_with_its_error(self, resource, server):
         server.statuses = ["running", "failed"]

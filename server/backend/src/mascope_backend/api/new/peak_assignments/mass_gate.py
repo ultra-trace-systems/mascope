@@ -822,6 +822,7 @@ def apply_mass_gate(
     fallback_sigma_ppm: float,
     lines: SpectrumLines | None = None,
     reagent_lines: Sequence[dict] = (),
+    calibration: MassCalibration | None = None,
 ) -> dict:
     """Record every commit's ``mass_z`` and cap the outliers no envelope confirms.
 
@@ -858,6 +859,12 @@ def apply_mass_gate(
         monoisotopic lines anchor the calibration beside the corroborated
         commits (:func:`fit_run_mass_accuracy`). Read only: a reagent row is
         no commit, so it is neither judged nor modified.
+    :param calibration: A calibration to judge every commit against instead of
+        fitting the run's own: a decoy run's, which is its control's
+        (``decoy.inherited_calibration``), recorded with its gate width. A
+        decoy's commits are wrong formulas on a moved axis, and fitted over
+        them the gate would centre on the shift, or measure nothing and stand
+        down. None fits the run's own, as every other run does.
     :return: A JSON-serializable summary for the run's config.
     """
     # The width the untargeted search actually scored a mass error at, rebuilt
@@ -871,12 +878,14 @@ def apply_mass_gate(
     tracking = isotopologue_tracking(
         assignments, precision_ppm=fallback_sigma_ppm, lines=lines
     )
-    calibration = fit_run_mass_accuracy(assignments, corroboration, reagent_lines)
-    if calibration.sigma_ppm is not None:
-        calibration = replace(
-            calibration,
-            gate_sigma_ppm=max(float(calibration.sigma_ppm), float(search_sigma)),
-        )
+    inherited = calibration is not None
+    if calibration is None:
+        calibration = fit_run_mass_accuracy(assignments, corroboration, reagent_lines)
+        if calibration.sigma_ppm is not None:
+            calibration = replace(
+                calibration,
+                gate_sigma_ppm=max(float(calibration.sigma_ppm), float(search_sigma)),
+            )
     summary = {
         **calibration.snapshot(),
         "cap_z": OFF_CALIBRATION_Z,
@@ -904,6 +913,10 @@ def apply_mass_gate(
         "capped_in_doubt": 0,
         "capped_untracked": 0,
     }
+    if inherited:
+        # Said only where it holds, so a run that fitted its own records what
+        # it always has.
+        summary["inherited"] = True
     if stage_a_accuracy is not None:
         # What Stage A had to score the untargeted search with, beside what the
         # run went on to be able to measure for itself. On the gate sets these

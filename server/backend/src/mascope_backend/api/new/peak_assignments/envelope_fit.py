@@ -78,9 +78,11 @@ from mascope_backend.runtime import runtime
 from mascope_file.name import get_instrument_type
 from mascope_thermo.backend import trailer_float
 from mascope_tools.composition.envelope_tolerance import (
+    DEFAULT_TOLERANCE,
     FORM_CENTRE_WIDTH,
     FORM_CURVE,
     FORM_DEFAULT,
+    LEVEL_DEFAULT,
     LEVEL_OWN,
     RESPONSE_SNR_EDGES,
     EnvelopeFit,
@@ -335,7 +337,8 @@ async def acquisition_settings(sample) -> dict | None:
 
 async def _latest_records(sample_item_ids: Sequence[str] | None, batch_id=None):
     """The ``envelope_tolerance`` record of each sample's latest completed
-    in-app run: of the samples named, or of every sample in a batch."""
+    in-app run that is no decoy: of the samples named, or of every sample in a
+    batch."""
     query = select(
         PeakAssignmentRun.sample_item_id,
         PeakAssignmentRun.config[ENVELOPE_TOLERANCE_KEY],
@@ -344,6 +347,9 @@ async def _latest_records(sample_item_ids: Sequence[str] | None, batch_id=None):
         # An import's config is the client's own: it says nothing of how the
         # in-app scorer read a line.
         PeakAssignmentRun.engine == IN_APP_ENGINE,
+        # A decoy scored at its control's tolerance, and the lines it would
+        # record are wrong formulas on a moved axis: neither is the sample's.
+        PeakAssignmentRun.decoy.is_(None),
     )
     if batch_id is not None:
         query = query.join(
@@ -411,10 +417,14 @@ class RunEnvelopeFit:
     :param acquisition: The settings a pooled curve was matched on, recorded
         so a sibling run can match this one's lines; None where the file
         records none, or the form pools nothing.
+    :param inherited: On a decoy run, the record of its control's tolerance,
+        which the decoy scores at instead of fitting its own
+        (:func:`inherited_envelope_fit`); None on every other run.
     """
 
     fit: EnvelopeFit
     acquisition: dict | None = None
+    inherited: dict | None = None
 
     @property
     def tolerance(self) -> EnvelopeTolerance:
@@ -423,6 +433,10 @@ class RunEnvelopeFit:
 
     def record(self) -> dict:
         """``config.envelope_tolerance``."""
+        if self.inherited is not None:
+            # The control's own record, marked only where it holds, as the
+            # mass gate marks an inherited calibration.
+            return {**self.inherited, "inherited": True}
         record = self.fit.record()
         if self.fit.form == FORM_CURVE:
             record["acquisition"] = self.acquisition
@@ -473,3 +487,31 @@ async def fit_run_envelope_tolerance(
             form, lines, await sibling_lines(sample, acquisition)
         )
     return RunEnvelopeFit(fit, acquisition)
+
+
+def inherited_envelope_fit(record: dict | None) -> RunEnvelopeFit:
+    """The tolerance a decoy run scores a line's share at: its control's.
+
+    A decoy's Stage A commits are wrong formulas on a moved axis, and few: on
+    the demo's uronium sample the +9 ppm arm kept 8 of its control's 702
+    assigned rows, short of the lines a fit of its own needs. Fitted on them,
+    the arm would fall back to the pooled curve or to today's numbers, and
+    measure a different tolerance as well as the arm. So it scores at the
+    control's, as it does at the control's mass accuracy
+    (:mod:`~mascope_backend.api.new.peak_assignments.decoy`).
+
+    :param record: The control's ``config.envelope_tolerance``; None for a
+        control from before the fit, which scored at today's numbers.
+    :return: The fit the decoy scores at, which records the control's record.
+    """
+    if not isinstance(record, dict):
+        record = EnvelopeFit(
+            DEFAULT_TOLERANCE, FORM_DEFAULT, LEVEL_DEFAULT, EnvelopeLines()
+        ).record()
+    fit = EnvelopeFit(
+        EnvelopeTolerance.from_record(record),
+        form=str(record.get("form") or FORM_DEFAULT),
+        level=str(record.get("level") or LEVEL_DEFAULT),
+        lines=EnvelopeLines(),
+    )
+    return RunEnvelopeFit(fit, inherited=record)

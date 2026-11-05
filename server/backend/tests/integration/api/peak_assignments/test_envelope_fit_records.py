@@ -6,7 +6,9 @@ in-app runs recorded under the same acquisition settings
 tolerance the sample's latest completed in-app run recorded
 (``envelope_fit.recorded_envelope_tolerance``); the settings are the sample's
 stream's where it points at one, else its file's ``.props``
-(``envelope_fit.acquisition_settings``).
+(``envelope_fit.acquisition_settings``). A decoy run is the sample's for neither
+reader: it scored at its control's tolerance, and its lines are wrong formulas
+on a moved axis (step 5.2).
 """
 
 from datetime import datetime, timedelta, timezone
@@ -147,7 +149,13 @@ async def batch(async_session_factory, pa_sample_view):
         await session.commit()
 
     async def run(
-        name, record, *, minutes_ago, status="completed", engine=IN_APP_ENGINE
+        name,
+        record,
+        *,
+        minutes_ago,
+        status="completed",
+        engine=IN_APP_ENGINE,
+        decoy=None,
     ):
         async with async_session_factory() as session:
             session.add(
@@ -157,6 +165,7 @@ async def batch(async_session_factory, pa_sample_view):
                     engine=engine,
                     engine_version="0.1.0-test",
                     status=status,
+                    decoy=decoy,
                     config={"run_untargeted": True, "envelope_tolerance": record},
                     peak_assignment_run_utc_created=_NOW
                     - timedelta(minutes=minutes_ago),
@@ -204,6 +213,17 @@ async def test_a_thin_file_pools_its_siblings_latest_lines_under_its_settings(ba
     np.testing.assert_allclose(pooled[0].ratio, 0.7)
 
 
+async def test_a_sibling_s_decoy_run_is_not_pooled(batch):
+    # A's newest completed in-app run is a decoy: its control is what A pools.
+    await batch.run("A", _record(0.7, TEN), minutes_ago=30)
+    await batch.run("A", _record(0.2, TEN), minutes_ago=5, decoy="mz_shift_ppm=+9")
+
+    pooled = await envelope_fit.sibling_lines(_sample(batch, "S"), TEN)
+
+    assert len(pooled) == 1
+    np.testing.assert_allclose(pooled[0].ratio, 0.7)
+
+
 async def test_a_sample_in_no_batch_pools_nothing(batch):
     sample = _sample(batch, "S")
     sample.sample_batch_id = None
@@ -221,6 +241,18 @@ async def test_outside_a_run_a_line_is_read_at_the_latest_runs_tolerance(batch):
 
     assert tolerance == EnvelopeTolerance.from_record(fitted)
     assert tolerance.lower[1] == pytest.approx(0.8)
+
+
+async def test_outside_a_run_a_decoy_run_s_tolerance_is_never_read(batch):
+    control = _record(0.8, TEN, lines=25)
+    await batch.run("S", control, minutes_ago=30)
+    await batch.run(
+        "S", _record(0.2, TEN, lines=25), minutes_ago=5, decoy="swap_adducts"
+    )
+
+    tolerance = await envelope_fit.recorded_envelope_tolerance(batch.samples["S"])
+
+    assert tolerance == EnvelopeTolerance.from_record(control)
 
 
 async def test_a_sample_no_run_fitted_is_read_at_today_s_numbers(batch):

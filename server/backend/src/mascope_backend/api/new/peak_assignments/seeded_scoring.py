@@ -51,6 +51,7 @@ from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.mass_accuracy import (
     MASS_ACCURACY_MIN_ANCHORS,
     ReagentOffset,
+    SampleMassAccuracy,
 )
 from mascope_tools.composition.profiles import resolve_fallback_sigma_ppm
 
@@ -214,6 +215,7 @@ def gate_and_score(
     fallback_sigma_ppm: float,
     reagent_offset: ReagentOffset | None,
     envelope_tolerance: EnvelopeTolerance | None = None,
+    inherited_accuracy: SampleMassAccuracy | None = None,
 ) -> pd.DataFrame:
     """Gate and fit-score a seeded match frame, exactly as Stage A does.
 
@@ -249,6 +251,9 @@ def gate_and_score(
         latest run recorded (``envelope_fit.recorded_envelope_tolerance``).
         A seed list is no set of committed envelopes to fit one on. None is
         today's numbers.
+    :param inherited_accuracy: The measurement a decoy run scores everything
+        at, its control's; the frame is then never fitted
+        (``engine.score_ions_by_fit``). None for every other caller.
     """
     gated = apply_match_params(match_isotope_df, match_params)
     return score_ions_by_fit(
@@ -257,6 +262,7 @@ def gate_and_score(
         reagent_offset=reagent_offset,
         min_anchor_ions=SEEDED_FIT_MIN_IONS,
         envelope_tolerance=envelope_tolerance,
+        inherited_accuracy=inherited_accuracy,
     )
 
 
@@ -327,6 +333,7 @@ async def score_seeds(
     envelope_tolerance: EnvelopeTolerance | None | object = (
         RESOLVE_ENVELOPE_TOLERANCE
     ),
+    inherited_accuracy: SampleMassAccuracy | None = None,
 ) -> tuple[
     dict[tuple[str, str], str],
     dict[str, float | None],
@@ -362,6 +369,9 @@ async def score_seeds(
         Left out, the one the sample's latest run recorded is read
         (``envelope_fit.recorded_envelope_tolerance``), which is what every
         caller outside a run wants.
+    :param inherited_accuracy: Inside a decoy run, the control's measurement,
+        which the seeds are scored at whatever their number
+        (:func:`gate_and_score`). None everywhere else.
     :return: ``(ion by seed, fit by ion, errors by pairing, the scored frame)``.
     """
     if not seeds:
@@ -374,6 +384,7 @@ async def score_seeds(
             reagent_offset=reagent_offset,
             config=config,
             envelope_tolerance=envelope_tolerance,
+            inherited_accuracy=inherited_accuracy,
         )
 
 
@@ -385,6 +396,7 @@ async def _score_seeds(
     reagent_offset: ReagentOffset | None | object,
     config: PeakAssignmentConfig | None,
     envelope_tolerance: EnvelopeTolerance | None | object,
+    inherited_accuracy: SampleMassAccuracy | None = None,
 ) -> tuple[
     dict[tuple[str, str], str],
     dict[str, float | None],
@@ -430,6 +442,7 @@ async def _score_seeds(
         ),
         reagent_offset=reagent_offset,
         envelope_tolerance=envelope_tolerance,
+        inherited_accuracy=inherited_accuracy,
     )
     fit_by_ion, errors_by_pairing = scored_maps(scored_df)
     return ion_by_seed, fit_by_ion, errors_by_pairing, scored_df

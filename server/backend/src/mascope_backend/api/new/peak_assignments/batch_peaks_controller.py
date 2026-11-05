@@ -88,12 +88,19 @@ def _intensity_variable(filename: str) -> str:
 
 
 async def _latest_completed_run_id(session, sample_item_id: str) -> str | None:
+    """The run a sample folds from: its latest completed one that is no decoy.
+
+    A decoy run is the sample read with its chemistry made wrong on purpose
+    (``PeakAssignmentConfig.decoy``); folded, it would put that reading on the
+    batch ledger and into every consensus the sample's members vote in.
+    """
     return (
         await session.execute(
             select(PeakAssignmentRun.peak_assignment_run_id)
             .where(
                 PeakAssignmentRun.sample_item_id == sample_item_id,
                 PeakAssignmentRun.status == "completed",
+                PeakAssignmentRun.decoy.is_(None),
             )
             .order_by(PeakAssignmentRun.peak_assignment_run_utc_created.desc())
             .limit(1)

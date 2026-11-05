@@ -28,6 +28,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     peak_assignment_enabled,
 )
 from mascope_backend.api.new.peak_assignments.curation import curate_assignment
+from mascope_backend.api.new.peak_assignments.decoy import DecoyRefused
 from mascope_backend.api.new.peak_assignments.derived_evidence import (
     measure_derived_assignment,
 )
@@ -72,6 +73,7 @@ from mascope_backend.api.new.peak_assignments.service import (
     get_peak_assignments,
     get_verifications,
     ineligible_reason,
+    plan_sample_decoy,
     recalibrate_instrument,
 )
 from mascope_backend.api.new.peak_assignments.visualization import (
@@ -97,6 +99,7 @@ peak_assignments_router = APIRouter(
 #: the route could not read, which carries no code.
 ASSIGNMENT_IN_FLIGHT_CODE = "assignment_in_flight"
 SAMPLE_INELIGIBLE_CODE = "sample_ineligible"
+DECOY_REFUSED_CODE = "decoy_refused"
 
 
 async def reject_oversized_import(request: Request) -> None:
@@ -291,19 +294,31 @@ async def get_derived_evidence_route(
 @api_route(token_access=True)
 async def get_peak_assignment_runs_route(
     sample_item_id: str,
+    include_decoys: bool = Query(
+        False,
+        description=(
+            "List the sample's decoy runs too (`decoy` set): the engine re-run "
+            "with its chemistry made wrong on purpose. Left out by default, "
+            "since a client that reads the first completed run as the sample's "
+            "result would otherwise read a decoy."
+        ),
+    ),
     user: User = Depends(current_active_user),
 ) -> PeakAssignmentRunsResponse:
     """
     Retrieve all peak assignment runs for a sample, newest first.
 
     :param sample_item_id: The unique identifier of the sample.
+    :param include_decoys: Whether decoy runs are listed.
     :param user: The current authenticated user. Requires workspace guest role.
     :return: Run records with status, engine version, and configuration,
         and the mass-error width each run scored at (`sigma_ppm`, `mu_ppm`
         and their sources), null where a run recorded none.
     """
     await check_sample_access(sample_item_id, user, "guest")
-    result = await get_peak_assignment_runs(sample_item_id=sample_item_id)
+    result = await get_peak_assignment_runs(
+        sample_item_id=sample_item_id, include_decoys=include_decoys
+    )
     return PeakAssignmentRunsResponse.model_validate(result)
 
 
@@ -664,6 +679,10 @@ async def assign_sample_peaks_route(
       ``assignment_in_flight``.
     - **422** when the sample cannot usefully be assigned, carrying the reason.
       Code ``sample_ineligible``, which a body the route could not read lacks.
+    - **422** with code ``decoy_refused`` when the config asks for a decoy run
+      that cannot bound the sample's latest run: there is none, its settings
+      differ, it recorded no calibration to inherit, a ppm shift is inside
+      its window, or no wrong adduct is left to swap in.
     - **403** when peak assignment is not enabled for this environment.
 
     :param sample_item_id: The unique identifier of the sample.
@@ -688,6 +707,19 @@ async def assign_sample_peaks_route(
         )
 
     config = body.config if body else None
+    if config is not None and config.decoy is not None:
+        try:
+            await plan_sample_decoy(sample, config)
+        except DecoyRefused as refused:
+            raise ApiException(
+                f"No decoy run for sample '{sample.sample_item_name}': {refused}.",
+                {
+                    "code": DECOY_REFUSED_CODE,
+                    "sample_item_id": sample_item_id,
+                    "reason": str(refused),
+                },
+                422,
+            ) from refused
     # Under the claim, so the admission read and the run creation that follows it
     # cannot interleave with another worker's pair. The run then holds the sample
     # durably from this commit onwards, which is what covers the window between

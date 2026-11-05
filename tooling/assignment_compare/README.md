@@ -64,3 +64,52 @@ O/C > 1.5, RDBE > 15) - the classes a mass-fit-only assignment produces and
 ambient chemistry does not. None of it is a ground truth: the second engine is
 the reference only in the sense that a disagreement is where a human should
 look, and the `tier_disagrees` filter in the app's ledger shows the same rows.
+
+## Decoy arms (`--decoy`)
+
+```sh
+uv run python tooling/assignment_compare/compare_runs.py \
+    --workspace "<workspace>" --batch "<batch name>" --dataset "<dataset>" \
+    --decoy --out decoy/
+```
+
+The agreement above says nothing about how many rows a run would still assign
+if the sample's chemistry were wrong. A decoy run measures it: the in-app
+engine run again on a sample it has already assigned (its control) with one
+arm made wrong, scored at the control's own calibration
+(`docs/user/how-it-works/peak-assignment.md`, *Decoy runs*). Launch one per
+sample and arm with `POST /api/peak-assignments/sample/{id}/assign` and the
+control's settings plus a `decoy` block:
+
+- `{"decoy": {"mz_shift_ppm": 9}}` and `-9`: the m/z axis scaled 9 ppm either
+  way, on an Orbitrap;
+- `{"decoy": {"mz_shift_da": 0.35}}`: every peak moved 0.35 Da, on a TOF, where
+  a 9 ppm shift is inside the window and is refused;
+- `{"decoy": {"swap_adducts": true}}`: every channel searched through an adduct
+  the profile does not make.
+
+A decoy that cannot bound the sample's latest run (none, other settings, a
+shift inside its window, no wrong adduct left) is refused with a 422 naming
+why, and creates no run. Decoy runs stay out of the runs listing unless it is
+asked for them (`include_decoys`, which this script sets), and out of the batch
+fold and every other reader of the sample's result.
+
+With `--decoy` the script reads each sample's newest decoy run per arm against
+the run it names as its control, and writes what follows. Each arm keeps its
+own retention quota, so a decoy can outlive its control: that arm is named as
+not read, and the rest of the set still is.
+
+| file | content |
+|---|---|
+| `decoy.json` | per arm, pooled over the set and per sample: the control's and the arm's assigned rows and intensity below and above m/z 350 and per 50-Da bin, the share the arm holds, and on the adduct arm the rows that are new ions against those that read an ion the control reads as another neutral; the arms that were refused, are still running or lost their control, and why |
+| `decoy.md` | the pooled table, one row per arm, ready to paste |
+
+A row counts where it is a monoisotopic row at the `assigned` tier. The m/z
+350 split is the reference engine's: below it a 0.35 Da shift lands in the
+mass-defect gap no CHNOS formula sits in. A dalton shift also moves the
+source's own lines out of the reagent pre-pass's reach, so its brightest ions
+are offered to the stages like any peak: an arm's rows on peaks the control
+claimed as reagent are counted apart (`on_control_reagent`), and the intensity
+share is read knowing them, since one such row can outweigh every analyte. There is no target yet (decision 31):
+the stage gates report the arms, and a target is set once two gates have read
+them.

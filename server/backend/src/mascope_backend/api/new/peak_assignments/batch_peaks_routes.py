@@ -11,6 +11,7 @@ from mascope_backend.api.controllers.samples.batch_peak_table import (
     build_batch_peak_table,
 )
 from mascope_backend.api.lib.api_features import api_route
+from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.models.base_pydantic_model import RequestBodyModel
 from mascope_backend.api.new.auth.dependencies import current_active_user
 from mascope_backend.api.new.peak_assignments.batch_curation import (
@@ -401,6 +402,15 @@ async def search_untargeted_batch_peaks_route(
     """
     sample_batch = await fetch_sample_batch(sample_batch_id)
     config = body.config if body is not None and body.config else PeakAssignmentConfig()
+    if config.decoy is not None:
+        # A decoy is a run of one sample against that sample's own last run;
+        # the batch search writes the batch ledger, which no decoy may reach.
+        raise ApiException(
+            "A decoy is a run of one sample, launched on the sample; the batch "
+            "search takes none.",
+            {"sample_batch_id": sample_batch_id},
+            422,
+        )
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(

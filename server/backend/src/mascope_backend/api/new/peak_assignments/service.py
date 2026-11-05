@@ -18,14 +18,14 @@ import copy
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime as dt
 from datetime import timezone
 from types import SimpleNamespace
 
 import pandas as pd
 from fastapi import status
-from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy import and_, func, insert, or_, select, update
 from sqlalchemy.orm import aliased
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
@@ -94,6 +94,15 @@ from mascope_backend.api.new.peak_assignments.config import (
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     apply_cross_channel,
 )
+from mascope_backend.api.new.peak_assignments.decoy import (
+    DECOY_ARM_KEY,
+    DecoyPlan,
+    DecoyRefused,
+    declared_channels,
+    plan_decoy,
+    swap_channels,
+    wrong_adducts,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
     CROSS_CHANNEL_KEY,
     ENVELOPE_TOLERANCE_KEY,
@@ -145,6 +154,7 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
 )
 from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.api.new.peak_assignments.mass_gate import (
+    MassCalibration,
     SpectrumLines,
     apply_mass_gate,
 )
@@ -195,7 +205,7 @@ from mascope_backend.socket.notifications import (
     send_progress_user_notification,
 )
 from mascope_file.name import get_instrument_type
-from mascope_match import compute_match_isotopes
+from mascope_match import compute_match_isotopes, shift_mz, shifted_mz_axis
 from mascope_reference import iter_known_compositions, known_state_fingerprint
 from mascope_reference.scope import SAMPLE_POLARITIES
 from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
@@ -228,6 +238,7 @@ from mascope_tools.composition.mechanism_notation import (
     mechanism_spellings,
     parse_mechanism,
 )
+from mascope_tools.composition.profiles import get_reagent_profile
 from mascope_tools.composition.reagents import (
     REAGENT_LINE_FAMILIES,
     secondary_channels,
@@ -272,22 +283,37 @@ def run_record(run: PeakAssignmentRun) -> dict:
 
 
 @api_controller()
-async def get_peak_assignment_runs(sample_item_id: str) -> dict:
+async def get_peak_assignment_runs(
+    sample_item_id: str, include_decoys: bool = False
+) -> dict:
     """
     Retrieve all peak assignment runs for a sample, newest first.
 
+    A decoy run (``PeakAssignmentConfig.decoy``) is listed only on request.
+    The Sample view and the SDK take the first completed run of this list as
+    the sample's result, and a decoy is the engine's answer to a sample whose
+    chemistry was made wrong on purpose: listed by default, the newest decoy
+    would be read as the sample's ledger by every client that predates it.
+
     :param sample_item_id: Unique identifier of the sample item
+    :param include_decoys: List the sample's decoy runs too, in their place by
+        creation time; the comparison tool reads them so.
     :return: Dictionary with status, message, results count, and run records
     """
     sample = await fetch_sample(sample_item_id)
 
     async with async_session() as session:
+        statement = select(PeakAssignmentRun).where(
+            PeakAssignmentRun.sample_item_id == sample_item_id
+        )
+        if not include_decoys:
+            statement = statement.where(PeakAssignmentRun.decoy.is_(None))
         runs = (
             (
                 await session.execute(
-                    select(PeakAssignmentRun)
-                    .where(PeakAssignmentRun.sample_item_id == sample_item_id)
-                    .order_by(PeakAssignmentRun.peak_assignment_run_utc_created.desc())
+                    statement.order_by(
+                        PeakAssignmentRun.peak_assignment_run_utc_created.desc()
+                    )
                 )
             )
             .scalars()
@@ -336,6 +362,11 @@ IMPORTING_STATUS = "importing"
 #: on this surface can mean, and the run listing is what tells it when to stop.
 RUN_STILL_ASSEMBLING_CODE = "run_still_assembling"
 
+#: Code carried in the error payload when a verdict is sent for a decoy run's
+#: row. A client that verifies rows it read by run id has to tell this apart
+#: from a row that is gone.
+DECOY_RUN_VERDICT_CODE = "decoy_run_verdict"
+
 #: Namespace discriminator for the per-identity verdict-write advisory lock, hashed into the
 #: first int of the two-int lock key space so it cannot collide with the other advisory-lock
 #: users (the match-write locks, the assignment admission claim).
@@ -372,6 +403,31 @@ class RunStillAssemblingException(CodedHTTPException):
                 "is incomplete. Wait for the import to finish - the runs "
                 "endpoint reports its status - or read the sample's latest "
                 "completed run by omitting the run id."
+            ),
+        )
+
+
+class DecoyRunVerdictException(CodedHTTPException):
+    """A verdict was sent for a row of a decoy run (422).
+
+    A decoy run assigns the sample with its chemistry made wrong on purpose,
+    so a verdict on one of its rows judges a reading nobody claims. Taken,
+    it would also supersede the live verdict on the same identity - which is
+    the peak, the formula and the adduct, whatever run they came from - and
+    feed the calibration from verdicts a label about a deliberate error.
+
+    :param peak_assignment_run_id: The decoy run the row belongs to.
+    """
+
+    error_code = DECOY_RUN_VERDICT_CODE
+
+    def __init__(self, peak_assignment_run_id: str):
+        super().__init__(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Assignment run '{peak_assignment_run_id}' is a decoy run, whose "
+                "rows read the sample with its chemistry made wrong on purpose; "
+                "they take no verdict. Verify the row in the sample's own run."
             ),
         )
 
@@ -595,6 +651,9 @@ async def get_peak_assignments(
                     .where(
                         PeakAssignmentRun.sample_item_id == sample_item_id,
                         PeakAssignmentRun.status == "completed",
+                        # A decoy is read only by its id: it is no answer
+                        # about the sample, whose chemistry it made wrong.
+                        PeakAssignmentRun.decoy.is_(None),
                     )
                     .order_by(PeakAssignmentRun.peak_assignment_run_utc_created.desc())
                     .limit(1)
@@ -924,6 +983,15 @@ async def create_verification(
                 f"Assignment '{peak_assignment_id}' not found for sample "
                 f"'{sample.sample_item_name}'"
             )
+        if assignment.peak_assignment_run_id is not None:
+            decoy = await session.scalar(
+                select(PeakAssignmentRun.decoy).where(
+                    PeakAssignmentRun.peak_assignment_run_id
+                    == assignment.peak_assignment_run_id
+                )
+            )
+            if decoy is not None:
+                raise DecoyRunVerdictException(assignment.peak_assignment_run_id)
         # Serialize verdict writes on this identity. The supersede-then-insert below has to be
         # atomic against a concurrent verdict on the same assignment - a double-fired submit, or
         # two members of a workspace judging the same peak at once - which would otherwise both
@@ -1368,7 +1436,13 @@ async def recalibrate_instrument(
                     AssignmentVerification.superseded_utc.is_(None),
                     or_(
                         PeakAssignmentRun.engine.is_(None),
-                        PeakAssignmentRun.engine == IN_APP_ENGINE,
+                        # A decoy run's rows take no verdict
+                        # (`create_verification`); kept out here as well, so
+                        # the pool does not rest on that refusal alone.
+                        and_(
+                            PeakAssignmentRun.engine == IN_APP_ENGINE,
+                            PeakAssignmentRun.decoy.is_(None),
+                        ),
                     ),
                 )
             )
@@ -1888,6 +1962,7 @@ def judge_commits(
     partner_gated_channels: frozenset[str] = frozenset(),
     reagent_lines: Sequence[dict] = (),
     resolution: Callable[[float], float] | None = None,
+    inherited_calibration: MassCalibration | None = None,
 ) -> JudgedCommits:
     """Run the mass gate, the partner gate, the cross-channel pass and the
     tiering pass, and read the lines they find in doubt as their neighbours'.
@@ -1924,6 +1999,9 @@ def judge_commits(
     :param resolution: The file's resolving power as a function of m/z, at
         which the tiering pass and the claims read a neighbour's envelope, one
         line per peak the file resolves; None where the run could read none.
+    :param inherited_calibration: The calibration the mass gate judges every
+        round against instead of fitting one: a decoy run's control's. None
+        fits each round's own (``mass_gate.apply_mass_gate``).
     :return: The judged rows and each pass's summary.
     """
     claims: dict[str, EnvelopeClaim] = {}
@@ -1939,6 +2017,7 @@ def judge_commits(
             fallback_sigma_ppm=fallback_sigma_ppm,
             lines=lines,
             reagent_lines=reagent_lines,
+            calibration=inherited_calibration,
         )
         partner_gate = apply_partner_gates(
             judged,
@@ -2317,6 +2396,10 @@ def load_sample_peaks(sample: Sample) -> pd.DataFrame:
     off the match frame `compute_match_isotopes` builds, and the untargeted
     stage has no match frame - it works from this peak list.
 
+    Inside a decoy run's shifted axis (``mascope_match.shifted_mz_axis``) the
+    m/z are read moved, as the targeted matcher reads them there, so every
+    stage of the run sees one spectrum.
+
     :param sample: Sample model object
     :return: DataFrame with sample_peak_id, mz, intensity, and (where the file
         has them) signal_to_noise columns
@@ -2327,7 +2410,7 @@ def load_sample_peaks(sample: Sample) -> pd.DataFrame:
     peaks_df = pd.DataFrame(
         {
             "sample_peak_id": [str(peak_id) for peak_id in peak_data.peak_ids],
-            "mz": peak_data.mz_values,
+            "mz": shift_mz(peak_data.mz_values),
             "intensity": intensities if intensities is not None else 0.0,
         }
     )
@@ -2429,6 +2512,7 @@ def _stored_run_config(
     fragments: dict | None = None,
     ionization_setup: dict | None = None,
     envelope_tolerance: dict | None = None,
+    decoy_arm: dict | None = None,
 ) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
@@ -2485,6 +2569,9 @@ def _stored_run_config(
     level it reached. A fit score is only comparable across two runs together
     with the tolerance it was read at, and a file beside this one pools the
     lines it records.
+    The decoy arm is the eleventh, on a decoy run alone: the run it is a decoy of,
+    the calibration it inherited from it and what it made wrong. The request
+    names the arm; which run it bounds is the server's to say.
 
     :param config: The validated client-supplied run configuration.
     :param resolved_profile: The chemistry the run resolved to, when known.
@@ -2500,6 +2587,7 @@ def _stored_run_config(
         (:func:`~mascope_backend.api.new.ionization.modes.versions.sample_setup`).
     :param envelope_tolerance: What the run fitted of a line's share
         (:meth:`envelope_fit.RunEnvelopeFit.record`), once Stage A has run.
+    :param decoy_arm: A decoy run's record of its control (``DecoyPlan.record``).
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
@@ -2523,6 +2611,8 @@ def _stored_run_config(
         stored[FRAGMENTS_KEY] = fragments
     if envelope_tolerance is not None:
         stored[ENVELOPE_TOLERANCE_KEY] = envelope_tolerance
+    if decoy_arm is not None:
+        stored[DECOY_ARM_KEY] = decoy_arm
     return stored
 
 
@@ -2539,6 +2629,7 @@ async def _record_resolved_profile(
     fragments: dict | None = None,
     ionization_setup: dict | None = None,
     envelope_tolerance: dict | None = None,
+    decoy_arm: dict | None = None,
 ) -> None:
     """Write the resolved chemistry onto a run that is about to use it.
 
@@ -2565,6 +2656,7 @@ async def _record_resolved_profile(
     :param ionization_setup: The setup the sample is bound under, kept as the
         run was created with it.
     :param envelope_tolerance: What the run fitted of a line's share.
+    :param decoy_arm: A decoy run's record of its control.
     """
     async with async_session() as session:
         await session.execute(
@@ -2583,6 +2675,7 @@ async def _record_resolved_profile(
                     fragments,
                     ionization_setup,
                     envelope_tolerance,
+                    decoy_arm,
                 )
             )
         )
@@ -2610,6 +2703,9 @@ async def _create_run(
         # tier means the same thing on either engine's run without reading into
         # the config blob.
         tier_bands=config.tier_bands(),
+        # On the row and not only in the config, since every reader of a
+        # sample's latest run filters on it.
+        decoy=None if config.decoy is None else config.decoy.arm,
         peak_assignment_run_utc_created=dt.now(timezone.utc),
     )
     async with async_session() as session:
@@ -2899,6 +2995,43 @@ def reagent_offset_for(
     )
 
 
+async def _latest_in_app_run(sample_item_id: str) -> tuple[str | None, dict | None]:
+    """The sample's latest completed in-app run that is no decoy.
+
+    The run the sample's own result is, as far as this engine is concerned:
+    what a seeded re-score outside a run centres at, and what a decoy run is a
+    decoy of.
+
+    :param sample_item_id: The sample.
+    :return: The run's id and stored config; ``(None, None)`` where the sample
+        has none.
+    """
+    async with async_session() as session:
+        row = (
+            await session.execute(
+                select(
+                    PeakAssignmentRun.peak_assignment_run_id, PeakAssignmentRun.config
+                )
+                .where(
+                    PeakAssignmentRun.sample_item_id == sample_item_id,
+                    PeakAssignmentRun.status == "completed",
+                    # An import's config is the client's own, stored as sent:
+                    # it says nothing of where the in-app scorer centred.
+                    PeakAssignmentRun.engine == IN_APP_ENGINE,
+                    # A decoy scored at its control's centre, on an axis moved
+                    # off it: neither is the sample's.
+                    PeakAssignmentRun.decoy.is_(None),
+                )
+                .order_by(PeakAssignmentRun.peak_assignment_run_utc_created.desc())
+                .limit(1)
+            )
+        ).first()
+    if row is None:
+        return None, None
+    run_id, config = row
+    return run_id, config if isinstance(config, dict) else {}
+
+
 async def _latest_run_pattern_scoring(sample_item_id: str) -> dict | None:
     """What the sample's latest completed in-app run recorded it scored at.
 
@@ -2907,23 +3040,52 @@ async def _latest_run_pattern_scoring(sample_item_id: str) -> dict | None:
         no completed in-app run, or its latest recorded none (a run without an
         untargeted search, or one from before the snapshot).
     """
-    async with async_session() as session:
-        config = (
-            await session.execute(
-                select(PeakAssignmentRun.config)
-                .where(
-                    PeakAssignmentRun.sample_item_id == sample_item_id,
-                    PeakAssignmentRun.status == "completed",
-                    # An import's config is the client's own, stored as sent:
-                    # it says nothing of where the in-app scorer centred.
-                    PeakAssignmentRun.engine == IN_APP_ENGINE,
-                )
-                .order_by(PeakAssignmentRun.peak_assignment_run_utc_created.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+    _, config = await _latest_in_app_run(sample_item_id)
     snapshot = (config or {}).get(PATTERN_SCORING_KEY)
     return snapshot if isinstance(snapshot, dict) else None
+
+
+async def plan_sample_decoy(sample, config: PeakAssignmentConfig) -> DecoyPlan:
+    """What a decoy run of a sample inherits, and the channels it searches.
+
+    Asked by the assign request, so a decoy that cannot bound its control is
+    refused before a run exists, and again by the engine, which runs the plan
+    it gets: the control may have moved on in between.
+
+    :param sample: The sample view row.
+    :param config: The decoy run's configuration; its ``decoy`` is set.
+    :raises DecoyRefused: The decoy cannot bound the sample's latest run.
+    :return: The plan (:class:`~mascope_backend.api.new.peak_assignments.decoy.DecoyPlan`).
+    """
+    control_run_id, control_config = await _latest_in_app_run(sample.sample_item_id)
+    plan = plan_decoy(config.decoy, config, control_run_id, control_config)
+    if not config.decoy.swap_adducts:
+        return plan
+    _, channels = await fetch_sample_mechanisms(sample)
+    profile_name = (control_config.get(RESOLVED_PROFILE_KEY) or {}).get("profile")
+    if not channels or profile_name is None:
+        raise DecoyRefused(
+            "its control searched no channel of the sample's mode to swap"
+        )
+    candidates = wrong_adducts(
+        sample.polarity,
+        declared_channels(profile_name, [m.ionization_mechanism for m in channels]),
+    )
+    searched, swapped = swap_channels(
+        channels,
+        candidates,
+        await fetch_mechanisms_by_notation(candidates, sample.polarity),
+        fingerprint=get_reagent_profile(profile_name).detection,
+    )
+    if not searched:
+        raise DecoyRefused(
+            "the deployment holds no adduct of the sample's polarity that its "
+            f"profile '{profile_name}' does not declare (of {', '.join(candidates)})"
+            if candidates
+            else f"its profile '{profile_name}' declares every adduct a decoy "
+            "would swap in"
+        )
+    return replace(plan, mechanisms=searched, swapped=swapped)
 
 
 def _recorded_scoring_centre(
@@ -3133,6 +3295,7 @@ async def _seeded_fits(
     *,
     reagent_offset: ReagentOffset | None,
     envelope_tolerance: EnvelopeTolerance | None,
+    inherited_accuracy: SampleMassAccuracy | None = None,
 ) -> dict[tuple[str, str], float | None]:
     """Measure the untargeted stage's readings the way Stage A measures one.
 
@@ -3157,6 +3320,8 @@ async def _seeded_fits(
     :param envelope_tolerance: How well the run measures a line's share: in a
         run the one Stage A fitted, in a batch search the one the sample's
         latest run recorded. None is today's numbers.
+    :param inherited_accuracy: In a decoy run, its control's measurement, which
+        the seeds are scored at instead of one fitted off them.
     :return: Fit per seed; a seed whose ion the pass could not score is absent,
         and its rows fall back to the finder's own number.
     """
@@ -3168,6 +3333,7 @@ async def _seeded_fits(
         match_params,
         reagent_offset=reagent_offset,
         envelope_tolerance=envelope_tolerance,
+        inherited_accuracy=inherited_accuracy,
     )
     fits = {
         seed: fit_by_ion.get(ion_id)
@@ -3196,6 +3362,8 @@ async def _stage_a_assignments(
     known_window: KnownWindow | None,
     reagent_offset: ReagentOffset | None = None,
     ionization_setup: dict | None = None,
+    inherited_accuracy: SampleMassAccuracy | None = None,
+    inherited_envelope: RunEnvelopeFit | None = None,
 ) -> tuple[list[dict], dict | None, SampleMassAccuracy, RunEnvelopeFit]:
     """Stage A: database-first assignment from the known composition set.
 
@@ -3238,6 +3406,15 @@ async def _stage_a_assignments(
         untargeted stage. The width stays the class's: a handful of the source's own
         bright lines says where the axis sits, not how an analyte scatters
         about it.
+    :param ionization_setup: The setup the sample is bound under, whose
+        confidence curve the rows are read off.
+    :param inherited_accuracy: A decoy run's control's measurement, which the
+        frame is scored at and which the stage returns, instead of one fitted
+        off a frame whose axis was moved on purpose. None for every other run.
+    :param inherited_envelope: A decoy run's control's envelope tolerance,
+        which the frame is scored at from the first pass and which the stage
+        returns, instead of one fitted on the decoy's own commits. None for
+        every other run.
     :return: The assignment rows; what a run records about the confidence curve
         their P(correct) came from - None when Stage A never ran or the
         instrument has no curve; and what the target library's own matched
@@ -3259,7 +3436,7 @@ async def _stage_a_assignments(
     """
     stage_a_assignments: list[dict] = []
     confidence_calibration: dict | None = None
-    mass_accuracy = SampleMassAccuracy(reagent=reagent_offset)
+    mass_accuracy = inherited_accuracy or SampleMassAccuracy(reagent=reagent_offset)
     gated_df = match_isotope_df = pd.DataFrame()
     target_isotopes_df = await _fetch_known_target_isotopes(
         sample, match_params.isotope_abundance_threshold, mechanism_ids
@@ -3302,15 +3479,23 @@ async def _stage_a_assignments(
                 fallback_sigma_ppm=fallback_sigma_ppm,
                 reagent_offset=reagent_offset,
                 min_anchor_ions=STAGE_A_FIT_MIN_IONS,
+                inherited_accuracy=inherited_accuracy,
+                # A decoy reads its control's tolerance from the start; any
+                # other run first today's numbers, since the fit reads the
+                # commits this pass makes.
+                envelope_tolerance=(
+                    None if inherited_envelope is None else inherited_envelope.tolerance
+                ),
             )
             # Read off the frame the fit was computed on, so Stage B is judged
             # at the width Stage A was judged at rather than at one refitted
             # over a different set of rows.
-            mass_accuracy = sample_mass_accuracy(
-                match_isotope_df,
-                reagent=reagent_offset,
-                min_anchor_ions=STAGE_A_FIT_MIN_IONS,
-            )
+            if inherited_accuracy is None:
+                mass_accuracy = sample_mass_accuracy(
+                    match_isotope_df,
+                    reagent=reagent_offset,
+                    min_anchor_ions=STAGE_A_FIT_MIN_IONS,
+                )
         instrument = get_instrument_type(sample.filename)
         # Load this instrument's confidence calibration from the D6 store (active DB row,
         # else the in-code provisional curve, else None -> uncalibrated). Passing it in keeps
@@ -3333,6 +3518,15 @@ async def _stage_a_assignments(
             )
 
         stage_a_assignments = assignments_of(match_isotope_df)
+    if inherited_envelope is not None:
+        # A decoy's commits are wrong formulas on a moved axis, and few: it
+        # fits no tolerance on them, and was scored at its control's above.
+        return (
+            stage_a_assignments,
+            confidence_calibration,
+            mass_accuracy,
+            inherited_envelope,
+        )
     # The tolerance is fitted on what Stage A committed, which a sample with no
     # library match has nothing of: it can still take its siblings' curve.
     envelope = await fit_run_envelope_tolerance(
@@ -3372,10 +3566,21 @@ async def _run_sample_assignment(
     one first, and the engine reads labelled ions at the purity that version
     carries (``custom_elements.labelled_purity``): every prediction of a
     labelled envelope the run makes, in Stage A's reference lines, the reagent
-    pre-pass, the untargeted search and the tiering, reads it.
+    pre-pass, the untargeted search and the tiering, reads it. A decoy run's
+    shift is set the same way (``mascope_match.shifted_mz_axis``).
     """
     await move_to_current_versions(sample_item_ids=[sample_item_id])
-    with labelled_purity(await sample_label_purity(sample_item_id)):
+    # A decoy that shifts the axis shifts it for every read the run makes, the
+    # peak table and the targeted matcher's series alike; any other run reads
+    # the axis as stored.
+    decoy = config.decoy if config is not None else None
+    with (
+        labelled_purity(await sample_label_purity(sample_item_id)),
+        shifted_mz_axis(
+            ppm=None if decoy is None else decoy.mz_shift_ppm,
+            da=None if decoy is None else decoy.mz_shift_da,
+        ),
+    ):
         return await _assign_sample(
             sample_item_id,
             config,
@@ -3420,7 +3625,16 @@ async def _assign_sample(
     ionization_setup = await sample_setup(sample_item_id)
     config = config or PeakAssignmentConfig()
 
-    if (reason := ineligible_reason(sample)) is not None:
+    reason = ineligible_reason(sample)
+    decoy_plan: DecoyPlan | None = None
+    if reason is None and config.decoy is not None:
+        # Planned before the run, and refused as an ineligible sample is: a
+        # decoy that cannot bound its control is not a run that failed.
+        try:
+            decoy_plan = await plan_sample_decoy(sample, config)
+        except DecoyRefused as refused:
+            reason = f"no decoy: {refused}"
+    if reason is not None:
         # Returned rather than raised: raise_api_warning always raises, which
         # made the skip payload unreachable and its _notification_data - the
         # reload the decorator's success path delivers - silently lost. The
@@ -3499,6 +3713,28 @@ async def _assign_sample(
         resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
             sample, resolved_profile, peaks_df
         )
+        if decoy_plan is not None:
+            runtime.logger.info(
+                f"Run '{run.peak_assignment_run_id}' is a decoy of run "
+                f"'{decoy_plan.control_run_id}' for sample "
+                f"'{sample.sample_item_name}': {decoy_plan.decoy.arm}, scored at "
+                "its control's calibration"
+            )
+        if decoy_plan is not None and decoy_plan.decoy.swap_adducts:
+            # Swapped after the chemistry is resolved, which reads the mode's
+            # own channels: the profile, the grid and the reagent are the
+            # sample's, and only the adducts read through them are wrong. No
+            # secondary channel is opened beside them.
+            mechanisms = list(decoy_plan.mechanisms)
+            mechanism_ids = [m.ionization_mechanism_id for m in mechanisms]
+            secondary_mechanisms = []
+            runtime.logger.info(
+                f"Decoy run '{run.peak_assignment_run_id}' searches "
+                + ", ".join(
+                    f"{own} as {wrong or 'nothing'}"
+                    for own, wrong in decoy_plan.swapped.items()
+                )
+            )
         if resolved_profile.unavailable_channels:
             # Once per run, and only for a channel the sample actually shows:
             # an operator can act on this by adding the mechanism.
@@ -3512,6 +3748,7 @@ async def _assign_sample(
             config,
             resolved_profile,
             ionization_setup=ionization_setup,
+            decoy_arm=None if decoy_plan is None else decoy_plan.record(),
         )
         # The mechanisms a sample's channels are searched and read through:
         # Stage A reads the reference lists through them, the untargeted
@@ -3584,22 +3821,31 @@ async def _assign_sample(
             known_window=resolved_profile.context.known_window,
             reagent_offset=reagent_offset,
             ionization_setup=ionization_setup,
+            inherited_accuracy=None if decoy_plan is None else decoy_plan.accuracy,
+            inherited_envelope=None if decoy_plan is None else decoy_plan.envelope,
         )
         runtime.logger.info(
             f"Stage A assigned {len(stage_a_assignments)} of {len(peaks_df)} "
             f"peaks from the known target library"
         )
-        runtime.logger.info(
-            f"Sample '{sample.sample_item_name}' reads an isotope line's share at "
-            f"the {envelope.fit.form} tolerance, level {envelope.fit.level}, over "
-            f"{envelope.fit.lines.lines} of its committed lines "
-            f"({envelope.fit.lines.absent} predicted lines absent)"
-            + (
-                f", pooled over {envelope.fit.pooled_files} files"
-                if envelope.fit.pooled_files
-                else ""
+        if envelope.inherited is not None:
+            runtime.logger.info(
+                f"Sample '{sample.sample_item_name}' reads an isotope line's share "
+                f"at its control run's {envelope.fit.form} tolerance, level "
+                f"{envelope.fit.level}"
             )
-        )
+        else:
+            runtime.logger.info(
+                f"Sample '{sample.sample_item_name}' reads an isotope line's share "
+                f"at the {envelope.fit.form} tolerance, level {envelope.fit.level}, "
+                f"over {envelope.fit.lines.lines} of its committed lines "
+                f"({envelope.fit.lines.absent} predicted lines absent)"
+                + (
+                    f", pooled over {envelope.fit.pooled_files} files"
+                    if envelope.fit.pooled_files
+                    else ""
+                )
+            )
         await send_progress_user_notification(notification, 0.4)
 
         # -- Stage B: untargeted composition search for the remainder. The
@@ -3769,6 +4015,9 @@ async def _assign_sample(
                     ),
                     reagent_offset=_run_scoring_centre(mass_accuracy),
                     envelope_tolerance=envelope.tolerance,
+                    inherited_accuracy=(
+                        None if decoy_plan is None else decoy_plan.accuracy
+                    ),
                 )
                 stage_b_assignments = untargeted_matches_to_peak_assignments(
                     election.matches,
@@ -3855,6 +4104,9 @@ async def _assign_sample(
             partner_gated_channels=resolved_profile.partner_gated_channels,
             reagent_lines=reagent_assignments,
             resolution=resolution,
+            inherited_calibration=(
+                None if decoy_plan is None else decoy_plan.calibration
+            ),
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel
@@ -3970,6 +4222,7 @@ async def _assign_sample(
             fragments.summary if fragments.summary["ladders"] else None,
             ionization_setup,
             envelope.record(),
+            None if decoy_plan is None else decoy_plan.record(),
         )
         await send_progress_user_notification(notification, 0.8)
 
@@ -4027,12 +4280,15 @@ async def _assign_sample(
         # reflects every assignment path: sample arrival, an explicit single-sample
         # re-assign, and a batch assign (which loops this function). Isolated -- a
         # fold-in failure must never fail or un-complete the assignment itself.
+        # A decoy is never folded: its rows are the sample read wrong on
+        # purpose, and the batch ledger is the sample's result.
         try:
             from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
                 fold_sample_into_batch_peaks,
             )
 
-            await fold_sample_into_batch_peaks(sample_item_id)
+            if decoy_plan is None:
+                await fold_sample_into_batch_peaks(sample_item_id)
         except Exception as fold_error:  # noqa: BLE001 - fold-in is best-effort
             runtime.logger.warning(
                 f"Batch-peak fold-in failed for sample '{sample_item_id}' "

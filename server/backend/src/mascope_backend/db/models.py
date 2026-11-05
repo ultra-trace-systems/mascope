@@ -2549,6 +2549,13 @@ class PeakAssignmentRun(Base):
     # so a retried create would otherwise mint a second run. NULL for in-app
     # runs and for imports that supplied none.
     import_key: Mapped[Optional[str]] = mapped_column(String(64))
+    # The arm a decoy run ran (``PeakAssignmentDecoy.arm``: ``mz_shift_ppm=+9``,
+    # ``mz_shift_da=+0.35``, ``swap_adducts``), NULL for every other run. A
+    # decoy is the in-app engine's own run with its chemistry made wrong on
+    # purpose, so the engine column cannot tell it from the sample's result,
+    # and every reader that takes a sample's latest run filters on this: the
+    # batch fold, the ledger read, the sample status, the recalibration pool.
+    decoy: Mapped[Optional[str]] = mapped_column(String(64))
     error: Mapped[Optional[str]] = mapped_column(Text)
     peak_assignment_run_utc_created: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True)

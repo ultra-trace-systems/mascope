@@ -22,7 +22,10 @@ This reclaims three kinds of run:
   ``keep_per_sample_total``, bounds the sum across engines, because `engine` is
   free text a client supplies and one that varies per build would otherwise
   mint a fresh quota on every import; the in-app engine is exempt from it, so
-  the total can never eat the history the per-engine quota protects.
+  the total can never eat the history the per-engine quota protects. A decoy
+  run is the in-app engine's too, but no part of that history: each arm ages
+  out of a quota of its own, so a sample's decoys never evict the run they
+  are decoys of, and they count against the total as an import does.
 - **Terminal non-completed runs** older than ``keep_failed_hours``. A failed run
   is invisible to the read model and can never become visible, so its rows are
   pure waste - but a just-failed run is kept briefly so its error is still
@@ -171,6 +174,7 @@ def _completed_runs_statement() -> Select:
             PeakAssignmentRun.peak_assignment_run_id,
             PeakAssignmentRun.sample_item_id,
             PeakAssignmentRun.engine,
+            PeakAssignmentRun.decoy,
         )
         .where(PeakAssignmentRun.status == "completed")
         .order_by(
@@ -236,7 +240,8 @@ async def _select_prunable_run_ids(
     """Collect the run ids eligible for pruning.
 
     :param session: Open async session.
-    :param keep_per_sample: Newest completed runs to keep per (sample, engine).
+    :param keep_per_sample: Newest completed runs to keep per (sample, engine),
+        and per decoy arm of a sample.
     :param keep_failed_hours: Grace period on terminal non-completed runs.
     :param keep_running_hours: Grace period on in-flight runs.
     :param keep_importing_hours: Grace period on assembling imports.
@@ -267,19 +272,24 @@ async def _select_prunable_run_ids(
     #
     # Counts are of runs *kept*, not runs seen: a run already condemned by the
     # engine quota must not also consume a slot in the total.
+    #
+    # A decoy run is the in-app engine's, so the engine alone would put it in
+    # the quota of the run it is a decoy of: two arms of one sample would then
+    # evict that run and its ledger. Each arm is a quota of its own instead,
+    # and none is exempt from the total - the in-app exemption protects the
+    # sample's own history, which a decoy is not part of.
     completed = (await session.execute(_completed_runs_statement())).all()
 
-    kept_per_engine: dict[tuple[str, str], int] = {}
+    kept_per_engine: dict[tuple[str, str, str | None], int] = {}
     kept_per_sample: dict[str, int] = {}
-    for run_id, sample_item_id, engine in completed:
-        engine_key = (sample_item_id, engine)
+    for run_id, sample_item_id, engine, decoy in completed:
+        engine_key = (sample_item_id, engine, decoy)
         if kept_per_engine.get(engine_key, 0) >= keep_per_sample:
             prunable.append(run_id)
             continue
-        if (
-            engine != IN_APP_ENGINE
-            and kept_per_sample.get(sample_item_id, 0) >= keep_per_sample_total
-        ):
+        if (engine != IN_APP_ENGINE or decoy is not None) and kept_per_sample.get(
+            sample_item_id, 0
+        ) >= keep_per_sample_total:
             prunable.append(run_id)
             continue
         kept_per_engine[engine_key] = kept_per_engine.get(engine_key, 0) + 1

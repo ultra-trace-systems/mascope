@@ -345,6 +345,7 @@ async def fold_run_record(session, sample: Any) -> Optional[dict]:
         "sigma_source": None,
         "mu_ppm": None,
         "mu_source": None,
+        "decoy": None,
         "error": None,
         "peak_assignment_run_utc_created": None,
         "peak_assignment_run_utc_completed": last_written,

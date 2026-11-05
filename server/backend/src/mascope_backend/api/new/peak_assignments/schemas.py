@@ -115,6 +115,13 @@ class PeakAssignmentRunRecord(BaseModel):
     #: Where ``mu_ppm`` came from: ``fitted``, ``reagent`` or ``none`` for an
     #: in-app run; the engine's own word for an imported one.
     mu_source: str | None = None
+    #: The arm a decoy run ran - ``mz_shift_ppm=+9``, ``mz_shift_da=+0.35`` or
+    #: ``swap_adducts`` - and null for every other run. A decoy is the in-app
+    #: engine re-run on the sample with its chemistry made wrong on purpose,
+    #: scored at the calibration of the run its config's ``decoy_arm`` names;
+    #: it is listed only with ``include_decoys`` and is never the sample's
+    #: result.
+    decoy: str | None = None
     error: str | None = None
     peak_assignment_run_utc_created: datetime | None = None
     peak_assignment_run_utc_completed: datetime | None = None

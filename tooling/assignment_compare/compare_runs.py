@@ -28,6 +28,14 @@ Usage::
 
 Writes ``joined_<sample>.csv`` per sample, ``joined_all.csv``, ``summary.json``
 (pooled and per-sample metrics) and ``summary.md`` (the same, as tables).
+
+With ``--decoy`` it reads the decoy runs of each sample instead: the in-app
+engine re-run with the m/z axis shifted or the adducts swapped, scored at the
+calibration of the run it is a decoy of (its control). Per arm it reports the
+share of the control's assigned rows, and of their intensity, that the decoy
+still holds at assigned, below and above m/z 350, and on the adduct arm how
+many of those rows are new ions rather than another split of an ion the
+control reads. Writes ``decoy.json`` and ``decoy.md``.
 """
 
 from __future__ import annotations
@@ -688,6 +696,266 @@ def markdown_summary(result: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+#: Below this m/z a 0.35 Da shift lands in the mass-defect gap no CHNOS formula
+#: sits in, and above it the gap closes, so a decoy arm is read on either side.
+#: The reference engine's own split (its ``scorecard.py``).
+DECOY_MZ_SPLIT = 350.0
+#: The width of the m/z bins a decoy arm is also reported in.
+DECOY_BIN_DA = 50
+#: The run config key under which a decoy run names the run it is a decoy of.
+DECOY_ARM_KEY = "decoy_arm"
+#: The arm the engine refuses with, in a refused decoy run's error.
+DECOY_REFUSAL = "no decoy:"
+
+
+def assigned_rows(ledger: pd.DataFrame) -> pd.DataFrame:
+    """A ledger's monoisotopic rows at the ``assigned`` tier, with what a decoy
+    count reads of them: the peak, its m/z and intensity, and the ion."""
+    role = ledger["role"].fillna("unassigned")
+    tier = ledger["tier"].fillna("unassigned")
+    rows = ledger[(role == ROLE_MAIN) & (tier == "assigned")]
+    return pd.DataFrame(
+        {
+            "sample_peak_id": rows["sample_peak_id"].astype(str),
+            "mz": pd.to_numeric(rows["sample_peak_mz"], errors="coerce"),
+            "intensity": pd.to_numeric(
+                rows["sample_peak_intensity"], errors="coerce"
+            ).fillna(0.0),
+            "ion": rows["ion_formula"].map(canonical),
+        }
+    )
+
+
+def assigned_counts(rows: pd.DataFrame) -> dict:
+    """How many assigned rows, and how much intensity, either side of the split
+    and per m/z bin (keyed by the bin's lower edge)."""
+    below = rows["mz"] < DECOY_MZ_SPLIT
+    above = rows["mz"] >= DECOY_MZ_SPLIT
+    bins = (np.floor(rows["mz"].dropna() / DECOY_BIN_DA) * DECOY_BIN_DA).astype(int)
+    return {
+        "rows": int(len(rows)),
+        "rows_lt_350": int(below.sum()),
+        "rows_ge_350": int(above.sum()),
+        "intensity": float(rows["intensity"].sum()),
+        "intensity_lt_350": float(rows.loc[below, "intensity"].sum()),
+        "intensity_ge_350": float(rows.loc[above, "intensity"].sum()),
+        "by_bin": {str(edge): int(n) for edge, n in bins.value_counts().items()},
+    }
+
+
+def ion_split(decoy: pd.DataFrame, control_ledger: pd.DataFrame) -> dict:
+    """The adduct arm's assigned rows at the ion level.
+
+    A swapped adduct can read an ion the control already reads as another
+    neutral: X through [M+Na]+ where the control had (X + Na - H) through
+    [M+H]+. The ion is pinned by its mass and the split is not, so such a row
+    is another split of an ion the run reads, not a new one. A row is a new ion
+    where the control read no monoisotopic row of that ion on that peak, at any
+    tier, or left the peak unexplained.
+
+    :param decoy: The arm's assigned rows (:func:`assigned_rows`).
+    :param control_ledger: The control's whole ledger.
+    :return: The counts, the new ions below the split among them.
+    """
+    role = control_ledger["role"].fillna("unassigned")
+    main = control_ledger[role == ROLE_MAIN]
+    control_ions = set(
+        zip(main["sample_peak_id"].astype(str), main["ion_formula"].map(canonical))
+    )
+    same = [
+        ion is not None and (peak, ion) in control_ions
+        for peak, ion in zip(decoy["sample_peak_id"], decoy["ion"])
+    ]
+    new = decoy[~np.asarray(same, dtype=bool)] if len(decoy) else decoy
+    return {
+        "same_ion": int(sum(same)),
+        "new_ion": int(len(new)),
+        "new_ion_lt_350": int((new["mz"] < DECOY_MZ_SPLIT).sum()),
+    }
+
+
+def on_control_reagent(decoy: pd.DataFrame, control_ledger: pd.DataFrame) -> dict:
+    """The arm's assigned rows on peaks its control claimed as the source's own.
+
+    A dalton shift moves the source's lines out of the reagent pre-pass's reach,
+    so the brightest ions of the spectrum are offered to the stages as any peak
+    is. A row there is a false assignment like any other, and the brightest one
+    there is: counted apart, so the intensity share is read knowing it.
+    """
+    role = control_ledger["role"].fillna("unassigned")
+    reagent = set(control_ledger.loc[role == "reagent", "sample_peak_id"].astype(str))
+    rows = decoy[decoy["sample_peak_id"].isin(reagent)]
+    return {
+        "on_control_reagent": int(len(rows)),
+        "intensity_on_control_reagent": float(rows["intensity"].sum()),
+    }
+
+
+def decoy_rates(control: dict, decoy: dict) -> dict:
+    """What share of its control's assigned rows and intensity an arm holds."""
+    rates = {
+        "held_pct": pct(decoy["rows"], control["rows"]),
+        "held_lt_350_pct": pct(decoy["rows_lt_350"], control["rows_lt_350"]),
+        "held_ge_350_pct": pct(decoy["rows_ge_350"], control["rows_ge_350"]),
+        "held_intensity_pct": pct(decoy["intensity"], control["intensity"]),
+        "held_intensity_lt_350_pct": pct(
+            decoy["intensity_lt_350"], control["intensity_lt_350"]
+        ),
+        "held_intensity_ge_350_pct": pct(
+            decoy["intensity_ge_350"], control["intensity_ge_350"]
+        ),
+    }
+    if "new_ion" in decoy:
+        rates["new_ion_pct"] = pct(decoy["new_ion"], control["rows"])
+    return rates
+
+
+def _added(total: dict, one: dict) -> dict:
+    """Two arms' counts summed, bins and all."""
+    out = dict(total)
+    for key, value in one.items():
+        if key == "by_bin":
+            bins = dict(out.get("by_bin", {}))
+            for edge, n in value.items():
+                bins[edge] = bins.get(edge, 0) + n
+            out["by_bin"] = bins
+        elif isinstance(value, (int, float)):
+            out[key] = out.get(key, 0) + value
+    return out
+
+
+def newest_decoys(runs: pd.DataFrame | None) -> dict[str, pd.Series]:
+    """A sample's newest decoy run per arm: the newest completed one, else the
+    newest of any status, so a refused or unfinished arm is still reported."""
+    if runs is None or runs.empty or "decoy" not in runs.columns:
+        return {}
+    decoys = runs[runs["decoy"].notna()]
+    newest: dict[str, pd.Series] = {}
+    for arm, group in decoys.groupby("decoy", sort=True):
+        completed = group[group["status"] == "completed"]
+        newest[str(arm)] = (completed if not completed.empty else group).iloc[0]
+    return newest
+
+
+def decoy_report(client: MascopeClient, sample_ids: list[str]) -> dict:
+    """Every sample's decoy arms against their controls, and the arms pooled.
+
+    :param client: The SDK client.
+    :param sample_ids: The samples of the set.
+    :return: ``{"pooled": {arm: ...}, "per_sample": {sample: {arm: ...}},
+        "skipped": {sample: {arm: why}}}``.
+    """
+    per_sample: dict[str, dict] = {}
+    skipped: dict[str, dict] = {}
+    pooled: dict[str, dict] = {}
+    for sample_id in sample_ids:
+        runs = client.peak_assignments.list_runs(sample_id, include_decoys=True)
+        arms = newest_decoys(runs)
+        if not arms:
+            print(f"{sample_id}: skipped (no decoy run)")
+            continue
+        ledgers: dict[str, pd.DataFrame | None] = {}
+        for arm, run in arms.items():
+            if run["status"] != "completed":
+                error = run.get("error")
+                why = (
+                    str(error)
+                    if isinstance(error, str) and error.startswith(DECOY_REFUSAL)
+                    else f"run {run['status']}"
+                )
+                skipped.setdefault(sample_id, {})[arm] = why
+                continue
+            config = run.get("config") if isinstance(run.get("config"), dict) else {}
+            control_id = (config.get(DECOY_ARM_KEY) or {}).get("control_run_id")
+            if control_id is None:
+                skipped.setdefault(sample_id, {})[arm] = "names no control run"
+                continue
+            if control_id not in set(runs["peak_assignment_run_id"]):
+                # Each arm has a retention quota of its own, so a decoy can
+                # outlive the control it was scored against
+                skipped.setdefault(sample_id, {})[arm] = "its control run is gone"
+                continue
+            for run_id in (control_id, run["peak_assignment_run_id"]):
+                if run_id not in ledgers:
+                    ledgers[run_id] = client.peak_assignments.get(
+                        sample_id, run_id=run_id
+                    )
+            control_ledger = ledgers[control_id]
+            decoy_ledger = ledgers[run["peak_assignment_run_id"]]
+            if control_ledger is None or decoy_ledger is None:
+                skipped.setdefault(sample_id, {})[arm] = "empty ledger"
+                continue
+            control = assigned_counts(assigned_rows(control_ledger))
+            decoy_rows = assigned_rows(decoy_ledger)
+            decoy = assigned_counts(decoy_rows)
+            decoy.update(on_control_reagent(decoy_rows, control_ledger))
+            if arm == "swap_adducts":
+                decoy.update(ion_split(decoy_rows, control_ledger))
+            per_sample.setdefault(sample_id, {})[arm] = {
+                "run": run["peak_assignment_run_id"],
+                "control_run": control_id,
+                "control": control,
+                "decoy": decoy,
+                **decoy_rates(control, decoy),
+            }
+            arm_total = pooled.setdefault(
+                arm, {"samples": 0, "control": {}, "decoy": {}}
+            )
+            arm_total["samples"] += 1
+            arm_total["control"] = _added(arm_total["control"], control)
+            arm_total["decoy"] = _added(arm_total["decoy"], decoy)
+        print(
+            f"{sample_id}: "
+            + ", ".join(
+                f"{arm} {one['held_pct']}%"
+                for arm, one in per_sample.get(sample_id, {}).items()
+            )
+        )
+    for total in pooled.values():
+        total.update(decoy_rates(total["control"], total["decoy"]))
+    return {
+        "pooled": dict(sorted(pooled.items())),
+        "per_sample": per_sample,
+        "skipped": skipped,
+    }
+
+
+def decoy_markdown(result: dict) -> str:
+    """The decoy report as the gate quotes it: one row per arm, pooled."""
+    lines = [
+        f"# Decoy arms over {len(result['per_sample'])} sample(s)",
+        "",
+        "Share of the control's assigned rows (and of their intensity) the arm "
+        "still holds at assigned. No target yet (decision 31).",
+        "",
+        "| arm | samples | control assigned | arm assigned | held % | "
+        f"held % < {DECOY_MZ_SPLIT:g} | held % >= {DECOY_MZ_SPLIT:g} | "
+        "held intensity % | on the control's reagent | new ions (< 350) |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for arm, total in result["pooled"].items():
+        decoy = total["decoy"]
+        new = (
+            f"{decoy['new_ion']} ({decoy['new_ion_lt_350']}), {total['new_ion_pct']}%"
+            if "new_ion" in decoy
+            else "-"
+        )
+        lines.append(
+            f"| {arm} | {total['samples']} | {total['control']['rows']} | "
+            f"{decoy['rows']} | {total['held_pct']} | {total['held_lt_350_pct']} | "
+            f"{total['held_ge_350_pct']} | {total['held_intensity_pct']} | "
+            f"{decoy['on_control_reagent']} | {new} |"
+        )
+    if result["skipped"]:
+        lines += ["", "Arms not read:", ""]
+        lines += [
+            f"- `{sample}` {arm}: {why}"
+            for sample, arms in result["skipped"].items()
+            for arm, why in arms.items()
+        ]
+    return "\n".join(lines) + "\n"
+
+
 def resolve_samples(client: MascopeClient, args) -> list[str]:
     if args.sample:
         return list(args.sample)
@@ -730,6 +998,12 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--out", default="assignment_compare_out", help="output directory"
     )
+    parser.add_argument(
+        "--decoy",
+        action="store_true",
+        help="report each sample's decoy runs against the run each is a decoy "
+        "of, instead of comparing two engines",
+    )
     args = parser.parse_args(argv)
     if not args.sample and not args.batch:
         parser.error("give --sample ids or a --batch name")
@@ -748,6 +1022,17 @@ def main(argv=None) -> int:
     )
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.decoy:
+        result = decoy_report(client, resolve_samples(client, args))
+        if not result["per_sample"]:
+            sys.exit("nothing to report: no sample carries a completed decoy run")
+        (out_dir / "decoy.json").write_text(
+            json.dumps(result, indent=2, default=_json_default), encoding="utf-8"
+        )
+        (out_dir / "decoy.md").write_text(decoy_markdown(result), encoding="utf-8")
+        print(decoy_markdown(result))
+        return 0
 
     frames = []
     per_sample = {}
