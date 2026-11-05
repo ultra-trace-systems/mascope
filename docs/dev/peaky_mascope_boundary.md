@@ -1,7 +1,7 @@
 # The boundary between Mascope and peaky
 
 - **Status:** building
-- **As of:** 2026-10-30
+- **As of:** 2026-11-05
 - **Tracked in:** [Assignment truth corpus and bench](https://linear.app/ultra-trace/project/assignment-truth-corpus-and-bench-90d43812ff0f)
   and [Peaky, thinner: the research and reporting platform](https://linear.app/ultra-trace/project/peaky-thinner-the-research-and-reporting-platform-81db9b25bea2)
   (Linear, team Peaky, PKY-1 onward, filed from 2026-10-30); the Mascope-side
@@ -149,6 +149,19 @@ note records it as its next decision when it is next edited on develop, and
 milestone 4's dependence on the stage 3 gate is lifted; 3.5c and 3.5d stay in
 stage 3 because they are small and the matcher fix is overdue on its own.
 
+**Decided 2026-11-05 by the plan owner: the plan's engine steps do not
+wait for the corpus (decision 34, MAS-708).** The corpus-first order of
+section 4 and the baseline's hold (PKY-25) apply to peaky's library
+moves, where a rule's two copies must be read against truth before one is
+deleted, and to the plan's own corpus gate (step 4.20). Mascope's open
+stage 3 steps and stage 4 proceed now, judged as every stage so far
+against the gate sets and peaky's runs at a pinned release, and the first
+card after the baseline is read once over everything merged before it.
+Section 3's rule stands: a rule moves as a specification, never as code,
+so stage 4 is written from the plan's riders and peaky's published docs,
+and the specifications of A7 are a cross-check on the built steps, not
+their prerequisite.
+
 **Also decided 2026-10-30, in the meeting:** the split of section 2 is accepted
 as written (PKY-1); peaky stays the interactive AI data analysis and reporting
 tool (PKY-2); the corpus comes first and peaky's owner builds it (PKY-3);
@@ -240,7 +253,7 @@ the baseline cards (PKY-25) the blocker of every move that changes output.
 | A5 The batch time series load | `io/io_mascope.py`, `fetch_batch_peaks` | `load_peaks` on the bulk route, with `save_path` | 5.11, MAS-568 | the first `mascope-sdk` after 2026.10.28 | | | merged 2026-10-30; same output |
 | A6 The minor-line response | `assignment/iso_response.py` | the presence-corrected share in `score_pattern_v2` | 3.5d, MAS-582 | | | | Todo; the curve stays as the fallback for stores without the count |
 | The formula grid, the width model, side lobes, the axis correction | `assignment/`, `batch/` | as stages 3 and 4 land each | | | | | not scheduled; one row each when they are |
-| A7 Batch isotope checks, evidence levels, the axis lock model | `batch/iso_checks.py`, `assignment/levels/`, `batch/axislock.py` | specification first, by peaky's owner | stage 4 | | | | waits for stage 4; the reverse direction of the chart |
+| A7 Batch isotope checks, evidence levels, the axis lock model | `batch/iso_checks.py`, `assignment/levels/`, `batch/axislock.py` | specification first, by peaky's owner | stage 4 | | | | stage 4 builds now from the plan's riders and peaky's docs (decision 34); the specification is a cross-check on each built step; the reverse direction of the chart |
 | A8 The MS2 source and the fragment composition rules | `ms2/sources.py`, `ms2/subformula.py` | the MS2 store's scans and window routes; `composition.ms2` | the MS2 project's phases 0, 1 and 5 (MAS-389, MAS-390; the core MAS-387 merged) | `mascope-tools` 2026.10.27 for the core, and the SDK release carrying the routes | | | the MS2 note's appendix A is this row's own register; same output, peaky's known answers as the proof; the binding class and replicates stay in peaky until MAS-401 |
 | A9 Reagent profiles and chemistry contexts, as data | `chem/profiles.py`, `chem/contexts.py` | the presets in `composition.profiles`; the served rows after 4.5 | 4.5, MAS-65 (the rows; the presets are in since 1.1) | `mascope-tools` 2026.10.27 | | | same output expected, the presets were ported verbatim; peaky's `load_config` extras stay as its research overlay |
 | A10 The reagent-cluster library | `chem/reagents.py`, `build_library` | `composition.reagents` and the profile's cluster grammar | 3.3 (built), 3.3d | | | | different output expected; an ion only peaky names enters the library with its citation first; the ledger-coupled labeler stays in peaky |

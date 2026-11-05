@@ -3,8 +3,8 @@
 # Closing the assignment quality gap: the work, step by step
 
 - **Status:** building
-- **As of:** 2026-10-23
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 and MAS-570)
+- **As of:** 2026-11-05
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708 and MAS-709)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -19,15 +19,19 @@ step; merged so far are 3.1 (#2197), 3.1c (#2205), 3.1d (#2211), 3.2
 3.4, 3.4c, 3.4e, 3.4f, 3.4h, 3.5, 3.5b, 3.6 and the 3.7 gate. Their
 baseline is the last stage 2 round (step 2.8, engine 0.5.0, tiering rule
 set 6) and, for the chamber dataset's sets G to J, the chemist's reading
-of 2026-09-24 (decision 21). Stage 4 has not started. Of milestone 5, the
+of 2026-09-24 (decision 21). Stage 4 starts with 4.1: it was pulled ahead
+of the stage 3 gate on 2026-10-30 (decision 33) and, until the truth
+corpus has a baseline, is judged as every stage so far, against the gate
+sets and the reference pinned at a release (decision 34, 2026-11-05). Of
+milestone 5, the
 reference's 0.10 review, step 5.5 is built (#2377), 5.3 is measured and
 the rest are planned; a readiness check against the reference's main on
 2026-10-22 (the last section of the review) found nothing new to bin and
 added step 5.9. Step 5.10 comes from the instrument's own centroid flags
 (a census of 2026-10-23), not from the review. Every planned step is an
 issue in the Linear project Assignment quality plan (MAS-37 to MAS-73,
-MAS-410 and MAS-443; step 5.3 is MAS-68, in review; decisions 29 and 31
-are raised as MAS-408 and MAS-409). The measurement log and the specifications of the completed
+MAS-410 and MAS-443; step 5.3 is MAS-68, measured; decisions 29 and 31
+were taken on MAS-408 and MAS-409 on 2026-10-23). The measurement log and the specifications of the completed
 steps are in
 [`assignment_quality_plan_log.md`](assignment_quality_plan_log.md); the
 table below names each step's PR, its merge date and one line on its state.
@@ -250,6 +254,22 @@ justify.
   new step, not ours or an ask of Mascope, written into this note as a dated
   section and into the steps it rides with (step 5.1). The first review is
   the section after stage 4.
+- **The truth corpus joins the gate when it exists; nothing waits for it.**
+  The boundary note (`peaky_mascope_boundary.md`) and the Linear project
+  *Assignment truth corpus and bench* build a vetted table of true and
+  false readings and one scorer over it, owned by peaky's owner. Until
+  its baseline cards exist, every step here is judged as the stages
+  before it: the gate sets, the reference's runs published at a pinned
+  release, G1 to G14 with G1 and G2 as readings, the intrinsic metrics
+  where no reference run exists, the certified cylinder, and the decoy
+  arms once 5.2 lands (decision 34). When the baseline exists, step 4.20
+  adds the corpus card to the gate and reads it once over every step
+  merged before; a step whose card fails the acceptance rule is reopened
+  as a finding. Stage 4's batch components are written from this note's
+  riders and the reference's published docs, reviewed per release (5.1)
+  and never ported; the specifications peaky's owner writes for the batch
+  isotope checks, the evidence levels and the axis lock model are a
+  cross-check when they arrive, not a prerequisite.
 - **Regression guards.** With the identity profile (`none`) and today's
   config a run must reproduce today's ledger content for content (ids and
   timestamps excluded); the scoring goldens in `tooling/score_eval` do not
@@ -851,12 +871,21 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
 
 ## Stage 4 - use the batch (engine 0.7.0)
 
-Corroboration that only a batch can give, on the batch ledger.
+Corroboration that only a batch can give, on the batch ledger. Pulled
+ahead of the remaining stage 3 steps on 2026-10-30 (decision 33): it is
+the stage the reference's advantage rests on. Its steps start now and are
+judged against the pinned reference until the truth corpus has a baseline
+(decision 34); none waits for the stage 3 gate except 4.5, which changes
+who edits chemistry and stays last.
 
 ### 4.1 Series detection on the batch ledger
 
-- **What.** Port `series_gka.py` units and `series_detect.py`'s
-  decoy-controlled detection (pure) to `mascope_tools.composition.series`.
+- **What.** Series units and decoy-controlled series detection as a pure
+  module, `mascope_tools.composition.series`, written from the rule as
+  this step and the reference's published docs state it. The boundary
+  note says how a rule moves (as a specification, never as code), so the
+  reference's series modules are not read or copied and the thresholds
+  are re-derived on our data.
   A batch operation, "Detect series", walks from Assigned anchors along
   CH2, O, H2O, CO, CO2, C2H2O and the profile's contaminant units (C2H6OSi,
   CF2), proposes members at exact mass among unassigned or candidate
@@ -872,7 +901,9 @@ Corroboration that only a batch can give, on the batch ledger.
   `stage` (`cover` or `residual`; peaky #43, #44), and `peaky
   publish-batch` maps fixed columns, so the comparison reads them from
   peaky's run folder rather than from the import.
-- **Size.** L. Depends on stages 2 and 3.
+- **Size.** L. Depends on stage 2; no longer on the stage 3 gate
+  (decision 33). Starts after the finder fix MAS-444, which edits the
+  same search function.
 
 ### 4.2 Time-series coherence
 
@@ -1525,10 +1556,12 @@ with the averaged profile kept as measured.
 - Its known-species registry and certified-neutral passes (the note's
   "Not in this plan").
 
-### Decisions proposed to the plan owner (30 taken 2026-10-14, 32 on 2026-10-22)
+### Decisions proposed to the plan owner (30 taken 2026-10-14, 29 and 31 on 2026-10-23, 32 on 2026-10-22, 33 on 2026-10-30, 34 on 2026-11-05)
 
 29. **The reference is pinned at a release, and each peaky minor gets a
-    boundary review** (step 5.1). Raised as MAS-408 on 2026-10-22.
+    boundary review** (step 5.1). Taken 2026-10-23 by the plan owner
+    (MAS-408), with one amendment: a pre-release is also reviewed when
+    it carries a behaviour the plan is about to build on.
 30. **A Schymanski-style identification level is the target, built in
     Mascope's own vocabulary; the reference's scale is not ported while it
     moves** (taken 2026-10-14 by the plan owner). The level is derived from
@@ -1537,7 +1570,8 @@ with the averaged profile kept as measured.
     derived tier stays what the fold and the UI read.
 31. **The decoy arms join the gate without a target** until two gates have
     read them; then a target is set from those readings, not from the
-    reference's numbers. Raised as MAS-409 on 2026-10-22.
+    reference's numbers. Taken 2026-10-23 by the plan owner as proposed
+    (MAS-409).
 32. **The envelope's tolerance is a per-file response curve on
     Orbitrap-class runs and a centre and a width on the TOF, read by
     height** (taken 2026-10-22 by the plan owner, on 5.3's numbers). On a
@@ -1545,6 +1579,32 @@ with the averaged profile kept as measured.
     line is charged; a file too thin for its own curve takes the curve of
     the run's files with its acquisition settings, then today's numbers.
     The TOF is revisited once E, F and J are re-read (step 3.5b).
+33. **Stage 4 is pulled ahead of the remaining stage 3 steps** (taken
+    2026-10-30 by the plan owner, confirmed with peaky's owner in the
+    boundary meeting; Linear MAS-609). It is the stage the reference's
+    advantage rests on: the batch isotope checks, the evidence levels and
+    the series its merged ledger has and Mascope's does not. Steps 3.5c
+    and 3.5d stay in stage 3 because they are small and the matcher fix
+    is overdue on its own; the other open stage 3 steps proceed as
+    footprints allow and no longer gate stage 4's start.
+34. **The plan proceeds against the pinned reference before the truth
+    corpus exists** (taken 2026-11-05 by the plan owner; Linear MAS-708).
+    The corpus-first sequencing of the boundary note holds for peaky's
+    library moves and for the corpus gate itself (step 4.20); it does
+    not gate the engine's steps. Until the baseline cards exist, a step
+    is judged as every step so far: the gate sets, the reference's runs
+    at a pinned release, G1 to G14 with G1 and G2 as readings, the
+    intrinsic metrics, the certified cylinder, the decoy arms. Stage 4's
+    components are written from this note's riders and the reference's
+    published docs, never ported, and the specifications peaky's owner
+    writes are read as a cross-check when they arrive. When the baseline
+    exists, 4.20 adds the corpus card and reads it once over every step
+    merged before, and a step whose card fails the acceptance rule is
+    reopened as a finding. The chain behind the corpus (inventory,
+    schema, converters, vetting, split, scorer, baseline) is weeks of
+    peaky's owner's time and changes nothing the open steps build;
+    waiting would have left 3.5b idle while six steps wait on its
+    tolerance, and stage 4 unstarted.
 
 ### Worth watching
 
