@@ -270,32 +270,74 @@ def _goose_version(env: dict[str, str]) -> str:
         sys.exit(f"goose is not runnable: {e}")
 
 
-def _parse_answer(stdout: str) -> Any:
-    """The model's final JSON object from Goose's output: the last top-level
-    object with a ``question_id``, or the last object at all."""
-    decoder = json.JSONDecoder()
-    found = []
-    i = 0
-    while i < len(stdout):
-        if stdout[i] == "{":
-            try:
-                obj, end = decoder.raw_decode(stdout[i:])
-                found.append(obj)
-                i += end
-                continue
-            except ValueError:
-                pass
-        i += 1
-    for obj in reversed(found):
-        if isinstance(obj, dict) and "question_id" in obj and "answer" in obj:
-            return obj["answer"]
-        if isinstance(obj, dict) and isinstance(
-            obj.get("result"), str
-        ):  # --output-format json wraps the reply
-            inner = _parse_answer(obj["result"])
-            if inner is not None:
-                return inner
+def _goose_output(stdout: str) -> dict[str, Any] | None:
+    """Goose's ``--output-format json`` document: the messages and the
+    metadata, found past the banner it prints first."""
+    start = stdout.find("{")
+    while start != -1:
+        try:
+            doc = json.loads(stdout[start:])
+        except ValueError:
+            start = stdout.find("{", start + 1)
+            continue
+        return doc if isinstance(doc, dict) and "messages" in doc else None
     return None
+
+
+def _as_json(value: Any) -> Any:
+    """*value*, decoded once when it is a JSON text: a model that writes its
+    answer as a string holding JSON answered the JSON."""
+    if isinstance(value, str):
+        text = value.strip()
+        if (
+            text[:1] in "[{"
+            or text in ("null", "true", "false")
+            or _NUMBER.fullmatch(text)
+        ):
+            try:
+                return json.loads(text)
+            except ValueError:
+                return value
+    return value
+
+
+_NUMBER = re.compile(r"-?\d+(\.\d+)?([eE][-+]?\d+)?")
+
+
+def _parse_answer(stdout: str) -> tuple[Any, dict[str, Any]]:
+    """The model's answer, and what else the episode's output says.
+
+    The answer is the ``answer`` of the recipe's final output (the
+    ``recipe__final_output`` call, or the last assistant text that is the
+    same JSON object); None when the model gave none. The rest: the tool
+    calls made, by tool, and Goose's token counts.
+    """
+    doc = _goose_output(stdout)
+    if doc is None:
+        return None, {"tool_calls": 0, "tools": {}, "tokens": {}}
+    answer = None
+    tools: dict[str, int] = {}
+    for message in doc.get("messages", ()):
+        for part in message.get("content", ()):
+            if part.get("type") == "toolRequest":
+                call = (part.get("toolCall") or {}).get("value") or {}
+                name = str(call.get("name", ""))
+                if name == "recipe__final_output":
+                    answer = _as_json((call.get("arguments") or {}).get("answer"))
+                else:
+                    tools[name] = tools.get(name, 0) + 1
+            elif part.get("type") == "text" and message.get("role") == "assistant":
+                try:
+                    final = json.loads(part["text"])
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(final, dict) and "answer" in final:
+                    answer = _as_json(final["answer"])
+    tokens = {
+        key: doc.get("metadata", {}).get(key)
+        for key in ("input_tokens", "output_tokens", "total_tokens")
+    }
+    return answer, {"tool_calls": sum(tools.values()), "tools": tools, "tokens": tokens}
 
 
 # --- the run -------------------------------------------------------------------
@@ -376,17 +418,28 @@ def run(args: argparse.Namespace) -> int:
     print(f"run {folder}", flush=True)
 
     try:
-        with open(folder / "results.jsonl", "a") as out:
-            for rep in range(args.reps):
-                for question in questions:
-                    record = episode(question, rep, folder, env, args)
-                    out.write(json.dumps(record, default=str) + "\n")
-                    out.flush()
-                    print(
-                        f"{question.id:<4} rep{rep} {record['verdict']:<8} {record['seconds']:6.1f}s"
-                        + (f"  {record['problems'][:2]}" if record["problems"] else ""),
-                        flush=True,
-                    )
+        import concurrent.futures as cf
+
+        jobs = [(question, rep) for rep in range(args.reps) for question in questions]
+        with (
+            open(folder / "results.jsonl", "a") as out,
+            cf.ThreadPoolExecutor(args.parallel) as pool,
+        ):
+            futures = [
+                pool.submit(episode, question, rep, folder, env, args)
+                for question, rep in jobs
+            ]
+            for (question, rep), future in zip(jobs, futures):
+                record = future.result()
+                out.write(json.dumps(record, default=str) + "\n")
+                out.flush()
+                print(
+                    f"{question.id:<4} rep{rep} {record['verdict']:<8} {record['seconds']:6.1f}s"
+                    f"  {record['tool_calls']} call(s)"
+                    + (f"  {record['problems'][:2]}" if record["problems"] else "")
+                    + (f"  {record['error'][-120:]!r}" if record["error"] else ""),
+                    flush=True,
+                )
     finally:
         # The token dies with the run
         try:
@@ -458,14 +511,13 @@ def episode(
             env=env,
             timeout=120,
         )
-    answer = _parse_answer(stdout) if code == 0 else _parse_answer(stdout)
+    answer, about = _parse_answer(stdout)
     # Goose exited without an answer: a provider error, or the harness's own
     # fault (a bad recipe, a missing extension): infra either way, never the
     # model's miss, and the stderr tail says which
     infra = code != 0 and answer is None
     verdict = "infra" if infra else ai_golden.verdict_of(question, answer)
     problems = [] if answer is None else ai_golden.check_answer(question, answer)
-    tool_calls = len(re.findall(r'"type"\s*:\s*"tool_(use|call|request)"', stdout))
     return {
         "question": question.id,
         "category": question.category,
@@ -474,7 +526,9 @@ def episode(
         "verdict": verdict,
         "problems": problems,
         "known": ai_golden.recorded(question.expected),
-        "tool_calls": tool_calls,
+        "tool_calls": about["tool_calls"],
+        "tools": about["tools"],
+        "tokens": about["tokens"],
         "seconds": round(seconds, 1),
         "exit_code": code,
         "infra": infra,
@@ -514,12 +568,12 @@ def summarize(folder: Path) -> None:
         "",
         "## Episodes",
         "",
-        "| Question | Rep | Verdict | Problems | Tool calls | s |",
-        "|---|---|---|---|---|---|",
+        "| Question | Rep | Verdict | Problems | Tool calls | s | Tokens |",
+        "|---|---|---|---|---|---|---|",
     ]
     for r in records:
         lines.append(
-            f"| {r['question']} | {r['rep']} | {r['verdict']} | {'; '.join(r['problems'][:3])} | {r['tool_calls']} | {r['seconds']} |"
+            f"| {r['question']} | {r['rep']} | {r['verdict']} | {'; '.join(r['problems'][:3])} | {r['tool_calls']} | {r['seconds']} | {(r.get('tokens') or {}).get('total_tokens') or ''} |"
         )
     (folder / "summary.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines[: 4 + len(ai_golden.CATEGORIES) + 2]))
@@ -550,6 +604,12 @@ def main(argv: list[str] | None = None) -> int:
         help="one question, one repetition: settle the harness",
     )
     runner.add_argument("--max-turns", type=int, default=30)
+    runner.add_argument(
+        "--parallel",
+        type=int,
+        default=3,
+        help="episodes run at once (each its own Goose session)",
+    )
     runner.add_argument(
         "--timeout", type=float, default=1800, help="seconds per episode"
     )
