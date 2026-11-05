@@ -793,7 +793,8 @@ then site B, the internal server last, each measured with the audit tool before 
 an instrument the reagent modes go first. Its modes without calibrants follow as a second step
 once calibration transfer (MAS-187) is released, so that a transfer reads the new parameters. The
 internal server's legacy test files are refit only where the readiness census classes them
-refit-ready. An instrument is done when no batch the runner touched is left at `rematch`.
+refit-ready, and the rest are left as they are, with no re-detection. An instrument is done when no
+batch the runner touched is left at `rematch`.
 
 **What customers hear** (MAS-197): per instrument, a short note through the plan owner before the
 run, from its dry run: what changes, over which acquisition dates, how far each mass band moves,
@@ -822,5 +823,5 @@ that it is done, with the ledger's numbers where they differ from the dry run.
   the run.
 - **Previous parameters** are kept for good in the ledger, not for 90 days. A TOF fit's parameters
   stay valid indefinitely (the axis is recomputed from the TOF index, and re-detection does not
-  change that), the ledger holds a few kilobytes per file at most, and it is the only record of
+  change that), the whole ledger is tens of MB at most, and it is the only record of
   what a file read before.
