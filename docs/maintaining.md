@@ -33,6 +33,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Write the MS2 stores of files converted before them, and list their groups (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
 | Rebuild the peak stores that disagree with the scans their files read, keeping every sample (dry run first) | `DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores`, then without `DRY_RUN` |
 | Flag the Orbitrap peaks under a local floor weak in stores written before the floor (dry run first) | `DRY_RUN=1 mascope prod db script run reflag_orbitrap_weak_peaks`, then without `DRY_RUN` |
+| Give stored matches the intensity of isotope lines that missed their ratio (once, after the upgrade; dry run first) | `DRY_RUN=1 mascope prod db script run reaggregate_ratio_gated_intensity`, then without `DRY_RUN` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | Fill the model of instruments registered before it was read (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run backfill_instrument_model`, then without `DRY_RUN` |
 | Recompute every sample's TIC as the mean per scan (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run fix_sample_item_tic`, then without `DRY_RUN` |
@@ -2449,6 +2450,43 @@ mascope prod db script run reflag_orbitrap_weak_peaks
 - The `pg_dump` taken before it covers the batch statuses and the matches;
   the flags are in the filestore. The flag before the floor was the
   signal-to-noise cutoff alone, which the store still holds.
+
+### Match intensities of isotope lines that missed their ratio
+
+A matched isotope line outside the isotope ratio tolerance keeps its
+intensity now; only its score, and so the match category, takes the miss
+(`docs/user/how-it-works/matching.md`, *The tolerances: what a line keeps*).
+Before, it lost its intensity too, so an ion with two near-equal lines, such
+as a bromide adduct, was stored at half its intensity in each file where one
+of them missed. The intensity of every match level is written when a
+sample's matches are aggregated, so batches matched before the change keep
+the old values. Once, after updating, write the new ones:
+
+```sh
+DRY_RUN=1 mascope prod db script run reaggregate_ratio_gated_intensity
+mascope prod db script run reaggregate_ratio_gated_intensity
+```
+
+- It reads only the samples that hold a matched line beyond the smallest
+  ratio tolerance any ion can have, and aggregates them again from their
+  stored isotope matches, with the parameters a batch match uses. It reads
+  no raw file and matches nothing again.
+- **Only the intensities are written**, on the ion, compound, collection and
+  sample levels, and only where they change. A score or a category is never
+  written. The run reports how many ion categories it would compute
+  differently: a row stored by an older release or other match parameters.
+  A rematch of that batch is what changes those.
+- **The dry run writes nothing.** It reports per batch the samples read, the
+  rows of each level whose intensity would change, the median factor by
+  which the changed ion intensities grow, and those category counts.
+- It can run beside a server that is matching: each write takes its batch's
+  match-write lock, and a sample matched again since it was read is left
+  alone. Running it again writes nothing more.
+- `REAGGREGATE_BATCHES=<id>,<id>` limits a run to those batches, to try one
+  first. `BATCH_SIZE` sets how many samples are aggregated at once. Unset,
+  each batch is aggregated in the chunks a batch match of it takes, sized
+  from its target set, so the run stays within the server's memory.
+- The `pg_dump` taken before it holds the old intensities.
 
 ### Auditing a TOF instrument's mass calibration
 
