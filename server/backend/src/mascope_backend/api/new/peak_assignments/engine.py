@@ -850,6 +850,7 @@ def score_ions_by_fit(
     reagent_offset: ReagentOffset | None = None,
     min_anchor_ions: int | None = None,
     envelope_tolerance: EnvelopeTolerance | None = None,
+    inherited_accuracy: SampleMassAccuracy | None = None,
 ) -> pd.DataFrame:
     """Set each isotopologue's ``match_score`` to its ion's fit score (Stage A).
 
@@ -927,6 +928,11 @@ def score_ions_by_fit(
         (:mod:`~mascope_backend.api.new.peak_assignments.envelope_fit`); None
         scores at today's 5% and threshold of 3, as Stage A's first pass does
         before the fit exists.
+    :param inherited_accuracy: A measurement the frame is scored at instead of
+        one fitted off it: a decoy run's, which is its control's
+        (:mod:`decoy`). Its own rows are wrong formulas on a moved axis, and
+        fitted on them the score would centre on the shift. None fits the
+        frame, as every other run does.
     :return: The gated frame with every ion's fit as its rows' ``match_score``.
     """
     if match_isotope_df.empty or not _FIT_SCORE_COLS.issubset(match_isotope_df.columns):
@@ -946,8 +952,12 @@ def score_ions_by_fit(
     # the width.
     # The offset is None where neither measured one; the scorer reads that as
     # an uncorrected sample rather than a centred one.
-    accuracy = sample_mass_accuracy(
-        df, reagent=reagent_offset, min_anchor_ions=min_anchor_ions
+    accuracy = (
+        inherited_accuracy
+        if inherited_accuracy is not None
+        else sample_mass_accuracy(
+            df, reagent=reagent_offset, min_anchor_ions=min_anchor_ions
+        )
     )
     sigma = accuracy.sigma_ppm if accuracy.sigma_ppm is not None else fallback_sigma_ppm
     mu = accuracy.scoring_mu_ppm

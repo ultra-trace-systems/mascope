@@ -24,8 +24,8 @@ of the stage 3 gate on 2026-10-30 (decision 33) and, until the truth
 corpus has a baseline, is judged as every stage so far, against the gate
 sets and the reference pinned at a release (decision 34, 2026-11-05). Of
 milestone 5, the
-reference's 0.10 review, step 5.5 is built (#2377), 5.3 is measured and
-the rest are planned; a readiness check against the reference's main on
+reference's 0.10 review, step 5.5 is built (#2377), 5.2 is built and
+waits for its first reading, 5.3 is measured and the rest are planned; a readiness check against the reference's main on
 2026-10-22 (the last section of the review) found nothing new to bin and
 added step 5.9. Step 5.10 comes from the instrument's own centroid flags
 (a census of 2026-10-23), not from the review. Every planned step is an
@@ -96,7 +96,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.4 - gate automation | - |  | planned |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
 | 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below; readiness check against the reference's main on 2026-10-22: nothing new to bin, 0.10.0 still uncut |
-| 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | - |  | planned; no target until two gates have read them |
+| 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | #2981 |  | built: a `decoy` block on the run config (`mz_shift_ppm`, `mz_shift_da`, `swap_adducts`), every stage at the control's calibration and envelope tolerance, the arm on the run row and out of the fold, the listing, the verdicts and the retention quota; `compare_runs.py --decoy` reports the share held below and above m/z 350; read in the next pass, no target until two gates have read them (decision 31) |
 | 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - |  | measured 2026-10-16 on the pass-9 ledgers; 3.5b's form decided 2026-10-22 (decision 32) |
 | 5.4 - the side lobe's signatures: width-scaled offset and narrowness in the sidelobe flag | - |  | planned; after 3.5b and 3.5; a TOF rider from the readiness check of 2026-10-22 |
 | 5.5 - the TOF signal-to-noise column: verify it tracks height, fix the picker or fall back to counting statistics | #2377 | 2026-10-16 | built: the picker's TOF noise is now the baseline's MAD; measured next on E, F, J |

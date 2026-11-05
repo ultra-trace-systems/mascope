@@ -7,7 +7,8 @@ read as the score reads them. ``fit_run_envelope_tolerance`` fits on them, and
 on a thin Orbitrap file pools the lines its siblings recorded under the same
 acquisition settings. The siblings and the settings live in the database and
 the file's ``.props``; they are stubbed here and read for real in the
-integration suite.
+integration suite. A decoy run fits nothing and scores at its control's
+(``envelope_fit.inherited_envelope_fit``).
 """
 
 from unittest.mock import AsyncMock, patch
@@ -28,9 +29,11 @@ from mascope_backend.api.new.peak_assignments.envelope_fit import (
     envelope_lines,
     fit_run_envelope_tolerance,
     form_for,
+    inherited_envelope_fit,
     is_carbon13_line,
 )
 from mascope_tools.composition.envelope_tolerance import (
+    DEFAULT_TOLERANCE,
     FORM_CENTRE_WIDTH,
     FORM_CURVE,
     FORM_DEFAULT,
@@ -38,6 +41,8 @@ from mascope_tools.composition.envelope_tolerance import (
     LEVEL_OWN,
     LEVEL_POOLED,
     EnvelopeLines,
+    EnvelopeTolerance,
+    fit_envelope_tolerance,
 )
 from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
@@ -419,3 +424,51 @@ class TestTheRunsLevel:
 
         assert (fit.fit.form, fit.fit.level) == (FORM_DEFAULT, LEVEL_DEFAULT)
         read_settings.assert_not_awaited()
+
+
+class TestADecoyInheritsItsControlsTolerance:
+    """A decoy's commits are wrong formulas on a moved axis: it scores at the
+    tolerance its control recorded, and records that record as its own."""
+
+    @pytest.mark.parametrize(
+        "form, lines",
+        [
+            (FORM_CURVE, EnvelopeLines(np.full(25, 15.0), np.full(25, 0.8))),
+            (FORM_CENTRE_WIDTH, EnvelopeLines(np.full(25, 10.0), np.full(25, 0.9))),
+        ],
+        ids=["curve", "centre and width"],
+    )
+    def test_it_scores_at_the_tolerance_its_control_recorded(self, form, lines):
+        record = fit_envelope_tolerance(form, lines).record()
+        record["acquisition"] = SETTINGS
+
+        inherited = inherited_envelope_fit(record)
+
+        assert inherited.tolerance == EnvelopeTolerance.from_record(record)
+        assert inherited.tolerance != DEFAULT_TOLERANCE
+        assert (inherited.fit.form, inherited.fit.level) == (form, LEVEL_OWN)
+        assert inherited.record() == {**record, "inherited": True}
+
+    def test_a_control_from_before_the_fit_scored_at_today_s_numbers(self):
+        inherited = inherited_envelope_fit(None)
+
+        assert inherited.tolerance == DEFAULT_TOLERANCE
+        assert (inherited.fit.form, inherited.fit.level) == (
+            FORM_DEFAULT,
+            LEVEL_DEFAULT,
+        )
+        assert inherited.record() == {
+            "form": FORM_DEFAULT,
+            "level": LEVEL_DEFAULT,
+            "lines": 0,
+            "absent": 0,
+            "detect_snr": 3.0,
+            "inherited": True,
+        }
+
+    def test_a_run_that_fits_its_own_records_no_inheritance(self):
+        fit = envelope_fit.RunEnvelopeFit(
+            fit_envelope_tolerance(FORM_CURVE, EnvelopeLines()), SETTINGS
+        )
+
+        assert "inherited" not in fit.record()

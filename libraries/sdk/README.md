@@ -623,6 +623,16 @@ The four width columns are null for a run that never reached scoring, an
 import that disclosed no width, and the `batch` run. Read the width a run
 scored at here instead of measuring it again from the spectrum.
 
+A **decoy run** is the in-app engine re-run on a sample with its chemistry made
+wrong on purpose (the m/z axis shifted, or the adducts swapped), to bound how
+many rows the engine assigns falsely. `list_runs` leaves decoy runs out unless
+called with `include_decoys=True`, so its first completed run always reads the
+sample as it is; listed, a decoy carries its arm in `decoy`
+(`mz_shift_ppm=+9`, `mz_shift_da=+0.35`, `swap_adducts`, null on every other
+run) and names the run it is a decoy of in `config["decoy_arm"]`. `get` reads
+one by its `run_id`, and `assign` and `wait_for_run` wait on one as on any other
+run. `tooling/assignment_compare/compare_runs.py --decoy` reads them so.
+
 A sample without any run still says what width its lines have.
 `mascope.samples.get(sample_id)["line_width"]` holds:
 
@@ -1177,7 +1187,7 @@ The compound list is shared by every workspace, so `add`, `update` and `remove` 
 
 | Method                              | Description                                                       | Returns             |
 | ----------------------------------- | ----------------------------------------------------------------- | ------------------- |
-| `list_runs(sample_id)`              | List a sample's assignment runs, newest first                     | `pd.DataFrame│None` |
+| `list_runs(sample_id, include_decoys=)` | List a sample's assignment runs, newest first; decoy runs only on request | `pd.DataFrame│None` |
 | `get(sample_id, run_id=, tier=, role=, source=)` | Full run ledger, one row per peak; run metadata on `df.attrs["run"]` | `pd.DataFrame│None` |
 | `detail(sample_id, peak_assignment_id)` | One assignment in full (`alternatives`, `provenance`)          | `dict│None`         |
 | `assign(sample_id, config=, wait=, poll_interval=, timeout=)` | Run the engine on a sample; with `wait=True` its ledger, else its run id | `pd.DataFrame│str│None` |

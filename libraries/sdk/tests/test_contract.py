@@ -295,6 +295,20 @@ class TestPeakAssignmentContract:
         assert (scored["sigma_ppm"] > 0).all()
         assert scored["sigma_source"].notna().all()
 
+    def test_a_decoy_run_is_listed_only_on_request(self, mascope):
+        _skip_unless_param(mascope.peak_assignments.list_runs, "include_decoys")
+        sample_id = _sample_with_completed_run(mascope)
+
+        default = mascope.peak_assignments.list_runs(sample_id)
+        asked = mascope.peak_assignments.list_runs(sample_id, include_decoys=True)
+
+        # Every run the default listing serves reads the sample as it is.
+        assert "decoy" in default.columns
+        assert default["decoy"].isna().all()
+        assert set(default["peak_assignment_run_id"]) <= set(
+            asked["peak_assignment_run_id"]
+        )
+
     def test_get_returns_one_row_per_peak_with_run_attrs(self, mascope):
         sample_id = _sample_with_completed_run(mascope)
 

@@ -129,12 +129,20 @@ class FakeServer:
 
     def http_get(self, url, path, access_token, params=None, **kwargs):
         if path.endswith("/runs"):
+            self.list_runs_params = params
+            # A decoy run is listed only on request, as the server does it
+            runs = [
+                run
+                for run in self.runs
+                if not run.get("decoy")
+                or (params or {}).get("include_decoys") == "true"
+            ]
             return _FakeResponse(
                 {
                     "status": "success",
-                    "message": f"Retrieved {len(self.runs)} runs",
-                    "results": len(self.runs),
-                    "data": self.runs,
+                    "message": f"Retrieved {len(runs)} runs",
+                    "results": len(runs),
+                    "data": runs,
                 }
             )
         if "/assignment/" in path:
@@ -234,6 +242,13 @@ class TestListRuns:
 
         assert resource.list_runs(SAMPLE_ID) is None
 
+    def test_decoys_are_asked_for_only_on_request(self, server, resource):
+        resource.list_runs(SAMPLE_ID)
+        assert server.list_runs_params is None
+
+        resource.list_runs(SAMPLE_ID, include_decoys=True)
+        assert server.list_runs_params == {"include_decoys": "true"}
+
 
 class TestGet:
     def test_pages_to_total_and_preserves_order(self, server, resource):
@@ -266,6 +281,36 @@ class TestGet:
         assert len(df) == 3
         assert df.attrs["run"]["peak_assignment_run_id"] == "run-old"
         assert df.attrs["run"]["engine_version"] == "1.0.0"
+
+    def test_a_decoy_named_by_its_id_carries_its_own_metadata(self, server, resource):
+        decoy = {
+            **RUNS[1],
+            "peak_assignment_run_id": "run-decoy",
+            "decoy": "mz_shift_ppm=+9",
+            "config": {"decoy_arm": {"control_run_id": "run-latest"}},
+            "peak_assignment_run_utc_created": "2026-08-19T10:00:00Z",
+        }
+        server.runs = [decoy, *RUNS]
+        server.assignments = _make_assignments("run-decoy", 2)
+
+        df = resource.get(SAMPLE_ID, run_id="run-decoy")
+
+        assert df.attrs["run"]["decoy"] == "mz_shift_ppm=+9"
+        assert df.attrs["run"]["config"] == decoy["config"]
+
+    def test_the_latest_run_is_never_a_decoy(self, server, resource):
+        decoy = {
+            **RUNS[1],
+            "peak_assignment_run_id": "run-decoy",
+            "decoy": "swap_adducts",
+            "peak_assignment_run_utc_created": "2026-08-19T10:00:00Z",
+        }
+        server.runs = [decoy, *RUNS]
+
+        df = resource.get(SAMPLE_ID)
+
+        assert df.attrs["run"]["peak_assignment_run_id"] == "run-latest"
+        assert server.list_runs_params is None
 
     def test_returns_none_when_no_completed_run_exists(self, server, resource):
         server.runs = [run for run in RUNS if run["status"] != "completed"]

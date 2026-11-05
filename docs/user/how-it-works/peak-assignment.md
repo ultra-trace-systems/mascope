@@ -450,7 +450,8 @@ failing that the defaults. On a TOF the run measures one offset and one spread o
 its lines read against their shares, since a TOF's signal-to-noise column is not read
 that way yet. The run records which of these it used, and a formula measured on its own
 afterwards - *Use this*, the inspector's evidence - is read at the tolerance the
-sample's latest run in Mascope recorded. A sample with no such run, one only folded into
+sample's latest run in Mascope recorded. A decoy run (below) is never that run, and its
+lines are pooled for no other file. A sample with no such run, one only folded into
 the batch ledger, is measured at the defaults, though its folded rows were scored at a
 tolerance fitted on the spot.
 
@@ -956,6 +957,62 @@ recorded against an imported run are kept and shown, but stay out of the
 instrument-wide confidence calibration, whose labels come only from runs this
 server computed.
 
+### Decoy runs
+
+How well a run agrees with another engine, and how plausible its formulas look,
+says nothing about how many rows it would still call *assigned* if the sample's
+chemistry were wrong. A **decoy run** measures that. It is the engine run again
+on a sample it has already assigned, its *control*, with one thing made wrong
+on purpose, and what still reaches *assigned* there is a bound on what the
+engine assigns falsely. This is the target-decoy idea of large-scale mass
+spectrometry annotation ([Elias and Gygi 2007][eg07],
+[Scheubert et al. 2017][sch17]), applied to the whole run; the reference
+engine, peaky, checks each of its releases with the same arms.
+
+A decoy run takes one of three arms:
+
+- **A ppm shift** (`mz_shift_ppm`, 9 either way on an Orbitrap): every peak's
+  m/z is scaled by a few ppm. The spectrum is the same, its lines sit in the
+  same crowded mass-defect band, and no true formula is on them. A shift
+  inside the window the control searched and matched in is refused, since the
+  true formula would stay in reach: on a TOF, which searches 10 ppm and
+  matches lines at 15, the arm is the next one.
+- **A dalton shift** (`mz_shift_da`, 0.35 on a TOF): every peak keeps its
+  nominal mass and loses its mass defect. Below about m/z 350 that puts the
+  lines in the gap no CHNOS formula sits in.
+- **Swapped adducts** (`swap_adducts`): each channel of the sample's
+  ionization mode is searched through an adduct of the same polarity that the
+  chemistry profile does not make (sodium, ammonium, potassium on a positive
+  source; chloride, iodide, bromide on a negative one, in that order), and no
+  secondary channel is opened. The ions are where they were and every neutral
+  read off them is wrong, except where the swap reads an ion the control
+  already reads as another neutral, which the comparison counts apart.
+
+Every stage of a decoy run reads the arm: the peak table, the targeted
+matcher, the untargeted search, the mass gate and the tiering. And every stage
+scores at the control's calibration, the centre and width the control
+recorded, rather than measuring its own: fitted on rows that are wrong on
+purpose, the run would measure the shift back out of the spectrum, or fail to
+calibrate and judge with its mass gate off. A line's height is read at the
+control's envelope tolerance for the same reason: the few envelopes a decoy
+confirms are wrong formulas, and too few to measure one of its own. The source's own lines are still
+claimed as reagent where a ppm shift moves them, since the claim finds them by
+their own pattern; a dalton shift moves them out of its reach, and the stages
+are then offered them as any peak, which the comparison counts apart.
+
+A decoy is launched through the API, as an assign request whose config carries
+a `decoy` block and every other setting as the control's: no setting may
+differ, or the arm would bound another run. A decoy the sample's latest
+completed run cannot be the control of is refused before any run exists, with
+the reason. A decoy run is never read as the sample's result: the run selector
+and the runs listing leave it out unless asked (`include_decoys`), a ledger
+read that names no run reads the control, the batch fold and its consensus
+never see it, its rows take no verdict, and the confidence calibration never
+reads one. `tooling/assignment_compare/compare_runs.py --decoy` reads a set's
+decoy runs against their controls and reports, per arm, the share of the
+control's assigned rows and of their intensity the arm still holds, below and
+above m/z 350.
+
 A sample whose peaks are in the batch ledger but that has no run of its own &mdash; its
 runs were deleted or pruned, or it was folded into the batch without one &mdash; is shown
 from the batch ledger instead. The run selector lists it as **Batch ledger**; the
@@ -1150,6 +1207,9 @@ batch ledger* puts Mascope's own view back.
 - <a id="du19"></a>Dührkop, K. et al. *SIRIUS 4: a rapid tool for turning tandem mass
   spectra into metabolite structure information.* Nature Methods 2019, 16:299–302.
   [link](https://www.nature.com/articles/s41592-019-0344-8)
+- <a id="eg07"></a>Elias, J. E.; Gygi, S. P. *Target-decoy search strategy for increased
+  confidence in large-scale protein identifications by mass spectrometry.* Nature
+  Methods 2007, 4(3):207–214. [link](https://doi.org/10.1038/nmeth1019)
 - <a id="sch17"></a>Scheubert, K. et al. *Significance estimation for large-scale
   metabolomics annotations by spectral matching.* Nature Communications 2017, 8:1494.
   [link](https://www.nature.com/articles/s41467-017-01318-5)
@@ -1345,6 +1405,7 @@ batch ledger* puts Mascope's own view back.
 [bl07]: #bl07
 [bo09]: #bo09
 [du19]: #du19
+[eg07]: #eg07
 [sch17]: #sch17
 [sch14]: #sch14
 [sum07]: #sum07

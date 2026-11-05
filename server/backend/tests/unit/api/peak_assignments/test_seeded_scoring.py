@@ -360,6 +360,36 @@ async def test_a_runs_seeded_re_score_is_handed_the_runs_offset(stubbed, reagent
     assert fits[TARGET] - await _fit({TARGET}, reagent_offset=None) > 0.1
 
 
+async def test_a_decoy_s_re_score_is_scored_at_its_control_s_measurement(
+    stubbed, reagent
+):
+    """A decoy run's commits sit on an axis moved on purpose, and a list long
+    enough to fit its own offset would centre on the move. Inside a decoy the
+    re-score takes its control's measurement whatever the list's length
+    (``decoy.inherited_accuracy``), through every step of the chain."""
+    stubbed.target_error_ppm = 3.0
+    stubbed.others_centre_ppm = 3.0
+    seeds = {TARGET} | OTHERS
+    control = SampleMassAccuracy(mu_ppm=0.0, sigma_ppm=0.2, anchors=40, anchor_ions=12)
+
+    own = await service._seeded_fits(
+        SAMPLE, OrbiMatchParams(), seeds, reagent_offset=None, envelope_tolerance=None
+    )
+    decoy = await service._seeded_fits(
+        SAMPLE,
+        OrbiMatchParams(),
+        seeds,
+        reagent_offset=None,
+        envelope_tolerance=None,
+        inherited_accuracy=control,
+    )
+
+    # Fitted, the frame is centred on the move and the target reads as on the
+    # axis; at the control's centre it reads three ppm off it.
+    assert own[TARGET] - decoy[TARGET] > 0.3
+    assert reagent.calls == []
+
+
 async def test_a_run_centres_its_re_score_where_stage_a_was_scored():
     """Stage A and the search are scored at ``scoring_mu_ppm``: the library's
     own fit where it made one, which need not be the reagent lines', and the

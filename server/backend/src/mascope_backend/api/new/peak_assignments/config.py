@@ -2,7 +2,14 @@
 
 import os
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
 from mascope_backend.runtime import runtime
@@ -90,6 +97,14 @@ MAX_UNTARGETED_PEAKS_CEILING = 5000
 MAX_MZ_PRECISION_PPM = 100.0
 MAX_FORMULA_RANGE_SPECIES = 12
 MAX_ALTERNATIVES_CEILING = 50
+
+# Bounds on a decoy run's shift (`PeakAssignmentDecoy`). A ppm shift as wide as
+# the widest window a run may search is as far as one can sensibly reach; a
+# dalton shift stays under half a nominal mass, so every line keeps its nominal
+# mass and only its mass defect moves - a shift of one would put each line on
+# its own 13C neighbour, which is a spectrum, not a decoy of one.
+MAX_DECOY_SHIFT_PPM = MAX_MZ_PRECISION_PPM
+MAX_DECOY_SHIFT_DA = 0.5
 
 # The value of `profile` / `context` that asks the engine to work the chemistry
 # out from the sample rather than being told it. Lives here, with the model that
@@ -291,6 +306,91 @@ def peak_assignment_ingest_ledger() -> str:
     return INGEST_LEDGER_BATCH
 
 
+#: A decoy arm's name for each field of :class:`PeakAssignmentDecoy`, as the run
+#: row's ``decoy`` column and the comparison tool read it.
+DECOY_SHIFT_PPM = "mz_shift_ppm"
+DECOY_SHIFT_DA = "mz_shift_da"
+DECOY_SWAP_ADDUCTS = "swap_adducts"
+
+
+class PeakAssignmentDecoy(BaseModel):
+    """One decoy arm: the run re-made with its chemistry deliberately wrong.
+
+    A decoy run is the engine run again on a sample it has already assigned
+    (its *control*), with one thing made wrong: the m/z axis moved off every
+    true formula, or every channel's adduct swapped for one the profile does
+    not declare. What still reaches ``assigned`` there is what the engine would
+    assign if the sample's chemistry were not what it is, which no agreement
+    metric can say (``docs/dev/assignment_quality_plan.md``, step 5.2). Every
+    arm is scored at the control's calibration, so the shift is not measured
+    back out of the spectrum it was put into.
+
+    Exactly one arm per run. A decoy run is marked on its row and is never
+    read as the sample's result: not by the batch fold, the consensus, the
+    calibration from verdicts, or a ledger read that names no run.
+    """
+
+    mz_shift_ppm: float | None = Field(
+        None,
+        ge=-MAX_DECOY_SHIFT_PPM,
+        le=MAX_DECOY_SHIFT_PPM,
+        description=(
+            "Scale every peak's m/z by (1 + mz_shift_ppm * 1e-6): the same "
+            "spectrum a few ppm off its true formulas (9 either way on an "
+            "Orbitrap). Refused where the shift is inside the window the run "
+            "searches and matches in, since the true formula stays in reach."
+        ),
+    )
+    mz_shift_da: float | None = Field(
+        None,
+        gt=-MAX_DECOY_SHIFT_DA,
+        lt=MAX_DECOY_SHIFT_DA,
+        description=(
+            "Add mz_shift_da to every peak's m/z (0.35 on a TOF): each line "
+            "keeps its nominal mass and loses its mass defect."
+        ),
+    )
+    swap_adducts: bool = Field(
+        False,
+        description=(
+            "Search every channel of the sample's ionization mode through an "
+            "adduct of the same polarity that its reagent profile does not "
+            "declare, and open none of the profile's secondary channels."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _one_arm(self) -> "PeakAssignmentDecoy":
+        """One arm, so a decoy's rate says what it measured.
+
+        Two wrongs at once would make a number neither arm is, and a zero shift
+        is no shift: it would mark a control run as a decoy of itself.
+        """
+        arms = [
+            self.mz_shift_ppm is not None,
+            self.mz_shift_da is not None,
+            self.swap_adducts,
+        ]
+        if sum(arms) != 1:
+            raise ValueError(
+                "a decoy names exactly one arm: mz_shift_ppm, mz_shift_da or "
+                "swap_adducts"
+            )
+        if self.mz_shift_ppm == 0 or self.mz_shift_da == 0:
+            raise ValueError("a decoy's shift cannot be zero")
+        return self
+
+    @property
+    def arm(self) -> str:
+        """The arm's name as the run row records it: ``mz_shift_ppm=+9``,
+        ``mz_shift_da=+0.35`` or ``swap_adducts``."""
+        if self.mz_shift_ppm is not None:
+            return f"{DECOY_SHIFT_PPM}={self.mz_shift_ppm:+g}"
+        if self.mz_shift_da is not None:
+            return f"{DECOY_SHIFT_DA}={self.mz_shift_da:+g}"
+        return DECOY_SWAP_ADDUCTS
+
+
 class PeakAssignmentConfig(BaseModel):
     """User-tunable configuration for one peak assignment run.
 
@@ -439,6 +539,18 @@ class PeakAssignmentConfig(BaseModel):
             "'candidate'."
         ),
     )
+    # Last, and None for every run but a decoy: the one field that does not tune
+    # the run but turns it into a measurement of the run before it.
+    decoy: PeakAssignmentDecoy | None = Field(
+        None,
+        description=(
+            "Make this run a decoy of the sample's latest completed run: the "
+            "same settings, scored at that run's calibration, with one arm "
+            "made wrong. Every other field must then be what that run used. "
+            "A decoy run is listed only on request and never read as the "
+            "sample's result."
+        ),
+    )
 
     @field_validator("formula_ranges")
     @classmethod
@@ -477,6 +589,11 @@ class PeakAssignmentConfig(BaseModel):
         created and reported to the client.
         """
         return known_preset_name(value, info.field_name)
+
+    def settings(self) -> dict:
+        """Every field but the decoy block: what a decoy run must share with
+        its control for its rate to bound that control."""
+        return self.model_dump(exclude={"decoy"})
 
     def tier_bands(self) -> dict[str, float]:
         """The evidence bands this config tiers with, keyed by the tier each opens.

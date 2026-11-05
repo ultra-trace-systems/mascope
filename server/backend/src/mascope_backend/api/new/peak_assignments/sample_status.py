@@ -120,6 +120,8 @@ async def get_batch_sample_assignment_status(sample_batch_id: str) -> dict:
             .where(
                 SampleItem.sample_batch_id == sample_batch_id,
                 PeakAssignmentRun.status == RUN_COMPLETED,
+                # A decoy is no state of the sample's assignment.
+                PeakAssignmentRun.decoy.is_(None),
             )
             .group_by(PeakAssignmentRun.sample_item_id)
             .subquery()

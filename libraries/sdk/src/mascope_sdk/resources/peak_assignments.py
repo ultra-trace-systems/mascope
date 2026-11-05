@@ -244,11 +244,20 @@ class PeakAssignmentsResource(BaseResource):
         )
         return response.json()
 
-    def list_runs(self, sample_id: str) -> pd.DataFrame | None:
+    def list_runs(
+        self, sample_id: str, include_decoys: bool = False
+    ) -> pd.DataFrame | None:
         """List the peak assignment runs of a sample, newest first.
 
         :param sample_id: The ID of the sample.
         :type sample_id: str
+        :param include_decoys: List the sample's decoy runs too: the in-app
+            engine re-run with the sample's chemistry made wrong on purpose
+            (the m/z axis shifted, or the adducts swapped), whose ``decoy``
+            names the arm. Left out by default, so the first completed run is
+            always one that reads the sample as it is. A server older than the
+            parameter lists no decoys either way.
+        :type include_decoys: bool, optional
         :return: A DataFrame with one row per run, containing:
 
                  - ``peak_assignment_run_id``: Run identifier
@@ -284,6 +293,11 @@ class PeakAssignmentsResource(BaseResource):
                    run corrected by [ppm], and where it came from. All four
                    are null for a run that never reached scoring, an import
                    that disclosed no width, and the ``batch`` run.
+                 - ``decoy``: The arm of a decoy run (``mz_shift_ppm=+9``,
+                   ``mz_shift_da=+0.35``, ``swap_adducts``); null for every
+                   other run, and absent from a server older than decoys.
+                   Its ``config`` names the run it is a decoy of under
+                   ``decoy_arm``.
                  - ``error``: Failure reason, if any
                  - ``peak_assignment_run_utc_created`` /
                    ``peak_assignment_run_utc_completed``: Timestamps (UTC)
@@ -299,7 +313,10 @@ class PeakAssignmentsResource(BaseResource):
             runs = mascope.peak_assignments.list_runs("sample-123")
             completed = runs[runs["status"] == "completed"]
         """
-        data = self._get(f"peak-assignments/sample/{sample_id}/runs")
+        data = self._get(
+            f"peak-assignments/sample/{sample_id}/runs",
+            params={"include_decoys": "true"} if include_decoys else None,
+        )
         if not data:
             return None
         return _coerce_utc_columns(_coerce_datetime_columns(pd.DataFrame(data)))
@@ -470,8 +487,9 @@ class PeakAssignmentsResource(BaseResource):
         """
         # Resolve the run client-side (the ledger response carries no run
         # object), so the call is deterministic and the run metadata can be
-        # attached to the result.
-        runs = self.list_runs(sample_id)
+        # attached to the result. A run named by its id may be a decoy, which
+        # the default listing leaves out.
+        runs = self.list_runs(sample_id, include_decoys=run_id is not None)
         run_meta: dict[str, Any] | None = None
         if run_id is None:
             if runs is None:
@@ -780,7 +798,8 @@ class PeakAssignmentsResource(BaseResource):
         status: str | None = None
         while True:
             try:
-                runs = self.list_runs(sample_id)
+                # The run waited on may be a decoy, never in the default list
+                runs = self.list_runs(sample_id, include_decoys=True)
             except (MascopeConnectionError, ServerError) as e:
                 # INFO: the HTTP layer has already retried; the run goes on
                 logger.info("Run '{}' not looked at this time: {}", run_id, e)

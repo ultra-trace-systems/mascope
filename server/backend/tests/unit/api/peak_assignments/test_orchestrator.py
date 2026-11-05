@@ -1521,6 +1521,11 @@ class TestResolvedProfile:
             "fallback_sigma_ppm": 0.3,
             "reagent_offset": None,
             "min_anchor_ions": STAGE_A_FIT_MIN_IONS,
+            # Fitted off the frame: only a decoy run scores at another's.
+            "inherited_accuracy": None,
+            # The first pass reads today's numbers, since the tolerance is
+            # fitted on its commits; only a decoy reads its control's.
+            "envelope_tolerance": None,
         }
 
     @pytest.mark.asyncio

@@ -77,12 +77,12 @@ async def test_keeps_the_newest_n_completed_per_sample():
     """Only runs past the keep window are prunable, and per sample."""
     rows = [
         # si1, newest first (as the query orders them)
-        ("s1-new", "si1", IN_APP),
-        ("s1-mid", "si1", IN_APP),
-        ("s1-old", "si1", IN_APP),
-        ("s1-older", "si1", IN_APP),
+        ("s1-new", "si1", IN_APP, None),
+        ("s1-mid", "si1", IN_APP, None),
+        ("s1-old", "si1", IN_APP, None),
+        ("s1-older", "si1", IN_APP, None),
         # si2 has fewer than the keep count
-        ("s2-only", "si2", IN_APP),
+        ("s2-only", "si2", IN_APP, None),
     ]
     session = _session(rows, [])
 
@@ -97,10 +97,10 @@ async def test_keeps_the_newest_n_completed_per_sample():
 async def test_keep_window_is_per_sample_not_global():
     """A sample with few runs is never pruned because another sample has many."""
     rows = [
-        ("a1", "si1", IN_APP),
-        ("a2", "si1", IN_APP),
-        ("a3", "si1", IN_APP),
-        ("b1", "si2", IN_APP),
+        ("a1", "si1", IN_APP, None),
+        ("a2", "si1", IN_APP, None),
+        ("a3", "si1", IN_APP, None),
+        ("b1", "si2", IN_APP, None),
     ]
     session = _session(rows, [])
 
@@ -115,7 +115,7 @@ async def test_keep_window_is_per_sample_not_global():
 @pytest.mark.asyncio
 async def test_stale_non_completed_runs_are_added():
     """Failed/interrupted runs past the grace period are prunable too."""
-    session = _session([("keep", "si1", IN_APP)], ["failed-1", "failed-2"])
+    session = _session([("keep", "si1", IN_APP, None)], ["failed-1", "failed-2"])
 
     prunable = await _select_prunable_run_ids(
         session, keep_per_sample=3, keep_failed_hours=24
@@ -127,7 +127,11 @@ async def test_stale_non_completed_runs_are_added():
 @pytest.mark.asyncio
 async def test_result_is_deduplicated_and_order_stable():
     """The same run never appears twice, and order is preserved for dry runs."""
-    rows = [("r1", "si1", IN_APP), ("r2", "si1", IN_APP), ("r3", "si1", IN_APP)]
+    rows = [
+        ("r1", "si1", IN_APP, None),
+        ("r2", "si1", IN_APP, None),
+        ("r3", "si1", IN_APP, None),
+    ]
     session = _session(rows, ["r3", "r4"])
 
     prunable = await _select_prunable_run_ids(
@@ -140,7 +144,7 @@ async def test_result_is_deduplicated_and_order_stable():
 
 @pytest.mark.asyncio
 async def test_nothing_prunable_returns_empty():
-    session = _session([("only", "si1", IN_APP)], [])
+    session = _session([("only", "si1", IN_APP, None)], [])
 
     assert (
         await _select_prunable_run_ids(session, keep_per_sample=3, keep_failed_hours=24)
@@ -163,7 +167,7 @@ class TestTheTotalBoundsTheEngineQuotas:
     async def test_a_client_cycling_engine_names_cannot_grow_without_limit(self):
         """Five engines at the per-engine quota, over a total of six."""
         rows = [
-            (f"{engine}-{index}", "si1", engine)
+            (f"{engine}-{index}", "si1", engine, None)
             for engine in ("e1", "e2", "e3", "e4", "e5")
             for index in range(2)
         ]
@@ -185,8 +189,8 @@ class TestTheTotalBoundsTheEngineQuotas:
         the in-app run - the arrangement that would evict it if the total
         applied to every engine alike.
         """
-        rows = [(f"import-{index}", "si1", "peaky") for index in range(4)]
-        rows += [("in-app-1", "si1", IN_APP)]
+        rows = [(f"import-{index}", "si1", "peaky", None) for index in range(4)]
+        rows += [("in-app-1", "si1", IN_APP, None)]
         session = _session(rows, [])
 
         prunable = await _select_prunable_run_ids(
@@ -199,7 +203,7 @@ class TestTheTotalBoundsTheEngineQuotas:
     @pytest.mark.asyncio
     async def test_the_in_app_engine_is_still_bounded_by_its_own_quota(self):
         """Exempt from the total is not exempt from everything."""
-        rows = [(f"in-app-{index}", "si1", IN_APP) for index in range(5)]
+        rows = [(f"in-app-{index}", "si1", IN_APP, None) for index in range(5)]
         session = _session(rows, [])
 
         prunable = await _select_prunable_run_ids(
@@ -215,8 +219,8 @@ class TestTheTotalBoundsTheEngineQuotas:
         Otherwise runs already over their engine's quota would eat the total's
         budget on the way past and evict runs that are within theirs.
         """
-        rows = [(f"peaky-{index}", "si1", "peaky") for index in range(5)]
-        rows += [("other-1", "si1", "other")]
+        rows = [(f"peaky-{index}", "si1", "peaky", None) for index in range(5)]
+        rows += [("other-1", "si1", "other", None)]
         session = _session(rows, [])
 
         prunable = await _select_prunable_run_ids(
@@ -253,10 +257,10 @@ class TestBudgetIsPerSampleAndEngine:
     async def test_imports_cannot_evict_a_samples_in_app_runs(self):
         """The case the shared budget got wrong: three imports, one in-app run."""
         rows = [
-            ("import-3", "si1", "peaky"),
-            ("import-2", "si1", "peaky"),
-            ("import-1", "si1", "peaky"),
-            ("in-app-1", "si1", IN_APP),
+            ("import-3", "si1", "peaky", None),
+            ("import-2", "si1", "peaky", None),
+            ("import-1", "si1", "peaky", None),
+            ("in-app-1", "si1", IN_APP, None),
         ]
         session = _session(rows, [])
 
@@ -270,10 +274,10 @@ class TestBudgetIsPerSampleAndEngine:
     async def test_each_engine_ages_out_of_its_own_quota(self):
         """Over budget on one engine never reaches the other's runs."""
         rows = [
-            ("import-new", "si1", "peaky"),
-            ("import-old", "si1", "peaky"),
-            ("in-app-new", "si1", IN_APP),
-            ("in-app-old", "si1", IN_APP),
+            ("import-new", "si1", "peaky", None),
+            ("import-old", "si1", "peaky", None),
+            ("in-app-new", "si1", IN_APP, None),
+            ("in-app-old", "si1", IN_APP, None),
         ]
         session = _session(rows, [])
 
@@ -287,9 +291,9 @@ class TestBudgetIsPerSampleAndEngine:
     async def test_the_same_engine_on_another_sample_is_untouched(self):
         """Grouping is by the pair, not by engine alone."""
         rows = [
-            ("a-new", "si1", "peaky"),
-            ("a-old", "si1", "peaky"),
-            ("b-only", "si2", "peaky"),
+            ("a-new", "si1", "peaky", None),
+            ("a-old", "si1", "peaky", None),
+            ("b-only", "si2", "peaky", None),
         ]
         session = _session(rows, [])
 
@@ -327,12 +331,12 @@ class TestBudgetIsPerSampleAndEngine:
         quota still has to be counted over its own subset.
         """
         rows = [
-            ("peaky-3", "si1", "peaky"),
-            ("in-app-3", "si1", IN_APP),
-            ("peaky-2", "si1", "peaky"),
-            ("in-app-2", "si1", IN_APP),
-            ("peaky-1", "si1", "peaky"),
-            ("in-app-1", "si1", IN_APP),
+            ("peaky-3", "si1", "peaky", None),
+            ("in-app-3", "si1", IN_APP, None),
+            ("peaky-2", "si1", "peaky", None),
+            ("in-app-2", "si1", IN_APP, None),
+            ("peaky-1", "si1", "peaky", None),
+            ("in-app-1", "si1", IN_APP, None),
         ]
         session = _session(rows, [])
 
@@ -403,6 +407,63 @@ def _stale_ids(
     )
     with engine.connect() as connection:
         return list(connection.execute(statement).scalars())
+
+
+class TestDecoyRunsHaveTheirOwnQuota:
+    """A decoy run is the in-app engine's, and no part of the sample's history.
+
+    It is stamped with the same engine as the run it is a decoy of, so a budget
+    keyed on the engine alone would rank a sample's decoys in that run's quota:
+    two arms run after it, at the default of two, would evict it and its ledger.
+    """
+
+    @pytest.mark.asyncio
+    async def test_two_arms_never_evict_the_run_they_are_decoys_of(self):
+        rows = [
+            ("decoy-minus", "si1", IN_APP, "mz_shift_ppm=-9"),
+            ("decoy-plus", "si1", IN_APP, "mz_shift_ppm=+9"),
+            ("control", "si1", IN_APP, None),
+        ]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=1, keep_failed_hours=24
+        )
+
+        assert prunable == []
+
+    @pytest.mark.asyncio
+    async def test_each_arm_ages_out_of_its_own_quota(self):
+        rows = [
+            ("plus-new", "si1", IN_APP, "mz_shift_ppm=+9"),
+            ("swap-new", "si1", IN_APP, "swap_adducts"),
+            ("plus-old", "si1", IN_APP, "mz_shift_ppm=+9"),
+            ("control", "si1", IN_APP, None),
+        ]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=1, keep_failed_hours=24
+        )
+
+        assert prunable == ["plus-old"]
+
+    @pytest.mark.asyncio
+    async def test_decoys_count_against_the_total_and_the_control_does_not(self):
+        """Arms are free text in effect, one quota per shift; the total bounds
+        them as it bounds an import's engine names."""
+        rows = [
+            (f"decoy-{shift}", "si1", IN_APP, f"mz_shift_ppm=+{shift}")
+            for shift in (9, 10, 11)
+        ]
+        rows += [("control", "si1", IN_APP, None)]
+        session = _session(rows, [])
+
+        prunable = await _select_prunable_run_ids(
+            session, keep_per_sample=2, keep_failed_hours=24, keep_per_sample_total=2
+        )
+
+        assert prunable == ["decoy-11"]
 
 
 class TestCompletedScanOrdering:
