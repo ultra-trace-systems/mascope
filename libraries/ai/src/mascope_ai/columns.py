@@ -9,7 +9,7 @@ over the sample's scans in a peak list and one scan's value in a time
 series, ``mz`` is a measurement in a peak list and a theoretical value in
 the match tree - so a meaning is looked up by the load that made the table
 first, then by the column's name. A derived table's column keeps the
-meaning of the load it came from.
+meaning of the load it came from, and has none when its inputs disagree.
 
 The texts are short because a handle carries them all inside a tool
 result's byte budget (:data:`mascope_ai.mcp.MAX_RESULT_BYTES`), beside the
@@ -21,21 +21,29 @@ here is a change there.
 from .manifest import CLIENT_COMPUTED, COMPUTED
 
 
-#: The intensity unit: that of the sample's averaged spectrum, which the
-#: server labels counts/s. Heights, areas and spectrum points share it.
-_UNIT = "counts/s"
+#: The intensity unit: that of the sample's averaged spectrum, which is an
+#: average over scans, never over time. Heights, time-series points and
+#: spectrum points share it; the spectrum route's ``counts/s`` is a label.
+_UNIT = "counts (Orbitrap) or ions/s (TOF)"
+
+#: The op recorded for a derived column whose inputs give it different
+#: meanings: it then has none, rather than one input's.
+MIXED = "mixed"
 
 #: What a column means wherever it appears, by name.
 COMMON: dict[str, str] = {
     "sample_batch_name": "the batch's name: users' text",
     "sample_item_id": "the sample's ID; group by it, names repeat across batches",
     "sample_item_name": "the sample's name: users' text",
-    "datetime_utc": "when the sample's time window starts, UTC",
+    "datetime_utc": (
+        "the sample file's acquisition start, UTC; the sample's window begins "
+        "t0 seconds later"
+    ),
     "peak_id": "Mascope's ID of the peak in its sample; one row per matched line",
     "mz": "the peak's measured centroid m/z, calibrated",
     "height": (
-        "the peak's apex intensity in the averaged spectrum: the mean over the "
-        f"sample's scans (sum with average=False); {_UNIT}"
+        "the peak's apex intensity in the averaged spectrum, the mean over the "
+        f"sample's scans; {_UNIT}"
     ),
     "area": (
         "the peak's intensity integrated over its m/z extent, aggregated like "
@@ -53,7 +61,10 @@ COMMON: dict[str, str] = {
         "the scan stream of a stitched sample the peak came from; None when "
         "not stitched"
     ),
-    "is_satellite": "whether the peak is a side-lobe artifact of a stronger peak",
+    "is_satellite": (
+        "whether the peak is a side-lobe artifact; False throughout a peak "
+        "list, which leaves satellites out"
+    ),
     "match_score_isotope": (
         "Mascope's 0 to 1 score of this peak as the matched isotope line; NaN "
         "when unmatched"
@@ -61,8 +72,8 @@ COMMON: dict[str, str] = {
     "match_score_ion": CLIENT_COMPUTED["match_score_ion"],
     "match_score_compound": CLIENT_COMPUTED["match_score_compound"],
     "relative_abundance": (
-        "the matched line's theoretical abundance in its ion's pattern; 1 is "
-        "the most abundant"
+        "the line's share of its ion's theoretical isotope pattern; an ion's "
+        "lines sum to about 1"
     ),
     "target_isotope_id": "the matched isotope line's ID",
     "target_isotope_formula": "the matched isotope line, one m/z of the ion's pattern",
@@ -72,25 +83,37 @@ COMMON: dict[str, str] = {
     "target_compound_name": "the matched compound's name; NaN when unmatched",
     "target_compound_formula": "the matched compound's neutral formula; NaN when unmatched",
     "ionization_mechanism": "the matched ion's ionization mechanism, by name",
-    "ionization_mechanism_id": "the matched ion's ionization mechanism's ID",
+    "ionization_mechanism_id": (
+        "the matched ion's ionization mechanism's ID; a peak list has the name only"
+    ),
     "target_collection_ids": "the target collections the matched compound is in",
     "target_collection_names": "their names, aligned with the IDs; group by the IDs",
-    "time": "seconds from the sample's start",
+    "time": (
+        "seconds on the sample file's clock, as describe's t_range_s; a "
+        "sample's first point is at its window's start, not 0"
+    ),
     "stage": "the stage's 0-based index in the stages asked for",
     "stage_name": "the stage's name, as given; None when none was",
-    "t_min": "the stage's start, seconds from the sample's start",
-    "t_max": "the stage's end, seconds from the sample's start",
+    "t_min": (
+        "the stage's start, seconds on the sample file's clock (t_range_s); a "
+        "start before t0 is moved to t0"
+    ),
+    "t_max": "the stage's end, seconds on the sample file's clock (t_range_s)",
 }
 
 #: The match tree's own columns: one row per isotope line Mascope looked
 #: for, every score and category Mascope's (:func:`mascope_ai.oracle.tree_rows`).
+#: A line with no peak holds placeholders, named where they would mislead.
 _TREE: dict[str, str] = {
     "candidate": "the formula as it was asked about",
     "origin": "where the candidate came from: given, mass_query or model",
     "mz": "the line's theoretical m/z; the measured one is sample_peak_mz",
     "match_score_compound": "Mascope's compound score: its best ion's",
     "match_score_ion": "Mascope's ion score: its lines' scores weighted by abundance",
-    "match_score_isotope": "Mascope's 0 to 1 score of the line on the peak found",
+    "match_score_isotope": (
+        "Mascope's 0 to 1 score of the line on its peak; 0 when none or when the "
+        "nearest failed the tolerances"
+    ),
     "match_category_compound": (
         "Mascope's category for the compound: 2 probable, 1 possible, 0 unmatched"
     ),
@@ -98,21 +121,41 @@ _TREE: dict[str, str] = {
     "match_category_isotope": "Mascope's category for the line: 2, 1 or 0",
     "match_isotope_id": "the ID of this match record",
     "intensity_compound": (
-        "Mascope's summed intensity of the peaks found at the compound's lines"
+        "Mascope's sum of the compound's lines' peak intensities: heights on an "
+        "Orbitrap, areas on a TOF"
     ),
-    "intensity_ion": "Mascope's summed intensity of the peaks found at the ion's lines",
-    "sample_peak_id": "the sample's peak the line was found at; empty if none",
-    "sample_peak_mz": "the measured m/z of the peak the line was found at",
-    "sample_peak_intensity": "that peak's intensity: height on an Orbitrap, area on a TOF",
+    "intensity_ion": (
+        "Mascope's sum of the ion's lines' peak intensities: heights on an "
+        "Orbitrap, areas on a TOF; the app's batch point"
+    ),
+    "sample_peak_id": (
+        "the nearest peak's ID, kept even when it failed the tolerances; empty "
+        "when the line has no peak"
+    ),
+    "sample_peak_mz": (
+        "the nearest peak's measured m/z; for a line with no peak, the "
+        "theoretical mz again, a placeholder"
+    ),
+    "sample_peak_intensity": (
+        "that peak's intensity: height on an Orbitrap, area on a TOF; 0 when "
+        "the line has no peak"
+    ),
     "sample_peak_intensity_relative": (
-        "that intensity relative to the ion's most abundant line's peak"
+        "that intensity relative to the ion's most abundant line's peak; 0 when no peak"
     ),
-    "sample_peak_tof": "that peak's time-of-flight coordinate; TOF files only",
-    "match_mz_error": "the peak's m/z against the line's theoretical m/z",
+    "sample_peak_tof": "that peak's time-of-flight coordinate, TOF only; -1 when no peak",
+    "match_mz_error": (
+        "the peak's m/z against the line's theoretical m/z, in ppm; 0 when "
+        "the line has no peak, a placeholder"
+    ),
     "match_abundance_error": (
-        "the peak's relative intensity against the line's theoretical abundance"
+        "the peak's relative intensity against the line's theoretical "
+        "abundance; 1 when no peak"
     ),
-    "resolution": "that peak's resolving power, m/z over its width",
+    "resolution": (
+        "which set of target lines the line is from: HIGH, an Orbitrap's "
+        "resolved lines; LOW, a TOF's merged ones"
+    ),
     "signal_to_noise": "that peak's height over its noise estimate",
     "is_satellite": "whether that peak is a side-lobe artifact of a stronger peak",
     "instrument": "the instrument whose match parameters scored the ion",
@@ -126,18 +169,18 @@ _TREE: dict[str, str] = {
 #: is not here falls back to :data:`COMMON`.
 BY_OP: dict[str, dict[str, str]] = {
     "load_timeseries": {
-        "datetime_utc": "the point's absolute time: the sample's start plus time, UTC",
+        "datetime_utc": "the point's absolute time: the file's start plus time, UTC",
         "height": (
-            f"the peak's height in one scan, at time; {_UNIT}. The sample's own "
-            "value is load_peaks' height"
+            f"the peak's height in one scan, at time; {_UNIT}. load_peaks' "
+            "height is the sample's mean"
         ),
         "mz": "the peak's m/z, the same on every point of its series",
     },
     "load_spectrum": {
         "mz": "the profile point's m/z",
         "intensity": (
-            f"the averaged profile at this m/z, {_UNIT}; a window's apex is its "
-            "highest point, near the fitted height, not equal"
+            f"the averaged profile at this m/z; {_UNIT}. Its apex is near the "
+            "fitted height, not equal"
         ),
     },
     "load_peaks_by_stage": {
@@ -156,7 +199,10 @@ BY_OP: dict[str, dict[str, str]] = {
 
 
 def meaning(op: str | None, column: str) -> str | None:
-    """What *column* means in the table *op* made; None when not known."""
+    """What *column* means in the table *op* made; None when not known, and
+    None for :data:`MIXED`, a derived column whose inputs disagree."""
+    if op == MIXED:
+        return None
     by_op = BY_OP.get(op or "", {})
     return by_op.get(column) or COMMON.get(column)
 
@@ -173,7 +219,8 @@ def meanings(
     A column in *computed* - one a derived Frame's code made - says so,
     whatever its name: a column the code wrote is the code's, and its
     meaning is in the code, not here. A column in *inherited* means what
-    it meant in the load named there. A column nobody knows is left out.
+    it meant in the load named there, and nothing when that is
+    :data:`MIXED`. A column nobody knows is left out.
     """
     out: dict[str, str] = {}
     for column in columns:

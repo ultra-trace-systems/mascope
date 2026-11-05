@@ -18,12 +18,14 @@ from mascope_ai import Frame, Ref, Session, Toolkit, mcp
 from mascope_ai.mcp import (
     INSTRUCTIONS,
     MAX_RESULT_BYTES,
+    MEANINGS_FIRST,
     MESSAGE_CHARS,
     PROTOCOL_VERSIONS,
     TEXT_CHARS,
     TOOLS,
     Own,
     Server,
+    _size,
     fit,
     inert,
     render,
@@ -569,23 +571,90 @@ class TestFrames:
         assert "mean" in out["meanings"]["height"]
         assert "meanings_omitted" not in out
         spectrum = ok(server, "load_spectrum", sample="s21", mz_range=[100, 101])
-        assert "counts/s" in spectrum["meanings"]["intensity"]
+        assert "Orbitrap" in spectrum["meanings"]["intensity"]
         assert spectrum["meanings"]["mz"] != out["meanings"]["mz"]
 
-    def test_the_meanings_give_way_when_the_handle_would_not_fit(
-        self, server, kit, monkeypatch
-    ):
-        from mascope_ai import mcp as mcp_module
+    @staticmethod
+    def _as_the_server_orders_it(kit, batches: int) -> Frame:
+        """A peak list in the live route's column order (the recorded
+        fixture stores the keys sorted, which puts height in the head),
+        with 16-character IDs and realistic names, from *batches* batches."""
+        names = {
+            "sample_batch_name": "2025-06-12 uronium ambient",
+            "sample_item_id": "Qm3xT8vLp2Rk9sWz",
+            "sample_item_name": "2025-06-12 14:34:03 uronium",
+            "datetime_utc": pd.Timestamp("2025-06-12T14:34:03Z"),
+            "peak_id": "pZ4kQ9mT2vL8sX1r",
+            "mz": 169.1222414,
+            "sparsity": 0.0,
+            "signal_to_noise": 41.7,
+            "segment": None,
+            "area": 0.29,
+            "height": 1166294.7,
+            "match_score_isotope": 0.995,
+            "relative_abundance": 0.984,
+            "target_isotope_id": "iK2vP8mL3qR7tX9s",
+            "target_isotope_formula": "C10H17O2+",
+            "target_ion_id": "nL7qR2vP9mK4tX8s",
+            "target_ion_formula": "C10H17O2+",
+            "target_compound_id": "cR9mK2vP7qL4tX3s",
+            "target_compound_name": "Camphor",
+            "target_compound_formula": "C10H16O",
+            "ionization_mechanism": "Protonation",
+            "target_collection_ids": ["tC2vP9mK7qL4rX8s"],
+            "target_collection_names": ["Monoterpene oxidation products"],
+            "match_score_ion": 0.995,
+            "match_score_compound": 0.995,
+        }
+        df = pd.DataFrame([names] * 5)
+        return Frame.from_df(
+            df,
+            source_refs=[
+                Ref(
+                    f"b{i}Qm3xT8vLp2Rk9s", "batch", f"2025-06-1{i} uronium", parent="d1"
+                )
+                for i in range(batches)
+            ],
+            query={"op": "load_peaks", "params": {}},
+            session=kit.session,
+            client_columns=["match_score_ion", "match_score_compound"],
+        )
 
-        # Room for the handle and the head's meanings, not all of them
-        monkeypatch.setattr(mcp_module, "MAX_RESULT_BYTES", 2600)
-        out = ok(server, "load_peaks", batches=["Spring 2026"])
-        assert set(out["meanings"]) <= set(out["head"][0])
-        assert out["meanings_omitted"] > 0
-        # No room for any: the handle points to Python instead
-        monkeypatch.setattr(mcp_module, "MAX_RESULT_BYTES", 1700)
-        out = ok(server, "load_peaks", batches=["Spring 2026"])
+    def test_the_numbers_meanings_come_first_when_not_all_fit(self, server, kit):
+        frame = self._as_the_server_orders_it(kit, batches=3)
+        out = server._handle(frame)
+        assert _size(inert(out)) <= MAX_RESULT_BYTES
+        # Whether or not every meaning fits, the ones a model computes with
+        # are there; what is left out is among the identity columns
+        for column in MEANINGS_FIRST:
+            assert column not in frame.columns or column in out["meanings"]
+        if "meanings_omitted" in out:
+            assert out["meanings_omitted"] > 0
+            assert out["meanings_in_python"].endswith(".column_meanings()")
+            assert out["meanings_omitted"] == len(frame.column_meanings()) - len(
+                out["meanings"]
+            )
+
+    def test_the_partial_tier_fills_the_budget_and_points_to_python(self, server, kit):
+        frame = self._as_the_server_orders_it(kit, batches=1)
+        whole = server._handle(frame, limit=10**6)
+        assert "meanings_omitted" not in whole
+        # A budget just too small for every meaning: as many as fit, the
+        # numbers first, and the pointer to the rest, all inside the budget
+        limit = _size(inert(whole)) - 1
+        out = server._handle(frame, limit=limit)
+        assert _size(inert(out)) <= limit
+        assert out["meanings_omitted"] >= 1
+        assert out["meanings_in_python"].endswith(".column_meanings()")
+        kept = list(out["meanings"])
+        assert kept[:4] == ["height", "area", "mz", "match_score_isotope"]
+        assert len(kept) + out["meanings_omitted"] == len(frame.column_meanings())
+        assert len(kept) > 8
+        # Too small for any meaning: the count and the pointer alone
+        bare = server._handle(frame, limit=0)
+        out = server._handle(frame, limit=_size(inert(bare)))
         assert "meanings" not in out
+        assert out["meanings_omitted"] == len(frame.column_meanings())
         assert out["meanings_in_python"].endswith(".column_meanings()")
 
     def test_rows_in_python_opens_the_frame_in_another_process_s_session(
@@ -841,6 +910,8 @@ class TestOracle:
         tree = kit.session.frame(out["tree"]["frame"])
         assert out["tree"]["rows"] == tree.n_rows
         assert "rows_in_python" in out["tree"]
+        assert out["tree"]["meanings_in_python"].endswith(".column_meanings()")
+        assert "theoretical" in tree.column_meanings()["mz"]
         assert out["params"] == "the instrument's defaults"
 
     def test_a_verdict_lists_its_first_peaks_and_counts_them_all(

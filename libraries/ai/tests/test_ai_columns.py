@@ -37,7 +37,34 @@ class TestMeaning:
         assert "one scan" in series
         assert "apex" in spectrum
         assert len({peaks, series, spectrum}) == 3
-        assert all("counts/s" in text for text in (peaks, series, spectrum))
+        # One unit per instrument, the averaged spectrum's: never a rate on
+        # an Orbitrap, whatever the spectrum route labels it
+        assert all(
+            "counts (Orbitrap) or ions/s (TOF)" in text
+            for text in (peaks, series, spectrum)
+        )
+        assert "counts/s" not in peaks
+
+    def test_times_are_on_the_files_clock(self):
+        assert "file's clock" in meaning("load_timeseries", "time")
+        assert "not 0" in meaning("load_timeseries", "time")
+        assert "file's acquisition start" in meaning("load_peaks", "datetime_utc")
+        assert "moved to t0" in meaning("load_peaks_by_stage", "t_min")
+
+    def test_the_trees_placeholders_are_named(self):
+        assert "placeholder" in meaning("match_compounds", "sample_peak_mz")
+        assert "ppm" in meaning("match_compounds", "match_mz_error")
+        assert "HIGH" in meaning("match_compounds", "resolution")
+        assert "sum to about 1" in meaning("load_peaks", "relative_abundance")
+        assert "batch point" in meaning("match_compounds", "intensity_ion")
+
+    def test_a_mixed_column_has_no_meaning(self):
+        from mascope_ai.columns import MIXED
+
+        assert meaning(MIXED, "height") is None
+        assert meanings("derive", ["height", "time"], inherited={"height": MIXED}) == {
+            "time": COMMON["time"]
+        }
 
     def test_a_stage_is_averaged_over_its_own_scans_but_keeps_the_samples_rest(
         self,
@@ -133,6 +160,35 @@ class TestDerive:
         out = top.column_meanings()
         assert out["intensity"] == BY_OP["load_spectrum"]["intensity"]
         assert out["rank"] == COMPUTED
+
+    def test_a_column_two_inputs_mean_differently_has_no_meaning(self, kit):
+        from mascope_ai.columns import MIXED
+
+        peaks = kit.load_peaks(samples="s21")
+        formula = peaks.df["target_compound_formula"].dropna().iloc[0]
+        series = kit.load_timeseries(compound=formula, samples="s21")
+        areas = peaks.df[["peak_id", "area"]].drop_duplicates()
+        joined = series.df.merge(areas, on="peak_id")
+        # Whichever input comes first: both inputs have a height and an mz,
+        # and mean them differently, so the joined table's have no meaning
+        for inputs in ([peaks, series], [series, peaks]):
+            frame = kit.derive(joined, inputs, code="merge")
+            assert frame.inherited["height"] == MIXED
+            assert frame.inherited["mz"] == MIXED
+            out = frame.column_meanings()
+            assert "height" not in out and "mz" not in out
+            # Columns the inputs agree on, or only one has, keep theirs
+            assert out["time"] == COMMON["time"]
+            assert out["area"] == COMMON["area"]
+            assert frame.inherited["area"] == "load_peaks"
+            assert frame.inherited["peak_id"] == inputs[0].query["op"]
+
+    def test_two_inputs_that_agree_keep_the_meaning(self, kit):
+        a = kit.load_peaks(samples="s21")
+        b = kit.load_peaks(samples="s22")
+        both = kit.derive(pd.concat([a.df, b.df]), [a, b], code="concat")
+        assert both.inherited["height"] == "load_peaks"
+        assert both.column_meanings()["height"] == COMMON["height"]
 
     def test_a_column_recomputed_under_its_old_name_is_the_codes(self, kit):
         peaks = kit.load_peaks(samples="s21")

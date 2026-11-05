@@ -87,6 +87,29 @@ HANDLE_WARNINGS = 2
 #: The peaks a verdict lists; the rest are counted.
 VERDICT_PEAKS = 5
 
+#: The columns whose meanings a handle keeps first when not all of them
+#: fit: the numbers a model computes with, and mistakes one for another,
+#: before the identity columns, whose names say what they are.
+MEANINGS_FIRST = (
+    "height",
+    "area",
+    "intensity",
+    "mz",
+    "time",
+    "match_score_isotope",
+    "match_score_ion",
+    "match_score_compound",
+    "relative_abundance",
+    "sparsity",
+    "signal_to_noise",
+    "datetime_utc",
+    "sample_peak_mz",
+    "sample_peak_intensity",
+    "match_mz_error",
+    "intensity_ion",
+    "intensity_compound",
+)
+
 #: What the server tells a client about itself when it connects; Claude
 #: Code hands it to the model.
 INSTRUCTIONS = """\
@@ -1201,8 +1224,13 @@ class Server:
 
     # --- the tools ---------------------------------------------------------------
 
-    def _handle(self, frame: Frame) -> dict[str, Any]:
-        """A Frame as a tool result shows it: never its rows."""
+    def _handle(self, frame: Frame, limit: int | None = None) -> dict[str, Any]:
+        """A Frame as a tool result shows it: never its rows.
+
+        :param limit: The bytes the handle may take, with its meanings;
+            :data:`MAX_RESULT_BYTES` when None.
+        """
+        limit = MAX_RESULT_BYTES if limit is None else limit
         out: dict[str, Any] = {
             "frame": frame.id,
             "rows": frame.n_rows,
@@ -1226,24 +1254,36 @@ class Server:
         ]
         out["rows_in_python"] = Own(f"{self.opener}.frame({frame.id!r}).df")
         # What the columns mean, as far as the result has room: every column
-        # the handle lists, else the head's, else a pointer to Python. The
-        # texts are the server's own, so they are not cut by fit().
+        # the handle lists when they fit, else as many as fit, the numbers a
+        # model computes with before the identity columns, and a pointer to
+        # the rest in Python. The texts are the server's own, so fit() does
+        # not cut them; the count and the pointer are measured with them.
         meanings = {
             c: Own(text)
             for c, text in frame.column_meanings().items()
             if c in out["columns"]
         }
-        for kept in (meanings, {c: t for c, t in meanings.items() if c in shown}):
-            if kept and _size(inert({**out, "meanings": kept})) <= MAX_RESULT_BYTES:
+        if meanings and _size(inert({**out, "meanings": meanings})) <= limit:
+            out["meanings"] = meanings
+        elif meanings:
+            pointer = Own(f"{self.opener}.frame({frame.id!r}).column_meanings()")
+            order = [c for c in MEANINGS_FIRST if c in meanings]
+            order += [c for c in meanings if c not in MEANINGS_FIRST]
+            kept: dict[str, Any] = {}
+            for c in order:
+                trial = {
+                    **out,
+                    "meanings": {**kept, c: meanings[c]},
+                    "meanings_omitted": len(meanings) - len(kept) - 1,
+                    "meanings_in_python": pointer,
+                }
+                if _size(inert(trial)) > limit:
+                    break
+                kept[c] = meanings[c]
+            if kept:
                 out["meanings"] = kept
-                if len(kept) < len(meanings):
-                    out["meanings_omitted"] = len(meanings) - len(kept)
-                break
-        else:
-            if meanings:
-                out["meanings_in_python"] = Own(
-                    f"{self.opener}.frame({frame.id!r}).column_meanings()"
-                )
+            out["meanings_omitted"] = len(meanings) - len(kept)
+            out["meanings_in_python"] = pointer
         return out
 
     def _find(self, args: _Args) -> dict[str, Any]:

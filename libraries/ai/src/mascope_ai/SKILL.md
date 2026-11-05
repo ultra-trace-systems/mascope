@@ -33,16 +33,24 @@ that all look like "how high" are not the same number:
 
 - `height` in a peak list (`load_peaks`) is the peak's apex intensity in
   the sample's averaged spectrum, the mean over its scans. It is the
-  sample's own value, and what Mascope draws as the sample's point.
+  sample's own value for that peak. It is not the point the app's batch
+  chart draws: that is the ion's summed matched intensity, `intensity_ion`
+  in the match tree (heights on an Orbitrap, areas on a TOF).
 - `height` in a time series (`load_timeseries`) is the peak's height in one
-  scan, at `time` seconds from the sample's start.
-- `intensity` in a spectrum (`load_spectrum`) is one profile point, in
-  counts/s. A window's apex is the highest point, near the fitted peak's
-  height but not equal to it.
+  scan, at `time` seconds on the sample file's clock, the clock of
+  `describe`'s `t_range_s`; a sample's first point is at its window's
+  start, not at 0.
+- `intensity` in a spectrum (`load_spectrum`) is one profile point. A
+  window's apex is the highest point, near the fitted peak's height but not
+  equal to it.
 
-A stage (`load_peaks_by_stage`) is a peak list averaged over one time range
-of the sample. The Mascope docs page "Tables and columns" lays the tables out
-in full: <https://mascope.app/docs/concepts/tables/>.
+All three share the averaged spectrum's unit: counts on an Orbitrap, ions/s
+on a TOF; the spectrum route's `counts/s` is a label. A stage
+(`load_peaks_by_stage`) is a peak list averaged over one time range of the
+sample, its bounds on the file's clock too. The Mascope docs page "Tables
+and columns" lays the tables out in full: each deployment serves it at
+`<MASCOPE_URL>/docs/concepts/tables/`, and the source is
+<https://github.com/ultra-trace-systems/mascope/blob/master/docs/user/concepts/tables.md>.
 
 ## Three kinds of question
 
@@ -57,9 +65,10 @@ in full: <https://mascope.app/docs/concepts/tables/>.
   says it left peaks out (`TimeseriesNotComputed`) is made whole by
   `compute_timeseries` on its sample, then loaded again; over its cap it
   refuses, and a narrower `mz_range` goes through. A batch's time
-  series, as Mascope draws it, is one point per sample: the sample's
-  averaged peak, from `load_peaks`. `load_timeseries` gives the scans within
-  each sample, for what happens inside one.
+  series, as Mascope draws it, is one point per sample: the ion's summed
+  matched intensity, which a sample's averaged peaks from `load_peaks`
+  give per line. `load_timeseries` gives the scans within each sample, for
+  what happens inside one.
 - **Interpretation** - what the peak at an m/z is: `query_by_mz` proposes
   formulas for the sample's mechanisms (`describe` the sample for them),
   `match_compounds` has Mascope score them in that sample. Put the mass
