@@ -20,6 +20,7 @@ instructions: |
   - Finish with your answer as the final message: a single JSON object
     {"question_id": "...", "answer": <the answer in the shape given>,
     "notes": "<one sentence on how you got it>"} and no other text.
+  {{ extra }}
 prompt: |
   Question {{ question_id }}: {{ question }}
 
@@ -41,6 +42,11 @@ parameters:
     input_type: string
     requirement: required
     description: the mascope-ai executable that serves the MCP server
+  - key: extra
+    input_type: string
+    requirement: optional
+    default: ""
+    description: further instructions for an arm of the matrix (the mcp+python arm's shell note)
 extensions:
   - type: stdio
     name: mascope

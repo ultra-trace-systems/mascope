@@ -47,6 +47,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -90,6 +91,83 @@ PROVIDERS = {
         "/v1/models",
     ),
 }
+
+#: List prices in USD per million tokens (input, output), by a part of the
+#: model id, as the bench recorded them (Nebius, 31 October 2026). An unknown
+#: model is priced as the most expensive one seen, so a cap errs on the safe
+#: side.
+PRICE = {
+    "nemotron-3.5-super-vl": (0.30, 0.90),
+    "nemotron-3-super": (0.30, 0.90),
+    "nemotron-3_5-lightning": (0.06, 0.24),
+    "nemotron-3-nano": (0.06, 0.24),
+    "gpt-oss-120b": (0.15, 0.60),
+}
+PRICE_UNKNOWN = (0.60, 3.60)
+
+#: What an episode that ran out of wall clock, or died without a token count,
+#: is charged: a long episode's worth of input, so the cap is not fooled.
+TOKENS_UNACCOUNTED = (300_000, 10_000)
+
+
+def price_of(model: str) -> tuple[float, float]:
+    for part, price in PRICE.items():
+        if part in model.lower():
+            return price
+    return PRICE_UNKNOWN
+
+
+def cost_of(tokens: dict[str, Any] | None, model: str) -> float:
+    """An episode's list-price cost in USD from its token counts; an episode
+    with no counts is charged :data:`TOKENS_UNACCOUNTED`."""
+    price_in, price_out = price_of(model)
+    tokens = tokens or {}
+    tin, tout = tokens.get("input_tokens"), tokens.get("output_tokens")
+    if tin is None and tout is None:
+        tin, tout = TOKENS_UNACCOUNTED
+    return ((tin or 0) * price_in + (tout or 0) * price_out) / 1e6
+
+
+def spent(runs_root: Path = RUNS_ROOT) -> float:
+    """The list-price spend of every run under *runs_root*, from their records
+    (an episode without a cost field is costed now, at its model's price)."""
+    total = 0.0
+    for results in runs_root.glob("*/results.jsonl"):
+        try:
+            header = json.loads(
+                (results.parent / "header.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            header = {}
+        for line in results.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            cost = record.get("cost_usd")
+            total += (
+                cost
+                if cost is not None
+                else cost_of(record.get("tokens"), header.get("model", ""))
+            )
+    return total
+
+
+#: The run's running spend, shared by the episodes: a cap stops new episodes.
+SPEND = {"usd": 0.0, "cap": None, "lock": threading.Lock()}
+
+
+#: What the mcp+python arm tells the model besides: it has a shell, and the
+#: toolkit's Python is the way to compute over a Frame. The same path a coding
+#: agent took on the first transcript (``golden_transcripts/2026-10-27-...``).
+PYTHON_ARM_NOTE = (
+    "You also have a shell (the developer extension). To compute over data, run "
+    "Python with `{python}`: `from mascope_ai import Toolkit, Session; from "
+    "mascope_sdk import MascopeClient; kit = Toolkit(MascopeClient(service_name="
+    "'ai-agent'))` reads MASCOPE_URL, MASCOPE_ACCESS_TOKEN and MASCOPE_WORKSPACE "
+    "from the environment; `kit.load_peaks(...)` and the other loaders return "
+    "Frames whose `.df` is a pandas DataFrame you can aggregate. Print only the "
+    "numbers you need. Write nothing to Mascope."
+)
 
 #: The sampling the bench ran every model with.
 SAMPLING = {"temperature": 1.0, "top_p": 0.95, "max_tokens": 32768}
@@ -541,6 +619,14 @@ def dryrun_gate() -> str:
 def run(args: argparse.Namespace) -> int:
     keys = _env_file()
     table = dryrun_gate()
+    already = spent(RUNS_ROOT)
+    if args.budget_usd is not None:
+        if already >= args.budget_usd:
+            sys.exit(
+                f"the runs so far cost ${already:.2f}, at or past the budget of ${args.budget_usd:.2f}"
+            )
+        SPEND["usd"], SPEND["cap"] = already, args.budget_usd
+        print(f"spent so far ${already:.2f} of ${args.budget_usd:.2f}", flush=True)
     questions = (
         [ai_golden.question(q.strip()) for q in args.only.split(",")]
         if args.only
@@ -591,6 +677,10 @@ def run(args: argparse.Namespace) -> int:
         else "provider default (the openai provider carries no sampling)",
         "repetitions": args.reps,
         "questions": [q.id for q in questions],
+        "arm": args.arm,
+        "price_per_mtoken": price_of(args.model),
+        "budget_usd": args.budget_usd,
+        "spent_before_usd": round(already, 4),
         "dryrun": table,
         "prereg": {p.name: _sha256(p) for p in PREREG_FILES},
     }
@@ -682,6 +772,33 @@ def episode(
 ) -> dict[str, Any]:
     name = f"{folder.name}-{question.id}-rep{rep}"
     started = time.monotonic()
+    with SPEND["lock"]:
+        over = SPEND["cap"] is not None and SPEND["usd"] >= SPEND["cap"]
+    if over:
+        return {
+            "question": question.id,
+            "category": question.category,
+            "rep": rep,
+            "answer": None,
+            "answer_raw": None,
+            "coerced": False,
+            "readings": [],
+            "verdict": "infra",
+            "problems": [],
+            "known": ai_golden.recorded(question.expected),
+            "tool_calls": 0,
+            "tools": {},
+            "tokens": {},
+            "seconds": 0.0,
+            "exit_code": None,
+            "infra": True,
+            "stdout_bytes": 0,
+            "timed_out": False,
+            "export_error": "",
+            "error": f"not run: the spend cap of ${SPEND['cap']:.2f} was reached",
+            "provider_error": False,
+            "cost_usd": 0.0,
+        }
     command = [
         "goose",
         "run",
@@ -695,6 +812,13 @@ def episode(
         f"shape={answer_shape(question)}",
         "--params",
         f"mascope_ai={args.mascope_ai}",
+        "--params",
+        "extra="
+        + (
+            PYTHON_ARM_NOTE.format(python=sys.executable)
+            if args.arm == "mcp+python"
+            else ""
+        ),
         "--name",
         name,
         "--max-turns",
@@ -702,6 +826,8 @@ def episode(
         "--output-format",
         "json",
     ]
+    if args.arm == "mcp+python":
+        command += ["--with-builtin", "developer"]
     timed_out = False
     try:
         proc = subprocess.run(
@@ -747,6 +873,9 @@ def episode(
             export_error = f"{type(e).__name__}: {e}"[:200]
     raw, about = _parse_answer(stdout)
     scored = score(question, raw)
+    cost = cost_of(about["tokens"], args.model)
+    with SPEND["lock"]:
+        SPEND["usd"] += cost
     # Goose exited without an answer: a model that ran out of wall clock is
     # missing (it did not finish); otherwise a provider error, or the
     # harness's own fault (a bad recipe, a missing extension): infra either
@@ -771,6 +900,7 @@ def episode(
         "export_error": export_error,
         "error": stderr.strip()[-500:] if (infra or timed_out) else "",
         "provider_error": bool(INFRA.search(stderr + stdout)) if infra else False,
+        "cost_usd": cost,
     }
 
 
@@ -844,16 +974,32 @@ def summarize(folder: Path) -> None:
         f"Run `{folder.name}`; bundle {header['bundle']}; toolkit {header['toolkit_commit'][:9]}; pin {header['pin']}; "
         f"reasoning {header['reasoning']}; {header['repetitions']} repetition(s).",
         "",
-        "| Class | Episodes | Correct | Wrong | Missing | Infra (excluded) |",
-        "|---|---|---|---|---|---|",
+        "| Class | Episodes | Correct | Wrong | Missing | Infra (excluded) | USD |",
+        "|---|---|---|---|---|---|---|",
     ]
+    model = header.get("model", "")
     for category in ai_golden.CATEGORIES:
         rows = [r for r in records if r["category"] == category]
         scored = [r for r in rows if r["verdict"] != "infra"]
         count = lambda v: sum(1 for r in scored if r["verdict"] == v)  # noqa: E731
-        lines.append(
-            f"| {category} | {len(scored)} | {count('correct')} | {count('wrong')} | {count('missing')} | {len(rows) - len(scored)} |"
+        usd = sum(
+            r["cost_usd"]
+            if r.get("cost_usd") is not None
+            else cost_of(r.get("tokens"), model)
+            for r in rows
         )
+        lines.append(
+            f"| {category} | {len(scored)} | {count('correct')} | {count('wrong')} | {count('missing')} | {len(rows) - len(scored)} | {usd:.2f} |"
+        )
+    total_usd = sum(
+        r["cost_usd"]
+        if r.get("cost_usd") is not None
+        else cost_of(r.get("tokens"), model)
+        for r in records
+    )
+    lines.append(
+        f"| all | {sum(1 for r in records if r['verdict'] != 'infra')} | | | | | {total_usd:.2f} |"
+    )
     lines += [
         "",
         "**wrong** = stated but false, or a value where none is available (the fabrication measure); **missing** = abstained or unfinished; "
@@ -1018,6 +1164,20 @@ def main(argv: list[str] | None = None) -> int:
         "--weights", default="", help="the Hugging Face repository the model id names"
     )
     runner.add_argument("--reps", type=int, default=3)
+    runner.add_argument(
+        "--arm",
+        choices=["mcp", "mcp+python"],
+        default="mcp",
+        help="mcp: the toolkit's MCP server alone; mcp+python: also Goose's developer "
+        "extension (a shell), so the model can compute over the Frames in Python, as a "
+        "coding agent does (the diagnostic arm of the first row)",
+    )
+    runner.add_argument(
+        "--budget-usd",
+        type=float,
+        default=20.0,
+        help="stop starting episodes once every run under the runs root has cost this much at list price",
+    )
     runner.add_argument("--only", help="question IDs, comma-separated")
     runner.add_argument(
         "--pilot",
@@ -1062,6 +1222,9 @@ def main(argv: list[str] | None = None) -> int:
         "summarize", help="rebuild summary.md of a run folder"
     )
     summarizer.add_argument("folder", type=Path)
+    commands.add_parser(
+        "spend", help="the list-price spend of every run under the runs root"
+    )
     recoverer = commands.add_parser(
         "recover", help="rebuild a run's results from the transcripts on disk"
     )
@@ -1090,6 +1253,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "summarize":
         summarize(args.folder)
+        return 0
+    if args.command == "spend":
+        print(f"${spent(RUNS_ROOT):.2f} at list price over the runs under {RUNS_ROOT}")
         return 0
     if args.command == "recover":
         recover(args.folder)
