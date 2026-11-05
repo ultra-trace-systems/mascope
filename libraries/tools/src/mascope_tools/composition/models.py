@@ -2,6 +2,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 
 from mascope_tools.composition import config
+from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,12 @@ class PatternScoring:
         (:func:`heuristic_filter.merge_unresolved_lines`): on a TOF the peak at
         the 13C position also holds the 15N, 2H and 17O lines. ``None`` keeps
         every line apart, as a caller that knows nothing of the file did.
+    :param envelope_tolerance: How well the sample's run measures an isotope
+        line's share, fitted on its own committed envelopes
+        (:mod:`envelope_tolerance`): the band of share a matched line scores as
+        a match in, and the expected signal-to-noise from which an absent line
+        counts. ``None`` scores at today's numbers, a 5% tolerance and a
+        threshold of 3.
     """
 
     sigma_ppm: float | None = None
@@ -80,6 +87,7 @@ class PatternScoring:
     mz_tolerance_ppm: float = config.ISOTOPE_MATCHING_MZ_TOLERANCE_PPM
     abundance_floor: float = config.ISOTOPE_ABUNDANCE_THRESHOLD
     resolution: Callable[[float], float] | None = None
+    envelope_tolerance: EnvelopeTolerance | None = None
 
 
 @dataclass(frozen=True)

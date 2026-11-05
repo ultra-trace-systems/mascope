@@ -14,6 +14,10 @@ import polars as pl
 import pytest
 
 from mascope_tools.composition import heuristic_filter
+from mascope_tools.composition.envelope_tolerance import (
+    RESPONSE_SNR_EDGES,
+    EnvelopeTolerance,
+)
 from mascope_tools.composition.heuristic_filter import (
     PATTERN_BASE_SNR,
     PATTERN_REQUIRED_LINES,
@@ -146,6 +150,19 @@ def _spectrum(rng, *, with_snr=True, duplicates=False):
     return mz[order], intensity[order], snr
 
 
+#: The tolerances a run may score at: today's, a response curve, a TOF's centre
+#: and width.
+TOLERANCES = [
+    None,
+    EnvelopeTolerance(
+        snr_edges=RESPONSE_SNR_EDGES,
+        lower=(0.6, 0.8, 0.9, 0.95, 1.0),
+        detect_snr=10.0,
+    ),
+    EnvelopeTolerance(centre=0.04, floor=0.09),
+]
+
+
 def _scorings(rng):
     resolving_power = float(rng.choice([8000.0, 60000.0]))
     return PatternScoring(
@@ -154,6 +171,7 @@ def _scorings(rng):
         mz_tolerance_ppm=float(rng.choice([3.0, 5.0, 15.0])),
         abundance_floor=float(rng.choice([1e-5, 1e-3, 0.01])),
         resolution=(lambda mz: resolving_power) if rng.random() < 0.4 else None,
+        envelope_tolerance=TOLERANCES[int(rng.integers(len(TOLERANCES)))],
     )
 
 
@@ -483,3 +501,46 @@ class TestScoreCandidates:
             assert reading["isotopic_pattern_score"] == pytest.approx(
                 by_formula[reading["formula"]], abs=ROUNDING, rel=0
             )
+
+
+class TestTheRunsToleranceReachesTheFinder:
+    """What a candidate is ranked at reads the tolerance its sample carries."""
+
+    @staticmethod
+    def _censored_spectrum():
+        # C10H15O4-'s 13C line reads 15% under its share, at an expected S/N
+        # of about 16, where the curve admits 20% under.
+        lines, abundances, _ = predict_isotopes("C10H15O4", -1, None, 1e-3)
+        lines, abundances = np.asarray(lines), np.asarray(abundances)
+        intensities = abundances / abundances[0] * 1e5
+        intensities[1] *= 0.85
+        snrs = intensities / 1e5 * 150.0
+        return lines, intensities, snrs
+
+    def test_one_candidate_alone(self):
+        mzs, intensities, snrs = self._censored_spectrum()
+        today = PatternScoring(sigma_ppm=0.6)
+        fitted = PatternScoring(sigma_ppm=0.6, envelope_tolerance=TOLERANCES[1])
+
+        before, _, _ = score_ion_envelope(
+            "C10H15O4", -1, 1e-3, mzs, intensities, snrs, today
+        )
+        after, _, _ = score_ion_envelope(
+            "C10H15O4", -1, 1e-3, mzs, intensities, snrs, fitted
+        )
+
+        assert after > before + 0.1
+
+    def test_many_candidates_at_once(self):
+        mzs, intensities, snrs = self._censored_spectrum()
+        today = PatternScoring(sigma_ppm=0.6)
+        fitted = PatternScoring(sigma_ppm=0.6, envelope_tolerance=TOLERANCES[1])
+
+        before = score_ion_envelopes(
+            ["C10H15O4"], [-1], [1e-3], mzs, intensities, snrs, today
+        )[0]
+        after = score_ion_envelopes(
+            ["C10H15O4"], [-1], [1e-3], mzs, intensities, snrs, fitted
+        )[0]
+
+        assert after[0] > before[0] + 0.1
