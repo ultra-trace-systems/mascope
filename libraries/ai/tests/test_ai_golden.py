@@ -278,6 +278,159 @@ class TestCompare:
             "answer['items'][0]['y']: 3.0, not 2 (within 0.1)"
         ]
 
+    def test_a_text_that_must_say_something(self):
+        said = ai_golden._says("outside", "range")
+
+        assert said.matches("m/z 61.04 is OUTSIDE the acquired RANGE 122-740")
+        assert not said.matches("no peak there")
+        assert not said.matches("")
+        assert not said.matches(None)
+        assert said.matches(said.example)
+        assert not said.matches(said.fabricated())
+        assert compare({"reason": said}, {"reason": "nothing"}) == [
+            "answer['reason']: 'nothing', not a text saying 'outside', 'range'"
+        ]
+
+
+class TestTheDeclineQuestions:
+    declines = [question for question in QUESTIONS if question.category == "decline"]
+
+    def test_each_declines_with_a_reason_and_no_value(self):
+        assert [question.id for question in self.declines] == [
+            "D1",
+            "D2",
+            "D3",
+            "D4",
+            "D5",
+        ]
+        for question in self.declines:
+            assert question.expected["available"] is False, question.id
+            assert isinstance(question.expected["reason"], ai_golden.Words), question.id
+            assert question.check is ai_golden._no_value, question.id
+
+    def test_a_value_given_is_wrong(self):
+        declined = {"available": False, "reason": "not available: no batch named"}
+
+        assert ai_golden._no_value({**declined, "value": 81}, {}) == [
+            "a decline question answered with a value: [81]"
+        ]
+        assert ai_golden._no_value({**declined, "flag": True}, {}) == []
+        assert ai_golden._numbers_in({"a": [1, {"b": 2.5}], "c": "3"}) == [1, 2.5]
+
+    @pytest.mark.parametrize("question_id", ["D1", "D2"])
+    def test_the_fake_server_has_neither_and_the_solver_declines(
+        self, kit, question_id
+    ):
+        # No batch and no workspace of those names exist there either
+        outcome = ai_golden.run_question(ai_golden.question(question_id), kit)
+
+        assert outcome.status == "answered", outcome.describe()
+        assert outcome.answer["available"] is False
+        assert outcome.tools == ("find",)
+
+
+class TestTheDryRun:
+    def test_the_careful_answer_is_the_known_one_as_recorded(self):
+        expected = {
+            "sample": "s",
+            "height": Close(10.0, rel=0.01),
+            "when": Instant("2025-08-11T11:23:12+00:00"),
+            "why": ai_golden._says("batch"),
+            "none": None,
+        }
+
+        assert ai_golden.recorded(expected) == {
+            "sample": "s",
+            "height": 10.0,
+            "when": "2025-08-11T11:23:12+00:00",
+            "why": "not available: batch",
+            "none": None,
+        }
+        assert compare(expected, ai_golden.recorded(expected)) == []
+
+    def test_a_fabrication_moves_one_value_past_its_tolerance(self):
+        expected = {
+            "sample": "2025-08-11 14:34:03",
+            "height": Close(100.0, rel=0.01),
+            "when": Instant("2025-08-11T11:23:12+00:00"),
+            "n": 81,
+            "status": "probable",
+            "list": ["CH2O2", None],
+        }
+
+        made = dict(ai_golden.fabrications(expected))
+
+        assert made["answer['height']"]["height"] == 103.0
+        assert made["answer['when']"]["when"] == "2025-08-11T12:23:12+00:00"
+        assert made["answer['n']"]["n"] == 82
+        assert made["answer['sample']"]["sample"] == "2025-08-11 14:34:04"
+        assert made["answer['status']"]["status"] == "possible"
+        assert made["answer['list'][0]"]["list"] == ["CH2O3", None]
+        assert made["answer['list'][1]"]["list"] == ["CH2O2", "fabricated"]
+        assert made["answer['list']: one item short"]["list"] == ["CH2O2"]
+        # Each differs from the recorded answer, and each is caught
+        recorded = ai_golden.recorded(expected)
+        for where, answer in made.items():
+            assert answer != recorded and set(answer) == set(recorded), where
+            assert compare(expected, answer), where
+
+    def test_a_decline_is_also_fabricated_with_a_value(self):
+        expected = ai_golden._not_available(ai_golden._says("batch"))
+
+        made = dict(ai_golden.fabrications(expected))
+
+        assert made["answer: a value given"] == {
+            "available": False,
+            "reason": "not available: batch",
+            "value": 42.0,
+        }
+        assert made["answer['available']"]["available"] is True
+        assert made["answer['reason']"]["reason"] == ""
+
+    @pytest.mark.parametrize("question", QUESTIONS, ids=lambda question: question.id)
+    def test_the_checker_fails_what_it_should(self, question):
+        run = ai_golden.dryrun_question(question)
+
+        assert run.careful == [], run.careful
+        assert run.passed == [], f"fabrication(s) passed at {run.passed}"
+        assert run.fabrications >= 1
+        assert run.empty == "missing"
+        assert run.ok
+
+    def test_the_fabricating_solver_is_wrong_on_every_decline_question(self):
+        for question in TestTheDeclineQuestions.declines:
+            for where, answer in ai_golden.fabrications(question.expected):
+                assert ai_golden.verdict_of(question, answer) == "wrong", (
+                    question.id,
+                    where,
+                )
+
+    def test_a_tolerance_too_wide_is_the_finding(self):
+        loose = _asked(lambda kit: None, {"height": Close(10.0, rel=100.0)})
+
+        run = ai_golden.dryrun_question(loose)
+
+        assert run.passed == ["answer['height']"]
+        assert not run.ok
+        table = ai_golden.dryrun_table([run])
+        assert "1 question(s) the checker gets wrong" in table
+        assert "M0: fabrication passed at answer['height']" in table
+
+    def test_the_table(self):
+        table = ai_golden.dryrun_table(ai_golden.dryrun())
+
+        lines = table.splitlines()
+        assert lines[0].split() == [
+            "id",
+            "category",
+            "careful",
+            "fabrications",
+            "empty",
+        ]
+        assert len(lines) == len(QUESTIONS) + 2
+        assert all("correct" in line and "missing" in line for line in lines[1:-1])
+        assert "the checker fails what it should" in lines[-1]
+
 
 def _samples_in_spring(kit):
     return kit.describe(kit.resolve("Spring 2026", "batch"))["n_samples"]
@@ -424,6 +577,29 @@ class TestTheHarness:
         report = ai_golden.run(kit, [_asked(_samples_in_spring, 3), _asked(_cannot, 1)])
 
         assert report.passed
+
+    def test_no_answer_is_missing(self, kit):
+        outcome = ai_golden.run_question(_asked(lambda kit: None, 3), kit)
+
+        assert outcome.status == "unanswerable"
+        assert outcome.verdict == "missing"
+        assert outcome.reason == "the solver gave no answer"
+        assert outcome.to_dict()["verdict"] == "missing"
+
+    def test_the_verdicts_of_a_model_run(self, kit):
+        verdict = lambda solve, expected: (
+            ai_golden.run_question(  # noqa: E731
+                _asked(solve, expected), kit
+            ).verdict
+        )
+
+        assert verdict(_samples_in_spring, 3) == "correct"
+        assert verdict(_samples_in_spring, 4) == "wrong"
+        assert verdict(_cannot, 1) == "missing"
+        assert verdict(_names_a_missing_batch, {}) == "missing"
+        assert set(ai_golden.VERDICT_OF_STATUS) == set(ai_golden.STATUSES)
+        assert set(ai_golden.VERDICT_OF_STATUS.values()) < set(ai_golden.VERDICTS)
+        assert "sloppy" in ai_golden.VERDICTS and "infra" in ai_golden.VERDICTS
 
 
 class _Batch:
@@ -577,6 +753,20 @@ class TestTheCommandLine:
 
         lines = capsys.readouterr().out.splitlines()
         assert lines == [f"{q.id}. {q.text}" for q in QUESTIONS]
+
+    def test_dryrun_passes_the_set_and_fails_a_loose_tolerance(
+        self, capsys, monkeypatch
+    ):
+        assert ai_golden.main(["dryrun"]) == 0
+        out = capsys.readouterr().out
+        assert "the checker fails what it should" in out
+        assert out.count(" caught") == len(QUESTIONS)
+
+        loose = _asked(lambda kit: None, {"height": Close(10.0, rel=100.0)})
+        monkeypatch.setattr(ai_golden, "QUESTIONS", (loose,))
+
+        assert ai_golden.main(["dryrun"]) == 1
+        assert "fabrication passed at answer['height']" in capsys.readouterr().out
 
 
 @pytest.fixture(scope="module")

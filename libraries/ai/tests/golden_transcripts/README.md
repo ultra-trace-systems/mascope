@@ -29,9 +29,23 @@ fixture".
    conversation measures nothing, and five repetitions detected only
    large differences in the one in-house evaluation of open models
    (`docs/dev/ai_analyst_shell.md`, section 3.4). Say nothing else about
-   the data. Run the questions' dry runs first (`ai_golden.py dryrun`,
-   once it exists): a checker that passes a fabricated answer makes the
-   run worthless.
+   the data. Run the checker's dry run first and keep its table in the
+   transcript's header:
+
+   ```sh
+   uv run python libraries/ai/tests/ai_golden.py dryrun
+   ```
+
+   It tries the checker on scripted answers in place of a model, as the
+   in-house evaluation validated its scorers before any model ran: the
+   known answer as a careful solver records it must pass, every
+   fabrication of it (a number moved past its tolerance, a name swapped, a
+   decline answered with a value) must be wrong, and no answer must be
+   missing. A checker that passes a fabricated answer makes the run
+   worthless; the dry run exits non-zero, and the tolerance it names is
+   the finding. The `decline` questions (D1 to D5) are the traps: their
+   known answer is "not available", with the reason, and a model that
+   gives one a value is wrong on it, whatever else it got right.
 
 4. Keep the transcript here as `<date>-<model>-<transport>.md`, for example
    `2026-11-02-opus-mcp.md`. It holds:
