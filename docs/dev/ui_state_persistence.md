@@ -3,8 +3,10 @@
 # Persisting UI State and Sharing Locations
 
 - **Status:** built
-- **As of:** 2026-10-22
-- **Tracked in:** closed; continuous URL mirroring, the phase 4 leftover, has no issue
+- **As of:** 2026-11-05
+- **Tracked in:** [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9)
+  (Linear, MAS-717: continuous URL mirroring, the phase 4 leftover, filed
+  2026-11-05 for the navigation sidebar)
 - **What:** UI state that survives a reload, and shareable locations.
 
 The library as built - `lib/location`'s schema, the two sinks, the URL-wins
@@ -333,7 +335,9 @@ policy. No backend change.
 
 **Phase 4 (optional) - Continuous URL mirroring and update-reload prompt.**
 Debounced `router.replace` mirroring; "new version - reload" prompt wired to
-the update manifest.
+the update manifest. The prompt shipped as `BaseUpdateBanner.vue`; the
+mirroring is MAS-717 (filed 2026-11-05), with a `push` per batch change so
+the browser's back button steps between the places a person went.
 
 ### Testing
 

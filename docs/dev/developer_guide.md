@@ -2526,7 +2526,7 @@ lack the id - as the toast "Could not open the shared <level>; you may not
 have access to it.", naming the shallowest unresolved level; the chain stops
 at the last level it resolved, and a slow but successful load never warns.
 The address bar carries a location only while a shared link is being opened:
-continuous URL mirroring, phase 4 of the design, is not built.
+continuous URL mirroring, phase 4 of the design, is not built (MAS-717).
 `BaseUpdateBanner.vue` is phase 4's other item, the "new version available"
 prompt whose reload the snapshot makes cheap.
 
