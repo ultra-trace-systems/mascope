@@ -3,7 +3,7 @@
 # Making the SDK peak-assignment aware (read-first)
 
 - **Status:** building
-- **As of:** 2026-10-29
+- **As of:** 2026-11-05
 - **Tracked in:** MAS-71 in [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) for the import contract; the SDK write wrappers (section 8.4 steps 5 and 6) are MAS-330 and MAS-345, the demo bundle MAS-331 and the reference identities in frames MAS-332, in [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) milestone 3 (filed 2026-10-22)
 - **What:** The SDK's peak-assignment surface; section 8 is the run-import contract.
 
@@ -1198,6 +1198,38 @@ document cites it.
    engine's batch-level result is imported as a batch run, matched by m/z and
    measured against every member. The per-sample import stays the way to publish
    a per-sample run.
+
+   **A verdict on batch rows** (assignment quality plan step 5.6, MAS-71). A
+   batch row used to carry the m/z, the formulas and the mechanism and nothing
+   of the engine's judgement, so a reference that holds most of its merged
+   identities as candidates had to withhold them or see them land beside its
+   assigned ones indistinguishably. A row now takes `engine_tier` (the
+   per-sample import's vocabulary and validator) and `engine_claim` (free text,
+   1024 characters), both optional; a row without them imports as before. They
+   are stored on the batch peak (`batch_peak.engine_tier`, `engine_claim`, and
+   the same two columns on `batch_peak_run_anchor`, so the run selector shows
+   them as the import left them) and served by the ledger read, which filters on
+   them with `engine_tier` and `tier_disagrees` as the per-sample read does.
+   The rules that keep the pair honest, all in `batch_import.py` and
+   `batch_peaks_controller._apply_consensus`:
+
+   - written after the import's consensus recompute, and only on an anchor
+     whose consensus then names the row's identity (neutral formula and
+     mechanism): a verdict beside another formula is withheld, and counted
+     (`engine_verdicts_withheld` beside `engine_verdicts` in the run summary);
+   - every other anchor of the batch loses the verdict an earlier import left,
+     since the ledger is the new import's view;
+   - the consensus writer clears it on an anchor whose formula or mechanism
+     then moves (a fold, a curation), and a rebuild clears the batch;
+   - nothing ranks on it: the fold, the sort and the batch roll-ups read
+     `consensus_tier` alone (the plan's decision 20). The ledgers' **Engine
+     tier** view option counts the tier strip in the engine's words, a reading
+     aid that is off by default.
+
+   The contract version is the SDK's: these fields are part of the contract
+   from the first SDK release after 2026.11.4, and a server older than this
+   change ignores them (the row model ignores unknown fields), so an engine
+   that needs the verdict kept checks the server's release, not the SDK's.
 2. **Ionization mechanisms: how far client-side resolution goes.** *Resolved:
    keep the floor.* `import_run` resolves an adduct by exact-string match
    against `mascope.ionization.list()` and sends `ionization_mechanism_id` null
@@ -1224,6 +1256,16 @@ document cites it.
 
    Consequently, **client-side validation in §8.3 does not claim to pre-empt the
    mechanism 422** - it catches shape errors, not chemistry.
+
+   **The mechanism table is a catalogue, not a configuration** (step 5.6). It
+   lists every adduct a deployment can name, shipped or added by its users;
+   it says nothing about which channels an engine should search. The
+   reference's 0.10 line read it the other way and opened every channel the
+   server listed. Mascope's own engine opens channels by the ionization profile
+   and the file's fingerprint (plan step 1.2), and an importer chooses its
+   channels by its own chemistry and uses the table only to name the adduct a
+   row found. The SDK README, the import page in the user docs and
+   `batch_peaks.import_run` say so.
 
    The exact-string floor matches more than it did when this was decided: since
    the assignment plan's step 3.3b the listing reads every mechanism in the

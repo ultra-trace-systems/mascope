@@ -97,7 +97,7 @@ owns: it mints `peak_assignment_id`, `peak_assignment_run_id` and
 | `sample_peak_mz`, `sample_peak_intensity`, `sample_peak_tof` | The peak as the engine observed it. The intensity must be the quantity Mascope's own engine uses for the instrument: **peak height for an Orbitrap file, peak area for a TOF file**. It scales the member's vote in the batch ledger, and nothing can detect the wrong quantity |
 | `role` | `M0`, `iso_child`, `reagent`, `artifact` or `unassigned` |
 | `assigned_formula`, `ion_formula`, `isotope_label`, `isotope_formula` | What the engine assigned |
-| `ionization_mechanism_id` | Optional: an engine names adducts by notation. A supplied id must exist on this server and carry the sample's polarity (422 otherwise); it need not belong to the sample's ionization mode |
+| `ionization_mechanism_id` | Optional: an engine names adducts by notation. A supplied id must exist on this server and carry the sample's polarity (422 otherwise); it need not belong to the sample's ionization mode. The mechanism table is a catalogue of what the server can name, not a list of channels to search (below) |
 | `source` | `database`, `untargeted` or `manual` |
 | `fit_score`, `mz_error_ppm`, `abundance_error` | The engine's measurement. `fit_score` is stored and served exactly as supplied |
 | `tier` | Optional, and better omitted (below) |
@@ -120,8 +120,22 @@ is better left out. A row with no `fit_score` is not banded: it may be
 writes with a null score.
 
 An engine whose own rules demote a peak below what its evidence alone earns
-keeps that verdict in `engine_tier`. The ledger's *tier disagrees* filter
-shows the rows where the two differ; nothing ranks on `engine_tier`.
+keeps that verdict in `engine_tier`. The API's `tier_disagrees` filter
+returns the rows where the two differ, and the ledger's **Engine tier** view
+option counts its tier chips in the engine's words; nothing ranks on
+`engine_tier`. A batch-level import takes the same field, and a free-text
+`engine_claim` beside it
+([Importing an engine's batch result](../how-it-works/peak-assignment.md#importing-an-engines-batch-result)).
+
+### Ionization mechanisms
+
+`mascope.ionization.list()` is a catalogue: every adduct this deployment can
+name, shipped or added by its users. It is not a configuration of the
+channels an engine should open, and an engine that searches every channel the
+server lists searches far more than its source makes. Mascope's own engine
+opens channels by the ionization profile and the file's fingerprint. Choose
+the channels by the engine's own chemistry, and use the table to name the
+adduct a row found.
 
 ### Reserved provenance keys
 
