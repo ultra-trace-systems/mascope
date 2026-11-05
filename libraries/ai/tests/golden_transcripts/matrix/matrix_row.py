@@ -579,6 +579,129 @@ def summarize(folder: Path) -> None:
     print("\n".join(lines[: 4 + len(ai_golden.CATEGORIES) + 2]))
 
 
+#: What a transcript never carries, whatever a tool result held.
+SECRET = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]{16,}|([A-Za-z0-9_\-]{48,})")
+
+
+def _scrubbed(text: str, scrub: tuple[str, ...] = ()) -> str:
+    for word in scrub:
+        if word:
+            text = text.replace(word, "[redacted]")
+    return SECRET.sub(lambda m: (m.group(1) or "") + "[redacted]", text)
+
+
+def _clipped(text: str, chars: int = 1500) -> str:
+    return (
+        text
+        if len(text) <= chars
+        else text[:chars] + f" ... [{len(text) - chars} more characters]"
+    )
+
+
+def transcript(folder: Path, scrub: tuple[str, ...] = ()) -> str:
+    """The run as ``golden_transcripts/README.md`` keeps it: the header, the
+    verdict table, then every episode's tool calls and results as the model
+    saw them, from Goose's output. Secrets are scrubbed; the reviewer's
+    column (sloppy, a corrected verdict) is left for the reviewer."""
+    header = json.loads((folder / "header.json").read_text())
+    records = [
+        json.loads(line)
+        for line in (folder / "results.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    questions = {q.id: q for q in ai_golden.QUESTIONS}
+    lines = [
+        f"# Golden questions: {header['model']} through Goose, {header['started'][:10]}",
+        "",
+        "## Header",
+        "",
+        f"- Run `{header['run']}`, started {header['started']}.",
+        f"- Demo bundle {header['bundle']}; stack build `{header['stack'].get('build_tag')}`; "
+        f"toolkit commit `{header['toolkit_commit'][:12]}` ({header['toolkit_branch']}).",
+        f"- Runtime: goose {header['runtime']['version']}, recipe `{header['runtime']['recipe']}`, "
+        f"max turns {header['runtime']['max_turns']}; the MCP server `mascope-ai mcp` as its extension.",
+        f"- Provider {header['provider']}; model id `{header['model']}`; weights {header['weights'] or 'as the model id names them'}.",
+        f"- Precision served: `{json.dumps(header['precision_served'], default=str)[:300]}`.",
+        f"- Reasoning: {header['reasoning']}. Pin: {header['pin']}. Sampling: {json.dumps(header['sampling'])}.",
+        f"- Repetitions: {header['repetitions']}; questions: {', '.join(header['questions'])}.",
+        f"- Pre-registration: {', '.join(f'{k} {v[:12]}' for k, v in header['prereg'].items())}.",
+        "",
+        "The checker's dry run before the run:",
+        "",
+        "```",
+        header["dryrun"],
+        "```",
+        "",
+        "## Verdicts",
+        "",
+        "Checker verdicts are the fixture's (`ai_golden.check_answer`): correct, wrong (stated but false, or a value "
+        "where none is available), missing, infra (excluded). The reviewer's column holds the hand verdict where it "
+        "differs (sloppy: right, an instruction not followed), empty where it agrees.",
+        "",
+        "| Question | Rep | Model's answer | Known answer | Checker | Reviewer |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in records:
+        cell = lambda v: _scrubbed(json.dumps(v, default=str), scrub).replace(
+            "|", "\\|"
+        )  # noqa: E731
+        lines.append(
+            f"| {r['question']} | {r['rep']} | {_clipped(cell(r['answer']), 300)} | {_clipped(cell(r['known']), 300)} | "
+            f"{r['verdict']}{' (' + '; '.join(r['problems'][:2]) + ')' if r['problems'] else ''} |  |"
+        )
+    lines += ["", "## Episodes", ""]
+    for r in records:
+        question = questions.get(r["question"])
+        lines += [
+            f"### {r['question']} rep {r['rep']}: {r['verdict']}",
+            "",
+            f"> {question.text if question else r['question']}",
+            "",
+            f"{r['seconds']} s; {r['tool_calls']} tool call(s); tokens {json.dumps(r.get('tokens'))}"
+            + (f"; error: {_scrubbed(r['error'], scrub)}" if r.get("error") else ""),
+            "",
+        ]
+        stdout_file = (
+            folder / "transcripts" / f"{r['question']}-rep{r['rep']}.stdout.txt"
+        )
+        doc = _goose_output(stdout_file.read_text()) if stdout_file.is_file() else None
+        for message in (doc or {}).get("messages", ()):
+            for part in message.get("content", ()):
+                kind = part.get("type")
+                if kind == "toolRequest":
+                    call = (part.get("toolCall") or {}).get("value") or {}
+                    lines.append(
+                        f"- **{call.get('name')}** `{_scrubbed(json.dumps(call.get('arguments'), default=str), scrub)}`"
+                    )
+                elif kind == "toolResponse":
+                    result = (part.get("toolResult") or {}).get("value") or {}
+                    texts = [
+                        c.get("text", "")
+                        for c in result.get("content", ())
+                        if c.get("type") == "text"
+                    ]
+                    lines += [
+                        "",
+                        "  ```",
+                        "  "
+                        + _clipped(_scrubbed(" ".join(texts), scrub)).replace(
+                            "\n", "\n  "
+                        ),
+                        "  ```",
+                        "",
+                    ]
+                elif kind == "text" and message.get("role") == "assistant":
+                    lines += [
+                        "",
+                        "  Final: `"
+                        + _clipped(_scrubbed(part.get("text", ""), scrub), 600)
+                        + "`",
+                        "",
+                    ]
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -638,12 +761,34 @@ def main(argv: list[str] | None = None) -> int:
         "summarize", help="rebuild summary.md of a run folder"
     )
     summarizer.add_argument("folder", type=Path)
+    renderer = commands.add_parser(
+        "transcript",
+        help="render a run folder as the transcript golden_transcripts/ keeps",
+    )
+    renderer.add_argument("folder", type=Path)
+    renderer.add_argument(
+        "-o", "--output", type=Path, help="write it here instead of stdout"
+    )
+    renderer.add_argument(
+        "--scrub",
+        action="append",
+        default=[],
+        help="a string that must not appear (a token)",
+    )
     args = parser.parse_args(argv)
     if args.command == "dryrun":
         print(dryrun_gate())
         return 0
     if args.command == "summarize":
         summarize(args.folder)
+        return 0
+    if args.command == "transcript":
+        text = transcript(args.folder, tuple(args.scrub))
+        if args.output:
+            args.output.write_text(text, encoding="utf-8")
+            print(f"{args.output}: {len(text)} characters")
+        else:
+            print(text)
         return 0
     return run(args)
 
