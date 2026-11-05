@@ -340,6 +340,67 @@ def _parse_answer(stdout: str) -> tuple[Any, dict[str, Any]]:
     return answer, {"tool_calls": sum(tools.values()), "tools": tools, "tokens": tokens}
 
 
+def lenient(answer: Any) -> tuple[Any, bool]:
+    """*answer* with every number written as text read as the number, and
+    whether anything was read so.
+
+    The fixture's checker holds a solver to the type it asked for; a model
+    that writes 2 as "2" has the value right and the shape wrong. The bench
+    scored such answers correct by reading the number, so the driver does
+    the same before the checker, and records that it did: the reviewer's
+    call whether that is sloppy.
+    """
+    coerced = False
+
+    def walk(value: Any) -> Any:
+        nonlocal coerced
+        if isinstance(value, str) and _NUMBER.fullmatch(value.strip()):
+            coerced = True
+            number = float(value)
+            return int(number) if number.is_integer() and "." not in value else number
+        if isinstance(value, dict):
+            return {key: walk(inner) for key, inner in value.items()}
+        if isinstance(value, list):
+            return [walk(inner) for inner in value]
+        return value
+
+    return walk(answer), coerced
+
+
+def score(question: ai_golden.Question, raw: Any) -> dict[str, Any]:
+    """The checker's verdict on a model's *raw* answer, read leniently."""
+    answer, coerced = lenient(raw)
+    return {
+        "answer": answer,
+        "answer_raw": raw,
+        "coerced": coerced,
+        "verdict": ai_golden.verdict_of(question, answer),
+        "problems": [] if answer is None else ai_golden.check_answer(question, answer),
+    }
+
+
+def rescore(folder: Path) -> None:
+    """Score a run's stored answers again with the current checker, keeping
+    the first scoring as ``results.orig.jsonl`` (as the bench kept its), and
+    rebuild the summary."""
+    results = folder / "results.jsonl"
+    original = folder / "results.orig.jsonl"
+    if not original.exists():
+        shutil.copy(results, original)
+    questions = {q.id: q for q in ai_golden.QUESTIONS}
+    records = []
+    for line in results.read_text().splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        raw = record.get("answer_raw", record.get("answer"))
+        if record.get("verdict") != "infra":
+            record.update(score(questions[record["question"]], raw))
+        records.append(record)
+    results.write_text("".join(json.dumps(r, default=str) + "\n" for r in records))
+    summarize(folder)
+
+
 # --- the run -------------------------------------------------------------------
 
 
@@ -436,6 +497,7 @@ def run(args: argparse.Namespace) -> int:
                 print(
                     f"{question.id:<4} rep{rep} {record['verdict']:<8} {record['seconds']:6.1f}s"
                     f"  {record['tool_calls']} call(s)"
+                    + ("  (numbers read from text)" if record.get("coerced") else "")
                     + (f"  {record['problems'][:2]}" if record["problems"] else "")
                     + (f"  {record['error'][-120:]!r}" if record["error"] else ""),
                     flush=True,
@@ -511,20 +573,19 @@ def episode(
             env=env,
             timeout=120,
         )
-    answer, about = _parse_answer(stdout)
+    raw, about = _parse_answer(stdout)
+    scored = score(question, raw)
     # Goose exited without an answer: a provider error, or the harness's own
     # fault (a bad recipe, a missing extension): infra either way, never the
     # model's miss, and the stderr tail says which
-    infra = code != 0 and answer is None
-    verdict = "infra" if infra else ai_golden.verdict_of(question, answer)
-    problems = [] if answer is None else ai_golden.check_answer(question, answer)
+    infra = code != 0 and raw is None
+    if infra:
+        scored["verdict"] = "infra"
     return {
         "question": question.id,
         "category": question.category,
         "rep": rep,
-        "answer": answer,
-        "verdict": verdict,
-        "problems": problems,
+        **scored,
         "known": ai_golden.recorded(question.expected),
         "tool_calls": about["tool_calls"],
         "tools": about["tools"],
@@ -647,7 +708,8 @@ def transcript(folder: Path, scrub: tuple[str, ...] = ()) -> str:
         )  # noqa: E731
         lines.append(
             f"| {r['question']} | {r['rep']} | {_clipped(cell(r['answer']), 300)} | {_clipped(cell(r['known']), 300)} | "
-            f"{r['verdict']}{' (' + '; '.join(r['problems'][:2]) + ')' if r['problems'] else ''} |  |"
+            f"{r['verdict']}{' (' + '; '.join(r['problems'][:2]) + ')' if r['problems'] else ''}"
+            f"{' numbers read from text' if r.get('coerced') else ''} |  |"
         )
     lines += ["", "## Episodes", ""]
     for r in records:
@@ -761,6 +823,10 @@ def main(argv: list[str] | None = None) -> int:
         "summarize", help="rebuild summary.md of a run folder"
     )
     summarizer.add_argument("folder", type=Path)
+    rescorer = commands.add_parser(
+        "rescore", help="score a run's stored answers again with the current checker"
+    )
+    rescorer.add_argument("folder", type=Path)
     renderer = commands.add_parser(
         "transcript",
         help="render a run folder as the transcript golden_transcripts/ keeps",
@@ -781,6 +847,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "summarize":
         summarize(args.folder)
+        return 0
+    if args.command == "rescore":
+        rescore(args.folder)
         return 0
     if args.command == "transcript":
         text = transcript(args.folder, tuple(args.scrub))

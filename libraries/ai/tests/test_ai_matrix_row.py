@@ -223,3 +223,39 @@ class TestTheTranscript:
         assert "- **mascope__find**" in text and "- **recipe__final_output**" in text
         assert "s" * 40 not in text and "Bearer [redacted]" in text
         assert "Final: `" in text
+
+
+class TestLeniency:
+    def test_numbers_written_as_text_are_read_and_the_reading_recorded(self, driver):
+        answer, coerced = driver.lenient(
+            {"2025": "2", "2026": "3", "name": "x", "list": ["1.5", None]}
+        )
+
+        assert answer == {"2025": 2, "2026": 3, "name": "x", "list": [1.5, None]}
+        assert coerced
+        assert driver.lenient({"2025": 2}) == ({"2025": 2}, False)
+        assert driver.lenient(None) == (None, False)
+
+    def test_a_text_number_scores_as_the_number_but_says_so(self, driver):
+        question = ai_golden.question("M1")
+
+        scored = driver.score(question, {"2025": "2", "2026": "3"})
+
+        assert scored["verdict"] == "correct" and scored["coerced"]
+        assert scored["answer_raw"] == {"2025": "2", "2026": "3"}
+        assert driver.score(question, {"2025": "3", "2026": "3"})["verdict"] == "wrong"
+        assert driver.score(question, None)["verdict"] == "missing"
+
+    def test_a_decline_answered_with_a_text_number_is_still_wrong(self, driver):
+        question = ai_golden.question("D1")
+
+        assert (
+            driver.score(question, {"available": True, "value": "81"})["verdict"]
+            == "wrong"
+        )
+        assert (
+            driver.score(question, {"available": False, "reason": "no batch named so"})[
+                "verdict"
+            ]
+            == "correct"
+        )
