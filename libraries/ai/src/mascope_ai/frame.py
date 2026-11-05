@@ -249,6 +249,18 @@ class Frame:
         """Drop the rows held in memory; :attr:`df` reads the session's copy."""
         object.__setattr__(self, "_rows", None)
 
+    def column_meanings(self) -> dict[str, str]:
+        """What each column means, by name, for the columns the toolkit
+        knows (:mod:`mascope_ai.columns`): what the number is, its unit, and
+        what it is not. A column the code of a derived Frame computed says
+        so; a column nobody knows is left out.
+        """
+        from .columns import meanings
+
+        return meanings(
+            self.query.get("op"), self.columns, computed=self.computed_columns
+        )
+
     def __len__(self) -> int:
         return self.n_rows
 

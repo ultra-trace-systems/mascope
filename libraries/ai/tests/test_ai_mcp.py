@@ -562,6 +562,32 @@ class TestFrames:
         assert len(out["head"]) == 3
         assert list(out["head"][0]) == list(frame.columns[:8])
 
+    def test_a_handle_says_what_its_columns_mean(self, server, kit):
+        out = ok(server, "load_peaks", batches=["Spring 2026"])
+        frame = kit.session.frame(out["frame"])
+        assert out["meanings"] == frame.column_meanings()
+        assert "mean" in out["meanings"]["height"]
+        assert "meanings_omitted" not in out
+        spectrum = ok(server, "load_spectrum", sample="s21", mz_range=[100, 101])
+        assert "counts/s" in spectrum["meanings"]["intensity"]
+        assert spectrum["meanings"]["mz"] != out["meanings"]["mz"]
+
+    def test_the_meanings_give_way_when_the_handle_would_not_fit(
+        self, server, kit, monkeypatch
+    ):
+        from mascope_ai import mcp as mcp_module
+
+        # Room for the handle and the head's meanings, not all of them
+        monkeypatch.setattr(mcp_module, "MAX_RESULT_BYTES", 2600)
+        out = ok(server, "load_peaks", batches=["Spring 2026"])
+        assert set(out["meanings"]) <= set(out["head"][0])
+        assert out["meanings_omitted"] > 0
+        # No room for any: the handle points to Python instead
+        monkeypatch.setattr(mcp_module, "MAX_RESULT_BYTES", 1700)
+        out = ok(server, "load_peaks", batches=["Spring 2026"])
+        assert "meanings" not in out
+        assert out["meanings_in_python"].endswith(".column_meanings()")
+
     def test_rows_in_python_opens_the_frame_in_another_process_s_session(
         self, server, kit
     ):
