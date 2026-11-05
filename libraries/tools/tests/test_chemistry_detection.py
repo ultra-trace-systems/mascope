@@ -208,6 +208,26 @@ class TestACall:
         assert by_profile["NO3"]["brightest"]["rank"] == 1
         assert stored["rules"] == DetectionRules().to_json()
 
+    def test_a_change_to_the_rules_is_a_new_version(self):
+        """An answer read back names its rules by the version: the default
+        rules of each version are pinned here, so a threshold or a window
+        moved without a new version fails."""
+        assert (DETECTOR_VERSION, DetectionRules().to_json()) == (
+            2,
+            {
+                "min_peaks": 30,
+                "min_score": 0.2,
+                "top_rank": 5,
+                "margin": 2.0,
+                "labelled_ratio": 5.0,
+                "natural_ratio": 0.1,
+                "anchor_ppm": {"orbi": 50.0, "tof": 300.0},
+                "claim_ppm": {"orbi": 5.0, "tof": 20.0},
+                "default_anchor_ppm": 300.0,
+                "default_claim_ppm": 20.0,
+            },
+        )
+
     def test_the_stored_rules_are_all_of_them(self):
         """The windows too: they decide which anchors are found and which ions
         are claimed. Every field differs from its default, so one left out of
@@ -455,6 +475,33 @@ class TestTheWindows:
         found = detect(bromide_cims(shift_ppm=150.0), instrument_type="tof")
         assert found.profile == "BR"
 
+    @pytest.mark.parametrize(
+        "source, shift_ppm, expected",
+        [
+            (bromide_cims, 250.0, "BR"),
+            (bromide_cims, -250.0, "BR"),
+            (nitrate_cims, 250.0, "NO3"),
+        ],
+    )
+    def test_a_tof_axis_250_ppm_out_is_still_read(self, source, shift_ppm, expected):
+        """A production TOF has read +181 to +245 ppm out before calibration."""
+        found = detect(source(shift_ppm=shift_ppm), instrument_type="tof")
+        assert found.profile == expected
+        anchors = evidence_of(found, expected).anchors_found
+        assert anchors
+        assert [anchor.error_ppm for anchor in anchors] == pytest.approx(
+            [shift_ppm] * len(anchors), abs=1.0
+        )
+
+    @pytest.mark.parametrize(
+        "peaks",
+        [bromide_cims(shift_ppm=350.0), nitrate_cims(shift_ppm=350.0)],
+        ids=["bromide", "nitrate"],
+    )
+    def test_a_tof_axis_350_ppm_out_is_not(self, peaks):
+        found = detect(peaks, instrument_type="tof")
+        assert not found.called
+
     def test_an_orbitrap_axis_30_ppm_out_is_still_read(self):
         found = detect(bromide_cims(shift_ppm=-30.0), instrument_type="orbi")
         assert found.profile == "BR"
@@ -464,7 +511,7 @@ class TestTheWindows:
         assert not found.called
 
     def test_an_unknown_class_takes_the_widest_window(self):
-        found = detect(bromide_cims(shift_ppm=150.0), instrument_type=None)
+        found = detect(bromide_cims(shift_ppm=250.0), instrument_type=None)
         assert found.profile == "BR"
 
     @pytest.mark.parametrize(

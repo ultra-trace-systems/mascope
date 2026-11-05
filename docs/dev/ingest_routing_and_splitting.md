@@ -107,7 +107,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05). The seeded profiles carry their calibrant and diagnostic collections (MAS-312) |
 | 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the item TIC and the per-scan export read the scans the store holds, an item made by hand reads the row the pipeline's item reads, and a spectrum that meets a stale store asks for its rebuild (#2329); the spectrum and the peak listing name each segment, and the sample's views draw the scan ranges apart (#2330); each segment is calibrated by a factor of its own, fitted on the calibrants it holds or taken from a neighbour (#2332), and the calibration dialog and the sample's badge say which (#2333); a stitched file's processing detail says what its ranges read where they overlap and which have no fit of their own (#2334); each segment is fitted an instrument function of its own, which its peaks are read under and the detail states (4.3); **phase 8 run** on the two sites that acquire composites (2026-10-15 and 16): one site's 7,312 pooled files from before its switch re-processed and stitched in ten hours, 2.5 s a file inside batches of 25 paced against the live ingest, leaving 45 files parked without a chemistry and one single-stream file; the other site's 889 files, stitched on arrival under 1.11.0, re-processed in 81 minutes at 3.0 s a file for their calibration per range; the ingest, the pipeline and error tracking undisturbed throughout - the operator's steps are in [maintaining.md](../maintaining.md#the-composite-cut) |
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is built with the composite cut (#2332) and shown with it (#2333), and so is its instrument function per segment; follows 3 on the same track; no rebuild script (4.5, 9.1) |
-| 5 | Chemistry detection: audit first, then provisional binding | **audit built** (MAS-92, #2649): the detector reads each bound or parked file's MS1 polarities off the reagent libraries and stores its call beside the rung that bound them (`sample_file.binding_evidence`); on the labelled corpus 92 calls, none wrong, 53% no call, in-sample (5.4). **Production read** (MAS-501, 2026-11-03): 3 wrong of 12,880 calls, but 2.0% at one TOF site, nitrate called on ambient-ion spectra, so the rung waits for a rules version 2 (#2846) |
+| 5 | Chemistry detection: audit first, then provisional binding | **audit built** (MAS-92, #2649): the detector reads each bound or parked file's MS1 polarities off the reagent libraries and stores its call beside the rung that bound them (`sample_file.binding_evidence`); on the labelled corpus 92 calls, none wrong, 53% no call, in-sample (5.4). **Production read** (MAS-501, 2026-11-03): 3 wrong of 12,880 calls, but 2.0% at one TOF site, nitrate called on ambient-ion spectra, so the rung waits for a rules version that holds them off (#2846). Rules version 2 (MAS-640) widens the TOF anchor window to 300 ppm, for a TOF whose axis sat past 200 ppm |
 | 6 | Recipes: time and trace windows, preview and apply | open |
 | 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open; its first declaration channel is built: a record of the whole file that the control program writes and the File Agent sends, which binds the file at rung 0 ([acquisition_sidecar.md](acquisition_sidecar.md)); MS2 parts: first cut built (4.2) - a file with no MS1 scans is stored and, where nothing binds it, filed as an MS2 part; centroid-only scans built (#1241): scans that stored their centroids alone are summed as their centroids, and their peaks are the instrument's |
 
@@ -2307,15 +2307,21 @@ adduct panel stay one table.
 - The polarity's scan ranges: its MS1 streams' in the census, else the
   file's own m/z range.
 - Windows per instrument class. The anchors are found within 50 ppm on an
-  Orbitrap and 200 ppm on a TOF, and say where the spectrum puts the
+  Orbitrap and 300 ppm on a TOF, and say where the spectrum puts the
   reagent's masses; every other ion is claimed within 5 or 20 ppm of the
   mass they correct (`match_reagent_clusters`). Wide because the axis is
   read as acquired: a file nothing binds has no calibration, which needs a
   chemistry. The corpus holds Orbitrap files up to 31 ppm out before
-  calibration and TOF files up to 160 ppm out; a TOF's peaks are about
-  200 ppm wide, so its window is no wider than one peak.
+  calibration and TOF files up to 160 ppm out. A TOF's peaks are about
+  200 ppm wide, and version 1 kept its window to that one peak. Production
+  showed TOF axes further out (MAS-640, below): one TOF read +181 to
+  +245 ppm out and called almost nothing, and the largest fitted
+  axis error on three TOF sites was 282 ppm. So the TOF window is 300 ppm
+  since version 2. The claim window is unchanged: the other ions still
+  have to sit within 20 ppm of the anchors' own offset.
 
-**The decision**, in order (rules version 1):
+**The decision**, in order (rules version 2; version 1 differed only in
+the TOF anchor window, 200 ppm):
 
 1. **Coverage, the no-call rule.** A fingerprint none of whose anchors is
    inside the scan ranges is *unobservable*, not absent. Only observable
@@ -2472,8 +2478,9 @@ agreed with a call, so counting those as wrong changes no rate.
   three clear rung 5's 0.4, so the bar's footing below - 0.17, the highest
   score of a spectrum without a reagent - does not hold on production. A
   nitrate bar of its own would not do either: 20 of the same instrument's
-  22 correct nitrate calls score 0.36 to 0.5. The guard version 2 needs is
-  one that tells the air's nitrate from a nitrate source's (#2846).
+  22 correct nitrate calls score 0.36 to 0.5. The guard a later rules
+  version needs is one that tells the air's nitrate from a nitrate
+  source's (#2846).
 - **The same TOF is barely read.** 425 of its 450 polarities called
   nothing, nearly all scoring under 0.1, among them 182 bound to bromide
   and 178 to nitrate; another TOF at the site called all 122 of its nitrate
@@ -2482,7 +2489,7 @@ agreed with a call, so counting those as wrong changes no rate.
   sits there or beyond, and a bromide spectrum of another TOF, shifted by
   hand, loses its call at 200 to 250 ppm. Not a wrong call but lost
   coverage: that instrument's part of the site's rate rests on 25 calls,
-  not 450 polarities (#2847).
+  not 450 polarities (#2847). Confirmed and fixed below (MAS-640).
 - **Nothing else disagreed.** Site D's 12,696 calls, uronium on its positive
   polarity and bromide on its negative, all agree; the EASY-IC beam was
   called six times, all agreeing. Site C's calls on three Orbitraps and site
@@ -2490,10 +2497,39 @@ agreed with a call, so counting those as wrong changes no rate.
   rung recorded on their sample; their calls agree too.
 
 **Verdict.** The production gate fails at site A, and the rules need a
-version 2 before rung 5 binds there or at any site whose TOFs run ambient-ion
+new version, one with the ambient guard, before rung 5 binds there or at any site whose TOFs run ambient-ion
 modes (#2846). It holds at site D. The other sites are too thin to say: a
 read after some weeks of processing, of the version 2 rules as well, is what
 decides them.
+
+**The TOF axis read on production** (MAS-640, 2026-11-05): a second
+read-only job, over the pre-calibration axis error each TOF file's fit
+stored, beside the detector's evidence, at sites A, B and E.
+
+- **The TOF that called almost nothing sits past the window.** Every one
+  of its 566 fitted files that list their calibrants reads high, +181 to
+  +245 ppm, median +210, the same in every mass band under 300 Th. Its
+  axis moved: the fit's median error was about 95 ppm from August to
+  October and about 210 ppm in November.
+- **The calls end where the anchors leave the window.** Where the axis
+  read 175 to 200 ppm out, 26 of 52 bromide polarities and all 39 nitrate
+  ones were called, their anchors found at +182 to +198 ppm. Where it
+  read 200 to 250 ppm out, 0 of 222 bromide and 29 of 253 nitrate
+  polarities were; every one left uncalled found no anchor at all.
+- **The other TOFs** read 5 to 128 ppm out (median). The largest fitted
+  error on the three sites is 282 ppm, in one file.
+- **Version 2 widens the TOF anchor window to 300 ppm**, the owner's call
+  between that, a wider offset pre-search and no change. It is a fixed
+  edge again: an axis past 300 ppm loses its calls the same way.
+- **On the labelled corpus** version 2 calls exactly what version 1 does
+  on the axis as stored, and with every TOF spectrum shifted by 150, 200
+  or 250 ppm either way it keeps all 92 calls, none wrong; version 1 keeps
+  88 at 250 ppm. At 300 ppm it keeps 91, at 350 ppm 88. On the parked
+  TOF spectra, which nothing labels, the wider window lets three thin
+  spectra that call nothing at their own axis call nitrate at 0.20 to
+  0.23 once shifted by 200 to 300 ppm: an anchor found 200 to 300 ppm off
+  a peak no reagent made. That is the confusion the ambient guard (#2846)
+  is for, and on a TOF read this far out it has more room.
 
 **Authority.**
 
@@ -3714,7 +3750,8 @@ Polarity always comes from the file, never from the filename.
   - a release in audit mode, and a production shadow read per site over
     the stored evidence (MAS-501): read on 2026-11-03, it fails at site A
     (2.0%) and holds at site D, the other sites too thin (5.4);
-  - rules version 2, which holds nitrate off ambient-ion spectra (#2846);
+  - a rules version that holds nitrate off ambient-ion spectra (#2846);
+    version 2 (MAS-640) only widened the TOF anchor window;
   - the rung: a provisional binding where no higher rung binds and the score
     reaches 0.4, with its review item (5.5) (MAS-502, blocked by MAS-501).
 - **Gates:**

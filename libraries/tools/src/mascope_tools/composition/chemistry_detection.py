@@ -66,8 +66,8 @@ from mascope_tools.composition.reagents import (
 
 #: The version of the rules below. Stored with every answer, so an answer read
 #: back says which rules made it, and a change to a threshold or a window is a
-#: new version.
-DETECTOR_VERSION = 1
+#: new version. Version 2 widened the TOF anchor window from 200 to 300 ppm.
+DETECTOR_VERSION = 2
 
 #: A profile's fingerprint dominates its spectrum and names it.
 DECISION_PROFILE = "profile"
@@ -115,9 +115,11 @@ class DetectionRules:
     :param anchor_ppm: Window the anchors are found in, per instrument class,
         on the axis as acquired, which is all a file nothing has bound has:
         its calibration needs a chemistry. The corpus holds Orbitrap files
-        up to 31 ppm out before calibration and TOF files up to 160 ppm out;
-        a TOF's peaks are about 200 ppm wide, so its window is no wider than
-        one peak.
+        up to 31 ppm out before calibration and TOF files up to 160 ppm out.
+        Production TOFs have read up to 282 ppm out, one of them at +181 to
+        +245 ppm, past the 200 ppm of one TOF peak's width that
+        bounded the window at first: a TOF's is 300 ppm. The claim window
+        still holds every other ion to its anchors' offset.
     :param claim_ppm: Window every other fingerprint ion is claimed in once
         the anchors have said where the spectrum puts the reagent's masses,
         per instrument class.
@@ -132,12 +134,12 @@ class DetectionRules:
     labelled_ratio: float = 5.0
     natural_ratio: float = 0.1
     anchor_ppm: dict[str, float] = field(
-        default_factory=lambda: {"orbi": 50.0, "tof": 200.0}
+        default_factory=lambda: {"orbi": 50.0, "tof": 300.0}
     )
     claim_ppm: dict[str, float] = field(
         default_factory=lambda: {"orbi": 5.0, "tof": 20.0}
     )
-    default_anchor_ppm: float = 200.0
+    default_anchor_ppm: float = 300.0
     default_claim_ppm: float = 20.0
 
     def windows(self, instrument_type: str | None) -> tuple[float, float]:
