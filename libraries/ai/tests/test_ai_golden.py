@@ -322,11 +322,8 @@ class TestTheoreticalMz:
     def test_an_ions_mz_from_its_formula(self):
         # Protonated C10H16O2, less the electron: the bundle's uronium peak
         assert ai_golden.ion_mz("C10H17O2+") == pytest.approx(169.1223062, abs=1e-6)
-        assert (
-            ai_golden.ion_mz("CH2BrO2-") > ai_golden.ion_mz("CH2BrO2+")
-            if "Br" in ai_golden.ATOMIC_MASS
-            else True
-        )
+        # Formate, an anion: the neutral 44.997654 plus the electron
+        assert ai_golden.ion_mz("CHO2-") == pytest.approx(44.998203, abs=1e-6)
         with pytest.raises(ValueError):
             ai_golden.ion_mz("C10H16O2")
         assert ai_golden._ppm(169.1223228, 169.1223062) == pytest.approx(
