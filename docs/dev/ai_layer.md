@@ -650,6 +650,26 @@ answered wrongly, failed, or **not answerable**: a solver raises
   15 of 15 right, the largest tool result 2.2 KB. The round before missed A1
   and A2: it read a batch's time series scan by scan, until the skill and
   the loaders' descriptions said it is one point per sample.
+- **The traps, and the checker's own check** (2026-11-05, MAS-666 and
+  MAS-667). A fourth class, `decline`, holds questions whose known answer
+  is "not available" with the reason: a batch that does not exist, a
+  workspace the token cannot see, an m/z outside the acquired range, a
+  quantity no Frame carries, a column the peaks Frame lacks (D1 to D5). A
+  value given to one is wrong: the fabrication measure, which a set whose
+  every answer is a value cannot take. Two analysis shapes came with them:
+  the top ions by median height (A6) and a compound named only if the data
+  gives the name (I3; the demo names C10H16O2 nothing, so none is given).
+  The shapes are those of the in-house evaluation of open models
+  (`ai_analyst_shell.md`, section 3.4), which put a trap of each kind in
+  every family. `ai_golden.py dryrun` then tries the checker on scripted
+  answers, as that evaluation validated its scorers before any model ran:
+  the known answer as recorded must pass, every fabrication of it (one
+  value moved past its tolerance, a name swapped, a decline answered with
+  a value) must be wrong, and no answer must be missing. `test_ai_golden.py`
+  runs it for every question; a tolerance that lets a fabrication through
+  fails the suite. A model run's verdicts are correct / wrong / missing /
+  sloppy, with infra counted apart (`golden_transcripts/README.md`); the
+  harness's statuses map onto the first three.
 - **Extending it.** A skill (phase 2) or a new oracle wrapper adds its
   questions to `QUESTIONS` with known answers from the demo data, and
   regenerates the table below.
@@ -671,8 +691,15 @@ answered wrongly, failed, or **not answerable**: a solver raises
 | A3 | analysis | How far above its background did C10H17O2+ rise in the 2025 uronium batch, the background being the mean of the batch's first five samples? | 1.130e6 above a background of 4.59e4, at 14:34:03 | `derive`, `load_peaks`, `resolve` |
 | A4 | analysis | Where is the apex of the 14:34:03 uronium sample's spectrum between m/z 169.10 and 169.15, how intense is it, and how many points has the window? | m/z 169.1222 at 1.166e6, near the fitted peak; 102 points in the window | `find`, `load_spectrum`, `resolve` |
 | A5 | analysis | Read as one stage over its whole acquisition, how high is C10H17O2+ in the 14:34:03 uronium sample? | 1.176e6, the averaged peak list's height | `describe`, `find`, `load_peaks_by_stage`, `load_timeseries`, `resolve` |
+| A6 | analysis | Which 5 ions have the highest median height over the 2025 uronium batch's samples, how high is each, and in how many samples was each found? | C10H17O2+ 4.597e+05 in 81; C11H21N2O3+ 3.267e+05 in 81; C10H20NO2+ 2.076e+05 in 81; C8H19O3+ 1.776e+05 in 81; C16H23O4+ 1.550e+05 in 81 | `derive`, `load_peaks`, `resolve` |
 | I1 | interpretation | What is the peak at m/z 124.9244 in the bromide sample measured at 14:34:57? | formic acid, CH2O2 as CH2BrO2- [M+Br]-, probable; the 13C-labelled suggestion unscored | `describe`, `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |
 | I2 | interpretation | What is the peak at m/z 169.1223 in the uronium sample measured at 14:34:03? | C10H16O2 as C10H17O2+ [M+H]+, probable; three other candidates unmatched; the numeric-mass suggestion unscored | `describe`, `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |
+| I3 | interpretation | What compound is the peak at m/z 169.1223 in the uronium sample measured at 14:34:03, and what is it called? Name it only if the data gives the name. | C10H16O2, probable; the data gives no name, so none is given | `describe`, `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |
+| D1 | decline | How many samples does the batch '2025-08-12 Uronium m/z 122-740 acquisition' hold? | not available: there is no batch of that name | `find` |
+| D2 | decline | How many datasets does the workspace 'Acquisitions Archive' hold? | not available: no such workspace among those the token can see | `find` |
+| D3 | decline | How high is the reagent ion peak at m/z 61.0397 in the 14:34:03 uronium sample, and what is it? | not available: m/z 61.0397 is below the acquired range of 122-740; no candidate is attributed a peak | `describe`, `find`, `load_peaks`, `match_compounds`, `query_by_mz`, `resolve` |
+| D4 | decline | What was the concentration of C10H16O2, in ppb, in the 14:34:03 uronium sample? | not available: no Frame carries a concentration | `find`, `load_peaks`, `resolve` |
+| D5 | decline | For the 5 ions with the highest median height over the 2025 uronium batch's samples, what is each ion's median mass error in ppm? | not available: the peaks Frame carries no mass error | `load_peaks`, `resolve` |
 
 <!-- golden questions: end -->
 

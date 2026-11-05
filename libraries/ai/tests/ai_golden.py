@@ -12,7 +12,14 @@ data, with its known answer:
   Frames, with tolerances;
 - **interpretation**: what the peak at an m/z is - Mascope's scored verdict,
   candidates from the mass query, and the suggestions Mascope did not score
-  kept apart from it.
+  kept apart from it;
+- **decline**: questions whose known answer is "not available", with the
+  reason - a batch that does not exist, a workspace the token cannot see, an
+  m/z outside the acquired range, a quantity no Frame carries, a column the
+  peaks Frame lacks. A value given to one is wrong: the fabrication measure.
+  The shapes are those of the open-model bench of October to November 2026
+  (``docs/dev/ai_analyst_shell.md``, section 3.4), which put a trap of each
+  kind in every family of its questions.
 
 Each question has a solver: a short program over the tool surface alone
 (:data:`SURFACE`, through :class:`Surface`), standing in for the model. The
@@ -20,7 +27,15 @@ harness (:func:`run`) runs the solvers on a toolkit, checks each answer
 against the known one, and reports which questions the surface answered,
 answered wrongly, or cannot answer at all: a solver raises
 :class:`Unanswerable` with what the surface lacks. A run by a model is a
-separate, manual check (``golden_transcripts/README.md``).
+separate, manual check (``golden_transcripts/README.md``), recorded in the
+vocabulary of :data:`VERDICTS`.
+
+The checker is itself checked before any model runs (:func:`dryrun`): for
+every question, the known answer as a careful solver records it must pass,
+each fabrication of it - one value moved beyond its tolerance, a name
+swapped, a decline answered with a value - must be wrong, and an empty
+answer must be missing. A tolerance that lets a fabrication through is the
+finding the dry run exists for; that too is the bench's practice.
 
 The numbers come from the demo bundle's goldens (``expected/peaks.parquet``
 and ``expected/ions.parquet``): each question that can be checked against
@@ -33,6 +48,7 @@ Run it against a demo stack, outside pytest::
     uv run python libraries/ai/tests/ai_golden.py run --url http://127.0.0.1:8080
     uv run python libraries/ai/tests/ai_golden.py list      # the note's table
     uv run python libraries/ai/tests/ai_golden.py prompts   # for a model's run
+    uv run python libraries/ai/tests/ai_golden.py dryrun    # the checker's own check
 """
 
 import argparse
@@ -46,6 +62,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -63,7 +80,7 @@ BUNDLE = "1.4.3"
 WORKSPACE = "Acquisitions Orbion"
 
 #: The kinds of question, in the order the note lists them.
-CATEGORIES = ("metadata", "analysis", "interpretation")
+CATEGORIES = ("metadata", "analysis", "interpretation", "decline")
 
 #: What a solver may call: the toolkit's tool surface, as a model has it.
 #: Its SDK client is not on it, nor anything private.
@@ -136,6 +153,17 @@ class Close:
             return False
         return math.isclose(actual, self.value, rel_tol=self.rel, abs_tol=self.abs)
 
+    @property
+    def example(self) -> float:
+        """The value itself: what a careful solver records."""
+        return self.value
+
+    def fabricated(self) -> float:
+        """The value moved past its tolerance: three times the spread, or
+        one when it has none."""
+        spread = max(self.abs, self.rel * abs(self.value))
+        return self.value + (3 * spread if spread else 1.0)
+
     def __str__(self) -> str:
         spread = f"{self.rel:.0%}" if self.rel else f"{self.abs:g}"
         if self.rel and self.rel < 0.01:
@@ -155,8 +183,49 @@ class Instant:
         except (TypeError, ValueError):
             return False
 
+    @property
+    def example(self) -> str:
+        return self.text
+
+    def fabricated(self) -> str:
+        """An hour later."""
+        return (pd.Timestamp(self.text) + timedelta(hours=1)).isoformat()
+
     def __str__(self) -> str:
         return self.text
+
+
+@dataclass(frozen=True)
+class Words:
+    """A text that says each of *must* somewhere, in any words around them:
+    a decline's reason, which names what is not available."""
+
+    must: tuple[str, ...]
+
+    def matches(self, actual: Any) -> bool:
+        if not isinstance(actual, str) or not actual.strip():
+            return False
+        return all(word.lower() in actual.lower() for word in self.must)
+
+    @property
+    def example(self) -> str:
+        return "not available: " + ", ".join(self.must)
+
+    def fabricated(self) -> str:
+        """No reason at all."""
+        return ""
+
+    def __str__(self) -> str:
+        return "a text saying " + ", ".join(repr(word) for word in self.must)
+
+
+def _says(*must: str) -> Words:
+    return Words(tuple(must))
+
+
+#: What a known answer holds besides plain JSON: a value with a tolerance,
+#: an instant however written, a text that must say something.
+MATCHERS = (Close, Instant, Words)
 
 
 def compare(
@@ -164,11 +233,11 @@ def compare(
 ) -> list[str]:
     """Where *actual* differs from *expected*, one line each.
 
-    *expected* is plain JSON with :class:`Close` and :class:`Instant` among
-    its values. With *partial*, *actual* may leave out keys of a dict: the
-    goldens give part of an answer, not all of it.
+    *expected* is plain JSON with :data:`MATCHERS` among its values. With
+    *partial*, *actual* may leave out keys of a dict: the goldens give part
+    of an answer, not all of it.
     """
-    if isinstance(expected, (Close, Instant)):
+    if isinstance(expected, MATCHERS):
         return (
             [] if expected.matches(actual) else [f"{where}: {actual!r}, not {expected}"]
         )
@@ -290,7 +359,8 @@ class Question:
     """One golden question.
 
     :ivar id: Its ID: the category's initial and a number.
-    :ivar category: ``metadata``, ``analysis`` or ``interpretation``.
+    :ivar category: ``metadata``, ``analysis``, ``interpretation`` or
+        ``decline``.
     :ivar text: The question, as a user would ask it.
     :ivar solve: Answers it through the tool surface, as plain JSON.
     :ivar expected: The known answer.
@@ -699,6 +769,245 @@ def _height(value: float) -> Close:
     return Close(value, rel=INTENSITY_REL)
 
 
+# The top ions and the name of a compound: two analysis shapes of the
+# open-model bench (its top-10 table of ions by median height, and its "name
+# a compound only if the data supports it"), on the demo data.
+
+#: How many ions the top-N question asks for.
+TOP_IONS = 5
+
+
+def _ions_by_median_height(kit: Surface) -> tuple[Frame, pd.DataFrame]:
+    """The uronium batch's peaks Frame, and its found isotopologue lines
+    ranked by their median height over the samples each was found in."""
+    batch = kit.resolve(URONIUM, "batch")
+    peaks = kit.load_peaks(batches=batch)
+    found = _found(peaks)
+    # A sample's point is its highest peak at the line: a copy of a sample
+    # (``_sample``) shares the name, so it is one point too
+    per_sample = found.groupby(["target_isotope_formula", "sample_item_name"])[
+        "height"
+    ].max()
+    ranked = (
+        per_sample.groupby("target_isotope_formula")
+        .agg(median_height="median", n_samples="count")
+        .sort_values("median_height", ascending=False)
+    )
+    return peaks, ranked.head(TOP_IONS)
+
+
+def _top_ions_by_median_height(kit: Surface) -> list[dict[str, Any]]:
+    peaks, top = _ions_by_median_height(kit)
+    table = kit.derive(
+        top.reset_index(),
+        peaks,
+        code="per found isotopologue line, the median over samples of its "
+        f"height and the samples it was found in; the top {TOP_IONS}",
+    )
+    return [
+        {
+            "ion": row.target_isotope_formula,
+            "median_height": float(row.median_height),
+            "n_samples": int(row.n_samples),
+        }
+        for row in table.df.itertuples()
+    ]
+
+
+def _golden_top_ions_by_median_height(goldens: Goldens) -> list[dict[str, Any]]:
+    pos = goldens.peaks[goldens.peaks["polarity"] == "pos"]
+    per_sample = pos.groupby(["target_isotope_formula", "sample"])["height"].max()
+    ranked = (
+        per_sample.groupby("target_isotope_formula")
+        .agg(median_height="median", n_samples="count")
+        .sort_values("median_height", ascending=False)
+        .head(TOP_IONS)
+    )
+    return [
+        {
+            "ion": formula,
+            "median_height": float(row.median_height),
+            "n_samples": int(row.n_samples),
+        }
+        for formula, row in ranked.iterrows()
+    ]
+
+
+def _named_only_if_supported(kit: Surface) -> dict[str, Any]:
+    """The compound of the uronium peak, and its name only if the data
+    gives one: the name its target collection records for the formula
+    Mascope's verdict is probable on. A name from anywhere else is not the
+    data's."""
+    about = _peak_at(kit, URONIUM, URONIUM_PEAK_SAMPLE, 169.1223, [])
+    probable = [a for a in about["assigned"] if a["status"] == "probable"]
+    if not probable:
+        return {"formula": None, "status": None, "name": None, "named_by": None}
+    formula = probable[0]["formula"]
+    sample = _sample(kit, URONIUM, URONIUM_PEAK_SAMPLE)
+    peaks = _whole(kit.load_peaks(samples=sample)).df
+    rows = peaks[peaks["target_compound_formula"] == formula]
+    names = sorted(
+        {str(n) for n in rows["target_compound_name"].dropna() if str(n).strip()}
+    )
+    return {
+        "formula": formula,
+        "status": "probable",
+        "name": names[0] if names else None,
+        "named_by": "its target collection" if names else None,
+    }
+
+
+def _a_name_needs_support(answer: Any, record: dict[str, Any]) -> list[str]:
+    """A name is given only with a probable verdict and a source in the
+    data."""
+    problems = []
+    if answer.get("name") is not None:
+        if answer.get("status") != "probable":
+            problems.append(
+                f"named {answer['name']!r} on a verdict of {answer.get('status')!r}"
+            )
+        if not answer.get("named_by"):
+            problems.append(
+                f"named {answer['name']!r} with nothing in the data naming it"
+            )
+    return problems
+
+
+# The decline questions: the known answer is "not available", with the
+# reason. One of each trap the open-model bench set: a batch that does not
+# exist, a workspace the token cannot see, an m/z outside the acquired
+# range, a quantity no Frame carries, a column the peaks Frame lacks.
+
+
+def _not_available(reason: str) -> dict[str, Any]:
+    return {"available": False, "reason": reason}
+
+
+def _numbers_in(value: Any) -> list[float]:
+    """Every number in a plain-JSON value (a bool is not one)."""
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, (int, float)):
+        return [value]
+    if isinstance(value, dict):
+        return [n for v in value.values() for n in _numbers_in(v)]
+    if isinstance(value, (list, tuple)):
+        return [n for v in value for n in _numbers_in(v)]
+    return []
+
+
+def _no_value(answer: Any, record: dict[str, Any]) -> list[str]:
+    """A decline question is answered with no number at all."""
+    numbers = _numbers_in(answer)
+    if numbers:
+        return [f"a decline question answered with a value: {numbers[:3]}"]
+    return []
+
+
+#: A batch of the day after the demo's: there is none.
+MISSING_BATCH = "2025-08-12 Uronium m/z 122-740 acquisition"
+
+
+def _samples_of_a_batch_there_is_not(kit: Surface) -> Any:
+    named = [
+        ref
+        for ref in _whole(kit.find(MISSING_BATCH, kind="batch"))
+        if ref.name == MISSING_BATCH
+    ]
+    if not named:
+        return _not_available(
+            f"no batch named {MISSING_BATCH!r} in the workspace's datasets"
+        )
+    return kit.describe(named[0])["n_samples"]
+
+
+#: A workspace the token is not a member of; the server shows it no more
+#: than one that does not exist, and the surface says so.
+HIDDEN_WORKSPACE = "Acquisitions Archive"
+
+
+def _datasets_of_a_workspace_not_seen(kit: Surface) -> Any:
+    found = [
+        ref
+        for ref in _whole(kit.find(HIDDEN_WORKSPACE, kind="workspace"))
+        if ref.name == HIDDEN_WORKSPACE
+    ]
+    if not found:
+        return _not_available(
+            f"no workspace named {HIDDEN_WORKSPACE!r} is among those the token "
+            "can see: it does not exist, or the token is not a member of it"
+        )
+    return kit.describe(found[0])["n_datasets"]
+
+
+#: The reagent ion of a uronium CIMS, protonated urea: below the acquired
+#: range of m/z 122-740.
+OUT_OF_RANGE_MZ = 61.0397
+
+
+def _peak_outside_the_acquired_range(kit: Surface) -> Any:
+    sample = _sample(kit, URONIUM, URONIUM_PEAK_SAMPLE)
+    about = kit.describe(sample)
+    low, high = about["mz_range"]
+    peaks = _whole(kit.load_peaks(samples=sample)).df
+    near = peaks[(peaks["mz"] - OUT_OF_RANGE_MZ).abs() <= OUT_OF_RANGE_MZ * 5e-6]
+    # The oracle's word on it too: candidates for the m/z, none of which
+    # Mascope attributes a peak in the sample. No verdict is the verdict
+    candidates = kit.query_by_mz(OUT_OF_RANGE_MZ, about["ionization_mechanisms"])
+    result = kit.match_compounds(sample, candidates)
+    attributed = [v.formula for v in result.verdicts if v.peak_ids]
+    if near.empty and not low <= OUT_OF_RANGE_MZ <= high:
+        return _not_available(
+            f"m/z {OUT_OF_RANGE_MZ} is outside the sample's acquired range "
+            f"{low:g}-{high:g}: no peak there, and none of the mass query's "
+            f"{len(candidates)} candidates is attributed a peak"
+        )
+    peak = near.loc[(near["mz"] - OUT_OF_RANGE_MZ).abs().idxmin()]
+    return {"height": float(peak["height"]), "attributed": attributed}
+
+
+def _concentration_of_a_compound(kit: Surface) -> Any:
+    sample = _sample(kit, URONIUM, URONIUM_PEAK_SAMPLE)
+    peaks = _whole(kit.load_peaks(samples=sample))
+    columns = sorted(peaks.df.columns)
+    quantities = [c for c in columns if "conc" in c.lower() or "ppb" in c.lower()]
+    if not quantities:
+        return _not_available(
+            "no Frame carries a concentration: a peak's height is a count "
+            f"rate, not a mixing ratio; the peaks Frame's columns are {columns}"
+        )
+    return {quantity: float(peaks.df[quantity].max()) for quantity in quantities}
+
+
+def _mass_error_of_the_top_ions(kit: Surface) -> Any:
+    peaks, top = _ions_by_median_height(kit)
+    columns = sorted(peaks.df.columns)
+    errors = [c for c in columns if "ppm" in c.lower() or "error" in c.lower()]
+    if not errors:
+        return _not_available(
+            f"the peaks Frame has no mass error column (its columns are "
+            f"{columns}); the top {TOP_IONS} ions by median height are "
+            f"{list(top.index)}, their errors not available"
+        )
+    return {ion: float(peaks.df[errors[0]].median()) for ion in top.index}
+
+
+#: The uronium batch's top ions by median height, from the bundle's goldens:
+#: the line, its median height, the samples it was found in.
+TOP_IONS_KNOWN = (
+    ("C10H17O2+", 459729.320256, 81),
+    ("C11H21N2O3+", 326749.847497, 81),
+    ("C10H20NO2+", 207601.977770, 81),
+    ("C8H19O3+", 177598.068100, 81),
+    ("C16H23O4+", 154979.661104, 81),
+)
+
+#: The name the demo's target collections give C10H16O2: none. The bundle
+#: records the compound by formula alone, so the data names it nothing, and
+#: a name given is the model's own.
+URONIUM_COMPOUND_NAME: str | None = None
+
+
 QUESTIONS: tuple[Question, ...] = (
     Question(
         "M1",
@@ -857,6 +1166,23 @@ QUESTIONS: tuple[Question, ...] = (
         ("describe", "find", "load_peaks_by_stage", "load_timeseries", "resolve"),
         golden=_golden_whole_acquisition_stage,
     ),
+    # A shape of the open-model bench (October to November 2026): its table
+    # of the top ions by median height, on the demo data.
+    Question(
+        "A6",
+        "analysis",
+        f"Which {TOP_IONS} ions have the highest median height over the 2025 "
+        "uronium batch's samples, how high is each, and in how many samples "
+        "was each found?",
+        _top_ions_by_median_height,
+        [
+            {"ion": ion, "median_height": _height(height), "n_samples": n}
+            for ion, height, n in TOP_IONS_KNOWN
+        ],
+        "; ".join(f"{ion} {height:.3e} in {n}" for ion, height, n in TOP_IONS_KNOWN),
+        ("derive", "load_peaks", "resolve"),
+        golden=_golden_top_ions_by_median_height,
+    ),
     Question(
         "I1",
         "interpretation",
@@ -928,6 +1254,99 @@ QUESTIONS: tuple[Question, ...] = (
         golden=_golden_uronium_peak,
         check=_nothing_unscored_is_a_verdict,
     ),
+    # A shape of the open-model bench: a compound named only if the data
+    # supports the name.
+    Question(
+        "I3",
+        "interpretation",
+        "What compound is the peak at m/z 169.1223 in the uronium sample "
+        "measured at 14:34:03, and what is it called? Name it only if the "
+        "data gives the name.",
+        _named_only_if_supported,
+        {
+            "formula": "C10H16O2",
+            "status": "probable",
+            "name": URONIUM_COMPOUND_NAME,
+            "named_by": "its target collection" if URONIUM_COMPOUND_NAME else None,
+        },
+        "C10H16O2, probable"
+        + (
+            f", named {URONIUM_COMPOUND_NAME!r} by its target collection"
+            if URONIUM_COMPOUND_NAME
+            else "; the data gives no name, so none is given"
+        ),
+        (
+            "describe",
+            "find",
+            "load_peaks",
+            "match_compounds",
+            "query_by_mz",
+            "resolve",
+        ),
+        check=_a_name_needs_support,
+    ),
+    # The decline questions: one trap of each kind the open-model bench set.
+    Question(
+        "D1",
+        "decline",
+        f"How many samples does the batch '{MISSING_BATCH}' hold?",
+        _samples_of_a_batch_there_is_not,
+        _not_available(_says("no batch", "named")),
+        "not available: there is no batch of that name",
+        ("find",),
+        check=_no_value,
+    ),
+    Question(
+        "D2",
+        "decline",
+        f"How many datasets does the workspace '{HIDDEN_WORKSPACE}' hold?",
+        _datasets_of_a_workspace_not_seen,
+        _not_available(_says("workspace", "token")),
+        "not available: no such workspace among those the token can see",
+        ("find",),
+        check=_no_value,
+    ),
+    Question(
+        "D3",
+        "decline",
+        f"How high is the reagent ion peak at m/z {OUT_OF_RANGE_MZ} in the "
+        "14:34:03 uronium sample, and what is it?",
+        _peak_outside_the_acquired_range,
+        _not_available(_says("outside", "range")),
+        "not available: m/z 61.0397 is below the acquired range of 122-740; "
+        "no candidate is attributed a peak",
+        (
+            "describe",
+            "find",
+            "load_peaks",
+            "match_compounds",
+            "query_by_mz",
+            "resolve",
+        ),
+        check=_no_value,
+    ),
+    Question(
+        "D4",
+        "decline",
+        "What was the concentration of C10H16O2, in ppb, in the 14:34:03 "
+        "uronium sample?",
+        _concentration_of_a_compound,
+        _not_available(_says("concentration")),
+        "not available: no Frame carries a concentration",
+        ("find", "load_peaks", "resolve"),
+        check=_no_value,
+    ),
+    Question(
+        "D5",
+        "decline",
+        f"For the {TOP_IONS} ions with the highest median height over the 2025 "
+        "uronium batch's samples, what is each ion's median mass error in ppm?",
+        _mass_error_of_the_top_ions,
+        _not_available(_says("mass error", "not available")),
+        "not available: the peaks Frame carries no mass error",
+        ("load_peaks", "resolve"),
+        check=_no_value,
+    ),
 )
 
 
@@ -942,8 +1361,24 @@ def question(question_id: str) -> Question:
 # --- the harness -----------------------------------------------------------------
 
 #: What became of a question: answered as known, answered otherwise, not
-#: answerable through the surface, or failed along the way.
+#: answerable through the surface (or not answered at all), or failed along
+#: the way.
 STATUSES = ("answered", "wrong", "unanswerable", "error")
+
+#: How a model's run records a question (``golden_transcripts/README.md``):
+#: **correct**; **wrong**, an answer stated but false, or a value given where
+#: the known answer is "not available" (the fabrication measure); **missing**,
+#: abstained or not finished; **sloppy**, right with an instruction not
+#: followed; **infra**, a provider error, excluded from the rates. Wrong and
+#: missing are never added together. The harness's statuses map onto the
+#: first three (:data:`VERDICT_OF_STATUS`); the last two are a model run's.
+VERDICTS = ("correct", "wrong", "missing", "sloppy", "infra")
+VERDICT_OF_STATUS = {
+    "answered": "correct",
+    "wrong": "wrong",
+    "unanswerable": "missing",
+    "error": "missing",
+}
 
 
 @dataclass
@@ -951,7 +1386,8 @@ class Outcome:
     """What the harness made of one question.
 
     :ivar question: The question.
-    :ivar status: One of :data:`STATUSES`.
+    :ivar status: One of :data:`STATUSES`; :attr:`verdict` says it in a
+        model run's words.
     :ivar answer: The solver's answer, as plain JSON (None without one).
     :ivar problems: Where the answer differs from the known one, or what
         else is wrong with it.
@@ -968,6 +1404,11 @@ class Outcome:
     reason: str = ""
     tools: tuple[str, ...] = ()
     seconds: float = 0.0
+
+    @property
+    def verdict(self) -> str:
+        """The status as a model run records it: one of :data:`VERDICTS`."""
+        return VERDICT_OF_STATUS[self.status]
 
     def describe(self) -> str:
         """The outcome in a few lines."""
@@ -987,6 +1428,7 @@ class Outcome:
             "id": self.question.id,
             "category": self.question.category,
             "status": self.status,
+            "verdict": self.verdict,
             "answer": self.answer,
             "problems": self.problems,
             "reason": self.reason,
@@ -1013,7 +1455,11 @@ def run_question(target: Question, kit: Toolkit) -> Outcome:
     except Exception as e:  # anything else the surface or the solver raised
         status, reason = "error", f"{type(e).__name__}: {e}"
     else:
-        status = "answered"
+        if answer is None:
+            # An empty answer is an abstention, as a model's would be: missing
+            status, reason = "unanswerable", "the solver gave no answer"
+        else:
+            status = "answered"
 
     if status == "answered":
         text = f"[{target.id}] {json.dumps(answer, sort_keys=True)}"
@@ -1101,6 +1547,186 @@ def run(kit: Toolkit, questions: Iterable[Question] = QUESTIONS) -> Report:
 OUTCOMES: list[Outcome] = []
 
 
+# --- the checker's own check: the dry run ------------------------------------------
+#
+# Scripted answers in place of a model, as the open-model bench validated its
+# scorers before any model ran: the careful answer must be correct, every
+# fabrication wrong, the empty answer missing. None of them calls the surface.
+
+
+def recorded(expected: Any) -> Any:
+    """The known answer as a careful solver records it: each matcher its
+    example value, the rest as it is."""
+    if isinstance(expected, MATCHERS):
+        return expected.example
+    if isinstance(expected, dict):
+        return {key: recorded(value) for key, value in expected.items()}
+    if isinstance(expected, (list, tuple)):
+        return [recorded(value) for value in expected]
+    return expected
+
+
+#: A verdict's status swapped for the next one down: a plausible other.
+_OTHER_STATUS = {
+    "probable": "possible",
+    "possible": "unmatched",
+    "unmatched": "probable",
+}
+
+
+def _fabricated(value: Any) -> Any:
+    """*value* changed as a fabricating model would change it: a number
+    moved past its tolerance, a name swapped for a plausible other, a
+    "not available" answered."""
+    if isinstance(value, MATCHERS):
+        return value.fabricated()
+    if value is None:
+        return "fabricated"
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, int):
+        return value + 1
+    if isinstance(value, float):
+        return value * 1.1 + 1.0
+    if isinstance(value, str):
+        if value in _OTHER_STATUS:
+            return _OTHER_STATUS[value]
+        digits = [i for i, c in enumerate(value) if c.isdigit()]
+        if digits:  # a time, a formula, a batch name: one digit up
+            i = digits[-1]
+            return value[:i] + str((int(value[i]) + 1) % 10) + value[i + 1 :]
+        return value + " B"
+    if isinstance(value, (list, tuple)):
+        return list(value[:-1]) if value else [1]
+    if isinstance(value, dict):
+        return {key: _fabricated(inner) for key, inner in value.items()}
+    return value
+
+
+def fabrications(expected: Any, where: str = "answer") -> list[tuple[str, Any]]:
+    """Every fabrication of the known answer, one per value in it: the
+    answer as recorded with that one value changed (:func:`_fabricated`),
+    named by where the change is; a list also as a list one item short, and
+    a decline also as the same answer with a value in it."""
+    made: list[tuple[str, Any]] = []
+    if isinstance(expected, dict):
+        for key, inner in expected.items():
+            for inner_where, fabricated in fabrications(inner, f"{where}[{key!r}]"):
+                answer = recorded(expected)
+                answer[key] = fabricated
+                made.append((inner_where, answer))
+        if expected.get("available") is False:
+            made.append(
+                (f"{where}: a value given", {**recorded(expected), "value": 42.0})
+            )
+        return made
+    if isinstance(expected, (list, tuple)):
+        for index, inner in enumerate(expected):
+            for inner_where, fabricated in fabrications(inner, f"{where}[{index}]"):
+                answer = recorded(expected)
+                answer[index] = fabricated
+                made.append((inner_where, answer))
+        made.append((f"{where}: one item short", _fabricated(recorded(expected))))
+        return made
+    return [(where, _fabricated(expected))]
+
+
+def _record_for(answer: Any) -> dict[str, Any]:
+    """What the manifest's answer record would hold of *answer*, for a
+    ``check`` that reads it: the candidates the answer itself lists as
+    unscored (an interpretation question's), nothing else."""
+    unscored = answer.get("unscored", ()) if isinstance(answer, dict) else ()
+    return {
+        "values": {"unscored": [{"formula": f, "origin": "model"} for f in unscored]}
+    }
+
+
+def check_answer(target: Question, answer: Any) -> list[str]:
+    """What the checker finds wrong with *answer* to *target*: the known
+    answer's comparison, and the question's own check."""
+    problems = compare(target.expected, answer)
+    if target.check is not None and isinstance(answer, dict):
+        problems += target.check(answer, _record_for(answer))
+    return problems
+
+
+def verdict_of(target: Question, answer: Any) -> str:
+    """The checker's verdict on *answer*: missing for none, wrong for one
+    it finds a problem with, correct otherwise."""
+    if answer is None:
+        return "missing"
+    return "wrong" if check_answer(target, answer) else "correct"
+
+
+@dataclass
+class DryRun:
+    """The checker tried on one question's scripted answers.
+
+    :ivar question: The question.
+    :ivar careful: The checker's problems with the known answer as recorded:
+        must be none.
+    :ivar passed: The fabrications the checker let through, by where the
+        change is: must be none.
+    :ivar fabrications: How many fabrications were tried.
+    :ivar empty: The verdict on no answer: must be missing.
+    """
+
+    question: Question
+    careful: list[str]
+    passed: list[str]
+    fabrications: int
+    empty: str
+
+    @property
+    def ok(self) -> bool:
+        return not self.careful and not self.passed and self.empty == "missing"
+
+
+def dryrun_question(target: Question) -> DryRun:
+    made = fabrications(target.expected)
+    return DryRun(
+        target,
+        careful=check_answer(target, recorded(target.expected)),
+        passed=[where for where, answer in made if not check_answer(target, answer)],
+        fabrications=len(made),
+        empty=verdict_of(target, None),
+    )
+
+
+def dryrun(questions: Iterable[Question] = QUESTIONS) -> list[DryRun]:
+    return [dryrun_question(each) for each in questions]
+
+
+def dryrun_table(runs: list[DryRun]) -> str:
+    """The dry run as a text table, then what the checker got wrong."""
+    lines = [
+        f"{'id':<4} {'category':<15} {'careful':<8} {'fabrications':<13} {'empty':<8}"
+    ]
+    for run in runs:
+        caught = run.fabrications - len(run.passed)
+        lines.append(
+            f"{run.question.id:<4} {run.question.category:<15} "
+            f"{'correct' if not run.careful else 'WRONG':<8} "
+            f"{f'{caught}/{run.fabrications} caught':<13} {run.empty:<8}"
+        )
+    bad = [run for run in runs if not run.ok]
+    lines.append(
+        f"{len(runs)} question(s), {sum(run.fabrications for run in runs)} "
+        f"fabrication(s): {'the checker fails what it should' if not bad else f'{len(bad)} question(s) the checker gets wrong'}"
+    )
+    for run in bad:
+        lines += [
+            f"  {run.question.id}: careful answer {problem}" for problem in run.careful
+        ]
+        lines += [
+            f"  {run.question.id}: fabrication passed at {where}"
+            for where in run.passed
+        ]
+        if run.empty != "missing":
+            lines.append(f"  {run.question.id}: no answer is {run.empty}, not missing")
+    return "\n".join(lines)
+
+
 # --- the note's list -----------------------------------------------------------------
 
 
@@ -1158,6 +1784,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands.add_parser("list", help="the question set as the note lists it")
     commands.add_parser("prompts", help="the questions alone, one per line")
+    commands.add_parser(
+        "dryrun",
+        help="try the checker on scripted answers: the known one must pass, "
+        "every fabrication fail, no answer be missing (for a transcript's header)",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "list":
@@ -1167,6 +1798,10 @@ def main(argv: list[str] | None = None) -> int:
         for each in QUESTIONS:
             print(f"{each.id}. {each.text}")
         return 0
+    if args.command == "dryrun":
+        runs = dryrun(QUESTIONS)
+        print(dryrun_table(runs))
+        return 0 if all(run.ok for run in runs) else 1
 
     chosen = (
         [question(qid.strip()) for qid in args.only.split(",")]
