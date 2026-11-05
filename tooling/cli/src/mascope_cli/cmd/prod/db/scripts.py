@@ -87,6 +87,8 @@ _FORWARDED_ENV_VARS = [
     # backfill_axis_fingerprint
     "AXF_LIMIT",
     "AXF_RETRY",
+    # reaggregate_ratio_gated_intensity
+    "REAGGREGATE_BATCHES",
     # reflag_orbitrap_weak_peaks
     "REFLAG_LIMIT",
     "REFLAG_RETRY",

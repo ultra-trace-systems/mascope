@@ -136,6 +136,9 @@ The trade-off is deliberate.
 A line that really carries an interference adds that interference to the ion's intensity, where before it would have taken half the ion away.
 The category still shows when the pattern did not fit.
 
+Before this was changed, a ratio miss also set the line's intensity to 0.
+Batches matched before then are put right by the maintenance script `reaggregate_ratio_gated_intensity`, which an operator runs once (`docs/maintaining.md`).
+
 ### Target Ion Match Score
 The match score for a target ion (a molecular configuration under a specific ionization mechanism) is computed as the weighted sum of its constituent isotope scores, using the theoretical abundances as weights:
 
