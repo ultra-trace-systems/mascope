@@ -1489,3 +1489,124 @@ describe('PaneBrowserBatchPeaks ledger export', () => {
     expect(wrapper.find('.export-ledger').exists()).toBe(false)
   })
 })
+
+// A batch import that carried the engine's own verdict: the engine's tier
+// beside the consensus, the batch peaks where the two differ, and the strip
+// read in the engine's words.
+describe('PaneBrowserBatchPeaks engine tier', () => {
+  const peaks = () => [
+    // The engine held it a candidate; the members' measurement says assigned.
+    peak('bp-1', 'assigned', 0.9, { mz: 100.1, engine_tier: 'candidate', engine_claim: 'level 3' }),
+    // The two agree.
+    peak('bp-2', 'assigned', 0.8, { mz: 200.1, engine_tier: 'assigned' }),
+    // A formula the engine stated no tier for.
+    peak('bp-3', 'candidate', 0.5, { mz: 300.1 }),
+    // A peak nobody explained.
+    peak('bp-4', 'unassigned', null, { mz: 400.1, consensus_formula: null })
+  ]
+
+  const toggle = (id) =>
+    wrapper
+      .findAllComponents({ name: 'ToggleSwitch' })
+      .find((component) => component.props('inputId') === id)
+  const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+  const chips = () => wrapper.findAll('.tier-stat').map((chip) => chip.text())
+
+  it('is absent, column and switches, from a ledger no engine tiered', async () => {
+    wrapper = await mountPane({ peaks: peaks().map(({ engine_tier, ...bp }) => bp) })
+
+    expect(columnFor('engineTierRank')).toBeUndefined()
+    expect(toggle('batch-engine-tier-view')).toBeUndefined()
+    expect(toggle('batch-engine-disagrees')).toBeUndefined()
+  })
+
+  it("shows the engine's tier in a column of its own, the consensus left as it is", async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+
+    expect(columnFor('engineTierRank')).toBeDefined()
+    expect(columnFor('consensus_tier')).toBeDefined()
+    const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
+    expect(byId['bp-1'].engineTierRank).toBe(1)
+    expect(byId['bp-3'].engineTierRank).toBeNull()
+    // Ordered by the consensus, not by the engine.
+    expect(ids()).toEqual(['bp-1', 'bp-2', 'bp-3', 'bp-4'])
+  })
+
+  it('names both tiers and the claim in the chip tooltip', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+
+    const text = wrapper.vm.engineTierTooltip(peaks()[0])
+    expect(text).toContain('candidate')
+    expect(text).toContain('assigned')
+    expect(text).toContain('level 3')
+    expect(wrapper.vm.engineTierTooltip(peaks()[1])).toContain('agrees')
+  })
+
+  it('keeps only the batch peaks where the engine disagrees, when asked', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+
+    await toggle('batch-engine-disagrees').trigger('click')
+
+    expect(ids()).toEqual(['bp-1'])
+    await toggle('batch-engine-disagrees').trigger('click')
+    expect(ids()).toHaveLength(4)
+  })
+
+  it("counts and filters the strip by the engine's tier when the view is on", async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    expect(chips()).toEqual([
+      '2 assigned',
+      '1 candidate',
+      '0 below',
+      '1 unassigned',
+      '0 reagent',
+      '0 artifact'
+    ])
+    expect(wrapper.find('.engine-view-label').exists()).toBe(false)
+
+    await toggle('batch-engine-tier-view').trigger('click')
+
+    expect(chips()).toEqual([
+      '1 assigned',
+      '1 candidate',
+      '0 below',
+      '1 unassigned',
+      '1 not stated',
+      '0 reagent',
+      '0 artifact'
+    ])
+    expect(wrapper.find('.engine-view-label').exists()).toBe(true)
+    wrapper.vm.toggleTier('candidate')
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-1'])
+    wrapper.vm.toggleTier('engine_unstated')
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-3'])
+  })
+
+  // Both switches outlive the ledger they were flipped on; one no engine tiered
+  // has nothing to read in its words, and no switch left to turn them off.
+  it('reads the consensus again on a ledger no engine tiered, whatever the switches', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    await toggle('batch-engine-tier-view').trigger('click')
+    await toggle('batch-engine-disagrees').trigger('click')
+
+    app.data.batchPeak.list = peaks().map(({ engine_tier, ...bp }) => bp)
+    await wrapper.vm.$nextTick()
+
+    expect(chips()).not.toContain('0 not stated')
+    expect(chips()[0]).toBe('2 assigned')
+    expect(ids()).toHaveLength(4)
+  })
+
+  it('drops a chip filter when the view changes', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    wrapper.vm.toggleTier('candidate')
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-3'])
+
+    await toggle('batch-engine-tier-view').trigger('click')
+
+    expect(ids()).toHaveLength(4)
+  })
+})

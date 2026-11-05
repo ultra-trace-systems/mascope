@@ -2017,6 +2017,123 @@ describe('PaneBrowserAssignment engine tier column', () => {
   })
 })
 
+// An imported run read in its own engine's words: the strip counts, and its
+// chips filter, by the engine's tier, while the tier column and the sort stay on
+// this server's.
+describe('PaneBrowserAssignment engine-tier view', () => {
+  const peak = (id, role, tier = 'unassigned') =>
+    family({ id, mz: 100 + id.length, intensity: 10, formula: null, tier, fit: null, role })
+
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+    seed(
+      // The engine holds 'a' a candidate where this server's banding says assigned.
+      family({
+        id: 'a',
+        mz: 150.1,
+        intensity: 50,
+        formula: 'C6H12O6',
+        tier: 'assigned',
+        children: [{ sample_peak_mz: 151.1, sample_peak_intensity: 3 }]
+      }),
+      // A formula the engine stated no tier for.
+      family({ id: 'b', mz: 160.1, intensity: 40, formula: 'C7H8', tier: 'below_assignability' }),
+      peak('u', 'unassigned'),
+      peak('r', 'reagent')
+    )
+    assignmentList[0].engine_tier = 'candidate'
+    tierCountsRecord = {
+      assigned: 1,
+      candidate: 0,
+      below_assignability: 1,
+      unassigned: 1,
+      reagent: 1,
+      artifact: 0
+    }
+  })
+
+  const chips = (wrapper) => wrapper.findAll('.tier-stat').map((chip) => chip.text())
+  const flip = (wrapper) => wrapper.find('.view-menu-popover #engine-tier-view').trigger('click')
+
+  it('is not offered on a run with no engine tiers', async () => {
+    assignmentList[0].engine_tier = null
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('#engine-tier-view').exists()).toBe(false)
+  })
+
+  it("is off by default: the strip counts this server's tiers", async () => {
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('label[for="engine-tier-view"]').text()).toBe('Engine tier')
+    expect(chips(wrapper)).toEqual([
+      '1 assigned',
+      '0 candidate',
+      '1 below',
+      '1 unassigned',
+      '1 reagent',
+      '0 artifact'
+    ])
+    expect(wrapper.find('.engine-view-label').exists()).toBe(false)
+  })
+
+  it("counts the engine's tiers when on, the formulas it left untiered apart", async () => {
+    const wrapper = await mountPane()
+    await flip(wrapper)
+
+    // The isotopologue line counts with its compound, not on its own; the
+    // reagent keeps its role chip; the unexplained peak stays unassigned.
+    expect(chips(wrapper)).toEqual([
+      '0 assigned',
+      '1 candidate',
+      '0 below',
+      '1 unassigned',
+      '1 not stated',
+      '1 reagent',
+      '0 artifact'
+    ])
+    expect(wrapper.find('.engine-view-label').text()).toBe("engine's tiers")
+  })
+
+  it("filters by the engine's tier and leaves the sort on this server's", async () => {
+    const wrapper = await mountPane()
+    await flip(wrapper)
+
+    wrapper.vm.toggleTier('candidate')
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['a'])
+    expect(wrapper.vm.rows[0].tierRank).toBe(tierRank('assigned'))
+
+    wrapper.vm.toggleTier('candidate')
+    wrapper.vm.toggleTier('engine_unstated')
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['b'])
+  })
+
+  // The switch outlives the run it was flipped on; a run whose engine stated no
+  // tiers has nothing to read in its words, and no switch to turn it back off.
+  it("reads this server's tiers on a run with none of the engine's, whatever the switch", async () => {
+    assignmentList[0].engine_tier = null
+    const wrapper = await mountPane()
+    wrapper.vm.engineView = true
+    await wrapper.vm.$nextTick()
+
+    expect(chips(wrapper)).not.toContain('0 not stated')
+    expect(chips(wrapper)[0]).toBe('1 assigned')
+  })
+
+  it('drops a chip filter when the view changes, since the chip meant the other tier', async () => {
+    const wrapper = await mountPane()
+    wrapper.vm.toggleTier('assigned')
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['a'])
+
+    await flip(wrapper)
+
+    expect(ids(wrapper).sort()).toEqual(['a', 'b', 'r', 'u'])
+  })
+})
+
 describe('PaneBrowserAssignment batch-level verdict overlay', () => {
   // The two default families, as the describes above seed them.
   beforeEach(() => {

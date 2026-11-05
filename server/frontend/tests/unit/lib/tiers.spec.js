@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest'
 
 import {
+  ENGINE_UNSTATED,
   FALLBACK_TIER,
   TIERS,
   TIER_META,
   TIER_RANK,
   countTiers,
+  engineBucketOf,
   isTier,
   tierBucket,
   tierMeta,
@@ -142,5 +144,33 @@ describe('countTiers', () => {
       below_assignability: 0,
       unassigned: 0
     })
+  })
+})
+
+// The engine-tier view of a ledger reads the producing engine's own tier where
+// it stated one; the derived tier stays every other view's.
+describe('engineBucketOf', () => {
+  it("reads the engine's tier where it stated one", () => {
+    expect(engineBucketOf('candidate', 'assigned', 'M0')).toBe('candidate')
+    expect(engineBucketOf('assigned', 'below_assignability', null)).toBe('assigned')
+  })
+
+  it('keeps a role ahead of any tier, as the default view does', () => {
+    expect(engineBucketOf('assigned', 'unassigned', 'reagent')).toBe('reagent')
+    expect(engineBucketOf(null, 'unassigned', 'artifact')).toBe('artifact')
+  })
+
+  it('counts a formula the engine said nothing about apart from the unassigned', () => {
+    expect(engineBucketOf(null, 'assigned', 'M0')).toBe(ENGINE_UNSTATED)
+    expect(engineBucketOf(undefined, 'below_assignability', null)).toBe(ENGINE_UNSTATED)
+  })
+
+  it('leaves a peak nobody explained unassigned', () => {
+    expect(engineBucketOf(null, 'unassigned', 'unassigned')).toBe(FALLBACK_TIER)
+    expect(engineBucketOf(null, null, null)).toBe(FALLBACK_TIER)
+  })
+
+  it('does not take an unknown engine tier for a tier', () => {
+    expect(engineBucketOf('constructor', 'assigned', null)).toBe(ENGINE_UNSTATED)
   })
 })
