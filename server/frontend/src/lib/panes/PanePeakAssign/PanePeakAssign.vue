@@ -20,6 +20,7 @@ import {
   listingTooltip
 } from '@/lib/referenceListings'
 import { holdsTierDown, reasonIcon, reasonTooltip, tierReasonsOf } from '@/lib/tierReasons'
+import { ROLE_BUCKETS, bucketRank } from '@/lib/tiers'
 import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
 
@@ -477,9 +478,56 @@ const corroborationTooltip = computed(() => {
   const channels = (c.names ?? []).join(', ')
   return (
     `Seen through ${c.n} ionization channels${channels ? ` (${channels})` : ''}: ` +
-    'independent evidence for the formula.'
+    'independent evidence for the formula.' +
+    (otherReadings.value.length ? '\nClick for the peaks the other channels read.' : '')
   )
 })
+
+// --- The other channels' peaks ------------------------------------------------
+// The badge names channels, which leaves the reader to find each one's peak in
+// the ledger: the cross-channel record is about the neutral and names no peak.
+// So the peaks are read off the ledger's rows, by neutral formula, the way the
+// ledger's "group by formula" reads them (PaneBrowserAssignment.vue): every
+// analyte row of the same neutral but the family's own M0, strongest first.
+// Isotope lines are their M0's peak again, and a source ion or a peak nothing
+// explained names no neutral of the sample.
+const otherReadings = computed(() => {
+  const own = app.data.peakAssignment.peak.m0Of(focusedAssignment.value)
+  const key = neutralKey(own?.assigned_formula)
+  if (!key) return []
+  return (app.data.peakAssignment.peak.list ?? [])
+    .filter(
+      (row) =>
+        row.peak_assignment_id !== own.peak_assignment_id &&
+        !isIsotopeLine(row) &&
+        !ROLE_BUCKETS.includes(row.role) &&
+        neutralKey(row.assigned_formula) === key
+    )
+    .sort(
+      (a, b) =>
+        bucketRank(a.tier, a.role) - bucketRank(b.tier, b.role) ||
+        (b.fit_score ?? -1) - (a.fit_score ?? -1)
+    )
+    .map((row) => ({ row, channel: channelOf(row), peak: peakOf(row) }))
+})
+
+// A reading whose peak the sample no longer has - its peaks were found again
+// after the run - is listed but not a link: focusing it would do nothing.
+const STALE_PEAK_TOOLTIP =
+  "This run's peak is no longer in the sample's peak list: the peaks were found again after " +
+  'the run. Run the assignment again to read the current peaks.'
+const readingTooltip = (reading) =>
+  reading.peak
+    ? `Focus this peak: ${reading.row.assigned_formula}` +
+      `${reading.channel ? ` through ${reading.channel}` : ''}`
+    : STALE_PEAK_TOOLTIP
+
+const channelsMenu = ref(null)
+const toggleChannels = (event) => channelsMenu.value?.toggle(event)
+function focusReading(reading) {
+  channelsMenu.value?.hide()
+  app.data.peak.focus(reading.peak)
+}
 
 // Compact substitution label (e.g. "[13C]", "[81Br]2") from the full
 // isotopologue formula; falls back to the M0/M+1 offset label. A source ion's
@@ -534,8 +582,10 @@ const formatRel = (value) => (value != null ? relAbuFmt.format(value) : '-')
 // into sample_peak_id, so the join has to coerce both sides -- and a miss must
 // leave the focus alone rather than clear it, which is what focus() would do
 // with an id that resolves to nothing.
+const peakOf = (entry) =>
+  app.data.peak.list.find((p) => String(p.peak_id) === String(entry.sample_peak_id)) ?? null
 const focusIsotopePeak = (iso) => {
-  const peak = app.data.peak.list.find((p) => String(p.peak_id) === String(iso.sample_peak_id))
+  const peak = peakOf(iso)
   if (peak) app.data.peak.focus(peak)
 }
 
@@ -1334,15 +1384,55 @@ const demotedCount = computed(() => {
           <span class="v uncal" v-else v-tooltip.top="LEDGER_CONFIDENCE_TOOLTIP">&mdash;</span>
         </div>
       </div>
+      <!-- A button where the ledger holds the other channels' rows: it opens
+           their peaks, each a link that focuses it. A run whose rows are not
+           all loaded, or a ledger the batch serves, may name channels whose
+           rows are not here, and the badge then only says so. -->
+      <button
+        v-if="corroboration && corroboration.n > 1 && otherReadings.length"
+        type="button"
+        class="corroboration opens"
+        :class="{ inherited: corroboration.inherited }"
+        data-testid="corroboration"
+        aria-haspopup="dialog"
+        v-tooltip.top="corroborationTooltip"
+        @click="toggleChannels"
+      >
+        <span class="pi ph ph-link-simple" />
+        {{ corroborationLabel }}
+        <span class="pi ph ph-caret-down" />
+      </button>
       <div
-        v-if="corroboration && corroboration.n > 1"
+        v-else-if="corroboration && corroboration.n > 1"
         class="corroboration"
         :class="{ inherited: corroboration.inherited }"
+        data-testid="corroboration"
         v-tooltip.top="corroborationTooltip"
       >
         <span class="pi ph ph-link-simple" />
         {{ corroborationLabel }}
       </div>
+      <Popover ref="channelsMenu" aria-label="The other channels' peaks">
+        <div class="other-readings">
+          <div class="alts-label">The same neutral, through the other channels</div>
+          <ul class="readings">
+            <li v-for="reading in otherReadings" :key="reading.row.peak_assignment_id">
+              <button
+                type="button"
+                class="reading-link"
+                data-testid="other-reading"
+                :disabled="!reading.peak"
+                v-tooltip.left="readingTooltip(reading)"
+                @click="focusReading(reading)"
+              >
+                <span class="reading-channel">{{ reading.channel ?? 'another channel' }}</span>
+                <span class="reading-mz">m/z {{ num.mz.format(reading.row.sample_peak_mz) }}</span>
+                <BaseTierTag :tier="reading.row.tier" :role="reading.row.role" />
+              </button>
+            </li>
+          </ul>
+        </div>
+      </Popover>
       <!-- Why the row holds its tier, in the run's own words. The rule is named
            first so the list can be scanned; the sentence under it is the
            server's. A reason that holds the tier down wears the down arrow, and
@@ -2145,6 +2235,49 @@ const demotedCount = computed(() => {
    here" idiom the placeholder values use, and cost contrast the pill needs. */
 .corroboration.inherited {
   border-style: dashed;
+}
+/* Where the ledger holds the other channels' rows the badge opens them. */
+.corroboration.opens {
+  font: inherit;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+.corroboration.opens:hover,
+.corroboration.opens:focus-visible {
+  background: color-mix(in srgb, var(--state-info) 22%, transparent);
+}
+.other-readings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+}
+/* One link per reading: the channel, where its peak sits, and its tier. */
+.reading-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.2rem 0.35rem;
+  border: none;
+  border-radius: 0.25rem;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.reading-link:hover:not(:disabled),
+.reading-link:focus-visible {
+  background: var(--p-content-hover-background, rgba(0, 0, 0, 0.05));
+}
+/* A peak the sample no longer has: listed, not a link. */
+.reading-link:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.reading-mz {
+  font-variant-numeric: tabular-nums;
 }
 /* Why this tier: one line per reason, the rule over the server's sentence. */
 .tier-reasons {

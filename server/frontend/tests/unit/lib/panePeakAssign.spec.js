@@ -22,10 +22,15 @@ const curate = vi.fn(() => Promise.resolve(null))
 const loadAltScores = vi.fn(() => Promise.resolve([]))
 const loadEvidence = vi.fn(() => Promise.resolve(null))
 const loadDetail = vi.fn(() => Promise.resolve())
+const peakFocus = vi.fn()
 
 let focusedPeak
 let focusedAssignment
 let ledger
+// The sample's peaks, as the peak store lists them, and the run's ledger rows
+// as the assignment store lists them.
+let peakList
+let ledgerRows
 let verdictRecord
 // The isotopologue family of the focused row, when a test needs one, and the
 // one detail record the inspector fetches (for the focused assignment only).
@@ -64,14 +69,15 @@ function makeApp() {
       // re-evaluate when a test moves the focus after mounting; a plain value
       // would be snapshotted at setup and no watcher would ever fire.
       peak: {
-        list: [PEAK],
+        list: peakList,
         get focused() {
           return focusedPeak.value
         },
-        focus: vi.fn()
+        focus: peakFocus
       },
       peakAssignment: {
         peak: {
+          list: ledgerRows,
           forPeak: () => focusedAssignment,
           // Keyed by id rather than answering every caller: the inspector loads
           // detail for the focused assignment, and for the M0 of an isotopologue
@@ -144,6 +150,9 @@ const PopoverStub = {
     },
     hide() {
       this.visible = false
+    },
+    toggle() {
+      this.visible = !this.visible
     },
     alignOverlay,
     focus: focusDialog
@@ -237,6 +246,8 @@ beforeEach(() => {
   focusedPeak = ref(PEAK)
   focusedAssignment = null
   ledger = new Map()
+  peakList = [PEAK]
+  ledgerRows = []
   verdictRecord = null
   familyRows = null
   runRecord = null
@@ -762,6 +773,150 @@ describe('PanePeakAssign adduct corroboration', () => {
     const wrapper = await mountPane()
 
     expect(badge(wrapper).exists()).toBe(false)
+  })
+})
+
+// The badge names channels, and the reader then had to find each one's peak in
+// the ledger (step 3.4h). It opens the other readings of the neutral instead,
+// read off the ledger's rows by neutral formula, each a link to its peak.
+describe("PanePeakAssign the other channels' peaks", () => {
+  const PROTONATED = {
+    peak_assignment_id: 'pa-h',
+    sample_peak_id: 'p-h',
+    sample_peak_mz: 137.1325,
+    sample_peak_intensity: 5000,
+    assigned_formula: 'C10H16',
+    ionization_mechanism_id: 'mech-h',
+    tier: 'assigned',
+    role: 'M0',
+    fit_score: 0.9,
+    corroboration_channels: 3
+  }
+  // The same neutral through ammonium, written in another element order: the
+  // grouping is by neutral, not by the string.
+  const AMMONIATED = {
+    ...PROTONATED,
+    peak_assignment_id: 'pa-nh4',
+    sample_peak_id: 'p-nh4',
+    sample_peak_mz: 154.159,
+    assigned_formula: 'H16C10',
+    ionization_mechanism_id: 'mech-nh4',
+    tier: 'candidate',
+    fit_score: 0.95
+  }
+  const SODIATED = {
+    ...PROTONATED,
+    peak_assignment_id: 'pa-na',
+    sample_peak_id: 'p-na',
+    sample_peak_mz: 159.1144,
+    ionization_mechanism_id: 'mech-na',
+    tier: 'assigned',
+    fit_score: 0.6
+  }
+  // Rows that read no other channel's peak: an isotope line of the focused
+  // family, another neutral, and a source ion that happens to share the formula.
+  const OWN_LINE = {
+    ...PROTONATED,
+    peak_assignment_id: 'pa-h-c0',
+    sample_peak_id: 'p-h-c0',
+    role: 'iso_child',
+    owner_peak_assignment_id: 'pa-h',
+    isotope_label: 'M+1'
+  }
+  const OTHER_NEUTRAL = { ...SODIATED, peak_assignment_id: 'pa-x', assigned_formula: 'C10H18' }
+  const SOURCE_ION = { ...SODIATED, peak_assignment_id: 'pa-r', role: 'reagent' }
+  const peakFor = (row) => ({ peak_id: row.sample_peak_id, mz: row.sample_peak_mz })
+
+  beforeEach(() => {
+    mechanisms = [
+      { ionization_mechanism_id: 'mech-h', ionization_mechanism: '[M+H]+' },
+      { ionization_mechanism_id: 'mech-nh4', ionization_mechanism: '[M+NH4]+' },
+      { ionization_mechanism_id: 'mech-na', ionization_mechanism: '[M+Na]+' }
+    ]
+    ledgerRows = [PROTONATED, OWN_LINE, SODIATED, OTHER_NEUTRAL, SOURCE_ION, AMMONIATED]
+    peakList = [PROTONATED, AMMONIATED, SODIATED].map(peakFor)
+    focusedAssignment = PROTONATED
+    focusedPeak.value = peakFor(PROTONATED)
+  })
+
+  const links = (wrapper) => wrapper.findAll('[data-testid="other-reading"]')
+
+  async function openBadge() {
+    const wrapper = await mountPane({ recordTooltips: true })
+    await wrapper.find('button.corroboration').trigger('click')
+    return wrapper
+  }
+
+  it('opens the other channels, strongest first, each with its peak', async () => {
+    const wrapper = await openBadge()
+    const [first, second] = links(wrapper)
+
+    expect(links(wrapper)).toHaveLength(2)
+    // Tier first, then fit: the assigned sodium reading before the candidate
+    // ammonium one, though the ammonium one fits better.
+    expect(first.text()).toContain('[M+Na]+')
+    expect(first.text()).toContain(`m/z ${num.mz.format(SODIATED.sample_peak_mz)}`)
+    expect(second.text()).toContain('[M+NH4]+')
+    expect(first.attributes('data-tooltip')).toBe('Focus this peak: C10H16 through [M+Na]+')
+    expect(wrapper.find('button.corroboration').attributes('data-tooltip')).toContain(
+      'Click for the peaks the other channels read.'
+    )
+  })
+
+  it('orders the readings of one tier by their fit', async () => {
+    ledgerRows = [PROTONATED, { ...SODIATED, tier: 'candidate' }, AMMONIATED]
+    const wrapper = await openBadge()
+
+    expect(links(wrapper).map((link) => link.find('.reading-channel').text())).toEqual([
+      '[M+NH4]+',
+      '[M+Na]+'
+    ])
+  })
+
+  it('focuses the peak a link names', async () => {
+    const wrapper = await openBadge()
+    await links(wrapper)[1].trigger('click')
+
+    expect(peakFocus).toHaveBeenCalledWith(peakFor(AMMONIATED))
+    // The popover closes on the way, as the card moves to the other peak.
+    expect(wrapper.find('.popover').exists()).toBe(false)
+  })
+
+  it("reads the M0's neutral on a focused isotope line, and leaves the M0 out", async () => {
+    ledger.set(PROTONATED.peak_assignment_id, PROTONATED)
+    focusedAssignment = { ...OWN_LINE, corroboration_channels: null }
+    familyRows = [PROTONATED, focusedAssignment]
+    const wrapper = await openBadge()
+
+    expect(links(wrapper).map((link) => link.find('.reading-channel').text())).toEqual([
+      '[M+Na]+',
+      '[M+NH4]+'
+    ])
+  })
+
+  // #2025: a run from before the sample's peaks were found again names peaks the
+  // sample no longer has, and a link to one would do nothing at all.
+  it('lists a reading whose peak is gone, but not as a link', async () => {
+    peakList = [PROTONATED, AMMONIATED].map(peakFor)
+    const wrapper = await openBadge()
+    const gone = links(wrapper)[0]
+
+    expect(gone.attributes('disabled')).toBeDefined()
+    expect(gone.attributes('data-tooltip')).toContain('no longer in the sample')
+    await gone.trigger('click')
+    expect(peakFocus).not.toHaveBeenCalled()
+  })
+
+  // The count can come from a record whose rows are not in this ledger (a
+  // ledger the batch serves, a run stored before the rows were): then the badge
+  // only says so, as it did.
+  it('stays a plain badge where the ledger holds no other reading', async () => {
+    ledgerRows = [PROTONATED, OTHER_NEUTRAL]
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(wrapper.find('button.corroboration').exists()).toBe(false)
+    expect(wrapper.find('.corroboration').text()).toContain('Supported by 3 channels')
+    expect(wrapper.find('.corroboration').attributes('data-tooltip')).not.toContain('Click')
   })
 })
 

@@ -749,6 +749,20 @@ filtered-out reading leaves the next one to head the row, and the counts above t
 still count readings. A reagent's ion or a peak nothing explained names no neutral of the
 sample and is never grouped.
 
+The inspector reads the same rows. A row whose neutral the run committed through more
+than one channel carries a ***Supported by N channels*** badge, and clicking it opens
+the neutral's other readings in this ledger, strongest first: each names its channel,
+its m/z and its tier, and clicking one focuses its peak. A focused isotopologue opens its
+M0's. The badge counts what the run recorded, and the links are the ledger's rows of
+that neutral, so a ledger that holds none of them, such as one the batch serves, leaves
+the badge as a count only.
+
+A run keeps the peaks it read. When a sample's peaks are found again after a run - the
+file re-ingested, the peaks detected again - the run's rows name peaks the sample no
+longer has. They still show what the run stored, but there is no peak to focus: the
+ledger dims them and says how many there are above the table, and the inspector lists
+such a reading without a link. Run the assignment again to read the current peaks.
+
 **Beside the reasons.** The peak inspector also names what the row is, and shows two
 measurements the reasons read.
 
@@ -765,9 +779,12 @@ measurements the reasons read.
   identification. Hovering lists the compounds by name, up to 25, and says how many more
   the lists hold. The same names appear beside the other readings of the ion and beside
   the close alternatives. The ledger shows the run's own match in its **listed as**
-  column, beside the formula: the first name, its list and the list's tags, with how
-  many more names the run matched, so a row's list reading is there without opening
-  the inspector. A lead is not shown there - it is looked up when a row is inspected.
+  column, beside the formula, folded to a flask with the list's tags beside it; hovering
+  the flask gives the first name, its list, the tags and how many more names the run
+  matched, so a row's list reading is there without opening the inspector. **Listed
+  as, in full**, in the view menu, writes the name and the list out in the column, in
+  this ledger and in the *Batch peaks* ledger both, and keeps the setting across a
+  reload. A lead is not shown there - it is looked up when a row is inspected.
 - ***mass z*** sits beside the m/z error. It is the row's distance from the run's own
   mass calibration at its m/z, counted in the calibration's widths. Hovering it gives
   the run's centre and width, and the distances at which *off calibration* caps a row.
@@ -1037,7 +1054,8 @@ the m/z is the anchor's bin, the intensity the brightest sample's, the formula a
 consensus over the members. *Listed as* is what a reference list calls the consensus
 formula, where a sample's run matched it from a list: the ledger keeps the listing of each
 identity a member brought matched from a list, through whichever channel, and shows the
-consensus formula's. A batch ledger folded before this column existed shows it once its
+consensus formula's. It is folded to a flask and the list's tags, the name on hover,
+as in a sample's ledger, and **Listed as, in full** in the view menu writes it out. A batch ledger folded before this column existed shows it once its
 samples are folded again (*Rebuild batch ledger*). The column a ledger is sorted by is kept per ledger - it
 survives the switch between the *Batch peaks* ledger and a sample's ledger, and a reload.
 

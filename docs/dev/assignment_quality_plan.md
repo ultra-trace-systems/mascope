@@ -84,7 +84,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.4e - an expected line that is absent | - |  | planned, from the plan owner's notes of 2026-09-26; gate G13; three 0.10 riders |
 | 3.4f - a peak that is not separated | - |  | planned, from the same notes; gate G14; the bimodality criterion of the 0.10 review |
 | 3.4g - the chart draws each peak in the trace's unit, and a lone M0 | #2379 | 2026-10-19 | built: the lone M0 drawn, the envelope in the trace's unit; engine and tiers untouched |
-| 3.4h - the inspector links the other channels, and the listing column folds | - |  | planned, from the same notes |
+| 3.4h - the inspector links the other channels, and the listing column folds | #2988 | 2026-11-05 | built: the badge opens the other channels' peaks as links, the listed-as column folds to a mark with a view-menu switch in both ledgers, and rows whose peak the sample no longer has are marked (#2025); no tier moves |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | #2593 (the gate's anchors) |  | in two PRs (decided 2026-10-22). Built: the mass gate's fit takes the reagent pass's monoisotopic lines beside its commits; estimated on the pass-10 ledgers, all seven K3 files fit a calibration. Planned: the cap and the offset report (MAS-469), landing with 3.5b |
 | 3.5b - the envelope's tolerance, fitted per run | - |  | planned, from the plan owner's reading of 2026-09-25 and the pass-9 ledgers |
 | 3.5c - the targeted matcher reads an isotope line over the scans that hold its anchor | - |  | built: an Orbitrap line's ratio is read over the scans it shares with its anchor, the count stored and shown in the Match tab; TOF unchanged |

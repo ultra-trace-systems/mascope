@@ -37,6 +37,7 @@ import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import { useApp } from '@/stores'
 
 import { useAssignmentLauncher } from './stores'
+import { useLedgerListing } from './stores/ledgerListing.js'
 import { useLedgerSort } from './stores/ledgerSort.js'
 import AssignmentVerdictPopover from './AssignmentVerdictPopover.vue'
 import { useBatchChartSelection } from './stores/batchChartSelection.js'
@@ -208,6 +209,40 @@ function focusPeak(assignment) {
   }
 }
 
+// --- Rows whose peak the sample no longer has --------------------------------
+
+// A run keeps the peak ids it read. When the sample's peaks are found again -
+// re-ingested, re-detected, restored - the new peaks carry new ids, and the
+// runs from before stay in the run selector with rows that name peaks the
+// sample no longer has. Such a row still shows its m/z and intensity, which
+// the run stored, but there is no peak for a click to focus, and a click that
+// did nothing at all read as a broken ledger (#2025). The rows are dimmed and
+// the ledger says why above them. Read only once the sample's peaks are in:
+// while they load, or for a sample with none listed, nothing is known yet.
+const livePeakIds = computed(() => {
+  const list = app.data.peak.list
+  if (app.data.peak.pending || !list?.length) return null
+  return new Set(list.map((peak) => String(peak.peak_id)))
+})
+const isStale = (row) =>
+  livePeakIds.value != null && !livePeakIds.value.has(String(row.sample_peak_id))
+const staleCount = computed(() =>
+  livePeakIds.value ? assignments.value.list.filter(isStale).length : 0
+)
+const staleNotice = computed(() => {
+  const n = staleCount.value
+  if (!n) return ''
+  const which =
+    n === assignments.value.list.length
+      ? "Every row of this run names a peak the sample's peak list no longer has"
+      : `${n} ${n === 1 ? 'row' : 'rows'} of this run name a peak the sample's peak list no longer has`
+  return (
+    `${which}: the peaks were found again after the run, so those rows cannot be opened. ` +
+    'Run the assignment again to read the current peaks.'
+  )
+})
+const rowClass = (row) => (isStale(row) ? 'stale-peak' : null)
+
 // --- Tier ordering & filtering ----------------------------------------------
 
 // Confidence order (assigned first, unassigned last) comes from the shared
@@ -332,6 +367,12 @@ const LISTING_HEADER_TOOLTIP =
   'What a reference list calls the formula: the first name the run matched from a list, ' +
   "that list, and the list's tags. A formula match names candidate compounds; it is not an " +
   'identification.'
+
+// The column rests folded to a mark - a flask, and the list's tags beside it -
+// whose tooltip says the rest: written out, it made the ledger too wide for the
+// column the browser has. The view menu's switch shows it in full, in this
+// ledger and the batch ledger both (stores/ledgerListing.js).
+const listingColumn = useLedgerListing()
 
 // What a column sorts on, where that is not the field it is named by: the
 // formula column shows a source ion's formula on a row with no analyte (see
@@ -805,7 +846,9 @@ const breadcrumb = computed(() => {
           aria-haspopup="dialog"
           :aria-controls="viewMenuOpen ? 'assignment-view-menu' : undefined"
           :aria-expanded="viewMenuOpen"
-          v-tooltip.top="'View options: isotopologue rows, grouping by formula, verdict filter'"
+          v-tooltip.top="
+            'View options: isotopologue rows, grouping by formula, the listing column, verdict filter'
+          "
           @click="toggleViewMenu"
           :pt="
             app.ui.help.top(
@@ -818,10 +861,13 @@ const breadcrumb = computed(() => {
               <b>Group by formula</b> makes a neutral read through several
               ionization channels one row, headed by its strongest reading; the
               arrow beside its ionization shows the others under it.
+              <b>Listed as, in full</b> writes out what a reference list calls
+              each formula; folded, the default, the column is a flask with the
+              list's tags beside it, and the name is in its tooltip.
               <b>Verdict</b> narrows the table to one verification verdict.
               </p>
               <p>
-              Both keep their setting while the menu is closed.
+              Each keeps its setting while the menu is closed.
               </p>`,
               { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
             )
@@ -864,6 +910,15 @@ const breadcrumb = computed(() => {
               <ToggleSwitch v-model="groupByFormula" inputId="group-formula" />
               <label for="group-formula">Group by formula</label>
             </div>
+            <div
+              class="unfold-toggle"
+              v-tooltip.top="
+                'Write out what a reference list calls each formula, rather than a mark that says it on hover'
+              "
+            >
+              <ToggleSwitch v-model="listingColumn.full" inputId="listing-full" />
+              <label for="listing-full">Listed as, in full</label>
+            </div>
             <!-- Chips rather than a dropdown, and the same shape as the tier
                  chips this menu hangs off. A Select here would be a second
                  overlay inside a focus-trapping one: PrimeVue's Select swallows
@@ -892,6 +947,14 @@ const breadcrumb = computed(() => {
         </Popover>
       </div>
 
+      <Message
+        v-if="staleNotice && !assignments.pending"
+        severity="warn"
+        class="stale-notice"
+        data-testid="stale-peaks"
+      >
+        {{ staleNotice }}
+      </Message>
       <div v-if="assignments.pending" class="center loading-region">
         <ProgressSpinner />
       </div>
@@ -922,6 +985,7 @@ const breadcrumb = computed(() => {
         selectionMode="single"
         :metaKeySelection="false"
         v-model:selection="selectedRow"
+        :rowClass="rowClass"
       >
         <!-- The batch chart draws the Batch peaks ledger's selection; this puts
              the row's species into it, or takes it out, without leaving the
@@ -1012,10 +1076,22 @@ const breadcrumb = computed(() => {
         <!-- What a reference list calls the formula: the name, its list, and
              the list's tags (background for the siloxanes), all in one line so
              the row keeps its height. The tooltip names every name the run
-             matched, as the inspector's does. -->
-        <Column field="listing" sortable style="min-width: 8rem">
+             matched, as the inspector's does. Folded, the name and the list
+             give way to a flask and only the tags stay written. -->
+        <Column
+          field="listing"
+          sortable
+          :style="{ minWidth: listingColumn.full ? '8rem' : '3rem' }"
+        >
           <template #header>
-            <span v-tooltip.top="LISTING_HEADER_TOOLTIP">listed as</span>
+            <span v-if="listingColumn.full" v-tooltip.top="LISTING_HEADER_TOOLTIP">listed as</span>
+            <span
+              v-else
+              class="pi ph ph-flask"
+              role="img"
+              aria-label="listed as"
+              v-tooltip.top="LISTING_HEADER_TOOLTIP"
+            />
           </template>
           <template #body="{ data }">
             <span
@@ -1024,10 +1100,18 @@ const breadcrumb = computed(() => {
               data-testid="listed-as"
               v-tooltip.top="listingTooltip(data.listing)"
             >
-              <span class="listing-name">{{ listingName(data.listing) }}</span>
-              <span v-if="listingSource(data.listing)" class="listing-source">{{
-                listingSource(data.listing)
-              }}</span>
+              <template v-if="listingColumn.full">
+                <span class="listing-name">{{ listingName(data.listing) }}</span>
+                <span v-if="listingSource(data.listing)" class="listing-source">{{
+                  listingSource(data.listing)
+                }}</span>
+              </template>
+              <span
+                v-else
+                class="pi ph ph-flask listing-mark"
+                role="img"
+                :aria-label="listingName(data.listing)"
+              />
               <span
                 v-for="tag in listingTags(data.listing)"
                 :key="tag"
@@ -1196,6 +1280,16 @@ const breadcrumb = computed(() => {
   gap: 0.35rem;
   max-width: 18rem;
   white-space: nowrap;
+}
+/* A row whose peak the sample no longer has: there is nothing to focus. */
+:deep(tr.stale-peak) {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Folded, the flask stands for the name and the list, in the tooltip. */
+.listing-mark {
+  opacity: 0.75;
 }
 .listing-name {
   overflow: hidden;

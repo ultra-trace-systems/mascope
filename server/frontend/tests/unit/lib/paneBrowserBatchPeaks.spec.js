@@ -166,10 +166,10 @@ const DataTableStub = {
 // pane binds: `ToggleSwitch: true` would render an element with no v-model.
 const ToggleSwitchStub = {
   name: 'ToggleSwitch',
-  props: ['modelValue'],
+  props: ['modelValue', 'inputId'],
   emits: ['update:modelValue'],
   template:
-    '<button class="iso-toggle" @click="$emit(\'update:modelValue\', !modelValue)">{{ modelValue }}</button>'
+    '<button class="iso-toggle" :id="inputId" @click="$emit(\'update:modelValue\', !modelValue)">{{ modelValue }}</button>'
 }
 
 // Rendered open, rather than stubbed away: the view menu's contents are the
@@ -611,7 +611,7 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
       'm/z',
       'Intensity',
       'Formula',
-      'Listed as',
+      '', // the listing header is a flask while the column is folded
       'Tier',
       // The tiering is still being built, and the tier header says so.
       TIERING_PROVISIONAL.label,
@@ -703,10 +703,11 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
 
   // Renders the cells: the stub table hands its rows to every column through a
   // ref, as the sample ledger's spec does.
-  async function renderedCells(peaks) {
+  async function renderedCells(peaks, { full = false } = {}) {
     const tableRows = ref([])
     app = makeApp({ peaks })
     localStorage.clear()
+    if (full) localStorage.setItem('mascope.browser.match.ledgerListing', '{"full":true}')
     setActivePinia(createPinia())
     const rendered = mount(PaneBrowserBatchPeaks, {
       global: {
@@ -722,7 +723,7 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
             ...ColumnStub,
             setup: () => ({ rows: tableRows }),
             template:
-              '<div class="column-stub" :data-field="field">' +
+              '<div class="column-stub" :data-field="field"><slot name="header" />' +
               '<template v-for="(row, i) in rows" :key="i">' +
               '<div class="stub-cell"><slot name="body" :data="row" /></div></template></div>'
           }
@@ -734,11 +735,47 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
     return rendered
   }
 
-  it('shows the name, the list and its tag on a listed batch peak', async () => {
+  const listingColumn = () =>
+    wrapper.findAll('.column-stub').find((col) => col.attributes('data-field') === 'listingName')
+
+  it('folds to a flask and the tags by default', async () => {
     wrapper = await renderedCells([
       peak('bp-1', 'assigned', 0.9, { reference_listing: LISTING }),
       peak('bp-2', 'assigned', 0.8, { mz: 200.1 })
     ])
+    const [listed, unlisted] = listingColumn().findAll('.stub-cell')
+
+    expect(listingColumn().find('[aria-label="Listed as"]').exists()).toBe(true)
+    expect(listed.find('.listing-name').exists()).toBe(false)
+    expect(listed.find('.listing-mark').attributes('aria-label')).toBe(
+      'decamethylcyclopentasiloxane +1'
+    )
+    expect(listed.find('[data-testid="list-tag-background"]').exists()).toBe(true)
+    expect(unlisted.text()).toBe('')
+  })
+
+  it("writes the column out from the view menu's switch", async () => {
+    wrapper = await renderedCells([peak('bp-1', 'assigned', 0.9, { reference_listing: LISTING })])
+    const toggle = wrapper.find('#batch-listing-full')
+
+    expect(toggle.text()).toBe('false')
+    await toggle.trigger('click')
+    const listed = listingColumn().find('.stub-cell')
+    expect(listed.find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
+    expect(listingColumn().text()).toContain('Listed as')
+    expect(JSON.parse(localStorage.getItem('mascope.browser.match.ledgerListing'))).toEqual({
+      full: true
+    })
+  })
+
+  it('shows the name, the list and its tag on a listed batch peak, in full', async () => {
+    wrapper = await renderedCells(
+      [
+        peak('bp-1', 'assigned', 0.9, { reference_listing: LISTING }),
+        peak('bp-2', 'assigned', 0.8, { mz: 200.1 })
+      ],
+      { full: true }
+    )
     const column = wrapper
       .findAll('.column-stub')
       .find((col) => col.attributes('data-field') === 'listingName')
