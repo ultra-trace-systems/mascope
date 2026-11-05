@@ -208,6 +208,19 @@ class TestTheAnswerFromGoose:
         driver._lock(tmp_path / "20260101T000001Z-other-goose")
         driver._unlock(tmp_path / "20260101T000001Z-other-goose")
 
+    def test_the_row_knows_its_surface(self, driver):
+        tools = driver.mcp_tools(
+            [sys.executable, "-m", "mascope_ai", "mcp", "--session", "t"]
+        )
+
+        assert "find" in tools and "load_peaks" in tools
+        hinted = driver.extra_instructions("mcp", ["find", "reduce"])
+        plain = driver.extra_instructions("mcp", ["find"])
+        both = driver.extra_instructions("mcp+python", ["find", "reduce"], python="py")
+        assert "reduce" in hinted and hinted.startswith("- ")
+        assert plain == ""
+        assert "reduce" in both and "`py`" in both and both.count("\n- ") == 1
+
     def test_the_checker_scores_what_was_parsed(self, driver):
         question = ai_golden.question("M2")
         right, _ = driver._parse_answer(

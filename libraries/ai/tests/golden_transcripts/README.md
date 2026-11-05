@@ -108,6 +108,17 @@ the first run's calls all fail with 401 from then on. The driver holds a lock
 whose tool results say `not_authenticated` is recorded as infra, with
 `token_revoked` set, never as the model's miss.
 
+**The surface.** Before the first episode the driver asks the MCP server for
+its tool list and writes it into `header.json`; the summary says how many
+tools the row ran on and whether `reduce` was among them. The recipe's rules
+are the same for every row; the driver adds the `reduce` hint only when the
+server lists the tool, so a row is never told of a tool it cannot call.
+
+**Provider errors.** An episode that ends in a provider error (a 529 or 503,
+a reset) is tried again once after two minutes (`--retry-infra`), with its
+own Goose session; the record says `retried` and quotes the first error. An
+episode that ran out of wall clock is not retried: that is the model's result.
+
 **The run.**
 
 ```sh
