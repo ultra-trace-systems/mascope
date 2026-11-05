@@ -62,6 +62,7 @@ import os
 import time
 from typing import Optional
 
+from mascope_backend.redis_failures import log_socket_failure
 from mascope_backend.runtime import runtime
 from mascope_backend.socket import sio
 from mascope_backend.socket.signed_in import SIGNED_IN_ROOM, admit_signed_in
@@ -199,9 +200,10 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
                 f"{len(left)} room(s) [Worker {worker_pid}]"
             )
         return evicted
-    except Exception:
-        runtime.logger.exception(
-            f"Failed to evict the sockets of user {user_id} [Worker {worker_pid}]"
+    except Exception as e:
+        log_socket_failure(
+            f"Failed to evict the sockets of user {user_id} [Worker {worker_pid}]",
+            e,
         )
         return 0
 
@@ -244,9 +246,10 @@ async def sign_out_socket(sid: str, user_id: int) -> bool:
 
         await _sign_out(sid, user_id)
         return True
-    except Exception:
-        runtime.logger.exception(
-            f"Failed to sign socket {sid} of user {user_id} out [Worker {worker_pid}]"
+    except Exception as e:
+        log_socket_failure(
+            f"Failed to sign socket {sid} of user {user_id} out [Worker {worker_pid}]",
+            e,
         )
         return False
 
@@ -278,10 +281,11 @@ async def sign_out_session(
         signed_out += 1
     try:
         others = await get_user_socket_sids(user_id)
-    except Exception:
-        runtime.logger.exception(
+    except Exception as e:
+        log_socket_failure(
             f"Failed to list the sockets of user {user_id} to sign out "
-            f"[Worker {os.getpid()}]"
+            f"[Worker {os.getpid()}]",
+            e,
         )
         return signed_out
     for other in others:
@@ -297,10 +301,11 @@ async def sign_out_session(
                 continue
             await _sign_out(other, user_id)
             signed_out += 1
-        except Exception:
-            runtime.logger.exception(
+        except Exception as e:
+            log_socket_failure(
                 f"Failed to sign socket {other} of user {user_id} out "
-                f"[Worker {os.getpid()}]"
+                f"[Worker {os.getpid()}]",
+                e,
             )
     return signed_out
 
@@ -330,10 +335,11 @@ async def sign_out_expired_socket(sid: str, user_id: int) -> bool:
             return False
         await _sign_out(sid, user_id)
         return True
-    except Exception:
-        runtime.logger.exception(
+    except Exception as e:
+        log_socket_failure(
             f"Failed to sign socket {sid} of user {user_id} out at its session's "
-            f"expiry [Worker {os.getpid()}]"
+            f"expiry [Worker {os.getpid()}]",
+            e,
         )
         return False
 

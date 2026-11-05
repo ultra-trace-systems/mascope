@@ -7,6 +7,7 @@ from mascope_backend.api.new.auth.access_token.validation import (
 )
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.exceptions import InvalidTokenException
+from mascope_backend.redis_failures import log_socket_failure
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.auth.exceptions import (
     SocketAuthConfigError,
@@ -120,10 +121,13 @@ async def authenticate_socket_connection(
         if isinstance(e, SocketUnauthenticatedError):
             raise
 
-        # logger.exception: the raised SocketUnauthenticatedError is handled
-        # as a routine rejection upstream, so this is the only record of the
-        # unexpected underlying failure
-        runtime.logger.exception("Socket authentication failed")
+        # Logged here: the raised SocketUnauthenticatedError is handled as a
+        # routine rejection upstream, so this is the only record of the
+        # unexpected underlying failure. Redis out of reach (the session
+        # could not be saved) is a warning kept out of monitoring: the
+        # socket is refused as before, and the worker heartbeat reports an
+        # outage that lasts. Anything else keeps its stack.
+        log_socket_failure("Socket authentication failed", e)
         raise SocketUnauthenticatedError("Authentication failed") from e
 
 
@@ -139,5 +143,5 @@ async def _hold_quietly(sid: str) -> None:
     """
     try:
         await hold_from_broadcasts(sid)
-    except Exception:
-        runtime.logger.exception(f"Failed to take socket {sid} out of broadcasts")
+    except Exception as e:
+        log_socket_failure(f"Failed to take socket {sid} out of broadcasts", e)

@@ -20,7 +20,7 @@ does not use MFA.
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.mfa.exceptions import MfaReauthRequiredException
 from mascope_backend.db import User
-from mascope_backend.runtime import runtime
+from mascope_backend.redis_failures import log_control_failure
 from mascope_backend.socket.storage import redis_storage_client
 
 
@@ -44,8 +44,8 @@ async def mark_recently_verified(user_id: int) -> None:
             "1",
             ex=auth_settings.mfa.REAUTH_WINDOW_SECONDS,
         )
-    except Exception:
-        runtime.logger.exception("Failed to record MFA step-up verification")
+    except Exception as e:
+        log_control_failure("Failed to record MFA step-up verification", e)
 
 
 async def require_recent_mfa(user: User) -> None:
@@ -68,9 +68,9 @@ async def require_recent_mfa(user: User) -> None:
 
     try:
         recent = await redis_storage_client.client.exists(_key(user.id)) > 0
-    except Exception:
-        runtime.logger.exception(
-            "MFA step-up check failed; refusing the action rather than allowing it"
+    except Exception as e:
+        log_control_failure(
+            "MFA step-up check failed; failed closed, refusing the action", e
         )
         raise MfaReauthRequiredException() from None
 
@@ -86,5 +86,5 @@ async def clear_recent_verification(user_id: int) -> None:
     """
     try:
         await redis_storage_client.client.delete(_key(user_id))
-    except Exception:
-        runtime.logger.exception("Failed to clear MFA step-up verification")
+    except Exception as e:
+        log_control_failure("Failed to clear MFA step-up verification", e)

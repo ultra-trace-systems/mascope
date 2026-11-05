@@ -1752,12 +1752,13 @@ inherits the DSN in the container: a prod job or an operator's
 terminal instead of filing them as the server's. Run a script by its path when
 its errors should reach GlitchTip.
 
-A short Redis outage files nothing from the web socket storage. A Redis
+A short Redis outage files nothing from the web sockets. A Redis
 restart, a dropped idle connection or a Redis host name that does not resolve
-yet while the stack comes up is logged there in the backend's log files as a
+yet while the stack comes up is logged in the backend's log files as a
 warning ending in `(Redis out of reach)`, with no stack, and kept out of
 GlitchTip: the socket storage rides it out by retrying once, refusing the call,
-or letting a key lapse. python-socketio's own "Cannot receive from redis...
+or letting a key lapse, and so do socket sign-in, which refuses the socket, the
+socket events, which are dropped, and signing sockets out. python-socketio's own "Cannot receive from redis...
 retrying" and "Cannot publish to redis... retrying" lines are logged at
 `INFO`; its other errors, such as "giving up" on a publish, still reach
 GlitchTip. A Redis that stays down is reported by each backend worker's web
@@ -1769,8 +1770,14 @@ connections, the worker files one warning, "Redis has been out of reach for
 and every worker's warnings group into one GlitchTip issue each. The heartbeat
 runs only on a worker a web socket has connected to since it started, which
 any open browser tab does. A wrong Redis password, and any other failure of
-the socket storage, is still an `ERROR` with its stack. Socket sign-in, the login
-rate limit and MFA still file an error during a Redis outage.
+the socket storage, is still an `ERROR` with its stack.
+
+The login rate limits and MFA do file an error during a Redis outage, even a
+short one, because a limit that is off is worth knowing about. A rate limit
+that cannot reach Redis lets the request through, and its error says
+"... failed open (Redis out of reach)"; the MFA step-up check refuses the
+action, "... failed closed, refusing the action (Redis out of reach)". These
+errors have no stack. Any other failure of theirs keeps its stack.
 
 Backend images ship `sentry-sdk` (the runtime's `[sentry]` extra) since
 2026-07, so there is nothing to install per server; the DSN alone toggles

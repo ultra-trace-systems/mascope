@@ -29,12 +29,9 @@ import time
 from typing import Any, Optional
 
 from mascope_backend.db import User
+from mascope_backend.redis_failures import is_transient_redis_error, log_storage_failure
 from mascope_backend.runtime import runtime
-from mascope_backend.socket.storage.client import (
-    is_transient_redis_error,
-    log_storage_failure,
-    redis_storage_client,
-)
+from mascope_backend.socket.storage.client import redis_storage_client
 from mascope_backend.socket.storage.config import storage_config
 from mascope_backend.socket.storage.exceptions import SocketSessionError
 from mascope_backend.socket.storage.workers import renew_socket_claim

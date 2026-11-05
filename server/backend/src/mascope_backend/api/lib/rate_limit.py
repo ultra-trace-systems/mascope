@@ -18,6 +18,7 @@ import ipaddress
 
 from fastapi import HTTPException, Request, status
 
+from mascope_backend.redis_failures import log_control_failure
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage import redis_storage_client
 
@@ -106,9 +107,11 @@ def rate_limit(*, times: int, seconds: int, scope: str):
 
     On limit exceed it raises ``429 Too Many Requests`` with a ``Retry-After``
     header. If Redis is unavailable the check fails open (the request is
-    allowed) and logs an error -- the app already requires Redis to function,
-    so a Redis outage is a broader failure than the rate limiter, and we prefer
-    not to lock every user out on a transient blip.
+    allowed) and logs an error, which says so when Redis was out of reach
+    (:func:`~mascope_backend.redis_failures.log_control_failure`) -- the app
+    already requires Redis to function, so a Redis outage is a broader failure
+    than the rate limiter, and we prefer not to lock every user out on a
+    transient blip.
 
     :param times: Maximum number of requests allowed within the window.
     :param seconds: Window length in seconds.
@@ -121,9 +124,12 @@ def rate_limit(*, times: int, seconds: int, scope: str):
         key = f"mascope:ratelimit:{scope}:{ip}"
         try:
             retry_after = await _over_fixed_window(key, times, seconds)
-        except Exception:
-            # Fail open on Redis errors, but make the gap visible.
-            runtime.logger.exception(f"Rate limit check failed for scope '{scope}'")
+        except Exception as e:
+            # Fail open on Redis errors, but make the gap visible: an error
+            # in monitoring even while Redis is only briefly out of reach.
+            log_control_failure(
+                f"Rate limit check failed for scope '{scope}'; failed open", e
+            )
             return
         if retry_after is not None:
             # Expected throttling of a noisy client, not a server fault.
@@ -199,8 +205,8 @@ async def enforce_login_rate_limit(
     key = _account_limit_key(identifier, scope)
     try:
         retry_after = await _over_fixed_window(key, times, seconds)
-    except Exception:
-        runtime.logger.exception("Account login rate limit check failed")
+    except Exception as e:
+        log_control_failure("Account login rate limit check failed; failed open", e)
         return
     if retry_after is not None:
         # Expected throttling of a noisy client, not a server fault. Log
@@ -253,9 +259,11 @@ async def enforce_user_rate_limit(
     key = _user_limit_key(user_id, scope)
     try:
         retry_after = await _over_fixed_window(key, times, seconds)
-    except Exception:
+    except Exception as e:
         # Fail open on Redis errors, but make the gap visible.
-        runtime.logger.exception(f"Rate limit check failed for scope '{scope}'")
+        log_control_failure(
+            f"Rate limit check failed for scope '{scope}'; failed open", e
+        )
         return
     if retry_after is not None:
         # Expected throttling, not a server fault.
@@ -288,8 +296,8 @@ async def clear_user_rate_limit(user_id: int, *, scope: str) -> None:
     """
     try:
         await redis_storage_client.client.delete(_user_limit_key(user_id, scope))
-    except Exception:
-        runtime.logger.exception(f"Failed to clear rate limit for scope '{scope}'")
+    except Exception as e:
+        log_control_failure(f"Failed to clear rate limit for scope '{scope}'", e)
 
 
 async def refund_ip_rate_limit(request: Request, *, scope: str) -> None:
@@ -321,8 +329,8 @@ async def refund_ip_rate_limit(request: Request, *, scope: str) -> None:
             # negative counter would hand out free requests in the next
             # window, so drop the key instead of keeping the credit.
             await client.delete(key)
-    except Exception:
-        runtime.logger.exception(f"Failed to refund rate limit for scope '{scope}'")
+    except Exception as e:
+        log_control_failure(f"Failed to refund rate limit for scope '{scope}'", e)
 
 
 async def clear_login_rate_limit(
@@ -341,5 +349,5 @@ async def clear_login_rate_limit(
     """
     try:
         await redis_storage_client.client.delete(_account_limit_key(identifier, scope))
-    except Exception:
-        runtime.logger.exception("Failed to clear account login rate limit")
+    except Exception as e:
+        log_control_failure("Failed to clear account login rate limit", e)

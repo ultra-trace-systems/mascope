@@ -39,12 +39,9 @@ import time
 import uuid
 from typing import Callable
 
+from mascope_backend.redis_failures import is_transient_redis_error, log_storage_failure
 from mascope_backend.runtime import runtime
-from mascope_backend.socket.storage.client import (
-    is_transient_redis_error,
-    log_storage_failure,
-    redis_storage_client,
-)
+from mascope_backend.socket.storage.client import redis_storage_client
 from mascope_backend.socket.storage.config import storage_config
 from mascope_runtime.logging import SENTRY_FINGERPRINT
 
