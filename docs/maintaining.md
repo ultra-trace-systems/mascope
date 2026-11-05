@@ -1752,25 +1752,29 @@ inherits the DSN in the container: a prod job or an operator's
 terminal instead of filing them as the server's. Run a script by its path when
 its errors should reach GlitchTip.
 
-A short Redis outage files nothing from the web sockets. A Redis
-restart, a dropped idle connection or a Redis host name that does not resolve
-yet while the stack comes up is logged in the backend's log files as a
-warning ending in `(Redis out of reach)`, with no stack, and kept out of
-GlitchTip: the socket storage rides it out by retrying once, refusing the call,
-or letting a key lapse, and so do socket sign-in, which refuses the socket, the
-socket events, which are dropped, and signing sockets out. python-socketio's own "Cannot receive from redis...
-retrying" and "Cannot publish to redis... retrying" lines are logged at
-`INFO`; its other errors, such as "giving up" on a publish, still reach
-GlitchTip. A Redis that stays down is reported by each backend worker's web
-socket heartbeat, which writes to Redis every 10 seconds: once 6 heartbeats in a
-row have failed, about a minute, or two when Redis hangs rather than refuses
-connections, the worker files one warning, "Redis has been out of reach for
-...", and when a heartbeat succeeds again one more,
-"Redis is back after ... out of reach". Nothing repeats while the outage lasts,
-and every worker's warnings group into one GlitchTip issue each. The heartbeat
-runs only on a worker a web socket has connected to since it started, which
-any open browser tab does. A wrong Redis password, and any other failure of
-the socket storage, is still an `ERROR` with its stack.
+A short Redis outage files nothing from the web sockets. A Redis restart, a
+dropped idle connection or a Redis host name that does not resolve yet while the
+stack comes up is logged in the backend's log files as a warning ending in
+`(Redis out of reach)`, with no stack, and kept out of GlitchTip: the socket
+storage rides it out by retrying once, refusing the call, or letting a key
+lapse, and so do socket sign-in, which refuses the socket, and the socket
+events, which are dropped. Signing sockets out, at a logout or when an account
+is disabled, deleted or has its sessions ended, is not retried: a socket it
+could not reach keeps its rooms until it reconnects or its token expires, and
+only the warning in the log files records it
+([#2960](https://github.com/ultra-trace-systems/mascope/issues/2960)).
+python-socketio's own "Cannot receive from redis... retrying" and "Cannot
+publish to redis... retrying" lines are logged at `INFO`; its other errors, such
+as "giving up" on a publish, still reach GlitchTip. A Redis that stays down is
+reported by each backend worker's web socket heartbeat, which writes to Redis
+every 10 seconds: once 6 heartbeats in a row have failed, about a minute, or two
+when Redis hangs rather than refuses connections, the worker files one warning,
+"Redis has been out of reach for ...", and when a heartbeat succeeds again one
+more, "Redis is back after ... out of reach". Nothing repeats while the outage
+lasts, and every worker's warnings group into one GlitchTip issue each. The
+heartbeat runs only on a worker a web socket has connected to since it started,
+which any open browser tab does. A wrong Redis password, and any other failure
+of the socket storage, is still an `ERROR` with its stack.
 
 The login rate limits and MFA do file an error during a Redis outage, even a
 short one, because a limit that is off is worth knowing about. A rate limit
