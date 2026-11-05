@@ -97,7 +97,8 @@ load tables as Frames and score candidate formulas, and never return a table.
 compute in Python on this machine. The session tool gives the Python, the \
 line that opens the session and the one that opens a toolkit on it; a \
 Frame's rows_in_python is its rows as a pandas DataFrame. Print a few \
-numbers, never the table.
+numbers, never the table. A handle's meanings say what each column is, its \
+unit and what it is not: pick the column by them, not by its name.
 - Interpretation (what the peak at m/z X is): query_by_mz proposes \
 formulas, match_compounds has Mascope score them in a sample. Never compute \
 a mass or a score yourself; a candidate Mascope did not score is \
@@ -1224,6 +1225,25 @@ class Server:
             {c: row.get(c) for c in shown} for row in frame.head5[:HEAD_ROWS]
         ]
         out["rows_in_python"] = Own(f"{self.opener}.frame({frame.id!r}).df")
+        # What the columns mean, as far as the result has room: every column
+        # the handle lists, else the head's, else a pointer to Python. The
+        # texts are the server's own, so they are not cut by fit().
+        meanings = {
+            c: Own(text)
+            for c, text in frame.column_meanings().items()
+            if c in out["columns"]
+        }
+        for kept in (meanings, {c: t for c, t in meanings.items() if c in shown}):
+            if kept and _size(inert({**out, "meanings": kept})) <= MAX_RESULT_BYTES:
+                out["meanings"] = kept
+                if len(kept) < len(meanings):
+                    out["meanings_omitted"] = len(meanings) - len(kept)
+                break
+        else:
+            if meanings:
+                out["meanings_in_python"] = Own(
+                    f"{self.opener}.frame({frame.id!r}).column_meanings()"
+                )
         return out
 
     def _find(self, args: _Args) -> dict[str, Any]:

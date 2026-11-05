@@ -75,6 +75,16 @@ matches are returned as candidates, not raised past. When a listing
 `resolve` searched failed, it raises `Unavailable` rather than answer with
 the one match it saw (an ID match excepted).
 
+**Columns.** `frame.column_meanings()` says what each column of a loaded
+table is, in which unit, and what it is not, for the columns the toolkit
+knows (`mascope_ai.columns`); the MCP server puts the same on every Frame's
+handle, as `meanings`. The meaning follows the load: `height` is the
+averaged peak's apex intensity in a peak list, one scan's value in a time
+series, and the match tree's scores are Mascope's where a peak list's ion
+and compound scores are the SDK's. A column a `derive` computed says so,
+and points to the code. The user docs' "Tables and columns" page
+(`docs/user/concepts/tables.md`) is the long form.
+
 **Row caps.** `max_rows` (500,000 by default) holds during a load: an
 estimate from the sample count (a rough 100 rows per sample) refuses a load
 clearly too big for the cap, and a running count stops the load as soon

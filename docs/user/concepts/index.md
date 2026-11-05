@@ -197,4 +197,6 @@ See [How it works → Calibration](../how-it-works/calibration.md) for the metho
 - [Build a target collection and run matching](../guides/target-collections.md) —
   put targeted analysis to work.
 - [How it works](../how-it-works/index.md) — the processing pipeline behind samples.
+- [Tables and columns](tables.md) — the tables the SDK and the AI toolkit return,
+  and what each column in them means.
 - [Guides](../guides/index.md) — task-by-task how-tos.

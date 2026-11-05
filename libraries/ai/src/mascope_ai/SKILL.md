@@ -25,6 +25,25 @@ few rows, and `rows_in_python`, the Python that gives its rows as a pandas
 DataFrame. The rows are read and computed on in Python, and only the few
 numbers the answer needs are printed. Never print a whole DataFrame.
 
+## Columns: read the meanings, not the names
+
+A handle's `meanings` say what each column is, in which unit, and what it
+is not; in Python, `frame.column_meanings()` says the same. Three numbers
+that all look like "how high" are not the same number:
+
+- `height` in a peak list (`load_peaks`) is the peak's apex intensity in
+  the sample's averaged spectrum, the mean over its scans. It is the
+  sample's own value, and what Mascope draws as the sample's point.
+- `height` in a time series (`load_timeseries`) is the peak's height in one
+  scan, at `time` seconds from the sample's start.
+- `intensity` in a spectrum (`load_spectrum`) is one profile point, in
+  counts/s. A window's apex is the highest point, near the fitted peak's
+  height but not equal to it.
+
+A stage (`load_peaks_by_stage`) is a peak list averaged over one time range
+of the sample. The Mascope docs page "Tables and columns" lays the tables out
+in full: <https://mascope.app/docs/concepts/tables/>.
+
 ## Three kinds of question
 
 - **Metadata** - what there is, how many, when, matched against what:

@@ -107,7 +107,9 @@ nav:
   - Getting started:
       - Run the demo: getting-started/index.md
       - First steps in the app: getting-started/first-steps.md
-  - Concepts: concepts/index.md
+  - Concepts:
+      - Overview: concepts/index.md
+      - Tables and columns: concepts/tables.md
   - How it works:
       - Overview: how-it-works/index.md
       - Instrument functions: how-it-works/instrument-functions.md
