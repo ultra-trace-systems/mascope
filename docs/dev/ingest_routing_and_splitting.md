@@ -2318,10 +2318,11 @@ adduct panel stay one table.
   +245 ppm out and called almost nothing, and the largest fitted
   axis error on three TOF sites was 282 ppm. So the TOF window is 300 ppm
   since version 2. The claim window is unchanged: the other ions still
-  have to sit within 20 ppm of the anchors' own offset.
+  have to sit within 20 ppm, plus half the anchors' spread, of the
+  anchors' own offset (`calibrate_on_anchors`; #2968).
 
 **The decision**, in order (rules version 2; version 1 differed only in
-the TOF anchor window, 200 ppm):
+the anchor window of a TOF and of an unknown class, 200 ppm):
 
 1. **Coverage, the no-call rule.** A fingerprint none of whose anchors is
    inside the scan ranges is *unobservable*, not absent. Only observable
@@ -2427,9 +2428,10 @@ and routing are bit-identical to develop's (`corpus compare`), and its
     pipeline does, lost nine correct calls the calibrated peak lists had
     given, and two on parked files: six Orbitrap spectra whose anchors sat
     20 to 31 ppm out and five TOF spectra 70 to 160 ppm out, outside anchor
-    windows of 20 and 50 ppm. The windows are 50 and 200 ppm since. Every
-    call of the corpus survives a shift of its whole calibrated spectrum by
-    30 ppm (Orbitrap) or 150 ppm (TOF) either way.
+    windows of 20 and 50 ppm. The windows were 50 and 200 ppm since, and
+    the TOF's is 300 ppm since version 2. Every call of the corpus
+    survives a shift of its whole calibrated spectrum by 30 ppm
+    (Orbitrap) or 150 ppm (TOF) either way.
 - **These are in-sample figures.** The thresholds were set on the spectra
   they are measured on, and the corpus has one ambient TOF spectrum and one
   15N mixture. Two thresholds sit close to the confusions they hold off:
@@ -2497,10 +2499,10 @@ agreed with a call, so counting those as wrong changes no rate.
   rung recorded on their sample; their calls agree too.
 
 **Verdict.** The production gate fails at site A, and the rules need a
-new version, one with the ambient guard, before rung 5 binds there or at any site whose TOFs run ambient-ion
-modes (#2846). It holds at site D. The other sites are too thin to say: a
-read after some weeks of processing, of the version 2 rules as well, is what
-decides them.
+new version, one with the ambient guard, before rung 5 binds there or at
+any site whose TOFs run ambient-ion modes (#2846). It holds at site D. The
+other sites are too thin to say: a read after some weeks of processing, of
+the rules with the ambient guard as well, is what decides them.
 
 **The TOF axis read on production** (MAS-640, 2026-11-05): a second
 read-only job, over the pre-calibration axis error each TOF file's fit
@@ -3751,7 +3753,8 @@ Polarity always comes from the file, never from the filename.
     the stored evidence (MAS-501): read on 2026-11-03, it fails at site A
     (2.0%) and holds at site D, the other sites too thin (5.4);
   - a rules version that holds nitrate off ambient-ion spectra (#2846);
-    version 2 (MAS-640) only widened the TOF anchor window;
+    version 2 (MAS-640) only widened the anchor window of a TOF and of an
+    unknown class;
   - the rung: a provisional binding where no higher rung binds and the score
     reaches 0.4, with its review item (5.5) (MAS-502, blocked by MAS-501).
 - **Gates:**

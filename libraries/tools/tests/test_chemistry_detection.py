@@ -209,8 +209,8 @@ class TestACall:
         assert stored["rules"] == DetectionRules().to_json()
 
     def test_a_change_to_the_rules_is_a_new_version(self):
-        """An answer read back names its rules by the version: the default
-        rules of each version are pinned here, so a threshold or a window
+        """An answer read back names its rules by the version: the current
+        version's default rules are pinned here, so a threshold or a window
         moved without a new version fails."""
         assert (DETECTOR_VERSION, DetectionRules().to_json()) == (
             2,
