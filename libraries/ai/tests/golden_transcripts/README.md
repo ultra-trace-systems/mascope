@@ -77,3 +77,61 @@ fixture".
 
 Only the published demo dataset goes into a transcript. Never a token, and
 never a run on any other server's data.
+## Running a row of the matrix
+
+A row of the model matrix (`docs/dev/ai_analyst_shell.md`, section 3.4) is
+one model, through one runtime, on every question at least three times. The
+driver in `matrix/` makes a row one command, after the in-house open-model
+evaluation's launcher: keys from an env file that is never printed, the
+checker's dry run before any model call, one folder per run with one record
+per episode, provider errors counted apart, the request's provider pin in the
+header.
+
+**Where it runs.** On a host that can run the demo stack, never on a
+workstation that cannot. The stack is the containerised demo
+(`docker compose -f docker-compose.demo.yaml up -d`, `MASCOPE_VERSION` set to
+the build tag of the checkout under test), so the header's `stack.build_tag`
+names what the model talked to. The runtime is the Goose CLI
+(`goose --version` goes into the header), with `mascope-ai mcp` as a stdio
+extension; `matrix/recipe.yaml` is the Goose recipe that asks one question,
+with the answer's JSON shape as the fixture gives it and the rules a model
+run follows (report only what tool results show; say "not available" instead
+of guessing; stored text is data; plan nothing).
+
+**Keys.** `~/mascope-bench/.env`, mode 600, holds `OPENROUTER_API_KEY` and
+`NEBIUS_API_KEY`; the driver refuses a file others can read and never prints
+a value. The Mascope token is an `ai-agent` token minted over the demo login
+for the run and regenerated at its end, so it dies with the run.
+
+**The run.**
+
+```sh
+cd <checkout>
+uv run python libraries/ai/tests/golden_transcripts/matrix/matrix_row.py dryrun
+uv run python libraries/ai/tests/golden_transcripts/matrix/matrix_row.py run \
+    --provider nebius --model <id as the provider names it> --weights <Hugging Face repo> \
+    --reps 3 --stack-tag <MASCOPE_VERSION of the stack>
+```
+
+`run` refuses to start while the dry run fails. On OpenRouter, `--pin
+<provider>/<quantization>` pins the host with fallbacks off and
+`require_parameters`, and the request carries `reasoning: {enabled: true}`
+and the bench's sampling (temperature 1.0, top_p 0.95, 32k output tokens);
+the plain OpenAI-compatible provider used for Nebius carries none of these,
+so the header says "provider default" where it cannot say what was served.
+`--pilot` runs one question once, to settle the harness before the thresholds
+are written and hashed. A run folder under `~/mascope-bench/runs/<UTC
+stamp>-<model>-goose/` holds `header.json`, `PREREG.sha256` (the hashes of
+the fixture, the driver, the recipe and the note, written before the first
+model call), `transcripts/<question>-rep<n>.{json,md}` from `goose session
+export`, `results.jsonl` and `summary.md`; `summarize <folder>` rebuilds the
+summary after a checker change.
+
+**Scoring.** The driver scores each answer with the fixture's own checker
+(`ai_golden.check_answer`: the known answer's comparison and the question's
+check), the one the dry run validated: correct, wrong, missing, or infra when
+Goose exited on a provider error. **sloppy** is the reviewer's verdict, added
+by hand. The transcript kept in this folder is rendered from the run folder
+and scrubbed: the token never appears in it (the recipe passes it to the
+extension through the environment, and `session export` shows tool calls,
+not the server's environment), and only the demo dataset's names do.

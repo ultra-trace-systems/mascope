@@ -390,6 +390,12 @@ and its table lives in this note. The first three columns are a frontier
 model, a cheap hosted model and an open-weight model a site could run
 itself; the fixture's rule stands: only the published demo dataset in a
 transcript, never a token.
+A row is produced by one command, the driver under
+`libraries/ai/tests/golden_transcripts/matrix/`, whose recipe
+`golden_transcripts/README.md` records ("Running a row of the matrix"):
+the checker's dry run as the gate, Goose as the runtime with the MCP
+server as its extension, keys in an env file on the host, one folder per
+run with its header, pre-registration hashes, transcripts and the row.
 
 **The fixture needs traps before the matrix means anything.** A matrix of
 questions whose right answer is always a value cannot tell a model that
