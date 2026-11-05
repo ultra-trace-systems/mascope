@@ -50,6 +50,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -172,13 +173,76 @@ PYTHON_ARM_NOTE = (
     "numbers you need. Write nothing to Mascope."
 )
 
+#: What the model is told when the server has ``reduce``: the one computation
+#: it can ask for over MCP. Given only then, so a row whose toolkit lacks the
+#: tool is not told of one it cannot call.
+REDUCE_HINT = (
+    "To compute over a Frame (a maximum, a median per group, the row an extreme "
+    "is in), call `reduce` with the Frame's ID. The few rows a Frame handle shows "
+    "are not an answer."
+)
+
 #: The sampling the bench ran every model with.
 SAMPLING = {"temperature": 1.0, "top_p": 0.95, "max_tokens": 32768}
 
 INFRA = re.compile(
-    r"(429|rate limit|timed? ?out|502|503|504|connection (error|refused|reset)|ECONNRESET)",
+    r"(429|rate limit|timed? ?out|502|503|504|529|overloaded|server error"
+    r"|connection (error|refused|reset)|ECONNRESET)",
     re.I,
 )
+
+#: How long an episode waits before its retry after a provider error (a 529,
+#: a 503): long enough for a short overload to pass.
+RETRY_PAUSE_S = 120
+
+
+def mcp_tools(command: list[str]) -> list[str]:
+    """The tools the MCP server *command* lists, asked over stdio with nothing
+    configured (the listing needs no stack): the surface this row runs on."""
+    messages = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "matrix_row", "version": "0"},
+            },
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+    ]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MASCOPE_")}
+    with tempfile.TemporaryDirectory() as scratch:
+        env["MASCOPE_AI_SCRATCH"] = scratch
+        done = subprocess.run(
+            command,
+            input="".join(json.dumps(m) + "\n" for m in messages),
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+        )
+    for line in done.stdout.splitlines():
+        try:
+            answer = json.loads(line)
+        except ValueError:
+            continue
+        if answer.get("id") == 2:
+            return [t["name"] for t in answer.get("result", {}).get("tools", [])]
+    raise RuntimeError(f"{command[0]} listed no tools: {done.stderr.strip()[-300:]}")
+
+
+def extra_instructions(arm: str, tools: list[str], python: str = sys.executable) -> str:
+    """The recipe's ``extra`` parameter for this row: the reduce hint when the
+    server has the tool, and the shell note on the mcp+python arm."""
+    parts = []
+    if "reduce" in tools:
+        parts.append(REDUCE_HINT)
+    if arm == "mcp+python":
+        parts.append(PYTHON_ARM_NOTE.format(python=python))
+    return "\n".join(f"- {part}" for part in parts)
 
 
 # --- helpers -----------------------------------------------------------------------
@@ -744,6 +808,8 @@ def run(args: argparse.Namespace) -> int:
     env = _goose_env(args.provider, args.model, args.pin, keys, mascope)
     goose_version = _goose_version(env)
     _, key_var, _, _ = PROVIDERS[args.provider]
+    tools = mcp_tools([args.mascope_ai, "mcp"])
+    args.extra = extra_instructions(args.arm, tools)
 
     header = {
         "run": folder.name,
@@ -752,6 +818,8 @@ def run(args: argparse.Namespace) -> int:
         "stack": {**_stack_header(args.url, token), "build_tag": args.stack_tag},
         "toolkit_commit": _git("rev-parse", "HEAD"),
         "toolkit_branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+        "tools": tools,
+        "extra_instructions": args.extra,
         "runtime": {
             "name": "goose",
             "version": goose_version,
@@ -876,7 +944,39 @@ def episode(
     env: dict[str, str],
     args: argparse.Namespace,
 ) -> dict[str, Any]:
-    name = f"{folder.name}-{question.id}-rep{rep}"
+    """One episode's record; after a provider error (a 529, a 503, a reset) it
+    is tried again, ``--retry-infra`` times at most, after a pause, and the
+    record says so. A model that ran out of wall clock is not retried: that
+    is its result."""
+    record = _attempt(question, rep, folder, env, args)
+    tries = 0
+    while (
+        record["verdict"] == "infra"
+        and record.get("provider_error")
+        and tries < getattr(args, "retry_infra", 0)
+    ):
+        tries += 1
+        time.sleep(RETRY_PAUSE_S)
+        earlier = record["error"]
+        record = _attempt(question, rep, folder, env, args, attempt=tries)
+        record["retried"] = tries
+        record["retried_after"] = earlier[-200:]
+    return record
+
+
+def _attempt(
+    question: ai_golden.Question,
+    rep: int,
+    folder: Path,
+    env: dict[str, str],
+    args: argparse.Namespace,
+    attempt: int = 0,
+) -> dict[str, Any]:
+    # A retry's Goose session has a name of its own; its transcript files
+    # replace the failed attempt's
+    name = f"{folder.name}-{question.id}-rep{rep}" + (
+        f"-try{attempt + 1}" if attempt else ""
+    )
     started = time.monotonic()
     with SPEND["lock"]:
         over = SPEND["cap"] is not None and SPEND["usd"] >= SPEND["cap"]
@@ -919,12 +1019,7 @@ def episode(
         "--params",
         f"mascope_ai={args.mascope_ai}",
         "--params",
-        "extra="
-        + (
-            PYTHON_ARM_NOTE.format(python=sys.executable)
-            if args.arm == "mcp+python"
-            else ""
-        ),
+        "extra=" + getattr(args, "extra", ""),
         "--name",
         name,
         "--max-turns",
@@ -1115,7 +1210,13 @@ def summarize(folder: Path) -> None:
     lines = [
         f"# Matrix row: {header['model']} via {header['provider']} through goose {header['runtime']['version']}",
         "",
-        f"Run `{folder.name}`; bundle {header['bundle']}; toolkit {header['toolkit_commit'][:9]}; pin {header['pin']}; "
+        f"Run `{folder.name}`; bundle {header['bundle']}; toolkit {header['toolkit_commit'][:9]}"
+        + (
+            f" ({len(header['tools'])} tools{', with reduce' if 'reduce' in header['tools'] else ''})"
+            if header.get("tools")
+            else ""
+        )
+        + f"; pin {header['pin']}; "
         f"reasoning {header['reasoning']}; {header['repetitions']} repetition(s).",
         "",
         "| Class | Episodes | Correct | Wrong | Missing | Infra (excluded) | USD |",
@@ -1329,6 +1430,12 @@ def main(argv: list[str] | None = None) -> int:
         help="one question, one repetition: settle the harness",
     )
     runner.add_argument("--max-turns", type=int, default=30)
+    runner.add_argument(
+        "--retry-infra",
+        type=int,
+        default=1,
+        help="how many times an episode that ended in a provider error is tried again",
+    )
     runner.add_argument(
         "--parallel",
         type=int,
