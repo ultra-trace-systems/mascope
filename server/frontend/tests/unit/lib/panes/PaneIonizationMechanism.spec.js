@@ -9,12 +9,12 @@ import PaneIonizationMechanism from '@/lib/panes/PaneIonizationMechanism.vue'
 // that is not what was typed. And the list below them, shipped mechanisms
 // first, which offers no delete for a mechanism Mascope ships.
 
-const { mechanisms } = vi.hoisted(() => ({ mechanisms: [] }))
+const { mechanisms, create } = vi.hoisted(() => ({ mechanisms: [], create: vi.fn() }))
 
 vi.mock('@/stores', () => ({
   useApp: () => ({
     data: {
-      ionization: { mechanism: { list: mechanisms, create: vi.fn(), delete: vi.fn() } }
+      ionization: { mechanism: { list: mechanisms, create, delete: vi.fn() } }
     }
   })
 }))
@@ -43,7 +43,9 @@ async function hintsFor(typed) {
   await wrapper.find('input').setValue(typed)
   const examples = wrapper.find('#add-mechanism-examples')
   const status = wrapper.find('#add-mechanism-status')
+  const derived = wrapper.find('#add-mechanism-derived')
   return {
+    derived: derived.text(),
     addDisabled: wrapper.find('button-stub[label="Add"]').attributes('disabled') === 'true',
     examples: examples.text(),
     examplesSeverity: examples.attributes('data-severity'),
@@ -78,8 +80,71 @@ describe('PaneIonizationMechanism', () => {
   )
 
   it('says what is wrong rather than what would be stored', async () => {
-    expect(await hintFor('[M+H]')).toContain('singly charged')
+    expect(await hintFor('[M+H]')).toContain("the ion's charge")
     expect(await hintFor('[M+[15N]O3]-')).toContain('written with a caret')
+  })
+
+  it.each([
+    ['[M+H]+', 'Ion charge +'],
+    ['[2M+H]+', 'Ion charge + · 2 molecules'],
+    ['[M+2H]2+', 'Ion charge 2+'],
+    ['[M-H2O+H]+', 'Ion charge + · loses H2O']
+  ])('shows the ion %s makes', async (typed, words) => {
+    const hints = await hintsFor(typed)
+    expect(hints.derived).toBe(words)
+    expect(hints.addDisabled).toBe(false)
+  })
+
+  it('says how a new shape is stored', async () => {
+    expect(await hintFor('[M-H2O+H]+')).toBe('Stored as [M+H-H2O]+')
+    expect(await hintFor('[M+(H)2]2+')).toBe('Stored as [M+2H]2+')
+  })
+
+  it.each(['', '[M+H]', '[M+H-H2o]+'])('shows no ion for %j', async (typed) => {
+    expect((await hintsFor(typed)).derived).toBe('')
+  })
+
+  it('checks the neutral loss as a formula too', async () => {
+    const hints = await hintsFor('[M+H-H2o]+')
+    expect(hints.status).toContain("'H2o' is not a formula")
+    expect(hints.addDisabled).toBe(true)
+  })
+
+  it.each([
+    ['  protonated water loss ', 'protonated water loss'],
+    ['   ', null]
+  ])('adds the mechanism with its name, %j', async (typed, name) => {
+    create.mockClear()
+    const wrapper = mount(PaneIonizationMechanism, {
+      global: {
+        stubs: {
+          ...stubs,
+          Button: {
+            props: ['label'],
+            template: '<button @click="$attrs.onClick">{{ label }}</button>'
+          }
+        },
+        directives: { tooltip: {} }
+      }
+    })
+    const [mechanism, nameField] = wrapper.findAll('input')
+    await mechanism.setValue(' [M+H-H2O]+ ')
+    await nameField.setValue(typed)
+    await wrapper.find('button').trigger('click')
+    expect(create).toHaveBeenCalledWith({ ionization_mechanism: '[M+H-H2O]+', name })
+  })
+
+  it('clears the name with the mechanism once one is added', async () => {
+    const wrapper = mount(PaneIonizationMechanism, {
+      global: { stubs, directives: { tooltip: {} } }
+    })
+    const [mechanism, nameField] = wrapper.findAll('input')
+    await mechanism.setValue('[2M+H]+')
+    await nameField.setValue('proton-bound dimer')
+    wrapper.vm.resetFields()
+    await wrapper.vm.$nextTick()
+    expect(mechanism.element.value).toBe('')
+    expect(nameField.element.value).toBe('')
   })
 
   it('turns only the status line red on a problem', async () => {
@@ -154,10 +219,7 @@ describe('PaneIonizationMechanism list', () => {
   })
 
   it('offers no delete for a mechanism Mascope ships, and one for the others', () => {
-    const wrapper = mountList([
-      row('sysAddBrNeg', '[M+Br]-', true),
-      row('ours', '[M+Cl]-', false)
-    ])
+    const wrapper = mountList([row('sysAddBrNeg', '[M+Br]-', true), row('ours', '[M+Cl]-', false)])
 
     // Every column renders the row; only the last has a body.
     const has = (id, selector) =>

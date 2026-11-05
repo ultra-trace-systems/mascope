@@ -15,6 +15,17 @@
  * it, and a run recorded then keeps it. Its trailing sign is the moiety's
  * charge, not the ion's: `-H+` is `[M-H]-`, and `-H-` is `[M-H]+`.
  *
+ * Three shapes only the standard notation says, and only it writes: a
+ * multimer, `[2M+H]+`; a charge above one, `[M+2H]2+` or `[M+Ca]2+`, where a
+ * coefficient is written on the one term and is the ion's charge (`2H` is
+ * the formula `(H)2`); and a neutral loss, `[M+H-H2O]+`, a term removed from
+ * a mechanism that adds. They have no legacy spelling.
+ *
+ * A mechanism is also a row (`mechanismRow`): whether its species is added
+ * or removed, the species and its charge, how many molecules the ion holds,
+ * the neutral it loses, and what follows from those - the ion's charge and
+ * polarity.
+ *
  * This mirrors `mascope_tools.composition.mechanism_notation`, which the
  * server validates and stores with, and the two agree on every spelling.
  */
@@ -22,6 +33,11 @@
 const FORMULA_TEXT = /^[A-Za-z0-9()[\]^]+$/
 const SIGNED_TERMS = /^(?:[+-][^+-]+)+$/
 const SIGNED_TERM = /([+-])([^+-]+)/g
+// The head of a standard spelling, `[M` or `[2M`, and its tail, the radical
+// dot taken off: the closing bracket, the charge's size, its sign.
+const STANDARD_HEAD = /^\[(\d+)?M/
+const STANDARD_TAIL = /\](\d+)?([+-])$/
+const COEFFICIENT_TERM = /^(\d+)(.*)$/s
 
 /** The index of the parenthesis closing the one `text` starts with. */
 function closingParen(text) {
@@ -55,6 +71,16 @@ function splitMoiety(moiety) {
   }
   if (rest) terms.push(rest)
   return terms
+}
+
+/** What a moiety written `(X)k` multiplies, and by how much; null otherwise. */
+function multipliedGroup(moiety) {
+  if (!moiety.startsWith('(')) return null
+  const close = closingParen(moiety)
+  if (close < 2) return null
+  const count = moiety.slice(close + 1)
+  if (!/^[1-9]\d*$/.test(count)) return null
+  return [moiety.slice(1, close), Number(count)]
 }
 
 /** The legacy moiety of these terms: all but the last parenthesised. */
@@ -100,7 +126,13 @@ function checkFormulaText(text) {
 
 function parseLegacy(notation) {
   if (notation === '+' || notation === '-') {
-    return { addition: notation === '-', moiety: '', charge: notation === '+' ? 1 : -1 }
+    return {
+      addition: notation === '-',
+      moiety: '',
+      charge: notation === '+' ? 1 : -1,
+      multimer: 1,
+      neutralLoss: ''
+    }
   }
   if (notation.length < 3 || !'+-'.includes(notation[0]) || !'+-'.includes(notation.at(-1))) {
     throw new Error("Write it as '[M+H]+', '[M-H]-', '[M+Br]-' or '[M]+.'")
@@ -113,46 +145,88 @@ function parseLegacy(notation) {
   return {
     addition,
     moiety: joinTerms(orderedTerms(splitMoiety(moiety))),
-    charge: addition ? moietyCharge : -moietyCharge
+    charge: addition ? moietyCharge : -moietyCharge,
+    multimer: 1,
+    neutralLoss: ''
   }
+}
+
+/** A molecule count or a charge's size as written: 1 where there is none. */
+function count(text, what) {
+  if (text === undefined) return 1
+  if (text[0] === '0' || Number(text) < 2) throw new Error(`${what}, with no count`)
+  return Number(text)
+}
+
+/** A term as a formula: a coefficient, `2H`, is `(H)2`, only as the ion's charge. */
+function addedFormula(term, size, alone) {
+  if (!isDigit(term[0])) return term
+  if (size === 1) throw new Error(`Write '${term}' as a formula, '(H2O)2' not '2H2O'`)
+  if (!alone) {
+    throw new Error("A coefficient goes on a mechanism's only term; write '[M+H+H+Na]3+'")
+  }
+  const [, coefficient, species] = term.match(COEFFICIENT_TERM)
+  if (!species || coefficient[0] === '0' || Number(coefficient) !== size) {
+    throw new Error(`The coefficient of '${term}' is the ion's charge, as in '[M+2H]2+'`)
+  }
+  return `(${species})${coefficient}`
 }
 
 function parseStandard(notation) {
   const radical = notation.endsWith('.')
   const body = radical ? notation.slice(0, -1) : notation
-  if (!body.startsWith('[M')) throw new Error("An ion is written around one molecule, '[M'")
-  if (body.length < 4 || body.at(-2) !== ']' || !'+-'.includes(body.at(-1))) {
-    throw new Error("It must end in ']+' or ']-', the charge of a singly charged ion")
+  const head = body.match(STANDARD_HEAD)
+  if (!head) throw new Error("An ion is written around its molecule, '[M' or '[2M'")
+  const tail = body.match(STANDARD_TAIL)
+  if (!tail || tail.index < head[0].length) {
+    throw new Error("It must end in the ion's charge, ']+', ']-' or ']2+'")
   }
-  const charge = body.at(-1) === '+' ? 1 : -1
-  const inside = body.slice(2, -2)
+  const multimer = count(head[1], "One molecule is written '[M'")
+  const size = count(tail[1], "A single charge is written ']+' or ']-'")
+  const charge = tail[2] === '+' ? size : -size
+  const inside = body.slice(head[0].length, tail.index)
   if (!inside) {
     if (!radical) throw new Error(`Electron transfer is written '${body}.'`)
-    return { addition: charge < 0, moiety: '', charge }
+    if (size > 1) throw new Error("Electron transfer moves one electron, '[M]+.' or '[M]-.'")
+    return { addition: charge < 0, moiety: '', charge, multimer, neutralLoss: '' }
   }
   if (radical) throw new Error("Only electron transfer, '[M]+.' or '[M]-.', carries the dot")
   if (!SIGNED_TERMS.test(inside)) {
     throw new Error("Each term is added with '+' or removed with '-', as in '[M-H]-'")
   }
   const signed = [...inside.matchAll(SIGNED_TERM)]
-  const operations = new Set(signed.map((match) => match[1]))
-  if (operations.size > 1) throw new Error('A mechanism adds its terms or removes them, not both')
-  const terms = signed.map((match) => match[2])
-  for (const term of terms) {
+  const added = signed.filter((match) => match[1] === '+').map((match) => match[2])
+  const removed = signed.filter((match) => match[1] === '-').map((match) => match[2])
+  // A mechanism that adds and removes adds what carries the charge and loses
+  // a neutral: [M+H-H2O]+.
+  const [terms, lost] = added.length ? [added, removed] : [removed, []]
+  for (const term of [...terms, ...lost]) {
     const problem = checkFormulaText(term)
     if (problem) throw new Error(problem)
-    if (isDigit(term[0])) throw new Error(`Write '${term}' as a formula, '(H2O)2' not '2H2O'`)
   }
-  return { addition: operations.has('+'), moiety: joinTerms(orderedTerms(terms)), charge }
+  for (const term of lost) {
+    if (isDigit(term[0])) {
+      throw new Error(`Write the neutral loss '${term}' as a formula, '(H2O)2' not '2H2O'`)
+    }
+  }
+  const formulas = terms.map((term) => addedFormula(term, size, terms.length === 1))
+  return {
+    addition: added.length > 0,
+    moiety: joinTerms(orderedTerms(formulas)),
+    charge,
+    multimer,
+    neutralLoss: lost.length ? joinTerms(orderedTerms(lost)) : ''
+  }
 }
 
 /**
  * Read a mechanism written in either notation.
  *
  * @param {string} text - `'[M-H]-'` or `'-H+'`
- * @returns {{addition: boolean, moiety: string, charge: number}} whether the
- *   moiety is added, the moiety as the legacy notation writes it (empty for
- *   electron transfer), and the ion's charge
+ * @returns {{addition: boolean, moiety: string, charge: number, multimer: number,
+ *   neutralLoss: string}} whether the moiety is added, the moiety as the legacy
+ *   notation writes it (empty for electron transfer), the ion's charge, how many
+ *   molecules it holds, and the neutral it loses (empty for none)
  * @throws {Error} naming what is wrong, when the text is neither notation
  */
 export function parseMechanism(text) {
@@ -191,13 +265,29 @@ export function standardMechanism(text) {
   } catch {
     return String(text).trim()
   }
-  const polarity = parts.charge > 0 ? '+' : '-'
-  if (!parts.moiety) return `[M]${polarity}.`
+  return writeStandard(parts)
+}
+
+/** The display terms of a moiety: `2H` for `(H)2` on an ion of charge two. */
+function displayTerms(parts) {
+  const size = Math.abs(parts.charge)
+  const multiplied = size > 1 ? multipliedGroup(parts.moiety) : null
+  if (multiplied && multiplied[1] === size) return [`${size}${multiplied[0]}`]
+  return splitMoiety(parts.moiety)
+}
+
+function writeStandard(parts) {
+  const molecule = parts.multimer > 1 ? `${parts.multimer}M` : 'M'
+  const size = Math.abs(parts.charge)
+  const charge = (size > 1 ? String(size) : '') + (parts.charge > 0 ? '+' : '-')
+  if (!parts.moiety) return `[${molecule}]${charge}.`
   const operation = parts.addition ? '+' : '-'
-  const inside = splitMoiety(parts.moiety)
-    .map((term) => operation + term)
-    .join('')
-  return `[M${inside}]${polarity}`
+  const lost = parts.neutralLoss ? splitMoiety(parts.neutralLoss) : []
+  const inside =
+    displayTerms(parts)
+      .map((term) => operation + term)
+      .join('') + lost.map((term) => `-${term}`).join('')
+  return `[${molecule}${inside}]${charge}`
 }
 
 /**
@@ -210,8 +300,67 @@ export function standardMechanism(text) {
  * @throws {Error} naming what is wrong, when the text is neither notation
  */
 export function mechanismTerms(text) {
-  const { moiety } = parseMechanism(text)
-  return moiety ? splitMoiety(moiety) : []
+  const parts = parseMechanism(text)
+  return parts.moiety ? displayTerms(parts) : []
+}
+
+/**
+ * Every formula a mechanism adds, removes or loses: its terms as formulas
+ * (`(H)2` where the notation writes `2H`), then its neutral loss's. What a
+ * form checks for real elements.
+ *
+ * @param {string} text - The mechanism, in either notation.
+ * @returns {string[]}
+ * @throws {Error} naming what is wrong, when the text is neither notation
+ */
+export function mechanismFormulas(text) {
+  const { moiety, neutralLoss } = parseMechanism(text)
+  return [...(moiety ? splitMoiety(moiety) : []), ...(neutralLoss ? splitMoiety(neutralLoss) : [])]
+}
+
+/**
+ * A mechanism as the server's structured row, with what follows from it, or
+ * null when it does not read.
+ *
+ * @param {string} text - The mechanism, in either notation.
+ * @returns {?{operation: 'add'|'remove', species: string, speciesCharge: number,
+ *   multimerN: number, neutralLoss: ?string, ionCharge: number,
+ *   polarity: '+'|'-'}}
+ */
+export function mechanismRow(text) {
+  let parts
+  try {
+    parts = parseMechanism(text)
+  } catch {
+    return null
+  }
+  return {
+    operation: parts.addition ? 'add' : 'remove',
+    species: parts.moiety,
+    speciesCharge: parts.addition ? parts.charge : -parts.charge,
+    multimerN: parts.multimer,
+    neutralLoss: parts.neutralLoss || null,
+    ionCharge: parts.charge,
+    polarity: parts.charge > 0 ? '+' : '-'
+  }
+}
+
+/**
+ * The ion a mechanism makes, in words, for a form to show: its charge, and
+ * the molecules and the neutral loss where the mechanism has them.
+ *
+ * @param {string} text - The mechanism, in either notation.
+ * @returns {string} `'Ion charge 2+ · 2 molecules · loses H2O'`; empty when it
+ *   does not read.
+ */
+export function describeMechanism(text) {
+  const row = mechanismRow(text)
+  if (!row) return ''
+  const size = Math.abs(row.ionCharge)
+  const parts = [`Ion charge ${size > 1 ? size : ''}${row.polarity}`]
+  if (row.multimerN > 1) parts.push(`${row.multimerN} molecules`)
+  if (row.neutralLoss) parts.push(`loses ${splitMoiety(row.neutralLoss).join(' and ')}`)
+  return parts.join(' · ')
 }
 
 /**

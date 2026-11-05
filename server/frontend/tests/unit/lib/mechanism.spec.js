@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  describeMechanism,
+  mechanismFormulas,
   mechanismPolarity,
   mechanismProblem,
+  mechanismRow,
   mechanismTerms,
   parseMechanism,
   standardMechanism
@@ -67,6 +70,33 @@ const OUT_OF_ORDER = [
   ['[M+NH4+(H2O)H]+', '[M+H+H2O+NH4]+']
 ]
 
+// The shapes only the standard notation says, as typed and as stored, and the
+// row the server stores - the library's NEW_SHAPES.
+const NEW_SHAPES = [
+  ['[2M+H]+', '[2M+H]+', ['add', 'H', 1, 2, null]],
+  ['[3M+Na]+', '[3M+Na]+', ['add', 'Na', 1, 3, null]],
+  ['[2M-H]-', '[2M-H]-', ['remove', 'H', 1, 2, null]],
+  ['[2M+Br]-', '[2M+Br]-', ['add', 'Br', -1, 2, null]],
+  ['[2M]+.', '[2M]+.', ['remove', '', -1, 2, null]],
+  ['[M+2H]2+', '[M+2H]2+', ['add', '(H)2', 2, 1, null]],
+  ['[M+(H)2]2+', '[M+2H]2+', ['add', '(H)2', 2, 1, null]],
+  ['[M+3H]3+', '[M+3H]3+', ['add', '(H)3', 3, 1, null]],
+  ['[M-2H]2-', '[M-2H]2-', ['remove', '(H)2', 2, 1, null]],
+  ['[M+2NH4]2+', '[M+2NH4]2+', ['add', '(NH4)2', 2, 1, null]],
+  ['[M+Ca]2+', '[M+Ca]2+', ['add', 'Ca', 2, 1, null]],
+  ['[M+H+Na]2+', '[M+H+Na]2+', ['add', '(H)Na', 2, 1, null]],
+  ['[M+Na+H]2+', '[M+H+Na]2+', ['add', '(H)Na', 2, 1, null]],
+  ['[M+H2]2+', '[M+H2]2+', ['add', 'H2', 2, 1, null]],
+  // A group multiplied by anything but the ion's charge is no coefficient.
+  ['[M+(H)3]2+', '[M+(H)3]2+', ['add', '(H)3', 2, 1, null]],
+  ['[M+H-H2O]+', '[M+H-H2O]+', ['add', 'H', 1, 1, 'H2O']],
+  ['[M-H2O+H]+', '[M+H-H2O]+', ['add', 'H', 1, 1, 'H2O']],
+  ['[M+Na-CO2]+', '[M+Na-CO2]+', ['add', 'Na', 1, 1, 'CO2']],
+  ['[M+H-NH3-H2O]+', '[M+H-H2O-NH3]+', ['add', 'H', 1, 1, '(H2O)NH3']],
+  ['[M+H-(H2O)2]+', '[M+H-(H2O)2]+', ['add', 'H', 1, 1, '(H2O)2']],
+  ['[2M+2H-H2O]2+', '[2M+2H-H2O]2+', ['add', '(H)2', 2, 2, 'H2O']]
+]
+
 // Terms to write mechanisms of in every order, the grouped and the multiplied
 // among them - the library's test pins the same set.
 const TERMS = ['H', 'K', 'H2O', '(H2O)Na', '(H2O)2', '(CH3)3C', '((A)B)C', '(A)', '^NO3']
@@ -110,6 +140,15 @@ describe('standardMechanism', () => {
     }
   )
 
+  it.each(NEW_SHAPES)(
+    'writes %s, which only the standard notation says, as %s',
+    (typed, stored) => {
+      expect(standardMechanism(typed)).toBe(stored)
+      expect(standardMechanism(stored)).toBe(stored)
+      expect(parseMechanism(typed)).toEqual(parseMechanism(stored))
+    }
+  )
+
   it('writes a standard spelling as the server stores it', () => {
     expect(standardMechanism('[M+(CH4N2O)H]+')).toBe('[M+CH4N2O+H]+')
     expect(standardMechanism('  [M+H]+ ')).toBe('[M+H]+')
@@ -134,7 +173,13 @@ describe('parseMechanism', () => {
     ['[M]+.', false, '', 1],
     ['[M]-.', true, '', -1]
   ])('reads %s with the ion charge last', (notation, addition, moiety, charge) => {
-    expect(parseMechanism(notation)).toEqual({ addition, moiety, charge })
+    expect(parseMechanism(notation)).toEqual({
+      addition,
+      moiety,
+      charge,
+      multimer: 1,
+      neutralLoss: ''
+    })
   })
 
   it.each(STORED)('reads %s as the same mechanism as %s', (legacy, standard) => {
@@ -153,9 +198,15 @@ describe('mechanismProblem', () => {
   it.each([
     ['[M]+', 'Electron transfer'],
     ['[M+H]+.', 'dot'],
-    ['[2M+H]+', 'one molecule'],
-    ['[M+2H]2+', 'singly charged'],
-    ['[M+Na-2H]-', 'not both'],
+    ['[1M+H]+', 'One molecule'],
+    ['[M+H]1+', 'single charge'],
+    ['[M+H]', "the ion's charge"],
+    ['[M]2+.', 'one electron'],
+    ['[M+2H]+', 'formula'],
+    ['[M+2H+Na]3+', 'only term'],
+    ['[M+3H]2+', "the ion's charge"],
+    ['[M+Na-2H]-', 'neutral loss'],
+    ['[M+H-2H2O]+', 'neutral loss'],
     ['[M+2H2O+H]+', 'formula'],
     ['[M+(H+H]+', 'unbalanced'],
     ['[M+A)(B]+', 'unbalanced'],
@@ -173,6 +224,68 @@ describe('mechanismTerms', () => {
     expect(mechanismTerms('[M+(CH4N2O)2+H]+')).toEqual(['(CH4N2O)2', 'H'])
     expect(mechanismTerms('-H+')).toEqual(['H'])
     expect(mechanismTerms('[M]+.')).toEqual([])
+    expect(mechanismTerms('[M+2H]2+')).toEqual(['2H'])
+    expect(mechanismTerms('[M+H-H2O]+')).toEqual(['H'])
+  })
+})
+
+describe('mechanismFormulas', () => {
+  it('lists every formula, the neutral loss and a coefficient as its group', () => {
+    expect(mechanismFormulas('[M+CH4N2O+H]+')).toEqual(['CH4N2O', 'H'])
+    expect(mechanismFormulas('[M+2H]2+')).toEqual(['(H)2'])
+    expect(mechanismFormulas('[M+H-H2O-NH3]+')).toEqual(['H', 'H2O', 'NH3'])
+    expect(mechanismFormulas('[M]+.')).toEqual([])
+  })
+})
+
+describe('mechanismRow', () => {
+  it.each(NEW_SHAPES)('reads %s as the row the server stores', (typed, _stored, row) => {
+    const [operation, species, speciesCharge, multimerN, neutralLoss] = row
+    expect(mechanismRow(typed)).toMatchObject({
+      operation,
+      species,
+      speciesCharge,
+      multimerN,
+      neutralLoss
+    })
+  })
+
+  it.each([
+    ['[M+H]+', 'add', 'H', 1, 1],
+    ['-H+', 'remove', 'H', 1, -1],
+    ['[M-H]+', 'remove', 'H', -1, 1],
+    ['[M+Br]-', 'add', 'Br', -1, -1],
+    ['[M]+.', 'remove', '', -1, 1],
+    ['[M]-.', 'add', '', -1, -1],
+    ['[M-2H]2-', 'remove', '(H)2', 2, -2]
+  ])('derives the ion of %s from its row', (notation, operation, species, speciesCharge, ion) => {
+    expect(mechanismRow(notation)).toEqual({
+      operation,
+      species,
+      speciesCharge,
+      multimerN: 1,
+      neutralLoss: null,
+      ionCharge: ion,
+      polarity: ion > 0 ? '+' : '-'
+    })
+  })
+
+  it('is null for what does not read', () => {
+    expect(mechanismRow('nonsense')).toBeNull()
+  })
+})
+
+describe('describeMechanism', () => {
+  it.each([
+    ['[M+H]+', 'Ion charge +'],
+    ['-H+', 'Ion charge -'],
+    ['[M+2H]2+', 'Ion charge 2+'],
+    ['[2M+H]+', 'Ion charge + · 2 molecules'],
+    ['[M+H-H2O-NH3]+', 'Ion charge + · loses H2O and NH3'],
+    ['[2M+2H-H2O]2+', 'Ion charge 2+ · 2 molecules · loses H2O'],
+    ['nonsense', '']
+  ])('says what ion %s makes', (notation, words) => {
+    expect(describeMechanism(notation)).toBe(words)
   })
 })
 
@@ -182,6 +295,7 @@ describe('mechanismPolarity', () => {
     expect(mechanismPolarity('-H+')).toBe('-')
     expect(mechanismPolarity('-H-')).toBe('+')
     expect(mechanismPolarity('[M]+.')).toBe('+')
+    expect(mechanismPolarity('[M-2H]2-')).toBe('-')
     expect(mechanismPolarity('nonsense')).toBeNull()
   })
 })
