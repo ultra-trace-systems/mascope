@@ -9,12 +9,13 @@ of a Frame handle's head.
 
 import json
 
+import pandas as pd
 import pytest
 from test_ai_mcp import MAX_RESULT_BYTES, ok, refused
 
 from mascope_ai import InvalidRequest, NotFound
 from mascope_ai.mcp import Server
-from mascope_ai.toolkit import REDUCE_ROWS, REDUCE_STATS
+from mascope_ai.toolkit import REDUCE_COLUMNS, REDUCE_ROWS, REDUCE_STATS
 
 
 @pytest.fixture
@@ -25,6 +26,16 @@ def server(kit) -> Server:
 @pytest.fixture
 def peaks(kit):
     return kit.load_peaks(batches="Spring 2026")
+
+
+@pytest.fixture
+def scored(kit, peaks):
+    """The peaks with a score that differs from row to row: the fake's samples
+    are alike in every column, so a reduction by sample cannot tell them
+    apart on the data alone."""
+    df = peaks.df.copy()
+    df["score"] = range(len(df))
+    return kit.derive(df, peaks, code="a score, one per row", computed=["score"])
 
 
 class TestReduce:
@@ -63,6 +74,114 @@ class TestReduce:
         (row,) = out["rows"]
         assert row["mz"] == apex["mz"] and row["intensity"] == apex["intensity"]
         assert out["result"] == apex["intensity"]
+
+    def test_argmin_is_the_other_extreme(self, kit):
+        spectrum = kit.load_spectrum("s21", (0, 1000))
+
+        low = kit.reduce(spectrum, value="intensity", stat="argmin")
+        high = kit.reduce(spectrum, value="intensity", stat="argmax")
+
+        floor = spectrum.df.loc[spectrum.df["intensity"].idxmin()]
+        (row,) = low["rows"]
+        assert row["mz"] == floor["mz"] and low["result"] == floor["intensity"]
+        assert low["result"] == spectrum.df["intensity"].min() < high["result"]
+
+    def test_the_extreme_row_of_each_group_the_largest_first(self, kit, peaks):
+        df = peaks.df
+
+        top = kit.reduce(peaks, value="height", stat="argmax", by="sample_item_name")
+        bottom = kit.reduce(peaks, value="height", stat="argmin", by="sample_item_name")
+
+        groups = df.groupby("sample_item_name")["height"]
+        assert top["n_groups"] == bottom["n_groups"] == groups.ngroups
+        heights = [r["height"] for r in top["rows"]]
+        assert heights == sorted(heights, reverse=True)
+        assert {r["sample_item_name"]: r["height"] for r in top["rows"]} == (
+            groups.max().to_dict()
+        )
+        assert {r["sample_item_name"]: r["height"] for r in bottom["rows"]} == (
+            groups.min().to_dict()
+        )
+        # The row is the whole row the extreme is in, not the number alone
+        assert all(r["mz"] for r in top["rows"])
+
+    def test_ascending_puts_the_smallest_first(self, kit, scored):
+        # The fake's samples have the same heights; a score tells them apart
+        out = kit.reduce(
+            scored, value="score", stat="median", by="sample_item_name", ascending=True
+        )
+        default = kit.reduce(
+            scored, value="score", stat="median", by="sample_item_name"
+        )
+
+        scores = [r["score"] for r in out["rows"]]
+        assert scores == sorted(scores) and scores[0] < scores[-1]
+        assert [r["score"] for r in default["rows"]] == scores[::-1]
+
+    def test_the_extreme_row_leads_with_the_columns_asked_about(self, kit, peaks):
+        # A peaks Frame has more columns than a row shows: the group key and
+        # the reduced column come first, then the Frame's others in its order
+        late = [c for c in peaks.df.columns if list(peaks.df.columns).index(c) >= 12]
+        value = next(c for c in late if peaks.df[c].notna().any())
+
+        out = kit.reduce(peaks, value=value, stat="argmax", by="sample_item_name")
+
+        (row, *_) = out["rows"]
+        assert list(row)[:2] == ["sample_item_name", value]
+        assert len(row) == min(REDUCE_COLUMNS, len(peaks.df.columns))
+        others = [c for c in peaks.df.columns if c not in ("sample_item_name", value)]
+        assert list(row)[2:] == others[: REDUCE_COLUMNS - 2]
+
+    def test_rows_without_a_value_have_no_extreme(self, kit, peaks):
+        df = peaks.df.copy()
+        df["score"] = float("nan")
+        samples = list(df["sample_item_name"].unique())
+        valued = df.index[df["sample_item_name"] == samples[0]][:2]
+        df.loc[valued, "score"] = [1.0, 2.0]
+        frame = kit.derive(df, peaks, code="a score two rows have", computed=["score"])
+
+        by_sample = kit.reduce(
+            frame, value="score", stat="argmax", by="sample_item_name"
+        )
+        whole = kit.reduce(frame, value="score", stat="argmax")
+        none = kit.reduce(
+            frame,
+            value="score",
+            stat="argmin",
+            where=[["sample_item_name", "==", samples[1]]],
+        )
+
+        # The groups with no value are not there, not an error
+        assert [r["sample_item_name"] for r in by_sample["rows"]] == [samples[0]]
+        assert by_sample["rows"][0]["score"] == 2.0 and by_sample["n_groups"] == 1
+        assert whole["result"] == 2.0
+        assert whole["rows_in"] == 2 and whole["rows_of_frame"] == len(df)
+        assert none["rows"] == [] and none["result"] is None and none["n_groups"] == 0
+
+    def test_a_repeated_index_still_gives_one_row(self, kit, peaks):
+        doubled = kit.derive(
+            pd.concat([peaks.df, peaks.df]), peaks, code="the peaks twice", computed=[]
+        )
+
+        out = kit.reduce(doubled, value="height", stat="argmax")
+
+        assert len(out["rows"]) == 1 and out["result"] == peaks.df["height"].max()
+
+    def test_each_comparison_keeps_what_it_says(self, kit, peaks):
+        heights = peaks.df["height"]
+        at = float(heights.iloc[0])  # a value the column has: <= and < differ by it
+
+        def count(op):
+            return kit.reduce(
+                peaks, value="height", stat="count", where=[["height", op, at]]
+            )["result"]
+
+        assert count("==") == int((heights == at).sum()) >= 1
+        assert count("!=") == int((heights != at).sum()) == len(heights) - count("==")
+        assert count(">") == int((heights > at).sum())
+        assert count(">=") == int((heights >= at).sum()) == count(">") + count("==")
+        assert count("<") == int((heights < at).sum())
+        assert count("<=") == int((heights <= at).sum()) == count("<") + count("==")
 
     def test_where_keeps_rows_first(self, kit, peaks):
         threshold = float(peaks.df["height"].median())
@@ -113,6 +232,10 @@ class TestReduce:
             kit.reduce(peaks, value="height", stat="mode")
         with pytest.raises(InvalidRequest, match="op is one of"):
             kit.reduce(peaks, value="height", where=[["height", "~", 1]])
+        with pytest.raises(InvalidRequest, match="to filter on"):
+            kit.reduce(peaks, value="height", where=[["nope", ">", 1]])
+        with pytest.raises(InvalidRequest, match="where clause is"):
+            kit.reduce(peaks, value="height", where=[["height", ">"]])
         with pytest.raises(InvalidRequest, match=f"top is 1 to {REDUCE_ROWS}"):
             kit.reduce(
                 peaks, value="height", by="sample_item_name", top=REDUCE_ROWS + 1
@@ -144,6 +267,34 @@ class TestReduceOverMcp:
         assert out["n_groups"] == 3
         assert len(json.dumps(out).encode()) <= MAX_RESULT_BYTES
         assert out["frame"].startswith("f_")
+
+    def test_top_and_ascending_reach_the_toolkit(self, server, scored):
+        largest = ok(
+            server,
+            "reduce",
+            frame=scored.id,
+            value="score",
+            stat="median",
+            by=["sample_item_name"],
+            top=1,
+        )
+        smallest = ok(
+            server,
+            "reduce",
+            frame=scored.id,
+            value="score",
+            stat="median",
+            by=["sample_item_name"],
+            top=1,
+            ascending=True,
+        )
+
+        assert len(largest["rows"]) == 1 and largest["rows_omitted"] == 2
+        assert largest["rows"][0]["score"] > smallest["rows"][0]["score"]
+        assert (
+            largest["rows"][0]["sample_item_name"]
+            != smallest["rows"][0]["sample_item_name"]
+        )
 
     def test_argmax_over_mcp_and_a_where_clause(self, server):
         handle = ok(server, "load_spectrum", sample="s21")

@@ -103,8 +103,9 @@ REDUCE_OPS = ("==", "!=", ">", ">=", "<", "<=", "in")
 #: a table; ``top`` picks which few.
 REDUCE_ROWS = 50
 
-#: The columns a reduction's rows show at most.
-HANDLE_COLUMNS_LISTED = 12
+#: The columns an ``argmax`` / ``argmin`` row shows at most: the group keys
+#: and the reduced column first, then the Frame's others in its order.
+REDUCE_COLUMNS = 12
 
 #: The order ``find`` lists kinds in, among matches ranked alike.
 _KIND_ORDER = {kind: index for index, kind in enumerate(KINDS)}
@@ -2044,6 +2045,9 @@ class Toolkit:
         :param top: How many groups to answer with; :data:`REDUCE_ROWS` at
             most, and the default.
         :param ascending: Smallest first.
+
+        ``rows_in`` is the rows reduced over: those the *where* clauses kept,
+        and for ``argmax`` / ``argmin`` only those with a value.
         :raises InvalidRequest: On an unknown column, statistic or
             comparison, or a *top* past :data:`REDUCE_ROWS`.
         :raises NotFound: When the session has no Frame of that ID.
@@ -2065,7 +2069,7 @@ class Toolkit:
             if column not in df.columns:
                 raise InvalidRequest(
                     f"The Frame has no column {column!r}; its columns are "
-                    f"{list(df.columns)[:HANDLE_COLUMNS_LISTED]}"
+                    f"{list(df.columns)[:REDUCE_COLUMNS]}"
                 )
         kept = df
         for clause in where:
@@ -2098,6 +2102,10 @@ class Toolkit:
             + (f" by {keys}" if keys else "")
             + (f" where {list(where)}" if where else "")
         )
+        if stat in ("argmax", "argmin"):
+            # A row with no value has no extreme to be; a label that repeats
+            # (a concatenated input) would select every row of it
+            kept = kept.dropna(subset=[value]).reset_index(drop=True)
         out: dict[str, Any] = {
             "stat": stat,
             "value": value,
@@ -2110,17 +2118,18 @@ class Toolkit:
             out.update(rows=[], n_groups=0, result=None)
             table = pd.DataFrame(columns=[*keys, value])
         elif stat in ("argmax", "argmin"):
+            extreme = "idxmax" if stat == "argmax" else "idxmin"
             if keys:
-                index = kept.groupby(keys, sort=False)[value].agg(
-                    "idxmax" if stat == "argmax" else "idxmin"
-                )
-                table = kept.loc[index.dropna()]
+                table = kept.loc[kept.groupby(keys, sort=False)[value].agg(extreme)]
                 table = table.sort_values(value, ascending=ascending)
             else:
-                at = kept[value].idxmax() if stat == "argmax" else kept[value].idxmin()
-                table = kept.loc[[at]]
+                table = kept.loc[[getattr(kept[value], extreme)()]]
             shown = table.head(top or REDUCE_ROWS)
-            columns = list(shown.columns)[:HANDLE_COLUMNS_LISTED]
+            # The columns asked about first, then the Frame's others
+            asked = [*keys, value]
+            columns = (asked + [c for c in shown.columns if c not in asked])[
+                :REDUCE_COLUMNS
+            ]
             out["rows"] = jsonable(shown[columns].to_dict("records"))
             out["n_groups"] = int(len(table)) if keys else 1
             if not keys:
