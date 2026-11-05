@@ -105,10 +105,12 @@
 #                        accepts nothing.
 #
 # Each run reads the accepted findings of its own target, which the runner
-# names in MASCOPE_PENTEST_BASELINE: both staging vantages the suite's own
-# baseline.json, a production deployment its prod-<NAME>.json. Staging's
-# acceptances are about staging, so they neither accept a production finding
-# nor turn stale where production passes.
+# names in MASCOPE_PENTEST_BASELINE: the origin pass the suite's own
+# baseline-origin.json, the CDN pass its baseline.json, a production
+# deployment its prod-<NAME>.json. An acceptance holds for the target and
+# vantage it was made for: past the CDN a control can fail where the edge
+# makes it pass, and staging's findings are not production's. Shared, an
+# entry would accept the same gap elsewhere, and turn stale where it passes.
 #
 # Each vantage leaves three files in RECORDS: <ts>-<vantage>.log (the suite's
 # output), <ts>-<vantage>.tar.gz (that run's report alone), and <ts>-<vantage>.summary
@@ -322,7 +324,7 @@ run_origin() {
   MASCOPE_PENTEST_LOWPRIV_PASSWORD='${MASCOPE_PENTEST_LOWPRIV_PASSWORD:-}' \
   MASCOPE_PENTEST_VERIFY_TLS=false \
   MASCOPE_PENTEST_VANTAGE=origin \
-  MASCOPE_PENTEST_BASELINE=baseline.json \
+  MASCOPE_PENTEST_BASELINE=baseline-origin.json \
   ${release_env}./.venv/bin/python -m pytest -q"
 
     ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" "$remote_cmd" > "$1" 2>&1

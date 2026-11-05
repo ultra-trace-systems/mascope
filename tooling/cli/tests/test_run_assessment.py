@@ -521,9 +521,11 @@ def test_a_release_in_the_environment_does_not_stand_in_for_the_lookup(tmp_path)
     assert "release=" in (tmp_path / "cdn-env").read_text().splitlines()
 
 
-def test_both_staging_vantages_read_the_suites_own_baseline(tmp_path):
+def test_each_staging_vantage_reads_its_own_baseline_from_the_suite(tmp_path):
     # Set, not inherited: a baseline exported in cron's environment, a
     # production deployment's say, must not decide a staging run's verdict.
+    # And one per vantage: the origin pass accepts what fails past the edge
+    # alone (IDENT-02), which the CDN pass would find stale.
     rc, _, _ = _run(
         tmp_path,
         report=_report(),
@@ -531,9 +533,10 @@ def test_both_staging_vantages_read_the_suites_own_baseline(tmp_path):
         extra_env={"MASCOPE_PENTEST_BASELINE": "/elsewhere/prod-a.json"},
     )
     assert rc == 0
-    assert "baseline=baseline.json" in (tmp_path / "origin-env").read_text().split()
+    origin_env = (tmp_path / "origin-env").read_text().split()
+    assert "baseline=baseline-origin.json" in origin_env
     assert "baseline=baseline.json" in (tmp_path / "cdn-env").read_text().splitlines()
-    assert "MASCOPE_PENTEST_BASELINE=baseline.json" in (
+    assert "MASCOPE_PENTEST_BASELINE=baseline-origin.json" in (
         (tmp_path / "ssh-args").read_text()
     )
 
