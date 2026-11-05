@@ -3,13 +3,14 @@
 # Sample filters, refreshable batches and acquisition metadata: design
 
 - **Status:** design
-- **As of:** 2026-10-22
+- **As of:** 2026-11-05
 - **Tracked in:** [Sample finder and acquisition metadata](https://linear.app/ultra-trace/project/sample-finder-and-acquisition-metadata-cd1678c32e78) (Linear; decisions MAS-104 to MAS-110; phases 1 to 4 filed 2026-10-22 as MAS-306, MAS-310, MAS-311, MAS-334 to MAS-336, MAS-338 to MAS-343, MAS-348 and MAS-349)
 - **What:** Sample search and refreshable batches over acquisition metadata.
 
 Status: **design, nothing built** (2026-10-05). The decisions in section 3 were
-settled in design review on that date. Section 9 lists what is open, each item
-with a recommendation. Code anchors were read on `develop` on the same date
+settled in design review on that date; decision 11, where the finder lives,
+was added on 2026-11-05 (MAS-105, with the UX review's D1). Section 9 lists
+what is open, each item with a recommendation. Code anchors were read on `develop` on the same date
 and are named where a claim rests on them.
 
 ## Picking this up
@@ -204,7 +205,7 @@ Facts a filter wants that are not columns:
 
 ## 3. Decisions
 
-Settled in design review, 2026-10-05.
+Settled in design review, 2026-10-05; decision 11 on 2026-11-05.
 
 | # | Decision |
 |---|---|
@@ -218,6 +219,7 @@ Settled in design review, 2026-10-05.
 | 8 | Acquisition metadata is keyed to the **raw file**, not to a sample row, so it survives re-processing and leaves the locked acquisition samples untouched. |
 | 9 | A copy **reads acquisition metadata through**, live. Nothing is snapshotted at copy time. |
 | 10 | The **origin key leaves out the ionization mode**. A copy whose file's chemistry is corrected afterwards stays as it is, and the refresh preview lists such copies. |
+| 11 | The finder is a **destination in the navigation sidebar**, *Find samples*, beside *Raw files*, which moves there from the chart tabs (decided 2026-11-05 with decision D1 of `ux_review_2026_10.md`, the sidebar): both are global lists over the instruments a person can read, not views of the open batch. It fills the main area with a facet column and the chips, histogram, count, result table and actions. The acquisition workspaces stay browsable from the workspace switcher but stop being the route to a batch. |
 
 Not chosen, and why:
 
@@ -297,7 +299,11 @@ brush a range on, the matching count always visible, and a result table. Two
 actions: **Create batch from this filter** and **Add to the open batch**.
 Checking individual rows and copying them is today's copy path and stays.
 
-Where the pane lives is open (section 9). The finder's filter can ride in the
+The pane is a destination in the navigation sidebar, *Find samples*, beside
+*Raw files* (decision 11): a facet column with counts on the left (instrument,
+chemistry, polarity, status; the metadata and environment facets of phases 2
+and 3 join it) and the chips, the histogram, the count, the result table and
+the two actions on the right. The finder's filter can ride in the
 shareable location later; the batch it produces is an ordinary batch, so the
 location chain itself does not change.
 
@@ -620,7 +626,7 @@ phase 1 depends on nothing.
 | # | Question | Recommendation |
 |---|---|---|
 | 1 | Who may define registry fields and environments? | As ionization modes do: any editor creates, changing or deleting needs admin, since both reach every instrument's data |
-| 2 | Where does the finder live? | A pane of its own beside *Raw files*, which already is the cross-instrument, time-filtered surface for files; the acquisition workspaces stay browsable but stop being the route to a batch |
+| 2 | Where does the finder live? | *Decided 2026-11-05, decision 11:* a destination in the navigation sidebar beside *Raw files*, which moves there too; the acquisition workspaces stay browsable but stop being the route to a batch (MAS-105) |
 | 3 | Does a refresh ever run on its own? | No (decision 2 says asked for). A badge on the batch saying new samples match its recipe is cheap and can follow |
 | 4 | Does changing a sample's environment flag the batches holding it for re-assignment? | Show it on the batch; do not re-run anything unasked. Existing runs keep their snapshot |
 | 5 | The list headers call regimes `applies_to_contexts`, but they are not chemistry contexts. Rename? | Keep the key in schema 2; call them regimes in the UI and here; hold them to a checked vocabulary as list `tags` are |

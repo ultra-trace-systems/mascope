@@ -3,8 +3,8 @@
 # Dashboard UX review, October 2026
 
 - **Status:** building
-- **As of:** 2026-10-27
-- **Tracked in:** [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) (Linear, MAS-148 to MAS-163)
+- **As of:** 2026-11-05
+- **Tracked in:** [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9) (Linear, MAS-148 to MAS-163, MAS-314 to MAS-317, MAS-712 and MAS-713)
 - **What:** The dashboard UX review of October 2026 and its three tiers of fixes.
 
 Status: **review recorded 2026-10-16; four of the six quick wins have shipped**
@@ -14,7 +14,10 @@ override and an "All time" option) while MAS-148 is still open and needs
 reconciling with that; QW5 (MAS-152) and QW6 (MAS-153) are open. The medium
 items are MAS-155 to MAS-160 under MAS-154, the decisions MAS-161 to MAS-163;
 of the small items, S2 and S4 were delivered by MAS-151 and MAS-149, and S1,
-S3, S5 and S6 were filed on 2026-10-22 as MAS-314 to MAS-317. The findings below
+S3, S5 and S6 were filed on 2026-10-22 as MAS-314 to MAS-317. D1 was decided on
+2026-11-05 (section 4.4): a persistent navigation sidebar and a chemistry-first
+main area, which rewrites M1 and M3 (MAS-155, MAS-157) and adds M7 and M8
+(MAS-712, MAS-713). The findings below
 were taken from a walk through the dashboard against a running instance and
 then re-verified against the frontend code on `develop` the same day; every
 finding names the file it rests on. The plan at the end is in three tiers:
@@ -569,25 +572,39 @@ collection focused on the demo stack; the legend appears in the help popover.
 
 On the roadmap, filed as issues under one parent in the Linear project, not
 scheduled. Each changes the shape of a component the quick wins only touch,
-so they follow them; M1 and M3 wait on decision D1.
+so they follow them. M1 and M3 waited on decision D1 and are rewritten below
+for its answer; M7 and M8 are the answer's own items.
 
-- **M1. One breadcrumb owns the chain** (F1, F2). The top bar's chain extends
-  to sample, collection and ion; `BaseTabbedPanel` loses its `breadcrumb`
-  prop and shows a label with a count and a labelled back control; the chart
-  title stops repeating the batch. Files: `SidebarMenu.vue`,
-  `BaseTabbedPanel.vue`, `BaseBreadcrumb.vue`, `MatchCollectionTable.vue`,
-  `MatchIonTable.vue`, `PaneBrowserAssignment.vue`, `PaneBrowserBatchPeaks.vue`
-  (they pass breadcrumbs too), `ChartBatchOverview.vue`. Builds on the chain
-  in `docs/dev/ui_state_persistence.md`.
+- **M1. One breadcrumb owns the chain** (F1, F2; MAS-155, rewritten
+  2026-11-05 for D1). The top bar's chain is the location chain of
+  `docs/dev/ui_state_persistence.md`, workspace to ion or focused ledger row,
+  and the only place the location is spelled: the sidebar of M7 marks the same
+  chain, the pane headers show their own count and actions, and the chart
+  title names only what the crumb does not. The sample crumb carries the
+  previous/next stepping the batch crumb has today. `BaseTabbedPanel` loses
+  its `breadcrumb` prop; a pane that still drills in the flag-off layout gets
+  a labelled back control at full opacity. The crumbs come from one pure
+  helper over the reads `lib/location/schema.js` makes, so the breadcrumb,
+  the sidebar and a shared link agree by construction. Files:
+  `SidebarMenu.vue` or its successor in the top bar, `BaseTabbedPanel.vue`,
+  `BaseBreadcrumb.vue`, `MatchCollectionTable.vue`, `MatchIonTable.vue`,
+  `PaneBrowserAssignment.vue`, `PaneBrowserBatchPeaks.vue`,
+  `ChartBatchOverview.vue`. After M7.
 - **M2. One dialog grammar and one button vocabulary** (F18, F21). A
   `BaseFormDialog` with float labels, a fixed footer (secondary "Cancel", a
   primary verb that names the action, no icons), size from content; the three
   dialogs rebuilt on it; Logout demoted. Files: the three `DialogXOp` files,
   `SidebarMenu.vue`, a new `lib/dialogs/BaseFormDialog.vue`.
-- **M3. Overflow buttons beside the context menus** (F17, F20). A row-end
-  hover button and a pane-header "..." open the existing menu models; the
-  Process entries renamed and described. Files: the five context-menu stores
-  and components, `BaseTabbedPanel.vue`, the four tables.
+- **M3. Overflow buttons beside the context menus** (F17, F20; MAS-157,
+  rewritten 2026-11-05 for D1). Dataset and batch actions open from a "..."
+  on the sidebar's tree node and, for the open batch, in the top bar beside
+  the breadcrumb, the one place reachable while the sidebar is a rail; the
+  expanded sample strip and the ledger get a row-end hover button and a
+  pane-header "..." over their existing menu models; the Process entries are
+  renamed to say what they do, with a one-line description, from one table
+  all three entry points read. Files: the five context-menu stores and
+  components, the sidebar of M7, `SampleTable.vue`,
+  `PaneBrowserAssignment.vue`, `BaseTabbedPanel.vue`. After M7 and M8.
 - **M4. Viewport-dependent default splits** (F22). `stores/ui/split.js`
   derives defaults from the viewport (a clamped pixel width for the left
   column) and recomputes on resize until the user drags; stored values win.
@@ -598,6 +615,32 @@ so they follow them; M1 and M3 wait on decision D1.
   variables; a comfortable/compact setting in `UserSettingsPane.vue` that
   drives table row height and type size; the fixed widths in
   `PanePeakSearch.vue` and the toolbar audited at 1280px.
+- **M7. The navigation sidebar** (F2, F22; decision D1; MAS-712). A persistent
+  left sidebar: the workspace switcher at its top, then the destinations *Find
+  samples*, *Raw files* and *Recent*, then the outline of the open workspace to
+  the batch (datasets and their batches, the focused node marked, each batch's
+  status, a badge on a batch built from a filter when its refresh has new
+  samples; acquisition batches grouped by month, collapsed), with Notifications,
+  Settings and About at its foot. Below about 1400px it collapses to an icon
+  rail and the outline opens as a flyout; the state persists like the splits.
+  It replaces `DatasetTable` and `BatchTable` in `PaneBrowserSample.vue`, the
+  Workspaces tab of the drawer and the Raw files chart tab; `PaneTabAcquisitions`
+  renders in the main area as a destination. The selection stores do not
+  change: the tree is a view over workspace, dataset and batch focus. Files: a
+  new `lib/sidebar/`, `routes/Dashboard.vue`, `ToolbarAppFilters.vue`,
+  `PaneBrowserSample.vue`, `WorkspacePane.vue`, `lib/location/schema.js`.
+- **M8. The chemistry-first main area** (F24; decision D1 as amended; MAS-713;
+  flag-on layout only). The ledger of `PaneBrowserAssignment.vue` becomes the
+  first content column, with a *This sample* / *Whole batch* scope switch and
+  *Targets* as a filter chip in its tier strip, which retires the
+  Targets/Assignments switch and `stores/ui/matchMode.js`; the inspector,
+  spectrum and time series of `PaneTabSample.vue` follow it with no tabs, and
+  with the batch scope and several rows selected the time series is the Batch
+  overview, its cursor the focused sample; the sample table folds to a strip on
+  the main area's left edge and expands on demand. Files: `Dashboard.vue`,
+  `PaneBrowserMatch.vue`, `PaneBrowserAssignment.vue`, `PaneTabSample.vue`,
+  `PaneTabBatch.vue`, `SampleTable.vue`, `stores/ui/tab.js`,
+  `stores/ui/split.js`. After M7; before the fold's second step.
 
 ### 4.3 Smaller follow-ups
 
@@ -626,7 +669,16 @@ the medium items named wait on it.
   M1, or move to a persistent outline of workspace, dataset and batch in the
   left column with the tables beside it. The first is cheaper and keeps the
   column narrow; the second removes F2 entirely and makes F22 worse. Decides
-  M1 and M3.
+  M1 and M3. *Answered 2026-11-05 (MAS-161): the persistent outline, scoped
+  by what each level holds. Workspaces, datasets and analysis batches are
+  tens of named things and go in a sidebar tree (M7); acquisition batches and
+  samples are hundreds told apart by attributes and go to the finder and a
+  table. The width objection is met the way every sidebar app meets it: an
+  icon rail with the outline as a flyout below about 1400px. The owner's
+  review of the first mockups moved the chemistry to the front of the main
+  area (M8): the ledger is the first content column, Targets a chip in it,
+  the sample table a strip. M1 and M3 are rewritten above; the finder's home
+  follows in `sample_filters_and_metadata.md` decision 11.*
 - **D2. One paradigm.** When does the targeted workflow (Targets mode, the
   Match tab, `MatchIonTable`) retire, and what of it survives - the
   match-parameter drawer and Rate Match are only there (the comment in
@@ -642,7 +694,10 @@ the medium items named wait on it.
   own - type scale, density, colour semantics, dialog grammar, button
   vocabulary, the empty-state pattern - that M2, M6 and QW6 implement against,
   and who owns it. Without one, each PR decides these alone and the three
-  grammars of F18 return.
+  grammars of F18 return. *Answered 2026-10-29 (MAS-163): yes, as
+  `docs/dev/frontend_design_system.md`; not yet written. Its first components
+  are the sidebar, rail, tree node, ledger strip, breadcrumb, chip and badge
+  of M7 and M8.*
 
 ---
 
