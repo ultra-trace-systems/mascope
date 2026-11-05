@@ -232,7 +232,11 @@ def _says(*must: str) -> Words:
 
 
 #: What a known answer holds besides plain JSON: a value with a tolerance,
-#: an instant however written, a text that must say something.
+#: an instant however written, a text that must say something. A decline's
+#: reason must name what is missing (the batch, the workspace, the range) and
+#: nothing more: a model says it in its own words (the first pilot: "No
+#: workspace named ... exists" where the solver said "the token is not a
+#: member"), and the words beyond the missing thing are the solver's.
 MATCHERS = (Close, Instant, Words)
 
 
@@ -1390,7 +1394,7 @@ QUESTIONS: tuple[Question, ...] = (
         "decline",
         f"How many samples does the batch '{MISSING_BATCH}' hold?",
         _samples_of_a_batch_there_is_not,
-        _not_available(_says("no batch", "named")),
+        _not_available(_says("batch")),
         "not available: there is no batch of that name",
         ("find",),
         check=_no_value,
@@ -1400,7 +1404,7 @@ QUESTIONS: tuple[Question, ...] = (
         "decline",
         f"How many datasets does the workspace '{HIDDEN_WORKSPACE}' hold?",
         _datasets_of_a_workspace_not_seen,
-        _not_available(_says("workspace", "token")),
+        _not_available(_says("workspace")),
         "not available: no such workspace among those the token can see",
         ("find",),
         check=_no_value,
@@ -1411,7 +1415,7 @@ QUESTIONS: tuple[Question, ...] = (
         f"How high is the reagent ion peak at m/z {OUT_OF_RANGE_MZ} in the "
         "14:34:03 uronium sample, and what is it?",
         _peak_outside_the_acquired_range,
-        _not_available(_says("outside", "range")),
+        _not_available(_says("range")),
         "not available: m/z 61.0397 is below the acquired range of 122-740; "
         "no candidate is attributed a peak",
         (
@@ -1442,7 +1446,7 @@ QUESTIONS: tuple[Question, ...] = (
         "uronium batch's samples, in how many samples was each ion's peak "
         "flagged as saturated by the detector?",
         _saturation_of_the_top_ions,
-        _not_available(_says("saturation", "not available")),
+        _not_available(_says("saturat")),
         "not available: no peak list carries a saturation flag, and no tool "
         "reports the detector's range",
         ("load_peaks", "resolve"),
