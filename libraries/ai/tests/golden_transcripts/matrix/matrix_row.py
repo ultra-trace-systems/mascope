@@ -459,7 +459,10 @@ def episode(
             timeout=120,
         )
     answer = _parse_answer(stdout) if code == 0 else _parse_answer(stdout)
-    infra = code != 0 and answer is None and bool(INFRA.search(stderr + stdout))
+    # Goose exited without an answer: a provider error, or the harness's own
+    # fault (a bad recipe, a missing extension): infra either way, never the
+    # model's miss, and the stderr tail says which
+    infra = code != 0 and answer is None
     verdict = "infra" if infra else ai_golden.verdict_of(question, answer)
     problems = [] if answer is None else ai_golden.check_answer(question, answer)
     tool_calls = len(re.findall(r'"type"\s*:\s*"tool_(use|call|request)"', stdout))
@@ -476,6 +479,8 @@ def episode(
         "exit_code": code,
         "infra": infra,
         "stdout_bytes": len(stdout.encode()),
+        "error": stderr.strip()[-500:] if infra else "",
+        "provider_error": bool(INFRA.search(stderr + stdout)) if infra else False,
     }
 
 
