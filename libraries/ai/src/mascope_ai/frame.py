@@ -157,6 +157,10 @@ class Frame:
     :ivar computed_columns: The columns computed in Python by the code that
         made a derived Frame (:meth:`~mascope_ai.toolkit.Toolkit.derive`),
         neither read from Mascope nor computed by the SDK.
+    :ivar inherited: For a derived Frame, the load each carried-over column
+        came from: column name -> that load's op, as far back as the loader
+        that made it. A column means what it meant there
+        (:meth:`column_meanings`). Empty for a loaded Frame.
     """
 
     id: str
@@ -172,6 +176,7 @@ class Frame:
     provenance: dict[str, Any] | None = None
     client_columns: tuple[str, ...] = ()
     computed_columns: tuple[str, ...] = ()
+    inherited: dict[str, str] = field(default_factory=dict)
     _rows: pd.DataFrame | None = field(default=None, compare=False)
     _session: "Session | None" = field(default=None, compare=False)
 
@@ -186,6 +191,7 @@ class Frame:
         frame_id: str | None = None,
         client_columns: "tuple[str, ...] | list[str]" = (),
         computed_columns: "tuple[str, ...] | list[str]" = (),
+        inherited: "dict[str, str] | None" = None,
     ) -> "Frame":
         """The Frame of a loaded table.
 
@@ -197,6 +203,8 @@ class Frame:
             those *df* lacks are left out.
         :param computed_columns: The columns computed in Python by the code
             that made the table; those *df* lacks are left out.
+        :param inherited: For a derived table, the op of the load each
+            carried-over column came from; those *df* lacks are left out.
         """
         attrs = df.attrs
         columns = tuple(str(column) for column in df.columns)
@@ -221,6 +229,7 @@ class Frame:
             else None,
             client_columns=tuple(c for c in client_columns if c in columns),
             computed_columns=tuple(c for c in computed_columns if c in columns),
+            inherited={c: op for c, op in (inherited or {}).items() if c in columns},
             _rows=df,
             _session=session,
         )
@@ -252,13 +261,17 @@ class Frame:
     def column_meanings(self) -> dict[str, str]:
         """What each column means, by name, for the columns the toolkit
         knows (:mod:`mascope_ai.columns`): what the number is, its unit, and
-        what it is not. A column the code of a derived Frame computed says
-        so; a column nobody knows is left out.
+        what it is not. A derived Frame's carried-over column means what it
+        meant in the load it came from (:attr:`inherited`), and one its code
+        computed says so; a column nobody knows is left out.
         """
         from .columns import meanings
 
         return meanings(
-            self.query.get("op"), self.columns, computed=self.computed_columns
+            self.query.get("op"),
+            self.columns,
+            computed=self.computed_columns,
+            inherited=self.inherited,
         )
 
     def __len__(self) -> int:
@@ -345,6 +358,7 @@ class Frame:
             "provenance": self.provenance,
             "client_columns": list(self.client_columns),
             "computed_columns": list(self.computed_columns),
+            "inherited": dict(self.inherited),
         }
 
     @classmethod
@@ -368,5 +382,6 @@ class Frame:
             provenance=data.get("provenance"),
             client_columns=tuple(data.get("client_columns", ())),
             computed_columns=tuple(data.get("computed_columns", ())),
+            inherited=dict(data.get("inherited") or {}),
             _session=session,
         )

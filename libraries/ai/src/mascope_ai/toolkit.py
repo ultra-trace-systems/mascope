@@ -1990,6 +1990,16 @@ class Toolkit:
         new += [c for f in frames for c in f.computed_columns]
         new = list(dict.fromkeys([*new, *recomputed]))
         client = [c for f in frames for c in f.client_columns if c not in new]
+        # A carried-over column means what it meant where it came from: the
+        # first input that has it, and that input's own source if derived
+        inherited: dict[str, str] = {}
+        for c in columns:
+            if c in new:
+                continue
+            for f in frames:
+                if c in f.columns:
+                    inherited[c] = f.inherited.get(c) or str(f.query.get("op"))
+                    break
         rows = df.copy()
         rows.attrs = {
             "complete": all(f.complete for f in frames),
@@ -2009,6 +2019,7 @@ class Toolkit:
             session=self.session,
             client_columns=tuple(dict.fromkeys(client)),
             computed_columns=tuple(new),
+            inherited=inherited,
         )
         self.session.save(frame, rows)
         return frame
