@@ -142,6 +142,11 @@ class FakeAPI:
     :ivar batches: Batch ID -> ``(dataset ID, name)``.
     :ivar samples: Sample ID -> ``(batch ID, name)``.
     :ivar collections: Collection ID -> ``(workspace ID, name, batch IDs)``.
+    :ivar descriptions: Collection ID -> its description, where a test set
+        one (None otherwise).
+    :ivar compounds: Collection ID -> its compound records, where a test set
+        them or a plan created the collection; every other collection
+        answers with thirty made-up compounds.
     :ivar roles: Workspace ID -> the user's role there (``my_role``).
     :ivar locked: The IDs of the datasets, batches and samples locked.
     :ivar types: Dataset or batch ID -> its type, where it is not the
@@ -166,6 +171,8 @@ class FakeAPI:
             c: (ws, name, list(batches))
             for c, (ws, name, batches) in COLLECTIONS.items()
         }
+        self.descriptions: dict[str, str] = {}
+        self.compounds: dict[str, list[dict[str, Any]]] = {}
         self.roles = {"ws1": "editor", "ws2": "guest"}
         self.locked: set[str] = set()
         self.types: dict[str, str] = {}
@@ -422,6 +429,26 @@ class FakeAPI:
                 body["target_collection_name"],
                 list(body.get("sample_batch_ids") or ()),
             )
+            if body.get("target_collection_description") is not None:
+                self.descriptions[new] = body["target_collection_description"]
+            # As the server makes the compounds: those named by ID are the
+            # records that exist, the rest created anew
+            known = {
+                c["target_compound_id"]: c
+                for cid in self.collections
+                for c in self._compounds(cid)
+            }
+            self.compounds[new] = [
+                known.get(i, {"target_compound_id": i, "target_compound_formula": "?"})
+                for i in body.get("target_compound_ids") or ()
+            ] + [
+                {
+                    "target_compound_id": f"{new}-tc{n}",
+                    "target_compound_formula": c.get("target_compound_formula"),
+                    "target_compound_name": c.get("target_compound_name", ""),
+                }
+                for n, c in enumerate(body.get("target_compounds_create") or (), 1)
+            ]
             return 200, _envelope(self._collection(new))
         if method == "PATCH" and re.fullmatch(r"target/collections/\w+", path):
             workspace, name, _ = self.collections[parts[2]]
@@ -559,24 +586,29 @@ class FakeAPI:
             "data": {**RECORDED["timeseries"]["data"], "peak_id": body["peak_id"]},
         }
 
+    def _compounds(self, collection_id: str) -> list[dict[str, Any]]:
+        if collection_id in self.compounds:
+            return self.compounds[collection_id]
+        return [
+            {
+                "target_compound_id": f"tc{i}",
+                "target_compound_formula": f"C{i}H{2 * i}O2",
+                "target_compound_name": f"compound {i}",
+            }
+            for i in range(1, 31)
+        ]
+
     def _collection(self, collection_id: str, full: bool = False) -> dict[str, Any]:
         workspace, name, batches = self.collections[collection_id]
         record: dict[str, Any] = {
             "target_collection_id": collection_id,
             "target_collection_name": name,
-            "target_collection_description": None,
+            "target_collection_description": self.descriptions.get(collection_id),
             "target_collection_type": "CALIBRANTS" if workspace is None else "TARGETS",
             "workspace_id": workspace,
         }
         if full:
-            compounds = [
-                {
-                    "target_compound_id": f"tc{i}",
-                    "target_compound_formula": f"C{i}H{2 * i}O2",
-                    "target_compound_name": f"compound {i}",
-                }
-                for i in range(1, 31)
-            ]
+            compounds = self._compounds(collection_id)
             record.update(
                 target_compounds=compounds,
                 target_compounds_count=len(compounds),
