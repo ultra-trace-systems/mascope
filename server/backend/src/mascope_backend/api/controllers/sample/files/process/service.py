@@ -649,14 +649,24 @@ def _bound_detail(ionization_modes: list[IonizationMode], rung: str) -> str:
     kept from the file's own samples that nobody chose says only that no
     file name chose it.
 
+    A profile Mascope ships is named as one ("the profile 'Bromide,
+    negative' (-)"): the Chemistry settings list it as a profile, and it
+    carries no token, so nothing else about the file says which it was.
+
     :param ionization_modes: The modes it bound to, one per polarity.
     :param rung: What bound it this run - "declared", "token", "method",
         "explicit" or "kept".
     """
-    names = " and ".join(
+    named = [
         f"'{mode.ionization_mode_name}' ({mode.ionization_mode_polarity})"
         for mode in ionization_modes
-    )
+    ]
+    if any(mode.system_key for mode in ionization_modes):
+        named = [
+            f"the profile {name}" if mode.system_key else name
+            for mode, name in zip(ionization_modes, named)
+        ]
+    names = " and ".join(named)
     if rung == "declared":
         return f"Bound to {names} by its acquisition record."
     if rung == "method":
@@ -1704,7 +1714,10 @@ async def _auto_process_sample_file(
     # the name: the row may show a token that did not bind the file. Whoever
     # fixed the tokens and re-processed reads the status the run ended on,
     # and that is where it says why this file did not follow them.
-    if rung in ("declared", "explicit"):
+    #
+    # Nor is a profile Mascope ships, whatever bound the file to it: it has
+    # no token for the row to show, so the status names it to the end.
+    if rung in ("declared", "explicit") or any(mode.system_key for mode in bound_modes):
         file_note = compose_detail(bound_detail, file_note)
 
     # Extract batch and sample IDs for notifications

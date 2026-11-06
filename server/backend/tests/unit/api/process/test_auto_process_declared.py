@@ -43,6 +43,8 @@ def _mode(mode_id="im-nitrate", name="Nitrate", polarity="-"):
     mode.ionization_mode_id = mode_id
     mode.ionization_mode_name = name
     mode.ionization_mode_polarity = polarity
+    # A mode of the deployment's own: a profile is named as one.
+    mode.system_key = None
     return mode
 
 
