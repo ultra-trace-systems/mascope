@@ -25,6 +25,7 @@ export const TIER_REASON_LABELS = Object.freeze({
   polyhalide_cluster: 'polyhalide: air or source',
   candidate_density: 'rivals left standing',
   lone_peak: 'one peak only',
+  absent_line: 'expected line absent',
   envelope_neighbour: "a neighbour's isotope line",
   oxygen_lattice: 'oxygen lattice',
   carbon_free: 'carbon-free formula',
