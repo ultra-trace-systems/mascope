@@ -1494,7 +1494,9 @@ def transcript(
                     lines += [
                         "",
                         "  Final: `"
-                        + _clipped(_scrubbed(part.get("text", ""), scrub), 600)
+                        + _clipped(_scrubbed(part.get("text", ""), scrub), 600).replace(
+                            "\n", " "
+                        )
                         + "`",
                         "",
                     ]
