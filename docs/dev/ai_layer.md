@@ -3,8 +3,12 @@
 # Mascope AI layer: Design & Plan
 
 - **Status:** building
-- **As of:** 2026-10-27
-- **Tracked in:** [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) (Linear, MAS-123 to MAS-142)
+- **As of:** 2026-11-06
+- **Tracked in:** [AI analyst shell](https://linear.app/ultra-trace/project/ai-analyst-shell-2b0a6a7e8af8)
+  (Linear, P-MAS-21, since 2026-11-06: the AI layer project, P-MAS-12, built
+  phases 0, 1 and 3, decided phase 2's scope (MAS-135) and is closed; its
+  open items, phase 2's skills among them, sit in the shell project's
+  milestones 1, 2 and 5, and phase 4 below is that project's milestone 5)
 - **What:** A natural-language agent over the SDK, read-only first, with a confirmed write path later.
 
 ## Purpose
@@ -23,16 +27,11 @@ open questions that draft flagged are resolved here against the backend source,
 its appendix is corrected, and the staging is revised around a constraint the
 draft missed (section 1.3).
 
-> **Status (2026-10-27).** Building, in the Linear project
-> [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) (appendix B):
-> phase 0 is mostly done (MAS-123, MAS-125, MAS-126, MAS-127, MAS-142, MAS-202,
-> MAS-264, MAS-277 and MAS-278 Done; MAS-433 open), phase 1 has started
-> (MAS-128 part 1 merged 2026-10-21 as `libraries/ai`; MAS-129, the oracle and
-> the manifest, done; MAS-131 adds the evaluation fixture, phase 1 below;
-> MAS-130 adds the MCP server, `mascope-ai mcp`), the backend half of phase 3
-> is done (MAS-136, the write routes; MAS-137, the SDK write wrappers;
-> MAS-138 open), and phases 2 and
-> 4 have not started. The design revision below is from 2026-10-19: written and
+> **Status (2026-11-06).** Where the plan stands is in the header above: the
+> AI layer project built phases 0, 1 and 3, decided phase 2's scope (MAS-135)
+> and is closed; phase 2's skills and phase 4 are open in the AI analyst shell
+> project's milestones, as the header says. The design revision below is from
+> 2026-10-19: written and
 > verified against the tree on 2026-08-11 and committed 2026-10-14 as written. Section 1 and the appendix were re-read against
 > `develop` on 2026-10-19, the first step of the plan: the SDK's write path
 > (the batch-ledger import), the provenance block on SDK frames, unified name
