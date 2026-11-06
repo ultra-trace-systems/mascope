@@ -397,6 +397,48 @@ the checker's dry run as the gate, Goose as the runtime with the MCP
 server as its extension, keys in an env file on the host, one folder per
 run with its header, pre-registration hashes, transcripts and the row.
 
+**The first row (2026-11-05).** The open-weight finalist of the owner's
+evaluation (3.1), served in bf16 by a hosted provider, through Goose 1.57.0
+with the MCP server alone (16 tools, before `reduce`), on demo bundle 1.4.3,
+three repetitions of the 22 questions. The record is
+`libraries/ai/tests/golden_transcripts/2026-11-05-nemotron-3.5-super-vl-goose.md`;
+a provider outage took most of the third repetition, which ran the next day
+and is rendered into the same record.
+
+| Class | Episodes | Correct | Wrong | Missing | Infra (excluded) | Median calls | Median s | USD |
+|---|---|---|---|---|---|---|---|---|
+| metadata | 24 | 24 | 0 | 0 | 0 | 4 | 11 | 0.25 |
+| analysis | 17 | 3 | 6 | 8 | 1 | 13 | 1464 | 2.64 |
+| interpretation | 9 | 9 | 0 | 0 | 0 | 11 | 48 | 0.40 |
+| decline | 15 | 15 | 0 | 0 | 0 | 6 | 31 | 0.60 |
+
+Three classes are clean. The analysis class is not, and its transcripts
+say why: through MCP alone a Frame handle has no computation path. The
+model declined the top-ions question "because no tool returns aggregate
+statistics", read the apex off the first row of a handle's head, named a
+background sample as the brightest, and ran the rest into the wall clock
+looking for a way to compute (A1 wrong, infra, wrong; A2 wrong, missing,
+missing; A3 missing three times; A4 correct, wrong, wrong; A5 missing,
+correct, correct; A6 wrong, missing, missing). The six "wrong" answers are
+null values and one decline, not fabrications. Two side arms on the same
+model, stack and questions, recorded beside the row:
+
+| Arm | Questions | Correct | Wrong | Missing | Infra |
+|---|---|---|---|---|---|
+| MCP with `reduce` (PR #2983), 2 repetitions | A1, A4, A6 | 4 (A1 2/2, A4 2/2) | 0 | 2 (A6: reached the grouped medians, then the provider went silent) | 0 |
+| MCP plus a Python shell (Goose's developer extension), 2 repetitions | A1 to A6 | 8 | 3 (A3 twice: the peak reported without its background subtracted; A2 once) | 0 | 1 |
+
+So the class fails for want of a computation path, not of reasoning, which
+is what milestone 1's coarse tools are for: `reduce` first (merged), then
+what A6 (a median per ion with its mass error), A3 (a value above a
+background) and A2 (a ratio of two lines) still lack. Two cautions for the
+next row. The recipe of this row told the model to call `reduce`, which its
+toolkit did not have; the three clean classes do not depend on it, the
+analysis class was told of a tool it could not call. And the provider's
+speed decided the wall clock: the same episodes took minutes in the
+afternoon and seconds in the evening, and an overload (529) took a
+repetition, so a provider error is retried once and excluded, never scored.
+
 **The fixture needs traps before the matrix means anything.** A matrix of
 questions whose right answer is always a value cannot tell a model that
 fabricates from one that declines. Milestone 0 therefore adds, before any
