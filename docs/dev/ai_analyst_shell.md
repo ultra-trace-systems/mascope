@@ -442,6 +442,46 @@ speed decided the wall clock: the same episodes took minutes in the
 afternoon and seconds in the evening, and an overload (529) took a
 repetition, so a provider error is retried once and excluded, never scored.
 
+**The second row (2026-11-06).** The same model, runtime and questions on
+develop's toolkit at the merge of the first row's driver (17 tools: `reduce`,
+and the column meanings every Frame handle now carries), against a stack
+built from that commit on bundle 1.4.4, three repetitions in one run of 66
+minutes with no provider error, after the golden contract passed on the
+stack. The record is
+`libraries/ai/tests/golden_transcripts/2026-11-06-nemotron-3.5-super-vl-goose-milestone-1-surface.md`.
+
+| Class | Episodes | Correct | Wrong | Missing | Infra (excluded) | Median calls | Median s | USD |
+|---|---|---|---|---|---|---|---|---|
+| metadata | 24 | 24 | 0 | 0 | 0 | 4 | 13 | 0.27 |
+| analysis | 18 | 8 | 7 | 3 | 0 | 12 | 257 | 2.28 |
+| interpretation | 9 | 9 | 0 | 0 | 0 | 12 | 105 | 0.52 |
+| decline | 15 | 12 | 3 | 0 | 0 | 5 | 71 | 0.53 |
+
+The surface moved the analysis class from 3 correct of 17 to 8 of 18 and
+its median episode from 1464 s to 257 s: A4 and A5 are correct three times
+and A1 twice, each through `reduce` in one or two calls. What is left is
+not a computation failure. A6 named the same wrong top ion three times: a
+median height by ion over the peaks Frame mixes an ion's isotopologue
+lines, and the minor lines drag the median down, where the fixture takes
+each line's height per sample. A3 reported the raw peak in all three
+repetitions instead of the rise above the background the question defines,
+as the first row's Python arm did, and its one background value was a mean
+over the ion's lines. A1's miss took the maximum of a time series computed
+at scan resolution where the question's series is the samples' means. A2
+ran out of Goose's turns three times: `reduce` returns at most 50 groups
+for 80 samples and nothing divides two lines per sample. The decline class
+lost one episode to the trap itself (D1: no batch of the asked date exists;
+the model took the nearest batch as "clearly the intended one" and reported
+its count as available, naming the discrepancy) and two to wording (D3: the
+model declined and said the m/z lies below the acquired window, where the
+checker looks for "range"; the reviewer marks them sloppy in the record,
+and the fixture is not loosened after the fact). Two things for milestone 1
+follow (MAS-741, MAS-742): the column meanings and `reduce` must say that an ion's rows are
+its lines, so a per-ion statistic takes the line or sums them (A6, A3); and
+the ratio of two lines per sample is a tool (A2). A3's miss is the model's,
+the same one the Python arm made: the question defines the quantity and the
+model reported a neighbouring one.
+
 **The fixture needs traps before the matrix means anything.** A matrix of
 questions whose right answer is always a value cannot tell a model that
 fabricates from one that declines. Milestone 0 therefore adds, before any
