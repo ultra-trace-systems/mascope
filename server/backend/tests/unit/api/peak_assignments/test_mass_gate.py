@@ -1205,6 +1205,28 @@ class TestReadingTheSpectrum:
             False,
         )
 
+    def test_a_window_holds_the_peaks_on_both_its_edges(self):
+        # Closed at both ends: a peak exactly on the edge of a line's match
+        # window is in it, as a peak exactly the tolerance off matches.
+        lines = _spectrum(
+            [
+                ("below", 199.0, 10.0, 5.0),
+                ("low", 200.0, 20.0, 5.0),
+                ("inside", 200.5, 30.0, 5.0),
+                ("high", 201.0, 40.0, 5.0),
+                ("above", 202.0, 50.0, 5.0),
+            ]
+        )
+
+        assert lines.between(200.0, 201.0) == [
+            ("low", 20.0),
+            ("inside", 30.0),
+            ("high", 40.0),
+        ]
+        assert lines.between(201.5, 201.9) == []
+        assert lines.span() == (199.0, 202.0)
+        assert lines.holds("inside") and not lines.holds("elsewhere")
+
 
 class TestHowAnIsotopologueFollowsItsParent:
     """Tracks, in doubt, or not at all."""
