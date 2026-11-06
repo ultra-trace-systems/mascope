@@ -174,3 +174,88 @@ def test_shares_are_read_one_scan_at_a_time(scans):
     _shares([100.0, 200.0], [1e4, 1e4])
 
     assert reader.read == [1, 1, 2, 2]
+
+
+def _presence(masses, resolutions, **kwargs):
+    return m_thermo.get_centroid_presence(
+        "file.raw", np.asarray(masses, float), np.asarray(resolutions, float), **kwargs
+    )
+
+
+def test_a_peak_counts_the_scans_that_hold_a_centroid_under_it(scans):
+    # A line in every scan, a dim one kept by two of four scans
+    scans(
+        {100.0: 0, 101.0: 0},
+        {100.0: 0},
+        {100.0: 0, 101.0: 0},
+        {100.0: 0},
+    )
+
+    presence = _presence([100.0, 101.0], [1e5, 1e5])
+
+    assert presence.n_scans.tolist() == [4.0, 2.0]
+    assert presence.n_scans_total == 4
+
+
+def test_a_scan_with_two_centroids_under_a_peak_counts_once(scans):
+    # Two centroids within half a width of m/z 100 in the first scan
+    scans({100.0: 0, 100.001: EXCEPTION}, {100.0: 0}, {})
+
+    presence = _presence([100.0], [1e4])
+
+    assert presence.n_scans.tolist() == [2.0]
+    assert presence.n_scans_total == 3
+    assert presence.flag_share.tolist() == pytest.approx([1 / 3])
+
+
+def test_the_scans_held_are_those_within_half_a_width(scans):
+    # A width of 0.01 at m/z 100: the window is 99.995 to 100.005
+    scans({99.9949: 0}, {100.004: 0}, {100.0051: 0})
+
+    assert _presence([100.0], [1e4]).n_scans.tolist() == [1.0]
+
+
+def test_a_peak_no_scan_holds_counts_none(scans):
+    scans({100.0: 0}, {100.0: 0})
+
+    presence = _presence([101.0], [1e4])
+
+    assert presence.n_scans.tolist() == [0.0]
+    assert np.isnan(presence.flag_share).all()
+
+
+@pytest.mark.parametrize("resolution", [0.0, -1.0, np.nan])
+def test_a_peak_without_a_width_has_no_count(scans, resolution):
+    scans({100.0: 0})
+
+    presence = _presence([100.0, 100.0], [1e4, resolution])
+
+    assert presence.n_scans[0] == 1.0
+    assert np.isnan(presence.n_scans[1])
+
+
+def test_the_scans_counted_are_those_the_averaged_centroids_take(scans):
+    reader = scans({100.0: 0}, {100.0: 0}, {})
+
+    presence = _presence(
+        [100.0], [1e4], polarity="+", stream="stream A", t_min=1.0, t_max=2.0
+    )
+
+    assert presence.n_scans.tolist() == [1.0]
+    assert presence.n_scans_total == 2
+    assert reader.selections == [
+        dict(polarity="+", t_min=1.0, t_max=2.0, stream="stream A")
+    ]
+
+
+def test_the_flag_shares_are_the_presences(scans):
+    scans(
+        {100.0: 0, 100.002: EXCEPTION},
+        {100.0: 0, 100.002: EXCEPTION},
+        {100.0: 0, 100.002: 0},
+    )
+
+    shares = _shares([100.0, 100.002], [1e5, 1e5])
+    presence = _presence([100.0, 100.002], [1e5, 1e5])
+
+    np.testing.assert_array_equal(shares, presence.flag_share)

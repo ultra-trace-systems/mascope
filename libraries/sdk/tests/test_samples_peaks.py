@@ -526,3 +526,30 @@ class TestWhatIsNotPerPeak:
             logger.remove(handler)
 
         assert ("DEBUG", "Peak listing: 'x' is not per peak, kept in attrs") in records
+
+
+class TestScanCounts:
+    """``n_scans`` and ``n_scans_total``, the server's per-peak lists, are
+    columns of every row of their peak; a store that keeps no count sends
+    null for both."""
+
+    def test_the_counts_are_columns_of_each_peaks_rows(self, monkeypatch):
+        extra = {"n_scans": [4, 2, None], "n_scans_total": [4, 4, 4]}
+        resource, _ = _serve(monkeypatch, extra=extra)
+
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert _row(peaks, "p2")["n_scans"] == 2
+        assert _row(peaks, "p2")["n_scans_total"] == 4
+        assert pd.isna(_row(peaks, "p3")["n_scans"])
+        assert "n_scans" not in peaks.attrs
+
+    def test_a_store_without_counts_reads_them_as_missing(self, monkeypatch):
+        extra = {"n_scans": None, "n_scans_total": None}
+        resource, _ = _serve(monkeypatch, extra=extra)
+
+        peaks = resource.get_peaks(SAMPLE_ID)
+
+        assert peaks["n_scans"].isna().all()
+        assert peaks["n_scans_total"].isna().all()
+        assert len(peaks) == 3
