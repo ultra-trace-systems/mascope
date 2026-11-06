@@ -6,7 +6,9 @@
   (Linear, P-MAS-21, filed 2026-11-04: milestones 0 to 5 follow section 4;
   the five decisions of section 5 are MAS-659 to MAS-662 and MAS-665;
   milestone 0's test issues are MAS-666 to MAS-668, with MAS-669 asking
-  for the owner's bench modules; the rest follow the decisions)
+  for the owner's bench modules; the rest follow the decisions; since
+  2026-11-06 also the open items of the AI layer project, P-MAS-12, which
+  built the layer under this and is closed)
 - **What:** The shell a user drives Mascope through in natural language: any
   ACP agent runtime over the toolkit's MCP server, Goose by default, recipes
   that compute every number, and an evaluation matrix that admits cheaper
