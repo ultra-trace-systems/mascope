@@ -1952,8 +1952,9 @@ own. Each mechanism is built with the target ions of every compound already in
 the library, so a fresh server searches under the same chemistry as any other
 from its first run. A mechanism the deployment already holds under that
 notation, in either spelling, is adopted as it is; the shipped modes arrive
-with no token and are left out of the ionization listing until a deployment
-adopts one; a second start changes nothing.
+with no token, and the ionization listing and the browser's *Chemistry*
+settings offer them as profiles from the first start, whether or not anything
+has been processed under them; a second start changes nothing.
 
 The shipped collections are read off the reagent-ion library. Nitrate,
 15N-nitrate, bromide, iodide, uronium and the two charge-transfer (EASY-IC)

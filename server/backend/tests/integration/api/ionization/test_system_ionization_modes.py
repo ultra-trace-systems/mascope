@@ -9,28 +9,45 @@ deleted. Its calibration and diagnostic collections are the deployment's own
 data, and are the part it may set - without them the mode calibrates and
 matches nothing, so refusing those too would leave the row permanently unusable.
 
-A deployment that has not adopted one should not be offered it either, so the
-listing leaves those out - but only those. Adoption is anything of the
-deployment's on the mode: either target collection, a sample bound to it, or
-an edit of it (``system_mode_adopted``). An adopted mode has to be listed like any other,
-because a sample bound to one carries an id the browser must resolve, and it
-is the same predicate that decides whether the mode may be released when a
-mechanism it holds is deleted.
+Every one of them is listed from the first start, as shipped: choosing one for
+a file is how a deployment takes it up, so there is nothing to adopt before it
+is offered (MAS-337). Each row says what it has routed - how many files the
+ingest filed under it, and when the newest was acquired - which is how the
+Chemistry settings tell a profile in use from one nobody has chosen. What a
+deployment has put on a seeded mode - a collection of its own, a sample, an
+edit (``holds_deployment_data``) - decides one thing only: whether the mode
+may be released when a mechanism it holds is deleted.
 
 Startup seeds the real catalogue; these tests mint their own rows so they do
 not depend on which chemistries the catalogue happens to name, nor on which
 mechanisms this database has.
 """
 
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
-from mascope_backend.db import IonizationMechanism, IonizationMode, TargetCollection
+from mascope_backend.db import (
+    Dataset,
+    IonizationMechanism,
+    IonizationMode,
+    SampleBatch,
+    SampleFile,
+    SampleItem,
+    TargetCollection,
+    Workspace,
+)
 from mascope_backend.db.id import gen_id
 
 
 _SYSTEM_KEY = "test-chemistry"
+_MECHANISMS = (
+    "mascope_backend.api.controllers.ionization_mechanisms."
+    "ionization_mechanisms_controller"
+)
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -105,8 +122,8 @@ async def system_mode(async_session_factory, sys_mechanisms):
 
 
 @pytest_asyncio.fixture
-async def adopted_mode(async_session_factory, sys_mechanisms, sys_collection):
-    """A seeded mode the deployment has adopted, by giving it a collection."""
+async def collected_mode(async_session_factory, sys_mechanisms, sys_collection):
+    """A seeded mode the deployment has pointed at a collection of its own."""
     mode_id = gen_id()
     async with async_session_factory() as session:
         session.add(
@@ -117,7 +134,7 @@ async def adopted_mode(async_session_factory, sys_mechanisms, sys_collection):
                 ionization_mode_polarity="-",
                 ionization_mechanism_ids=[sys_mechanisms["a"], sys_mechanisms["b"]],
                 calibration_collection_id=sys_collection,
-                system_key=f"{_SYSTEM_KEY}-adopted-{mode_id}",
+                system_key=f"{_SYSTEM_KEY}-collected-{mode_id}",
             )
         )
         await session.commit()
@@ -365,50 +382,232 @@ async def test_a_deployments_own_mode_can_still_be_renamed(
 
 
 @pytest.mark.asyncio
-async def test_the_listing_leaves_an_unadopted_seeded_mode_out(
+async def test_the_listing_carries_a_seeded_mode_from_the_start(
     admin_client, system_mode, own_mode
 ):
-    """Offering the shipped chemistries is the browser's step (MAS-337)."""
+    """As seeded - no collection, no sample, no edit - and listed all the
+    same: choosing it for a file is how it is taken up (MAS-337)."""
     resp = await admin_client.get("/api/ionization/modes")
     assert resp.status_code == 200
-    listed = {mode["ionization_mode_id"] for mode in resp.json()["data"]}
+    listed = {mode["ionization_mode_id"]: mode for mode in resp.json()["data"]}
     assert own_mode in listed
-    assert system_mode not in listed
+    assert system_mode in listed
+    assert listed[system_mode]["system_key"] == f"{_SYSTEM_KEY}-{system_mode}"
+    assert listed[own_mode]["system_key"] is None
 
 
 @pytest.mark.asyncio
-async def test_the_listing_carries_an_adopted_seeded_mode(admin_client, adopted_mode):
-    """Adoption is the collection. Hidden after it, a sample bound to the mode
-    would carry an id the browser cannot resolve."""
+async def test_the_listing_carries_a_seeded_mode_given_a_collection(
+    admin_client, collected_mode
+):
+    """A sample bound to one carries an id the browser must resolve."""
     resp = await admin_client.get("/api/ionization/modes")
     assert resp.status_code == 200
     listed = {mode["ionization_mode_id"] for mode in resp.json()["data"]}
-    assert adopted_mode in listed
+    assert collected_mode in listed
 
 
 @pytest.mark.asyncio
-async def test_the_listing_can_be_asked_for_the_unadopted_ones(
-    admin_client, system_mode
-):
-    """Hidden by default, but reachable - otherwise nothing could adopt one."""
-    resp = await admin_client.get("/api/ionization/modes?include_system=true")
+async def test_the_old_switch_changes_nothing(admin_client, system_mode, own_mode):
+    """``include_system`` is gone. A client that still sends it - an SDK
+    released before the change - gets the same listing, not a 422."""
+    plain = await admin_client.get("/api/ionization/modes")
+    asked = await admin_client.get("/api/ionization/modes?include_system=true")
+    assert plain.status_code == asked.status_code == 200
+    ids = {mode["ionization_mode_id"] for mode in plain.json()["data"]}
+    assert ids == {mode["ionization_mode_id"] for mode in asked.json()["data"]}
+    assert {system_mode, own_mode} <= ids
+
+
+# ============= What a mode has routed =============
+
+
+_ROUTED_AT = datetime(2026, 3, 4, 5, 6, 7, tzinfo=timezone.utc)
+
+
+@pytest_asyncio.fixture
+async def routed_world(async_session_factory):
+    """A workspace and a dataset, with a way to file samples into them.
+
+    ``file(mode_id, batch, at)`` registers a raw file acquired at *at* and
+    files one sample of it under *mode_id* in *batch*, an ``ACQUISITION``
+    batch unless ``kind`` says otherwise. Everything is removed at teardown,
+    the files' samples and batches through the cascade.
+    """
+    workspace_id, dataset_id = gen_id(), gen_id()
+    file_ids: list[str] = []
+    batch_ids: dict[str, str] = {}
+    async with async_session_factory() as session:
+        session.add(
+            Workspace(
+                workspace_id=workspace_id,
+                workspace_name=f"Routed {workspace_id}",
+                workspace_status="active",
+                workspace_utc_created=_ROUTED_AT,
+                workspace_utc_modified=_ROUTED_AT,
+            )
+        )
+        session.add(
+            Dataset(
+                dataset_id=dataset_id,
+                workspace_id=workspace_id,
+                dataset_name="Routed",
+                dataset_type="ACQUISITION",
+                dataset_utc_created=_ROUTED_AT,
+            )
+        )
+        await session.commit()
+
+    async def file(mode_id, batch, at, kind="ACQUISITION", sample_file_id=None):
+        async with async_session_factory() as session:
+            if batch not in batch_ids:
+                batch_ids[batch] = gen_id()
+                session.add(
+                    SampleBatch(
+                        sample_batch_id=batch_ids[batch],
+                        dataset_id=dataset_id,
+                        sample_batch_name=f"{batch} {batch_ids[batch]}",
+                        sample_batch_type=kind,
+                        sample_batch_utc_created=_ROUTED_AT,
+                    )
+                )
+            if sample_file_id is None:
+                sample_file_id = gen_id()
+                file_ids.append(sample_file_id)
+                session.add(
+                    SampleFile(
+                        sample_file_id=sample_file_id,
+                        filename=f"routed-test_{sample_file_id}.raw",
+                        instrument="routed-test",
+                        instrument_type="orbi",
+                        datetime=at.replace(tzinfo=None),
+                        datetime_utc=at,
+                        length=60.0,
+                        range={"min": 0, "max": 500},
+                        polarity="-",
+                    )
+                )
+            session.add(
+                SampleItem(
+                    sample_item_id=gen_id(),
+                    sample_batch_id=batch_ids[batch],
+                    sample_file_id=sample_file_id,
+                    sample_item_name=at.strftime("%Y-%m-%d %H:%M:%S"),
+                    sample_item_type=kind,
+                    sample_item_attributes={},
+                    polarity="-",
+                    tic=1000.0,
+                    t0=0.0,
+                    t1=60.0,
+                    ionization_mode_id=mode_id,
+                    sample_item_utc_created=_ROUTED_AT,
+                )
+            )
+            await session.commit()
+        return sample_file_id
+
+    yield file
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleFile).where(SampleFile.sample_file_id.in_(file_ids))
+        )
+        await session.execute(
+            delete(Workspace).where(Workspace.workspace_id == workspace_id)
+        )
+        await session.commit()
+
+
+async def _listed(client, mode_id):
+    resp = await client.get("/api/ionization/modes")
     assert resp.status_code == 200
-    listed = {mode["ionization_mode_id"] for mode in resp.json()["data"]}
-    assert system_mode in listed
+    (row,) = [m for m in resp.json()["data"] if m["ionization_mode_id"] == mode_id]
+    return row
+
+
+@pytest.mark.asyncio
+async def test_a_mode_nothing_was_routed_to_says_so(admin_client, system_mode):
+    row = await _listed(admin_client, system_mode)
+    assert row["routed_files"] == 0
+    assert row["last_file_utc"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_row_says_how_many_files_it_routed_and_when_the_last_was_acquired(
+    admin_client, system_mode, routed_world
+):
+    """Counted off the daily acquisition batches, one sample a file."""
+    earlier = _ROUTED_AT.replace(day=1)
+    await routed_world(system_mode, "day one", earlier)
+    await routed_world(system_mode, "day four", _ROUTED_AT)
+
+    row = await _listed(admin_client, system_mode)
+
+    assert row["routed_files"] == 2
+    assert datetime.fromisoformat(row["last_file_utc"]) == _ROUTED_AT
+    # And the single record reads the same, as the socket's does.
+    single = await admin_client.get(f"/api/ionization/modes/{system_mode}")
+    assert single.json()["data"]["routed_files"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_copy_in_a_batch_of_ones_own_is_not_a_second_file(
+    admin_client, system_mode, routed_world
+):
+    """A user's batch holds a copy of the acquisition sample: the same file."""
+    routed = await routed_world(system_mode, "acquired", _ROUTED_AT.replace(day=1))
+    await routed_world(
+        system_mode,
+        "campaign",
+        _ROUTED_AT,
+        kind="ANALYSIS",
+        sample_file_id=routed,
+    )
+    await routed_world(system_mode, "processed by hand", _ROUTED_AT, kind="ANALYSIS")
+
+    row = await _listed(admin_client, system_mode)
+
+    assert row["routed_files"] == 1
+    assert datetime.fromisoformat(row["last_file_utc"]) == _ROUTED_AT.replace(day=1)
+
+
+@pytest.mark.asyncio
+async def test_what_an_earlier_version_routed_counts_for_the_mode(
+    admin_client, system_mode, sys_mechanisms, sys_collection, routed_world
+):
+    """A file processed before an edit was routed to the same setup."""
+    await routed_world(system_mode, "before the edit", _ROUTED_AT)
+    resp = await admin_client.patch(
+        f"/api/ionization/modes/{system_mode}",
+        json=_body(
+            sys_mechanisms,
+            ionization_mode_name=f"Seeded Chemistry {system_mode}",
+            calibration_collection_id=sys_collection,
+        ),
+    )
+    assert resp.status_code == 200
+    successor = resp.json()["data"]["ionization_mode_id"]
+    assert successor != system_mode
+    await routed_world(successor, "after the edit", _ROUTED_AT.replace(day=5))
+
+    row = await _listed(admin_client, successor)
+
+    assert row["routed_files"] == 2
+    assert datetime.fromisoformat(row["last_file_utc"]) == _ROUTED_AT.replace(day=5)
 
 
 # ============= A seeded mode never pins a mechanism =============
 
 
 @pytest.mark.asyncio
-async def test_deleting_a_mechanism_releases_an_unadopted_seeded_mode(
+async def test_deleting_a_mechanism_releases_a_seeded_mode_as_seeded(
     admin_client, async_session_factory
 ):
     """A seeded mode cannot be deleted through its own route.
 
     So one built on a mechanism the deployment is retiring would pin that
-    mechanism for good. Unadopted, the mode holds nothing of the
-    deployment's - no collections, no samples - and goes with it.
+    mechanism for good. As seeded, the mode holds nothing of the
+    deployment's - no collections, no samples - and goes with it. It was
+    listed, as every mode is, so the browsers are told it is gone.
     """
     mechanism_id = gen_id(11)
     mode_id = gen_id()
@@ -432,18 +631,23 @@ async def test_deleting_a_mechanism_releases_an_unadopted_seeded_mode(
         )
         await session.commit()
 
-    resp = await admin_client.delete(f"/api/ionization_mechanisms/{mechanism_id}")
+    with patch(f"{_MECHANISMS}.emit_record_deleted", new_callable=AsyncMock) as emit:
+        resp = await admin_client.delete(f"/api/ionization_mechanisms/{mechanism_id}")
 
     assert resp.status_code == 200
     async with async_session_factory() as session:
         assert await session.get(IonizationMode, mode_id) is None
+    assert [call.kwargs for call in emit.await_args_list] == [
+        {"record_type": "ionization_mode", "record_id": mode_id},
+        {"record_type": "ionization_mechanism", "record_id": mechanism_id},
+    ]
 
 
 @pytest.mark.asyncio
-async def test_deleting_a_mechanism_an_adopted_mode_uses_is_still_refused(
+async def test_deleting_a_mechanism_a_seeded_mode_given_a_collection_uses_is_refused(
     admin_client, async_session_factory, sys_collection
 ):
-    """Adopted, the mode carries the deployment's own collection."""
+    """The mode carries the deployment's own collection, so it stays."""
     mechanism_id = gen_id(11)
     mode_id = gen_id()
     async with async_session_factory() as session:
@@ -487,7 +691,7 @@ async def test_deleting_a_mechanism_an_adopted_mode_uses_is_still_refused(
 async def test_the_seeded_modes_are_still_in_the_database(
     async_session_factory, system_mode
 ):
-    """Left out of the listing, not absent: later phases bind to them."""
+    """Written to the database, not only listed: the rungs bind to them."""
     async with async_session_factory() as session:
         found = (
             await session.execute(
@@ -500,13 +704,11 @@ async def test_the_seeded_modes_are_still_in_the_database(
 
 
 @pytest.mark.asyncio
-async def test_a_diagnostic_only_seeded_mode_counts_as_adopted(
+async def test_a_diagnostic_only_seeded_mode_holds_the_deployments_data(
     admin_client, async_session_factory, sys_mechanisms, sys_collection
 ):
-    """One definition of adopted, read the same by the listing and the release.
-
-    Read differently, a mode with only a diagnostic collection was hidden from
-    the listing and still pinned its mechanisms behind a refusal naming it.
+    """Either collection of the deployment's keeps a seeded mode from being
+    released, and the mode its refusal names is one the listing shows.
     """
     mechanism_id = gen_id(11)
     mode_id = gen_id()
@@ -537,8 +739,8 @@ async def test_a_diagnostic_only_seeded_mode_counts_as_adopted(
     )
 
     listed = {mode["ionization_mode_id"] for mode in listing.json()["data"]}
-    assert mode_id in listed, "adopted, so it must be offered"
-    assert delete_resp.status_code == 400, "adopted, so it must not be released"
+    assert mode_id in listed, "every mode is listed"
+    assert delete_resp.status_code == 400, "the deployment's, so not released"
 
     async with async_session_factory() as session:
         await session.execute(
@@ -557,8 +759,8 @@ async def test_a_superseded_seeded_version_is_not_released_with_a_mechanism(
     admin_client, async_session_factory, sys_collection
 ):
     """An edit of a seeded mode's collections leaves its first version, as
-    seeded and unadopted, behind its adopted successor. It is that mode's
-    history, not a mode nobody took up, so it is not released. No sample
+    seeded, behind its edited successor. It is that mode's history, not a
+    mode nobody took up, so it is not released. No sample
     holds it, so it does not block either: the mechanism both versions name
     is shown, and its delete refused, for the current one alone."""
     mechanism_id = gen_id(11)

@@ -10,7 +10,6 @@ from mascope_backend.api.new.auth.dependencies import (
     guest_user,
 )
 from mascope_backend.api.new.ionization.modes.schema import (
-    GetIonizationModesQueryParams,
     IonizationModeCreate,
     IonizationModeUpdate,
 )
@@ -97,13 +96,13 @@ async def get_ionization_mode_route(
 @ionization_mode_router.get("")
 @api_route(token_access=True)
 async def get_ionization_modes_route(
-    query_params: GetIonizationModesQueryParams = Depends(),
     user=Depends(guest_user),
 ):
     """
-    Retrieve a list of ionization modes with optional filtering.
+    Retrieve the ionization modes: the deployment's own, and every profile
+    Mascope ships.
     """
-    return await get_ionization_modes(**query_params.model_dump())
+    return await get_ionization_modes()
 
 
 @ionization_mode_router.get("/by_filename/{filename}")
