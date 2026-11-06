@@ -62,7 +62,8 @@ class TestMeaning:
         from mascope_ai.columns import MIXED
 
         assert meaning(MIXED, "height") is None
-        assert meanings("derive", ["height", "time"], inherited={"height": MIXED}) == {
+        inherited = {"height": MIXED, "time": "load_timeseries"}
+        assert meanings("derive", ["height", "time"], inherited=inherited) == {
             "time": COMMON["time"]
         }
 
@@ -83,6 +84,35 @@ class TestMeaning:
 
     def test_a_zero_sparsity_may_be_an_uncomputed_series(self):
         assert "not yet" in meaning("load_peaks", "sparsity")
+
+    def test_the_gates_are_named_on_the_trees_intensities(self):
+        # Each fact of what a line keeps under the match tolerances, pinned
+        # one by one so a reverted text fails
+        assert "outside the m/z tolerance" in meaning(
+            "match_compounds", "sample_peak_intensity"
+        )
+        assert "ratio miss keeps it" in meaning(
+            "match_compounds", "sample_peak_intensity"
+        )
+        assert "m/z-gated lines 0" in meaning("match_compounds", "intensity_ion")
+        assert "m/z-gated lines count 0" in meaning(
+            "match_compounds", "intensity_compound"
+        )
+        relative = meaning("match_compounds", "sample_peak_intensity_relative")
+        assert "before the m/z gate" in relative and "may exceed 1" in relative
+
+    def test_the_tree_has_no_compound_names(self):
+        assert "always empty" in meaning("match_compounds", "target_compound_name")
+        assert "NaN when unmatched" in meaning("load_peaks", "target_compound_name")
+
+    def test_peak_id_follows_each_tables_row_rule(self):
+        assert "one row per matched line" in meaning("load_peaks", "peak_id")
+        assert "every point of its series" in meaning("load_timeseries", "peak_id")
+        assert "per stage" in meaning("load_peaks_by_stage", "peak_id")
+
+    def test_a_derived_column_with_no_recorded_source_has_no_meaning(self):
+        assert meaning("derive", "height") is None
+        assert meanings("derive", ["height", "time"]) == {}
 
     def test_an_unknown_column_has_none(self):
         assert meaning("load_peaks", "no such column") is None
@@ -105,7 +135,10 @@ class TestFrameMeanings:
 
     def test_a_derived_frames_computed_column_says_so_whatever_its_name(self):
         frame = _frame(
-            "derive", ["sample_item_id", "height"], computed_columns=["height"]
+            "derive",
+            ["sample_item_id", "height"],
+            computed_columns=["height"],
+            inherited={"sample_item_id": "load_peaks", "height": "load_peaks"},
         )
         out = frame.column_meanings()
         assert out["sample_item_id"] == COMMON["sample_item_id"]
@@ -117,7 +150,11 @@ class TestFrameMeanings:
         frame = _frame(
             "derive",
             ["time", "height", "mz"],
-            inherited={"height": "load_timeseries", "mz": "load_spectrum"},
+            inherited={
+                "height": "load_timeseries",
+                "mz": "load_spectrum",
+                "time": "load_timeseries",
+            },
         )
         out = frame.column_meanings()
         assert out["height"] == BY_OP["load_timeseries"]["height"]
@@ -129,6 +166,16 @@ class TestFrameMeanings:
         again = Frame.from_dict(frame.to_dict())
         assert again.inherited == {"height": "load_timeseries"}
         assert again.column_meanings() == frame.column_meanings()
+
+    def test_a_derived_frame_saved_before_inherited_gives_no_meaning(self):
+        # A session written before columns recorded their source has derived
+        # Frames with no inherited: their columns are not the peak list's
+        frame = _frame("derive", ["time", "height", "rank"], computed_columns=["rank"])
+        record = frame.to_dict()
+        del record["inherited"]
+        older = Frame.from_dict(record)
+        assert older.inherited == {}
+        assert older.column_meanings() == {"rank": COMPUTED}
 
     def test_meanings_follow_the_frames_op(self):
         frame = _frame("load_timeseries", ["time", "height"])
@@ -181,7 +228,11 @@ class TestDerive:
             assert out["time"] == COMMON["time"]
             assert out["area"] == COMMON["area"]
             assert frame.inherited["area"] == "load_peaks"
-            assert frame.inherited["peak_id"] == inputs[0].query["op"]
+            # peak_id follows each table's row rule, so it is mixed too; a
+            # column both inputs mean alike takes the first input's op
+            assert frame.inherited["peak_id"] == MIXED
+            assert frame.inherited["sample_item_id"] == inputs[0].query["op"]
+            assert out["sample_item_id"] == COMMON["sample_item_id"]
 
     def test_two_inputs_that_agree_keep_the_meaning(self, kit):
         a = kit.load_peaks(samples="s21")

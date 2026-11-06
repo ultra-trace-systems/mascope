@@ -30,6 +30,13 @@ _UNIT = "counts (Orbitrap) or ions/s (TOF)"
 #: meanings: it then has none, rather than one input's.
 MIXED = "mixed"
 
+#: Ops under which a column has no meaning: a mixed one, and a derived
+#: Frame's own op, which says nothing of where a column came from. A
+#: derived Frame saved before columns recorded their source has no
+#: ``inherited``, and its columns fall here rather than on the peak list's
+#: texts.
+_UNRECORDED = (MIXED, "derive")
+
 #: What a column means wherever it appears, by name.
 COMMON: dict[str, str] = {
     "sample_batch_name": "the batch's name: users' text",
@@ -141,7 +148,12 @@ _TREE: dict[str, str] = {
         "the m/z tolerance; a ratio miss keeps it, score 0"
     ),
     "sample_peak_intensity_relative": (
-        "that intensity relative to the ion's most abundant line's peak; 0 when no peak"
+        "that peak's intensity over the main line's peak's, read before the m/z "
+        "gate: not 0 there, may exceed 1; 0 when no peak"
+    ),
+    "target_compound_name": (
+        "always empty here: the tree scores formulas, not named compounds; "
+        "match_category_compound says whether it matched"
     ),
     "sample_peak_tof": "that peak's time-of-flight coordinate, TOF only; -1 when no peak",
     "match_mz_error": (
@@ -169,6 +181,10 @@ _TREE: dict[str, str] = {
 #: is not here falls back to :data:`COMMON`.
 BY_OP: dict[str, dict[str, str]] = {
     "load_timeseries": {
+        "peak_id": (
+            "Mascope's ID of the peak; the same on every point of its series, one "
+            "series per matched line"
+        ),
         "datetime_utc": "the point's absolute time: the file's start plus time, UTC",
         "height": (
             f"the peak's height in one scan, at time; {_UNIT}. load_peaks' "
@@ -184,6 +200,7 @@ BY_OP: dict[str, dict[str, str]] = {
         ),
     },
     "load_peaks_by_stage": {
+        "peak_id": "Mascope's ID of the peak; one row per stage and matched line",
         "height": f"the peak's apex intensity over the stage's scans only; {_UNIT}",
         "area": "the peak's area over the stage's scans only",
         "signal_to_noise": (
@@ -200,8 +217,9 @@ BY_OP: dict[str, dict[str, str]] = {
 
 def meaning(op: str | None, column: str) -> str | None:
     """What *column* means in the table *op* made; None when not known, and
-    None for :data:`MIXED`, a derived column whose inputs disagree."""
-    if op == MIXED:
+    None under :data:`MIXED` and under ``derive`` itself (:data:`_UNRECORDED`):
+    a derived column means something only through the load it came from."""
+    if op in _UNRECORDED:
         return None
     by_op = BY_OP.get(op or "", {})
     return by_op.get(column) or COMMON.get(column)
