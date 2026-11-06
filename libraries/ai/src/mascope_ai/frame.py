@@ -258,6 +258,20 @@ class Frame:
         """Drop the rows held in memory; :attr:`df` reads the session's copy."""
         object.__setattr__(self, "_rows", None)
 
+    @property
+    def meaning_op(self) -> str | None:
+        """The load a column's meaning is looked up under: the query's op,
+        except that a peak list loaded with ``average=False`` holds sums over
+        the scans, not means, and is looked up as its own load
+        (:data:`mascope_ai.columns.LOAD_PEAKS_SUMMED`)."""
+        op = self.query.get("op")
+        params = self.query.get("params") or {}
+        if op == "load_peaks" and params.get("average") is False:
+            from .columns import LOAD_PEAKS_SUMMED
+
+            return LOAD_PEAKS_SUMMED
+        return op
+
     def column_meanings(self) -> dict[str, str]:
         """What each column means, by name, for the columns the toolkit
         knows (:mod:`mascope_ai.columns`): what the number is, its unit, and
@@ -268,7 +282,7 @@ class Frame:
         from .columns import meanings
 
         return meanings(
-            self.query.get("op"),
+            self.meaning_op,
             self.columns,
             computed=self.computed_columns,
             inherited=self.inherited,

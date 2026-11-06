@@ -2004,7 +2004,7 @@ class Toolkit:
             ops: list[str] = []
             for f in frames:
                 if c in f.columns:
-                    op = f.inherited.get(c) or str(f.query.get("op"))
+                    op = f.inherited.get(c) or str(f.meaning_op)
                     if op not in ops:
                         ops.append(op)
             if ops:

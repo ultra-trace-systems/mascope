@@ -30,6 +30,10 @@ _UNIT = "counts (Orbitrap) or ions/s (TOF)"
 #: meanings: it then has none, rather than one input's.
 MIXED = "mixed"
 
+#: The op a peak list loaded with ``average=False`` is looked up under: its
+#: height and area are sums over the scans, not means.
+LOAD_PEAKS_SUMMED = "load_peaks_summed"
+
 #: Ops under which a column has no meaning: a mixed one, and a derived
 #: Frame's own op, which says nothing of where a column came from. A
 #: derived Frame saved before columns recorded their source has no
@@ -116,6 +120,17 @@ COMMON: dict[str, str] = {
 #: A line with no peak holds placeholders, named where they would mislead.
 _TREE: dict[str, str] = {
     "candidate": "the formula as it was asked about",
+    "target_isotope_id": "the ID of the line Mascope looked for, matched or not",
+    "target_isotope_formula": (
+        "the line Mascope looked for, matched or not; match_category_isotope says"
+    ),
+    "target_ion_id": "the ID of the ion Mascope looked for, matched or not",
+    "target_ion_formula": (
+        "the ion Mascope looked for, matched or not; match_category_ion says"
+    ),
+    "target_compound_id": "the candidate's compound ID in this answer, matched or not",
+    "ionization_mechanism": "the mechanism of the ion Mascope looked for, by name",
+    "ionization_mechanism_id": "the mechanism of the ion Mascope looked for, its ID",
     "origin": "where the candidate came from: given, mass_query or model",
     "mz": "the line's theoretical m/z; the measured one is sample_peak_mz",
     "match_score_compound": "Mascope's compound score: its best ion's",
@@ -198,6 +213,16 @@ BY_OP: dict[str, dict[str, str]] = {
             "height is the sample's mean"
         ),
         "mz": "the peak's m/z, the same on every point of its series",
+    },
+    "load_peaks_summed": {
+        "height": (
+            "the peak's apex intensity, summed over the sample's scans "
+            f"(average=False); {_UNIT}"
+        ),
+        "area": (
+            "the peak's intensity integrated over its m/z extent, summed over the "
+            "scans like height"
+        ),
     },
     "load_spectrum": {
         "mz": "the profile point's m/z",
