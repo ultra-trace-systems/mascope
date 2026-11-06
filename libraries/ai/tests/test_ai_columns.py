@@ -100,15 +100,27 @@ class TestMeaning:
         )
         relative = meaning("match_compounds", "sample_peak_intensity_relative")
         assert "before the m/z gate" in relative and "may exceed 1" in relative
+        # Also 0 with a peak: when the main line has none, or no shared scan
+        assert "either line has no peak or no shared scan" in relative
+        assert "not 0" not in relative
 
-    def test_the_tree_has_no_compound_names(self):
+    def test_the_tree_has_no_compound_names_and_a_formula_on_every_row(self):
         assert "always empty" in meaning("match_compounds", "target_compound_name")
         assert "NaN when unmatched" in meaning("load_peaks", "target_compound_name")
+        formula = meaning("match_compounds", "target_compound_formula")
+        assert "on every row" in formula and "NaN" not in formula
+        assert "NaN when unmatched" in meaning("load_peaks", "target_compound_formula")
 
     def test_peak_id_follows_each_tables_row_rule(self):
-        assert "one row per matched line" in meaning("load_peaks", "peak_id")
+        # Every peak has a row; a matched one repeats per line, so rows do
+        # not count matched lines
+        peaks = meaning("load_peaks", "peak_id")
+        assert (
+            "when the peak matched several" in peaks and "per matched line" not in peaks
+        )
         assert "every point of its series" in meaning("load_timeseries", "peak_id")
-        assert "per stage" in meaning("load_peaks_by_stage", "peak_id")
+        stage = meaning("load_peaks_by_stage", "peak_id")
+        assert "per stage" in stage and "matched several" in stage
 
     def test_a_derived_column_with_no_recorded_source_has_no_meaning(self):
         assert meaning("derive", "height") is None

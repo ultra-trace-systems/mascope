@@ -66,9 +66,11 @@ and columns" lays the tables out in full: each deployment serves it at
   `compute_timeseries` on its sample, then loaded again; over its cap it
   refuses, and a narrower `mz_range` goes through. A batch's time
   series, as Mascope draws it, is one point per sample: the ion's summed
-  matched intensity, which a sample's averaged peaks from `load_peaks`
-  give per line. `load_timeseries` gives the scans within each sample, for
-  what happens inside one.
+  matched intensity, `intensity_ion` in the match tree. A sum of the
+  ion's `load_peaks` rows is not it: a line that missed only its isotope
+  ratio, or the minimum intensity, is unmatched there, and the chart
+  still counts it. `load_timeseries` gives the scans within each sample,
+  for what happens inside one.
 - **Interpretation** - what the peak at an m/z is: `query_by_mz` proposes
   formulas for the sample's mechanisms (`describe` the sample for them),
   `match_compounds` has Mascope score them in that sample. Put the mass

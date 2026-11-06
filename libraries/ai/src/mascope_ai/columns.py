@@ -46,7 +46,10 @@ COMMON: dict[str, str] = {
         "the sample file's acquisition start, UTC; the sample's window begins "
         "t0 seconds later"
     ),
-    "peak_id": "Mascope's ID of the peak in its sample; one row per matched line",
+    "peak_id": (
+        "Mascope's ID of the peak in its sample; repeated, one row per line, when "
+        "the peak matched several"
+    ),
     "mz": "the peak's measured centroid m/z, calibrated",
     "height": (
         "the peak's apex intensity in the averaged spectrum, the mean over the "
@@ -148,12 +151,16 @@ _TREE: dict[str, str] = {
         "the m/z tolerance; a ratio miss keeps it, score 0"
     ),
     "sample_peak_intensity_relative": (
-        "that peak's intensity over the main line's peak's, read before the m/z "
-        "gate: not 0 there, may exceed 1; 0 when no peak"
+        "ratio to the main line's peak, before the m/z gate, may exceed 1; 0 if "
+        "either line has no peak or no shared scan"
     ),
     "target_compound_name": (
         "always empty here: the tree scores formulas, not named compounds; "
         "match_category_compound says whether it matched"
+    ),
+    "target_compound_formula": (
+        "the candidate's neutral formula, on every row; match_category_compound "
+        "says whether it matched"
     ),
     "sample_peak_tof": "that peak's time-of-flight coordinate, TOF only; -1 when no peak",
     "match_mz_error": (
@@ -200,7 +207,10 @@ BY_OP: dict[str, dict[str, str]] = {
         ),
     },
     "load_peaks_by_stage": {
-        "peak_id": "Mascope's ID of the peak; one row per stage and matched line",
+        "peak_id": (
+            "Mascope's ID of the peak; one row per stage, repeated when the peak "
+            "matched several lines"
+        ),
         "height": f"the peak's apex intensity over the stage's scans only; {_UNIT}",
         "area": "the peak's area over the stage's scans only",
         "signal_to_noise": (
