@@ -1342,7 +1342,6 @@ def summarize(folder: Path) -> None:
     print("\n".join(lines[: 4 + len(ai_golden.CATEGORIES) + 2]))
 
 
-#: What a transcript never carries, whatever a tool result held.
 #: What a transcript never carries, whatever a tool result or a shell held:
 #: a bearer token, a ``NAME=value`` of a key, token or secret (the python
 #: arm's shell inherits the environment), or a bare token-length word (a

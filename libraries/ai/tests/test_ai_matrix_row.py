@@ -656,6 +656,9 @@ class TestTheRulesOutsideScore:
                 stdout=_goose_json({"2025": 2, "2026": 3}).replace(
                     "refs", "not_authenticated"
                 ),
+                # A provider word in stderr too: without the revoked guard
+                # this would be a provider error and be retried
+                stderr="Server error (529): System is overloaded",
                 code=1,
             )
 
@@ -872,3 +875,114 @@ class TestTheRulesOutsideScore:
         assert driver._scrubbed("frame f_27d1934897bc sample oqR5MzdP8cJGJj1Z") == (
             "frame f_27d1934897bc sample oqR5MzdP8cJGJj1Z"
         )
+
+
+class TestTheRunsTeardown:
+    """What run() does around the episodes: the lock, the token, the arm's
+    note, and what an interruption leaves. Everything that reaches a stack,
+    a provider or Goose is stood in for."""
+
+    class _Session:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, url, **kwargs):
+            self.posts.append(url)
+
+    @pytest.fixture
+    def harness(self, driver, tmp_path, monkeypatch):
+        session = self._Session()
+        runs = tmp_path / "runs"
+        monkeypatch.setattr(driver, "RUNS_ROOT", runs)
+        monkeypatch.setattr(driver, "LOCK", runs / "RUNNING")
+        monkeypatch.setattr(driver, "_env_file", lambda: {"NEBIUS_API_KEY": "k"})
+        monkeypatch.setattr(driver, "dryrun_gate", lambda: "table")
+        monkeypatch.setattr(driver, "spent", lambda root: 0.0)
+        monkeypatch.setattr(
+            driver, "_mint_token", lambda url, email, pw: ("tok", session)
+        )
+        monkeypatch.setattr(driver, "_goose_env", lambda *a, **k: {"GOOSE_MODEL": "m"})
+        monkeypatch.setattr(driver, "_goose_version", lambda env: "1.57.0")
+        monkeypatch.setattr(driver, "mcp_tools", lambda command: ["find", "reduce"])
+        monkeypatch.setattr(driver, "_stack_header", lambda url, token: {"url": url})
+        monkeypatch.setattr(driver, "_served_precision", lambda *a: "bf16")
+        monkeypatch.setattr(driver, "_git", lambda *a: "abc123")
+        return session
+
+    def _argv(self, *more):
+        return [
+            "run",
+            "--provider",
+            "nebius",
+            "--model",
+            "m",
+            "--only",
+            "M1,M2,M3",
+            "--reps",
+            "1",
+            "--parallel",
+            "1",
+            "--workspace",
+            "Other Workspace",
+            "--mascope-ai",
+            "mascope-ai",
+            *more,
+        ]
+
+    def test_an_interruption_starts_no_further_episode_and_the_token_dies(
+        self, driver, harness, monkeypatch
+    ):
+        seen = []
+
+        def episode(question, rep, folder, env, args):
+            seen.append((question.id, args))
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(driver, "episode", episode)
+
+        with pytest.raises(KeyboardInterrupt):
+            driver.main(self._argv())
+
+        assert len(seen) == 1, "the queued episodes never started"
+        assert [
+            url
+            for url in harness.posts
+            if url.endswith("/api/auth/access_token/regenerate")
+        ]
+        assert not driver.LOCK.exists(), "the lock is released"
+        assert (
+            "workspace='Other Workspace'" not in seen[0][1].extra
+        )  # the mcp arm has no shell note (and the fixture's default is another workspace)
+        assert "reduce" in seen[0][1].extra, "the hint, since the server lists the tool"
+
+    def test_the_python_arms_note_names_the_workspace_given(
+        self, driver, harness, monkeypatch
+    ):
+        seen = []
+
+        def episode(question, rep, folder, env, args):
+            seen.append(args)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(driver, "episode", episode)
+
+        with pytest.raises(KeyboardInterrupt):
+            driver.main(self._argv("--arm", "mcp+python"))
+
+        assert "workspace='Other Workspace'" in seen[0].extra
+
+    def test_a_failure_before_the_episodes_still_kills_the_token(
+        self, driver, harness, monkeypatch
+    ):
+        monkeypatch.setattr(
+            driver, "_goose_env", lambda *a, **k: sys.exit("NEBIUS_API_KEY is empty")
+        )
+        monkeypatch.setattr(
+            driver, "episode", lambda *a: pytest.fail("no episode runs")
+        )
+
+        with pytest.raises(SystemExit):
+            driver.main(self._argv())
+
+        assert [url for url in harness.posts if url.endswith("/regenerate")]
+        assert not driver.LOCK.exists()
