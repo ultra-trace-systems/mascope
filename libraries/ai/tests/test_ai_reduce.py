@@ -350,3 +350,112 @@ class TestReduceOverMcp:
         assert "reduce" in tools
         assert "reduce" in tools["load_peaks"]["description"]
         assert tools["reduce"]["inputSchema"]["required"] == ["frame", "value"]
+
+
+class TestLinesMixed:
+    """An ion's rows in a peak list are its isotope lines: a statistic of an
+    intensity by ion, or filtered to one, takes them together, and the result
+    says so. The second matrix row named the wrong top ion three times this
+    way, from a median height by ion over the whole peak list."""
+
+    @pytest.fixture
+    def lines(self, kit, peaks):
+        """The matched peaks with a second, ten times weaker line on every
+        ion, as a bromine ion or a 13C line has in a real peak list."""
+        df = peaks.df[peaks.df["target_isotope_formula"].notna()]
+        minor = df.copy()
+        minor["target_isotope_formula"] = "[13C]" + minor["target_isotope_formula"]
+        minor["target_isotope_id"] = minor["target_isotope_id"].astype(str) + "-13C"
+        minor["height"] = minor["height"] / 10
+        return kit.derive(
+            pd.concat([df, minor], ignore_index=True),
+            peaks,
+            code="a minor line per ion",
+        )
+
+    @pytest.fixture
+    def ion(self, lines):
+        return lines.df["target_ion_formula"].iloc[0]
+
+    def test_a_height_by_ion_says_the_lines_it_took_together(self, kit, lines):
+        out = kit.reduce(lines, value="height", stat="median", by="target_ion_formula")
+
+        # The fake has ions of several lines already; the minor line makes
+        # every ion one of at least two
+        per_ion = lines.df.groupby("target_ion_formula")[
+            "target_isotope_formula"
+        ].nunique()
+        mixed = out["lines_mixed"]
+        assert mixed["lines_per_group_max"] == per_ion.max() >= 2
+        assert mixed["groups_with_several"] == int((per_ion > 1).sum()) == len(per_ion)
+        assert "isotope lines" in mixed["note"]
+        assert "target_isotope_formula" in mixed["note"]
+
+    def test_a_filter_to_an_ion_mixes_its_lines_per_sample_too(self, kit, lines, ion):
+        # The shape of A3's background: a mean height per sample of "the ion"
+        out = kit.reduce(
+            lines,
+            value="height",
+            stat="mean",
+            by="sample_item_name",
+            where=[["target_ion_formula", "==", ion]],
+        )
+
+        assert out["lines_mixed"]["lines_per_group_max"] >= 2
+
+    def test_one_line_kept_by_a_where_clause_is_not_mixed(self, kit, lines, ion):
+        out = kit.reduce(
+            lines,
+            value="height",
+            stat="median",
+            by="target_ion_formula",
+            where=[["target_isotope_formula", "==", ion]],
+        )
+
+        assert "lines_mixed" not in out
+        assert (
+            out["rows"][0]["height"]
+            == lines.df[lines.df["target_isotope_formula"] == ion]["height"].median()
+        )
+
+    def test_grouping_by_the_line_is_not_mixed(self, kit, lines):
+        out = kit.reduce(
+            lines,
+            value="height",
+            stat="median",
+            by=["target_ion_formula", "target_isotope_formula"],
+        )
+
+        assert "lines_mixed" not in out
+
+    def test_a_statistic_that_is_not_an_intensity_says_nothing(self, kit, lines):
+        out = kit.reduce(lines, value="mz", stat="mean", by="target_ion_formula")
+
+        assert "lines_mixed" not in out
+
+    def test_one_line_per_ion_says_nothing(self, kit, peaks):
+        df = peaks.df
+        mono = kit.derive(
+            df[df["target_isotope_formula"] == df["target_ion_formula"]],
+            peaks,
+            code="the main line of each ion",
+        )
+
+        out = kit.reduce(mono, value="height", stat="median", by="target_ion_formula")
+
+        assert "lines_mixed" not in out
+
+    def test_the_word_reaches_the_model_over_mcp(self, server, kit, lines):
+        out = ok(
+            server, "reduce", frame=lines.id, value="height", by=["target_ion_formula"]
+        )
+
+        assert out["lines_mixed"]["lines_per_group_max"] >= 2
+
+    def test_the_tool_texts_say_so_and_that_session_runs_nothing(self, server):
+        listing = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        tools = {t["name"]: t["description"] for t in listing["result"]["tools"]}
+
+        assert "lines_mixed" in tools["reduce"] and "isotope lines" in tools["reduce"]
+        assert "reduce the returned Frame again" in tools["reduce"]
+        assert "runs nothing" in tools["session"] and "reduce" in tools["session"]

@@ -92,10 +92,15 @@ COMMON: dict[str, str] = {
     "target_isotope_id": "the matched isotope line's ID",
     "target_isotope_formula": "the matched isotope line, one m/z of the ion's pattern",
     "target_ion_id": "the matched ion's ID",
-    "target_ion_formula": "the matched ion: the compound with its mechanism applied",
+    "target_ion_formula": (
+        "the matched ion, its mechanism applied; its rows are its isotope lines: "
+        "a height by ion mixes them"
+    ),
     "target_compound_id": "the matched compound's ID; group by it, formulas repeat",
     "target_compound_name": "the matched compound's name; NaN when unmatched",
-    "target_compound_formula": "the matched compound's neutral formula; NaN when unmatched",
+    "target_compound_formula": (
+        "the matched compound's neutral formula; NaN when unmatched; rows are its lines"
+    ),
     "ionization_mechanism": "the matched ion's ionization mechanism, by name",
     "ionization_mechanism_id": (
         "the matched ion's ionization mechanism's ID; a peak list has the name only"

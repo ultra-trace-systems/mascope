@@ -713,7 +713,11 @@ TOOLS: tuple[Tool, ...] = (
         "median, mean, max, min, sum, count, or argmax / argmin (the row the "
         "extreme is in). Optional where-clauses keep rows first. Answers with a few "
         "numbers, the largest first, never the table: this is how to compute over a "
-        "Frame here. The reduction is kept as a derived Frame for provenance.",
+        "Frame here. The reduction is kept as a derived Frame for provenance. In a "
+        "peak list an ion's rows are its isotope lines: a height by ion mixes them, "
+        "and the result says lines_mixed; keep one line with a where clause on "
+        "target_isotope_formula. For groups past top, reduce the returned Frame "
+        "again, ascending or with a where clause.",
         {
             "frame": {"type": "string", "description": "The Frame's ID (from a load)."},
             "value": {"type": "string", "description": "The column reduced."},
@@ -976,7 +980,8 @@ TOOLS: tuple[Tool, ...] = (
         "This server's session: its directory, the Python to run on this "
         "machine, the line that opens the session there (open), the line "
         "that opens a toolkit on it in the server's workspace, to load more "
-        "there (toolkit), and its Frames.",
+        "there (toolkit), and its Frames. It runs nothing: with no shell of "
+        "your own, compute with reduce.",
         {},
         "_session",
     ),
