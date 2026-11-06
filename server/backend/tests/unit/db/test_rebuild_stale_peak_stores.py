@@ -52,7 +52,7 @@ def test_the_survey_finds_the_stale_files_and_counts_every_other():
         script.survey(candidates, lambda filename: filename != "zarr", check)
     )
 
-    assert stale == [{**candidates[0], "stored": 8, "reads": 7}]
+    assert stale == [{**candidates[0], "state": script.STALE, "stored": 8, "reads": 7}]
     assert "zarr" not in checked
     assert counts["A"] == {script.STALE: 1, script.CURRENT: 1, script.NO_PEAKS: 1}
     assert counts["B"] == {"not_raw": 1, "unreadable": 1, script.NO_STORE: 1}
@@ -126,6 +126,44 @@ def test_a_survey_that_goes_on_keeps_the_run_s_progress_and_traceback_budget(
     assert sum(r["exception"] is not None for r in records) == 1
 
 
+def test_a_store_without_scan_counts_is_counted_and_rebuilt_only_when_asked():
+    """It is not stale: every read takes it as it is. The run says how many
+    there are, and rebuilds them on ``FILL_SCAN_COUNTS=1`` beside the stale."""
+    candidates = _candidates(("stale", "A"), ("uncounted", "A"), ("current", "A"))
+    found = {
+        "stale": script.Checked(script.STALE, 8, 7),
+        "uncounted": script.Checked(script.UNCOUNTED),
+        "current": script.Checked(script.CURRENT),
+    }
+
+    def survey(**kwargs):
+        return asyncio.run(
+            script.survey(candidates, lambda _: True, found.__getitem__, **kwargs)
+        )
+
+    stale, counts, _ = survey()
+    assert [row["filename"] for row in stale] == ["stale"]
+    assert counts["A"][script.UNCOUNTED] == 1
+
+    both, _, _ = survey(uncounted=True)
+    assert [(row["filename"], row["state"]) for row in both] == [
+        ("stale", script.STALE),
+        ("uncounted", script.UNCOUNTED),
+    ]
+
+
+@pytest.mark.parametrize("value, asked", [("1", True), ("0", False), (None, False)])
+def test_the_stores_without_scan_counts_are_asked_for_by_name(
+    monkeypatch, value, asked
+):
+    if value is None:
+        monkeypatch.delenv("FILL_SCAN_COUNTS", raising=False)
+    else:
+        monkeypatch.setenv("FILL_SCAN_COUNTS", value)
+
+    assert script._fill_scan_counts() is asked
+
+
 # --- the run ------------------------------------------------------------------
 
 
@@ -145,10 +183,11 @@ class _Recorder:
     """Every step a run takes, as stand-ins that record what they were
     asked."""
 
-    def __init__(self, fail=(), stale_after=()):
+    def __init__(self, fail=(), stale_after=(), uncounted_after=()):
         self.calls = []
         self._fail = set(fail)
         self._stale_after = set(stale_after)
+        self._uncounted_after = set(uncounted_after)
 
     async def samples_of(self, sample_file_id):
         return [f"{sample_file_id}-item"], [f"{sample_file_id}-batch"]
@@ -174,6 +213,8 @@ class _Recorder:
 
     def check(self, filename):
         state = script.STALE if filename in self._stale_after else script.CURRENT
+        if filename in self._uncounted_after:
+            state = script.UNCOUNTED
         return script.Checked(state)
 
     def steps(self):
@@ -356,12 +397,17 @@ def test_an_uncapped_run_rebuilds_every_stale_file(monkeypatch):
     assert not outcome.left_over
 
 
-def _run(monkeypatch, files, limit, fail=(), current=()):
-    """:func:`script.run` over ``files``, every one stale, with stand-ins
-    for the database and the filestore; the messages it logs."""
+def _run(monkeypatch, files, limit, fail=(), current=(), uncounted=(), fill=False):
+    """:func:`script.run` over ``files``, every one stale but those
+    ``current`` or ``uncounted``, with stand-ins for the database and the
+    filestore; the messages it logs. ``fill`` sets ``FILL_SCAN_COUNTS=1``."""
     monkeypatch.setattr(script, "_CHECK_BATCH", 2)
     monkeypatch.setenv("REBUILD_LIMIT", str(limit))
     monkeypatch.delenv("DRY_RUN", raising=False)
+    if fill:
+        monkeypatch.setenv("FILL_SCAN_COUNTS", "1")
+    else:
+        monkeypatch.delenv("FILL_SCAN_COUNTS", raising=False)
     recorder = _Recorder(fail=fail)
 
     async def nothing(*_):
@@ -385,13 +431,15 @@ def _run(monkeypatch, files, limit, fail=(), current=()):
         rebuilt.add(filename)
 
     monkeypatch.setattr(script, "_rebuild", rebuild)
-    monkeypatch.setattr(
-        script,
-        "check",
-        lambda filename: script.Checked(
-            script.CURRENT if filename in rebuilt else script.STALE, 8, 7
-        ),
-    )
+
+    def check(filename):
+        if filename in rebuilt:
+            return script.Checked(script.CURRENT)
+        if filename in uncounted:
+            return script.Checked(script.UNCOUNTED)
+        return script.Checked(script.STALE, 8, 7)
+
+    monkeypatch.setattr(script, "check", check)
     with captured_logs("INFO") as records:
         asyncio.run(script.run())
     return [record["message"] for record in records]
@@ -400,7 +448,10 @@ def _run(monkeypatch, files, limit, fail=(), current=()):
 def test_a_capped_run_with_stores_left_says_to_run_again(monkeypatch):
     messages = _run(monkeypatch, [f"f{i}" for i in range(4)], limit=1, fail={"f0"})
 
-    assert any("Stale stores found: 2; rebuilt 1" in m for m in messages)
+    assert any(
+        "Stale stores found: 2, without scan counts: 0; rebuilt 1" in m
+        for m in messages
+    )
     assert any("run this again until it reports nothing" in m for m in messages)
     assert any(m.endswith("The next run tries them again.") for m in messages)
 
@@ -412,13 +463,50 @@ def test_a_run_with_nothing_stale_says_so(monkeypatch):
     assert not any("Stale stores found" in m for m in messages)
 
 
+def test_a_run_rebuilds_the_stores_without_scan_counts_only_when_asked(
+    monkeypatch,
+):
+    """Without ``FILL_SCAN_COUNTS=1`` it only says how many there are."""
+    files = ["f0", "f1", "f2"]
+
+    messages = _run(monkeypatch, files, limit=5, current={"f2"}, uncounted={"f1"})
+
+    assert any(m.startswith("  1 store(s) predate the scan counts") for m in messages)
+    assert any("Stale stores found: 1, without scan counts: 0;" in m for m in messages)
+
+    messages = _run(
+        monkeypatch, files, limit=5, current={"f2"}, uncounted={"f1"}, fill=True
+    )
+
+    assert not any("predate the scan counts" in m for m in messages)
+    assert any("f1: keeps no scan counts;" in m for m in messages)
+    assert any(
+        "Stale stores found: 1, without scan counts: 1; rebuilt 2" in m
+        for m in messages
+    )
+
+
 def test_a_capped_run_left_with_failures_alone_says_so(monkeypatch):
     """No advice to run again: the next run would fail on the same files."""
     messages = _run(monkeypatch, ["f0", "f1", "f2"], limit=2, fail={"f0", "f1"})
 
-    assert any("Stale stores found: 3; rebuilt 1" in m for m in messages)
+    assert any(
+        "Stale stores found: 3, without scan counts: 0; rebuilt 1" in m
+        for m in messages
+    )
     assert not any("run this again" in m for m in messages)
     assert any("every other stale store was rebuilt" in m for m in messages)
+
+
+def test_a_rebuild_that_leaves_the_store_without_counts_is_named():
+    recorder = _Recorder(uncounted_after={"first"})
+    uncounted = [{**STALE[0], "state": script.UNCOUNTED}]
+
+    outcome = asyncio.run(script.rebuild_all(uncounted, recorder.steps()))
+
+    assert outcome.failed == ["first"]
+    assert outcome.counts["still_stale"] == 1
+    assert outcome.counts["rebuilt"] == 0
 
 
 # --- which files are read -----------------------------------------------------
