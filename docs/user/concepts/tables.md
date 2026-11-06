@@ -129,7 +129,7 @@ acquisition, the clock `t0` and `t1` themselves are on (the toolkit's
 | `sample_item_id` | The sample's ID. Group by it: sample names repeat across batches. |
 | `sample_item_name` | The sample's name, as its owner wrote it. |
 | `datetime_utc` | In a peak list: the sample file's acquisition start, UTC; the sample's window begins `t0` seconds later. In a time series: the point's absolute time, the file's start plus `time`. |
-| `peak_id` | Mascope's ID of the detected peak within its sample. A peak matched to several isotope lines has one row per line, so the ID repeats. |
+| `peak_id` | Mascope's ID of the detected peak within its sample. In a peak list, a peak matched to several isotope lines has one row per line, so the ID repeats; in a time series it is the same on every point of the peak's series, one series per matched line; in a stage table there is one row per stage and matched line. |
 
 ### The peak
 
@@ -207,13 +207,15 @@ SDK's roll-ups.
 | `match_isotope_id` | The ID of the match record for the line. |
 | `intensity_compound`, `intensity_ion` | Mascope's sum of the peak intensities of the compound's lines (all its ions) and of the ion's lines: heights on an Orbitrap, areas on a TOF. A line outside the m/z tolerance counts 0; a line outside only the isotope ratio tolerance, or under the minimum intensity, keeps its intensity in the sum though its score is 0 ([what a line keeps](../how-it-works/matching.md#the-tolerances-what-a-line-keeps)). `intensity_ion` is the point the app's batch chart draws, so that point includes a ratio-gated line and leaves out an m/z-gated one. |
 | `sample_peak_id`, `sample_peak_mz` | The nearest peak to the line, by ID and measured m/z. The ID is kept even when that peak failed the tolerances, with `match_score_isotope` 0; a line is *found* only with a score above 0. A line with **no peak** holds placeholders: an empty ID and, as `sample_peak_mz`, the theoretical `mz` again. |
-| `sample_peak_intensity`, `sample_peak_intensity_relative` | That peak's intensity, the height on an Orbitrap and the area on a TOF, and the same relative to the peak of the ion's most abundant line. It is 0 when the line has no peak **and** when its nearest peak is outside the m/z tolerance, in which case the peak's ID and m/z are still there; a line outside only the ratio tolerance keeps its intensity with a score of 0 ([what a line keeps](../how-it-works/matching.md#the-tolerances-what-a-line-keeps)). |
+| `sample_peak_intensity` | That peak's intensity, the height on an Orbitrap and the area on a TOF. It is 0 when the line has no peak **and** when its nearest peak is outside the m/z tolerance, in which case the peak's ID and m/z are still there; a line outside only the ratio tolerance keeps its intensity with a score of 0 ([what a line keeps](../how-it-works/matching.md#the-tolerances-what-a-line-keeps)). |
+| `sample_peak_intensity_relative` | The nearest peak's intensity over the main line's peak's. It is read **before** the m/z tolerance is applied: on a line outside it, it still holds the nearest peak's ratio, often far above 1, though `sample_peak_intensity` reads 0. It is 0 only when the line has no peak. |
 | `match_mz_error`, `match_abundance_error` | How far the peak's m/z is from the line's theoretical m/z, **in ppm**, and how far its relative intensity is from the line's theoretical abundance. A line with no peak holds 0 and 1: read with the empty `sample_peak_id`, not as a perfect match. |
 | `resolution` | Which set of target lines the line comes from: `HIGH`, an Orbitrap's resolved lines; `LOW`, a TOF's merged ones. Not a resolving power. |
 | `signal_to_noise`, `sample_peak_tof`, `is_satellite` | The found peak's own: its signal-to-noise ratio, its time-of-flight coordinate (TOF files only; -1 when no peak), and whether it is a satellite. |
 | `instrument` | The instrument whose match parameters scored the ion. |
 | `cas_number`, `inchi`, `inchikey`, `smiles` | The compound's identifiers, where its record has them. The match is on the formula and confirms no structure. |
-| `target_*`, `ionization_mechanism`, `relative_abundance` | As in the peak list. |
+| `target_compound_name` | Always empty in the tree: it scores formulas, not named compounds. `match_category_compound` says whether a candidate matched. |
+| other `target_*`, `ionization_mechanism`, `relative_abundance` | As in the peak list. |
 
 ## Rows that repeat, and rows that are missing
 
