@@ -91,6 +91,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.api.new.peak_assignments.service import (
+    SEARCH_PEAK_COLUMNS,
     _resolution_of,
     _searched_mechanisms,
     _seeded_fits,
@@ -584,9 +585,7 @@ async def _search_sample_peaks(
         envelope_tolerance=envelope_tolerance,
     )
     search_columns = [
-        column
-        for column in ("mz", "intensity", "signal_to_noise")
-        if column in frame.columns
+        column for column in SEARCH_PEAK_COLUMNS if column in frame.columns
     ]
     matches_df, _ = await asyncio.to_thread(
         assign_compositions,

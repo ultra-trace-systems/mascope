@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import pytest
+from scipy.stats import norm
 
 from mascope_tools.composition import heuristic_filter
 from mascope_tools.composition.envelope_tolerance import (
@@ -38,6 +39,17 @@ from mascope_tools.composition.scoring import (
 
 #: Bulk and one-at-a-time sum the weighted mean in different orders.
 ROUNDING = 1e-12
+
+#: The tolerances an envelope may be scored at beside its scan counts:
+#: today's, and a response curve with a band and a threshold of its own.
+TOLERANCES_FOR_ENVELOPES = [
+    None,
+    EnvelopeTolerance(
+        snr_edges=RESPONSE_SNR_EDGES,
+        lower=(0.6, 0.8, 0.9, 0.95, 1.0),
+        detect_snr=10.0,
+    ),
+]
 
 IONS = [
     ("C6H5O", -1),
@@ -68,8 +80,54 @@ def _random_envelope(rng, n):
     return me, oi, snr, pr
 
 
+def _random_counts(rng, n):
+    """Per line, the scans holding its peak and the scans averaged: one total
+    per envelope, as one spectrum's, and a count the detection could not take
+    now and then."""
+    total = float(rng.choice([1, 4, 20, 100]))
+    present = rng.integers(1, int(total) + 1, n).astype(float)
+    present[rng.random(n) < 0.1] = np.nan
+    return present, np.full(n, total)
+
+
 class TestManyEnvelopesScoreAsEachDoesAlone:
     """``score_patterns_v2`` against ``score_pattern_v2``, envelope by envelope."""
+
+    @pytest.mark.parametrize("tolerance", TOLERANCES_FOR_ENVELOPES)
+    def test_random_envelopes_with_scan_counts(self, tolerance):
+        rng = np.random.default_rng(11)
+        envelopes = [
+            _random_envelope(rng, int(rng.integers(1, 30))) for _ in range(300)
+        ]
+        counts = [_random_counts(rng, len(e[3])) for e in envelopes]
+        # An envelope whose anchor has no count, and one with none at all
+        counts[4][0][0] = np.nan
+        counts[5][0][:] = np.nan
+
+        alone = [
+            score_pattern_v2(
+                me,
+                oi,
+                snr,
+                pr,
+                k_detect=3.0,
+                tolerance=tolerance,
+                n_scans=present,
+                n_scans_total=total,
+            )
+            for (me, oi, snr, pr), (present, total) in zip(envelopes, counts)
+        ]
+        offsets = np.concatenate([[0], np.cumsum([len(e[3]) for e in envelopes])])
+        together = score_patterns_v2(
+            *(np.concatenate([e[part] for e in envelopes]) for part in range(4)),
+            offsets,
+            k_detect=3.0,
+            tolerance=tolerance,
+            n_scans=np.concatenate([c[0] for c in counts]),
+            n_scans_total=np.concatenate([c[1] for c in counts]),
+        )
+
+        assert together == pytest.approx(alone, abs=ROUNDING, rel=0)
 
     @pytest.mark.parametrize("with_snr", [True, False], ids=["snr", "no snr"])
     @pytest.mark.parametrize("sigma", [None, 0.6, 5.0])
@@ -165,6 +223,14 @@ TOLERANCES = [
 ]
 
 
+def _peak_counts(rng, size):
+    """Per peak of a spectrum, the scans holding it and the scans averaged."""
+    total = float(rng.choice([4, 20, 100]))
+    present = rng.integers(1, int(total) + 1, size).astype(float)
+    present[rng.random(size) < 0.05] = np.nan
+    return present, np.full(size, total)
+
+
 def _scorings(rng):
     resolving_power = float(rng.choice([8000.0, 60000.0]))
     return PatternScoring(
@@ -194,11 +260,15 @@ class TestManyCandidatesMatchAsEachDoesAlone:
     """``score_ion_envelopes`` against ``score_ion_envelope``, line for line."""
 
     @pytest.mark.parametrize("seed", range(6))
-    def test_random_spectra(self, seed):
+    @pytest.mark.parametrize("with_counts", [False, True], ids=["", "counted"])
+    def test_random_spectra(self, seed, with_counts):
         rng = np.random.default_rng(seed)
         for _ in range(25):
             mzs, intensities, snrs = _spectrum(
                 rng, with_snr=rng.random() < 0.7, duplicates=rng.random() < 0.3
+            )
+            n_scans, n_scans_total = (
+                _peak_counts(rng, mzs.size) if with_counts else (None, None)
             )
             scoring = _scorings(rng)
             picked = [IONS[i] for i in rng.choice(len(IONS), 8)]
@@ -211,11 +281,21 @@ class TestManyCandidatesMatchAsEachDoesAlone:
                 intensities,
                 snrs,
                 scoring,
+                n_scans=n_scans,
+                n_scans_total=n_scans_total,
             )
             for position, ((formula, charge), floor) in enumerate(zip(picked, floors)):
                 _assert_same(
                     score_ion_envelope(
-                        formula, charge, floor, mzs, intensities, snrs, scoring
+                        formula,
+                        charge,
+                        floor,
+                        mzs,
+                        intensities,
+                        snrs,
+                        scoring,
+                        n_scans=n_scans,
+                        n_scans_total=n_scans_total,
                     ),
                     tuple(part[position] for part in together),
                 )
@@ -417,6 +497,49 @@ class TestScoreCandidates:
             in_order.drop(columns=list(in_order.columns[5:])),
             shuffled.drop(columns=list(shuffled.columns[5:])),
         )
+
+    def test_the_scan_counts_follow_their_peaks_in_any_order(self):
+        """The M+1 line kept by 3 of 10 scans, read at its mean per scan: the
+        counts go with their peaks when the list is sorted for the match.
+
+        Under the floor model (``scan_presence``), a line whose per-scan S/N
+        is ``mu = 2 + Phi^-1(0.3)`` is kept by 30% of the scans at a mean of
+        ``mu + phi(2 - mu) / 0.3`` over them; the other lines are in every
+        scan. Heights in a scan noise of 1,000."""
+        lines, abundances, _ = predict_isotopes("C10H15O4", -1, None, 1e-3)
+        rng = np.random.default_rng(6)
+        mean = 2.0 + norm.ppf(0.3)
+        per_scan = np.asarray(abundances, float) / abundances[1] * mean
+        heights = per_scan.copy()
+        heights[1] = 0.3 * (mean + norm.pdf(2.0 - mean) / 0.3)
+        present = np.full(len(lines), 10.0)
+        present[1] = 3.0
+        peaks = pd.DataFrame(
+            {
+                "mz": np.concatenate([lines, rng.uniform(100, 400, 50)]),
+                "intensity": np.concatenate([heights * 1e3, rng.uniform(1e2, 1e4, 50)]),
+                "signal_to_noise": np.concatenate(
+                    [heights * np.sqrt(10.0), rng.uniform(3, 30, 50)]
+                ),
+                "n_scans": np.concatenate([present, rng.integers(1, 11, 50)]),
+                "n_scans_total": 10.0,
+            }
+        )
+        candidates = [{"ion": "C10H15O4-", "observed_mass": float(lines[0])}]
+        scoring = PatternScoring(sigma_ppm=0.6)
+
+        in_order = score_candidates(candidates, peaks.sort_values("mz"), scoring)
+        shuffled = score_candidates(
+            candidates, peaks.sample(frac=1, random_state=1), scoring
+        )
+        uncounted = score_candidates(
+            candidates, peaks.drop(columns=["n_scans", "n_scans_total"]), scoring
+        )
+
+        assert shuffled["fit_score"].iloc[0] == pytest.approx(
+            in_order["fit_score"].iloc[0], abs=ROUNDING
+        )
+        assert in_order["fit_score"].iloc[0] > uncounted["fit_score"].iloc[0] + 0.1
 
     def test_a_polars_peak_list_scores_as_a_pandas_one(self):
         peaks = self._peaks(np.random.default_rng(5))

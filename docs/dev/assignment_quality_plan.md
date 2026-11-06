@@ -88,6 +88,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | #2593 (the gate's anchors) |  | in two PRs (decided 2026-10-22). Built: the mass gate's fit takes the reagent pass's monoisotopic lines beside its commits; estimated on the pass-10 ledgers, all seven K3 files fit a calibration. Planned: the cap and the offset report (MAS-469), landing with 3.5b |
 | 3.5b - the envelope's tolerance, fitted per run | #2978 |  | built: Stage A fits a response curve per Orbitrap file (pooled with its batch siblings at the same settings, then the defaults) and a centre and width per TOF run; every fit score of the run reads it; pass 11 measures it |
 | 3.5c - the targeted matcher reads an isotope line over the scans that hold its anchor | - |  | built: an Orbitrap line's ratio is read over the scans it shares with its anchor, the count stored and shown in the Match tab; TOF unchanged |
+| 3.5d - the peak store keeps each Orbitrap peak's scan presence count; the scorer reads a line against its presence-corrected share | - |  | built: a raw Orbitrap store keeps `n_scans` and `n_scans_total` per peak, the peaks route, the batch table and the SDK serve them; the fit score reads a counted line at its mean per scan (the censored-normal estimate from its count and S/N); an absent line keeps the curve's threshold (the count's own, a hard gate, is held back for a soft one: #3123); a stage serves no counts until its S/N is its own (#3117); 3.5b's curve is the fallback for a file without counts; the gate's pass measures it |
 | 3.6 - priors and the dataset's context | - |  | planned; two riders from the reference's 0.10 line (the review section) |
 | 3.7 - stage 3 gate, engine 0.6.0 | - |  | planned; read against the literature and chemical reasoning, not the reference (decision 27) |
 | 4.1 - series detection on the batch ledger | - |  | built: *Detect series* walks CH2, O, H2O, CO, CO2, C2H2O and, from a peak carrying their element, C2H6OSi and CF2 up to three steps from the batch's assigned peaks onto its unassigned and candidate ones within the search's window, commits a unit at 12 proposals and ten times its six decoys' mean (re-derived on the testbed: 3x commits every TOF family), measures each proposal through the propagation chain, records the series with `has_anchor` on the batch peak, and a run counts it as a second observation; tiering rule set 12; MAS-61 |
@@ -952,6 +953,14 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
     envelope predictor's depth stays at 3: the threshold moves what an
     absent line costs, not which lines are predicted or which present ones
     count.
+  - **Since 3.5d the curve is the fallback, not the model.** Where a file's
+    peaks carry their scan counts, a counted line is read over the scans that
+    hold it and held to its share; an absent line is still charged from the
+    curve's threshold (the count's own is mascope#3123). The curve is still
+    fitted and recorded on every Orbitrap
+    run, on the lines as listed, and scores the lines of a file without
+    counts. Its record pools the same uncorrected readings for siblings that
+    lack counts.
 
 ### 3.5c The targeted matcher reads an isotope line over the scans that hold its anchor
 
@@ -987,6 +996,128 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   the demo set's match categories before and after. The reproducibility
   goldens compare peak m/z and intensity only and do not move.
 - **Size.** S. Before 3.5d, whose scorer form it previews.
+
+### 3.5d The peak store keeps each Orbitrap peak's scan presence count
+
+- **What.** Detection counts, per peak of a raw Orbitrap file, the scans
+  holding a centroid within half its width (`n_scans`) of the scans averaged
+  into it (`n_scans_total`: its polarity's, or its stream's for a store
+  detected per stream), and the store keeps both beside `signal_to_noise`.
+  `GET /api/samples/{id}/peaks`, the batch's Parquet peak table,
+  `samples.get_peaks` and `load_peaks` serve them, and the fit score reads
+  them: a matched line at its mean per scan, the censored-normal estimate
+  from its count and S/N, against its anchor read alike, held to its share.
+  An absent line is gated as before; the threshold the anchor's count and
+  per-scan S/N set waits for a soft gate (mascope#3123). 3.5b's curve is the
+  fallback for a file without counts.
+- **Why.** The centroid averaging knew how many scans each peak came from and
+  dropped it, so the untargeted engine read each line off the file-averaged
+  list and modelled the censoring (3.5b's curve, the reference's response
+  curve) instead of measuring it. The count is the one number per peak the
+  censoring's cause is.
+- **Where.** `mascope_thermo.thermo.get_centroid_presence` (one pass over
+  the averaged scans gives the side-lobe flag share and the count);
+  `mascope_signal.peak` (`N_SCANS`, `N_SCANS_TOTAL`); `samples_peaks.py`,
+  the peaks route, `batch_peak_table.py`; the SDK docstrings and README;
+  `mascope_tools.composition.scan_presence` and `score_pattern_v2` /
+  `score_patterns_v2` (`n_scans`, `n_scans_total`), the untargeted matcher
+  (`score_ion_envelope(s)`, `match_isotopic_pattern`, `score_candidates`);
+  the engine's peak read and search columns; the targeted matcher's frame
+  (`mascope_match.compute.isotopes`) for Stage A's `ion_scores_v2`;
+  `rebuild_stale_peak_stores` (`FILL_SCAN_COUNTS=1`); `tooling/score_eval`.
+- **Verify.** On the gate's Orbitrap sets, 5.3's table by the corrected
+  share: flat across the scans-missed bins, and the share of committed lines
+  under 0.9 at an expected S/N of 10 to 20 falling toward the bright lines'.
+  The 79Br/81Br control on the untargeted path, paired. The score_eval
+  goldens move only where a line's presence fraction is below one; the
+  reproducibility goldens do not move. A store without the column loads and
+  scores as before.
+- **Size.** M.
+- **As built (MAS-582).**
+  - **The count.** A scan counts when it holds a centroid within half the
+    peak's width of its m/z, read in the pass the side-lobe flag already made
+    (every scan's centroids, flagged ones included). It is reader-independent:
+    the OpenTFRaw averaging's own bin count can exceed the scans (one scan's
+    two labels in one bin) and the vendor library's averaging has none. On the
+    published demo raws the two agree for 99.8 % of the 18,978 peaks above the
+    noise. NaN where a peak's width is unknown.
+  - **The store.** The detector writes both counts; a store without them
+    loads, serves null for both, and scores as before. No store is stale for
+    lacking them: `rebuild_stale_peak_stores` counts such stores as current
+    without scan counts and rebuilds them only on `FILL_SCAN_COUNTS=1`, since
+    a rebuild sets their batches to rematch. A time-ranged peak read, a
+    stage's, serves neither: its S/N is the whole window's, and the estimate
+    reads a range's own counts against it low (0.78 to 0.95 of the share on a
+    tenth of a 100-scan file), with no lower band to catch it. It serves them
+    once a stage's S/N is its own (mascope#3117).
+  - **A matched line.** Read at its mean per scan: the averaged S/N `S` of a
+    peak in `n` of `N` scans gives its mean per-scan S/N over the kept scans,
+    `xbar = S * sqrt(N) / n` (the averaging's own law, so no per-scan noise
+    need be stored), and the censored-normal (Tobit) estimate with unit noise
+    gives its mean over every scan, `mu`, the root of `n (xbar - mu) = (N -
+    n) phi(F - mu) / Phi(F - mu)` (Tobin 1958; Amemiya 1984): unique, the
+    log-likelihood being concave, and reached by Newton's steps from `xbar`
+    (at most 9 above the noise). The line reads `I * mu * sqrt(N) / S`, `I`
+    where every scan holds it, and its share is that over its anchor's read
+    alike, held to the predicted share at the default floor: the curve's
+    lower end, which allows for the dilution, applies to an uncounted line
+    only, and to one some scans missed that has no S/N or that the estimate
+    puts at or below the noise. The untargeted matcher's 40% window reads the
+    same share, so a diluted dim line on a counted file is kept rather than
+    turned absent (MAS-370 remains for a file without counts). Round 3 of
+    the review built the first form, the mean over the kept scans
+    `(I_line / f_line) / (I_anchor / f_anchor)`, and held it to the share:
+    the kept scans are a dim line's upward fluctuations, so under the floor
+    model it read 1.40 of the share at half presence and 1.76 at 0.31, a
+    bias that does not shrink with the scans. The estimate reads 0.99 to
+    1.00 there from 20 scans up (median over simulated lines; 0.99 to 1.08
+    on four scans). Its limits: the averaged S/N's law (1.00 to 1.04 of the
+    measured kept mean times `n / sqrt(N)` with OpenTFRaw and 0.90 to 0.96
+    with the vendor library on the demo raws of 4 to 176 scans, which moves
+    the share at most 2%), and an analyte that varies within the averaged
+    window, whose dim line's kept scans are its high-concentration scans.
+  - **An absent line, built and held back.** The anchor's per-scan S/N is `S * sqrt(N) / n` (the
+    averaging's own scaling); the line reads `x ~ N(p t, 1)` per scan and a
+    scan keeps it from the floor `F = 2` (the demo raws' centroids reach down
+    to an S/N of about 2: 5th percentile 2.04 to 2.18). Charged where what the
+    kept scans add to the list at its m/z beyond the noise's own,
+    `(p t Phi(p t - F) + phi(p t - F) - phi(F)) n / sqrt(N)`, reaches 3, the
+    list's cut. With the anchor in every scan: 3.2 at one scan, 4.2 at four,
+    9.2 at a hundred; the curve's threshold is the fallback for an uncounted
+    anchor. The floor model was read on the demo raws first: the median S/N
+    of a peak over its kept scans against its presence fraction follows the
+    truncated normal within about 0.2 on the 20-scan file. Held back before
+    merge (the owner's second design review): on the demo bundle, its stores'
+    counts filled from each raw, the rule lowered score_eval's top-1, 0.8461
+    with the matched-line estimate alone and 0.8447 with both at `F = 2`,
+    0.8481 and 0.8443 at 2.8 (develop 0.8367). It costs more at the floor
+    that matches the demo's detection rate, so the hard gate fails, not the
+    threshold: it charges the full miss penalty on lines the list holds
+    about half the time. The scorer gates an absent line at the curve's
+    threshold, counts or not; `absent_line_detectable` stays for a soft gate,
+    an absent line charged by the chance the list would have held it
+    (mascope#3123).
+  - **Read on the demo raws** (161 four-scan files, the bundle's matched
+    ions, the list read with the counts offline; the gate sets are the
+    planner's pass). 13C lines missing one or two of their anchor's four
+    scans read 0.77 of their share as listed, 1.08 over their kept scans and
+    0.90 by the estimate; lines in every scan 0.96. The same with the vendor
+    library's averaging: 0.77, 1.07, 0.90. At an expected S/N of 10 to 20 the
+    share under 0.9 is 32% every way: nearly every such line is in all four
+    scans there, so the demo's shortfall at 10 to 20 is not the censoring.
+    The demo's long files (20 to 176 scans) are MS2 runs whose matched ions
+    give almost no counted 13C line. The one-81Br line of the bromine ions:
+    85 of 2,908 read differently by the estimate, 93% of them closer to
+    natural (median paired change in error -0.11), within 0.2 of natural
+    96.6% as listed, 97.6% over the kept scans, 97.4% by the estimate.
+    Predicted 13C lines the list holds, by expected S/N: 6%
+    at 3 to 4, 42% at 4.2 to 5, 64% at 5 to 6, 88 to 89% at 6 to 8, 98% or
+    more from 10;
+    the count rule would charge from 4.2, so it would charge some lines a
+    four-scan file holds about half the time, where 3.5b's curve, fitted at
+    10 on the demo's files, charges almost none of them and today's 3 all of
+    them. Of the absent predicted 13C lines from 3 up it would charge 43%,
+    today 100% and the curve 7%.
 
 ### 3.6 Priors and the dataset's context
 

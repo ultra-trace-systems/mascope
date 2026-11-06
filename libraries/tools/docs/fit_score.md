@@ -279,6 +279,60 @@ censored line the curve admits is matched rather than charged as a miss
 a line whose base SNR is missing or not above 0, which the score reads as unknown
 too, keeps the fixed window.
 
+### 3.2b A line read by its scan presence (3.5d)
+
+The curve models a loss that a raw Orbitrap file's peak store counts instead: per peak,
+the scans holding a centroid within half its width, $n$, of the $N$ scans averaged
+(`n_scans`, `n_scans_total`; `mascope_signal.peak.N_SCANS`). Where the caller passes them
+(`n_scans`, `n_scans_total`, one per line, as `observed_snr` is), a matched line whose
+anchor is counted too is read at its mean per scan
+(`mascope_tools.composition.scan_presence`).
+
+A scan reads a line at $x \sim \mathcal{N}(\mu_i, 1)$, in units of the scan's noise, and
+keeps it where $x \ge F$, the per-scan floor (§3.3). The averaged list holds the kept
+scans' sum over every scan, at an SNR $s_i$ that is the mean per-scan SNR over the kept
+scans times $n_i/\sqrt{N}$ (`OpenTFRawBackend.average_centroids` scales it so; the vendor
+library reads its SNR off the noise-reduced averaged spectrum), so the scans that keep the
+line read it at $\bar x_i = s_i \sqrt{N} / n_i$. They are its upward fluctuations: $\bar
+x_i$ overshoots $\mu_i$ as the mean over every scan undershoots it. $\mu_i$ is the
+censored-normal (Tobit) maximum-likelihood estimate with known noise (Tobin 1958; Amemiya
+1984), the root of
+
+$$n_i\,(\bar x_i - \mu_i) = (N - n_i)\,\frac{\varphi(F - \mu_i)}{\Phi(F - \mu_i)}$$
+
+which is unique, the log-likelihood being concave in $\mu_i$; Newton's steps from $\bar x_i$
+reach it from above. The line at its mean per scan is $o_i \mu_i \sqrt{N} / s_i$, which is
+$o_i$ where $n_i = N$, and
+
+$$r_i = \frac{o_i\, \mu_i / s_i}{o_0\, \mu_0 / s_0}$$
+
+the line's mean per scan against the anchor's. It is held to the predicted share itself:
+the band of §3.2a, which allows for the dilution this takes out, is the fallback for a
+line without counts, and for one that some scans missed and that has no SNR or that the
+estimate puts at or below the noise ($\mu_i \le 0$). The SNR terms are the same, on $r_i$.
+The composition finder's matcher keeps its fixed window for such a line, without the
+curve's lower end, for the same reason.
+
+Under the floor model the median of $r_i / p_i$ over simulated lines is $0.99$ to $1.00$
+from 20 scans up at every presence and $0.99$ to $1.08$ on four. The mean over the kept
+scans, $(o_i / f_i) / (o_0 / f_0)$ with $f = n/N$, reads $1.40$ at half presence and $1.76$
+at $0.31$; the mean over every scan reads $0.70$ and $0.54$. Three things the model does not
+hold move the estimate:
+
+- **The floor.** $F$ is the demo raws', one number for every file. Read at $F = 2$ on a
+  file whose scans keep lines from 3, a line kept by $30\%$ of the scans reads $0.77$ of
+  its share and by half $0.86$; on one whose scans keep them from 1, $2.06$ and $1.36$.
+  A floor read per file is mascope#3111.
+- **The SNR's law.** On the published demo raws (4 to 176 scans, the median per bin of
+  presence) the averaged SNR is $1.00$ to $1.04$ times the measured kept mean times
+  $n/\sqrt{N}$ with OpenTFRaw, and $0.90$ to $0.96$ times it with the vendor library. An
+  SNR $10\%$ low reads a line's share $2\%$ high at a presence of $0.31$ and $1\%$ at
+  $0.69$; one $4\%$ high reads it under $1\%$ low.
+- **An analyte that varies within the averaged window.** Its dim line's kept scans are
+  also its high-concentration scans, a bias a noise-only model does not cover, and a
+  compound present in only part of the file is read as if the scans that miss it were
+  below the floor. 3.5c's paired per-scan ratio is robust to both; the count is not.
+
 ### 3.3 Detectability gate (censoring at the detection limit)
 
 A predicted peak that is **absent** ($o_i = 0$) is only evidence *against* the assignment
@@ -295,6 +349,33 @@ This is a censored-data treatment: missing low-abundance isotopologues do not pu
 genuine low-intensity ions, but a missing $^{81}$Br twin of a bromine ion does. Defaults
 $k_{\text{detect}} = 3$, $\text{miss\_penalty} = 0.3$. A run's fitted curve raises the
 threshold to where that file's lines are actually present (§3.2a).
+
+**With the anchor's scan count (§3.2b)** the threshold could follow from it instead
+(`scan_presence.absent_line_detectable`); the score does not do this yet. The anchor's
+per-scan SNR in the $n_0$ scans holding it is $t_0 = s_0 \sqrt{N} / n_0$ (the
+averaged SNR is the per-scan one times $n_0/\sqrt{N}$:
+`OpenTFRawBackend.average_centroids` scales it so, and the vendor library reads its SNR off
+the noise-reduced averaged spectrum). A line reads $x \sim \mathcal{N}(p_i t_0, 1)$ per
+scan, and a scan keeps it where $x \ge F$, the per-scan floor (`SCAN_FLOOR_SNR = 2`, the
+lower edge of the centroids the demo raws' scans write). What the kept scans add at its m/z
+to the averaged list, beyond the noise's own,
+
+$$\ell_i = \Big(p_i t_0\, \Phi(p_i t_0 - F) + \varphi(p_i t_0 - F) - \varphi(F)\Big)\, \frac{n_0}{\sqrt{N}}$$
+
+(the truncated normal's first moment), is what the list would have read it at; the absent
+line is charged where $\ell_i \ge k_{\text{detect}}$, the list's own cut. With no floor
+this is $p_i s_0 \ge k_{\text{detect}}$, the rule above. With the anchor in every scan the
+threshold on $p_i s_0$ is $3.2$ at $N=1$, $4.2$ at $N=4$, $5.3$ at $N=10$, $9.2$ at
+$N=100$ and $14.4$ at $N=1000$, never falling as $N$ grows.
+
+As a hard gate this charges the full miss penalty on lines the list holds about half the
+time. On the demo bundle, its stores' counts filled from each raw, it lowered `score_eval`'s
+top-1: $0.8461$ with the matched-line reading of §3.2b alone and $0.8447$ with both at $F =
+2$, $0.8481$ and $0.8443$ at $F = 2.8$ (develop $0.8367$). It costs more at $2.8$, the floor
+that matches the demo's detection rate, so the threshold is not what fails. The score
+therefore gates an absent line as above, at $k_{\text{detect}}$ or the curve's threshold,
+counts or not, until a soft gate charges it by the chance the list would have held it
+(mascope#3123).
 
 ### 3.3a No-SNR mode (callers without per-peak signal-to-noise)
 
@@ -346,6 +427,8 @@ proportionally less. The result is in $[0,1]$, equals $1$ only for a flawless fi
 | `miss_penalty` | `0.3` | likelihood assigned to a detectable-but-absent peak |
 | `rel_detect_no_snr` | `0.10` | no-SNR fallback (§3.3a): predicted abundance above which an absent peak is penalised when the base peak's SNR is unknown |
 | `tolerance` | `None` (today's: band the share itself, floor `0.05`, `k_detect`) | the run's fitted envelope tolerance (§3.2a): the admitted band per bin of expected SNR, the centre, the floor, and the detectability threshold |
+| `n_scans`, `n_scans_total` | `None` (no counts: read as before) | per line, the scans holding its peak and the scans averaged (§3.2b): a counted line is read at its mean per scan, the censored-normal estimate from its count and SNR, and held to its share; an absent line is gated as without counts (§3.3) |
+| `SCAN_FLOOR_SNR` | `2.0` (`composition.scan_presence`) | the per-scan SNR under which a scan writes no centroid (§3.2b, §3.3) |
 | `PRED_SIGMA_PPM` | `0.5` (`composition.mass_accuracy`) | prediction/centroiding term added to $\sigma$ in quadrature by `scoring_sigma_ppm` |
 
 ## 5. Properties (validated on the demo)
@@ -406,6 +489,13 @@ proportionally less. The result is in $[0,1]$, equals $1$ only for a flawless fi
 - Barlow, R. E.; Bartholomew, D. J.; Bremner, J. M.; Brunk, H. D. *Statistical
   inference under order restrictions: the theory and application of isotonic
   regression.* Wiley, 1972. (The pool-adjacent-violators fit of §3.2a.)
+
+- Tobin, J. *Estimation of relationships for limited dependent variables.*
+  **Econometrica** 1958, 26(1):24–36. (The censored normal's likelihood, §3.2b.)
+- Amemiya, T. *Tobit models: a survey.* **Journal of Econometrics** 1984,
+  24(1–2):3–61. (Its estimation with a known variance, §3.2b.)
+- Johnson, N. L.; Kotz, S.; Balakrishnan, N. *Continuous univariate distributions*,
+  vol. 1, 2nd ed. Wiley, 1994, ch. 13. (The truncated normal's moments, §3.2b and §3.3.)
 
 - Kind, T.; Fiehn, O. *Metabolomic database annotations via query of elemental
   compositions: mass accuracy is insufficient even at less than 1 ppm.* **BMC

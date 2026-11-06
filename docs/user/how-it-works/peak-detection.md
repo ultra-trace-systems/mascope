@@ -255,10 +255,11 @@ A scan counts when it holds a centroid within half the peak's width of its m/z, 
 $$n = \#\left\{\text{scans with a centroid at } |m/z_{\text{centroid}} - m/z_{\text{peak}}| \le \frac{m/z_{\text{peak}}}{2R}\right\}$$
 
 $N$ is the scans of the peak's polarity, or of its own scan stream when the file is detected per stream.
-The peak's height over the scans that hold it is its height times $N / n$.
+The peak's height over the scans that hold it is its height times $N / n$, which reads a peak near the noise high: the scans that keep it are the ones its noise lifted.
 On the published demo raws this count equals the number of scans the averaging itself binned into the peak for 99.8 % of the peaks above the noise.
 
 The peak list serves both counts beside each peak's signal-to-noise (`n_scans` and `n_scans_total`).
+Peak assignment reads an isotope line by them (*The fit score* on [Peak Assignment](peak-assignment.md)).
 A TOF file has no count: it detects on its summed spectrum, and no scan drops a peak on its own.
 Nor does an Orbitrap file detected before the count was kept, until its peaks are detected again.
 Its peak list leaves both columns empty, and everything that reads it reads it as before.

@@ -12,6 +12,7 @@ Several tests below pin that the no-SNR answer equals the real-SNR answer.
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.stats import norm
 
 from mascope_backend.api.controllers.match.lib.match_score_v2 import (
     ion_score_v2,
@@ -367,3 +368,80 @@ def test_every_ion_at_once_is_read_at_the_run_s_envelope_tolerance():
 
     np.testing.assert_allclose(scored, 1.0)
     assert (ion_scores_v2(frame, "target_ion_id", sigma_ppm=0.5) < 0.75).all()
+
+
+# --- the scan counts a raw Orbitrap store keeps ----------------------------------
+
+
+def _counted(m1_intensity, n_scans, n_scans_total, snr=(500, 55)):
+    frame = _ion(m1_intensity, snr=list(snr), me=(0.0, 0.0))
+    frame["n_scans"] = n_scans
+    frame["n_scans_total"] = n_scans_total
+    return frame
+
+
+def _censored_m1(present, total, rel=0.11):
+    """The M+1 line kept by `present` of `total` scans as the scorer's floor
+    model has it (`mascope_tools.composition.scan_presence`), its anchor of
+    1000 in every scan: the line's height in the averaged series, and both
+    lines' S/N. A scan keeps the line where its per-scan S/N, normal about
+    `mean`, clears 2; the height is the kept scans' sum over every scan."""
+    mean = 2.0 + norm.ppf(present / total)
+    kept_mean = mean + norm.pdf(2.0 - mean) * total / present
+    noise = 1000.0 * rel / mean
+    height = present / total * kept_mean * noise
+    return height, (mean / rel * np.sqrt(total), present * kept_mean / np.sqrt(total))
+
+
+def test_a_line_kept_by_part_of_the_scans_is_read_at_its_mean_per_scan():
+    """Stage A's frame carries each matched peak's scan counts: the M+1 line,
+    kept by 30 of the 100 scans its anchor is in, reads 0.54 of its share in
+    the averaged series and all of it at its mean per scan."""
+    height, snr = _censored_m1(30, 100)
+    perfect = ion_score_v2(_counted(110.0, [100, 100], [100, 100], snr), sigma_ppm=0.5)
+
+    counted = ion_score_v2(_counted(height, [100, 30], [100, 100], snr), sigma_ppm=0.5)
+    uncounted = ion_score_v2(
+        _counted(height, [100, 30], [100, 100], snr).drop(
+            columns=["n_scans", "n_scans_total"]
+        ),
+        sigma_ppm=0.5,
+    )
+
+    assert height / 110.0 == pytest.approx(0.54, abs=0.01)
+    assert counted == pytest.approx(perfect, abs=1e-9)
+    assert uncounted < counted - 0.3
+
+
+def test_an_absent_line_is_gated_as_without_counts():
+    """At an expected S/N of 6 the anchor's count would say a hundred scans
+    would not have listed the line (mascope#3123); the score charges it from
+    today's threshold of 3, as without counts."""
+    absent = _counted(0.0, [100, np.nan], [100, np.nan], snr=(6 / 0.11, np.nan))
+
+    counted = ion_score_v2(absent, sigma_ppm=0.5)
+    uncounted = ion_score_v2(
+        absent.drop(columns=["n_scans", "n_scans_total"]), sigma_ppm=0.5
+    )
+
+    assert counted == pytest.approx(uncounted, abs=1e-12)
+    assert counted < 0.9
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_every_ion_at_once_reads_the_counts_as_each_does_alone(seed):
+    rng = np.random.default_rng(seed)
+    frame = _ions_frame(rng)
+    total = float(rng.choice([4, 20, 100]))
+    frame["n_scans_total"] = total
+    frame["n_scans"] = rng.integers(1, int(total) + 1, len(frame)).astype(float)
+    frame.loc[rng.random(len(frame)) < 0.1, "n_scans"] = np.nan
+
+    by_ion = frame.groupby("target_ion_id", sort=False, dropna=False).apply(
+        lambda g: ion_score_v2(g, sigma_ppm=0.5), include_groups=False
+    )
+    expected = frame["target_ion_id"].map(by_ion).astype(float)
+
+    scored = ion_scores_v2(frame, "target_ion_id", sigma_ppm=0.5)
+
+    np.testing.assert_allclose(scored, expected, rtol=0, atol=1e-12)

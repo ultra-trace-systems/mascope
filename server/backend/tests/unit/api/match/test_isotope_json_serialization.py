@@ -70,3 +70,22 @@ def test_nan_ratio_scan_count_serializes_as_null():
 
     assert parsed[0]["ratio_scan_count"] is None
     assert parsed[1]["ratio_scan_count"] == 12
+
+
+def test_nan_scan_counts_serialize_as_null():
+    """A line whose peak's store keeps no scan counts (an unmatched row, a TOF
+    file, a store detected before them) has neither count."""
+    df = pd.DataFrame(
+        {
+            "target_ion_id": ["ion-1", "ion-1"],
+            "n_scans": [np.nan, 3.0],
+            "n_scans_total": [np.nan, 4.0],
+        }
+    )
+
+    parsed = json.loads(
+        json.dumps(snr_columns_json_safe(df).to_dict("records"), allow_nan=False)
+    )
+
+    assert [row["n_scans"] for row in parsed] == [None, 3]
+    assert [row["n_scans_total"] for row in parsed] == [None, 4]

@@ -160,6 +160,8 @@ class TestTheShiftedAxis:
             heights=[10.0, 20.0],
             areas=None,
             signal_to_noise=None,
+            n_scans=None,
+            n_scans_total=None,
         )
         sample = SimpleNamespace(
             filename="orbi-sample.raw", polarity="+", t0=None, t1=None
