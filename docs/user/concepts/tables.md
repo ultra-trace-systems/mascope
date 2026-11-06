@@ -159,8 +159,8 @@ before reading it.
 | `match_score_compound` | In a peak list, the SDK's roll-up: the best ion score, per compound. In the match tree, Mascope's own compound score. |
 | `relative_abundance` | The matched line's share of its ion's theoretical isotope pattern. An ion's lines sum to about 1, so its main line is below 1: about 0.98 for a small CHO ion, about 0.5 each for the two main lines of a bromine ion. |
 | `target_isotope_id`, `target_isotope_formula` | The matched isotope line: one m/z of the ion's theoretical pattern. |
-| `target_ion_id`, `target_ion_formula` | The matched ion: the compound with its ionization mechanism applied. |
-| `target_compound_id`, `target_compound_name`, `target_compound_formula` | The matched compound, by ID, name and neutral formula. Group by the ID: formulas repeat across compounds. |
+| `target_ion_id`, `target_ion_formula` | The matched ion: the compound with its ionization mechanism applied. An ion's rows are its matched isotope lines, so a statistic of `height` grouped by the ion takes its minor lines together with its main one and comes out low; take one line (`target_isotope_formula`) or sum the lines per sample, as the app's batch point does. The toolkit's `reduce` says `lines_mixed` when it took several. |
+| `target_compound_id`, `target_compound_name`, `target_compound_formula` | The matched compound, by ID, name and neutral formula. Group by the ID: formulas repeat across compounds. A compound's rows are its ions' isotope lines, not samples. |
 | `ionization_mechanism`, `ionization_mechanism_id` | The matched ion's [ionization mechanism](index.md#ionization-modes-and-mechanisms). A peak list carries the name only; the match tree carries both. |
 | `target_collection_ids`, `target_collection_names` | The target collections the matched compound is in. The names are aligned with the IDs and are for display: group by the IDs. |
 

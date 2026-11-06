@@ -325,3 +325,19 @@ class TestEveryLoadedColumnHasAMeaning:
         assert both.inherited["height"] == MIXED
         assert both.inherited["mz"] == "load_peaks"
         assert "height" not in both.column_meanings()
+
+
+class TestAnIonsRowsAreItsLines:
+    """The second matrix row read an ion's rows as its samples; the meanings
+    of the ion and compound columns now say what the rows are."""
+
+    def test_the_ion_and_compound_columns_say_their_rows_are_lines(self):
+        # On the two formula columns a model groups by; the handle's byte
+        # budget has no room for the sentence on every match column
+        assert "isotope lines" in meaning("load_peaks", "target_ion_formula")
+        assert "mixes them" in meaning("load_peaks", "target_ion_formula")
+        assert "its lines" in meaning("load_peaks", "target_compound_formula")
+
+    def test_the_tree_keeps_its_own_words(self):
+        # The match tree has one row per line by construction and says so
+        assert "matched or not" in meaning("match_compounds", "target_ion_formula")
