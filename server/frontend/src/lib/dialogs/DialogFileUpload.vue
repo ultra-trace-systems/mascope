@@ -389,7 +389,7 @@ const cancel = () => {
           <label for="file-ionization"> Ionization modes </label>
         </FloatLabel>
         <Button
-          label="Edit Ionizations"
+          label="Edit ionization modes"
           icon="pi pi-sliders-h"
           severity="secondary"
           @click="ionizationDialogVisible = true"
@@ -411,7 +411,7 @@ const cancel = () => {
       <Button label="Save" icon="pi pi-save" :disabled="invalid" @click="upload" />
     </menu>
 
-    <DialogIonizationOp v-model:visible="ionizationDialogVisible" />
+    <DialogIonizationOp v-model:visible="ionizationDialogVisible" start="advanced" />
   </Dialog>
 </template>
 
