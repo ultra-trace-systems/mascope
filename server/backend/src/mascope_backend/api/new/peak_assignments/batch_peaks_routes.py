@@ -307,8 +307,11 @@ async def get_batch_peak_lists_route(
 
     The columns: ``sample_item_id``, ``sample_item_name``, ``datetime_utc``
     (the sample's start), ``peak_id``, ``mz``, ``sparsity``,
-    ``signal_to_noise`` (null where the file has no estimate), ``segment``
-    (the scan stream of a stitched sample's peak, null otherwise), ``area``,
+    ``signal_to_noise`` (null where the file has no estimate), ``n_scans`` and
+    ``n_scans_total`` (how many of the scans averaged into an Orbitrap peak
+    hold it, and how many those are; null where the file keeps no count),
+    ``segment`` (the scan stream of a stitched sample's peak, null
+    otherwise), ``area``,
     ``height`` and ``is_satellite``; with ``matches``, the per-match columns
     the per-sample read nests under ``match``.
 

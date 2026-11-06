@@ -64,7 +64,9 @@ def raw_orbitrap(monkeypatch, sample_file_path):
         "get_tic_per_scan": (np.array([0.0]), np.array([5.0])),
         "get_centroids": (np.array([100.0]),) * 4,
         "get_centroids_per_scan": [],
-        "get_centroid_flag_shares": np.array([0.0]),
+        "get_centroid_presence": m_compute.m_thermo.CentroidPresence(
+            np.array([0.0]), np.array([1.0]), 1
+        ),
         "get_peak_timeseries": timeseries,
     }.items():
         monkeypatch.setattr(m_compute.m_thermo, name, _reader(name, answer))
@@ -114,13 +116,13 @@ _READS = {
         lambda **kw: m_compute.get_orbi_centroids_per_scan(SIGNAL_TEST_FILENAME, **kw),
         "get_centroids_per_scan",
     ),
-    "get_orbi_centroid_flag_shares": (
+    "get_orbi_centroid_presence": (
         lambda **kw: asyncio.run(
-            m_compute.get_orbi_centroid_flag_shares(
+            m_compute.get_orbi_centroid_presence(
                 SIGNAL_TEST_FILENAME, np.array([100.0]), np.array([1e5]), **kw
             )
         ),
-        "get_centroid_flag_shares",
+        "get_centroid_presence",
     ),
     "get_peak_timeseries": (
         lambda **kw: asyncio.run(

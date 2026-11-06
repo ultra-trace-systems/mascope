@@ -60,6 +60,8 @@ PEAK_SCHEMA = pa.schema(
         ("mz", pa.float64()),
         ("sparsity", pa.float64()),
         ("signal_to_noise", pa.float64()),
+        ("n_scans", pa.int64()),
+        ("n_scans_total", pa.int64()),
         ("segment", pa.int64()),
         ("area", pa.float64()),
         ("height", pa.float64()),
@@ -140,6 +142,10 @@ async def _sample_table(
         "mz": peaks.mz_values,
         "sparsity": peaks.sparsity or [],
         "signal_to_noise": _finite_or_none(peaks.signal_to_noise, count),
+        # Null throughout for a file that keeps no count, as the per-sample
+        # read's null
+        "n_scans": peaks.n_scans or [None] * count,
+        "n_scans_total": peaks.n_scans_total or [None] * count,
         # As the per-sample read: a peak names its segment only where the
         # sample's spectrum is stitched from several
         "segment": (

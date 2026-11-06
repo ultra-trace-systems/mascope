@@ -249,6 +249,20 @@ class TestClientContract:
         names = matched["target_collection_names"].explode().dropna()
         assert not names.empty, "matched peaks should name their collections"
 
+    def test_sample_peaks_carry_their_scan_counts(self, mascope):
+        # The counts come from the server, as per-peak lists the frame takes
+        # whole, so no SDK predates them; a store detected before they were
+        # kept sends null for both, throughout.
+        peaks = mascope.samples.get_peaks(_first_sample_id(mascope), matches=False)
+
+        assert peaks is not None and not peaks.empty
+        assert {"n_scans", "n_scans_total"} <= set(peaks.columns)
+        counted = peaks["n_scans"].notna()
+        assert peaks.loc[counted, "n_scans_total"].notna().all()
+        present = peaks.loc[counted, "n_scans"].astype(float)
+        total = peaks.loc[counted, "n_scans_total"].astype(float)
+        assert ((present >= 0) & (present <= total)).all()
+
     def test_a_sample_says_its_class_and_line_width(self, mascope):
         """Whether or not it has an assignment run: the demo has none."""
         sample = mascope.samples.get(_first_sample_id(mascope))
