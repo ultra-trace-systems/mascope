@@ -1,6 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 
 
@@ -174,18 +173,4 @@ class IonizationModeUpdate(
         gt=0,
         le=1,
         description=f"{_LABEL_PURITY_DESCRIPTION} Left as it is when omitted.",
-    )
-
-
-class GetIonizationModesQueryParams(QueryParamsModel):
-    """Query parameters for getting ionization modes."""
-
-    include_system: bool = Field(
-        False,
-        description=(
-            "Include the modes Mascope ships that this deployment has not "
-            "adopted. They are left out by default, as the web app leaves "
-            "them out until it offers the shipped chemistries itself. Ask "
-            "for them to adopt one."
-        ),
     )

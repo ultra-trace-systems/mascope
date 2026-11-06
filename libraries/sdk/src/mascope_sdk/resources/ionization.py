@@ -57,16 +57,17 @@ class IonizationResource(BaseResource):
     def modes(self, include_system: bool = False) -> pd.DataFrame | None:
         """List the ionization modes.
 
-        :param include_system: Also list the modes Mascope ships that this
-            server has not adopted. They are left out by default, as the web
-            app leaves them out until it offers the shipped chemistries
-            itself.
+        :param include_system: For a server older than the one that lists
+            the profiles Mascope ships from its first start: also list the
+            ones it has not adopted, which it leaves out by default. A newer
+            server lists every profile and changes nothing for it.
         :type include_system: bool
         :return: A DataFrame with one row per mode and columns including
                  ``ionization_mode_id``, ``ionization_mode_name``,
                  ``ionization_mode_polarity``, ``ionization_mode_token``,
-                 ``instrument`` and ``ionization_mechanism_ids``, or None if
-                 there are none.
+                 ``instrument``, ``ionization_mechanism_ids`` and, from a
+                 server that has them, ``routed_files`` and
+                 ``last_file_utc``, or None if there are none.
         :rtype: pd.DataFrame | None
         :raises AuthenticationError: If authentication fails, or the server
             is older than the token access to the modes.
