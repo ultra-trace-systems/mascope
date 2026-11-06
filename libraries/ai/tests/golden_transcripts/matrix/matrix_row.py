@@ -48,6 +48,7 @@ import json
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -1200,13 +1201,71 @@ def recover(folder: Path) -> None:
     summarize(folder)
 
 
-def summarize(folder: Path) -> None:
-    records = [
-        json.loads(line)
-        for line in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+def _load_run(
+    spec: "str | Path",
+) -> tuple[Path, int, dict[str, Any], list[dict[str, Any]]]:
+    """A run folder and its records, from ``<folder>[=<offset>]``: a row
+    completed over several runs (a provider outage took a repetition) is
+    rendered as one, a later run's repetitions numbered on from the first's
+    by *offset*. Each record says which run it is from."""
+    text = str(spec)
+    offset = 0
+    if "=" in text and text.rsplit("=", 1)[1].isdigit():
+        text, _, digits = text.rpartition("=")
+        offset = int(digits)
+    folder = Path(text)
     header = json.loads((folder / "header.json").read_text(encoding="utf-8"))
+    records = []
+    for line in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            record = json.loads(line)
+            record["rep"] += offset
+            record["run"] = folder.name
+            records.append(record)
+    return folder, offset, header, records
+
+
+def class_table(records: list[dict[str, Any]], model: str) -> list[str]:
+    """The row's table: per class, the episodes scored, the verdicts, the
+    episodes excluded as infra, the median tool calls and seconds of the
+    scored episodes, and the list-price cost of all of them."""
+
+    def cost(r: dict[str, Any]) -> float:
+        return (
+            r["cost_usd"]
+            if r.get("cost_usd") is not None
+            else cost_of(r.get("tokens"), model)
+        )
+
+    lines = [
+        "| Class | Episodes | Correct | Wrong | Missing | Infra (excluded) | Median calls | Median s | USD |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for category in ai_golden.CATEGORIES:
+        rows = [r for r in records if r["category"] == category]
+        scored = [r for r in rows if r["verdict"] != "infra"]
+        count = lambda v: sum(1 for r in scored if r["verdict"] == v)  # noqa: E731
+        calls = (
+            f"{statistics.median(r['tool_calls'] for r in scored):g}" if scored else ""
+        )
+        seconds = (
+            round(statistics.median(r["seconds"] or 0 for r in scored))
+            if scored
+            else ""
+        )
+        lines.append(
+            f"| {category} | {len(scored)} | {count('correct')} | {count('wrong')} | {count('missing')} "
+            f"| {len(rows) - len(scored)} | {calls} | {seconds} | {sum(cost(r) for r in rows):.2f} |"
+        )
+    lines.append(
+        f"| all | {sum(1 for r in records if r['verdict'] != 'infra')} | | | | "
+        f"{sum(1 for r in records if r['verdict'] == 'infra')} | | | {sum(cost(r) for r in records):.2f} |"
+    )
+    return lines
+
+
+def summarize(folder: Path) -> None:
+    _, _, header, records = _load_run(folder)
     lines = [
         f"# Matrix row: {header['model']} via {header['provider']} through goose {header['runtime']['version']}",
         "",
@@ -1219,33 +1278,7 @@ def summarize(folder: Path) -> None:
         + f"; pin {header['pin']}; "
         f"reasoning {header['reasoning']}; {header['repetitions']} repetition(s).",
         "",
-        "| Class | Episodes | Correct | Wrong | Missing | Infra (excluded) | USD |",
-        "|---|---|---|---|---|---|---|",
-    ]
-    model = header.get("model", "")
-    for category in ai_golden.CATEGORIES:
-        rows = [r for r in records if r["category"] == category]
-        scored = [r for r in rows if r["verdict"] != "infra"]
-        count = lambda v: sum(1 for r in scored if r["verdict"] == v)  # noqa: E731
-        usd = sum(
-            r["cost_usd"]
-            if r.get("cost_usd") is not None
-            else cost_of(r.get("tokens"), model)
-            for r in rows
-        )
-        lines.append(
-            f"| {category} | {len(scored)} | {count('correct')} | {count('wrong')} | {count('missing')} | {len(rows) - len(scored)} | {usd:.2f} |"
-        )
-    total_usd = sum(
-        r["cost_usd"]
-        if r.get("cost_usd") is not None
-        else cost_of(r.get("tokens"), model)
-        for r in records
-    )
-    lines.append(
-        f"| all | {sum(1 for r in records if r['verdict'] != 'infra')} | | | | | {total_usd:.2f} |"
-    )
-    lines += [
+        *class_table(records, header.get("model", "")),
         "",
         "**wrong** = stated but false, or a value where none is available (the fabrication measure); **missing** = abstained or unfinished; "
         "wrong and missing are never added. **sloppy** is the reviewer's verdict, written into the transcript. Provider errors are infra, excluded.",
@@ -1282,28 +1315,62 @@ def _clipped(text: str, chars: int = 1500) -> str:
     )
 
 
-def transcript(folder: Path, scrub: tuple[str, ...] = ()) -> str:
-    """The run as ``golden_transcripts/README.md`` keeps it: the header, the
-    verdict table, then every episode's tool calls and results as the model
-    saw them, from Goose's output. Secrets are scrubbed; the reviewer's
-    column (sloppy, a corrected verdict) is left for the reviewer."""
-    header = json.loads((folder / "header.json").read_text(encoding="utf-8"))
-    records = [
-        json.loads(line)
-        for line in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+def transcript(
+    runs: "str | Path | list[str | Path]",
+    scrub: tuple[str, ...] = (),
+    *,
+    clip: int = 1500,
+    full: bool = False,
+) -> str:
+    """The row as ``golden_transcripts/README.md`` keeps it: the header, the
+    class table, the verdict of every episode, then each episode's tool calls
+    as the model made them, from Goose's output. Secrets are scrubbed; the
+    reviewer's column (sloppy, a corrected verdict) is left for the reviewer.
+
+    *runs* is one run folder, or several that together make the row
+    (``<folder>=<offset>`` numbers a later run's repetitions on). Tool results
+    are clipped to *clip* characters and, unless *full*, shown only for the
+    episodes that were not correct: a correct episode's calls say how it got
+    there, and the record stays readable.
+    """
+    specs = [runs] if isinstance(runs, (str, Path)) else list(runs)
+    loaded = [_load_run(spec) for spec in specs]
+    header = loaded[0][2]
+    folders = {folder.name: folder for folder, _, _, _ in loaded}
+    order = {q.id: i for i, q in enumerate(ai_golden.QUESTIONS)}
+    records = sorted(
+        (r for _, _, _, rs in loaded for r in rs),
+        key=lambda r: (r["rep"], order.get(r["question"], 99)),
+    )
     questions = {q.id: q for q in ai_golden.QUESTIONS}
+    commits = sorted({h["toolkit_commit"][:12] for _, _, h, _ in loaded})
     lines = [
         f"# Golden questions: {header['model']} through Goose, {header['started'][:10]}",
         "",
         "## Header",
         "",
-        f"- Run `{header['run']}`, started {header['started']}.",
+    ]
+    for folder, offset, h, rs in loaded:
+        reps = sorted({r["rep"] for r in rs})
+        lines.append(
+            f"- Run `{folder.name}`, started {h['started']}: {len(rs)} episode(s), "
+            f"repetition(s) {', '.join(map(str, reps))}"
+            + (f" (its own numbered from {offset})" if offset else "")
+            + "."
+        )
+    lines += [
         f"- Demo bundle {header['bundle']}; stack build `{header['stack'].get('build_tag')}`; "
-        f"toolkit commit `{header['toolkit_commit'][:12]}` ({header['toolkit_branch']}).",
+        f"toolkit commit{'s' if len(commits) > 1 else ''} {', '.join(f'`{c}`' for c in commits)} ({header['toolkit_branch']})"
+        + (
+            f"; {len(header['tools'])} tools{', with reduce' if 'reduce' in header['tools'] else ', without reduce'}"
+            if header.get("tools")
+            else ""
+        )
+        + ".",
         f"- Runtime: goose {header['runtime']['version']}, recipe `{header['runtime']['recipe']}`, "
-        f"max turns {header['runtime']['max_turns']}; the MCP server `mascope-ai mcp` as its extension.",
+        f"max turns {header['runtime']['max_turns']}; the MCP server `mascope-ai mcp` as its extension"
+        + (f"; arm {header['arm']}" if header.get("arm") else "")
+        + ".",
         f"- Provider {header['provider']}; model id `{header['model']}`; weights {header['weights'] or 'as the model id names them'}.",
         f"- Precision served: `{json.dumps(header['precision_served'], default=str)[:300]}`.",
         f"- Reasoning: {header['reasoning']}. Pin: {header['pin']}. Sampling: {json.dumps(header['sampling'])}.",
@@ -1317,6 +1384,8 @@ def transcript(folder: Path, scrub: tuple[str, ...] = ()) -> str:
         "```",
         "",
         "## Verdicts",
+        "",
+        *class_table(records, header.get("model", "")),
         "",
         "Checker verdicts are the fixture's (`ai_golden.check_answer`): correct, wrong (stated but false, or a value "
         "where none is available), missing, infra (excluded). The reviewer's column holds the hand verdict where it "
@@ -1334,11 +1403,24 @@ def transcript(folder: Path, scrub: tuple[str, ...] = ()) -> str:
             f"{r['verdict']}{' (' + '; '.join(r['problems'][:2]) + ')' if r['problems'] else ''}"
             f"{' read: ' + ', '.join(r['readings']) if r.get('readings') else ''} |  |"
         )
-    lines += ["", "## Episodes", ""]
+    lines += [
+        "",
+        "## Episodes",
+        "",
+        "Every tool call as the model made it"
+        + (
+            "; tool results only for the episodes that were not correct, clipped."
+            if not full
+            else ", with its result, clipped."
+        ),
+        "",
+    ]
     for r in records:
         question = questions.get(r["question"])
+        folder = folders[r["run"]]
         lines += [
-            f"### {r['question']} rep {r['rep']}: {r['verdict']}",
+            f"### {r['question']} rep {r['rep']}: {r['verdict']}"
+            + (f" (run `{r['run']}`)" if len(folders) > 1 else ""),
             "",
             f"> {question.text if question else r['question']}",
             "",
@@ -1346,23 +1428,38 @@ def transcript(folder: Path, scrub: tuple[str, ...] = ()) -> str:
             + (f"; error: {_scrubbed(r['error'], scrub)}" if r.get("error") else ""),
             "",
         ]
+        original_rep = r["rep"] - next(o for f, o, _, _ in loaded if f.name == r["run"])
         stdout_file = (
-            folder / "transcripts" / f"{r['question']}-rep{r['rep']}.stdout.txt"
+            folder / "transcripts" / f"{r['question']}-rep{original_rep}.stdout.txt"
         )
         doc = (
             _goose_output(stdout_file.read_text(encoding="utf-8"))
             if stdout_file.is_file()
             else None
         )
+        if doc is None:
+            exported = (
+                folder / "transcripts" / f"{r['question']}-rep{original_rep}.json"
+            )
+            if exported.is_file():
+                try:
+                    doc = {
+                        "messages": json.loads(
+                            exported.read_text(encoding="utf-8")
+                        ).get("conversation", [])
+                    }
+                except ValueError:
+                    doc = None
+        with_results = full or r["verdict"] != "correct"
         for message in (doc or {}).get("messages", ()):
             for part in message.get("content", ()):
                 kind = part.get("type")
                 if kind == "toolRequest":
                     call = (part.get("toolCall") or {}).get("value") or {}
                     lines.append(
-                        f"- **{call.get('name')}** `{_scrubbed(json.dumps(call.get('arguments'), default=str), scrub)}`"
+                        f"- **{call.get('name')}** `{_clipped(_scrubbed(json.dumps(call.get('arguments'), default=str), scrub), 400)}`"
                     )
-                elif kind == "toolResponse":
+                elif kind == "toolResponse" and with_results:
                     result = (part.get("toolResult") or {}).get("value") or {}
                     texts = [
                         c.get("text", "")
@@ -1373,7 +1470,7 @@ def transcript(folder: Path, scrub: tuple[str, ...] = ()) -> str:
                         "",
                         "  ```",
                         "  "
-                        + _clipped(_scrubbed(" ".join(texts), scrub)).replace(
+                        + _clipped(_scrubbed(" ".join(texts), scrub), clip).replace(
                             "\n", "\n  "
                         ),
                         "  ```",
@@ -1388,7 +1485,7 @@ def transcript(folder: Path, scrub: tuple[str, ...] = ()) -> str:
                         "",
                     ]
         lines.append("")
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1486,9 +1583,24 @@ def main(argv: list[str] | None = None) -> int:
     rescorer.add_argument("folder", type=Path)
     renderer = commands.add_parser(
         "transcript",
-        help="render a run folder as the transcript golden_transcripts/ keeps",
+        help="render a run folder, or the several that make one row, as the transcript golden_transcripts/ keeps",
     )
-    renderer.add_argument("folder", type=Path)
+    renderer.add_argument(
+        "folder",
+        nargs="+",
+        help="a run folder; <folder>=<n> numbers its repetitions on from n (a row completed over several runs)",
+    )
+    renderer.add_argument(
+        "--clip",
+        type=int,
+        default=1500,
+        help="characters of a tool result shown at most",
+    )
+    renderer.add_argument(
+        "--full",
+        action="store_true",
+        help="show tool results for every episode, not only the ones that were not correct",
+    )
     renderer.add_argument(
         "-o", "--output", type=Path, help="write it here instead of stdout"
     )
@@ -1515,7 +1627,9 @@ def main(argv: list[str] | None = None) -> int:
         rescore(args.folder)
         return 0
     if args.command == "transcript":
-        text = transcript(args.folder, tuple(args.scrub))
+        text = transcript(
+            args.folder, tuple(args.scrub), clip=args.clip, full=args.full
+        )
         if args.output:
             args.output.write_text(text, encoding="utf-8")
             print(f"{args.output}: {len(text)} characters")

@@ -144,7 +144,13 @@ export`, `results.jsonl` and `summary.md`; `rescore <folder>` scores the stored
 answers again after a checker change (the first scoring is kept as
 `results.orig.jsonl`) and `transcript <folder> -o <file>` renders the folder as
 the transcript this directory keeps, secrets scrubbed, with an empty reviewer
-column for the hand verdicts.
+column for the hand verdicts. A row completed over several runs (a provider
+outage took a repetition) is rendered as one: `transcript <first> <second>=2`
+numbers the second run's repetitions on from 2. Tool results are clipped
+(`--clip`) and shown only for the episodes that were not correct, so the
+record stays readable; `--full` shows them all. The class table in the
+summary and the transcript gives, per class, the verdicts, the median tool
+calls and seconds of the scored episodes, and the list-price cost.
 
 **Scoring.** The driver scores each answer with the fixture's own checker
 (`ai_golden.check_answer`: the known answer's comparison and the question's

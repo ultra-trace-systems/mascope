@@ -259,60 +259,68 @@ class TestTheShape:
             assert driver.answer_shape(question) != known, question.id
 
 
+def _run_folder(root, name, *, verdict, answer, started="2026-11-05T13:00:00Z"):
+    """A run folder of one M2 episode, as the driver writes one."""
+    folder = root / name
+    (folder / "transcripts").mkdir(parents=True)
+    (folder / "header.json").write_text(
+        json.dumps(
+            {
+                "run": name,
+                "started": started,
+                "bundle": "1.4.3",
+                "stack": {"build_tag": "t"},
+                "toolkit_commit": "abcdef123456789",
+                "toolkit_branch": "b",
+                "tools": ["find", "describe"],
+                "runtime": {
+                    "version": "1.57.0",
+                    "recipe": "recipe.yaml",
+                    "max_turns": 30,
+                },
+                "provider": "nebius",
+                "model": "m",
+                "weights": "",
+                "precision_served": [{"quantization": "bf16"}],
+                "reasoning": "provider default",
+                "pin": "none needed",
+                "sampling": "provider default",
+                "repetitions": 1,
+                "questions": ["M2"],
+                "dryrun": "table",
+                "prereg": {"ai_golden.py": "0" * 64},
+            }
+        )
+    )
+    stdout = _goose_json(answer).replace(
+        '"query": "2025"', '"query": "Bearer ' + "s" * 40 + '"'
+    )
+    (folder / "transcripts" / "M2-rep0.stdout.txt").write_text(stdout)
+    (folder / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "question": "M2",
+                "rep": 0,
+                "category": "metadata",
+                "answer": answer,
+                "known": ["a", "b"],
+                "verdict": verdict,
+                "problems": ["answer[0]: 'x', not 'a'"] if verdict == "wrong" else [],
+                "tool_calls": 2,
+                "tokens": {"total_tokens": 1},
+                "seconds": 3.0,
+                "error": "",
+                "cost_usd": 0.01,
+            }
+        )
+        + "\n"
+    )
+    return folder
+
+
 class TestTheTranscript:
     def test_it_renders_the_run_and_scrubs_secrets(self, driver, tmp_path):
-        folder = tmp_path / "run"
-        (folder / "transcripts").mkdir(parents=True)
-        (folder / "header.json").write_text(
-            json.dumps(
-                {
-                    "run": "r",
-                    "started": "2026-11-05T13:00:00Z",
-                    "bundle": "1.4.3",
-                    "stack": {"build_tag": "t"},
-                    "toolkit_commit": "abcdef123456789",
-                    "toolkit_branch": "b",
-                    "runtime": {
-                        "version": "1.57.0",
-                        "recipe": "recipe.yaml",
-                        "max_turns": 30,
-                    },
-                    "provider": "nebius",
-                    "model": "m",
-                    "weights": "",
-                    "precision_served": [{"quantization": "bf16"}],
-                    "reasoning": "provider default",
-                    "pin": "none needed",
-                    "sampling": "provider default",
-                    "repetitions": 1,
-                    "questions": ["M2"],
-                    "dryrun": "table",
-                    "prereg": {"ai_golden.py": "0" * 64},
-                }
-            )
-        )
-        stdout = _goose_json(["x", "y"]).replace(
-            '"query": "2025"', '"query": "Bearer ' + "s" * 40 + '"'
-        )
-        (folder / "transcripts" / "M2-rep0.stdout.txt").write_text(stdout)
-        (folder / "results.jsonl").write_text(
-            json.dumps(
-                {
-                    "question": "M2",
-                    "rep": 0,
-                    "category": "metadata",
-                    "answer": ["x", "y"],
-                    "known": ["a", "b"],
-                    "verdict": "wrong",
-                    "problems": ["answer[0]: 'x', not 'a'"],
-                    "tool_calls": 2,
-                    "tokens": {"total_tokens": 1},
-                    "seconds": 3.0,
-                    "error": "",
-                }
-            )
-            + "\n"
-        )
+        folder = _run_folder(tmp_path, "run", verdict="wrong", answer=["x", "y"])
 
         text = driver.transcript(folder, scrub=("verysecrettoken",))
 
@@ -321,6 +329,47 @@ class TestTheTranscript:
         assert "- **mascope__find**" in text and "- **recipe__final_output**" in text
         assert "s" * 40 not in text and "Bearer [redacted]" in text
         assert "Final: `" in text
+        assert "| metadata | 1 | 0 | 1 | 0 | 0 | 2 | 3 | 0.01 |" in text
+        # A wrong episode shows its tool results; the renderer says so
+        assert "  ```" in text and "only for the episodes that were not correct" in text
+
+    def test_several_runs_make_one_row(self, driver, tmp_path):
+        first = _run_folder(tmp_path, "r1", verdict="correct", answer=["a", "b"])
+        second = _run_folder(
+            tmp_path,
+            "r2",
+            verdict="wrong",
+            answer=["x", "y"],
+            started="2026-11-06T12:00:00Z",
+        )
+
+        text = driver.transcript([first, f"{second}=1"])
+
+        assert (
+            "- Run `r1`, started 2026-11-05T13:00:00Z: 1 episode(s), repetition(s) 0."
+            in text
+        )
+        assert "repetition(s) 1 (its own numbered from 1)" in text
+        assert "| M2 | 0 | " in text and "| M2 | 1 | " in text
+        assert "| metadata | 2 | 1 | 1 | 0 | 0 | 2 | 3 | 0.02 |" in text
+        assert "### M2 rep 0: correct (run `r1`)" in text
+        assert "### M2 rep 1: wrong (run `r2`)" in text
+        assert "2 tools, without reduce" in text
+        # The correct episode lists its calls without their results
+        head, _, tail = text.partition("### M2 rep 1")
+        correct = head.split("### M2 rep 0", 1)[1]
+        assert "- **mascope__find**" in correct and "  ```" not in correct
+        assert "  ```" in tail
+        assert "  ```" in driver.transcript(first, full=True)
+
+    def test_a_folder_spec_carries_its_offset(self, driver, tmp_path):
+        folder = _run_folder(tmp_path, "r", verdict="correct", answer=["a", "b"])
+
+        where, offset, header, records = driver._load_run(f"{folder}=2")
+
+        assert where == folder and offset == 2 and header["model"] == "m"
+        assert records[0]["rep"] == 2 and records[0]["run"] == "r"
+        assert driver._load_run(folder)[1] == 0
 
 
 class TestLeniency:
