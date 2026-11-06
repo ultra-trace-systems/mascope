@@ -10,6 +10,9 @@ import { createPinia, setActivePinia } from 'pinia'
 // which on a TOF are areas and would put the envelope above the trace.
 // Rows are shaped as the API sends them: the peak list keys a peak by a
 // numeric `peak_id`, an assignment row by its string `sample_peak_id`.
+// A line the run expected the spectrum to show and found no peak for (step
+// 3.4e) is drawn from the prediction its M0's record carries, as an empty
+// circle at its predicted m/z and the M0's height times its share.
 
 const get = vi.fn()
 vi.mock('@/api', () => ({ api: { http: { get: (...args) => get(...args) } } }))
@@ -46,6 +49,8 @@ const m1 = {
 }
 
 let chart
+// The M0's detail, as the store caches it once the inspector has fetched it.
+let details
 
 const open = async (family, peaks = [], focused = m0) => {
   const rows = new Map(family.map((row) => [row.sample_peak_id, row]))
@@ -67,7 +72,8 @@ const open = async (family, peaks = [], focused = m0) => {
           run: { peak_assignment_run_id: 'r-1' },
           forPeak: (peakId) => rows.get(String(peakId)) ?? null,
           m0Of: () => family[0],
-          familyOf: () => family
+          familyOf: () => family,
+          detailOf: (id) => details.get(id) ?? null
         }
       }
     },
@@ -82,11 +88,13 @@ const open = async (family, peaks = [], focused = m0) => {
 }
 
 const envelope = () => chart.traces.filter((trace) => trace.name === 'Theoretical Peak')
+const notFound = () => chart.traces.filter((trace) => trace.name === 'Not Found Peak')
 
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
   vi.resetModules()
+  details = new Map()
 })
 
 describe('the theoretical envelope of the focused peak', () => {
@@ -137,5 +145,65 @@ describe('the theoretical envelope of the focused peak', () => {
 
     const [trace] = envelope()
     expect(trace.y[4]).toBeCloseTo((220 * (500 / 2000)) / 1.1, 9)
+  })
+})
+
+describe('the lines the run did not find', () => {
+  const record = (lines) => ({ provenance: { predicted_envelope: { lines } } })
+  const absent = { line: '81Br', predicted_mz: 101.998, predicted_share: 0.97, state: 'absent' }
+  const found = { line: '13C', predicted_mz: 101.004, predicted_share: 0.11, state: 'found' }
+
+  it('draws a line not found as an empty circle at its predicted m/z and height', async () => {
+    details.set('a-0', record([found, absent]))
+    await open([m0, m1])
+
+    const [trace] = notFound()
+    expect(trace.mode).toBe('markers')
+    expect(trace.marker.symbol).toBe('circle-open')
+    expect(trace.x).toEqual([101.998])
+    expect(trace.y[0]).toBeCloseTo(2000 * 0.97, 9)
+    expect(trace.customdata[0][3]).toBe('not found')
+    // The found line keeps its stick, recovered from its row.
+    expect(envelope()).toHaveLength(1)
+  })
+
+  it("draws it at the M0's measured height, not its stored intensity", async () => {
+    details.set('a-0', record([absent]))
+    await open([m0], [{ peak_id: 7, mz: m0.sample_peak_mz, height: 500, area: 2000 }])
+
+    expect(notFound()[0].y[0]).toBeCloseTo(500 * 0.97, 9)
+  })
+
+  it('names a line only an artifact sat on as not tested', async () => {
+    details.set('a-0', record([{ ...absent, state: 'untestable', untestable: 'artifact' }]))
+    await open([m0])
+
+    expect(notFound()[0].customdata[0][3]).toBe('not tested')
+  })
+
+  it("reads the M0's record when one of its isotopologues is focused", async () => {
+    details.set('a-0', record([absent]))
+    details.set('a-1', record([{ ...absent, predicted_mz: 103.0 }]))
+    await open([m0, m1], [], m1)
+
+    expect(notFound()[0].x).toEqual([101.998])
+  })
+
+  it('draws no line of an M0 with no height to scale it by', async () => {
+    details.set('a-0', record([absent]))
+    await open([{ ...m0, sample_peak_intensity: null }, m1], [], m1)
+
+    expect(notFound()).toHaveLength(0)
+  })
+
+  it('draws nothing more where the run asked the spectrum nothing', async () => {
+    details.set('a-0', record([found]))
+    await open([m0, m1])
+    expect(notFound()).toHaveLength(0)
+
+    details.clear()
+    await open([m0, m1])
+    expect(notFound()).toHaveLength(0)
+    expect(envelope()).toHaveLength(1)
   })
 })

@@ -20,6 +20,7 @@ const SERVER_RULES = [
   'polyhalide_cluster',
   'candidate_density',
   'lone_peak',
+  'absent_line',
   'envelope_neighbour',
   'oxygen_lattice',
   'carbon_free',

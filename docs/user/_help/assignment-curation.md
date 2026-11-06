@@ -10,7 +10,11 @@ an assignment without its adduct could not be verified; search the peak with
 The peak's row is edited in place and marked as assigned by hand, and the
 assignment it replaced becomes its first close alternative, so *use this* on it
 puts it back. The tier is recalculated from the new formula's own evidence under
-the run's thresholds. The replaced compound's isotopologues are
+the run's thresholds, and the spectrum is asked for the isotope lines the formula
+predicts, as the run asked its own rows: a missing one holds the assignment at
+*candidate* at most (*expected line absent*). A peak you assign as one of a
+compound's isotopologues is not asked, since the lines are read from the
+compound's main one. The replaced compound's isotopologues are
 unassigned with it and come back with it, except any assigned by hand since.
 
 A hand assignment lasts until the sample is next assigned, which recomputes the
