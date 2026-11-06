@@ -408,7 +408,7 @@ and is rendered into the same record.
 | Class | Episodes | Correct | Wrong | Missing | Infra (excluded) | Median calls | Median s | USD |
 |---|---|---|---|---|---|---|---|---|
 | metadata | 24 | 24 | 0 | 0 | 0 | 4 | 11 | 0.25 |
-| analysis | 17 | 3 | 6 | 8 | 1 | 13 | 1464 | 2.64 |
+| analysis | 17 | 3 | 2 | 12 | 1 | 13 | 1464 | 2.64 |
 | interpretation | 9 | 9 | 0 | 0 | 0 | 11 | 48 | 0.40 |
 | decline | 15 | 15 | 0 | 0 | 0 | 6 | 31 | 0.60 |
 
@@ -417,11 +417,14 @@ say why: through MCP alone a Frame handle has no computation path. The
 model declined the top-ions question "because no tool returns aggregate
 statistics", read the apex off the first row of a handle's head, named a
 background sample as the brightest, and ran the rest into the wall clock
-looking for a way to compute (A1 wrong, infra, wrong; A2 wrong, missing,
-missing; A3 missing three times; A4 correct, wrong, wrong; A5 missing,
-correct, correct; A6 wrong, missing, missing). The six "wrong" answers are
-null values and one decline, not fabrications. Two side arms on the same
-model, stack and questions, recorded beside the row:
+looking for a way to compute (A1 missing, infra, wrong; A2 missing three
+times; A3 missing three times; A4 correct, missing, missing; A5 missing,
+correct, correct; A6 wrong, missing, missing). The twelve missing are nulls
+where values were asked, read as the abstention they are, and declines of
+answerable questions; the two wrong are the background sample named as the
+brightest and a decline the model wrapped in a JSON string, its own JSON
+error. Two side arms on the same model, stack and questions, recorded
+beside the row:
 
 | Arm | Questions | Correct | Wrong | Missing | Infra |
 |---|---|---|---|---|---|
