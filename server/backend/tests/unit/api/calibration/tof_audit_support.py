@@ -161,6 +161,39 @@ def calibrant_peaks(formulas=CALIBRANTS, off: dict | None = None) -> list[dict]:
     return [{"mz": float(mz), "ppm": off.get(round(mz), 0.0)} for mz in lines.mz]
 
 
+def bent_axis(p3: float) -> list[float]:
+    """The mode-2 axis at this p3 closest to :data:`TRUE_FIT`, as parameters.
+
+    Its p1 and p2 are the least-squares fit of the true axis' index over 50
+    to 250 Th, so the two part by the bend alone: a p3 of 0.49997 leaves a
+    bow of about 3 ppm across the calibrants under mode 0.
+    """
+    grid = np.linspace(50.0, 250.0, 200)
+    design = np.vstack([grid**p3, np.ones_like(grid)]).T
+    (p1, p2), *_ = np.linalg.lstsq(design, tof_of(grid), rcond=None)
+    return [float(p1), float(p2), p3]
+
+
+def bent_peaks(
+    formulas=CALIBRANTS, axis: list[float] | None = None, off: dict | None = None
+) -> list[dict]:
+    """One peak per calibrant line, each at the index a mode-2 axis gives it.
+
+    :param axis: Mode-2 parameters (:func:`bent_axis`); :data:`TRUE_FIT` if
+        None
+    :param off: How far some lines sit off that axis, in ppm, by their exact
+        m/z rounded to whole Th
+    """
+    off = dict(off or {})
+    if axis is not None:
+        p1, p2, p3 = axis
+        for peak in calibrant_peaks(formulas):
+            mz = peak["mz"]
+            on_true = tof_to_mass(p1 * mz**p3 + p2, 0, TRUE_FIT["par"])
+            off[round(mz)] = off.get(round(mz), 0.0) + (on_true / mz - 1) * 1e6
+    return calibrant_peaks(formulas, off=off)
+
+
 def snapshot(root) -> dict:
     """Every file under the filestore, with its size and modification time."""
     found = {}

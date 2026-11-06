@@ -215,9 +215,17 @@ async def test_the_record_names_the_collection_the_model_and_the_node(filestore)
         "id": "collection",
         "isotopes_sha256": calibration_isotopes_sha256(isotopes),
     }
-    assert handler.fitted_on["model"] == {"mode": 0, "equation": "i = p1*sqrt(m) + p2"}
+    model = handler.fitted_on["model"]
+    assert {key: model[key] for key in ("mode", "equation", "min_gain_ppm")} == {
+        "mode": 0,
+        "equation": "i = p1*sqrt(m) + p2",
+        "min_gain_ppm": 0.5,
+    }
+    # Four ions: the two models were compared, and mode 2 gained nothing on
+    # a square-root axis
+    assert [entry["mode"] for entry in model["compared"]] == [0, 2]
     assert handler.fitted_on["node_version"] == TOF_CALIBRATION_NODE_VERSION
-    assert TOF_CALIBRATION_NODE_VERSION == 1
+    assert TOF_CALIBRATION_NODE_VERSION == 2
 
 
 @pytest.mark.asyncio
@@ -465,6 +473,40 @@ async def test_a_record_with_or_without_the_keys_applies(filestore, named):
     assert stored["verified"] is True
     assert stored["quality"] == json.loads(json.dumps(quality))
     assert (NEW_KEYS <= stored["quality"].keys()) is named
+
+
+@pytest.mark.asyncio
+async def test_a_mode_2_fit_is_sealed_judged_and_applied(filestore):
+    """A file on a bent axis is fitted in mode 2: the record carries its
+    three parameters and the comparison under the seal, clears the bar as a
+    mode-0 fit would, and is stored verified."""
+    formulas = support.CALIBRANTS + support.MORE_CALIBRANTS
+    filename = support.write_file(
+        filestore, support.bent_peaks(formulas, support.bent_axis(0.49997))
+    )
+
+    fit, _ = await _fit_answer(filename, support.isotopes(formulas))
+
+    assert fit["mode"] == 2
+    assert len(fit["par"]) == 3
+    assert fit["quality"]["model"]["mode"] == 2
+    compared = {
+        e["mode"]: e["held_out_ppm"] for e in fit["quality"]["model"]["compared"]
+    }
+    assert compared[0] - compared[2] > 0.5
+    assert fit["quality_issues"] == []
+    sent_back = json.loads(json.dumps(fit))
+    with patch.object(calibration_controller, "derive_token_secret", lambda _: "key"):
+        assert calibration_controller.fit_seal_valid(sent_back, filename)
+        sent_back["quality"]["model"]["mode"] = 0
+        assert not calibration_controller.fit_seal_valid(sent_back, filename)
+
+    stored = await _apply(filename, json.loads(json.dumps(fit)))
+
+    assert stored["status"] == "ok"
+    assert stored["verified"] is True
+    assert (stored["mode"], stored["par"]) == (2, fit["par"])
+    assert stored["quality"]["model"] == fit["quality"]["model"]
 
 
 # --- The share of the collection's lines kept ---

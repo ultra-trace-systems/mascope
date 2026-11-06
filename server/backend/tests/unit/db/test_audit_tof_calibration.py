@@ -165,7 +165,8 @@ def test_everything_can_be_set(no_env):
         ("TOF_AUDIT_SETS", '{"proposed": []}', "list of formulas"),
         ("TOF_AUDIT_SETS", '{"proposed": "C3H9N"}', "list of formulas"),
         ("TOF_AUDIT_SETS", '["C3H9N"]', "map set names"),
-        ("TOF_AUDIT_MODELS", "2", "cannot be fitted"),
+        ("TOF_AUDIT_MODELS", "5", "cannot be fitted"),
+        ("TOF_AUDIT_MODELS", "0,nodes", "not a list"),
         ("TOF_AUDIT_MODELS", "zero", "not a list"),
         ("TOF_AUDIT_BANDS", "100,40", "rise"),
         ("TOF_AUDIT_BANDS", "40,a", "not a list"),
@@ -180,6 +181,19 @@ def test_what_cannot_be_read_stops_the_run(no_env, name, value, message):
     no_env.setenv(name, value)
     with pytest.raises(ValueError, match=message):
         script.read_config(today=date(2026, 10, 20))
+
+
+def test_the_models_are_modes_and_the_node_own_choice(no_env):
+    no_env.setenv("TOF_AUDIT_MODELS", "0,2, node")
+
+    config = script.read_config()
+
+    assert config.models == (0, 2, None)
+    assert script.fit_names(_mode_audit(), config.models) == [
+        "collection/mode0",
+        "collection/mode2",
+        "collection/node",
+    ]
 
 
 def test_an_empty_setting_is_unset(no_env):
@@ -746,6 +760,98 @@ async def test_a_record_fitted_with_the_mode_settings_is_not_refitted_twice(
     assert [call.refine_window for call in calls] == [100, 30]
 
 
+#: Seven lines of six ions on a bent axis, which the node fits in mode 2.
+SEVEN = support.CALIBRANTS + support.MORE_CALIBRANTS
+
+
+async def _bent_record(filestore, model, node_version) -> tuple[list, dict]:
+    """Peaks on a bent axis, and the record a node fitting ``model`` stores."""
+    peaks = support.bent_peaks(SEVEN, support.bent_axis(0.49997))
+    support.write_file(filestore, peaks)
+    refit = await audit.refit(
+        audit.read_stored_peaks(support.FILENAME),
+        support.params(),
+        support.isotopes(SEVEN),
+        support.resolution,
+        model=model,
+    )
+    quality = {"n_points": len(refit.retained), "refine_window": 100.0}
+    if node_version is not None:
+        quality["node_version"] = node_version
+    return peaks, {**refit.fit, "quality": quality, "status": "ok"}
+
+
+@pytest.mark.parametrize(
+    "model, node_version, refit_model",
+    [
+        pytest.param(None, 2, None, id="the node's choice, mode 2"),
+        pytest.param(0, 1, 0, id="mode 0 alone, version 1"),
+        pytest.param(0, None, 0, id="mode 0 alone, before the version"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_record_is_reproduced_in_the_model_its_node_fitted(
+    filestore, model, node_version, refit_model
+):
+    """A node since version 2 chooses between mode 0 and mode 2, one before
+    fitted mode 0 alone: the same bent file was fitted in mode 2 by the one
+    and in mode 0 by the other, and each record is reproduced as made."""
+    peaks, record = await _bent_record(filestore, model, node_version)
+    assert record["mode"] == (2 if model is None else 0)
+    mode_audit = _mode_audit(sets={"collection": support.isotopes(SEVEN)})
+    models = []
+    real = audit.refit
+
+    async def counted(*args, **kwargs):
+        models.append(kwargs.get("model", 0))
+        return await real(*args, **kwargs)
+
+    with patch.object(audit, "refit", counted):
+        file = await _audit(filestore, peaks, record, mode_audit)
+
+    assert file.reproduction["reproduced"]
+    assert file.reproduction["difference_ppm"] <= script.REPRODUCED_PPM
+    # The collection's refit in mode 0, then the reproduction's own where
+    # the record's model is not that one
+    assert models == ([0] if refit_model == 0 else [0, None])
+
+
+@pytest.mark.asyncio
+async def test_a_mode_0_record_of_a_choosing_node_is_not_mode_2s(filestore):
+    """A mode-0 fit of the bent file, said to be version 2's: the node's own
+    choice there is mode 2, which lands elsewhere."""
+    peaks, record = await _bent_record(filestore, 0, 2)
+    mode_audit = _mode_audit(sets={"collection": support.isotopes(SEVEN)})
+
+    file = await _audit(filestore, peaks, record, mode_audit)
+
+    assert not file.reproduction["reproduced"]
+
+
+@pytest.mark.asyncio
+async def test_a_node_record_is_reproduced_by_the_refit_already_made(filestore):
+    """Asked for the node's own choice, the audit reproduces a version-2
+    record by that refit instead of fitting the file again."""
+    peaks, record = await _bent_record(filestore, None, 2)
+    mode_audit = _mode_audit(sets={"collection": support.isotopes(SEVEN)})
+    calls = []
+    real = audit.refit
+
+    async def counted(*args, **kwargs):
+        calls.append(kwargs.get("model", 0))
+        return await real(*args, **kwargs)
+
+    with patch.object(audit, "refit", counted):
+        file = await _audit(
+            filestore, peaks, record, mode_audit, _config("AuditTof", models=(0, None))
+        )
+
+    assert file.reproduction["reproduced"]
+    assert calls == [0, None]
+    assert file.fits["collection/node"]["mode"] == 2
+    assert file.fits["collection/mode0"]["mode"] == 0
+
+
 @pytest.mark.asyncio
 async def test_a_refit_that_raises_fails_alone(filestore):
     """A least-squares failure under one set costs that fit, not the file's
@@ -804,9 +910,9 @@ async def test_a_reproduction_that_raises_says_so(filestore):
         support.STORED_FIT,
         {**support.STORED_FIT, "verified": True},
         {**support.STORED_FIT, "quality": {"n_points": 5}, "status": "unfitted"},
-        {"mode": 2, "par": [1.0, 2.0, 0.5], "quality": {"n_points": 5}},
+        {"mode": 5, "par": [1.0, 2.0, 0.5], "quality": {"n_points": 5}},
     ],
-    ids=["converter", "legacy fit", "unfitted", "another model"],
+    ids=["converter", "legacy fit", "unfitted", "a model the node does not fit"],
 )
 @pytest.mark.asyncio
 async def test_only_a_node_fit_is_reproduced(filestore, record):
@@ -1259,7 +1365,11 @@ async def test_a_run_audits_each_mode_and_counts_what_it_could_not_read(
 ):
     """The other mode has no collection; a file with no store on disk is
     counted, not fatal."""
-    config = _config(site["instrument"], sets={"nitrate": ["NO3", "HN2O6", "H2N3O9"]})
+    config = _config(
+        site["instrument"],
+        sets={"nitrate": ["NO3", "HN2O6", "H2N3O9"]},
+        models=(0, None),
+    )
     with patch.object(
         script,
         "read_instrument_functions",
@@ -1267,6 +1377,7 @@ async def test_a_run_audits_each_mode_and_counts_what_it_could_not_read(
     ):
         report = await script.run_audit(config)
 
+    assert report["models"] == ["mode0", "node"]
     by_mode = {mode["mode"].split()[0]: mode for mode in report["modes"]}
     assert by_mode["Nitrate"]["unreadable"] == {script.NO_PEAK_STORE: 3}
     assert by_mode["Other"]["unreadable"] == {script.NO_PEAK_STORE: 1}
@@ -1280,6 +1391,7 @@ async def test_a_run_audits_each_mode_and_counts_what_it_could_not_read(
         (files["other mode"], script.NO_PEAK_STORE),
     ]
     assert "collection/mode0" in by_mode["Nitrate"]["fits"]
+    assert "collection/node" in by_mode["Nitrate"]["fits"]
     assert "collection/mode0" not in by_mode["Other"]["fits"]
     assert "nitrate/mode0" in by_mode["Other"]["fits"]
     assert report["files"] == []

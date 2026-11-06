@@ -18,6 +18,9 @@ General calibration workflow:
    - Orbitrap: one-point scaling based on observed-to-target m/z ratios.
 - Refine the calibration set by removing peaks with unacceptable residual errors;
    for small match sets, evaluate all subsets to find the most self-consistent fit.
+- For a TOF fit on four calibrant ions or more, fit Tofwerk's three-parameter
+   mode 2 to the same calibrants as well, and keep it where it predicts each
+   ion, fitted on the others, clearly better than mode 0.
 - Build calibration statistics, summary metrics, and warnings when calibration is
    missing, underdetermined, or inaccurate.
 - For a TOF fit, say what it was made on: every candidate point with its
@@ -90,10 +93,18 @@ from mascope_match.params import (
 )
 from mascope_signal.peak import DEFAULT_SAMPLE_INTERVAL_NS, rows_set_apart
 from mascope_thermo.scan_filter import parse_stream_key
-from mascope_tofwerk.calibration import mz_calibrate, tof_to_mass
+from mascope_tofwerk.calibration import FITTED_MODES, mz_calibrate, tof_to_mass
 
 
-TOF_MINIMUM_CALIBRATION_POINTS = 3
+#: The fewest calibrants a TOF fit is made on, by the Tofwerk mode it fits:
+#: one more than the model has parameters. A model passes through as many
+#: points as it has parameters, whatever they are, so its residuals there are
+#: zero by construction, and the residual rule and the exact subset search,
+#: which keep the calibrants that agree with each other best, would always
+#: keep such a set: three points under mode 2, two under mode 0.
+TOF_MINIMUM_CALIBRATION_POINTS = {
+    mode: n_parameters + 1 for mode, n_parameters in FITTED_MODES.items()
+}
 ORBI_MINIMUM_CALIBRATION_POINTS = 1
 LARGE_SAMPLE_SIZE_THRESHOLD = 5
 
@@ -101,11 +112,27 @@ LARGE_SAMPLE_SIZE_THRESHOLD = 5
 #: it keeps and how it fits them. Stored with every TOF fit
 #: (``quality.node_version``), so a file one version fitted can be told from
 #: a file another did, and a change to any of the three is a new version.
-TOF_CALIBRATION_NODE_VERSION = 1
+#: Version 1 fitted mode 0 alone; version 2 fits mode 2 beside it and keeps
+#: the one that predicts the calibrants better (:data:`TOF_MODE2_MIN_GAIN_PPM`).
+TOF_CALIBRATION_NODE_VERSION = 2
 
 #: The TOF models the node fits, by Tofwerk mode, as a TOF fit's record names
 #: its model (``quality.model``). ``tof_to_mass`` evaluates more of them.
-TOF_MODEL_EQUATIONS = {0: "i = p1*sqrt(m) + p2"}
+TOF_MODEL_EQUATIONS = {0: "i = p1*sqrt(m) + p2", 2: "i = p1*m^p3 + p2"}
+
+#: How much better Tofwerk's three-parameter mode 2 has to predict the
+#: calibrants than mode 0 for the node to keep it, in ppm. Each model is
+#: fitted on the calibrants of every ion the fit kept but one, in turn, and
+#: read at the ion left out; mode 2 is kept when its mean error there is
+#: below mode 0's by more than this. Its own residuals cannot judge it: with a parameter
+#: more to follow the calibrants with, they are never larger than mode 0's.
+TOF_MODE2_MIN_GAIN_PPM = 0.5
+
+#: The fewest calibrant ions the two models are compared on. Left one out,
+#: three remain for mode 2's three parameters, at three places on the axis:
+#: what makes a calibrant here is its ion, as the two lines of a bromide ion
+#: read the axis at one place. Fewer, and the node keeps mode 0.
+TOF_MODE2_MIN_IONS = 4
 
 #: Mean retained residuals closer than this rank two subsets of calibrants as
 #: equally consistent. A subset the fit can absorb whole is fitted exactly - an
@@ -953,9 +980,42 @@ class BaseCalibrationHandler:
 
 
 class TofCalibrationHandler(BaseCalibrationHandler):
+    """The calibration node for a TOF file.
+
+    :param model: None for the node's own fit: the calibrants selected under
+        mode 0, then fitted in mode 0 or in mode 2, whichever predicts them
+        better (:meth:`_choose_model`). A key of :data:`TOF_MODEL_EQUATIONS`
+        for a fit in that mode alone, the calibrants selected under it too,
+        as the calibration audit refits a file in one model
+        (``tof_calibration_audit``).
+    """
+
+    def __init__(
+        self,
+        filename: str,
+        params: CalibrationFitParams | None = None,
+        notification: UserNotification | None = None,
+        model: int | None = None,
+    ):
+        super().__init__(filename, params, notification)
+        if model is not None and model not in TOF_MODEL_EQUATIONS:
+            raise ValueError(
+                f"Model {model} cannot be fitted; fittable: "
+                f"{', '.join(str(mode) for mode in TOF_MODEL_EQUATIONS)}"
+            )
+        self.model = model
+        #: Each model's error at the calibrants it was not fitted on, for the
+        #: record (:meth:`_choose_model`); None where none were compared.
+        self.model_comparison: list[dict] | None = None
+
+    @property
+    def _selection_mode(self) -> int:
+        """The mode the calibrants are selected under."""
+        return 0 if self.model is None else self.model
+
     @property
     def _minimum_calibration_points(self) -> int:
-        return TOF_MINIMUM_CALIBRATION_POINTS
+        return TOF_MINIMUM_CALIBRATION_POINTS[self._selection_mode]
 
     async def _resolve_calibration_isotopes(self) -> pd.DataFrame | None:
         """The collection's isotopes, each with the formula of its ion.
@@ -975,13 +1035,92 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         }
         return isotopes.assign(target_ion_formula=isotopes.target_ion_id.map(formulas))
 
-    def _fit_matches(self, matches_df: pd.DataFrame) -> tuple[dict, dict]:
-        """Fit the m/z calibration model to the matched peaks using the tofwerk mz_calibrate function."""
+    def _fit_matches(
+        self, matches_df: pd.DataFrame, mode: int | None = None
+    ) -> tuple[dict, dict]:
+        """Fit the m/z calibration model to the matched peaks using the tofwerk mz_calibrate function.
+
+        :param mode: The Tofwerk mode to fit; the one the calibrants are
+            selected under when None.
+        """
         return mz_calibrate(
             matches_df["sample_peak_tof"],
             matches_df["sample_peak_mz"],
             matches_df["mz"],
+            mode=self._selection_mode if mode is None else mode,
         )
+
+    def _held_out_error(self, matches_df: pd.DataFrame, mode: int) -> float | None:
+        """How well a model predicts calibrants it was not fitted on.
+
+        The model is fitted on the lines of every calibrant ion but one, in
+        turn, and read at the lines of the one left out. An ion is left out
+        whole: the two lines of a bromide ion are 2 Th apart, and one left
+        in would hold the axis where the other is read.
+
+        :param matches_df: The calibrant lines, of at least
+            :data:`TOF_MODE2_MIN_IONS` ions.
+        :param mode: The Tofwerk mode.
+        :return: The mean size of the errors, one per line, in ppm; None
+            when a fit fails or puts a line at no mass.
+        """
+        errors = []
+        for ion in matches_df.target_ion_id.unique():
+            left_out = matches_df.target_ion_id == ion
+            try:
+                fit, _ = self._fit_matches(matches_df[~left_out], mode)
+            except ValueError:
+                return None
+            with np.errstate(invalid="ignore"):
+                post_dmz = self._evaluate_fit(matches_df[left_out], fit)["post_dmz"]
+            errors.extend(abs(float(error)) for error in post_dmz)
+        if not all(math.isfinite(error) for error in errors):
+            return None
+        return float(np.mean(errors))
+
+    def _choose_model(
+        self, fit: dict, retained: pd.DataFrame
+    ) -> tuple[dict, pd.DataFrame, list[dict] | None]:
+        """Mode 0's fit to the calibrants kept, or mode 2's if it predicts them better.
+
+        Mode 2 is kept when its error at the calibrants left out of the fit
+        (:meth:`_held_out_error`) is below mode 0's by more than
+        :data:`TOF_MODE2_MIN_GAIN_PPM`. The two are compared only on the
+        lines of :data:`TOF_MODE2_MIN_IONS` ions or more.
+
+        Nor is mode 2 kept when its fit does not give every sample of the
+        axis a mass: an offset p2 at or past the first sample leaves the
+        samples before it with none, where mode 0 has one.
+
+        :param fit: The mode-0 fit to the calibrants kept.
+        :param retained: The calibrants kept, with their residuals under it.
+        :return: The fit kept, the calibrants with their residuals under it,
+            and each model's mode and held-out error in ppm for the record;
+            None for the last when there were too few calibrants to compare.
+        """
+        if retained.target_ion_id.nunique() < TOF_MODE2_MIN_IONS:
+            return fit, retained, None
+        try:
+            mode2, _ = self._fit_matches(retained, mode=2)
+        except ValueError:
+            mode2 = None
+        held_out = {0: self._held_out_error(retained, 0), 2: None}
+        if mode2 is not None and _axis_starts_after_its_offset(mode2):
+            held_out[2] = self._held_out_error(retained, 2)
+        comparison = [
+            {"mode": mode, "held_out_ppm": _finite_or_none(error)}
+            for mode, error in held_out.items()
+        ]
+        if (
+            held_out[0] is not None
+            and held_out[2] is not None
+            and held_out[0] - held_out[2] > TOF_MODE2_MIN_GAIN_PPM
+        ):
+            evaluated = self._build_calibration_df(
+                retained, self._evaluate_fit(retained, mode2)
+            )
+            return mode2, evaluated, comparison
+        return fit, retained, comparison
 
     def _evaluate_fit(self, matches_df: pd.DataFrame, fit_result: dict) -> dict:
         """Evaluate the fit by calculating the calibrated m/z values and errors for each matched peak."""
@@ -1084,9 +1223,15 @@ class TofCalibrationHandler(BaseCalibrationHandler):
                 self.stats = selected_matches_df.to_dict("records")
                 self.warning = (
                     "Not enough calibration peaks after residual filtering. "
-                    "At least 3 peaks are required for a reliable calibration fit."
+                    f"At least {self._minimum_calibration_points} peaks are "
+                    "required for a reliable calibration fit."
                 )
                 return
+
+            if self.model is None:
+                self.fit_result, selected_matches_df, self.model_comparison = (
+                    self._choose_model(self.fit_result, selected_matches_df)
+                )
 
             zero_coefficient = any(coef == 0 for coef in self.fit_result["par"])
             if zero_coefficient:
@@ -1144,7 +1289,11 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         - ``collection``: the calibration collection, and a hash of the
           isotopes it offered (:func:`calibration_isotopes_sha256`), which
           tells one version of it from another.
-        - ``model``: the Tofwerk mode fitted, and its equation.
+        - ``model``: the Tofwerk mode fitted, and its equation; the models
+          compared, each with its error at the calibrants it was not fitted
+          on (:meth:`_choose_model`), None where the fit kept too few
+          calibrants to compare them; and the gain mode 2 needed to be kept,
+          :data:`TOF_MODE2_MIN_GAIN_PPM`.
         - ``node_version``: :data:`TOF_CALIBRATION_NODE_VERSION`.
 
         :param isotopes: The isotopes the collection offered the fit.
@@ -1191,7 +1340,12 @@ class TofCalibrationHandler(BaseCalibrationHandler):
                 "id": self.params.calibration_collection_id,
                 "isotopes_sha256": calibration_isotopes_sha256(isotopes),
             },
-            "model": {"mode": mode, "equation": TOF_MODEL_EQUATIONS.get(mode)},
+            "model": {
+                "mode": mode,
+                "equation": TOF_MODEL_EQUATIONS.get(mode),
+                "compared": self.model_comparison,
+                "min_gain_ppm": TOF_MODE2_MIN_GAIN_PPM,
+            },
             "node_version": TOF_CALIBRATION_NODE_VERSION,
         }
 
@@ -1915,6 +2069,18 @@ def _finite_or_none(value) -> float | None:
     except (TypeError, ValueError):
         return None
     return value if math.isfinite(value) else None
+
+
+def _axis_starts_after_its_offset(fit: dict) -> bool:
+    """Whether a mode-2 fit gives every sample of the axis a mass.
+
+    Mode 2 reads a sample index ``i`` at ``((i - p2) / p1) ** (1 / p3)``,
+    which has no value below the offset p2: an axis from index 0 needs p2
+    below it, a positive p1 and a positive p3. Mode 0 squares the same ratio
+    instead, so it gives every index a mass, if a mirrored one below p2.
+    """
+    p1, p2, p3 = fit["par"]
+    return p1 > 0 and p3 > 0 and p2 < 0
 
 
 def calibration_isotopes_sha256(isotopes: pd.DataFrame) -> str:
