@@ -3,8 +3,11 @@
 # Mascope AI layer: Design & Plan
 
 - **Status:** building
-- **As of:** 2026-10-27
-- **Tracked in:** [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) (Linear, MAS-123 to MAS-142)
+- **As of:** 2026-11-06
+- **Tracked in:** [AI analyst shell](https://linear.app/ultra-trace/project/ai-analyst-shell-2b0a6a7e8af8)
+  (Linear, P-MAS-21, since 2026-11-06: the AI layer project, P-MAS-12, built
+  phases 0 to 3 and is closed; its open items sit in the shell project's
+  milestones 1, 2 and 5, and phase 4 below is that project's milestone 5)
 - **What:** A natural-language agent over the SDK, read-only first, with a confirmed write path later.
 
 ## Purpose
