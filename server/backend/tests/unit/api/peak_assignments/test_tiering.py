@@ -56,7 +56,9 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     TIERING_RULES_VERSION,
     UNTESTABLE_ARTIFACT,
     UNTESTABLE_RANGE,
+    LineGate,
     apply_tiering,
+    ask_absent_line,
     envelope_neighbours,
     find_envelope_claims,
     predicted_envelope,
@@ -2590,6 +2592,8 @@ class TestAnExpectedLineThatIsAbsent:
         summary = run(rows, lines=self.peaks(br81=False))
         assert summary["absent_line"] == {
             "spectrum": True,
+            "mz_tolerance_ppm": 5.0,
+            "abundance_floor": 0.01,
             "detect_snr": 3.0,
             "detect_from": DETECT_DEFAULT,
             "rel_detect_no_snr": 0.10,
@@ -2727,3 +2731,154 @@ class TestOnATofAHalogenShowsItsM2Line:
         assert envelope_of(rows, "pa-1")["lines"] == []
         assert tier_of(rows, "pa-1") == "assigned"
         assert summary["absent_line"]["tof_m2"] is True
+
+
+class TestTheGateARunAskedAt:
+    """`LineGate`: what the run records it asked lines at, which a hand
+    assignment on the run is asked at."""
+
+    BR = TestAnExpectedLineThatIsAbsent
+
+    def test_the_run_s_record_reads_back_as_its_gate(self):
+        summary = run([row("pa-1")], lines=spectrum(("p-1", 181.07, 10.0, 1.0)))
+        assert LineGate.from_record(summary) == LineGate(
+            mz_tolerance_ppm=5.0,
+            abundance_floor=0.01,
+            detect_snr=3.0,
+            detect_from=DETECT_DEFAULT,
+            rel_detect_no_snr=0.10,
+            tof=False,
+        )
+
+    def test_a_curve_and_a_tof_read_back_too(self):
+        summary = run(
+            [row("pa-1")],
+            lines=spectrum(("p-1", 181.07, 10.0, 1.0)),
+            mz_tolerance_ppm=15.0,
+            abundance_floor=0.02,
+            envelope_tolerance=EnvelopeTolerance(detect_snr=7.5),
+            instrument_type="tof",
+        )
+        assert LineGate.from_record(summary) == LineGate(
+            mz_tolerance_ppm=15.0,
+            abundance_floor=0.02,
+            detect_snr=7.5,
+            detect_from=DETECT_FROM_CURVE,
+            rel_detect_no_snr=0.10,
+            tof=True,
+        )
+
+    def test_the_share_asked_with_no_signal_to_noise_is_the_run_s(self, monkeypatch):
+        # The run recorded the fit's constant as it stood; a hand row on the
+        # run is asked at that share, not at what the constant reads today.
+        from mascope_backend.api.new.peak_assignments import tiering as module
+
+        monkeypatch.setattr(module, "REL_DETECT_NO_SNR", 0.05)
+        summary = run([row("pa-1")], lines=spectrum(("p-1", 181.07, 10.0, 1.0)))
+        assert summary["absent_line"]["rel_detect_no_snr"] == 0.05
+        monkeypatch.setattr(module, "REL_DETECT_NO_SNR", 0.10)
+
+        gate = LineGate.from_record(summary)
+        assert gate.rel_detect_no_snr == 0.05
+        # From 5% the 13C lines at 6.5 and 6.4% are asked beside the 81Br line,
+        # which a share of 10% would ask alone.
+        case = self.BR()
+        expected, _ = ask_absent_line(case.bromide(), case.peaks(snr=None), gate)
+        assert expected["asks_share"] == 0.05
+        assert [line["line"] for line in expected["lines"]] == [
+            "13C",
+            "81Br",
+            "13C+81Br",
+        ]
+
+    def test_a_run_that_read_no_spectrum_asked_no_line(self):
+        assert LineGate.from_record(run([row("pa-1")])) is None
+
+    @pytest.mark.parametrize(
+        "tiering",
+        [
+            None,
+            "a string",
+            {},
+            {"absent_line": None},
+            {"absent_line": {"spectrum": True}},
+        ],
+    )
+    def test_a_run_from_before_the_rule_asked_none(self, tiering):
+        assert LineGate.from_record(tiering) is None
+
+    @pytest.mark.parametrize(
+        "broken",
+        [
+            {"mz_tolerance_ppm": None},
+            {"abundance_floor": "0.01"},
+            {"detect_snr": True},
+            {"detect_snr": float("nan")},
+            {"mz_tolerance_ppm": float("inf")},
+            {"mz_tolerance_ppm": 0.0},
+            {"abundance_floor": -0.01},
+            {"rel_detect_no_snr": None},
+            {"rel_detect_no_snr": 0.0},
+        ],
+    )
+    def test_a_record_that_does_not_say_what_it_asked_at_asks_nothing(self, broken):
+        summary = run([row("pa-1")], lines=spectrum(("p-1", 181.07, 10.0, 1.0)))
+        summary["absent_line"].update(broken)
+        assert LineGate.from_record(summary) is None
+
+    def test_asking_one_row_records_its_lines_and_leaves_its_tier(self):
+        # The tiering pass and the curation path each decide what the reason
+        # does to the row: this only reads.
+        case = self.BR()
+        bromide = case.bromide()
+        expected, reason = ask_absent_line(
+            bromide,
+            case.peaks(br81=False),
+            LineGate.from_record(
+                run([row("pa-1")], lines=spectrum(("p-1", 181.07, 10.0, 1.0)))
+            ),
+        )
+        assert bromide["provenance"][PREDICTED_ENVELOPE] is expected
+        assert line_named(expected, "81Br")["state"] == LINE_ABSENT
+        assert reason["rule"] == REASON_ABSENT_LINE
+        assert reason["line"] == "81Br"
+        assert bromide["tier"] == "assigned"
+        assert "tier_reasons" not in bromide["provenance"]
+
+    def test_the_gate_s_window_floor_and_instrument_reach_the_lines(self):
+        # A 15 ppm window reads a peak 10 ppm off as the line; a TOF gate
+        # asks a bromine reading's M+2 line at a signal-to-noise the default
+        # gate would not; a floor above the 13C lines predicts none of them.
+        case = self.BR()
+        off = case.BR81 * (1 + 10e-6)
+        lines = case.peaks(br81=False, extra=[("p-off", off, 900.0, 90.0)])
+        wide = LineGate(15.0, 0.01, 3.0, DETECT_DEFAULT, 0.1, False)
+        expected, reason = ask_absent_line(case.bromide(), lines, wide)
+        assert line_named(expected, "81Br")["peak_id"] == "p-off"
+        assert reason is None
+
+        dim = spectrum(("p-m0", case.M0, 1000.0, 1.0), HIGHER)
+        expected, _ = ask_absent_line(
+            case.bromide(), dim, LineGate(5.0, 0.01, 3.0, DETECT_DEFAULT, 0.1, True)
+        )
+        assert [line["line"] for line in expected["lines"]] == ["81Br"]
+        expected, _ = ask_absent_line(
+            case.bromide(), dim, LineGate(5.0, 0.01, 3.0, DETECT_DEFAULT, 0.1, False)
+        )
+        assert expected["lines"] == []
+
+        expected, _ = ask_absent_line(
+            case.bromide(),
+            case.peaks(),
+            LineGate(5.0, 0.1, 3.0, DETECT_DEFAULT, 0.1, False),
+        )
+        assert [line["line"] for line in expected["lines"]] == ["81Br"]
+
+    def test_the_curve_s_word_reaches_the_reason(self):
+        case = self.BR()
+        _, reason = ask_absent_line(
+            case.bromide(),
+            case.peaks(br81=False),
+            LineGate(5.0, 0.01, 3.0, DETECT_FROM_CURVE, 0.1, False),
+        )
+        assert reason["detail"].endswith("the file's own detection curve)")

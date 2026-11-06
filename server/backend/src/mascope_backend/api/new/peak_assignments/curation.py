@@ -16,7 +16,12 @@ Three rules keep an edited row honest beside the engine's own:
 - **The tier is recomputed, never inherited or accepted.** It is derived here
   with :func:`engine.tier_for_evidence` under the run's own ``tier_bands``, so a
   curated row sorts, filters and rolls up against the same yardstick as every
-  other row of that run.
+  other row of that run. A monoisotopic row is then asked the one rule of the
+  tiering pass that is about the spectrum rather than about how its formula
+  was elected: whether the lines its envelope predicts are there
+  (:func:`tiering.ask_absent_line`, step 3.4e), at the gate the run asked its
+  own rows at. The others weigh rivals, channels and lists, which a person's
+  choice is not; a missing line is missing whoever named the formula.
 - **The engine's reading of the old winner does not survive.** All nine keys
   of :data:`_ENGINE_JUDGEMENT_KEYS` - ``p_correct``, ``calibrated``,
   ``calibration``, ``corroboration``, ``confidence``, ``n_candidates``,
@@ -44,9 +49,11 @@ Three rules keep an edited row honest beside the engine's own:
   peaks that only a full re-run could re-attach.
 """
 
+import asyncio
 import math
 from datetime import datetime as dt
 from datetime import timezone
+from typing import NamedTuple
 
 from sqlalchemy import select
 
@@ -56,17 +63,21 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     NotFoundException,
 )
+from mascope_backend.api.new.ionization.modes.versions import sample_label_purity
 from mascope_backend.api.new.peak_assignments.config import (
+    IN_APP_ENGINE,
     MAX_ALTERNATIVES_CEILING,
     PeakAssignmentConfig,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
+    ROLE_ARTIFACT,
     ROLE_ISO_CHILD,
     ROLE_M0,
     ROLE_UNASSIGNED,
     SOURCE_DATABASE,
     SOURCE_MANUAL,
     SOURCE_UNTARGETED,
+    TIERING_KEY,
     evidence_for,
     plausibility_for,
     tier_for_evidence,
@@ -75,14 +86,23 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     DerivedAssignmentReadOnlyException,
     is_fold_id,
 )
+from mascope_backend.api.new.peak_assignments.mass_gate import SpectrumLines
 from mascope_backend.api.new.peak_assignments.schemas import (
     PromoteAlternativeBody,
     SetAssignmentBody,
 )
 from mascope_backend.api.new.peak_assignments.service import (
+    _resolution_of,
+    load_sample_peaks,
     provenance_with_calibration,
 )
+from mascope_backend.api.new.peak_assignments.tiering import (
+    LineGate,
+    ask_absent_line,
+)
 from mascope_backend.api.new.peak_assignments.tiers import (
+    TIER_ASSIGNED,
+    TIER_CANDIDATE,
     TIER_UNASSIGNED,
     TIERS,
     normalize_tier,
@@ -96,6 +116,9 @@ from mascope_backend.db import (
     TargetIon,
     async_session,
 )
+from mascope_backend.runtime import runtime
+from mascope_match import shifted_mz_axis
+from mascope_tools.composition.custom_elements import labelled_purity
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
 
 
@@ -925,6 +948,81 @@ def _chosen_from_alternative(
     return chosen
 
 
+class _LinesAsked(NamedTuple):
+    """What asking a hand assignment's lines came to.
+
+    ``reason`` is the absent-line reason where a line is missing; ``unread``
+    says the run asks lines and the sample's peaks could not be read, which the
+    edit's message says rather than passing over.
+    """
+
+    reason: dict | None = None
+    unread: bool = False
+
+
+async def _absent_line_of(
+    session, sample, run: PeakAssignmentRun, row: dict
+) -> _LinesAsked:
+    """Ask a hand assignment whether the spectrum holds the lines it predicts.
+
+    At the gate the run asked its own rows at
+    (:meth:`tiering.LineGate.from_record`), over the sample's peaks read as the
+    run read them - at the setup's labelled
+    purity, and on a decoy run's shifted axis - with the peaks the run's
+    artifact rows hold read as neither a line nor an absence. A run that asked
+    no line asks none of its hand assignments either: an imported run, whose
+    configuration is its engine's own, and a run tiered before rule set 11 or
+    without the sample's peaks.
+
+    :param session: The edit's session, which reads the run's artifact rows.
+    :param sample: The sample view row.
+    :param run: The row's run.
+    :param row: The curated row as the rule reads it; its provenance takes the
+        record of what was asked (``tiering.PREDICTED_ENVELOPE``).
+    :return: The reason (``tiering.absent_line_reason``) where a line is
+        missing, or that the peaks could not be read.
+    """
+    if run.engine != IN_APP_ENGINE or not isinstance(run.config, dict):
+        return _LinesAsked()
+    gate = LineGate.from_record(run.config.get(TIERING_KEY))
+    if gate is None:
+        return _LinesAsked()
+    artifact_peak_ids = frozenset(
+        str(peak_id)
+        for peak_id in (
+            await session.execute(
+                select(PeakAssignment.sample_peak_id).where(
+                    PeakAssignment.peak_assignment_run_id == run.peak_assignment_run_id,
+                    PeakAssignment.role == ROLE_ARTIFACT,
+                )
+            )
+        ).scalars()
+    )
+    decoy = run.config.get("decoy")
+    decoy = decoy if isinstance(decoy, dict) else {}
+    with (
+        labelled_purity(await sample_label_purity(sample.sample_item_id)),
+        shifted_mz_axis(ppm=decoy.get("mz_shift_ppm"), da=decoy.get("mz_shift_da")),
+    ):
+        try:
+            peaks_df = await asyncio.to_thread(load_sample_peaks, sample)
+        except Exception as exc:  # noqa: BLE001 - the edit stands without it
+            runtime.logger.warning(
+                f"Peaks of sample '{sample.sample_item_name}' unreadable ({exc}); "
+                "a hand assignment's isotope lines were not checked"
+            )
+            return _LinesAsked(unread=True)
+        resolution = await _resolution_of(sample)
+        _, reason = ask_absent_line(
+            row,
+            SpectrumLines.from_peaks(peaks_df, resolution),
+            gate,
+            resolution=resolution,
+            artifact_peak_ids=artifact_peak_ids,
+        )
+    return _LinesAsked(reason=reason)
+
+
 @api_controller()
 async def curate_assignment(
     sample_item_id: str,
@@ -1179,6 +1277,27 @@ async def curate_assignment(
             candidate_threshold=candidate_band,
             assigned_threshold=assigned_band,
         )
+        # And then asked whether the spectrum holds the lines the formula
+        # predicts, as the run asked its own rows (`_absent_line_of`): an
+        # absent line holds the row at candidate at most, and is the one
+        # reason a hand assignment lists. A hand isotopologue is not asked:
+        # the rule reads a formula's lines from its main one, and the row has
+        # no M0 on the run.
+        lines = _LinesAsked()
+        if assignment.role == ROLE_M0:
+            hand_row = {
+                "sample_peak_id": assignment.sample_peak_id,
+                "ion_formula": assignment.ion_formula,
+                "sample_peak_intensity": assignment.sample_peak_intensity,
+                "mz_error_ppm": assignment.mz_error_ppm,
+                "provenance": dict(assignment.provenance or {}),
+            }
+            lines = await _absent_line_of(session, sample, run, hand_row)
+            if lines.reason is not None:
+                hand_row["provenance"]["tier_reasons"] = [lines.reason]
+                if assignment.tier == TIER_ASSIGNED:
+                    assignment.tier = TIER_CANDIDATE
+            assignment.provenance = hand_row["provenance"]
         # The engine's verdict is about a FORMULA, not about a row, so it
         # survives exactly as long as the row still holds the formula it judged.
         # Three cases, and only the last is "no engine judged this":
@@ -1254,13 +1373,27 @@ async def curate_assignment(
         if restore_failed
         else ""
     )
+    # Said here as well as in the row's reasons: the tier the person sees is
+    # not the one the evidence alone gave, and this says why.
+    if lines.reason is not None:
+        lines_note = (
+            f" Its {lines.reason['line']} line is not in the spectrum, which "
+            "holds it at candidate at most."
+        )
+    elif lines.unread:
+        lines_note = (
+            " Its isotope lines were not checked: the sample's peaks could not be read."
+        )
+    else:
+        lines_note = ""
     return {
         "status": "success",
         "message": (
             f"Assigned '{assigned}' to peak {sample_peak_id} of sample "
             f"'{sample.sample_item_name}' by hand"
             f"{f' (was {previous_formula!r})' if previous_formula else ''}."
-            f"{displaced_note}{restored_note}{skipped_note}{failed_note}"
+            f"{lines_note}{displaced_note}{restored_note}{skipped_note}"
+            f"{failed_note}"
         ),
         "results": len(records),
         "data": records,
