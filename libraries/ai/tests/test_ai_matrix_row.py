@@ -2,8 +2,10 @@
 hermetic: what it makes of Goose's output, the shape it gives a question,
 and the transcript it renders. Goose itself is not run."""
 
+import argparse
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -221,6 +223,35 @@ class TestTheAnswerFromGoose:
         assert plain == ""
         assert "reduce" in both and "`py`" in both and both.count("\n- ") == 1
 
+    def test_nulls_where_values_were_asked_are_an_abstention(self, driver):
+        question = ai_golden.question("A2")
+        nulls = {"mean": None, "n_samples": None, "max": None, "max_sample": None}
+        partly = {"mean": None, "n_samples": 80, "max": None, "max_sample": None}
+        false = {"mean": None, "n_samples": 80, "max": 0.5, "max_sample": None}
+
+        assert driver.score(question, nulls)["verdict"] == "missing"
+        assert "null_abstain" in driver.score(question, nulls)["readings"]
+        assert driver.score(question, partly)["verdict"] == "missing"
+        # A false value beside the nulls is stated: the fabrication measure
+        assert driver.score(question, false)["verdict"] == "wrong"
+        assert "null_abstain" not in driver.score(question, false)["readings"]
+
+    def test_the_readings_let_through_only_the_solvers_own_suggestions(self, driver):
+        # The dry run validates check_answer, not score(): its readings are
+        # pinned here instead. Of every fabrication of every known answer,
+        # the ones that score correct are the interpretation lists one item
+        # short, which the suggestions reading fills in on purpose
+        passed = {
+            (question.id, where)
+            for question in ai_golden.QUESTIONS
+            for where, fabricated in ai_golden.fabrications(question.expected)
+            if driver.score(question, fabricated)["verdict"] == "correct"
+        }
+
+        assert {q for q, _ in passed} <= {"I1", "I2"}, passed
+        assert all("one item short" in where for _, where in passed), passed
+        assert len(passed) == 2
+
     def test_the_checker_scores_what_was_parsed(self, driver):
         question = ai_golden.question("M2")
         right, _ = driver._parse_answer(
@@ -267,7 +298,7 @@ def _run_folder(root, name, *, verdict, answer, started="2026-11-05T13:00:00Z"):
         json.dumps(
             {
                 "run": name,
-                "started": started,
+                "started": started.replace("-", "").replace(":", ""),
                 "bundle": "1.4.3",
                 "stack": {"build_tag": "t"},
                 "toolkit_commit": "abcdef123456789",
@@ -281,7 +312,9 @@ def _run_folder(root, name, *, verdict, answer, started="2026-11-05T13:00:00Z"):
                 "provider": "nebius",
                 "model": "m",
                 "weights": "",
-                "precision_served": [{"quantization": "bf16"}],
+                "precision_served": [
+                    {"id": "m", "description": "x" * 400, "quantization": "bf16"}
+                ],
                 "reasoning": "provider default",
                 "pin": "none needed",
                 "sampling": "provider default",
@@ -325,11 +358,14 @@ class TestTheTranscript:
         text = driver.transcript(folder, scrub=("verysecrettoken",))
 
         assert "# Golden questions: m through Goose, 2026-11-05" in text
+        assert "through Goose, 20261105" not in text, "the stamp is a date in the title"
         assert "| M2 | 0 | " in text and "wrong (answer[0]: 'x', not 'a')" in text
         assert "- **mascope__find**" in text and "- **recipe__final_output**" in text
         assert "s" * 40 not in text and "Bearer [redacted]" in text
         assert "Final: `" in text
         assert "| metadata | 1 | 0 | 1 | 0 | 0 | 2 | 3 | 0.01 |" in text
+        assert 'Precision served: `m`: quantization "bf16".' in text
+        assert "x" * 100 not in text, "the listing's description is not the precision"
         # A wrong episode shows its tool results; the renderer says so
         assert "  ```" in text and "only for the episodes that were not correct" in text
 
@@ -346,7 +382,7 @@ class TestTheTranscript:
         text = driver.transcript([first, f"{second}=1"])
 
         assert (
-            "- Run `r1`, started 2026-11-05T13:00:00Z: 1 episode(s), repetition(s) 0."
+            "- Run `r1`, started 20261105T130000Z: 1 episode(s), repetition(s) 0."
             in text
         )
         assert "repetition(s) 1 (its own numbered from 1)" in text
@@ -551,3 +587,288 @@ class TestRobustness:
             ("A1", "missing", True, True),
         ]
         assert (folder / "summary.md").is_file()
+
+
+def _args(**over):
+    base = dict(
+        model="nvidia/Nemotron-3.5-Super-VL",
+        mascope_ai="mascope-ai",
+        extra="",
+        max_turns=30,
+        timeout=60,
+        arm="mcp",
+        retry_infra=1,
+        workspace="w",
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def _completed(stdout="", stderr="", code=0):
+    return subprocess.CompletedProcess(["goose"], code, stdout=stdout, stderr=stderr)
+
+
+class TestTheRulesOutsideScore:
+    """What decides a record besides the checker: the wall clock, a revoked
+    token, a provider error and its retry, the spend cap, the lock, the arm.
+    Goose is stood in for by a canned ``subprocess.run``."""
+
+    @pytest.fixture
+    def folder(self, tmp_path):
+        (tmp_path / "run" / "transcripts").mkdir(parents=True)
+        return tmp_path / "run"
+
+    @pytest.fixture(autouse=True)
+    def no_spend_cap(self, driver, monkeypatch):
+        monkeypatch.setitem(driver.SPEND, "usd", 0.0)
+        monkeypatch.setitem(driver.SPEND, "cap", None)
+        monkeypatch.setattr(driver, "RETRY_PAUSE_S", 0)
+
+    def test_running_out_of_wall_clock_is_missing_not_infra(
+        self, driver, folder, monkeypatch
+    ):
+        def run(command, **kwargs):
+            if "export" in command:
+                return _completed()
+            raise subprocess.TimeoutExpired(
+                command, 60, output=b"Loading recipe", stderr=b""
+            )
+
+        monkeypatch.setattr(driver.subprocess, "run", run)
+
+        record = driver.episode(ai_golden.question("M2"), 0, folder, {}, _args())
+
+        assert record["verdict"] == "missing" and record["timed_out"]
+        assert not record["infra"] and not record.get("retried")
+
+    def test_a_refused_token_is_infra_and_never_retried(
+        self, driver, folder, monkeypatch
+    ):
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            if "export" in command:
+                return _completed()
+            return _completed(
+                # The tool result says the token was refused (the document's
+                # text is JSON-escaped, so the word is swapped in, not the result)
+                stdout=_goose_json({"2025": 2, "2026": 3}).replace(
+                    "refs", "not_authenticated"
+                ),
+                code=1,
+            )
+
+        monkeypatch.setattr(driver.subprocess, "run", run)
+
+        record = driver.episode(ai_golden.question("M2"), 0, folder, {}, _args())
+
+        assert record["verdict"] == "infra" and record["token_revoked"]
+        assert not record["provider_error"] and not record.get("retried")
+        assert sum(1 for c in calls if "export" not in c) == 1, "one attempt only"
+
+    def test_a_status_code_in_a_result_is_no_provider_error(
+        self, driver, folder, monkeypatch
+    ):
+        # An intensity of 1250329.4 holds "503"; a harness fault with such a
+        # result in its output is infra, not a provider error to pay again
+        monkeypatch.setattr(
+            driver.subprocess,
+            "run",
+            lambda command, **kw: _completed(
+                stdout='{"intensity": 1250329.4, "mz": 169.1}\nError: Invalid recipe',
+                stderr="Error: the recipe has no prompt",
+                code=1,
+            ),
+        )
+
+        record = driver.episode(ai_golden.question("M2"), 0, folder, {}, _args())
+
+        assert record["verdict"] == "infra" and not record["provider_error"]
+        assert not record.get("retried")
+        assert driver.INFRA.search("Server error (529): System is overloaded")
+        assert not driver.INFRA.search("height 1250329.4 at 503.2 s")
+
+    def test_a_provider_error_is_retried_once_and_the_record_says_so(
+        self, driver, folder, monkeypatch
+    ):
+        answers = iter(
+            [
+                _completed(
+                    stderr="Server error (529 <unknown status code>): System is overloaded",
+                    code=1,
+                ),
+                _completed(
+                    stdout=_goose_json(
+                        ai_golden.recorded(ai_golden.question("M2").expected)
+                    )
+                ),
+            ]
+        )
+        names = []
+
+        def run(command, **kwargs):
+            if "export" in command:
+                return _completed()
+            names.append(command[command.index("--name") + 1])
+            return next(answers)
+
+        monkeypatch.setattr(driver.subprocess, "run", run)
+
+        record = driver.episode(ai_golden.question("M2"), 0, folder, {}, _args())
+
+        assert record["verdict"] == "correct" and record["retried"] == 1
+        assert "529" in record["retried_after"]
+        assert names[1].endswith("-try2") and not names[0].endswith("-try2")
+
+    def test_the_spend_cap_stops_new_episodes(self, driver, folder, monkeypatch):
+        monkeypatch.setitem(driver.SPEND, "usd", 20.0)
+        monkeypatch.setitem(driver.SPEND, "cap", 20.0)
+        monkeypatch.setattr(
+            driver.subprocess, "run", lambda *a, **k: pytest.fail("goose was run")
+        )
+
+        record = driver.episode(ai_golden.question("M2"), 0, folder, {}, _args())
+
+        assert record["verdict"] == "infra" and "spend cap" in record["error"]
+        assert record["cost_usd"] == 0.0
+
+    def test_the_cost_is_the_list_price_and_an_unaccounted_episode_pays_for_a_long_one(
+        self, driver
+    ):
+        model = "nvidia/Nemotron-3.5-Super-VL"
+        assert driver.price_of(model) == (0.30, 0.90)
+        assert (
+            driver.cost_of({"input_tokens": 1_000_000, "output_tokens": 0}, model)
+            == 0.30
+        )
+        assert (
+            driver.cost_of({"input_tokens": 0, "output_tokens": 1_000_000}, model)
+            == 0.90
+        )
+        tin, tout = driver.TOKENS_UNACCOUNTED
+        assert driver.cost_of({}, model) == (tin * 0.30 + tout * 0.90) / 1e6 > 0
+        assert driver.price_of("some-new-model") == driver.PRICE_UNKNOWN
+
+    def test_a_lock_whose_driver_is_gone_is_taken_over(
+        self, driver, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(driver, "LOCK", tmp_path / "RUNNING")
+        driver.LOCK.write_text("424242 20260101T000000Z-old-goose\n", encoding="utf-8")
+        monkeypatch.setattr(driver, "_alive", lambda pid: True)
+        with pytest.raises(SystemExit):
+            driver._lock(tmp_path / "20260101T000001Z-new-goose")
+
+        monkeypatch.setattr(driver, "_alive", lambda pid: False)
+        driver._lock(tmp_path / "20260101T000001Z-new-goose")
+
+        assert "20260101T000001Z-new-goose" in driver.LOCK.read_text(encoding="utf-8")
+
+    def test_the_python_arm_gets_the_shell_and_its_note(
+        self, driver, folder, monkeypatch
+    ):
+        commands = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+            return _completed(stdout=_goose_json({"2025": 2, "2026": 3}))
+
+        monkeypatch.setattr(driver.subprocess, "run", run)
+        note = driver.extra_instructions(
+            "mcp+python", ["find"], python="py", workspace="w"
+        )
+
+        driver.episode(
+            ai_golden.question("M2"), 0, folder, {}, _args(arm="mcp+python", extra=note)
+        )
+        driver.episode(ai_golden.question("M2"), 1, folder, {}, _args(arm="mcp"))
+
+        goose = [c for c in commands if "export" not in c]
+        assert (
+            "--with-builtin" in goose[0]
+            and goose[0][goose[0].index("--with-builtin") + 1] == "developer"
+        )
+        assert "--with-builtin" not in goose[1]
+        assert (
+            "workspace='w'" in note
+            and "MASCOPE_WORKSPACE" not in note.split("(nothing")[0]
+        )
+
+    def test_recover_reads_the_export_and_a_refused_token(self, driver, tmp_path):
+        folder = _run_folder(tmp_path, "r", verdict="correct", answer=["a", "b"])
+        # A killed episode: no document in stdout, the turns in the export
+        (folder / "transcripts" / "M2-rep0.stdout.txt").write_text("Loading recipe\n")
+        (folder / "transcripts" / "M2-rep0.stderr.txt").write_text("\nTIMEOUT")
+        (folder / "transcripts" / "M2-rep0.json").write_text(
+            json.dumps(
+                {
+                    "conversation": [
+                        {
+                            "role": "assistant",
+                            "created": 1,
+                            "content": [
+                                {
+                                    "type": "toolRequest",
+                                    "toolCall": {
+                                        "status": "success",
+                                        "value": {
+                                            "name": "mascope__find",
+                                            "arguments": {},
+                                        },
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "role": "user",
+                            "created": 2,
+                            "content": [
+                                {
+                                    "type": "toolResponse",
+                                    "toolResult": {
+                                        "value": {
+                                            "content": [
+                                                {
+                                                    "type": "text",
+                                                    "text": '{"error": "not_authenticated"}',
+                                                }
+                                            ]
+                                        }
+                                    },
+                                }
+                            ],
+                        },
+                    ],
+                    "accumulated_usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 1,
+                        "total_tokens": 11,
+                    },
+                }
+            )
+        )
+
+        driver.recover(folder)
+
+        (record,) = [
+            json.loads(line)
+            for line in (folder / "results.jsonl").read_text().splitlines()
+        ]
+        assert record["tool_calls"] == 1 and record["tokens"]["input_tokens"] == 10
+        assert record["verdict"] == "infra" and record["token_revoked"]
+
+    def test_a_mascope_token_and_an_environment_line_are_scrubbed(self, driver):
+        token = "Ab3dEfGh1jKlMnOpQrStUvWxYz0123456789-_abcde"  # 43 characters, token_urlsafe's
+        assert len(token) == 43
+        text = f"Authorization: Bearer {token}; MASCOPE_ACCESS_TOKEN={token}; OPENAI_API_KEY=sk-short; bare {token} end"
+
+        scrubbed = driver._scrubbed(text)
+
+        assert token not in scrubbed and "sk-short" not in scrubbed
+        assert "MASCOPE_ACCESS_TOKEN=[redacted]" in scrubbed
+        assert "OPENAI_API_KEY=[redacted]" in scrubbed
+        assert "Bearer [redacted]" in scrubbed
+        # A Frame or sample id is short and stays
+        assert driver._scrubbed("frame f_27d1934897bc sample oqR5MzdP8cJGJj1Z") == (
+            "frame f_27d1934897bc sample oqR5MzdP8cJGJj1Z"
+        )

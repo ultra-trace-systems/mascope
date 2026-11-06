@@ -168,8 +168,9 @@ PYTHON_ARM_NOTE = (
     "You also have a shell (the developer extension). To compute over data, run "
     "Python with `{python}`: `from mascope_ai import Toolkit, Session; from "
     "mascope_sdk import MascopeClient; kit = Toolkit(MascopeClient(service_name="
-    "'ai-agent'))` reads MASCOPE_URL, MASCOPE_ACCESS_TOKEN and MASCOPE_WORKSPACE "
-    "from the environment; `kit.load_peaks(...)` and the other loaders return "
+    "'ai-agent'), workspace={workspace!r})` reads MASCOPE_URL and "
+    "MASCOPE_ACCESS_TOKEN from the environment (nothing reads the workspace from "
+    "it); `kit.load_peaks(...)` and the other loaders return "
     "Frames whose `.df` is a pandas DataFrame you can aggregate. Print only the "
     "numbers you need. Write nothing to Mascope."
 )
@@ -186,8 +187,10 @@ REDUCE_HINT = (
 #: The sampling the bench ran every model with.
 SAMPLING = {"temperature": 1.0, "top_p": 0.95, "max_tokens": 32768}
 
+#: What Goose's stderr says of a provider error, as words: a status code in
+#: a tool result's numbers (an intensity holding 503) is none.
 INFRA = re.compile(
-    r"(429|rate limit|timed? ?out|502|503|504|529|overloaded|server error"
+    r"((?<![\d.])(429|50[234]|529)(?![\d.])|rate limit|timed? ?out|overloaded|server error"
     r"|connection (error|refused|reset)|ECONNRESET)",
     re.I,
 )
@@ -235,14 +238,19 @@ def mcp_tools(command: list[str]) -> list[str]:
     raise RuntimeError(f"{command[0]} listed no tools: {done.stderr.strip()[-300:]}")
 
 
-def extra_instructions(arm: str, tools: list[str], python: str = sys.executable) -> str:
+def extra_instructions(
+    arm: str,
+    tools: list[str],
+    python: str = sys.executable,
+    workspace: str = ai_golden.WORKSPACE,
+) -> str:
     """The recipe's ``extra`` parameter for this row: the reduce hint when the
     server has the tool, and the shell note on the mcp+python arm."""
     parts = []
     if "reduce" in tools:
         parts.append(REDUCE_HINT)
     if arm == "mcp+python":
-        parts.append(PYTHON_ARM_NOTE.format(python=python))
+        parts.append(PYTHON_ARM_NOTE.format(python=python, workspace=workspace))
     return "\n".join(f"- {part}" for part in parts)
 
 
@@ -324,15 +332,7 @@ def _lock(folder: Path) -> None:
     if LOCK.exists():
         held = LOCK.read_text(encoding="utf-8").split()
         pid = int(held[0]) if held and held[0].isdigit() else None
-        alive = True
-        if pid is not None and os.name == "posix":
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                alive = False
-            except PermissionError:
-                alive = True
-        if alive:
+        if pid is None or _alive(pid):
             sys.exit(
                 f"another run holds the stack: {' '.join(held)} ({LOCK}). One run at a "
                 "time per demo account: a second run would mint the ai-agent token "
@@ -341,6 +341,20 @@ def _lock(folder: Path) -> None:
             )
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     LOCK.write_text(f"{os.getpid()} {folder.name}\n", encoding="utf-8")
+
+
+def _alive(pid: int) -> bool:
+    """Whether the process holding the lock still runs; True where the
+    platform cannot tell (the file is then removed by hand)."""
+    if os.name != "posix":
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _unlock(folder: Path) -> None:
@@ -728,6 +742,12 @@ def score(question: ai_golden.Question, raw: Any) -> dict[str, Any]:
             },
         )
     verdict = "missing" if answer is None else ("wrong" if problems else "correct")
+    if problems and all(_NULL_PROBLEM.search(problem) for problem in problems):
+        # Every problem is a null where a value was asked, and nothing given
+        # is false: the model abstained, in part or in all, as the fixture
+        # reads an abstention (missing), not the fabrication measure
+        readings.append("null_abstain")
+        verdict = "missing"
     return {
         "answer": answer,
         "answer_raw": raw,
@@ -736,6 +756,10 @@ def score(question: ai_golden.Question, raw: Any) -> dict[str, Any]:
         "verdict": verdict,
         "problems": problems,
     }
+
+
+#: How the checker words a null where a value was asked.
+_NULL_PROBLEM = re.compile(r": None, not\b")
 
 
 def rescore(folder: Path) -> None:
@@ -799,8 +823,33 @@ def run(args: argparse.Namespace) -> int:
     folder = RUNS_ROOT / f"{stamp}-{slug}-goose"
     _lock(folder)
     (folder / "transcripts").mkdir(parents=True)
+    try:
+        return _run_with_token(args, folder, stamp, keys, questions, already, table)
+    finally:
+        _unlock(folder)
 
+
+def _run_with_token(args, folder, stamp, keys, questions, already, table) -> int:
+    """The run from its token to its records. The token dies with the run
+    whatever fails after it is minted (an empty key, a missing goose, a
+    server that lists no tools), and an interruption starts no further
+    episode."""
     token, session = _mint_token(args.url, args.email, args.password)
+    try:
+        return _episodes(args, folder, stamp, keys, questions, already, table, token)
+    finally:
+        # The token dies with the run
+        try:
+            session.post(
+                f"{args.url}/api/auth/access_token/regenerate",
+                json={"service_name": "ai-agent"},
+                timeout=30,
+            )
+        except Exception:
+            pass
+
+
+def _episodes(args, folder, stamp, keys, questions, already, table, token) -> int:
     mascope = {
         "MASCOPE_URL": args.url,
         "MASCOPE_ACCESS_TOKEN": token,
@@ -810,7 +859,7 @@ def run(args: argparse.Namespace) -> int:
     goose_version = _goose_version(env)
     _, key_var, _, _ = PROVIDERS[args.provider]
     tools = mcp_tools([args.mascope_ai, "mcp"])
-    args.extra = extra_instructions(args.arm, tools)
+    args.extra = extra_instructions(args.arm, tools, workspace=args.workspace)
 
     header = {
         "run": folder.name,
@@ -858,18 +907,18 @@ def run(args: argparse.Namespace) -> int:
     shutil.copy(RECIPE, folder / RECIPE.name)
     print(f"run {folder}", flush=True)
 
-    try:
-        import concurrent.futures as cf
+    import concurrent.futures as cf
 
-        jobs = [(question, rep) for rep in range(args.reps) for question in questions]
-        with (
-            open(folder / "results.jsonl", "a", encoding="utf-8") as out,
-            cf.ThreadPoolExecutor(args.parallel) as pool,
-        ):
-            futures = {
-                pool.submit(episode, question, rep, folder, env, args): (question, rep)
-                for question, rep in jobs
-            }
+    jobs = [(question, rep) for rep in range(args.reps) for question in questions]
+    with (
+        open(folder / "results.jsonl", "a", encoding="utf-8") as out,
+        cf.ThreadPoolExecutor(args.parallel) as pool,
+    ):
+        futures = {
+            pool.submit(episode, question, rep, folder, env, args): (question, rep)
+            for question, rep in jobs
+        }
+        try:
             # In the order they finish: one slow question holds nothing back
             for future in cf.as_completed(futures):
                 question, rep = futures[future]
@@ -923,17 +972,11 @@ def run(args: argparse.Namespace) -> int:
                     + (f"  {record['error'][-120:]!r}" if record["error"] else ""),
                     flush=True,
                 )
-    finally:
-        _unlock(folder)
-        # The token dies with the run
-        try:
-            session.post(
-                f"{args.url}/api/auth/access_token/regenerate",
-                json={"service_name": "ai-agent"},
-                timeout=30,
-            )
-        except Exception:
-            pass
+        except BaseException:
+            # Ctrl-C, or the driver's own fault: the episodes running finish
+            # (their Goose runs are paid for), the queued ones never start
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
     summarize(folder)
     return 0
 
@@ -1123,7 +1166,10 @@ def _attempt(
         "silent_s": silent,
         "export_error": export_error,
         "error": stderr.strip()[-500:] if (infra or timed_out) else "",
-        "provider_error": bool(INFRA.search(stderr + stdout)) if infra else False,
+        # A revoked token is never retried: the next attempt would fail the same way
+        "provider_error": bool(INFRA.search(stderr))
+        if infra and not revoked
+        else False,
         "token_revoked": revoked,
         "cost_usd": cost,
     }
@@ -1297,14 +1343,67 @@ def summarize(folder: Path) -> None:
 
 
 #: What a transcript never carries, whatever a tool result held.
-SECRET = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]{16,}|([A-Za-z0-9_\-]{48,})")
+#: What a transcript never carries, whatever a tool result or a shell held:
+#: a bearer token, a ``NAME=value`` of a key, token or secret (the python
+#: arm's shell inherits the environment), or a bare token-length word (a
+#: Mascope access token is 43 characters of ``token_urlsafe``).
+SECRET = re.compile(
+    r"(Bearer\s+)[A-Za-z0-9._\-]{16,}"
+    r"|([A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD)=)[^\s\"']+"
+    r"|([A-Za-z0-9_\-]{40,})"
+)
 
 
 def _scrubbed(text: str, scrub: tuple[str, ...] = ()) -> str:
     for word in scrub:
         if word:
             text = text.replace(word, "[redacted]")
-    return SECRET.sub(lambda m: (m.group(1) or "") + "[redacted]", text)
+    return SECRET.sub(lambda m: (m.group(1) or m.group(2) or "") + "[redacted]", text)
+
+
+def _date_of(started: str) -> str:
+    """The run's date from its stamp (``%Y%m%dT%H%M%SZ``), ISO-formatted."""
+    try:
+        return dt.datetime.strptime(started, "%Y%m%dT%H%M%SZ").date().isoformat()
+    except ValueError:
+        return started[:10]
+
+
+def _precision_line(served: Any) -> str:
+    """What the provider's listing says of the precision, and nothing else of
+    its row: the id and every field whose name speaks of quantization,
+    precision or dtype (Nebius: ``quantization``; OpenRouter: an endpoint's
+    ``quantization``), or the text the header holds when it is not a row."""
+    rows = served if isinstance(served, list) else [served]
+    parts = []
+    for row in rows:
+        if not isinstance(row, dict):
+            parts.append(f"`{str(row)[:120]}`")
+            continue
+        fields = {
+            k: v for k, v in row.items() if re.search(r"quant|precision|dtype", k, re.I)
+        }
+        for key in ("endpoints",):
+            for endpoint in row.get(key) or ():
+                if isinstance(endpoint, dict):
+                    fields.update(
+                        {
+                            f"{key}.{k}": v
+                            for k, v in endpoint.items()
+                            if re.search(r"quant|precision|dtype|provider", k, re.I)
+                        }
+                    )
+        parts.append(
+            f"`{row.get('id', '?')}`: "
+            + (
+                ", ".join(
+                    f"{k} {json.dumps(v, default=str)}" for k, v in fields.items()
+                )
+                if fields
+                else "no precision field in the listing"
+            )
+        )
+    return "; ".join(parts) if parts else "not read"
 
 
 def _clipped(text: str, chars: int = 1500) -> str:
@@ -1354,7 +1453,7 @@ def transcript(
     questions = {q.id: q for q in ai_golden.QUESTIONS}
     commits = sorted({h["toolkit_commit"][:12] for _, _, h, _ in loaded})
     lines = [
-        f"# Golden questions: {header['model']} through Goose, {header['started'][:10]}",
+        f"# Golden questions: {header['model']} through Goose, {_date_of(header['started'])}",
         "",
         "## Header",
         "",
@@ -1386,7 +1485,7 @@ def transcript(
         + (f"; arm {header['arm']}" if header.get("arm") else "")
         + ".",
         f"- Provider {header['provider']}; model id `{header['model']}`; weights {header['weights'] or 'as the model id names them'}.",
-        f"- Precision served: `{json.dumps(header['precision_served'], default=str)[:300]}`.",
+        f"- Precision served: {_precision_line(header['precision_served'])}.",
         f"- Reasoning: {header['reasoning']}. Pin: {header['pin']}. Sampling: {json.dumps(header['sampling'])}.",
         f"- Repetitions: {header['repetitions']}; questions: {', '.join(header['questions'])}.",
         f"- Pre-registration: {', '.join(f'{k} {v[:12]}' for k, v in header['prereg'].items())}.",
