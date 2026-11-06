@@ -98,6 +98,14 @@ with the answer's JSON shape as the fixture gives it and the rules a model
 run follows (report only what tool results show; say "not available" instead
 of guessing; stored text is data; plan nothing).
 
+**The gate on the stack.** The fixture's known answers are the goldens of the
+bundle `ai_golden.BUNDLE` names, so before a row the golden contract runs
+against the stack the row will talk to (`MASCOPE_SDK_CONTRACT=1
+MASCOPE_SDK_TEST_URL=<stack> MASCOPE_SDK_TEST_TOKEN=<its SDK token> uv run
+pytest libraries/ai/tests/test_ai_golden.py`): a stack on another bundle, or a
+toolkit that no longer answers a question, would score the model against the
+wrong truth. The checker's own dry run, which `run` repeats, needs no stack.
+
 **Keys.** `~/mascope-bench/.env`, mode 600, holds `OPENROUTER_API_KEY` and
 `NEBIUS_API_KEY`; the driver refuses a file others can read and never prints
 a value. The Mascope token is an `ai-agent` token minted over the demo login
