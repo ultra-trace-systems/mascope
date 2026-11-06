@@ -105,6 +105,24 @@ REDUCE_OPS = ("==", "!=", ">", ">=", "<", "<=", "in")
 #: a table; ``top`` picks which few.
 REDUCE_ROWS = 50
 
+#: The columns that name an ion or a compound: in a peak list, one of their
+#: rows is one matched isotope line, so a statistic of an intensity grouped or
+#: filtered by them alone mixes an ion's lines (reduce() says ``lines_mixed``).
+ION_COLUMNS = (
+    "target_ion_id",
+    "target_ion_formula",
+    "target_compound_id",
+    "target_compound_name",
+    "target_compound_formula",
+)
+
+#: The columns that name one isotope line: a where-clause or a group on one
+#: of them keeps a statistic to one line.
+LINE_COLUMNS = ("target_isotope_formula", "target_isotope_id")
+
+#: The intensity columns a line-mixing statistic is of.
+INTENSITY_COLUMNS = ("height", "area", "intensity")
+
 #: The columns an ``argmax`` / ``argmin`` row shows at most: the group keys
 #: and the reduced column first, then the Frame's others in its order.
 REDUCE_COLUMNS = 12
@@ -2171,6 +2189,9 @@ class Toolkit:
             out["result"] = jsonable(result)
         if out.get("n_groups", 0) > len(out["rows"]):
             out["rows_omitted"] = out["n_groups"] - len(out["rows"])
+        mixed = _lines_mixed(kept, value, stat, keys, where)
+        if mixed:
+            out["lines_mixed"] = mixed
         derived = self.derive(table, frame, code=code, computed=[value])
         out["frame"] = derived.id
         return out
@@ -2454,3 +2475,52 @@ def _refused(message: str, pending: list[str]) -> str | None:
 def _refuses_unnamed(message: str) -> bool:
     """Whether a refusal of the match route is of a formula it does not name."""
     return any(text in (message or "") for text in _UNNAMED_REFUSALS)
+
+
+def _lines_mixed(
+    kept: pd.DataFrame,
+    value: str,
+    stat: str,
+    keys: list[str],
+    where: Sequence[Sequence[Any]],
+) -> dict[str, Any] | None:
+    """What reduce() says when a statistic of an intensity, by an ion or a
+    compound or filtered to one, took several isotope lines together.
+
+    In a peak list an ion's rows are its matched isotope lines, so the
+    median height "of an ion" over them is pulled down by its minor lines;
+    the second matrix row named the wrong top ion three times this way.
+    Nothing is said when the value is not an intensity, when no ion or
+    compound column is in play, when the statistic is a sum (a sum over an
+    ion's lines is its intensity, the way the app's batch point is), or when
+    every group has one line, as it has once a where clause or a group
+    names the line.
+
+    :return: The lines per group at most and how many groups had several,
+        with the rule in a sentence; None when nothing was mixed.
+    """
+    line_column = next((c for c in LINE_COLUMNS if c in kept.columns), None)
+    if value not in INTENSITY_COLUMNS or line_column is None or kept.empty:
+        return None
+    if stat == "sum":
+        return None
+    filtered = [clause[0] for clause in where if clause]
+    if not any(c in ION_COLUMNS for c in [*keys, *filtered]):
+        return None
+    lines = (
+        kept.groupby(keys, sort=False)[line_column].nunique()
+        if keys
+        else pd.Series([kept[line_column].nunique()])
+    )
+    if int(lines.max()) <= 1:
+        return None
+    return {
+        "lines_per_group_max": int(lines.max()),
+        "groups_with_several": int((lines > 1).sum()),
+        "note": (
+            f"an ion's rows are its isotope lines, and this {value} took them "
+            f"together; to rank ions, sum {value} by sample and ion first, then "
+            f"reduce the returned Frame by ion; for one ion, filter where "
+            f"{line_column} is its line"
+        ),
+    }
