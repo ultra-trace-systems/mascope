@@ -1338,9 +1338,18 @@ def transcript(
     header = loaded[0][2]
     folders = {folder.name: folder for folder, _, _, _ in loaded}
     order = {q.id: i for i, q in enumerate(ai_golden.QUESTIONS)}
+    # An episode a later run ran again (after a provider outage) is the later
+    # run's record; the earlier attempt is counted, not scored twice
+    latest: dict[tuple[str, int], dict[str, Any]] = {}
+    superseded = 0
+    for _, _, _, rs in loaded:
+        for r in rs:
+            key = (r["question"], r["rep"])
+            if key in latest:
+                superseded += 1
+            latest[key] = r
     records = sorted(
-        (r for _, _, _, rs in loaded for r in rs),
-        key=lambda r: (r["rep"], order.get(r["question"], 99)),
+        latest.values(), key=lambda r: (r["rep"], order.get(r["question"], 99))
     )
     questions = {q.id: q for q in ai_golden.QUESTIONS}
     commits = sorted({h["toolkit_commit"][:12] for _, _, h, _ in loaded})
@@ -1357,6 +1366,11 @@ def transcript(
             f"repetition(s) {', '.join(map(str, reps))}"
             + (f" (its own numbered from {offset})" if offset else "")
             + "."
+        )
+    if superseded:
+        lines.append(
+            f"- {superseded} episode(s) of an earlier run were run again in a later one "
+            "(the earlier attempts ended in provider errors); the later run's record stands."
         )
     lines += [
         f"- Demo bundle {header['bundle']}; stack build `{header['stack'].get('build_tag')}`; "

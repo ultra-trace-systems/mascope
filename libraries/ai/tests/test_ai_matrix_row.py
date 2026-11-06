@@ -362,6 +362,25 @@ class TestTheTranscript:
         assert "  ```" in tail
         assert "  ```" in driver.transcript(first, full=True)
 
+    def test_a_later_run_supersedes_an_earlier_attempt(self, driver, tmp_path):
+        # The same episode in two runs: an outage took it in the first, the
+        # second ran it again; the second's record stands, the first is counted
+        first = _run_folder(tmp_path, "r1", verdict="infra", answer=None)
+        second = _run_folder(
+            tmp_path,
+            "r2",
+            verdict="correct",
+            answer=["a", "b"],
+            started="2026-11-06T12:00:00Z",
+        )
+
+        text = driver.transcript([first, second])
+
+        assert text.count("| M2 | 0 | ") == 1
+        assert "### M2 rep 0: correct (run `r2`)" in text
+        assert "1 episode(s) of an earlier run were run again" in text
+        assert "| metadata | 1 | 1 | 0 | 0 | 0 |" in text
+
     def test_a_folder_spec_carries_its_offset(self, driver, tmp_path):
         folder = _run_folder(tmp_path, "r", verdict="correct", answer=["a", "b"])
 
