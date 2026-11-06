@@ -1975,6 +1975,9 @@ def judge_commits(
     reagent_lines: Sequence[dict] = (),
     resolution: Callable[[float], float] | None = None,
     inherited_calibration: MassCalibration | None = None,
+    envelope_tolerance: EnvelopeTolerance | None = None,
+    artifact_peak_ids: frozenset[str] = frozenset(),
+    instrument_type: str | None = None,
 ) -> JudgedCommits:
     """Run the mass gate, the partner gate, the cross-channel pass and the
     tiering pass, and read the lines they find in doubt as their neighbours'.
@@ -2014,6 +2017,13 @@ def judge_commits(
     :param inherited_calibration: The calibration the mass gate judges every
         round against instead of fitting one: a decoy run's control's. None
         fits each round's own (``mass_gate.apply_mass_gate``).
+    :param envelope_tolerance: The tolerance the run scored a line's share at,
+        whose detectability threshold the tiering pass asks a row's lines from
+        (``tiering.detect_threshold``); None for the fit's default.
+    :param artifact_peak_ids: The peaks the artifact pre-pass claimed, which
+        the tiering pass reads as neither a line nor an absence.
+    :param instrument_type: The sample's instrument class, which on a TOF
+        holds a bromine or chlorine reading to its own M+2 line.
     :return: The judged rows and each pass's summary.
     """
     claims: dict[str, EnvelopeClaim] = {}
@@ -2048,6 +2058,10 @@ def judge_commits(
             notation_by_id=notation_by_id,
             tier_bands=tier_bands,
             resolution=resolution,
+            lines=lines,
+            envelope_tolerance=envelope_tolerance,
+            artifact_peak_ids=artifact_peak_ids,
+            instrument_type=instrument_type,
         )
         found, held = find_envelope_claims(
             judged,
@@ -4096,7 +4110,8 @@ async def _assign_sample(
         # - what the sample's other channels say about each committed neutral,
         #   and which readings of one ion nothing measured tells apart;
         # - why every committed row holds the tier it holds, which reads what
-        #   the two above recorded and the finished ledger's own envelopes.
+        #   the two above recorded, the finished ledger's own envelopes, and
+        #   which lines of each envelope the sample's peaks hold.
         # All three only ever demote, so their order decides which pass is named
         # and never which tier a row ends on. A line one of them finds on an
         # assigned neighbour's envelope is read as that neighbour's, and then
@@ -4119,6 +4134,9 @@ async def _assign_sample(
             inherited_calibration=(
                 None if decoy_plan is None else decoy_plan.calibration
             ),
+            envelope_tolerance=scoring.envelope_tolerance,
+            artifact_peak_ids=frozenset(artifact_peak_ids),
+            instrument_type=instrument_type,
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel
