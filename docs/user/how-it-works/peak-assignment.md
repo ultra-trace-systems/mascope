@@ -458,6 +458,37 @@ lines are pooled for no other file. A sample with no such run, one only folded i
 the batch ledger, is measured at the defaults, though its folded rows were scored at a
 tolerance fitted on the spot.
 
+An Orbitrap file whose peaks record the scans they are present in (*Scan Presence* on
+[Peak Detection](peak-detection.md)) needs no such measurement: it counts the loss
+instead. Its lines are read by the count, and the run's measurement is what a file
+without the counts reads:
+
+- **A line is read over the scans that hold it**, against the main line read over the
+  scans that hold that. A 13C line in two of four scans reads half its share in the
+  file's peak list and all of it over those two. A compound present in only part of
+  the file is read over its own scans the same way. The line is then held to its share
+  at the default 5%, since the shortfall the measurement allows for is gone.
+- **A missing line counts where the peak list would have held it.** Each scan that
+  holds the main line would have read the line at its share of the main line's
+  signal-to-noise in that scan, and a scan keeps a line from about twice its noise. A
+  missing line counts where what those scans would have kept, summed as the file's
+  peak list sums them, reaches the list's cut of 3 ([Johnson et al. 1994][jkb94] for
+  the truncated normal). With the main line in every scan that is an expected
+  signal-to-noise of 3.2 on a file of one scan, 4.2 on a file of four, as the demo's,
+  9.2 on a file of a hundred.
+- The untargeted search's 40% window, which keeps a line only near its share, reads
+  the share by the count too.
+
+The read over the present scans runs high for a line near the noise: the scans that
+keep it are the ones its noise lifted. On the demo raws, 13C lines missing one or two
+of their main line's four scans read 0.77 of their share in the peak list and 1.08
+over their scans, where lines in every scan read 0.96. The 81Br line of the demo's
+bromine ions reads within 0.2 of its natural share for 97.6% of 2,908 lines, from
+96.6%; the 63 that read differently are closer to natural for 79% of them. Of the
+predicted 13C lines at an expected signal-to-noise of 4.2 to 5, the demo's peak lists
+hold 42%, from 6 to 8 88 to 89%, and from 10 98% or more, so the cut above charges some
+lines a file of four scans holds only about half the time.
+
 A predicted line is a peak your instrument can resolve, not a single isotopologue. On a
 TOF, the peak one mass unit above a compound holds its 13C line and also its 15N, 2H and
 17O lines, a few mDa apart. The untargeted search reads that peak against the sum of all
@@ -1219,6 +1250,9 @@ batch ledger* puts Mascope's own view back.
 - <a id="ba72"></a>Barlow, R. E.; Bartholomew, D. J.; Bremner, J. M.; Brunk, H. D.
   *Statistical inference under order restrictions: the theory and application of
   isotonic regression.* Wiley, 1972.
+- <a id="jkb94"></a>Johnson, N. L.; Kotz, S.; Balakrishnan, N. *Continuous Univariate
+  Distributions*, vol. 1, 2nd ed. Wiley, 1994, ch. 13 (the normal distribution, its
+  truncated moments).
 - <a id="platt"></a>Platt, J. *Probabilistic outputs for support vector machines and
   comparisons to regularized likelihood methods.* Advances in Large Margin Classifiers,
   1999. [link](https://en.wikipedia.org/wiki/Platt_scaling)
@@ -1416,6 +1450,7 @@ batch ledger* puts Mascope's own view back.
 [wa21]: #wa21
 [platt]: #platt
 [ba72]: #ba72
+[jkb94]: #jkb94
 [good70]: #good70
 [good70b]: #good70b
 [sha66]: #sha66

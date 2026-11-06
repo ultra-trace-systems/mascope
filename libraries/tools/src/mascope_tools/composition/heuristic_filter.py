@@ -30,6 +30,11 @@ from mascope_tools.composition.models import (
     HeuristicFilterConfig,
     PatternScoring,
 )
+from mascope_tools.composition.scan_presence import (
+    absent_line_detectable,
+    presence_corrected,
+    presence_fractions,
+)
 from mascope_tools.composition.utils import (
     combine_counts_and_ionization,
     ionization_composition,
@@ -1423,6 +1428,8 @@ def score_ion_envelope(
     intensities: np.ndarray,
     snrs: np.ndarray | None,
     scoring: PatternScoring,
+    n_scans: np.ndarray | None = None,
+    n_scans_total: np.ndarray | None = None,
 ) -> tuple[float, bool, dict[str, np.ndarray | list[str]]]:
     """Score one ion's envelope against a sorted peak list.
 
@@ -1440,6 +1447,10 @@ def score_ion_envelope(
     :param intensities: Their intensities, same order.
     :param snrs: Their signal-to-noise, same order, or None.
     :param scoring: What the sample is scored at.
+    :param n_scans: How many of the scans averaged into each peak hold it,
+        same order, or None (:mod:`scan_presence`).
+    :param n_scans_total: How many scans each peak is averaged over, same
+        order, or None.
     :return: The fit score, whether the two lines a reading needs were found,
         and the isotope data ``match_isotopic_pattern`` reports.
     """
@@ -1457,8 +1468,19 @@ def score_ion_envelope(
     # file carries none. It only ever widens a tolerance in the score, so a
     # NaN costs the candidate nothing it had earned.
     observed_snr = np.full(predicted_mzs.size, np.nan)
+    # Per line, its peak's scan counts, NaN where it was not matched or the
+    # list keeps none: a line read by its presence needs both its own and the
+    # anchor's.
+    observed_n_scans = np.full(predicted_mzs.size, np.nan)
+    observed_n_scans_total = np.full(predicted_mzs.size, np.nan)
+    peak_presence = (
+        presence_fractions(n_scans, n_scans_total)
+        if n_scans is not None and n_scans_total is not None
+        else None
+    )
 
     base_peak_intensity = None
+    base_presence = np.nan
     for i, p_mz in enumerate(predicted_mzs):
         mz_delta = p_mz * scoring.mz_tolerance_ppm * 1e-6
         mz_min, mz_max = p_mz - mz_delta, p_mz + mz_delta
@@ -1478,12 +1500,21 @@ def score_ion_envelope(
             if snrs is not None
             else np.nan
         )
+        peak = start_idx + matched_index
+        matched_presence = np.nan if peak_presence is None else peak_presence[peak]
+        matched_counts = (
+            (np.nan, np.nan)
+            if peak_presence is None
+            else (float(n_scans[peak]), float(n_scans_total[peak]))
+        )
 
         if i == 0:
             base_peak_intensity = matched_intensity
+            base_presence = matched_presence
             observed_intensities[0] = matched_intensity
             observed_masses[0] = matched_mz
             observed_snr[0] = matched_snr
+            observed_n_scans[0], observed_n_scans_total[0] = matched_counts
             # Signed, (observed - predicted)/predicted: the same convention as
             # the targeted matcher's match_mz_error, so a consumer can recover the
             # predicted m/z as observed / (1 + error/1e6).
@@ -1498,7 +1529,15 @@ def score_ion_envelope(
         if base_peak_intensity is None or base_peak_intensity == 0:
             continue
 
-        observed_rel_intensity = matched_intensity / base_peak_intensity
+        # Over the scans that hold the line, against the anchor over the
+        # scans that hold it, where the list counts both (scan_presence)
+        observed_rel_intensity = float(
+            presence_corrected(
+                np.array([matched_intensity / base_peak_intensity]),
+                np.array([matched_presence]),
+                np.array([base_presence]),
+            )[0][0]
+        )
         # Signed relative error, observed/predicted - 1: the same convention as
         # the targeted matcher's match_abundance_error, so a consumer can recover
         # the predicted relative abundance as observed_rel / (1 + error).
@@ -1517,6 +1556,7 @@ def score_ion_envelope(
             observed_mass_errors_ppm[i] = (matched_mz - p_mz) / p_mz * 1e6
             observed_intensity_error[i] = intensity_error
             observed_snr[i] = matched_snr
+            observed_n_scans[i], observed_n_scans_total[i] = matched_counts
 
     # Two lines have to be there for the envelope to be evidence at all: the
     # ion's own, which is the peak the candidate was enumerated for, and the
@@ -1535,6 +1575,8 @@ def score_ion_envelope(
         sigma_ppm=scoring.sigma_ppm,
         k_detect=DETECT_SNR_K,
         tolerance=scoring.envelope_tolerance,
+        n_scans=observed_n_scans,
+        n_scans_total=observed_n_scans_total,
     )
     return (
         score,
@@ -1599,6 +1641,8 @@ def score_ion_envelopes(
     intensities: np.ndarray,
     snrs: np.ndarray | None,
     scoring: PatternScoring,
+    n_scans: np.ndarray | None = None,
+    n_scans_total: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[dict[str, np.ndarray | list[str]]]]:
     """Score many ions' envelopes against a sorted peak list, on arrays.
 
@@ -1616,6 +1660,10 @@ def score_ion_envelopes(
     :param intensities: Their intensities, same order.
     :param snrs: Their signal-to-noise, same order, or None.
     :param scoring: What the sample is scored at.
+    :param n_scans: How many of the scans averaged into each peak hold it,
+        same order, or None (:mod:`scan_presence`).
+    :param n_scans_total: How many scans each peak is averaged over, same
+        order, or None.
     :return: The fit scores, whether each found the two lines a reading needs,
         and each one's isotope data, in the candidates' order.
     """
@@ -1655,14 +1703,29 @@ def score_ion_envelopes(
         if snrs is not None and mzs.size
         else np.full(predicted_mz.size, np.nan)
     )
+    counted = n_scans is not None and n_scans_total is not None and mzs.size
+    matched_n_scans, matched_n_scans_total = (
+        (
+            np.where(found, np.asarray(n_scans, dtype=float)[index], np.nan),
+            np.where(found, np.asarray(n_scans_total, dtype=float)[index], np.nan),
+        )
+        if counted
+        else (np.full(predicted_mz.size, np.nan),) * 2
+    )
+    matched_presence = presence_fractions(matched_n_scans, matched_n_scans_total)
 
     # The ion's own line sets the intensity every isotopologue is read
     # against; a candidate whose own line found nothing, or found a zero,
-    # matches no isotopologue at all.
+    # matches no isotopologue at all. A line is read over the scans that hold
+    # it, against the anchor over the scans that hold it, where the list
+    # counts both (scan_presence).
     base = matched_intensity[first]
     base_found = found[first] & (base != 0)
     with np.errstate(divide="ignore", invalid="ignore"):
-        intensity_error = (matched_intensity / base) / predicted_rel - 1.0
+        share, _ = presence_corrected(
+            matched_intensity / base, matched_presence, matched_presence[first]
+        )
+        intensity_error = share / predicted_rel - 1.0
     kept = np.where(
         is_own,
         found,
@@ -1678,6 +1741,8 @@ def score_ion_envelopes(
     observed_mass_error = np.where(kept, mass_error, 0.0)
     observed_intensity_error = np.where(kept & ~is_own, intensity_error, 0.0)
     observed_snr = np.where(kept, matched_snr, np.nan)
+    observed_n_scans = np.where(kept, matched_n_scans, np.nan)
+    observed_n_scans_total = np.where(kept, matched_n_scans_total, np.nan)
 
     # Each envelope's brightest line, the first of them on a tie, as argmax
     # finds it.
@@ -1703,6 +1768,8 @@ def score_ion_envelopes(
         sigma_ppm=scoring.sigma_ppm,
         k_detect=DETECT_SNR_K,
         tolerance=scoring.envelope_tolerance,
+        n_scans=observed_n_scans,
+        n_scans_total=observed_n_scans_total,
     )
 
     isotopes = []
@@ -1722,6 +1789,27 @@ def score_ion_envelopes(
             }
         )
     return scores, required, isotopes
+
+
+def peak_scan_counts(
+    peaks: pl.DataFrame | Any,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """A peak list's scan counts, ``n_scans`` and ``n_scans_total``, as floats.
+
+    :param peaks: A peak list, polars or pandas, with the two columns where
+        its file keeps them (``mascope_signal.peak.N_SCANS``).
+    :return: Both, NaN for a missing value; ``(None, None)`` for a list that
+        carries either column not at all, which then scores as before.
+    """
+    if "n_scans" not in peaks.columns or "n_scans_total" not in peaks.columns:
+        return None, None
+    counts = []
+    for column in ("n_scans", "n_scans_total"):
+        values = peaks[column]
+        if isinstance(values, pl.Series):
+            values = values.cast(pl.Float64, strict=False).to_numpy()
+        counts.append(np.asarray(values, dtype=float))
+    return counts[0], counts[1]
 
 
 def match_isotopic_pattern(
@@ -1753,7 +1841,10 @@ def match_isotopic_pattern(
         and optionally 'signal_to_noise' - the per-peak noise estimate the
         detectability gate and the mass width read. Without it the score falls
         back to its no-SNR mode, where an absent line is charged on its
-        predicted abundance alone.
+        predicted abundance alone. Optionally 'n_scans' and 'n_scans_total',
+        how many of the scans averaged into each peak hold it and how many
+        those are: a line is then read over the scans that hold it
+        (:mod:`scan_presence`).
     :type peaks: pl.DataFrame
     :param scoring: The sample's scoring parameters - fitted mass width and
         offset, match window, envelope floor. Defaults to the fixed
@@ -1783,6 +1874,7 @@ def match_isotopic_pattern(
         if "signal_to_noise" in peaks.columns
         else None
     )
+    n_scans, n_scans_total = peak_scan_counts(peaks)
 
     if not candidates:
         return [], []
@@ -1839,6 +1931,8 @@ def match_isotopic_pattern(
         intensities,
         snrs,
         scoring,
+        n_scans=n_scans,
+        n_scans_total=n_scans_total,
     )
 
     ranked = [
@@ -2201,15 +2295,20 @@ def _outside_band(
     pr: np.ndarray,
     expected_snr: np.ndarray,
     tolerance: EnvelopeTolerance,
+    by_presence: np.ndarray | None = None,
 ) -> np.ndarray:
     """How far each line's observed share sits outside the band the tolerance
     admits for it, signed; zero inside.
 
     The band is :meth:`EnvelopeTolerance.admitted` at the line's expected SNR,
     in units of the predicted share. Today's tolerance admits the predicted
-    share alone, so this is ``rel_obs - pr`` exactly.
+    share alone, so this is ``rel_obs - pr`` exactly. A line read by its scan
+    presence (``by_presence``) has had the dilution the band's lower end
+    allows for taken out, and is held to the share itself.
     """
     lower, upper = tolerance.admitted(expected_snr)
+    if by_presence is not None:
+        lower = np.where(by_presence, upper, lower)
     low, high = lower * pr, upper * pr
     return np.where(
         rel_obs < low, rel_obs - low, np.where(rel_obs > high, rel_obs - high, 0.0)
@@ -2227,6 +2326,8 @@ def score_pattern_v2(
     sigma_ppm: float | None = None,
     rel_detect_no_snr: float = REL_DETECT_NO_SNR,
     tolerance: EnvelopeTolerance | None = None,
+    n_scans: np.ndarray | None = None,
+    n_scans_total: np.ndarray | None = None,
 ) -> float:
     """Detectability-gated, SNR-aware match score in [0, 1].
 
@@ -2274,6 +2375,19 @@ def score_pattern_v2(
     `k_detect`. None is today's score: the band the predicted share itself, a 5%
     floor, `k_detect`.
 
+    `n_scans` and `n_scans_total` are, per line, how many of the scans averaged into
+    its matched peak hold it and how many those are (:mod:`scan_presence`): an
+    Orbitrap scan keeps a dim line only where it clears that scan's noise, so the
+    averaged list reads it diluted by the share of scans it missed. Where the line
+    and the anchor both have counts, the line is read over the scans that hold it,
+    against the anchor read over the scans that hold the anchor, and held to its
+    predicted share: the tolerance's band, which allows for that dilution, is the
+    fallback for a line without counts. Where the anchor has counts, an absent line
+    is charged where the averaged list would have held it, read through the scans
+    that hold the anchor and the floor under which a scan keeps no line
+    (:func:`scan_presence.absent_line_detectable` at `k_detect`), in place of the
+    tolerance's threshold. None, or a line without a usable count, scores as before.
+
     :raises ValueError: if the input arrays do not all have one entry per predicted
         isotopologue."""
     if sigma_ppm is None:
@@ -2292,6 +2406,9 @@ def score_pattern_v2(
         "observed_snr": snr.size,
         "predicted_rel": n,
     }
+    if n_scans is not None and n_scans_total is not None:
+        sizes["n_scans"] = np.asarray(n_scans).size
+        sizes["n_scans_total"] = np.asarray(n_scans_total).size
     if len(set(sizes.values())) > 1:
         # Left to numpy this surfaces far downstream in np.maximum.reduce as an
         # "inhomogeneous shape" error that points nowhere near the mismatched caller.
@@ -2329,7 +2446,12 @@ def score_pattern_v2(
     # unknown SNR falls back to the fixed sigma alone.
     sigma_mass = np.hypot(sigma_ppm, MASS_SNR_K * inv_snr)
     mass_L = np.exp(-0.5 * (me / sigma_mass) ** 2)
-    rel_obs = oi / base_int
+    presence = presence_fractions(n_scans, n_scans_total, n)
+    # An absent line's share is zero either way, and it is charged by the
+    # detectability gate below rather than read
+    rel_obs, by_presence = presence_corrected(
+        oi / base_int, presence, np.full(n, presence[0])
+    )
     sigma_rel = np.maximum.reduce(
         [
             # Unknown SNR contributes 0 here, so the abundance floors below decide.
@@ -2340,9 +2462,13 @@ def score_pattern_v2(
     )
     expected_snr = pr * snr[0] if snr_known[0] else np.full(n, np.nan)
     int_L = np.exp(
-        -0.5 * (_outside_band(rel_obs, pr, expected_snr, tolerance) / sigma_rel) ** 2
+        -0.5
+        * (_outside_band(rel_obs, pr, expected_snr, tolerance, by_presence) / sigma_rel)
+        ** 2
     )
-    k_detect = k_detect if tolerance.detect_snr is None else tolerance.detect_snr
+    anchor_counted = bool(np.isfinite(presence[0]))
+    if not anchor_counted and tolerance.detect_snr is not None:
+        k_detect = tolerance.detect_snr
 
     L = np.full(n, np.nan)
     L[0] = mass_L[0]
@@ -2351,7 +2477,14 @@ def score_pattern_v2(
     L[m] = mass_L[m] * int_L[m]
     absent = ~matched
     absent[0] = False
-    if snr_known[0]:
+    if snr_known[0] and anchor_counted:
+        detectable = absent & absent_line_detectable(
+            pr * snr[0],
+            np.full(n, float(np.asarray(n_scans, float)[0])),
+            np.full(n, float(np.asarray(n_scans_total, float)[0])),
+            k_detect,
+        )
+    elif snr_known[0]:
         detectable = absent & (pr * snr[0] >= k_detect)
     else:
         # No base SNR -> the expected-SNR gate is unevaluable; fall back to abundance, so
@@ -2379,6 +2512,8 @@ def score_patterns_v2(
     sigma_ppm: float | None = None,
     rel_detect_no_snr: float = REL_DETECT_NO_SNR,
     tolerance: EnvelopeTolerance | None = None,
+    n_scans: np.ndarray | None = None,
+    n_scans_total: np.ndarray | None = None,
 ) -> np.ndarray:
     """:func:`score_pattern_v2` for many envelopes at once.
 
@@ -2398,6 +2533,9 @@ def score_patterns_v2(
         as the one-envelope function scores it.
     :param tolerance: As :func:`score_pattern_v2`, one for every envelope: it
         is the sample's.
+    :param n_scans: As :func:`score_pattern_v2`, laid out as the lines are.
+    :param n_scans_total: As :func:`score_pattern_v2`, laid out as the lines
+        are.
     :raises ValueError: if the arrays do not all have one entry per line, or
         the offsets do not end where they do.
     :return: One score per envelope.
@@ -2420,6 +2558,9 @@ def score_patterns_v2(
         "predicted_rel": n,
         "offsets[-1]": int(offsets[-1]) if offsets.size else 0,
     }
+    if n_scans is not None and n_scans_total is not None:
+        sizes["n_scans"] = np.asarray(n_scans).size
+        sizes["n_scans_total"] = np.asarray(n_scans_total).size
     if len(set(sizes.values())) > 1:
         raise ValueError(
             "score_patterns_v2 needs one entry per predicted isotopologue in every "
@@ -2451,8 +2592,11 @@ def score_patterns_v2(
     matched = oi > 0
     sigma_mass = np.hypot(sigma_ppm, MASS_SNR_K * inv_snr)
     mass_L = np.exp(-0.5 * (me / sigma_mass) ** 2)
+    presence = presence_fractions(n_scans, n_scans_total, n)
     with np.errstate(divide="ignore", invalid="ignore"):
-        rel_obs = oi / oi[first]
+        rel_obs, by_presence = presence_corrected(
+            oi / oi[first], presence, presence[first]
+        )
         sigma_rel = np.maximum.reduce(
             [
                 rel_obs * np.sqrt(inv_snr**2 + inv_snr[first] ** 2),
@@ -2463,17 +2607,32 @@ def score_patterns_v2(
         expected_snr = np.where(snr_known[first], pr * snr[first], np.nan)
         int_L = np.exp(
             -0.5
-            * (_outside_band(rel_obs, pr, expected_snr, tolerance) / sigma_rel) ** 2
+            * (
+                _outside_band(rel_obs, pr, expected_snr, tolerance, by_presence)
+                / sigma_rel
+            )
+            ** 2
         )
-    k_detect = k_detect if tolerance.detect_snr is None else tolerance.detect_snr
+    anchor_counted = np.isfinite(presence[first])
+    curve_k_detect = k_detect if tolerance.detect_snr is None else tolerance.detect_snr
 
     L = np.full(n, np.nan)
     L[anchor] = mass_L[anchor]
     m = matched & ~anchor
     L[m] = mass_L[m] * int_L[m]
     absent = ~matched & ~anchor
+    if anchor_counted.any():
+        anchor_scans = np.asarray(n_scans, dtype=float)[first]
+        anchor_total = np.asarray(n_scans_total, dtype=float)[first]
+        by_count = absent_line_detectable(
+            pr * snr[first], anchor_scans, anchor_total, k_detect
+        )
+    else:
+        by_count = np.zeros(n, dtype=bool)
     detectable = absent & np.where(
-        snr_known[first], pr * snr[first] >= k_detect, pr >= rel_detect_no_snr
+        snr_known[first],
+        np.where(anchor_counted, by_count, pr * snr[first] >= curve_k_detect),
+        pr >= rel_detect_no_snr,
     )
     L[detectable] = miss_penalty
     include = ~np.isnan(L)

@@ -36,6 +36,7 @@ from mascope_tools.composition.heuristic_filter import (
     _extract_formulae_and_charges,
     _target_peak,
     envelope_floor_for_peak,
+    peak_scan_counts,
     score_ion_envelopes,
 )
 from mascope_tools.composition.mass_accuracy import (
@@ -147,7 +148,10 @@ def score_candidates(
         envelope's depth is read off that peak; a candidate without one is
         predicted to the floor.
     :param peaks: The sample's peak list with ``mz`` and ``intensity`` and,
-        where the file has one, ``signal_to_noise``. Need not be sorted.
+        where the file has one, ``signal_to_noise``, and ``n_scans`` and
+        ``n_scans_total`` where it keeps them (``samples.get_peaks`` serves
+        all of them): a line is then read over the scans that hold it
+        (:mod:`~mascope_tools.composition.scan_presence`). Need not be sorted.
     :param scoring: What the sample is scored at
         (:func:`pattern_scoring_for_sample`); None takes the defaults.
     :return: One row per candidate, on the candidates' index: ``fit_score``;
@@ -182,6 +186,9 @@ def score_candidates(
         if "signal_to_noise" in peaks.columns
         else None
     )
+    n_scans, n_scans_total = peak_scan_counts(peaks)
+    if n_scans is not None:
+        n_scans, n_scans_total = n_scans[order], n_scans_total[order]
 
     positive = intensities[intensities > 0]
     faintest = float(positive.min()) if positive.size else 0.0
@@ -216,7 +223,15 @@ def score_candidates(
         pl.Series("ion", [str(ion or "") for ion in frame["ion"]])
     )
     scores, required, isotopes = score_ion_envelopes(
-        ion_formulas, ion_charges, floors, mzs, intensities, snrs, scoring
+        ion_formulas,
+        ion_charges,
+        floors,
+        mzs,
+        intensities,
+        snrs,
+        scoring,
+        n_scans=n_scans,
+        n_scans_total=n_scans_total,
     )
     return pd.DataFrame(
         {

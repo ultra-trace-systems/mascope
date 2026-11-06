@@ -45,9 +45,11 @@ def load_filestore_peaks(
     bundle_dir: str, filename: str, _cache: dict = {}
 ) -> "pd.DataFrame | None":
     """Full detected-peak list for a sample from its `peak_timeseries.zarr` in the
-    filestore: m/z, summed height, real `signal_to_noise`, and `is_satellite`. This
-    is the COMPLETE spectrum (not the matched-target subset) WITH SNR — so it
-    replaces both the matched-peak proxy and the proxy noise floor. None if absent."""
+    filestore: m/z, summed height, real `signal_to_noise`, and `is_satellite`, and
+    `n_scans` / `n_scans_total` (the scans holding each peak, of those averaged)
+    where the store keeps them. This is the COMPLETE spectrum (not the
+    matched-target subset) WITH SNR — so it replaces both the matched-peak proxy
+    and the proxy noise floor. None if absent."""
     if filename in _cache:
         return _cache[filename]
     import glob
@@ -62,18 +64,16 @@ def load_filestore_peaks(
         _cache[filename] = None
         return None
     ds = xr.open_zarr(hits[0])
-    df = (
-        pd.DataFrame(
-            {
-                "mz": ds["mz"].values.astype(float),
-                "height": ds["sum_peak_heights"].values.astype(float),
-                "snr": ds["signal_to_noise"].values.astype(float),
-                "is_satellite": ds["is_satellite"].values.astype(bool),
-            }
-        )
-        .sort_values("mz")
-        .reset_index(drop=True)
-    )
+    columns = {
+        "mz": ds["mz"].values.astype(float),
+        "height": ds["sum_peak_heights"].values.astype(float),
+        "snr": ds["signal_to_noise"].values.astype(float),
+        "is_satellite": ds["is_satellite"].values.astype(bool),
+    }
+    if "n_scans" in ds and "n_scans_total" in ds:
+        columns["n_scans"] = ds["n_scans"].values.astype(float)
+        columns["n_scans_total"] = ds["n_scans_total"].values.astype(float)
+    df = pd.DataFrame(columns).sort_values("mz").reset_index(drop=True)
     _cache[filename] = df
     return df
 
@@ -174,11 +174,13 @@ def score_ion(
     return float(score_pattern(obs_mz, obs_mz_err, obs_int, obs_int_err, pred_rel))
 
 
-def _match_arrays(mzs, ints, snrs, ion, *, ppm, mu=0.0, noise=0.0):
-    """Build v2's per-isotopologue matched arrays (obs_me, obs_int, obs_snr, pred_rel)
-    for one ion by matching its predicted envelope to the observed peaks. None if the
-    ion can't be predicted or its monoisotopic peak is absent. Mass errors are
-    offset-centred by mu; SNR falls back to height/noise when not provided."""
+def _match_arrays(mzs, ints, snrs, ion, *, ppm, mu=0.0, noise=0.0, counts=None):
+    """Build v2's per-isotopologue matched arrays (obs_me, obs_int, obs_snr, pred_rel,
+    obs_n_scans, obs_n_scans_total) for one ion by matching its predicted envelope to
+    the observed peaks. None if the ion can't be predicted or its monoisotopic peak is
+    absent. Mass errors are offset-centred by mu; SNR falls back to height/noise when
+    not provided; the scan counts are NaN where `counts`, the peaks' `(n_scans,
+    n_scans_total)`, is not given."""
     from mascope_tools.composition.heuristic_filter import predict_isotopes
 
     sign = ion[-1] if ion and ion[-1] in "+-" else ""
@@ -196,6 +198,8 @@ def _match_arrays(mzs, ints, snrs, ion, *, ppm, mu=0.0, noise=0.0):
     obs_int = np.zeros(n)
     obs_me = np.zeros(n)
     obs_snr = np.zeros(n)
+    obs_n_scans = np.full(n, np.nan)
+    obs_n_scans_total = np.full(n, np.nan)
     for i, pmz in enumerate(pred_mz):
         d = pmz * ppm * 1e-6
         lo = np.searchsorted(mzs, pmz - d, "left")
@@ -206,11 +210,13 @@ def _match_arrays(mzs, ints, snrs, ion, *, ppm, mu=0.0, noise=0.0):
         obs_int[i] = ints[k]
         obs_me[i] = (mzs[k] - pmz) / pmz * 1e6 - mu  # offset-centred; library abs()es
         obs_snr[i] = float(snrs[k]) if snrs is not None else 0.0
+        if counts is not None:
+            obs_n_scans[i], obs_n_scans_total[i] = counts[0][k], counts[1][k]
     if obs_int[0] <= 0:
         return None  # monoisotopic must be present
     if snrs is None:  # proxy SNR from the noise floor
         obs_snr = np.where(obs_int > 0, obs_int / max(noise, 1e-9), 0.0)
-    return obs_me, obs_int, obs_snr, pred_rel
+    return obs_me, obs_int, obs_snr, pred_rel, obs_n_scans, obs_n_scans_total
 
 
 def score_ion_v2(
@@ -226,16 +232,19 @@ def score_ion_v2(
     sigma_ppm: float | None = None,
     mu: float = 0.0,
     snr_intensity: bool = True,
+    counts=None,
 ) -> float | None:
     """Match the candidate ion's envelope and delegate to the PROMOTED library scorer
     `mascope_tools...score_pattern_v2` (single source of truth). `snr_intensity` is
     retained for signature compat; v2 always uses SNR-set intensity tolerance."""
     from mascope_tools.composition.heuristic_filter import score_pattern_v2
 
-    arrs = _match_arrays(mzs, ints, snrs, ion, ppm=ppm, mu=mu, noise=noise)
+    arrs = _match_arrays(
+        mzs, ints, snrs, ion, ppm=ppm, mu=mu, noise=noise, counts=counts
+    )
     if arrs is None:
         return None
-    obs_me, obs_int, obs_snr, pred_rel = arrs
+    obs_me, obs_int, obs_snr, pred_rel, obs_n_scans, obs_n_scans_total = arrs
     return score_pattern_v2(
         obs_me,
         obs_int,
@@ -244,6 +253,8 @@ def score_ion_v2(
         k_detect=k_detect,
         miss_penalty=miss_penalty,
         sigma_ppm=sigma_ppm,
+        n_scans=obs_n_scans,
+        n_scans_total=obs_n_scans_total,
     )
 
 
@@ -261,16 +272,19 @@ def score_v2_resample_std(
     miss_penalty=0.3,
     n=16,
     rng=None,
+    counts=None,
 ):
     """ROBUSTNESS metric: std of the v2 score when each matched peak's intensity is
     resampled within its own measurement noise (Gaussian, sigma = intensity/SNR). A
     robust score barely moves under noise. None if the ion can't be scored."""
     from mascope_tools.composition.heuristic_filter import score_pattern_v2
 
-    arrs = _match_arrays(mzs, ints, snrs, ion, ppm=ppm, mu=mu, noise=noise)
+    arrs = _match_arrays(
+        mzs, ints, snrs, ion, ppm=ppm, mu=mu, noise=noise, counts=counts
+    )
     if arrs is None:
         return None
-    obs_me, obs_int, obs_snr, pred_rel = arrs
+    obs_me, obs_int, obs_snr, pred_rel, obs_n_scans, obs_n_scans_total = arrs
     rng = rng or np.random.default_rng(0)
     matched = obs_int > 0
     sigma_int = np.where(
@@ -292,6 +306,8 @@ def score_v2_resample_std(
                 k_detect=k_detect,
                 miss_penalty=miss_penalty,
                 sigma_ppm=sigma_ppm,
+                n_scans=obs_n_scans,
+                n_scans_total=obs_n_scans_total,
             )
         )
     return float(np.std(scores)) if len(scores) >= 2 else None
@@ -420,6 +436,9 @@ def main() -> int:
     matched = pd.read_parquet(f"{a.bundle_dir}/expected/peaks.parquet")
     matched = matched.assign(mz=matched["mz"].astype(float))
     obs = {}
+    # The scans holding each peak and the scans averaged, where a store keeps
+    # them: a dim line is then read over the scans that hold it
+    counts = {}
     n_fs = 0
     for f in filenames:
         df = load_filestore_peaks(a.bundle_dir, f)
@@ -431,6 +450,11 @@ def main() -> int:
                 df["snr"].to_numpy(float),
                 0.0,
             )
+            if "n_scans" in df:
+                counts[f] = (
+                    df["n_scans"].to_numpy(float),
+                    df["n_scans_total"].to_numpy(float),
+                )
             n_fs += 1
         else:
             g = matched[matched["filename"] == f].sort_values("mz")
@@ -443,6 +467,7 @@ def main() -> int:
         else "matched-target proxy (no SNR)"
     )
     print(f"scorer={a.scorer}  peaks: {n_fs}/{len(filenames)} files from {src}")
+    print(f"scan counts: {len(counts)}/{len(filenames)} files keep them")
 
     # Per-sample fitted mass accuracy (mu, sigma) for the resolution-correct mass term.
     cal = {}
@@ -499,6 +524,7 @@ def main() -> int:
                     sigma_ppm=sigma,
                     mu=mu,
                     snr_intensity=(a.intensity == "snr"),
+                    counts=counts.get(r.filename),
                 )
             else:
                 s = score_ion(mzs, ints, r.candidate_ion, ppm=a.ppm)
@@ -592,6 +618,7 @@ def main() -> int:
                 k_detect=a.k_detect,
                 miss_penalty=a.miss_penalty,
                 rng=rrng,
+                counts=counts.get(r.filename),
             )
             if sd is not None:
                 stds.append(sd)

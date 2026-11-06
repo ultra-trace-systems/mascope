@@ -265,6 +265,25 @@ is `server/backend/.../peak_assignments/envelope_fit.py`; the run records what i
 fitted under `config.envelope_tolerance`, and `EnvelopeTolerance.from_record` rebuilds
 it from that record.
 
+### 3.2b A line read by its scan presence (3.5d)
+
+The curve models a loss that a raw Orbitrap file's peak store counts instead: per peak,
+the scans holding a centroid within half its width, $n$, of the $N$ scans averaged
+(`n_scans`, `n_scans_total`; `mascope_signal.peak.N_SCANS`). Where the caller passes them
+(`n_scans`, `n_scans_total`, one per line, as `observed_snr` is), a matched line whose
+anchor is counted too is read by its presence fraction $f = n / N$
+(`mascope_tools.composition.scan_presence`):
+
+$$r_i = \frac{o_i / f_i}{o_0 / f_0}$$
+
+the line's mean over the scans that hold it against the anchor's over the scans that hold
+it, and is held to the predicted share itself: the band of §3.2a, which allows for the
+dilution this takes out, is the fallback for a line without counts. The SNR terms are the
+same, on $r_i$. The kept scans are a dim line's upward fluctuations, so $r_i$ runs high
+for a line near the floor (about a quarter at a per-scan SNR of 3 with half the scans
+keeping it); the censoring-aware estimate from $f_i$ and a line's per-scan noise is not
+built.
+
 ### 3.3 Detectability gate (censoring at the detection limit)
 
 A predicted peak that is **absent** ($o_i = 0$) is only evidence *against* the assignment
@@ -281,6 +300,24 @@ This is a censored-data treatment: missing low-abundance isotopologues do not pu
 genuine low-intensity ions, but a missing $^{81}$Br twin of a bromine ion does. Defaults
 $k_{\text{detect}} = 3$, $\text{miss\_penalty} = 0.3$. A run's fitted curve raises the
 threshold to where that file's lines are actually present (§3.2a).
+
+**With the anchor's scan count (§3.2b)** the threshold follows from it instead. The
+anchor's per-scan SNR in the $n_0$ scans holding it is $t_0 = s_0 \sqrt{N} / n_0$ (the
+averaged SNR is the per-scan one times $n_0/\sqrt{N}$:
+`OpenTFRawBackend.average_centroids` scales it so, and the vendor library reads its SNR off
+the noise-reduced averaged spectrum). A line reads $x \sim \mathcal{N}(p_i t_0, 1)$ per
+scan, and a scan keeps it where $x \ge F$, the per-scan floor (`SCAN_FLOOR_SNR = 2`, the
+lower edge of the centroids the demo raws' scans write). What the kept scans add at its m/z
+to the averaged list, beyond the noise's own,
+
+$$\ell_i = \Big(p_i t_0\, \Phi(p_i t_0 - F) + \varphi(p_i t_0 - F) - \varphi(F)\Big)\, \frac{n_0}{\sqrt{N}}$$
+
+(the truncated normal's first moment), is what the list would have read it at; the absent
+line is charged where $\ell_i \ge k_{\text{detect}}$, the list's own cut. With no floor
+this is $p_i s_0 \ge k_{\text{detect}}$, the rule above. With the anchor in every scan the
+threshold on $p_i s_0$ is $3.2$ at $N=1$, $4.2$ at $N=4$, $5.3$ at $N=10$, $9.2$ at
+$N=100$ and $14.4$ at $N=1000$, never falling as $N$ grows; the curve's threshold is the
+fallback for an anchor without a count.
 
 ### 3.3a No-SNR mode (callers without per-peak signal-to-noise)
 
@@ -332,6 +369,8 @@ proportionally less. The result is in $[0,1]$, equals $1$ only for a flawless fi
 | `miss_penalty` | `0.3` | likelihood assigned to a detectable-but-absent peak |
 | `rel_detect_no_snr` | `0.10` | no-SNR fallback (§3.3a): predicted abundance above which an absent peak is penalised when the base peak's SNR is unknown |
 | `tolerance` | `None` (today's: band the share itself, floor `0.05`, `k_detect`) | the run's fitted envelope tolerance (§3.2a): the admitted band per bin of expected SNR, the centre, the floor, and the detectability threshold |
+| `n_scans`, `n_scans_total` | `None` (no counts: read as before) | per line, the scans holding its peak and the scans averaged (§3.2b): a counted line is read over its scans and held to its share, an absent line beside a counted anchor charged by §3.3's count rule |
+| `SCAN_FLOOR_SNR` | `2.0` (`composition.scan_presence`) | the per-scan SNR under which a scan writes no centroid (§3.3) |
 | `PRED_SIGMA_PPM` | `0.5` (`composition.mass_accuracy`) | prediction/centroiding term added to $\sigma$ in quadrature by `scoring_sigma_ppm` |
 
 ## 5. Properties (validated on the demo)

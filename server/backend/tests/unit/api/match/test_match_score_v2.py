@@ -367,3 +367,63 @@ def test_every_ion_at_once_is_read_at_the_run_s_envelope_tolerance():
 
     np.testing.assert_allclose(scored, 1.0)
     assert (ion_scores_v2(frame, "target_ion_id", sigma_ppm=0.5) < 0.75).all()
+
+
+# --- the scan counts a raw Orbitrap store keeps ----------------------------------
+
+
+def _counted(m1_intensity, n_scans, n_scans_total, snr=(500, 55)):
+    frame = _ion(m1_intensity, snr=list(snr), me=(0.0, 0.0))
+    frame["n_scans"] = n_scans
+    frame["n_scans_total"] = n_scans_total
+    return frame
+
+
+def test_a_line_kept_by_half_the_scans_is_read_over_them():
+    """Stage A's frame carries each matched peak's scan counts: the M+1 line,
+    in two of the four scans its anchor is in, reads half its share in the
+    averaged series and all of it over the scans that hold it."""
+    perfect = ion_score_v2(_counted(110.0, [4, 4], [4, 4]), sigma_ppm=0.5)
+
+    counted = ion_score_v2(_counted(55.0, [4, 2], [4, 4]), sigma_ppm=0.5)
+    uncounted = ion_score_v2(
+        _counted(55.0, [4, 2], [4, 4]).drop(columns=["n_scans", "n_scans_total"]),
+        sigma_ppm=0.5,
+    )
+
+    assert counted == pytest.approx(perfect, abs=1e-12)
+    assert uncounted < counted - 0.3
+
+
+def test_an_absent_line_is_charged_by_its_anchors_count():
+    """At an expected S/N of 6 a hundred scans would not have listed the
+    line, so its absence costs nothing, where today's threshold of 3 charges
+    it."""
+    absent = _counted(0.0, [100, np.nan], [100, np.nan], snr=(6 / 0.11, np.nan))
+
+    counted = ion_score_v2(absent, sigma_ppm=0.5)
+    uncounted = ion_score_v2(
+        absent.drop(columns=["n_scans", "n_scans_total"]), sigma_ppm=0.5
+    )
+
+    assert counted == pytest.approx(1.0, abs=1e-9)
+    assert uncounted < 0.9
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_every_ion_at_once_reads_the_counts_as_each_does_alone(seed):
+    rng = np.random.default_rng(seed)
+    frame = _ions_frame(rng)
+    total = float(rng.choice([4, 20, 100]))
+    frame["n_scans_total"] = total
+    frame["n_scans"] = rng.integers(1, int(total) + 1, len(frame)).astype(float)
+    frame.loc[rng.random(len(frame)) < 0.1, "n_scans"] = np.nan
+
+    by_ion = frame.groupby("target_ion_id", sort=False, dropna=False).apply(
+        lambda g: ion_score_v2(g, sigma_ppm=0.5), include_groups=False
+    )
+    expected = frame["target_ion_id"].map(by_ion).astype(float)
+
+    scored = ion_scores_v2(frame, "target_ion_id", sigma_ppm=0.5)
+
+    np.testing.assert_allclose(scored, expected, rtol=0, atol=1e-12)

@@ -253,6 +253,18 @@ from mascope_tools.composition.reagents import (
 #: The keys of a run's scoring width, as the runs listing serves them.
 SCORING_WIDTH_KEYS = ("sigma_ppm", "sigma_source", "mu_ppm", "mu_source")
 
+#: The columns of a sample's peak list (:func:`load_sample_peaks`) the
+#: untargeted search reads, where the list has them: the noise estimate
+#: decides whether a predicted line's absence is evidence, and the scan
+#: counts how far a dim line's height is diluted by the scans it missed.
+SEARCH_PEAK_COLUMNS = (
+    "mz",
+    "intensity",
+    "signal_to_noise",
+    "n_scans",
+    "n_scans_total",
+)
+
 
 def scoring_width(run: PeakAssignmentRun) -> dict:
     """The mass-error width a run scored at, and where each number came from.
@@ -2408,13 +2420,20 @@ def load_sample_peaks(sample: Sample) -> pd.DataFrame:
     off the match frame `compute_match_isotopes` builds, and the untargeted
     stage has no match frame - it works from this peak list.
 
+    So do the scan counts where the file keeps them (``n_scans`` and
+    ``n_scans_total``): how many of the scans averaged into each peak hold it.
+    An Orbitrap scan keeps a dim line only where it clears that scan's noise,
+    so the averaged list reads it diluted by the share of scans it missed, and
+    the untargeted stage reads it over the scans that hold it instead
+    (``mascope_tools.composition.scan_presence``).
+
     Inside a decoy run's shifted axis (``mascope_match.shifted_mz_axis``) the
     m/z are read moved, as the targeted matcher reads them there, so every
     stage of the run sees one spectrum.
 
     :param sample: Sample model object
     :return: DataFrame with sample_peak_id, mz, intensity, and (where the file
-        has them) signal_to_noise columns
+        has them) signal_to_noise, n_scans and n_scans_total columns
     """
     peak_data = extract_peaks(sample.filename, sample.polarity, sample.t0, sample.t1)
     instrument_type = get_instrument_type(sample.filename)
@@ -2432,6 +2451,13 @@ def load_sample_peaks(sample: Sample) -> pd.DataFrame:
         # records no noise estimate", and a zero would say "measured, and
         # noise-free", which is the one reading that must not happen.
         peaks_df["signal_to_noise"] = peak_data.signal_to_noise
+    if peak_data.n_scans is not None and peak_data.n_scans_total is not None:
+        # Absent for a file that keeps no count, as the noise estimate is; a
+        # peak whose count the detection could not take reads NaN
+        peaks_df["n_scans"] = pd.Series(peak_data.n_scans, dtype=float).to_numpy()
+        peaks_df["n_scans_total"] = pd.Series(
+            peak_data.n_scans_total, dtype=float
+        ).to_numpy()
     return peaks_df
 
 
@@ -3976,9 +4002,11 @@ async def _assign_sample(
                 #
                 # The noise estimate rides along when the file has one: it is
                 # what decides whether a predicted line's absence is evidence.
+                # So do the scan counts, which say how far a dim line's
+                # height is diluted by the scans it missed.
                 search_columns = [
                     column
-                    for column in ("mz", "intensity", "signal_to_noise")
+                    for column in SEARCH_PEAK_COLUMNS
                     if column in search_peaks_df.columns
                 ]
                 scoring_snapshot = pattern_scoring_snapshot(
