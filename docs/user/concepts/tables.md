@@ -215,7 +215,8 @@ SDK's roll-ups.
 | `instrument` | The instrument whose match parameters scored the ion. |
 | `cas_number`, `inchi`, `inchikey`, `smiles` | The compound's identifiers, where its record has them. The match is on the formula and confirms no structure. |
 | `target_compound_name`, `target_compound_formula` | The name is always empty in the tree: it scores formulas, not named compounds. The formula is the candidate's and is on every row, matched or not. `match_category_compound` says whether a candidate matched. |
-| other `target_*`, `ionization_mechanism`, `relative_abundance` | As in the peak list. |
+| `target_isotope_*`, `target_ion_*`, `target_compound_id`, `ionization_mechanism`, `ionization_mechanism_id` | The line, the ion and the compound Mascope **looked for**, on every row, matched or not; the category columns say whether each matched. A list of the tree's isotope formulas is the lines searched, not the lines found. |
+| `relative_abundance` | As in the peak list. |
 
 ## Rows that repeat, and rows that are missing
 

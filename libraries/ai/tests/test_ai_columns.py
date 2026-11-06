@@ -289,7 +289,39 @@ class TestEveryLoadedColumnHasAMeaning:
         assert self._unexplained(frame) == set()
 
     def test_match_tree(self, kit):
-        tree = kit.match_compounds("s21", ["CH2O2"]).tree
+        tree = kit.match_compounds("s21", ["CH2O2", "C10H16O"]).tree
         assert tree.n_rows > 0
         assert self._unexplained(tree) == set()
         assert "theoretical" in tree.column_meanings()["mz"]
+
+    def test_no_tree_column_calls_its_row_matched(self, kit):
+        # A tree row is a line Mascope looked for, matched or not; a text
+        # that says "the matched ..." is the peak list's, and wrong here
+        tree = kit.match_compounds("s21", ["CH2O2", "C10H16O"]).tree
+        assert (tree.df["match_category_isotope"] == 0).any()
+        offenders = {
+            c: text
+            for c, text in tree.column_meanings().items()
+            if "the matched" in text or "when unmatched" in text
+        }
+        assert offenders == {}
+
+    def test_a_summed_peak_list_says_so(self, kit):
+        summed = kit.load_peaks(samples="s21", average=False)
+        assert summed.meaning_op == "load_peaks_summed"
+        out = summed.column_meanings()
+        assert "summed over" in out["height"] and "average=False" in out["height"]
+        assert "summed over" in out["area"]
+        assert self._unexplained(summed) == set()
+        # The other columns are the peak list's
+        assert out["mz"] == COMMON["mz"]
+        # A mean and a sum derived together have no height in common
+        from mascope_ai.columns import MIXED
+
+        averaged = kit.load_peaks(samples="s21")
+        both = kit.derive(
+            pd.concat([averaged.df, summed.df]), [averaged, summed], code="concat"
+        )
+        assert both.inherited["height"] == MIXED
+        assert both.inherited["mz"] == "load_peaks"
+        assert "height" not in both.column_meanings()
