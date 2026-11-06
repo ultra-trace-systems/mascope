@@ -32,6 +32,7 @@ Everything below assumes an Ubuntu host provisioned with
 | What the method bindings would route, and where a file name disagrees | `mascope prod db script run report_method_binding_disagreements` |
 | Write the MS2 stores of files converted before them, and list their groups (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
 | Rebuild the peak stores that disagree with the scans their files read, keeping every sample (dry run first) | `DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores`, then without `DRY_RUN` |
+| Fill the scan counts of the Orbitrap peak stores detected before them, which sets their batches to rematch (dry run first) | `FILL_SCAN_COUNTS=1 DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores`, then without `DRY_RUN` |
 | Flag the Orbitrap peaks under a local floor weak in stores written before the floor (dry run first) | `DRY_RUN=1 mascope prod db script run reflag_orbitrap_weak_peaks`, then without `DRY_RUN` |
 | Give stored matches the intensity of isotope lines that missed their ratio (once, after the upgrade; dry run first) | `DRY_RUN=1 mascope prod db script run reaggregate_ratio_gated_intensity`, then without `DRY_RUN` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
@@ -2436,6 +2437,30 @@ mascope prod db script run rebuild_stale_peak_stores
   the TICs. The stores are in the filestore.
 - *Detect peaks* on one file does the same for that file alone, and
   rematches its samples at once.
+
+**Stores without scan counts.** A raw Orbitrap file's store also keeps, per
+peak, how many of the scans averaged into it hold it, and how many those are
+(`docs/user/how-it-works/peak-detection.md`, *Scan Presence (Orbitrap)*).
+Peak assignment reads a dim isotope line by them; a store detected before
+they were kept reads as it always did, the curve each run fits standing in
+for them. Such a store is not stale: the run counts it as current without
+scan counts, says how many there are, and leaves it alone. To fill them, ask
+for those stores to be rebuilt too:
+
+```sh
+FILL_SCAN_COUNTS=1 DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores
+FILL_SCAN_COUNTS=1 mascope prod db script run rebuild_stale_peak_stores
+```
+
+- The dry run lists them beside the stale ones, each as keeping no scan
+  counts.
+- Their rebuild is the one above, matches removed and batches set to
+  rematch included: run it when those batches can be matched again, and
+  rematch them afterwards. `REBUILD_LIMIT` bounds it the same way.
+- A store whose rebuild still keeps no counts is named at the end with those
+  that still disagree with their files.
+- *Detect peaks*, a re-processing and every new file write the counts
+  anyway: the command is only for the stores detected before.
 
 ### Orbitrap peaks under a local floor
 

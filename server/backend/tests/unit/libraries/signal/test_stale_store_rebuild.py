@@ -34,6 +34,30 @@ def test_a_store_its_file_reads_back_is_current(acquire, instrument_functions):
     assert script.check(SAMPLE_FILENAME) == script.Checked(script.CURRENT)
 
 
+def test_a_store_without_scan_counts_is_uncounted_and_its_rebuild_counts(
+    acquire, instrument_functions
+):
+    """A store detected before the scan counts were kept: current but for
+    them, and a rebuild fills them."""
+    acquire(SCANS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+    store = _store().load()
+    asyncio.run(
+        m_io.write_peaks(
+            store.drop_vars([m_peak.N_SCANS, m_peak.N_SCANS_TOTAL]),
+            SAMPLE_FILENAME,
+            overwrite=True,
+        )
+    )
+    assert m_peak.N_SCANS not in _store().data_vars
+
+    assert script.check(SAMPLE_FILENAME) == script.Checked(script.UNCOUNTED)
+
+    asyncio.run(_rebuilt(instrument_functions))
+    assert script.check(SAMPLE_FILENAME) == script.Checked(script.CURRENT)
+    assert _store()[m_peak.N_SCANS].values.tolist() == [len(SCANS)] * 3
+
+
 def test_a_file_with_no_store_or_no_peaks_is_not_rebuilt(acquire):
     acquire(SCANS)
     assert script.check(SAMPLE_FILENAME) == script.Checked(script.NO_STORE)

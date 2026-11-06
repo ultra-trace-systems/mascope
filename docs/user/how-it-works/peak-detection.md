@@ -262,6 +262,7 @@ The peak list serves both counts beside each peak's signal-to-noise (`n_scans` a
 A TOF file has no count: it detects on its summed spectrum, and no scan drops a peak on its own.
 Nor does an Orbitrap file detected before the count was kept, until its peaks are detected again.
 Its peak list leaves both columns empty, and everything that reads it reads it as before.
+`docs/maintaining.md` (*Peak stores a file has outgrown*) has the operator's command that detects them again.
 
 #### References
 

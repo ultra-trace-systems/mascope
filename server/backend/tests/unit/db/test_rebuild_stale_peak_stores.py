@@ -51,7 +51,7 @@ def test_the_survey_finds_the_stale_files_and_counts_every_other():
         script.survey(candidates, lambda filename: filename != "zarr", check)
     )
 
-    assert stale == [{**candidates[0], "stored": 8, "reads": 7}]
+    assert stale == [{**candidates[0], "state": script.STALE, "stored": 8, "reads": 7}]
     assert "zarr" not in checked
     assert counts["A"] == {script.STALE: 1, script.CURRENT: 1, script.NO_PEAKS: 1}
     assert counts["B"] == {"not_raw": 1, "unreadable": 1, script.NO_STORE: 1}
@@ -73,6 +73,44 @@ def test_a_capped_survey_stops_once_it_has_found_enough(monkeypatch):
     assert len(checked) == 4
 
 
+def test_a_store_without_scan_counts_is_counted_and_rebuilt_only_when_asked():
+    """It is not stale: every read takes it as it is. The run says how many
+    there are, and rebuilds them on ``FILL_SCAN_COUNTS=1`` beside the stale."""
+    candidates = _candidates(("stale", "A"), ("uncounted", "A"), ("current", "A"))
+    found = {
+        "stale": script.Checked(script.STALE, 8, 7),
+        "uncounted": script.Checked(script.UNCOUNTED),
+        "current": script.Checked(script.CURRENT),
+    }
+
+    def survey(**kwargs):
+        return asyncio.run(
+            script.survey(candidates, lambda _: True, found.__getitem__, **kwargs)
+        )
+
+    stale, counts = survey()
+    assert [row["filename"] for row in stale] == ["stale"]
+    assert counts["A"][script.UNCOUNTED] == 1
+
+    both, _ = survey(uncounted=True)
+    assert [(row["filename"], row["state"]) for row in both] == [
+        ("stale", script.STALE),
+        ("uncounted", script.UNCOUNTED),
+    ]
+
+
+@pytest.mark.parametrize("value, asked", [("1", True), ("0", False), (None, False)])
+def test_the_stores_without_scan_counts_are_asked_for_by_name(
+    monkeypatch, value, asked
+):
+    if value is None:
+        monkeypatch.delenv("FILL_SCAN_COUNTS", raising=False)
+    else:
+        monkeypatch.setenv("FILL_SCAN_COUNTS", value)
+
+    assert script._fill_scan_counts() is asked
+
+
 # --- the run ------------------------------------------------------------------
 
 
@@ -92,10 +130,11 @@ class _Recorder:
     """Every step a run takes, as stand-ins that record what they were
     asked."""
 
-    def __init__(self, fail=(), stale_after=()):
+    def __init__(self, fail=(), stale_after=(), uncounted_after=()):
         self.calls = []
         self._fail = set(fail)
         self._stale_after = set(stale_after)
+        self._uncounted_after = set(uncounted_after)
 
     async def samples_of(self, sample_file_id):
         return [f"{sample_file_id}-item"], [f"{sample_file_id}-batch"]
@@ -121,6 +160,8 @@ class _Recorder:
 
     def check(self, filename):
         state = script.STALE if filename in self._stale_after else script.CURRENT
+        if filename in self._uncounted_after:
+            state = script.UNCOUNTED
         return script.Checked(state)
 
     def steps(self):
@@ -189,6 +230,17 @@ def test_a_rebuild_that_does_not_take_is_named():
     assert outcome.failed == ["second"]
     assert outcome.counts["still_stale"] == 1
     assert outcome.counts["rebuilt"] == 1
+
+
+def test_a_rebuild_that_leaves_the_store_without_counts_is_named():
+    recorder = _Recorder(uncounted_after={"first"})
+    uncounted = [{**STALE[0], "state": script.UNCOUNTED}]
+
+    outcome = asyncio.run(script.rebuild_all(uncounted, recorder.steps()))
+
+    assert outcome.failed == ["first"]
+    assert outcome.counts["still_stale"] == 1
+    assert outcome.counts["rebuilt"] == 0
 
 
 # --- which files are read -----------------------------------------------------
