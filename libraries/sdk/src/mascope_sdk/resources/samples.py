@@ -453,6 +453,17 @@ class SamplesResource(BaseResource):
                    Mascope measured the noise on the baseline (see the
                    changelog) carry an estimate that does not follow
                    the peak's height; detecting them again replaces it
+                 - ``n_scans``, ``n_scans_total``: on an Orbitrap file,
+                   how many of the scans averaged into the peak hold it,
+                   and how many those are. A scan keeps a peak only where
+                   it clears that scan's noise, so a dim line missing from
+                   part of the scans reads diluted by the share it missed;
+                   ``height * n_scans_total / n_scans`` is its mean over
+                   the scans that hold it. ``None`` throughout for a file
+                   that keeps no count: a TOF file, or one whose peaks
+                   were detected before the count was kept; and over
+                   ``t_min`` / ``t_max``, whose ``signal_to_noise`` is the
+                   whole sample's
                  - ``match_score_isotope``, ``match_score_ion``,
                    ``match_score_compound``
                  - ``relative_abundance``

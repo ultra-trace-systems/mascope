@@ -1751,7 +1751,7 @@ async def get_orbi_centroids(
     return masses, intensities, resolutions, signal_to_noise
 
 
-async def get_orbi_centroid_flag_shares(
+async def get_orbi_centroid_presence(
     base_filename: str,
     masses: np.ndarray,
     resolutions: np.ndarray,
@@ -1759,13 +1759,13 @@ async def get_orbi_centroid_flag_shares(
     polarity: Literal["+", "-"] | None = None,
     stream: str | None = None,
     calibration: dict | None | object = RECORD_ON_FILE,
-) -> np.ndarray:
-    """The share of each peak's per-scan centroids that carry a centroid flag.
+) -> m_thermo.CentroidPresence:
+    """What the scans averaged into each peak recorded under it.
 
     For the peaks :func:`get_orbi_centroids` gives for the same selection:
     over the scans averaged into them, the centroids within half a width of
-    each peak, and of those the ones the instrument flagged
-    (``mascope_thermo.thermo.get_centroid_flag_shares``).
+    each peak, the share of them the instrument flagged, and how many of the
+    scans hold one (``mascope_thermo.thermo.get_centroid_presence``).
 
     :param base_filename: Sample file name (base, not full path).
     :type base_filename: str
@@ -1785,8 +1785,9 @@ async def get_orbi_centroid_flag_shares(
         taken off it again by the same factor, since a scan's centroids are
         read as it recorded them. Left out, the record the file holds.
     :type calibration: dict | None, optional
-    :return: One share per peak, NaN where no centroid falls within its width.
-    :rtype: np.ndarray
+    :return: Per peak its flag share (NaN where no centroid falls within its
+        width) and the scans it is present in, and the scans averaged.
+    :rtype: mascope_thermo.thermo.CentroidPresence
     """
     sample_type = m_name.get_sample_file_type(base_filename)
     if sample_type != "orbi_raw":
@@ -1799,7 +1800,7 @@ async def get_orbi_centroid_flag_shares(
     if calibration:
         recorded = recorded / m_factor.stream_factor(calibration, stream)
     return await asyncio.to_thread(
-        m_thermo.get_centroid_flag_shares,
+        m_thermo.get_centroid_presence,
         m_name.filename_to_datafile_path(base_filename),
         recorded,
         resolutions,
