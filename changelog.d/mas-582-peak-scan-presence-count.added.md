@@ -5,7 +5,10 @@
   peak, the scans it is present in, and `GET /api/samples/{id}/peaks`, the
   batch's peak table, `samples.get_peaks` and `load_peaks` serve it as
   `n_scans` beside `n_scans_total`, the scans averaged; `height *
-  n_scans_total / n_scans` is the peak's height over the scans that hold it.
+  n_scans_total / n_scans` is the peak's height over the scans that hold it,
+  high for a peak near the noise, whose kept scans are the ones its noise
+  lifted (`mascope_tools.composition.scan_presence` reads it at its mean per
+  scan).
   Both are empty for a TOF file and for an Orbitrap file detected before this
   release, until its peaks are detected again: *Detect peaks*, or
   `rebuild_stale_peak_stores` with `FILL_SCAN_COUNTS=1`, which counts such

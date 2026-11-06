@@ -289,7 +289,10 @@ The columns, one row per peak (per match with `matches=True`):
   averaged into the peak hold it, and how many those are. An Orbitrap scan
   keeps a peak only where it clears that scan's noise, so a dim isotope line
   missing from part of the scans reads diluted by the share it missed:
-  `height * n_scans_total / n_scans` is its mean over the scans that hold it.
+  `height * n_scans_total / n_scans` is its mean over the scans that hold it,
+  which reads a line near the noise high: the scans that keep it are the ones
+  its noise lifted. `mascope_tools.composition.scan_presence.scan_levels`
+  reads a line at its mean per scan from both counts and `signal_to_noise`.
   `NaN` where the file keeps no count: a TOF file, or one whose peaks were
   detected before the count was kept (a re-detection fills it, see the
   operator notes on peak stores in `docs/maintaining.md`).

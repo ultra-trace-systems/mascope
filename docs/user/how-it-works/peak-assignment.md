@@ -480,6 +480,45 @@ lines are pooled for no other file. A sample with no such run, one only folded i
 the batch ledger, is measured at the defaults, though its folded rows were scored at a
 tolerance fitted on the spot.
 
+An Orbitrap file whose peaks record the scans they are present in (*Scan Presence* on
+[Peak Detection](peak-detection.md)) needs no such measurement for its lines: it
+counts the loss instead. Its lines are read by the count, and the run's measurement
+is what a file without the counts reads:
+
+- **A line is read at its mean per scan**, against the main line read the same way. A
+  scan keeps a line only where it clears about twice its noise, so the scans that keep
+  a dim line are the ones its noise lifted, and its mean over them reads high: 1.4
+  times its share where half the scans keep it. The fit score instead estimates the
+  line's mean over every scan from how many scans kept it and how far above the noise
+  they read it, the censored-normal estimate ([Tobin 1958][tob58];
+  [Amemiya 1984][ame84]). A line in every scan reads as the peak list has it. The line
+  is then held to its share at the default 5%, since the shortfall the measurement
+  allows for is gone. A line some scans missed and that has no signal-to-noise keeps
+  the measurement.
+- The untargeted search's 40% window, which keeps a line only near its share, reads
+  the share by the count too. Its lower end stays at 40% below the share and does not
+  move down to the file's low reading, since the count has already taken that out.
+
+On simulated files of 20 to 100 scans, the estimate reads a line at 0.99 to 1.00 of its
+share, the median whatever share of the scans keeps it. On the demo raws, 13C lines
+missing one or two of their main line's four scans read 0.77 of their share in the peak list, 1.08 over the scans that keep them, and 0.90 by
+the estimate, where lines in every scan read 0.96. The 81Br line of the demo's bromine
+ions reads within 0.2 of its natural share for 97.4% of 2,908 lines, from 96.6%; the 85
+that read differently are closer to natural for 93% of them.
+
+A missing line counts as on a file without the counts: from the signal-to-noise the run
+measured its lines to be present at. The count could set that threshold too, from where
+the scans holding the main line would have put the line in the peak list. As a yes-or-no
+rule it charged lines the peak list holds only about half the time: the demo's lists hold
+42% of the predicted 13C lines at an expected signal-to-noise of 4.2 to 5, the rule's
+threshold on a file of four scans. It ranked the demo's true formulas a little lower, so
+it is not used.
+
+The estimate assumes a line's level is the same in every scan. Where a compound varies
+within the file, the scans that keep its dim line are also the scans where there is most
+of it, and the line reads high. A compound present in only part of the file is read as if
+the scans without it were below the noise.
+
 A predicted line is a peak your instrument can resolve, not a single isotopologue. On a
 TOF, the peak one mass unit above a compound holds its 13C line and also its 15N, 2H and
 17O lines, a few mDa apart. The untargeted search reads that peak against the sum of all
@@ -1494,6 +1533,10 @@ engine found, and leave the rest of the table alone.
 - <a id="ba72"></a>Barlow, R. E.; Bartholomew, D. J.; Bremner, J. M.; Brunk, H. D.
   *Statistical inference under order restrictions: the theory and application of
   isotonic regression.* Wiley, 1972.
+- <a id="ame84"></a>Amemiya, T. *Tobit models: a survey.* Journal of Econometrics 24,
+  3-61, 1984 (the censored normal's estimation).
+- <a id="tob58"></a>Tobin, J. *Estimation of relationships for limited dependent
+  variables.* Econometrica 26, 24-36, 1958 (the censored normal's likelihood).
 - <a id="platt"></a>Platt, J. *Probabilistic outputs for support vector machines and
   comparisons to regularized likelihood methods.* Advances in Large Margin Classifiers,
   1999. [link](https://en.wikipedia.org/wiki/Platt_scaling)
@@ -1695,6 +1738,8 @@ engine found, and leave the rest of the table alone.
 [wa21]: #wa21
 [platt]: #platt
 [ba72]: #ba72
+[ame84]: #ame84
+[tob58]: #tob58
 [good70]: #good70
 [good70b]: #good70b
 [sha66]: #sha66
