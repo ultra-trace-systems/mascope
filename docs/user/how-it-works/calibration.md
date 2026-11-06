@@ -30,6 +30,7 @@ Peaks of the mode's polarity with a signal-to-noise ratio of at least 10 are can
 A peak that overlaps a neighbour within one FWHM by the instrument's resolution function is dropped, and so is the neighbour; the local-dominance guard is an Orbitrap rule and is off for TOF.
 Each calibrant then takes the strongest remaining peak in its window, by time-averaged peak area.
 A fit needs at least three matched points; fewer leaves the file with the warning *Not enough calibration peaks*.
+The three-parameter model below is tried only where the points kept come from four ions or more.
 The residual rule that keeps or drops a point in the fit below is 15 ppm, and a fit whose mean post-fit residual exceeds 15 ppm, or whose points all come from one ion, warns *Calibration inaccurate*.
 
 ## Quality Assessment and Scoring
@@ -85,6 +86,7 @@ The highest-scoring consistent subset is chosen.
 If no sub-group cleanly decouples in-tolerance points from outliers, the calibration is aborted.
 
 A subset no larger than the model can absorb is fitted exactly and has no internal residual to be scored by.
+A TOF model is never fitted on so few points: it takes one point more than it has parameters, three for the square-root model and four for the three-parameter one.
 This is the case for an Orbitrap file whose calibrants all disagree with one another by more than the tolerance: each one alone is a perfect one-point fit.
 Between such subsets the one that asks for the smallest correction is kept, the calibrant closest to its theoretical mass before the fit, because a mass axis is far more likely to be nearly right than far off and a match that needs a large correction is more likely a neighbouring peak than the calibrant.
 The verification below still judges the result: a one-point fit is trusted only while its correction is small.
@@ -110,10 +112,44 @@ $$m = \left( \frac{\text{TOF} - p_1}{p_0} \right)^2$$
 
 A TOF fit is absolute.
 Applying it recomputes the m/z axis from the stored time-of-flight index of every point of the spectrum and every detected peak, and nothing depends on the axis the file had before (an Orbitrap fit, by contrast, rescales the stored axis by a cumulative factor).
-So re-calibrating needs no peak re-detection, an earlier fit is restored exactly from its two parameters, and applying the same fit twice changes nothing.
+So re-calibrating needs no peak re-detection, an earlier fit is restored exactly from its parameters, in either model, and applying the same fit twice changes nothing.
 Applying a fit clears the file's matches and marks its batches for rematching.
 Editing the calibration collection a mode already uses only marks its batches: the files stay on their old calibration until someone re-calibrates them.
 A TOF file that has never been fitted carries the axis the acquisition software wrote, stamped `unfitted` in its calibration record.
+
+#### The three-parameter model
+
+In an ideal time-of-flight analyser the flight time grows with the square root of m/z ([Guilhaus, 1995](https://doi.org/10.1002/jms.1190301102)), which is the model above.
+A real instrument departs from it a little, and on a well-spread calibrant set the square-root fit leaves a bow of a few ppm across the calibrants: on one production TOF, −8 ppm at 41–58 Th and +2 to +4 ppm at 100–150 Th.
+Tofwerk's acquisition software offers a three-parameter model, which it numbers mode 2:
+
+$$\text{Residual} = p_0 m^{p_2} + p_1 - \text{TOF}$$
+
+with the mass axis
+
+$$m = \left( \frac{\text{TOF} - p_1}{p_0} \right)^{1/p_2}$$
+
+The square-root model is this one at $p_2 = 0.5$.
+The fit starts from the square-root fit's coefficients and $p_2 = 0.5$, and uses the same soft $L_1$ loss.
+
+With a parameter more, the three-parameter model always fits the calibrants at least as closely, so its own residuals cannot say whether it reads the axis better.
+The pipeline judges it by leave-one-out cross-validation ([Stone, 1974](https://doi.org/10.1111/j.2517-6161.1974.tb00994.x)):
+
+```mermaid
+flowchart TD
+  A[Calibrants kept by the square-root fit] --> B{From four ions or more?}
+  B -- no --> K0[Keep the square-root fit]
+  B -- yes --> C[Fit each model without one ion, in turn]
+  C --> D[Read each model's error at the ion left out]
+  D --> E{"Three-parameter error lower by more than 0.5 ppm?"}
+  E -- yes --> K2[Keep the three-parameter fit]
+  E -- no --> K0
+```
+
+- The calibrants are those the square-root fit keeps, by the rules above.
+- Each model is fitted on the lines of every calibrant ion but one, in turn, and its error is read at the lines of the ion left out. An ion's lines are left out together: the two lines of a bromide ion lie 2 Th apart and read the axis at one place.
+- The three-parameter fit is kept when its mean held-out error is more than 0.5 ppm below the square-root model's. Otherwise the square-root fit is kept, as it is when the calibrants come from fewer than four ions.
+- A three-parameter fit whose offset $p_1$ lies at or past the first time-of-flight sample is not kept either: it would give the samples before the offset no mass.
 
 #### What a TOF record says
 
@@ -123,8 +159,8 @@ Beside its parameters and the counts and mean errors of its quality block, a TOF
 - **Span**: the exact m/z of the lowest and the highest line kept. Peaks outside it are on an extrapolated axis.
 - **Lines**: how many distinct lines the collection offered above the abundance floor, matched or not. A line two ions share counts once.
 - **Collection**: the calibration collection, and a hash of the isotopes it offered under the mode's ionization mechanisms: their formulas, exact m/z and abundances. Editing the collection's compounds changes the hash, so files fitted on different versions of one collection can be told apart. The hash is the same on every server.
-- **Model**: the model fitted, the square-root model above, which Tofwerk numbers mode 0. The record keeps that number and the model's equation in Tofwerk's names, `i = p1*sqrt(m) + p2`: `i` is the time-of-flight index, and `p1` and `p2` are $p_0$ and $p_1$ above.
-- **Node version**: the version of the calibration step that made the fit.
+- **Model**: the model kept, by Tofwerk's number: 0 for the square-root model, 2 for the three-parameter one. Its equation is in Tofwerk's names, `i = p1*sqrt(m) + p2` or `i = p1*m^p3 + p2`: `i` is the time-of-flight index, `p1` and `p2` are $p_0$ and $p_1$ above, and `p3` is $p_2$. Beside it, `compared` lists each model's mean held-out error in ppm, and `min_gain_ppm` the 0.5 ppm the three-parameter model has to gain. `compared` is empty (`null`) when the calibrants came from fewer than four ions, and a model whose fits failed has no error in it.
+- **Node version**: the version of the calibration step that made the fit. Version 1 fitted the square-root model alone; version 2 also tries the three-parameter one.
 
 The calibration dialog lists the points of the fit it previews, a line the fit left out in muted text, and the badge of a calibrated TOF sample names the span.
 A sample list (`GET /api/samples`) leaves the points out of each sample's record, so a large batch's list stays small; the rest of the record is there. `GET /api/calibration/mz_calibration` answers one sample's whole record, points included.

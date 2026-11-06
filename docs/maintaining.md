@@ -2579,7 +2579,9 @@ the nearest CHO formula under each of the mode's mechanisms, which needs no
 identity to be right; and the nitrate, sulfate and bromide cluster series
 member by member. It checks that its refit under the mode's own collection
 lands on the stored fit to 0.01 ppm on every file the node fitted, and says why
-where it does not.
+where it does not. That refit is in the model the node then fitted: the
+square-root model alone for a record of node version 1 or with no version, and
+the node's own choice between the two models for a later one.
 A file whose record is the converter's own calibration, as on a mode with no
 calibrants or after a failed fit, has no `stored` fit: those coefficients count
 samples from the start of the raw file's axis, not the stored TOF index the
@@ -2603,7 +2605,7 @@ Everything is set through the environment:
 | `TOF_AUDIT_PER_DAY` | Files per day, spread over the day; `0` (the default) for every file |
 | `TOF_AUDIT_MODE` | Only the files of the ionization mode of this name |
 | `TOF_AUDIT_SETS` | Named calibrant sets as JSON: a name to a list of compound formulas, which the mode's mechanisms make ions of as a collection would, or to `{"collection": "<id or name>"}`. The mode's own collection is always audited, as `collection` |
-| `TOF_AUDIT_MODELS` | Tofwerk calibration modes to fit, comma-separated; default `0` |
+| `TOF_AUDIT_MODELS` | The models to fit, comma-separated: `0` (the square-root model) or `2` (the three-parameter one) for that model alone, its calibrants selected with it too, and `node` for the node's own choice between them; default `0`. A fit is reported by its set and model: `collection/mode2`, `proposed/node` |
 | `TOF_AUDIT_BANDS` | Mass band edges in Th; default `40,100,150,200,300,500` |
 | `TOF_AUDIT_FAMILIES` | Mechanisms whose CHO family is measured, comma-separated (`[M+NO3]-,[M-H]-`); default the mode's |
 | `TOF_AUDIT_SERIES` | Cluster series as JSON, a name to `{"core": "HSO4", "unit": "H2SO4", "n": 4, "charge": "-"}`, or `none`; default the three negative-ion series |
