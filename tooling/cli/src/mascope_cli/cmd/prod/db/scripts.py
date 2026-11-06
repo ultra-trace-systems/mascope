@@ -94,6 +94,7 @@ _FORWARDED_ENV_VARS = [
     "REFLAG_RETRY",
     # rebuild_stale_peak_stores
     "REBUILD_LIMIT",
+    "FILL_SCAN_COUNTS",
     # report_method_binding_disagreements
     "BINDING_REPORT_FILES",
     "BINDING_REPORT_PER_KEY",
