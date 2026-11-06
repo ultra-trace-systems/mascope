@@ -156,11 +156,24 @@ calls and seconds of the scored episodes, and the list-price cost.
 (`ai_golden.check_answer`: the known answer's comparison and the question's
 check), the one the dry run validated: correct, wrong, missing, or infra when
 Goose exited without an answer (a provider error, or the harness's own fault,
-which the record's `error` tells apart). One leniency the fixture's solvers
-are not given: a number the model wrote as text is read as the number before
-the check, and the record says so (`coerced`), since the first pilot answered
-`{"2025": "2"}` for 2 batches; whether that is sloppy is the reviewer's call. **sloppy** is the reviewer's verdict, added
-by hand. The transcript kept in this folder is rendered from the run folder
+which the record's `error` tells apart), when the token was refused
+(`token_revoked`), or when the spend cap stopped the episode. Before the
+check the answer is read as a reviewer would, and every reading is named on
+the record (`readings`, `coerced`): a number written as text is the number
+(`text_number`), a null beside the asked fields is not an extra
+(`null_extra`), a list of names compares in any order (`reordered`), an m/z
+is held to 1 ppm instead of the bundle's 0.1 (`rounded_mz`), an
+interpretation is compared without the suggestions the fixture's own solver
+made (`suggestions`), and nulls where values were asked are an abstention,
+missing, never the fabrication measure (`null_abstain`); a decline of a
+question the surface answers is missing too, never correct. These readings
+are outside the dry run, which validates `check_answer` alone: the test
+`test_the_readings_let_through_only_the_solvers_own_suggestions` runs every
+fabrication of every known answer through the driver's scorer and pins that
+exactly two pass, the interpretation lists one item short that the
+`suggestions` reading fills in on purpose. Whether a reading was sloppy is
+the reviewer's call: **sloppy** is the reviewer's verdict, added by hand.
+The transcript kept in this folder is rendered from the run folder
 and scrubbed: the token never appears in it (the recipe passes it to the
 extension through the environment, and `session export` shows tool calls,
 not the server's environment), and only the demo dataset's names do.
