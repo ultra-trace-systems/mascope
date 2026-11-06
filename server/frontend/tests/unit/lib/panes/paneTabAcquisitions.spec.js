@@ -5,7 +5,7 @@ import { reactive, toRefs } from 'vue'
 // Raw files lists the sample files of the instrument chosen in the toolbar, or
 // of every instrument the user can see when none is. Two things are under test
 // here: that a row says which instrument its file was filed under, and the
-// handover between Choose chemistry and the ionization settings, which are
+// handover between Choose chemistry and the Chemistry settings, which are
 // both modal and so cannot be open at once.
 
 const mocks = vi.hoisted(() => ({
@@ -67,6 +67,7 @@ const passthrough = (name) => ({
     disabled: null,
     value: null,
     files: null,
+    start: null,
     resume: { type: Boolean, default: false }
   },
   emits: ['update:modelValue', 'update:visible', 'update:action', 'click', 'configure', 'submit'],
@@ -199,12 +200,14 @@ describe('PaneTabAcquisitions', () => {
       return wrapper
     }
 
-    it('gives way to the ionization settings and comes back with them closed', async () => {
+    it('gives way to the Chemistry settings and comes back with them closed', async () => {
       const wrapper = await openChemistry(mountPane())
 
       await chemistryDialog(wrapper).vm.$emit('configure')
       expect(chemistryDialog(wrapper).props('visible')).toBe(false)
       expect(ionizationDialog(wrapper).props('visible')).toBe(true)
+      // At Advanced, where a mode of one's own is made.
+      expect(ionizationDialog(wrapper).props('start')).toBe('advanced')
 
       await ionizationDialog(wrapper).vm.$emit('update:visible', false)
       expect(chemistryDialog(wrapper).props('visible')).toBe(true)
@@ -215,7 +218,7 @@ describe('PaneTabAcquisitions', () => {
     // The toolbar opens the same settings, and closing them there must not
     // raise a dialog the user never asked for. Files are selected, so that
     // only having been asked can be what holds the dialog back.
-    it('does not open it after the ionization settings were opened from the toolbar', async () => {
+    it('does not open it after the Chemistry settings were opened from the toolbar', async () => {
       const wrapper = mountPane()
       mocks.app.data.acquisition.selected = [file('a', 'Orbi-Lab1')]
 
@@ -223,6 +226,23 @@ describe('PaneTabAcquisitions', () => {
       await ionizationDialog(wrapper).vm.$emit('update:visible', false)
 
       expect(chemistryDialog(wrapper).props('visible')).toBe(false)
+    })
+
+    // The toolbar is a regular user's way in: the profiles. Having been sent
+    // to Advanced once from Choose chemistry does not stick to it.
+    it('opens the Chemistry settings from the toolbar on the profiles', async () => {
+      const wrapper = await openChemistry(mountPane())
+      await chemistryDialog(wrapper).vm.$emit('configure')
+      await ionizationDialog(wrapper).vm.$emit('update:visible', false)
+      await chemistryDialog(wrapper).vm.$emit('update:visible', false)
+
+      const toolbar = wrapper
+        .findAllComponents({ name: 'Button' })
+        .find((button) => button.props('label') === 'Chemistry')
+      await toolbar.vm.$emit('click')
+
+      expect(ionizationDialog(wrapper).props('visible')).toBe(true)
+      expect(ionizationDialog(wrapper).props('start')).toBe('profiles')
     })
 
     // Between the two dialogs the files can be deleted, or the instrument
@@ -283,7 +303,7 @@ describe('PaneTabAcquisitions', () => {
     })
 
     // Nothing stops the files being processed, or given a chemistry by
-    // someone else, while the ionization settings are open.
+    // someone else, while the Chemistry settings are open.
     it('does not come back for files the server would now refuse', async () => {
       const chosen = file('a', 'Orbi-1', 'needs_chemistry')
       mocks.app.data.acquisition.selected = [chosen]

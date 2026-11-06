@@ -4,17 +4,19 @@
  *
  * A file whose name carries no token of a configured ionization mode waits in
  * Raw files as "Needs a chemistry", with no samples unless an earlier run made
- * them. Choosing a mode for each
- * polarity the selected files hold processes them under those modes, as a
- * token would have had them processed (`POST /sample/files/bind`); a file
- * that has samples already, bound wrongly, is rebuilt under them, and one a
- * person made a sample from keeps its m/z calibration. The server refuses a
- * file being processed, and answers 207 when it refused some and processed
- * the rest.
+ * them. Choosing a chemistry for each polarity the selected files hold
+ * processes them under it, as a token would have had them processed
+ * (`POST /sample/files/bind`); a file that has samples already, bound wrongly,
+ * is rebuilt under them, and one a person made a sample from keeps its m/z
+ * calibration. The server refuses a file being processed, and answers 207
+ * when it refused some and processed the rest.
  *
- * A file waits here precisely because its name named no mode, so often enough
- * no configured mode is the right one either. `configure` asks the owner to
- * open the ionization settings; it brings the dialog back afterwards.
+ * The profiles Mascope ships come first: they are on every server from its
+ * first start, so a fresh server's first file is one click away. The server's
+ * own modes, and a profile that ships no calibrants, follow under Advanced
+ * (`chemistryOptions`). When none of them is the chemistry the files were run
+ * under, `configure` asks the owner to open the Chemistry settings at
+ * Advanced; it brings the dialog back afterwards.
  */
 import { computed, reactive, ref, watch } from 'vue'
 
@@ -27,6 +29,7 @@ import Message from 'primevue/message'
 import { api } from '@/api'
 import { useApp } from '@/stores'
 import { findMode } from '@/lib/ionizationModes'
+import { chemistryOptions, flatOptions } from '@/lib/chemistryProfiles'
 
 const app = useApp()
 
@@ -36,7 +39,7 @@ const props = defineProps({
     type: Array,
     default: () => []
   },
-  // Whether this open is the return from the ionization settings. The owner
+  // Whether this open is the return from the Chemistry settings. The owner
   // decides: it is the one that sent the dialog there, and the one that knows
   // whether the visit ended in coming back at all.
   resume: {
@@ -55,20 +58,14 @@ const polarities = computed(() =>
   )
 )
 
-const options = (polarity) =>
-  (app.data.ionization.mode.list ?? [])
-    .filter((mode) => mode.ionization_mode_polarity === polarity)
-    .sort((a, b) => a.ionization_mode_name.localeCompare(b.ionization_mode_name))
-    .map((mode) => ({
-      label: mode.ionization_mode_token
-        ? `${mode.ionization_mode_name} (${mode.ionization_mode_token})`
-        : mode.ionization_mode_name,
-      value: mode.ionization_mode_id
-    }))
+// Grouped: the profiles, then everything else under Advanced. The list is
+// given room for both, so the server's own modes are not hidden below the
+// profiles where a scroll would be needed to find that they exist.
+const options = (polarity) => chemistryOptions(app.data.ionization.mode.list ?? [], polarity)
 
 const chosen = reactive({ '-': null, '+': null })
 
-// The dialog gives way to the ionization settings and is reopened afterwards,
+// The dialog gives way to the Chemistry settings and is reopened afterwards,
 // which is an open like any other - but the point of going there was to come
 // back and use what was set up, so a mode already picked for the other
 // polarity has to survive it. Anything else opens on a clean pair.
@@ -81,7 +78,9 @@ watch(visible, (open) => {
     // the choice follows it to the current one.
     for (const polarity of ['-', '+']) {
       const current = findMode(app.data.ionization.mode.list, chosen[polarity])
-      const offered = options(polarity).some(({ value }) => value === current?.ionization_mode_id)
+      const offered = flatOptions(options(polarity)).some(
+        ({ value }) => value === current?.ionization_mode_id
+      )
       chosen[polarity] = offered ? current.ionization_mode_id : null
     }
     return
@@ -131,8 +130,8 @@ async function submit() {
   <Dialog v-model:visible="visible" modal header="Choose chemistry" style="width: 30rem">
     <p>
       {{ files.length }} {{ files.length === 1 ? 'file is' : 'files are' }} processed under the
-      ionization modes you choose, as if their names carried the modes' tokens. A file that has
-      samples already is rebuilt under them.
+      chemistry you choose for each polarity: calibrated, matched and filed as if their names had
+      named it. A file that has samples already is rebuilt under it.
     </p>
     <!-- stretch: .col centers its children, which leaves each field as wide as
          its own content - and an empty Select has none, so it collapses. -->
@@ -144,21 +143,24 @@ async function submit() {
           :options="options(polarity)"
           optionLabel="label"
           optionValue="value"
+          optionGroupLabel="label"
+          optionGroupChildren="items"
+          scrollHeight="24rem"
           style="width: 100%"
         />
         <label :for="`chemistry-${polarity === '-' ? 'negative' : 'positive'}`">
-          {{ POLARITY_NAMES[polarity] }} ionization mode
+          {{ POLARITY_NAMES[polarity] }} chemistry
         </label>
       </FloatLabel>
     </div>
     <Message v-if="missing.length" severity="warn" :closable="false">
       No {{ missing.map((polarity) => POLARITY_NAMES[polarity].toLowerCase()).join(' or ') }}
-      ionization mode is configured yet.
+      chemistry is available yet.
     </Message>
     <p class="chemistry-setup">
-      Missing the mode these files were run under?
+      Run under a chemistry not listed?
       <Button
-        label="Set up ionization modes"
+        label="Set up a mode of your own"
         icon="pi pi-sliders-h"
         link
         size="small"
