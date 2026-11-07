@@ -30,7 +30,7 @@ from mascope_backend.socket.records.service import (
 
 from .util import (
     fetch_all_ionization_modes,
-    fetch_listable_ionization_modes,
+    fetch_routed,
     resolve_ionization_modes_by_tokens,
     token_is_unique,
 )
@@ -62,22 +62,39 @@ def _same_value(field: str, incoming, current) -> bool:
 
 
 async def listed(modes: list[IonizationMode]) -> list[dict]:
-    """The modes as the browser holds them: each with its earlier versions.
+    """The modes as the browser holds them: each with its earlier versions,
+    and what it has routed.
 
     ``superseded_ids`` is what lets a reader holding only the current versions
     resolve a sample bound under an earlier one, without the listing offering
-    the earlier ones to bind to. Every record of a mode that leaves the server
-    goes through here, the socket's included: a record without the field
-    would replace a listed one and lose it.
+    the earlier ones to bind to. ``routed_files`` and ``last_file_utc`` say
+    what the mode is used for: how many files the ingest filed under it, and
+    when the newest of them was acquired (``fetch_routed``), which is how the
+    Chemistry settings tell a profile in use from one nobody has chosen.
+    Every record of a mode that leaves the server goes through here, the
+    socket's included: a record without the fields would replace a listed one
+    and lose them.
     """
     async with async_session() as session:
         earlier = await superseded_ids(
             session, [mode.ionization_mode_id for mode in modes]
         )
-    return [
-        {**mode.to_dict(), "superseded_ids": earlier[mode.ionization_mode_id]}
-        for mode in modes
-    ]
+        routed = await fetch_routed(
+            session,
+            {mode_id: [mode_id, *versions] for mode_id, versions in earlier.items()},
+        )
+    records = []
+    for mode in modes:
+        files, newest = routed.get(mode.ionization_mode_id, (0, None))
+        records.append(
+            {
+                **mode.to_dict(),
+                "superseded_ids": earlier[mode.ionization_mode_id],
+                "routed_files": files,
+                "last_file_utc": None if newest is None else newest.isoformat(),
+            }
+        )
+    return records
 
 
 #: The date a daily ACQUISITION batch's name starts with: ``YYYY-MM-DD``.
@@ -212,24 +229,23 @@ async def get_ionization_mode(ionization_mode_id: str) -> dict:
 
 
 @api_controller()
-async def get_ionization_modes(include_system: bool = False) -> dict:
+async def get_ionization_modes() -> dict:
     """
-    Retrieves the ionization modes.
+    Retrieves the ionization modes: the deployment's own and every profile
+    Mascope ships.
 
-    The modes Mascope ships that this deployment has not adopted are left out
-    unless asked for: offering the shipped chemistries is the browser's step
-    (MAS-337), not a side effect of the listing, and the collections Mascope
-    seeds for one do not adopt it (``system_mode_adopted``). Asking for them
-    is how one is adopted in the first place.
+    A profile is listed from the first start, marked by its ``system_key``,
+    whether or not anything has been processed under it: choosing it for a
+    file is how a deployment takes one up, so there is no state to be in
+    first. Which of them can calibrate a file is the record's to say (its
+    ``calibration_collection_id``), and the browser offers them accordingly.
 
-    :param include_system: Whether to include unadopted seeded modes.
+    The ``include_system`` switch that once added the profiles to the
+    listing is gone; a client that still sends it gets the same answer.
+
     :return: A dictionary containing total results count and a list of ionization modes.
     """
-    ionization_modes = await (
-        fetch_all_ionization_modes()
-        if include_system
-        else fetch_listable_ionization_modes()
-    )
+    ionization_modes = await fetch_all_ionization_modes()
 
     return {
         "message": "Ionization modes retrieved successfully.",

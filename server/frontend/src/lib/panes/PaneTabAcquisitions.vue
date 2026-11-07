@@ -115,15 +115,23 @@ const liveSelection = () =>
 
 // What the dialog asks about: the rows as the list has them now, not the
 // copies taken when they were selected. A status can change while the dialog
-// is open, and it stands open across the ionization settings.
+// is open, and it stands open across the Chemistry settings.
 const chemistryFiles = computed(() => liveSelection())
 
-// --- Choose chemistry -> ionization settings -> Choose chemistry.
-// Files whose chemistry has to be chosen by hand are often the ones no
-// configured mode describes, so the dialog offers the ionization settings.
-// The two are modal, so Choose chemistry gives way and is brought back with
-// the same files still selected, and the mode just added among its options.
+// --- Choose chemistry -> Chemistry settings, Advanced -> Choose chemistry.
+// Files whose chemistry has to be chosen by hand are sometimes ones no
+// profile or configured mode describes, so the dialog offers the settings, at
+// Advanced where a mode of one's own is made. The two are modal, so Choose
+// chemistry gives way and is brought back with the same files still
+// selected, and the mode just added among its options.
 const resumeChemistry = ref(false)
+// Which tab the Chemistry settings open on: Profiles from the toolbar,
+// Advanced from Choose chemistry.
+const settingsStart = ref('profiles')
+const openSettings = () => {
+  settingsStart.value = 'profiles'
+  dialog.mechanism = true
+}
 // Whether the open now on screen is the return from the settings. The dialog
 // is told rather than left to remember: a visit does not always end in coming
 // back, and a flag it raised for itself would then still be up at the next
@@ -132,6 +140,7 @@ const chemistryResumed = ref(false)
 const configureChemistry = () => {
   resumeChemistry.value = true
   dialog.chemistry = false
+  settingsStart.value = 'advanced'
   dialog.mechanism = true
 }
 watch(
@@ -386,17 +395,13 @@ const currentPageReportTemplate =
     <menu class="acquisition-menu">
       <div class="row">
         <Button
-          v-tooltip.top="'Edit ionizations'"
-          label="Edit ionizations"
+          v-tooltip.top="'Chemistry'"
+          label="Chemistry"
           class="hiddenlabel"
           icon="pi pi-sliders-h"
           text
           size="small"
-          @click="
-            () => {
-              dialog.mechanism = true
-            }
-          "
+          @click="openSettings"
         />
         <InstrumentSelector />
       </div>
@@ -688,7 +693,7 @@ const currentPageReportTemplate =
         @submit="app.data.acquisition.unfocus()"
       />
       <DialogFileUpload :files="app.uppy.invalidFiles" @upload="app.uppy.addFromDialog($event)" />
-      <DialogIonizationOp v-model:visible="dialog.mechanism" />
+      <DialogIonizationOp v-model:visible="dialog.mechanism" :start="settingsStart" />
       <DialogChooseChemistry
         v-model:visible="dialog.chemistry"
         :files="chemistryFiles"

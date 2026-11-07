@@ -1,7 +1,10 @@
-from sqlalchemy import and_, exists, or_, select
+from datetime import datetime
+
+from sqlalchemy import and_, case, exists, func, or_, select
 
 from mascope_backend.db import (
     IonizationMode,
+    SampleBatch,
     SampleFile,
     SampleItem,
     async_session,
@@ -89,8 +92,9 @@ async def fetch_all_ionization_modes() -> list[IonizationMode]:
     """Fetch every current ionization mode from the database.
 
     Every mode, the ones Mascope ships included: this is what routing reads,
-    and the next binding rung routes *to* those rows. Hiding an unadopted mode
-    is the listing's concern, and ``get_ionization_modes`` does it there.
+    what the next binding rung routes *to*, and what the listing offers. A
+    profile is listed from the first start, as shipped: choosing it for a
+    file is all it takes to use one, so there is nothing to adopt first.
 
     Current versions only. A superseded version is kept for the samples bound
     under it, and nothing new is bound, routed or checked against it.
@@ -106,23 +110,20 @@ async def fetch_all_ionization_modes() -> list[IonizationMode]:
         return ionization_modes
 
 
-def system_mode_adopted():
-    """Whether a deployment has taken up a mode Mascope ships.
+def holds_deployment_data():
+    """Whether a mode carries anything of the deployment's.
 
-    One definition, used everywhere, because the answer decides two things
-    that have to agree: whether the mode is offered, and whether it may be
-    dropped when a mechanism it holds is deleted. Read differently in the two
-    places, a mode could be hidden from the listing and still pin its
-    mechanisms behind a refusal naming a mode nobody can see.
+    Either target collection of the deployment's own, a sample bound to it,
+    or an edit. Anything less and a mode Mascope ships is still exactly as it
+    was seeded, so releasing it when a mechanism it holds is deleted loses
+    nothing (``_release_seeded_modes`` in the mechanisms controller). A
+    version that supersedes another is the deployment's edit, and the samples
+    of the mode it replaced are bound under the earlier version, not under
+    it. A collection Mascope seeds for the chemistry is not the deployment's,
+    so a mode pointed at one holds nothing of the deployment's by that alone.
 
-    A mode is adopted once it carries anything of the deployment's: either
-    target collection, a sample bound to it, or an edit. Anything less and the
-    mode is still exactly as it was seeded. A version that supersedes another
-    is the deployment's edit, and the samples of the mode it replaced are
-    bound under the earlier version, not under it. A collection Mascope seeds
-    for the chemistry is not the deployment's, so a mode pointed at one is not
-    adopted by that alone: offering the shipped chemistries is the browser's
-    change to make, not a side effect of shipping their collections.
+    It no longer decides what is listed: every mode is, a profile from the
+    first start (:func:`fetch_all_ionization_modes`).
 
     :return: A SQL predicate over ``IonizationMode``.
     """
@@ -143,32 +144,53 @@ def system_mode_adopted():
     )
 
 
-async def fetch_listable_ionization_modes() -> list[IonizationMode]:
-    """Fetch the ionization modes a deployment should be offered.
+async def fetch_routed(
+    session, versions: dict[str, list[str]]
+) -> dict[str, tuple[int, datetime | None]]:
+    """What each mode has routed: how many files, and when the newest was
+    acquired.
 
-    A mode Mascope ships is left out until the deployment adopts it. Before
-    that, offering it is the browser's step (MAS-337), not the listing's: the
-    collections Mascope seeds for a chemistry let its mode calibrate, but do
-    not adopt it (``system_mode_adopted``). After it, the mode has to be
-    listed: it is a mode like any other, and a sample bound to one carries an
-    id the browser must resolve.
+    A routed file is one the ingest filed under the mode: its sample in the
+    daily ACQUISITION batch, however it was bound - by its record, a
+    person's choice, its name or its method. A file gets one such sample per
+    polarity, and a mode holds one polarity, so counting them counts files.
+    Samples copied into a batch of a user's own are the same files again and
+    are not counted.
 
-    Current versions only; a sample bound under an earlier one is resolved
-    through its successor's ``superseded_ids`` (``service.listed``).
+    Every version of a mode counts towards the mode: a file processed before
+    an edit was routed to the setup all the same. The newest file is the one
+    acquired last, by its own clock in UTC.
 
-    :return: A list of the deployment's own modes and the seeded ones it
-        has adopted.
-    :rtype: list[IonizationMode]
+    The name of that file is not read. The modes are reference data any user
+    reads, while a raw file is shown only to the members of its instrument's
+    workspace: the count and the time say what a mode is used for without
+    naming anybody's file.
+
+    :param session: The session to read in.
+    :param versions: Each mode's id, with the ids of every version of it,
+        its own included.
+    :return: The count and the newest acquisition time, by mode id. A mode
+        that has routed nothing is left out.
     """
-    async with async_session() as session:
-        result = await session.execute(
-            select(IonizationMode).where(
-                IonizationMode.is_active.is_(True),
-                or_(IonizationMode.system_key.is_(None), system_mode_adopted()),
-            )
+    current = {
+        version_id: mode_id
+        for mode_id, version_ids in versions.items()
+        for version_id in version_ids
+    }
+    if not current:
+        return {}
+    mode_id = case(current, value=SampleItem.ionization_mode_id)
+    rows = await session.execute(
+        select(mode_id, func.count(), func.max(SampleFile.datetime_utc))
+        .join(SampleBatch, SampleBatch.sample_batch_id == SampleItem.sample_batch_id)
+        .join(SampleFile, SampleFile.sample_file_id == SampleItem.sample_file_id)
+        .where(
+            SampleBatch.sample_batch_type == "ACQUISITION",
+            SampleItem.ionization_mode_id.in_(current),
         )
-        ionization_modes = result.scalars().all()
-        return ionization_modes
+        .group_by(mode_id)
+    )
+    return {mode: (files, newest) for mode, files, newest in rows}
 
 
 async def fetch_batch_ionization_mechanism_ids(sample_batch_id: str) -> list[str]:

@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { ref } from 'vue'
 
 import PaneIonizationMode from '@/lib/panes/PaneIonizationMode.vue'
 
@@ -13,7 +14,9 @@ import PaneIonizationMode from '@/lib/panes/PaneIonizationMode.vue'
 
 const store = vi.hoisted(() => ({
   modes: [],
-  create: null
+  create: null,
+  // A guest: the form is offered to anyone, the row actions to editors.
+  role: 100
 }))
 
 vi.mock('@/stores', async () => {
@@ -23,7 +26,7 @@ vi.mock('@/stores', async () => {
   store.create = vi.fn()
   return {
     useApp: () => ({
-      auth: { user: { role_id: 100 } },
+      auth: { user: { role_id: store.role } },
       data: {
         instrument: { list: [] },
         target: { collection: { list: [] } },
@@ -119,5 +122,133 @@ describe('PaneIonizationMode create form', () => {
     await create.vm.$emit('click')
     await flushPromises()
     expect(nameField(wrapper).props('modelValue')).toBe('')
+  })
+})
+
+// Under Advanced the table lists the server's own modes, then the profiles
+// Mascope ships. A profile's name, polarity and mechanisms are the chemistry's:
+// an edit of one offers its collections alone, and it cannot be deleted.
+describe('PaneIonizationMode list', () => {
+  afterEach(() => {
+    store.role = 100
+    store.modes.splice(0, store.modes.length)
+  })
+
+  const row = (id, name, extra = {}) => ({
+    ionization_mode_id: id,
+    ionization_mode_name: name,
+    ionization_mode_token: null,
+    ionization_mode_polarity: '-',
+    ionization_mechanism_ids: ['m1'],
+    calibration_collection_id: null,
+    diagnostic_collection_id: null,
+    instrument: null,
+    system_key: null,
+    ...extra
+  })
+
+  const listed = () => {
+    const tableRows = ref([])
+    store.role = 200 // an editor, who is offered the row actions
+    return mount(PaneIonizationMode, {
+      global: {
+        directives: { tooltip: {} },
+        stubs: {
+          ...stubs,
+          Tag: { props: ['value'], template: '<span class="tag">{{ value }}</span>' },
+          Button: {
+            name: 'Button',
+            props: ['label', 'disabled', 'icon'],
+            emits: ['click'],
+            template: '<button :data-icon="icon" @click="$emit(\'click\')" />'
+          },
+          DataTable: {
+            props: ['value'],
+            watch: { value: { handler: (value) => (tableRows.value = value), immediate: true } },
+            template: '<div class="table"><slot /></div>'
+          },
+          Column: {
+            props: ['header'],
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="col" :data-header="header"><div v-for="row in rows" ' +
+              ':key="row.ionization_mode_id" :data-row="row.ionization_mode_id">' +
+              '<slot name="body" :data="row" /></div></div>'
+          }
+        }
+      }
+    })
+  }
+
+  const cells = (wrapper, id) => wrapper.findAll(`[data-row="${id}"]`)
+  const inCell = (wrapper, header, id, selector) =>
+    wrapper.find(`.col[data-header="${header}"] [data-row="${id}"]`).find(selector)
+  const edit = async (wrapper, id) => {
+    const pencil = cells(wrapper, id)
+      .map((cell) => cell.find('button[data-icon="pi pi-pencil"]'))
+      .find((button) => button.exists())
+    await pencil.trigger('click')
+  }
+
+  const rows = () => [
+    row('sysBromide', 'Bromide, negative', {
+      system_key: 'bromide',
+      calibration_collection_id: 'sysBromideCal'
+    }),
+    row('own', 'Bromide RI', { ionization_mode_token: 'Br' })
+  ]
+
+  it('lists the server own modes first, then the profiles', async () => {
+    store.modes.splice(0, store.modes.length, ...rows())
+    const wrapper = listed()
+    await flushPromises()
+
+    const order = wrapper
+      .find('.col')
+      .findAll('[data-row]')
+      .map((cell) => cell.attributes('data-row'))
+    expect(order).toEqual(['own', 'sysBromide'])
+    expect(inCell(wrapper, 'Name', 'sysBromide', '.tag').text()).toBe('Shipped')
+    expect(inCell(wrapper, 'Name', 'own', '.tag').exists()).toBe(false)
+  })
+
+  it('offers a profile no delete, and the server own mode one', async () => {
+    store.modes.splice(0, store.modes.length, ...rows())
+    const wrapper = listed()
+    await flushPromises()
+
+    const has = (id, selector) => cells(wrapper, id).some((cell) => cell.find(selector).exists())
+    const deletable = 'button[data-icon="pi pi-trash"]'
+    const locked = '[aria-label="Shipped with Mascope"]'
+    expect(has('sysBromide', deletable)).toBe(false)
+    expect(has('sysBromide', locked)).toBe(true)
+    expect(has('own', deletable)).toBe(true)
+    expect(has('own', locked)).toBe(false)
+  })
+
+  it('edits a profile collections alone, and every field of the server own', async () => {
+    store.modes.splice(0, store.modes.length, ...rows())
+    const wrapper = listed()
+    await flushPromises()
+
+    await edit(wrapper, 'sysBromide')
+    for (const [header, field] of [
+      ['Name', '.inputtext'],
+      ['Filename token', '.inputtext'],
+      ['Instrument', '.select'],
+      ['Polarity', '.select'],
+      ['Mechanisms', '.multiselect']
+    ]) {
+      expect(inCell(wrapper, header, 'sysBromide', field).exists(), header).toBe(false)
+    }
+    expect(inCell(wrapper, 'Calibration Collection', 'sysBromide', '.select').exists()).toBe(true)
+    expect(inCell(wrapper, 'Diagnostic Collection', 'sysBromide', '.select').exists()).toBe(true)
+
+    await edit(wrapper, 'own')
+    expect(inCell(wrapper, 'Name', 'own', '.inputtext').exists()).toBe(true)
+    expect(inCell(wrapper, 'Filename token', 'own', '.inputtext').exists()).toBe(true)
+    expect(inCell(wrapper, 'Polarity', 'own', '.select').exists()).toBe(true)
+    expect(inCell(wrapper, 'Mechanisms', 'own', '.multiselect').exists()).toBe(true)
+    expect(inCell(wrapper, 'Instrument', 'own', '.select').exists()).toBe(true)
   })
 })

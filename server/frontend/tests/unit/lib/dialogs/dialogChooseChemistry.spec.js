@@ -4,8 +4,9 @@ import { mount, flushPromises } from '@vue/test-utils'
 import PrimeVue from 'primevue/config'
 
 // Files that bind to no ionization mode wait in Raw files for someone to
-// choose their chemistry. The dialog asks for one mode per polarity the
-// selected files hold and hands the choice to the server, which processes the
+// choose their chemistry. The dialog asks for one chemistry per polarity the
+// selected files hold - a profile Mascope ships, or under Advanced a mode of
+// the server's own - and hands the choice to the server, which processes the
 // files under it and refuses any that have samples already.
 
 const mocks = vi.hoisted(() => ({ post: vi.fn(), push: vi.fn(), modes: [] }))
@@ -24,7 +25,17 @@ import DialogChooseChemistry from '@/lib/dialogs/DialogChooseChemistry.vue'
 // passthroughs that still render their slots and forward what they are given.
 const passthrough = (name) => ({
   name,
-  props: ['modelValue', 'visible', 'label', 'disabled', 'loading', 'options', 'inputId'],
+  props: [
+    'modelValue',
+    'visible',
+    'label',
+    'disabled',
+    'loading',
+    'options',
+    'inputId',
+    'optionGroupLabel',
+    'optionGroupChildren'
+  ],
   emits: ['update:modelValue', 'update:visible', 'click'],
   template: '<div><slot /><slot name="footer" /></div>'
 })
@@ -37,6 +48,16 @@ const mode = (id, name, token, polarity) => ({
   ionization_mode_name: name,
   ionization_mode_token: token,
   ionization_mode_polarity: polarity
+})
+
+// A profile Mascope ships: a system key, no token, and - for one with a
+// reagent of its own - the calibrants it ships.
+const profile = (id, name, polarity, calibrants = `${id}Cal`) => ({
+  ...mode(id, name, null, polarity),
+  system_key: id,
+  calibration_collection_id: calibrants,
+  routed_files: 0,
+  last_file_utc: null
 })
 
 const file = (id, polarity) => ({
@@ -56,7 +77,8 @@ const selects = (wrapper) => wrapper.findAllComponents({ name: 'Select' })
 const button = (wrapper, label) =>
   wrapper.findAllComponents({ name: 'Button' }).find((b) => b.props('label') === label)
 const processButton = (wrapper) => button(wrapper, 'Process')
-const setupButton = (wrapper) => button(wrapper, 'Set up ionization modes')
+const setupButton = (wrapper) => button(wrapper, 'Set up a mode of your own')
+const advanced = (items) => [{ label: 'Advanced', items }]
 
 describe('DialogChooseChemistry', () => {
   beforeEach(() => {
@@ -76,11 +98,61 @@ describe('DialogChooseChemistry', () => {
     const [negative, positive] = selects(wrapper)
     expect(selects(wrapper)).toHaveLength(2)
     expect(negative.props('inputId')).toBe('chemistry-negative')
+    expect(negative.props('options')).toEqual(
+      advanced([
+        { label: 'Bromide (Br)', value: 'br' },
+        { label: 'Nitrate (NO3)', value: 'no3' }
+      ])
+    )
+    expect(positive.props('options')).toEqual(advanced([{ label: 'Uronium', value: 'ur' }]))
+    // The Select is told how the groups are shaped.
+    expect(negative.props('optionGroupLabel')).toBe('label')
+    expect(negative.props('optionGroupChildren')).toBe('items')
+  })
+
+  // A fresh server has none of its own: what it ships is what it offers, and
+  // nothing has to be adopted first (MAS-337).
+  it('offers the shipped profiles first, the server own modes under Advanced', () => {
+    mocks.modes.push(
+      profile('sysBromide', 'Bromide, negative', '-'),
+      profile('sysDeprotonate', 'Deprotonation, negative', '-', null),
+      profile('sysUronium', 'Uronium, positive', '+')
+    )
+    const wrapper = mountDialog([file('a', '+-')])
+
+    const [negative, positive] = selects(wrapper)
     expect(negative.props('options')).toEqual([
-      { label: 'Bromide (Br)', value: 'br' },
-      { label: 'Nitrate (NO3)', value: 'no3' }
+      { label: 'Profiles', items: [{ label: 'Bromide, negative', value: 'sysBromide' }] },
+      {
+        label: 'Advanced',
+        items: [
+          { label: 'Bromide (Br)', value: 'br' },
+          { label: 'Deprotonation, negative (no calibrants)', value: 'sysDeprotonate' },
+          { label: 'Nitrate (NO3)', value: 'no3' }
+        ]
+      }
     ])
-    expect(positive.props('options')).toEqual([{ label: 'Uronium', value: 'ur' }])
+    expect(positive.props('options')[0]).toEqual({
+      label: 'Profiles',
+      items: [{ label: 'Uronium, positive', value: 'sysUronium' }]
+    })
+  })
+
+  it('hands a chosen profile to the server as any mode', async () => {
+    mocks.modes.splice(0, mocks.modes.length, profile('sysBromide', 'Bromide, negative', '-'))
+    mocks.post.mockResolvedValue({ data: { message: 'Processing 1 file.' } })
+    const wrapper = mountDialog([file('a', '-')])
+    expect(wrapper.findComponent({ name: 'Message' }).exists()).toBe(false)
+
+    await selects(wrapper)[0].vm.$emit('update:modelValue', 'sysBromide')
+    await processButton(wrapper).vm.$emit('click')
+    await flushPromises()
+
+    expect(mocks.post).toHaveBeenCalledWith(
+      '/sample/files/bind',
+      { sample_file_ids: ['a'], ionization_mode_ids: ['sysBromide'] },
+      expect.anything()
+    )
   })
 
   it('asks for one mode when the files hold one polarity', () => {
@@ -166,7 +238,7 @@ describe('DialogChooseChemistry', () => {
 
     const message = wrapper.findComponent({ name: 'Message' })
     expect(message.exists()).toBe(true)
-    expect(message.text()).toContain('No positive ionization mode is configured yet.')
+    expect(message.text()).toContain('No positive chemistry is available yet.')
   })
 
   // A file is here because its name named no mode, so the mode it was run
@@ -174,14 +246,14 @@ describe('DialogChooseChemistry', () => {
   // about adding it. The way there is offered whatever the options hold: a
   // list that is merely missing the right mode looks no different from a
   // full one.
-  it('offers the ionization settings, with modes configured or without', () => {
+  it('offers the Chemistry settings, with modes configured or without', () => {
     expect(setupButton(mountDialog([file('a', '-')])).exists()).toBe(true)
 
     mocks.modes.splice(0, mocks.modes.length)
     expect(setupButton(mountDialog([file('a', '-')])).exists()).toBe(true)
   })
 
-  it('asks its owner for the ionization settings, and stays open', async () => {
+  it('asks its owner for the Chemistry settings, and stays open', async () => {
     const wrapper = mountDialog([file('a', '-')])
 
     await setupButton(wrapper).vm.$emit('click')
@@ -196,7 +268,7 @@ describe('DialogChooseChemistry', () => {
   // polarity has to still be there. Whether an open is that return is the
   // owner's to say - the dialog remembering it for itself would leave the
   // memory standing when the owner decided not to come back.
-  describe('coming back from the ionization settings', () => {
+  describe('coming back from the Chemistry settings', () => {
     const reopen = async (wrapper, { resume = false } = {}) => {
       await wrapper.setProps({ visible: false })
       await wrapper.setProps({ visible: true, resume })
@@ -237,6 +309,17 @@ describe('DialogChooseChemistry', () => {
       await reopen(wrapper, { resume: true })
 
       expect(selects(wrapper)[0].props('modelValue')).toBe('no3-v2')
+    })
+
+    it('keeps a profile chosen, from among the groups', async () => {
+      mocks.modes.push(profile('sysBromide', 'Bromide, negative', '-'))
+      const wrapper = mountDialog([file('a', '-')])
+      await selects(wrapper)[0].vm.$emit('update:modelValue', 'sysBromide')
+
+      await setupButton(wrapper).vm.$emit('click')
+      await reopen(wrapper, { resume: true })
+
+      expect(selects(wrapper)[0].props('modelValue')).toBe('sysBromide')
     })
 
     it('still opens clean when it was simply closed and opened again', async () => {

@@ -88,13 +88,18 @@ def _make_ionization_mode(
     ionization_mode_name="Bromide RI",
     ionization_mode_polarity="-",
     calibration_collection_id="cal-001",
+    system_key=None,
 ):
-    """Build a fake IonizationMode ORM-like object."""
+    """Build a fake IonizationMode ORM-like object.
+
+    A deployment's own mode unless *system_key* names the profile it is.
+    """
     im = MagicMock()
     im.ionization_mode_id = ionization_mode_id
     im.ionization_mode_name = ionization_mode_name
     im.ionization_mode_polarity = ionization_mode_polarity
     im.calibration_collection_id = calibration_collection_id
+    im.system_key = system_key
     return im
 
 
@@ -1908,6 +1913,76 @@ async def test_a_kept_choice_says_so_and_teaches_nothing(status, bound_by, bound
     assert _recorded(status)[-1] == ("done", done)
     assert _recorded_provenance(mocks) == kept
     status.learn.assert_not_awaited()
+
+
+#: A profile Mascope ships, as the detail names it.
+PROFILE = "the profile 'Bromide, negative' (-)"
+
+
+def _profile():
+    return _make_ionization_mode(
+        ionization_mode_name="Bromide, negative",
+        calibration_collection_id="sysBromideCal",
+        system_key="bromide",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_profile_chosen_by_hand_is_named_as_one(status):
+    """What Choose chemistry does with a shipped profile (MAS-337)."""
+    _start_single()
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=[_profile()],
+    ):
+        await _run_pipeline(
+            ionization_mode_ids=["im-001"],
+            kept_provenance={"im-001": ItemProvenance("explicit")},
+        )
+
+    chosen = f"Bound to {PROFILE} as chosen by hand."
+    assert _recorded(status)[0] == ("bound", chosen)
+    assert _recorded(status)[-1] == ("done", f"Matched 1 sample. {chosen}")
+
+
+@pytest.mark.asyncio
+async def test_a_profile_its_method_bound_is_named_to_the_end(status):
+    """A profile has no token for the row to show, so the status the run ends
+    on names it whatever rung bound the file - here the method, which for a
+    mode of the deployment's own is said at the binding alone."""
+    mocks, _ = _start_single()
+    mocks["resolve"].side_effect = _no_token()
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=True):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=([_routing(_profile())], None),
+        ):
+            await _run_pipeline()
+
+    bound = f"Bound to {PROFILE} by its acquisition method."
+    assert _recorded(status)[0] == ("bound", bound)
+    assert _recorded(status)[-1] == ("done", f"Matched 1 sample. {bound}")
+
+
+def test_a_profile_beside_a_mode_of_ones_own_is_told_apart():
+    """A file of two polarities can be bound to one of each."""
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        _bound_detail,
+    )
+
+    own = _make_ionization_mode(
+        ionization_mode_name="Uronium RI", ionization_mode_polarity="+"
+    )
+    assert _bound_detail([_profile(), own], "explicit") == (
+        f"Bound to {PROFILE} and 'Uronium RI' (+) as chosen by hand."
+    )
+    assert _bound_detail([own], "explicit") == (
+        "Bound to 'Uronium RI' (+) as chosen by hand."
+    )
 
 
 @pytest.mark.asyncio
