@@ -337,6 +337,13 @@ class TestTheMatchersHeightWindow:
 
         assert isotopes["masses"][1] == 0
 
+    def test_an_anchor_read_at_snr_zero_keeps_the_fixed_window(self, path):
+        # An S/N of 0 is unknown to the score (its snr_known needs > 0), so
+        # the window must not read it as the curve's first bin either.
+        _, isotopes = _scored(path, 0.5, 0.0, CENSORING)
+
+        assert isotopes["masses"][1] == 0
+
 
 class TestTheAdmittedBand:
     def test_each_bin_admits_its_own_lower_end(self):

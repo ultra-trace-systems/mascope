@@ -447,11 +447,12 @@ the envelopes its lists confirmed: for every range of expected signal-to-noise, 
 below its share a 13C line reads in that file, and how often it is there at all
 ([Barlow et al. 1972][ba72] for the monotone fit). A line then costs nothing anywhere
 between that low reading and its full share, and a missing line counts only where that
-file's lines are usually present. When Mascope looks for a formula's lines, a peak more
-than 40% off its line's share is taken for another compound's and the line counts as
-missing. On a file with its own measurement, the lower end of that cut moves down to
-the file's low reading, so a faint 13C line is found rather than counted against the
-formula. Above the share the 40% cut stays. A file with too few confirmed lines takes the
+file's lines are usually present. When the composition search tries a candidate
+formula, a peak more than 40% off its line's share is taken for another compound's and
+the line counts as missing. On a file with a measured response (its own, or the one
+pooled from its batch), the lower end of that cut moves down to the file's low reading,
+so a faint 13C line is found rather than counted against the formula. Above the share
+the 40% cut stays. A file with too few confirmed lines takes the
 measurement pooled with the other files of its batch acquired at the same settings, and
 failing that the defaults. On a TOF the run measures one offset and one spread of how
 its lines read against their shares, since a TOF's signal-to-noise column is not read
