@@ -1415,6 +1415,38 @@ def _predicted_envelope(
     return predicted_mzs, predicted_intensities / predicted_intensities[0], labels
 
 
+def within_intensity_window(
+    intensity_error,
+    expected_snr,
+    tolerance: EnvelopeTolerance | None,
+) -> np.ndarray:
+    """Whether an isotopologue's height is close enough to its share to be the
+    ion's line at all.
+
+    The window is :data:`ISOTOPE_MATCHING_INTENSITY_TOLERANCE` either side of
+    the predicted share. On a file whose fitted response curve opens lower
+    (:mod:`envelope_tolerance`), the window opens down to the curve's lower end
+    at the line's expected S/N: a dim line censored scan by scan reads below
+    its share, and the instrument genuinely delivers it there, so turning it
+    away would hand the score an absent line to charge (step 5.3 measured a
+    median 0.44 of the share at an expected S/N of 10 to 50). The upper end
+    stays: a line read well above its share is the guard against an unrelated
+    peak, and a curve says nothing about lines read high. A line whose expected
+    S/N is unknown, and a file with no curve, keep the fixed window.
+
+    :param intensity_error: Each line's observed / predicted share minus one.
+    :param expected_snr: Each line's expected S/N: the anchor's S/N times the
+        line's predicted share; NaN where the anchor carries none.
+    :param tolerance: The run's fitted tolerance, or None for today's.
+    :return: Per line, whether it is kept.
+    """
+    tolerance = tolerance or DEFAULT_TOLERANCE
+    error = np.asarray(intensity_error, dtype=float)
+    lower, _ = tolerance.admitted(expected_snr)
+    low = np.minimum(1.0 - ISOTOPE_MATCHING_INTENSITY_TOLERANCE, lower) - 1.0
+    return (error >= low) & (error <= ISOTOPE_MATCHING_INTENSITY_TOLERANCE)
+
+
 def score_ion_envelope(
     ion_formula: str,
     ion_charge: int,
@@ -1510,8 +1542,17 @@ def score_ion_envelope(
         # unrelated peak, and this is what keeps the ion from claiming it.
         # What the score then sees is an ABSENT line, which the
         # detectability gate charges or ignores according to whether the
-        # noise says it should have been there.
-        if abs(intensity_error) <= ISOTOPE_MATCHING_INTENSITY_TOLERANCE:
+        # noise says it should have been there. A fitted curve opens the
+        # window downwards for a dim line (:func:`within_intensity_window`).
+        anchor_snr = observed_snr[0]
+        expected_snr = (
+            anchor_snr * predicted_rel[i]
+            if np.isfinite(anchor_snr) and anchor_snr > 0
+            else np.nan
+        )
+        if within_intensity_window(
+            intensity_error, expected_snr, scoring.envelope_tolerance
+        ):
             observed_intensities[i] = matched_intensity
             observed_masses[i] = matched_mz
             observed_mass_errors_ppm[i] = (matched_mz - p_mz) / p_mz * 1e6
@@ -1663,12 +1704,18 @@ def score_ion_envelopes(
     base_found = found[first] & (base != 0)
     with np.errstate(divide="ignore", invalid="ignore"):
         intensity_error = (matched_intensity / base) / predicted_rel - 1.0
+    base_snr = matched_snr[first]
+    expected_snr = np.where(
+        np.isfinite(base_snr) & (base_snr > 0), base_snr * predicted_rel, np.nan
+    )
     kept = np.where(
         is_own,
         found,
         found
         & base_found
-        & (np.abs(intensity_error) <= ISOTOPE_MATCHING_INTENSITY_TOLERANCE),
+        & within_intensity_window(
+            intensity_error, expected_snr, scoring.envelope_tolerance
+        ),
     )
 
     observed_mz = np.where(kept, matched_mz, 0.0)
