@@ -10,7 +10,10 @@ import numpy as np
 import polars as pl
 import pytest
 
+from mascope_tools.composition import heuristic_filter
+from mascope_tools.composition.config import UNRESOLVED_MEMBER_DEPTH
 from mascope_tools.composition.heuristic_filter import (
+    _fold_under_floor,
     match_isotopic_pattern,
     merge_unresolved_lines,
     predict_isotopes,
@@ -88,11 +91,16 @@ def test_without_a_resolution_the_13c_line_stands_alone():
 
 
 def test_an_orbitrap_separates_the_lines_and_keeps_them_apart():
+    # At 120000 a FWHM at m/z 199 is 1.7 mDa: the 15N line (6.3 mDa under the
+    # 13C line) and the 2H line (2.9 mDa over it) are peaks of their own, under
+    # the floor. The 17O line, 0.9 mDa over it, is not: one peak holds both.
     share, _ = _fine_structure()
 
     envelope, at_m1 = _match(PatternScoring(resolution=_resolving(ORBITRAP)), 0.11)
 
-    assert envelope["predicted_intensities"][at_m1] == pytest.approx(share["13C"])
+    assert envelope["predicted_intensities"][at_m1] == pytest.approx(
+        share["13C"] + share["17O"]
+    )
 
 
 def test_the_members_under_the_floor_still_count_toward_the_merged_share():
@@ -227,3 +235,148 @@ def test_a_labelled_reagent_is_predicted_at_its_own_purity(power):
 
     share = dict(zip(labels, intensities / intensities[labels.index("M0")]))
     assert share["14N"] == pytest.approx(0.05 / 0.95, rel=1e-3)
+
+
+def _m1_share(ion, floor, power):
+    """The predicted M+1 share of the ion's envelope, and every line it reaches.
+
+    The second value sums every fine-structure line at M+1 the predictor
+    reaches at the members' depth, each labelled.
+    """
+    mzs, intensities, labels = predict_resolved_isotopes(
+        ion, 1, floor, _resolving(power)
+    )
+    anchor = labels.index("M0")
+    at_m1 = np.round(mzs - mzs[anchor]) == 1
+    predicted = float(intensities[at_m1].sum() / intensities[anchor])
+
+    fine_mz, fine, fine_labels = predict_isotopes(
+        ion, 1, threshold=floor * UNRESOLVED_MEMBER_DEPTH
+    )
+    fine_anchor = fine_labels.index("M0")
+    reached = {
+        label: float(share / fine[fine_anchor])
+        for mz, share, label in zip(fine_mz, fine, fine_labels)
+        if round(float(mz - fine_mz[fine_anchor])) == 1
+    }
+    return predicted, reached
+
+
+@pytest.mark.parametrize(
+    ("ion", "power", "members"),
+    [
+        # The 15N line is 6.3 mDa under the 13C line, half a FWHM 5.4 mDa:
+        # a bin of its own at 0.37% of M0, under the 1% floor.
+        ("C4H8NO", 8000.0, {"13C", "15N"}),
+        # The 13C bin takes the 33S line (4 mDa) but not the 15N line (6.3
+        # mDa, half a FWHM 5.9 mDa), which alone is 0.73% of M0.
+        ("C6H12N2O2S", 15000.0, {"13C", "33S", "15N", "2H"}),
+    ],
+    ids=["C4H8NO+ at 8000", "C6H12N2O2S+ at 15000"],
+)
+def test_a_line_under_the_floor_within_one_fwhm_of_a_kept_line_is_added_to_it(
+    ion, power, members
+):
+    # mascope#2591: one peak of that width does not separate the 15N line
+    # from the 13C line, so the peak there is predicted with both.
+    predicted, reached = _m1_share(ion, 0.01, power)
+
+    assert set(reached) == members
+    assert predicted == pytest.approx(sum(reached.values()), rel=1e-6)
+
+
+def test_a_line_under_the_floor_more_than_one_fwhm_away_is_still_dropped():
+    # At 30000 a FWHM at m/z 87 is 2.9 mDa: the 15N line, 6.3 mDa from the
+    # 13C line, is a peak of its own, and under the floor it is not predicted.
+    predicted, reached = _m1_share("C4H8NO", 0.01, 30000.0)
+
+    assert predicted == pytest.approx(reached["13C"], rel=1e-6)
+
+
+def test_a_fold_into_the_brightest_line_keeps_a_line_on_the_floor(monkeypatch):
+    # The floor is judged once, on the merged lines. At m/z 100 and a
+    # resolving power of 1000 a FWHM is 0.1: the 100.07 line is a bin of its
+    # own under the floor and folds into M0, which then reads 1.005. The line
+    # at exactly 1% of M0 as merged stays kept, though it is under 1% of 1.005.
+    monkeypatch.setattr(
+        heuristic_filter,
+        "predict_isotopes",
+        lambda *args, **kwargs: (
+            np.array([100.0, 100.07, 101.0]),
+            np.array([1.0, 0.005, 0.01]),
+            ["M0", "15N", "13C"],
+        ),
+    )
+
+    _, intensities, labels = predict_resolved_isotopes("X", 1, 0.01, _resolving(1000.0))
+
+    assert labels == ["M0", "13C"]
+    np.testing.assert_allclose(intensities, [1.005, 0.01])
+
+
+def _fold(mzs, intensities, keep, power):
+    return _fold_under_floor(
+        np.asarray(mzs, dtype=float),
+        np.asarray(intensities, dtype=float),
+        np.asarray(keep, dtype=bool),
+        _resolving(power),
+    )
+
+
+def test_a_folded_line_moves_the_kept_line_to_their_weighted_centre():
+    # At m/z 100 and a resolving power of 1000 a FWHM is 0.1.
+    mzs, intensities = _fold(
+        [100.0, 101.0, 101.08], [1.0, 0.1, 0.005], [True, True, False], 1000.0
+    )
+
+    np.testing.assert_allclose(intensities[:2], [1.0, 0.105])
+    assert mzs[0] == 100.0
+    assert mzs[1] == pytest.approx((101.0 * 0.1 + 101.08 * 0.005) / 0.105)
+
+
+def test_a_line_one_fwhm_away_is_not_folded():
+    mzs, intensities = _fold(
+        [100.0, 101.0, 101.1015], [1.0, 0.1, 0.005], [True, True, False], 1000.0
+    )
+
+    np.testing.assert_allclose(intensities[:2], [1.0, 0.1])
+    np.testing.assert_allclose(mzs[:2], [100.0, 101.0])
+
+
+def test_a_line_between_two_kept_lines_goes_to_the_nearer():
+    _, intensities = _fold(
+        [100.0, 100.07, 100.09], [1.0, 0.005, 0.5], [True, False, True], 1000.0
+    )
+
+    np.testing.assert_allclose(intensities[[0, 2]], [1.0, 0.505])
+
+
+def test_distances_are_read_against_the_kept_lines_as_merged():
+    # Two dim lines either side of the kept line each fold on their own
+    # distance to it. Had the first fold moved the line to its new centre, the
+    # second, 0.0998 over it at a FWHM of 0.1, would then be over a FWHM away.
+    mzs, intensities = _fold(
+        [99.905, 100.0, 100.0998], [0.004, 1.0, 0.004], [False, True, False], 1000.0
+    )
+
+    assert intensities[1] == pytest.approx(1.008)
+    assert mzs[1] == pytest.approx((100.0 + 0.004 * (99.905 + 100.0998)) / 1.008)
+
+
+@pytest.mark.parametrize("power", [float("nan"), 0.0], ids=["nan", "zero"])
+def test_a_resolution_that_reads_nothing_folds_nothing(power):
+    mzs, intensities = _fold([100.0, 100.01], [1.0, 0.005], [True, False], power)
+
+    np.testing.assert_allclose(intensities, [1.0, 0.005])
+    np.testing.assert_allclose(mzs, [100.0, 100.01])
+
+
+def test_a_resolution_that_raises_folds_nothing():
+    _, intensities = _fold_under_floor(
+        np.array([100.0, 100.01]),
+        np.array([1.0, 0.005]),
+        np.array([True, False]),
+        lambda mz: 1 / 0,
+    )
+
+    np.testing.assert_allclose(intensities, [1.0, 0.005])

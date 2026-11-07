@@ -462,8 +462,10 @@ A predicted line is a peak your instrument can resolve, not a single isotopologu
 TOF, the peak one mass unit above a compound holds its 13C line and also its 15N, 2H and
 17O lines, a few mDa apart. The untargeted search reads that peak against the sum of all
 four, at the resolving power recorded for the file, and so does the check that reads a
-peak as a neighbour's isotope line (*a neighbour's isotope line*, below). A file with no
-recorded resolving power is read one isotopologue per line.
+peak as a neighbour's isotope line (*a neighbour's isotope line*, below). A line too
+faint to predict on its own still counts when it sits less than one peak width from a
+line that is predicted: it is added to that line, since one peak that wide holds both.
+A file with no recorded resolving power is read one isotopologue per line.
 
 **A consequence users see:** a lone mass-only match (one peak, no isotopic corroboration)
 scores *low* by design, while a fully corroborated isotope envelope scores near 1.0. This
