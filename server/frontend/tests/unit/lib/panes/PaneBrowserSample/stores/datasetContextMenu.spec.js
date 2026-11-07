@@ -11,6 +11,7 @@ const rematch = vi.fn()
 const confirmRequire = vi.fn()
 
 const app = {
+  auth: { user: null },
   data: {
     dataset: { rematch, move: vi.fn(), focusedId: 'ds-focused' },
     workspace: { focusedId: 'ws-1', focused: { workspace_id: 'ws-1', is_system: false } }
@@ -95,6 +96,8 @@ describe('dataset context menu: paste into a new dataset', () => {
     vi.unstubAllGlobals()
     document.execCommand = originalExecCommand
     app.data.workspace.focused.is_system = false
+    app.data.workspace.focused.my_role = undefined
+    app.auth.user = null
   })
 
   const clipboard = async () =>
@@ -132,6 +135,20 @@ describe('dataset context menu: paste into a new dataset', () => {
     app.data.workspace.focused.is_system = true
     await menu.onClick({ data: null })
     expect(entry(menu, 'Paste batch into a new dataset').visible).toBe(false)
+  })
+
+  // creating the dataset takes the editor role in the workspace
+  it('does not offer a guest of the workspace a new dataset', async () => {
+    app.auth.user = { user_id: 'u-1', role_id: 200 }
+    app.data.workspace.focused.my_role = 'guest'
+    await (await clipboard()).copy(BATCH)
+    const menu = useDatasetContextMenu()
+    await menu.onClick({ data: null })
+    expect(entry(menu, 'Paste batch into a new dataset').visible).toBe(false)
+
+    await (await clipboard()).copy(SAMPLES)
+    await menu.onClick({ data: null })
+    expect(entry(menu, 'Paste sample into a new dataset and batch').visible).toBe(false)
   })
 })
 

@@ -386,6 +386,13 @@ select the samples you want (hold `Shift` or `Ctrl` to select several),
 right-click and choose **Copy samples**, then paste them into a batch of your
 own (right-click the empty space in its *Samples* pane → **Paste samples**).
 
+A copied batch goes into a new dataset the same way. Copied or cut samples
+go into a new batch: right-click the empty space in the *Batches* pane and
+choose **Paste samples into a new batch**, or in the *Datasets* pane
+**Paste samples into a new dataset and batch**. Each of these entries creates
+a dataset or a batch first, so it appears only in a workspace you may edit.
+A guest of the workspace is not offered them.
+
 ### Alternative: process raw files by hand
 
 The **Raw files** tab can also process files straight into your batch — for

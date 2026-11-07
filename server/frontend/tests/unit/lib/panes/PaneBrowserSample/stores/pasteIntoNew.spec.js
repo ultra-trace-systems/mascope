@@ -160,12 +160,12 @@ describe('paste into a new dataset', () => {
     expect(paste.dialog.visible).toBe(false)
   })
 
-  // the move route takes the editor role in the workspace the dataset goes into
+  // creating the dataset, and moving a batch in, take the editor role in the
+  // workspace the dataset goes into
   it('does not offer a cut batch to a guest of the workspace', async () => {
     await clipboard.cut(BATCH)
     app.auth.user = { user_id: 'u-1', role_id: 200 }
     app.data.workspace.focused.my_role = 'guest'
-    expect(paste.batchPaste).toBe(false)
     expect(paste.datasetValid).toBe(false)
   })
 
@@ -183,12 +183,25 @@ describe('paste into a new dataset', () => {
     expect(paste.datasetValid).toBe(false)
   })
 
-  // the editor check is the move's; a copied batch is offered as before
-  it('does not put the editor check on a copied batch', async () => {
+  it('does not offer a copied batch to a guest of the workspace', async () => {
     await clipboard.copy(BATCH)
     app.auth.user = { user_id: 'u-1', role_id: 200 }
     app.data.workspace.focused.my_role = 'guest'
-    expect(paste.batchPaste).toBe(true)
+    expect(paste.datasetValid).toBe(false)
+  })
+
+  it('offers a copied batch to an editor of the workspace', async () => {
+    await clipboard.copy(BATCH)
+    app.auth.user = { user_id: 'u-1', role_id: 200 }
+    app.data.workspace.focused.my_role = 'editor'
+    expect(paste.datasetValid).toBe(true)
+  })
+
+  it.each(['copy', 'cut'])('does not offer %s samples to a guest of the workspace', async (op) => {
+    await clipboard[op](SAMPLES)
+    app.auth.user = { user_id: 'u-1', role_id: 200 }
+    app.data.workspace.focused.my_role = 'guest'
+    expect(paste.datasetValid).toBe(false)
   })
 
   it('does not create the dataset again when a retry follows a failed batch', async () => {
@@ -273,6 +286,21 @@ describe('paste into a new batch', () => {
   it('is offered in an analysis dataset', async () => {
     await clipboard.cut(SAMPLES)
     app.data.dataset.focused = { dataset_id: 'ds-focused', dataset_type: 'ANALYSIS' }
+    expect(paste.batchValid).toBe(true)
+  })
+
+  // POST /sample_batches takes the editor role on the dataset
+  it.each(['copy', 'cut'])('does not offer %s samples to a guest of the workspace', async (op) => {
+    await clipboard[op](SAMPLES)
+    app.auth.user = { user_id: 'u-1', role_id: 200 }
+    app.data.workspace.focused.my_role = 'guest'
+    expect(paste.batchValid).toBe(false)
+  })
+
+  it('is offered to an editor of the workspace', async () => {
+    await clipboard.cut(SAMPLES)
+    app.auth.user = { user_id: 'u-1', role_id: 200 }
+    app.data.workspace.focused.my_role = 'editor'
     expect(paste.batchValid).toBe(true)
   })
 
