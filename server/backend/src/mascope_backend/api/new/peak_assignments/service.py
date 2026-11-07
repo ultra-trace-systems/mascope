@@ -3328,7 +3328,8 @@ async def _seeded_fits(
     :param reagent_offset: The centre a seed list too short to fit an offset of
         its own is scored at, where it is beyond the width: in a run, the one
         Stage A and the search were scored at (:func:`_run_scoring_centre`);
-        in a batch search, which runs no Stage A, the reagent lines' own.
+        in a batch search, which runs no Stage A, the one its finder was
+        scored at (:func:`sample_reagent_offset`).
     :param envelope_tolerance: How well the run measures a line's share: in a
         run the one Stage A fitted, in a batch search the one the sample's
         latest run recorded. None is today's numbers.
