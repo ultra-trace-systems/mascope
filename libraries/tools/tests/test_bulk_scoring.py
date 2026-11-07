@@ -150,8 +150,8 @@ def _spectrum(rng, *, with_snr=True, duplicates=False):
     return mz[order], intensity[order], snr
 
 
-#: The tolerances a run may score at: today's, a response curve, a TOF's centre
-#: and width.
+#: The tolerances a run may score at: today's, two response curves, a TOF's
+#: centre and width.
 TOLERANCES = [
     None,
     EnvelopeTolerance(
@@ -159,6 +159,8 @@ TOLERANCES = [
         lower=(0.6, 0.8, 0.9, 0.95, 1.0),
         detect_snr=10.0,
     ),
+    # One that opens the matcher's height window below its fixed 0.6.
+    EnvelopeTolerance(snr_edges=RESPONSE_SNR_EDGES, lower=(0.3, 0.45, 0.9, 0.95, 1.0)),
     EnvelopeTolerance(centre=0.04, floor=0.09),
 ]
 
