@@ -1,7 +1,11 @@
+import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
-from mascope_backend.api.models.calibration.config import calibration_config
+from mascope_backend.api.models.calibration.config import (
+    calibrants_over_cap,
+    calibration_config,
+)
 
 
 class GetMzCalibrationQueryParams(QueryParamsModel):
@@ -66,6 +70,24 @@ class MzCalibrationParams(BaseModel):
             "to be considered in calibration."
         ),
     )
+    calibrant_tic_share_max: float | None = Field(
+        None,
+        gt=0,
+        description=(
+            "Largest share of the total ion current one calibrant line may "
+            "carry: of its own scan stream's for a file calibrated stream by "
+            "stream, of its polarity's otherwise. A brighter line is left out "
+            "of the fit. None for no cap."
+        ),
+    )
+    peak_intensity_max: float | None = Field(
+        calibration_config.DEFAULT_PEAK_INTENSITY_MAX,
+        gt=0,
+        description=(
+            "Maximum intensity for peaks to be considered in calibration. "
+            "None for no cap."
+        ),
+    )
 
     def with_defaults(self, defaults: "MzCalibrationParams") -> "MzCalibrationParams":
         """Fill missing parameters from another MzCalibrationParams instance.
@@ -99,7 +121,34 @@ class MzCalibrationParams(BaseModel):
                     if self.snr_threshold is not None
                     else defaults.snr_threshold
                 ),
+                "calibrant_tic_share_max": (
+                    self.calibrant_tic_share_max
+                    if self.calibrant_tic_share_max is not None
+                    else defaults.calibrant_tic_share_max
+                ),
+                "peak_intensity_max": (
+                    self.peak_intensity_max
+                    if self.peak_intensity_max is not None
+                    else defaults.peak_intensity_max
+                ),
             }
+        )
+
+    def calibrants_over_cap(self, intensity, tic_share) -> np.ndarray:
+        """Which calibrant lines are brighter than these params' cap
+        (``config.calibrants_over_cap``).
+
+        :param intensity: Each line's intensity, as the fit reads it.
+        :param tic_share: Each line's share of the ion current
+            (``calibrant_to_tic``).
+        :return: True for each line over the cap.
+        :rtype: np.ndarray
+        """
+        return calibrants_over_cap(
+            intensity,
+            tic_share,
+            self.calibrant_tic_share_max,
+            self.peak_intensity_max,
         )
 
 
@@ -107,12 +156,18 @@ class OrbiCalibrationParams(MzCalibrationParams):
     mz_error_tolerance: float = Field(calibration_config.ORBI_MZ_ERROR_TOLERANCE)
     refine_window: int = Field(calibration_config.ORBI_DEFAULT_REFINE_WINDOW)
     snr_threshold: float = Field(calibration_config.ORBI_SNR_THRESHOLD)
+    calibrant_tic_share_max: float | None = Field(
+        calibration_config.ORBI_CALIBRANT_TIC_SHARE_MAX, gt=0
+    )
 
 
 class TofCalibrationParams(MzCalibrationParams):
     mz_error_tolerance: float = Field(calibration_config.TOF_MZ_ERROR_TOLERANCE)
     refine_window: int = Field(calibration_config.TOF_DEFAULT_REFINE_WINDOW)
     snr_threshold: float = Field(calibration_config.TOF_SNR_THRESHOLD)
+    calibrant_tic_share_max: float | None = Field(
+        calibration_config.TOF_CALIBRANT_TIC_SHARE_MAX, gt=0
+    )
 
 
 class CalibrationFitParams(MzCalibrationParams):

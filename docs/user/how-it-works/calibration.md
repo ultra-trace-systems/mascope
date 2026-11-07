@@ -68,6 +68,38 @@ $$\text{Match Score} = \text{Component}_{\text{abundance}} \times \text{Componen
 
 The resulting pairs are filtered using four strict quality control filters: a minimum relative isotopic abundance, a minimum absolute peak intensity, a maximum allowable baseline mass error, and a minimum match score.
 
+### The brightest calibrants are left out
+
+The brightest lines are the worst calibrants on an Orbitrap.
+A line that carries a large share of the ion current reads high against the weaker lines of its own file.
+Space charge in the trap is the usual explanation for such a shift ([Kharchenko et al., 2012](https://doi.org/10.1007/s13361-011-0325-3)); Mascope does not model it, it leaves those lines out.
+The Orbitrap fit is the median of its lines, so a calibration collection that holds the reagent's own base peak lands between the bright line and the weak ones.
+
+So the fit leaves out a calibrant brighter than a cap, as it leaves out one below the minimum intensity.
+The cap is two optional parameters, and a line over either is left out:
+
+- `calibrant_tic_share_max`: the largest share of the total ion current one calibrant line may carry. A file calibrated range by range measures each line against the ion current of its own scan range; any other file, against the ion current of the sample's polarity. A line's intensity is its height averaged over those scans, and the ion current is their mean per scan.
+- `peak_intensity_max`: the largest intensity, beside the minimum intensity.
+
+On an Orbitrap the share cap is 25 % by default, and there is no intensity cap.
+On a TOF neither is set.
+The 25 % comes from a measurement on the assignment gate's Orbitrap files, two instruments, each calibrant held against the trend over m/z of its own file's assigned analytes:
+
+| Share of the ion current | Lines | Error against the analytes' trend |
+|---|---|---|
+| 16 % or less | 106, on 38 files | -1.0 to +0.7 ppm, 0.3 ppm apart |
+| 32 % or more | 5, on four sets | +0.6 to +4.0 ppm |
+
+The cap sits between the two.
+The only lines in between are one bromide set's two calibrants, at 22 to 25 %, which are all that set's files hold.
+
+A cap that would leave fewer lines than the fit needs is set aside, and the fit is made on every line as if there were no cap: one line for an Orbitrap, three for a TOF.
+That fit is the one the file had before the cap, and the verification below still judges it.
+
+The fit's record says what the cap did, under `calibrant_cap` in its quality block: the cap in effect (`tic_share_max`, `peak_intensity_max`), how many lines it left out (`n_excluded`), and whether it was set aside (`fell_back`).
+A file calibrated range by range has the same block for each range, and the file's counts the lines left out across them.
+Set the parameters in the calibration dialog's request, or leave them out to take the instrument's default.
+
 ## Outlier Rejection and Model Fitting
 
 To insulate the calibration from false matches, the pipeline splits its outlier rejection strategy based on the size of the qualified match pool.
@@ -144,6 +176,25 @@ $$\text{Calibration Factor}_{\text{new}} = \text{Calibration Factor}_{\text{old}
 Calibrated mass values are computed by directly multiplying the observed mass values by the scaling factor:
 
 $$m_{\text{calibrated}} = m_{\text{observed}} \times \text{Scaling Factor}$$
+
+#### The offset it reports
+
+A factor moves every line by the same ppm.
+An axis can also carry a constant offset in millidaltons, which is more ppm at low m/z: one gate set reads -0.11 to -0.14 mDa, and no factor removes that.
+So beside its factor, an Orbitrap fit also fits the line
+
+$$\text{error}_{\text{ppm}} = a + b \times \frac{1000}{m/z}$$
+
+over the calibrants it kept, each line's error taken of the m/z the instrument recorded.
+$b$ is the offset in mDa and $a$ the factor term in ppm.
+With no offset, $a$ is the recorded axis' error, about the fit's axis correction with the sign turned.
+A file calibrated range by range is fitted over the calibrants of all its ranges together, since one narrow range can barely tell an offset from a factor.
+
+The offset is reported, not applied: the record stays a factor.
+The quality block's `offset` has `offset_mda`, `factor_ppm`, the offset's standard error `offset_se_mda`, how many lines it was fitted on (`n_lines`) and the exact m/z of the lowest and the highest (`span`).
+The line is fitted only where the calibrants can tell the two terms apart: three lines or more, spread so that $1000 / (m/z)$ differs by at least 3 across them.
+Across that spread an offset of 0.1 mDa moves the error by 0.3 ppm, the scatter of the calibrants measured above.
+Elsewhere both terms are null and `reason` says why.
 
 ### The Orbitrap Axis Fingerprint
 

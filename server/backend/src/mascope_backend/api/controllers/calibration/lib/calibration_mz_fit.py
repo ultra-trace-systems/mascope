@@ -13,6 +13,9 @@ General calibration workflow:
    window and calculate match statistics.
 - Keep only calibration candidates that satisfy abundance, intensity, m/z error,
    and match-score thresholds.
+- Leave out the calibrants brighter than the cap, by their share of the ion
+   current or their intensity: the brightest lines read high on the
+   Orbitrap. A cap that would leave too few for a fit is set aside.
 - Fit an instrument-specific calibration model:
    - TOF: multi-point fit using tof and m/z pairs.
    - Orbitrap: one-point scaling based on observed-to-target m/z ratios.
@@ -23,6 +26,8 @@ General calibration workflow:
 - For a TOF fit, say what it was made on: every candidate point with its
    residual, the m/z span of the points kept, the version of the calibration
    collection, the model and the node's version.
+- For an Orbitrap fit, report the offset in mDa its calibrants carry beside
+   the factor, fitted and not applied (:func:`offset_report`).
 - Apply the accepted calibration by updating stored calibration parameters and
    rewriting relevant m/z coordinates in the sample file.
 
@@ -169,6 +174,14 @@ class BaseCalibrationHandler:
         #: What a TOF fit was made on, for its record's quality block
         #: (``TofCalibrationHandler._fitted_on``); None for any other.
         self.fitted_on: dict | None = None
+        #: The calibrant cap in effect and what it left out, for the record's
+        #: quality block (:meth:`_leave_out_bright_calibrants`); None until a
+        #: fit got as far as its calibrants.
+        self.calibrant_cap: dict | None = None
+        #: The offset an Orbitrap fit's calibrants carry beside its factor,
+        #: reported and not applied (:func:`offset_report`); None for a TOF
+        #: fit and for a fit that found none.
+        self.offset: dict | None = None
 
     def _calibration_lock_path(self) -> str:
         """Path naming the lock that guards a whole ``apply`` for this sample.
@@ -756,6 +769,45 @@ class BaseCalibrationHandler:
             mz_error_diff=abs(fit_stats["post_dmz"]) - abs(fit_stats["pre_dmz"]),
         )
 
+    def _leave_out_bright_calibrants(
+        self, matches_df: pd.DataFrame
+    ) -> tuple[pd.DataFrame, dict]:
+        """Leave out the calibrant lines brighter than the cap.
+
+        The cap is the params' (``MzCalibrationParams.calibrants_over_cap``):
+        a line's share of the ion current, ``calibrant_to_tic``, or its
+        intensity. The brightest lines are the worst calibrants
+        (``calibration_config.ORBI_CALIBRANT_TIC_SHARE_MAX`` has the
+        measurement), and a fit that is a median of its lines lands between
+        them and the weaker ones.
+
+        A cap that would leave fewer lines than the fit needs is set aside,
+        and the fit made on every line, as with no cap. A fit on the bright
+        lines is the one the file had before there was a cap, and the
+        quality bar still judges it; no fit at all would leave the file
+        uncalibrated for want of a dimmer calibrant.
+
+        :param matches_df: The matched calibrants, with ``calibrant_to_tic``.
+        :return: The lines the fit goes on, and what the cap did, for the
+            fit's quality block: the cap in effect (``tic_share_max``,
+            ``peak_intensity_max``), how many lines it left out
+            (``n_excluded``), and whether it was set aside (``fell_back``),
+            when it left out none.
+        """
+        over = self.params.calibrants_over_cap(
+            matches_df["sample_peak_intensity"], matches_df["calibrant_to_tic"]
+        )
+        kept = matches_df[~over]
+        fell_back = bool(over.any()) and len(kept) < self._minimum_calibration_points
+        if fell_back:
+            kept = matches_df
+        return kept, {
+            "tic_share_max": _finite_or_none(self.params.calibrant_tic_share_max),
+            "peak_intensity_max": _finite_or_none(self.params.peak_intensity_max),
+            "n_excluded": 0 if fell_back else int(over.sum()),
+            "fell_back": fell_back,
+        }
+
     def _mz_error_mask(self, calibration_df: pd.DataFrame) -> pd.Series:
         """Create a boolean mask to identify matches with acceptable calibration m/z error."""
         return (
@@ -1054,7 +1106,11 @@ class TofCalibrationHandler(BaseCalibrationHandler):
             ]
         )
         calibrant_signal_intensity = good_matches_df["sample_peak_intensity"]
-        calibrant_to_tic = calibrant_signal_intensity / tic
+        good_matches_df, self.calibrant_cap = self._leave_out_bright_calibrants(
+            good_matches_df.assign(
+                calibrant_to_tic=calibrant_signal_intensity / tic,
+            )
+        )
 
         await self._send_progress(0.75)
 
@@ -1062,9 +1118,7 @@ class TofCalibrationHandler(BaseCalibrationHandler):
             n_relevant_isotopes >= self._minimum_calibration_points
             and len(good_matches_df) >= self._minimum_calibration_points
         ):
-            calibration_matches_df = good_matches_df.copy().assign(
-                calibrant_to_tic=calibrant_to_tic,
-            )
+            calibration_matches_df = good_matches_df.copy()
             initial_fit_result, _ = self._fit_matches(calibration_matches_df)
             zero_coefficient = any(coef == 0 for coef in initial_fit_result["par"])
             if zero_coefficient:
@@ -1326,17 +1380,18 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
             self.warning = "No calibration peaks found"
             return
 
-        # A calibrant's height is the mean over the file's scans, so its
-        # share is of the mean TIC per scan, not their sum.
+        # A calibrant's height is the mean over the scans of the sample's
+        # polarity, so its share is of their mean TIC per scan, not of their
+        # sum, and not of the scans of the other polarity.
         _, tic_per_scan = await asyncio.to_thread(
-            m_compute.get_tic_per_scan, self.filename
+            m_compute.get_tic_per_scan, self.filename, polarity=self.params.polarity
         )
         tic = np.mean(tic_per_scan)
         calibrant_signal_intensity = good_matches_df["sample_peak_intensity"]
         calibrant_to_tic = calibrant_signal_intensity / tic
 
-        calibration_matches_df = good_matches_df.copy().assign(
-            calibrant_to_tic=calibrant_to_tic,
+        calibration_matches_df, self.calibrant_cap = self._leave_out_bright_calibrants(
+            good_matches_df.copy().assign(calibrant_to_tic=calibrant_to_tic)
         )
         self.fit_result, calibration_df = self._fit_retained_matches(
             calibration_matches_df,
@@ -1359,6 +1414,12 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         self.stats = calibration_df.to_dict("records")
         summary_row = self._get_summary_row(calibration_df)
         self.stats.append(summary_row)
+        # On the m/z the instrument recorded: the peaks are on the factor
+        # the file carries
+        self.offset = offset_report(
+            calibration_df["mz"],
+            calibration_df["sample_peak_mz"] / self.fit_result["par"]["old_factor"],
+        )
 
         await self._send_progress(0.95)
 
@@ -1681,6 +1742,13 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
 
         The statistics are the kept calibrants of every stream, each judged
         by its own stream's fit and naming its stream, under one summary.
+
+        Each stream's calibrants are capped by their share of the stream's
+        own ion current, and its block says what its cap did; the file's
+        says how many lines the cap left out across the streams, and whether
+        it was set aside in any. The offset is fitted over the kept
+        calibrants of every stream pooled, on the m/z the instrument
+        recorded: one narrow window can barely tell an offset from a factor.
         """
         keys, members = streams["keys"], streams["members"]
         # One read of the record for the whole fit: a stream's peaks are on
@@ -1692,6 +1760,7 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
 
         fitted: dict[int, dict] = {}
         notes: dict[int, str] = {}
+        caps: dict[int, dict] = {}
         for index in members:
             key = keys[index]
             self.warning = None
@@ -1714,8 +1783,11 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
                 m_compute.get_tic_per_scan, self.filename, stream=key
             )
             tic_mean = float(np.mean(tic_per_scan))
-            matches_df = good_matches_df.copy().assign(
-                calibrant_to_tic=good_matches_df["sample_peak_intensity"] / tic_mean,
+            matches_df, caps[index] = self._leave_out_bright_calibrants(
+                good_matches_df.copy().assign(
+                    calibrant_to_tic=good_matches_df["sample_peak_intensity"]
+                    / tic_mean,
+                )
             )
             fit_result, calibration_df = self._fit_retained_matches(matches_df)
             if fit_result is None or calibration_df.empty:
@@ -1732,6 +1804,12 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
                 ),
             }
         self.warning = None
+        if caps:
+            self.calibrant_cap = {
+                **next(iter(caps.values())),
+                "n_excluded": sum(cap["n_excluded"] for cap in caps.values()),
+                "fell_back": any(cap["fell_back"] for cap in caps.values()),
+            }
 
         await self._send_progress(0.75)
 
@@ -1794,6 +1872,7 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
                 quality["axis_correction_ppm"] = _finite_or_none(
                     (entry["calibration_factor"] - 1.0) * 1e6
                 )
+                quality["calibrant_cap"] = caps[index]
             self.segments.append(
                 {
                     "index": index,
@@ -1829,6 +1908,15 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
             / sum(fit["tic_total"] for fit in fitted.values())
         )
         self.stats.append(summary)
+        self.offset = offset_report(
+            np.concatenate([fit["rows"]["mz"].to_numpy() for fit in fitted.values()]),
+            np.concatenate(
+                [
+                    fit["rows"]["sample_peak_mz"].to_numpy() / fit["old_factor"]
+                    for fit in fitted.values()
+                ]
+            ),
+        )
 
         await self._send_progress(0.95)
 
@@ -1964,6 +2052,81 @@ def axis_correction_ppm(fit: dict | None) -> float | None:
     if factor is None:
         return None
     return _finite_or_none((float(factor) - 1.0) * 1e6)
+
+
+def offset_report(target_mz, recorded_mz) -> dict:
+    """
+    The offset an Orbitrap fit's calibrants carry beside its factor.
+
+    The line ``ppm = factor_ppm + offset_mda * 1000 / mz`` fitted by least
+    squares over the calibrants a fit kept, each line's error taken of the
+    m/z the instrument recorded. A factor moves every line by the same ppm
+    and an offset by the same mDa, which is more ppm at low m/z: set A of
+    the assignment gate carries -0.11 to -0.14 mDa, which one factor cannot
+    remove. The record stays a factor; the offset is reported for the
+    quality block, not applied, until the axis' readers take a function of
+    m/z (the axis-fingerprint project).
+
+    With no offset, ``factor_ppm`` is the recorded axis' error, about the
+    fit's ``axis_correction_ppm`` with the sign turned.
+
+    Fitted only where the calibrants can tell the two terms apart:
+    ``ORBI_OFFSET_MIN_LINES`` lines or more, spread so that ``1000 / mz``
+    differs by ``ORBI_OFFSET_MIN_INVERSE_SPAN`` across them. Elsewhere both
+    terms are None and ``reason`` says why.
+
+    :param target_mz: Each kept calibrant's exact m/z.
+    :param recorded_mz: The m/z the instrument recorded it at.
+    :return: ``offset_mda`` and ``factor_ppm``, the offset's standard error
+        (``offset_se_mda``, None on as many lines as terms), how many lines
+        it was fitted on (``n_lines``), the exact m/z of the lowest and the
+        highest (``span``), and ``reason``, None where the line was fitted.
+    """
+    target = np.asarray(target_mz, dtype=float)
+    recorded = np.asarray(recorded_mz, dtype=float)
+    finite = np.isfinite(target) & np.isfinite(recorded) & (target > 0)
+    target, recorded = target[finite], recorded[finite]
+    report = {
+        "offset_mda": None,
+        "factor_ppm": None,
+        "offset_se_mda": None,
+        "n_lines": int(target.size),
+        "span": (
+            [_finite_or_none(target.min()), _finite_or_none(target.max())]
+            if target.size
+            else None
+        ),
+        "reason": None,
+    }
+    min_lines = calibration_config.ORBI_OFFSET_MIN_LINES
+    if target.size < min_lines:
+        report["reason"] = (
+            f"Fitted on {target.size} calibrant line"
+            f"{'' if target.size == 1 else 's'}; an offset is told from a factor "
+            f"on {min_lines} or more."
+        )
+        return report
+    inverse = 1000.0 / target
+    min_span = calibration_config.ORBI_OFFSET_MIN_INVERSE_SPAN
+    if inverse.max() - inverse.min() < min_span:
+        report["reason"] = (
+            f"The calibrants span m/z {target.min():.2f} to {target.max():.2f}, "
+            "too narrow to tell an offset from a factor (1000 / mz must "
+            f"differ by {min_span:g} across them)."
+        )
+        return report
+    ppm = 1e6 * (recorded - target) / target
+    design = np.column_stack([np.ones(target.size), inverse])
+    (factor_ppm, offset_mda), *_ = np.linalg.lstsq(design, ppm, rcond=None)
+    dof = target.size - 2
+    if dof > 0:
+        residual = ppm - design @ np.array([factor_ppm, offset_mda])
+        variance = float(residual @ residual) / dof
+        covariance = variance * np.linalg.inv(design.T @ design)
+        report["offset_se_mda"] = _finite_or_none(math.sqrt(covariance[1, 1]))
+    report["offset_mda"] = _finite_or_none(offset_mda)
+    report["factor_ppm"] = _finite_or_none(factor_ppm)
+    return report
 
 
 def fit_quality(
