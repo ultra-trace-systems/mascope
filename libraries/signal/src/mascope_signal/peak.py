@@ -104,6 +104,21 @@ PEAK_ID_LENGTH = 20
 #: ``is_satellite`` and is not written to the store.
 EXCEPTION_PEAK = "is_exception_peak"
 
+#: Per peak of a raw Orbitrap file's store, how many of the scans averaged
+#: into it hold it: those with a centroid within half the peak's width of its
+#: m/z (``mascope_thermo.thermo.get_centroid_presence``). An Orbitrap scan
+#: keeps a centroid only where it clears that scan's noise, and the peak's
+#: sums are over every scan, so a dim line missing from part of the scans is
+#: stored diluted by the share it missed; this is that share's numerator.
+#: NaN for a peak whose width is unknown. A store detected before it, a TOF
+#: file's or an Orbitrap file's without its raw file has none.
+N_SCANS = "n_scans"
+
+#: Per peak, the scans averaged into it, :data:`N_SCANS`' denominator: those
+#: of its polarity for a store detected whole, of its own stream for one
+#: detected per stream.
+N_SCANS_TOTAL = "n_scans_total"
+
 #: The ``.props`` entry that records the decision a file's peak store is built
 #: by: true where its peaks are detected per scan stream. Absent where nobody
 #: has decided, which is every file converted before streams could be read
@@ -668,10 +683,12 @@ class OrbiPeakDetector(BasePeakDetector):
             self._filename, polarity=polarity, stream=stream, calibration=calibration
         )
 
-        # The peaks the instrument marked as side lobes, scan by scan. Read
-        # here, where the peaks are one spectrum, and carried as far as the
-        # satellite flag (_flag_satellite_peaks), which takes them in.
-        exception_share = await m_compute.get_orbi_centroid_flag_shares(
+        # What the averaged scans recorded under each peak, read here, where
+        # the peaks are one spectrum: the share of its centroids the
+        # instrument marked as side lobes, carried as far as the satellite
+        # flag (_flag_satellite_peaks), which takes it in; and how many of
+        # the scans hold the peak, which the store keeps (N_SCANS).
+        presence = await m_compute.get_orbi_centroid_presence(
             self._filename,
             peak_mzs,
             resolutions,
@@ -679,6 +696,7 @@ class OrbiPeakDetector(BasePeakDetector):
             stream=stream,
             calibration=calibration,
         )
+        exception_share = presence.flag_share
         is_exception_peak = flag_exception_peaks(
             pd.DataFrame(
                 {
@@ -711,6 +729,11 @@ class OrbiPeakDetector(BasePeakDetector):
                 "sum_peak_areas": (("mz"), peak_areas),
                 "sum_peak_heights": (("mz"), peak_heights),
                 "signal_to_noise": (("mz"), signal_to_noise),
+                N_SCANS: (("mz"), presence.n_scans),
+                N_SCANS_TOTAL: (
+                    ("mz"),
+                    np.full(peak_mzs.shape, presence.n_scans_total, dtype=np.int64),
+                ),
                 "polarity": (("mz"), np.full(peak_mzs.shape, polarity)),
                 EXCEPTION_PEAK: (("mz"), is_exception_peak),
             }

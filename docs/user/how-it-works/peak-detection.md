@@ -244,6 +244,27 @@ Of those, 22 % sit on an isotopologue line and are kept.
 The rest are satellites, 5.0 % of the peaks above the noise; 2.1 % were not satellites before and now leave the peak list.
 The summed spectrum itself does not change: it still holds every centroid the instrument recorded, marked or not.
 
+### Scan Presence (Orbitrap)
+An Orbitrap scan keeps a centroid only where it clears that scan's noise, about twice the noise on the published demo raws.
+A bright line is in every scan; a dim one, an isotope line of a small ion say, is missing from some.
+Its peak in the summed spectrum is still divided by every scan, so it reads lower than it is, by the share of scans it missed.
+
+So each peak also records the scans it is present in, $n$, out of the $N$ scans averaged into it.
+A scan counts when it holds a centroid within half the peak's width of its m/z, the window the side-lobe flag above reads:
+
+$$n = \#\left\{\text{scans with a centroid at } |m/z_{\text{centroid}} - m/z_{\text{peak}}| \le \frac{m/z_{\text{peak}}}{2R}\right\}$$
+
+$N$ is the scans of the peak's polarity, or of its own scan stream when the file is detected per stream.
+The peak's height over the scans that hold it is its height times $N / n$.
+On the published demo raws this count equals the number of scans the averaging itself binned into the peak for 99.8 % of the peaks above the noise.
+
+The peak list serves both counts beside each peak's signal-to-noise (`n_scans` and `n_scans_total`).
+Peak assignment reads an isotope line by them (*The fit score* on [Peak Assignment](peak-assignment.md)).
+A TOF file has no count: it detects on its summed spectrum, and no scan drops a peak on its own.
+Nor does an Orbitrap file detected before the count was kept, until its peaks are detected again.
+Its peak list leaves both columns empty, and everything that reads it reads it as before.
+`docs/maintaining.md` (*Peak stores a file has outgrown*) has the operator's command that detects them again.
+
 #### References
 
 - <a id="thermo-rfr"></a>Thermo Fisher Scientific. *RawFileReader*, the `PeakOptions`

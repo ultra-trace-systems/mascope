@@ -16,6 +16,7 @@ import xarray as xr
 import mascope_signal.compute as m_compute
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_file.io import load_peak_data
+from mascope_signal.peak import N_SCANS, N_SCANS_TOTAL
 
 
 @dataclass
@@ -33,6 +34,14 @@ class PeakData:
     # predicted isotopologue's absence against the noise. ``None`` for a file
     # that stores none, which is an honest "no estimate" and never a zero.
     signal_to_noise: list[float] | None = None
+    # Per peak, how many of the scans it is averaged over hold it, and how
+    # many those are: an Orbitrap scan keeps a centroid only where it clears
+    # that scan's noise, so a dim line is missing from part of the scans and
+    # its average is diluted by the share it missed. ``None`` for a store
+    # that keeps no count: a TOF file's, and one detected before the count
+    # was kept. A count is ``None`` where the store could not take it.
+    n_scans: list[int | None] | None = None
+    n_scans_total: list[int] | None = None
     # Per peak, the scan stream it was detected in, as an index among the
     # store's stream keys; ``None`` for a store that labels no peak with one,
     # which is every store detected whole.
@@ -95,6 +104,42 @@ def _peak_signal_to_noise(data: xr.Dataset) -> list[float] | None:
     return data.signal_to_noise.values.tolist()
 
 
+def _peak_scan_counts(
+    data: xr.Dataset,
+) -> tuple[list[int | None] | None, list[int] | None]:
+    """The scans each peak is present in and the scans it is averaged over,
+    over the whole sample, as the store keeps them; ``(None, None)`` for a
+    store that keeps none."""
+    if N_SCANS not in data or N_SCANS_TOTAL not in data:
+        return None, None
+    present = data[N_SCANS].values.astype(float)
+    return (
+        [int(v) if np.isfinite(v) else None for v in present],
+        data[N_SCANS_TOTAL].values.astype(int).tolist(),
+    )
+
+
+def _range_scan_counts(
+    data: xr.Dataset, range_heights: np.ndarray | None, scans: np.ndarray | int
+) -> tuple[list[int | None] | None, list[int] | None]:
+    """The scans of a time range each peak is present in, and those it is
+    averaged over there, read off its timeseries over the range; ``(None,
+    None)`` for a store that keeps no count, whose scans say nothing of a
+    peak's presence (a TOF file detects on its summed spectrum).
+
+    :param data: The peaks read, each with its timeseries.
+    :param range_heights: Their heights over the range's scans (peak x scan),
+        read for a store that keeps the count.
+    :param scans: The range's scans each peak is averaged over
+        (``mascope_signal.compute.scans_per_peak``).
+    """
+    if N_SCANS not in data:
+        return None, None
+    present = np.count_nonzero(range_heights > 0, axis=1)
+    total = np.broadcast_to(np.asarray(scans, dtype=int), present.shape)
+    return present.astype(int).tolist(), total.astype(int).tolist()
+
+
 def _peak_satellites(data: xr.Dataset) -> list[bool] | None:
     """Whether each peak is flagged a satellite, or None for a store that
     flags none."""
@@ -149,6 +194,7 @@ def _aggregate_full_sample(
 ) -> PeakData:
     """Aggregate peak data over the full sample (pre-computed sums)."""
     average_factor = _stored_sum_divisor(data, filename, average=average)
+    n_scans, n_scans_total = _peak_scan_counts(data)
 
     return PeakData(
         peak_ids=data.peak_id.values.tolist(),
@@ -161,6 +207,8 @@ def _aggregate_full_sample(
         ),
         sparsity=data.sparsity.values.tolist(),
         signal_to_noise=_peak_signal_to_noise(data),
+        n_scans=n_scans,
+        n_scans_total=n_scans_total,
         streams=_peak_streams(data),
         satellite=_peak_satellites(data),
     )
@@ -218,6 +266,7 @@ def _aggregate_time_range(
         filename, t_min=t_min, t_max=t_max, polarity=polarity
     )
     if len(timestamps) == 0:
+        counted = N_SCANS in data
         return PeakData(
             peak_ids=data.peak_id.values.tolist(),
             mz_values=data.mz.values.tolist(),
@@ -225,6 +274,8 @@ def _aggregate_time_range(
             heights=[0.0] * data.mz.size if heights else None,
             sparsity=data.sparsity.values.tolist(),
             signal_to_noise=_peak_signal_to_noise(data),
+            n_scans=[0] * data.mz.size if counted else None,
+            n_scans_total=[0] * data.mz.size if counted else None,
             streams=_peak_streams(data),
             satellite=_peak_satellites(data),
             warnings=warnings,
@@ -233,7 +284,15 @@ def _aggregate_time_range(
     # Select the time slice and sum
     time_slice = data.sel(time=timestamps, method="nearest")
     # Per peak: a stream's peak holds values on its own scans of the range only
-    average_factor = m_compute.scans_per_peak(data, timestamps) if average else 1
+    range_scans = m_compute.scans_per_peak(data, timestamps)
+    average_factor = range_scans if average else 1
+    # The heights over the range, read off the store once for both their sum
+    # and the scan counts: the store opens lazily, so each read of the slice
+    # is a read off the disk
+    range_heights = (
+        time_slice.peak_heights.values if heights or N_SCANS in data else None
+    )
+    n_scans, n_scans_total = _range_scan_counts(data, range_heights, range_scans)
 
     return PeakData(
         peak_ids=data.peak_id.values.tolist(),
@@ -244,14 +303,14 @@ def _aggregate_time_range(
             else None
         ),
         heights=(
-            (
-                np.nansum(time_slice.peak_heights.values, axis=1) / average_factor
-            ).tolist()
+            (np.nansum(range_heights, axis=1) / average_factor).tolist()
             if heights
             else None
         ),
         sparsity=data.sparsity.values.tolist(),
         signal_to_noise=_peak_signal_to_noise(data),
+        n_scans=n_scans,
+        n_scans_total=n_scans_total,
         streams=_peak_streams(data),
         satellite=_peak_satellites(data),
         warnings=warnings,

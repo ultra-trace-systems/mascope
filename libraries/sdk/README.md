@@ -285,6 +285,14 @@ The columns, one row per peak (per match with `matches=True`):
 - `peak_id`, `mz`, `area`, `height` (averaged over the sample's scans;
   summed with `average=False`), `sparsity`.
 - `signal_to_noise`, `NaN` where the file stores no estimate.
+- `n_scans` and `n_scans_total`: on an Orbitrap file, how many of the scans
+  averaged into the peak hold it, and how many those are. An Orbitrap scan
+  keeps a peak only where it clears that scan's noise, so a dim isotope line
+  missing from part of the scans reads diluted by the share it missed:
+  `height * n_scans_total / n_scans` is its mean over the scans that hold it.
+  `NaN` where the file keeps no count: a TOF file, or one whose peaks were
+  detected before the count was kept (a re-detection fills it, see the
+  operator notes on peak stores in `docs/maintaining.md`).
 - `segment`, only for a stitched sample.
 - `is_satellite`, as above.
 - With matches, the match columns of `get_peaks`: `target_isotope_id`,
@@ -1218,7 +1226,7 @@ The compound list is shared by every workspace, so `add`, `update` and `remove` 
 | `import_run(batch_id, rows, engine=, engine_version=)` | Land an external engine's batch-level result as a run; rows may carry the engine's own `engine_tier` and `engine_claim` | `dict│None`         |
 | `peak_lists(batch_id, samples=None, matches=False, satellites=False, average=True)` | Every peak of every sample of the batch, or of the samples named, in one read | `pd.DataFrame` |
 
-`peak_lists` is the batch's peak lists, not its ledger: every sample read as `samples.get_peaks` reads it with no range, sent by the server as one Parquet table. It needs no ledger and is what `load_peaks` reads. Its columns are `sample_item_id`, `sample_item_name`, `datetime_utc`, `peak_id`, `mz`, `sparsity`, `signal_to_noise`, `segment`, `area`, `height` and `is_satellite`. With `matches=True` it adds the match columns as the server keeps them, `ionization_mechanism_id` among them, with no ion or compound score. `satellites=True` keeps the satellite peaks, sidelobes of a stronger peak that `get_peaks` leaves out, with `is_satellite` True. `samples=` takes a list of `sample_item_id`s and reads only those; an ID that is no sample of the batch is a failure with status 404. Each ID goes in the request's URL, so name at most a hundred or so per call. `df.attrs["failures"]` names each sample the server could not read (`status_code`, `error`). `df.attrs["complete"]` is then False, and the rest of the batch is answered without it.
+`peak_lists` is the batch's peak lists, not its ledger: every sample read as `samples.get_peaks` reads it with no range, sent by the server as one Parquet table. It needs no ledger and is what `load_peaks` reads. Its columns are `sample_item_id`, `sample_item_name`, `datetime_utc`, `peak_id`, `mz`, `sparsity`, `signal_to_noise`, `n_scans`, `n_scans_total`, `segment`, `area`, `height` and `is_satellite`. With `matches=True` it adds the match columns as the server keeps them, `ionization_mechanism_id` among them, with no ion or compound score. `satellites=True` keeps the satellite peaks, sidelobes of a stronger peak that `get_peaks` leaves out, with `is_satellite` True. `samples=` takes a list of `sample_item_id`s and reads only those; an ID that is no sample of the batch is a failure with status 404. Each ID goes in the request's URL, so name at most a hundred or so per call. `df.attrs["failures"]` names each sample the server could not read (`status_code`, `error`). `df.attrs["complete"]` is then False, and the rest of the batch is answered without it.
 
 `series` is the slim counterpart of `members`: one row per (sample, batch peak) with the member's `sample_item_id`, `sample_peak_id`, `intensity` and `tier` beside its batch peak's `batch_peak_id`, `batch_mz`, `consensus_formula`, `consensus_ion_formula` and `consensus_tier`. `min_n_present=2` leaves out the batch peaks only one sample saw. `df.attrs["run_id"]` names the run the rows are from: `run_id` when given, else the batch's current run. While a rebuild or search is running, the previous run is still the current one but the live ledger is being rewritten, so the rows may be half of each; `series` logs a warning then, and a read after the run finishes is the reliable one. See [`load_batch_ledger`](#load_batch_ledger-the-batch-ledger).
 

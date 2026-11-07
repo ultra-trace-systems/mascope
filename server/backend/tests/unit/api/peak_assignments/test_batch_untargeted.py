@@ -638,3 +638,58 @@ async def test_a_batch_search_is_scored_at_its_samples_own_instrument(
         math.hypot(INSTRUMENT_FALLBACK_SIGMA_PPM[instrument], PRED_SIGMA_PPM)
     )
     assert seen["scoring"].mz_tolerance_ppm == 15.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("counted", [True, False], ids=["counted", "uncounted"])
+async def test_a_batch_search_reads_the_peak_lists_scan_counts(counted):
+    # As a run's search does: a dim line is read over the scans that hold it
+    # where the file keeps the counts.
+    sample = SimpleNamespace(
+        sample_item_id="si-1",
+        sample_item_name="Sample One",
+        filename="orbi-sample.raw",
+        polarity="-",
+    )
+    peaks = pd.DataFrame([{"sample_peak_id": "p1", "mz": 160.8413, "intensity": 1.0e6}])
+    if counted:
+        peaks["n_scans"] = 3.0
+        peaks["n_scans_total"] = 4.0
+    mechanism = SimpleNamespace(
+        ionization_mechanism="[M-H]-", ionization_mechanism_id="im-h"
+    )
+    seen = {}
+
+    def finder(frame, *args, **kwargs):
+        seen["columns"] = set(frame.columns)
+        raise _Searched
+
+    with (
+        patch.object(batch_untargeted, "fetch_sample", AsyncMock(return_value=sample)),
+        patch.object(batch_untargeted, "load_sample_peaks", return_value=peaks),
+        patch.object(
+            batch_untargeted,
+            "fetch_sample_mechanisms",
+            AsyncMock(return_value=(["im-h"], [mechanism])),
+        ),
+        patch.object(
+            batch_untargeted, "fetch_mechanisms_by_notation", AsyncMock(return_value=[])
+        ),
+        patch.object(
+            batch_untargeted,
+            "default_match_params",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    mz_tolerance=15.0, isotope_abundance_threshold=1e-4
+                )
+            ),
+        ),
+        patch.object(batch_untargeted, "_resolution_of", AsyncMock(return_value=None)),
+        patch.object(batch_untargeted, "assign_compositions", finder),
+        pytest.raises(_Searched),
+    ):
+        await batch_untargeted._search_sample_peaks(
+            "si-1", {"p1"}, PeakAssignmentConfig()
+        )
+
+    assert ({"n_scans", "n_scans_total"} <= seen["columns"]) is counted

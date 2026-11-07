@@ -48,10 +48,18 @@ def snr_columns_json_safe(df: pd.DataFrame) -> pd.DataFrame:
     without noise data, reconstructed unmatched rows, and rows stored before
     the column existed). NaN is not JSON - starlette refuses to serialize it -
     so it must leave the frame as None. ``ratio_scan_count`` is NaN the same
-    way, wherever a ratio was not read scan by scan.
+    way, wherever a ratio was not read scan by scan, and ``n_scans`` /
+    ``n_scans_total`` wherever the matched peak's store keeps no scan counts
+    (an unmatched row, a TOF file, a store detected before them).
     """
     df = df.copy()
-    for column in ("signal_to_noise", "is_satellite", "ratio_scan_count"):
+    for column in (
+        "signal_to_noise",
+        "is_satellite",
+        "ratio_scan_count",
+        "n_scans",
+        "n_scans_total",
+    ):
         if column in df.columns and df[column].isna().any():
             df[column] = df[column].astype(object).where(df[column].notna(), None)
     return df

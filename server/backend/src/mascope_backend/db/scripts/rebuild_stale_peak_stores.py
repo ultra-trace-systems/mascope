@@ -48,6 +48,15 @@ file that needs it:
   status icon, **Refresh matches**, or a dataset's rematch, which takes every
   batch of the dataset in turn.
 
+**A store without scan counts.** A raw Orbitrap file's store keeps, per
+peak, how many of the scans averaged into it hold it
+(``mascope_signal.peak.N_SCANS``), and the fit score of peak assignment reads
+a dim isotope line by it. A store detected before the count was kept reads as
+it always did, and is not stale: the run counts such stores and says how many,
+and rebuilds them only when asked, with ``FILL_SCAN_COUNTS=1``. Their rebuild
+is the one above, so every batch holding one of their samples is set to
+rematch: ask for it when those batches can be matched again.
+
 A file whose store is rebuilt reads it back, so the next run leaves it alone:
 run it again until it reports nothing to rebuild. ``REBUILD_LIMIT`` caps how
 many files one run rebuilds. A file whose rebuild fails, or whose rebuilt
@@ -70,6 +79,9 @@ Usage:
 
     REBUILD_LIMIT=500 mascope prod db script run rebuild_stale_peak_stores
 
+    FILL_SCAN_COUNTS=1 DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores
+    FILL_SCAN_COUNTS=1 mascope prod db script run rebuild_stale_peak_stores
+
     python -m mascope_backend.db.scripts.rebuild_stale_peak_stores
 
 Date: 2026-11-05
@@ -90,6 +102,7 @@ import mascope_signal.compute as m_compute
 import mascope_thermo.thermo as m_thermo
 from mascope_backend.db import async_session, configure_database_engine
 from mascope_backend.runtime import runtime
+from mascope_signal.peak import N_SCANS
 
 
 #: The instrument class whose files carry the rule.
@@ -98,11 +111,13 @@ ORBITRAP = "orbi"
 #: The sample file type whose scans the reader selects anew on every read.
 ORBITRAP_RAW = "orbi_raw"
 
-#: What :func:`check` calls a file.
+#: What :func:`check` calls a file. A store that is :data:`UNCOUNTED` is
+#: current but for the scan counts it predates.
 NO_STORE = "no_store"
 NO_PEAKS = "no_peaks"
 CURRENT = "current"
 STALE = "stale"
+UNCOUNTED = "uncounted"
 
 #: Files checked at once: each opens its raw file's scan index, a few
 #: milliseconds of reading, on a server that keeps serving.
@@ -136,7 +151,8 @@ class BadLimit(ValueError):
 class Checked:
     """What one file's store is against the scans its file reads."""
 
-    #: :data:`NO_STORE`, :data:`NO_PEAKS`, :data:`CURRENT` or :data:`STALE`.
+    #: :data:`NO_STORE`, :data:`NO_PEAKS`, :data:`CURRENT`, :data:`STALE` or
+    #: :data:`UNCOUNTED`.
     state: str
     #: The scans the store holds, and those the file reads; 0 where the file
     #: was not read for them.
@@ -167,10 +183,24 @@ def check_store(
     :param stream_scans: The scan times one stream reads, by its key, or None
         where the file holds no stream under it.
     :return: :data:`NO_PEAKS` for a store with nothing to divide (a blank's),
-        else :data:`CURRENT` or :data:`STALE`.
+        else :data:`STALE`, or for one its file reads back :data:`CURRENT`, or
+        :data:`UNCOUNTED` where it keeps no scan counts.
     """
     if not store.mz.size:
         return Checked(NO_PEAKS)
+    checked = _check_axis(store, file_scans, stream_scans)
+    if checked.state == CURRENT and N_SCANS not in store.data_vars:
+        return Checked(UNCOUNTED)
+    return checked
+
+
+def _check_axis(
+    store,
+    file_scans: Callable[[], np.ndarray],
+    stream_scans: Callable[[str], np.ndarray | None],
+) -> Checked:
+    """Whether a store with peaks holds the scans its file reads now
+    (:func:`check_store`): :data:`CURRENT` or :data:`STALE`."""
     stored_time = np.asarray(store.time.values)
     try:
         streams = m_compute.peak_store_streams(store)
@@ -239,20 +269,26 @@ async def survey(
     is_raw: Callable[[str], bool],
     check_one: Callable[[str], Checked],
     limit: int | None = None,
+    uncounted: bool = False,
 ) -> tuple[list[dict], dict[str, Counter]]:
-    """The files whose store is stale, and every file counted per instrument.
+    """The files whose store is to be rebuilt, and every file counted per
+    instrument.
 
-    Stops as soon as ``limit`` stale files are found, between batches, so
+    Stops as soon as ``limit`` such files are found, between batches, so
     repeated capped runs do not each read every file on the server.
 
     :param candidates: Rows from :func:`_candidates`, newest first.
     :param is_raw: :func:`_is_raw`, or a stand-in.
     :param check_one: :func:`check`, or a stand-in.
     :param limit: Stop once this many are found; None checks them all.
-    :return: The stale files, newest first, each with ``stored`` and
-        ``reads``; and per instrument, how many files were found of each
-        kind: ``not_raw``, ``unreadable`` and those :func:`check` returns.
+    :param uncounted: Rebuild the stores that keep no scan counts too, beside
+        the stale ones.
+    :return: The files to rebuild, newest first, each with its ``state``,
+        ``stored`` and ``reads``; and per instrument, how many files were
+        found of each kind: ``not_raw``, ``unreadable`` and those
+        :func:`check` returns.
     """
+    wanted = {STALE, UNCOUNTED} if uncounted else {STALE}
     gate = asyncio.Semaphore(_CHECK_CONCURRENCY)
     traced = 0
     done = 0
@@ -285,9 +321,14 @@ async def survey(
         batch = candidates[start : start + _CHECK_BATCH]
         for candidate, kind, found in await asyncio.gather(*map(one, batch)):
             counts[candidate.get("instrument") or "(none)"][kind] += 1
-            if kind == STALE:
+            if kind in wanted:
                 stale.append(
-                    {**candidate, "stored": found.stored, "reads": found.reads}
+                    {
+                        **candidate,
+                        "state": kind,
+                        "stored": found.stored,
+                        "reads": found.reads,
+                    }
                 )
         if limit is not None and len(stale) >= limit:
             return stale[:limit], counts
@@ -349,9 +390,13 @@ async def rebuild_all(stale: list[dict], steps: Steps) -> Outcome:
     for position, candidate in enumerate(stale, start=1):
         filename = candidate["filename"]
         samples, batches = await steps.samples_of(candidate["sample_file_id"])
+        what = (
+            "keeps no scan counts"
+            if candidate.get("state") == UNCOUNTED
+            else f"{candidate['stored']} scans stored, {candidate['reads']} read"
+        )
         line = (
-            f"  {candidate['sample_file_id']}  {filename}: "
-            f"{candidate['stored']} scans stored, {candidate['reads']} read; "
+            f"  {candidate['sample_file_id']}  {filename}: {what}; "
             f"{len(samples)} sample(s), {len(batches)} batch(es)"
         )
         if not dry_run:
@@ -381,12 +426,16 @@ async def rebuild_all(stale: list[dict], steps: Steps) -> Outcome:
                     again = await asyncio.to_thread(steps.check_one, filename)
                 except Exception:  # noqa: BLE001
                     again = None
-                if again is None or again.state == STALE:
+                if again is None or again.state in (STALE, UNCOUNTED):
                     counts["still_stale"] += 1
                     outcome.failed.append(filename)
                     runtime.logger.warning(
                         f"The peak store rebuilt for '{filename}' still "
-                        "disagrees with the file it was detected on."
+                        + (
+                            "keeps no scan counts."
+                            if again is not None and again.state == UNCOUNTED
+                            else "disagrees with the file it was detected on."
+                        )
                     )
                     continue
         runtime.logger.info(f"[{position}/{len(stale)}]{line}")
@@ -551,9 +600,16 @@ def _limit() -> int | None:
     return limit
 
 
+def _fill_scan_counts() -> bool:
+    """Whether ``FILL_SCAN_COUNTS=1`` asks for the stores without scan counts
+    to be rebuilt too."""
+    return os.environ.get("FILL_SCAN_COUNTS") == "1"
+
+
 def _counts_line(found: Counter) -> str:
     return (
         f"{found[STALE]} stale, {found[CURRENT]} current, "
+        f"{found[UNCOUNTED]} current without scan counts, "
         f"{found[NO_PEAKS]} with no peaks, {found[NO_STORE]} with no store, "
         f"{found['unreadable']} unreadable, {found['not_raw']} with no raw file"
     )
@@ -563,6 +619,7 @@ async def run() -> None:
     """Find the raw Orbitrap stores their files no longer read back, and
     rebuild them."""
     dry_run = os.environ.get("DRY_RUN") == "1"
+    uncounted = _fill_scan_counts()
     limit = _limit()
     await configure_database_engine()
 
@@ -572,7 +629,7 @@ async def run() -> None:
         return
     runtime.logger.info(f"Orbitrap files: {len(candidates)}")
 
-    stale, counts = await survey(candidates, _is_raw, check, limit)
+    stale, counts = await survey(candidates, _is_raw, check, limit, uncounted)
     total: Counter = Counter()
     runtime.logger.info("Per instrument:")
     for instrument in sorted(counts):
@@ -583,6 +640,13 @@ async def run() -> None:
         f"  Checked {checked} of {len(candidates)}: {_counts_line(total)}"
         + (" (DRY_RUN=1: nothing is written)" if dry_run else "")
     )
+    if total[UNCOUNTED] and not uncounted:
+        runtime.logger.info(
+            f"  {total[UNCOUNTED]} store(s) predate the scan counts peak "
+            "assignment reads a dim isotope line by. FILL_SCAN_COUNTS=1 "
+            "rebuilds them too, and sets every batch holding one of their "
+            "samples to rematch."
+        )
     if not stale:
         runtime.logger.info("No peak store to rebuild.")
         return
@@ -607,8 +671,10 @@ async def run() -> None:
         "REBUILD STALE PEAK STORES COMPLETE" + (" (DRY RUN)" if dry_run else "")
     )
     verb = "would rebuild" if dry_run else "rebuilt"
+    without = sum(1 for row in stale if row.get("state") == UNCOUNTED)
     runtime.logger.info(
-        f"Stale stores: {len(stale)}; {verb} {done['rebuilt']}"
+        f"Stale stores: {len(stale) - without}, without scan counts: {without}; "
+        f"{verb} {done['rebuilt']}"
         + (
             ""
             if dry_run

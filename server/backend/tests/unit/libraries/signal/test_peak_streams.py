@@ -101,6 +101,9 @@ LEGACY_VARIABLES = {
     "sum_peak_areas",
     "sum_peak_heights",
     "signal_to_noise",
+    # The scans holding each peak, kept for a raw file however it is detected
+    "n_scans",
+    "n_scans_total",
     "polarity",
     "is_weak",
     "is_satellite",

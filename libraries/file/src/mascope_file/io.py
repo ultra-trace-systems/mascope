@@ -370,6 +370,12 @@ def load_peak_data(
     - sum_peak_areas (mz)
     - sum_peak_heights (mz)
 
+    A raw Orbitrap file's store detected since the scan counts were kept also
+    carries ``n_scans`` (mz), how many of the scans averaged into each peak
+    hold it (NaN where its width was unknown), and ``n_scans_total`` (mz), how
+    many those are (``mascope_signal.peak.N_SCANS``). A store without them
+    loads as it is.
+
     A store that holds a peak list per scan stream (``mascope_signal.peak``)
     also carries:
     - stream (mz): the stream each peak was detected in

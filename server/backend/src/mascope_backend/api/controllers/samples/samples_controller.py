@@ -489,6 +489,8 @@ async def get_sample_peaks(
                 "height": [] if heights else None,
                 "sparsity": [],
                 "signal_to_noise": [],
+                "n_scans": [],
+                "n_scans_total": [],
                 "match": [] if matches else None,
                 "segment": [] if segments else None,
                 "segments": segments.described if segments else None,
@@ -509,6 +511,14 @@ async def get_sample_peaks(
         # it as None itself: the response's fallback render would log every
         # such answer as a route that left a value undecided.
         "signal_to_noise": non_finite_to_none(peak_data.signal_to_noise),
+        # How many of the scans averaged into each peak hold it, and how many
+        # those are, on an Orbitrap file: a dim line missing from part of the
+        # scans reads diluted by the share it missed, and an engine reading
+        # this endpoint can read it over its present scans instead. None for
+        # a file that keeps no count (a TOF file, or one detected before the
+        # count was kept), never a zero, which would say "in no scan".
+        "n_scans": peak_data.n_scans,
+        "n_scans_total": peak_data.n_scans_total,
         "segment": peak_data.streams if segments else None,
         "segments": segments.described if segments else None,
     }

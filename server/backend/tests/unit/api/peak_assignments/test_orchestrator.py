@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pandas as pd
 import pytest
 from test_engine import _isotope_row  # same directory; pytest puts it on sys.path
@@ -63,6 +64,36 @@ def _peaks_df(peak_specs: list[tuple[str, float, float]]) -> pd.DataFrame:
             for pid, mz, intensity in peak_specs
         ]
     )
+
+
+@pytest.mark.parametrize("counted", [True, False], ids=["counted", "uncounted"])
+def test_the_engines_peak_read_carries_the_scan_counts(counted):
+    """Beside the noise estimate, where the file keeps them; a peak whose
+    count the detection could not take reads NaN, never zero."""
+    from mascope_backend.api.new.peak_assignments.service import load_sample_peaks
+
+    peak_data = SimpleNamespace(
+        peak_ids=["p1", "p2"],
+        mz_values=[100.0, 101.0],
+        heights=[10.0, 1.0],
+        areas=None,
+        signal_to_noise=[50.0, 5.0],
+        n_scans=[4, None] if counted else None,
+        n_scans_total=[4, 4] if counted else None,
+    )
+    sample = SimpleNamespace(filename="orbi-sample.raw", polarity="+", t0=0, t1=1)
+    with (
+        patch(f"{_MOD}.extract_peaks", return_value=peak_data),
+        patch(f"{_MOD}.get_instrument_type", return_value="orbi"),
+    ):
+        peaks = load_sample_peaks(sample)
+
+    if counted:
+        assert peaks["n_scans"].iloc[0] == 4.0
+        assert np.isnan(peaks["n_scans"].iloc[1])
+        assert peaks["n_scans_total"].tolist() == [4.0, 4.0]
+    else:
+        assert not {"n_scans", "n_scans_total"} & set(peaks.columns)
 
 
 def _sample() -> MagicMock:
@@ -1612,6 +1643,36 @@ class TestResolvedProfile:
         else:
             assert recorded["snr_source"] == "none"
             assert recorded["snr_intensity_spearman"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("counted", [True, False], ids=["counted", "uncounted"])
+    async def test_the_search_reads_the_peak_lists_scan_counts(self, counted):
+        # How many of its scans hold each peak decides how far a dim line's
+        # height is diluted: the search is handed the counts where the file
+        # keeps them, and nothing in their place where it does not.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df(
+            [(f"p{index}", 150.0 + 3.1 * index, 1000.0) for index in range(5)]
+        )
+        peaks["signal_to_noise"] = 20.0
+        if counted:
+            peaks["n_scans"] = [4.0, 2.0, 1.0, 4.0, np.nan]
+            peaks["n_scans_total"] = 4.0
+        mocks = _start(_patches(_Recorder(), peaks, []))
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        mocks["compositions"].assert_called_once()
+        frame = mocks["compositions"].call_args.args[0]
+        if counted:
+            assert {"n_scans", "n_scans_total"} <= set(frame.columns)
+            assert frame["n_scans"].tolist()[:4] == [4.0, 2.0, 1.0, 4.0]
+            assert (frame["n_scans_total"] == 4.0).all()
+        else:
+            assert not {"n_scans", "n_scans_total"} & set(frame.columns)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

@@ -59,6 +59,17 @@ def match_score_version() -> int:
         return 1  # malformed value -> the default
 
 
+def _scan_counts(frame: pd.DataFrame) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Each row's peak's scans holding it and scans averaged, NaN where a row has
+    none; ``(None, None)`` for a frame without the columns."""
+    if "n_scans" not in frame or "n_scans_total" not in frame:
+        return None, None
+    return (
+        pd.to_numeric(frame["n_scans"], errors="coerce").to_numpy(float),
+        pd.to_numeric(frame["n_scans_total"], errors="coerce").to_numpy(float),
+    )
+
+
 def ion_score_v2(
     group: pd.DataFrame,
     *,
@@ -93,6 +104,12 @@ def ion_score_v2(
     `tolerance` is how well the sample's run measures an isotope line's share
     (`mascope_tools.composition.envelope_tolerance`); None is today's 5% and the
     threshold of 3.
+
+    Where `group` has `n_scans` and `n_scans_total`, how many of the scans averaged
+    into each row's peak hold it and how many those are (the match frame carries
+    them from a raw Orbitrap store), a line is read over the scans that hold it and
+    an absent line is charged by its anchor's count
+    (`mascope_tools.composition.scan_presence`); a row without them scores as before.
 
     `calibrate=True` recasts the fit as a single-candidate P(correct) — a confidence-layer
     concern, not the headline match score — and REQUIRES `calibration`, the Platt `(a, b)`
@@ -134,8 +151,18 @@ def ion_score_v2(
         if "signal_to_noise" in g
         else None
     )
+    n_scans, n_scans_total = _scan_counts(g)
     sig = float(np.hypot(sigma_ppm, PRED_SIGMA_PPM)) if sigma_ppm is not None else None
-    raw = score_pattern_v2(me, oi, snr, pr, sigma_ppm=sig, tolerance=tolerance)
+    raw = score_pattern_v2(
+        me,
+        oi,
+        snr,
+        pr,
+        sigma_ppm=sig,
+        tolerance=tolerance,
+        n_scans=n_scans,
+        n_scans_total=n_scans_total,
+    )
     return float(calibrate_score(raw, calibration)) if calibrate else float(raw)
 
 
@@ -227,9 +254,20 @@ def ion_scores_v2(
         if "signal_to_noise" in frame
         else None
     )
+    n_scans, n_scans_total = _scan_counts(frame)
+    if n_scans is not None:
+        n_scans, n_scans_total = n_scans[order], n_scans_total[order]
     sig = float(np.hypot(sigma_ppm, PRED_SIGMA_PPM)) if sigma_ppm is not None else None
     scores = score_patterns_v2(
-        me, oi, snr, pr, offsets, sigma_ppm=sig, tolerance=tolerance
+        me,
+        oi,
+        snr,
+        pr,
+        offsets,
+        sigma_ppm=sig,
+        tolerance=tolerance,
+        n_scans=n_scans,
+        n_scans_total=n_scans_total,
     )
     scores = np.where(scored, scores, 0.0)
     return pd.Series(scores[codes], index=frame.index, dtype=float)
