@@ -936,6 +936,18 @@ async def calibration_mz_fit(
                 calibration_data["fit"]["quality"]["segments"] = (
                     calibration_handler.segments
                 )
+            if calibration_handler.calibrant_cap is not None:
+                # The cap on the calibrants' brightness that was in effect,
+                # and how many it left out
+                calibration_data["fit"]["quality"]["calibrant_cap"] = (
+                    calibration_handler.calibrant_cap
+                )
+            if calibration_handler.offset is not None:
+                # An Orbitrap fit: the offset its calibrants carry beside the
+                # factor, reported and not applied
+                calibration_data["fit"]["quality"]["offset"] = (
+                    calibration_handler.offset
+                )
             if calibration_handler.fitted_on is not None:
                 # A TOF fit: its points, span, collection version, model and
                 # node version, sealed with the rest of the block

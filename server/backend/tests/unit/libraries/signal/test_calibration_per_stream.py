@@ -47,6 +47,7 @@ from mascope_backend.api.controllers.calibration.lib import calibration_mz_fit
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     OrbiCalibrationHandler,
     calibration_quality_issues,
+    offset_report,
 )
 from mascope_backend.api.models.calibration.calibration_pydantic_model import (
     CalibrationFitParams,
@@ -585,13 +586,14 @@ def _isotopes(targets=TARGETS):
     )
 
 
-async def _fitted(targets=TARGETS, polarity="-"):
-    """Fit the test sample's polarity against the given calibrants."""
+async def _fitted(targets=TARGETS, polarity="-", **params):
+    """Fit the test sample's polarity against the given calibrants, with the
+    Orbitrap's parameters but for any given."""
     params = CalibrationFitParams(
         calibration_collection_id="tc-1",
         ionization_mechanism_ids=["im-1"],
         polarity=polarity,
-        **OrbiCalibrationParams().model_dump(),
+        **{**OrbiCalibrationParams().model_dump(), **params},
     )
     handler = OrbiCalibrationHandler(SAMPLE_FILENAME, params)
     handler._resolve_calibration_isotopes = AsyncMock(return_value=_isotopes(targets))
@@ -1086,6 +1088,8 @@ async def _answered(segments, correction=2.0):
         fit=AsyncMock(),
         segments=segments,
         fitted_on=None,
+        calibrant_cap=None,
+        offset=None,
         to_dict=lambda: {
             "fit": _fit(file=1 + correction * 1e-6),
             "stats": [point, summary],
@@ -1184,6 +1188,108 @@ async def test_a_file_fitted_as_one_answers_no_segments():
     fit = await _answered(None)
 
     assert "segments" not in fit["quality"]
+
+
+# -- the calibrant cap and the offset, stream by stream ------------------------------
+
+#: The ion at 80 as a calibrant: the reagent scan reads it 1 ppm high, beside
+#: the reagent ion it holds at most of its ion current
+AT_80 = ("ion-80", "C2O3-", 80.0 * (1 - 1e-6))
+
+
+@pytest.mark.asyncio
+async def test_a_streams_brightest_calibrant_is_left_out_by_its_own_share(fitted):
+    """The reagent ion carries most of the reagent scan's ion current, so the
+    reagent scan is fitted on the ion at 80 alone, and its block says so."""
+    assert 1000.0 / np.mean(_tic_per_scan(KEYS[REAGENT])) > 0.28
+
+    handler = await fitted([TARGETS[0], AT_80])
+
+    assert handler.fit_result["streams"][KEYS[REAGENT]][
+        "calibration_factor"
+    ] == pytest.approx(1 - 1e-6, rel=1e-15)
+    by_index = {segment["index"]: segment for segment in handler.segments}
+    assert by_index[REAGENT]["quality"]["calibrant_cap"] == {
+        "tic_share_max": 0.28,
+        "peak_intensity_max": None,
+        "n_excluded": 1,
+        "fell_back": False,
+    }
+    # The low window reads the ion at 80 at a fifth of its own ion current
+    assert by_index[LOW]["quality"]["calibrant_cap"]["n_excluded"] == 0
+    assert handler.calibrant_cap == {
+        "tic_share_max": 0.28,
+        "peak_intensity_max": None,
+        "n_excluded": 1,
+        "fell_back": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_without_a_cap_the_reagent_ion_pulls_its_streams_fit(fitted):
+    handler = await fitted([TARGETS[0], AT_80], calibrant_tic_share_max=None)
+
+    assert handler.fit_result["streams"][KEYS[REAGENT]][
+        "calibration_factor"
+    ] == pytest.approx(1 + 0.5e-6, rel=1e-15)
+    assert handler.calibrant_cap["n_excluded"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_stream_whose_every_calibrant_is_over_the_cap_is_fitted_on_them(
+    fitted,
+):
+    handler = await fitted()
+
+    reagent = handler.segments[REAGENT]["quality"]["calibrant_cap"]
+    assert reagent["fell_back"] and reagent["n_excluded"] == 0
+    assert handler.fit_result["streams"][KEYS[REAGENT]][
+        "calibration_factor"
+    ] == pytest.approx(ASKED[REAGENT], rel=1e-15)
+    # Said for the file as well
+    assert handler.calibrant_cap["fell_back"]
+
+
+@pytest.mark.asyncio
+async def test_the_offset_is_fitted_over_every_streams_calibrants_pooled(fitted):
+    """One calibrant in each of three streams, on factors of their own from
+    an earlier fit: the offset is fitted over the three together, each line
+    on the m/z the instrument recorded, which its target asks its stream's
+    factor of."""
+    _apply(_fit())
+
+    handler = await fitted()
+
+    targets = np.array([mz for _, _, mz in TARGETS])
+    asked = np.array([ASKED[REAGENT], ASKED[LOW], ASKED[HIGH]])
+    expected = offset_report(targets, targets / asked)
+    assert expected["reason"] is None
+    assert handler.offset["n_lines"] == 3
+    assert handler.offset["span"] == pytest.approx(expected["span"])
+    for key in ("offset_mda", "factor_ppm", "offset_se_mda"):
+        assert handler.offset[key] == pytest.approx(expected[key], abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_the_fits_answer_carries_the_cap_and_the_offset(fitted):
+    handler = await fitted([TARGETS[0], AT_80, *TARGETS[1:]])
+    handler.fit = AsyncMock()
+
+    fit = await _answer(handler)
+
+    # The reagent ion and the low window's ion at 100, each most of its
+    # stream's ion current, are left out; the high window's ion at 700 is
+    # all its stream holds
+    assert fit["quality"]["calibrant_cap"] == handler.calibrant_cap
+    assert fit["quality"]["calibrant_cap"]["n_excluded"] == 2
+    assert fit["quality"]["calibrant_cap"]["fell_back"]
+    assert fit["quality"]["offset"] == handler.offset
+    assert fit["quality"]["offset"]["n_lines"] == 3
+    # Sealed with them, so the verdict an apply reaches is of this answer
+    with patch.object(calibration_controller, "derive_token_secret", lambda _: "key"):
+        assert calibration_controller.fit_seal_valid(fit, SAMPLE_FILENAME)
+        fit["quality"]["calibrant_cap"]["n_excluded"] = 0
+        assert not calibration_controller.fit_seal_valid(fit, SAMPLE_FILENAME)
 
 
 # -- the quality bar -----------------------------------------------------------------
