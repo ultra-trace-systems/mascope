@@ -84,6 +84,9 @@ def report_stopped(socket_client, request: dict[str, Any]) -> None:
                 access_token=request.get("access_token"),
                 user_id=request.get("user_id"),
             ),
+            # The socket disconnects soon after: the stop waits for the
+            # backend to acknowledge this before it does.
+            awaited=True,
         )
     except Exception:
         runtime.logger.exception(

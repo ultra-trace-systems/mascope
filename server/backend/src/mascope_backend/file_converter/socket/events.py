@@ -35,6 +35,7 @@ class SocketEventHandler:
         @self.client.sio.event(namespace="/file-converter")
         def disconnect():
             runtime.logger.info("Disconnected from mascope server")
+            self.client.forget_awaited()
 
         @self.client.sio.on("file_context", namespace="/file-converter")
         def on_file_context(data):
