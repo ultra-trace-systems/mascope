@@ -30,27 +30,27 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
     pending: false
   })
 
-  // A copied or cut batch, or copied or cut samples. A cut batch moves, which
-  // takes the editor role in the workspace the new dataset goes into, as the
-  // move route does; the menu cut it only where it may leave its own.
+  // A copied or cut batch, or copied or cut samples.
   const batchPaste = computed(
-    () =>
-      clipboard.batch !== null &&
-      (clipboard.op === 'copy' ||
-        (clipboard.op === 'cut' && canEditWorkspace(app.data.workspace.focused, app.auth.user)))
+    () => clipboard.batch !== null && ['copy', 'cut'].includes(clipboard.op)
   )
   const samplesPaste = computed(
     () => clipboard.samples !== null && ['copy', 'cut'].includes(clipboard.op)
   )
+  // Every paste here first creates a dataset or a batch, and both creates take
+  // the editor role in the workspace (POST /datasets, and POST /sample_batches
+  // on the dataset), as does moving a cut batch in. A guest is not offered it.
+  const canCreate = computed(() => canEditWorkspace(app.data.workspace.focused, app.auth.user))
   // Nothing is created in the system workspace, nor a batch in an
   // auto-managed acquisition dataset.
   const systemWorkspace = computed(() => !!app.data.workspace.focused?.is_system)
   const datasetValid = computed(
-    () => (batchPaste.value || samplesPaste.value) && !systemWorkspace.value
+    () => (batchPaste.value || samplesPaste.value) && canCreate.value && !systemWorkspace.value
   )
   const batchValid = computed(
     () =>
       samplesPaste.value &&
+      canCreate.value &&
       app.data.dataset.focusedId != null &&
       app.data.dataset.focused?.dataset_type !== 'ACQUISITION' &&
       !systemWorkspace.value
