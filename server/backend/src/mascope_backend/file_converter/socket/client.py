@@ -41,7 +41,13 @@ class _FileRejections:
 class FileConverterSocketClient:
     """Socket.IO client for file converter service"""
 
-    def __init__(self, url: str, peak_recompute_queue=None, peak_guard=None):
+    def __init__(
+        self,
+        url: str,
+        peak_recompute_queue=None,
+        peak_guard=None,
+        shutdown_event=None,
+    ):
         self.url = url
         self.sio = socketio.Client(
             logger=False,
@@ -71,6 +77,7 @@ class FileConverterSocketClient:
             self,
             peak_recompute_queue=peak_recompute_queue,
             peak_guard=peak_guard,
+            shutdown_event=shutdown_event,
         )
         self._print_registered_events()
 

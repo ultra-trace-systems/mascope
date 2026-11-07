@@ -6,7 +6,10 @@ from threading import Event, Thread
 from time import monotonic
 
 from mascope_backend.file_converter.peak_guard import PeakDetectionGuard
-from mascope_backend.file_converter.peak_recompute_worker import PeakRecomputeWorker
+from mascope_backend.file_converter.peak_recompute_worker import (
+    PeakRecomputeWorker,
+    drain_on_stop,
+)
 from mascope_backend.file_converter.socket.client import FileConverterSocketClient
 from mascope_backend.file_converter.watcher import FSWatcher
 from mascope_runtime.logging import SENTRY_FINGERPRINT
@@ -332,7 +335,10 @@ PEAK_CONCURRENCY = 3
 PEAK_GUARD = PeakDetectionGuard()
 PEAK_RECOMPUTE_QUEUE = Queue()
 SOCKET_CLIENT = FileConverterSocketClient(
-    URL, peak_recompute_queue=PEAK_RECOMPUTE_QUEUE, peak_guard=PEAK_GUARD
+    URL,
+    peak_recompute_queue=PEAK_RECOMPUTE_QUEUE,
+    peak_guard=PEAK_GUARD,
+    shutdown_event=SHUTDOWN_EVENT,
 )
 
 
@@ -465,6 +471,10 @@ def run():
         h5_fs_watcher.join()
         for worker in peak_workers:
             worker.join()
+        # Nothing reads the peak queue any more. A request still on it would be
+        # lost with the process and its caller left waiting on it, so each is
+        # answered now, while the socket is still up.
+        drain_on_stop(SOCKET_CLIENT, PEAK_RECOMPUTE_QUEUE, PEAK_GUARD)
         # Leave now rather than at the backend's ping timeout: until then it
         # still counts the converter as connected and accepts uploads for it.
         try:
