@@ -23,8 +23,14 @@ class SampleBatchBaseValidator:
     @field_validator("sample_batch_name")
     @classmethod
     def validate_sample_batch_name(cls, sample_batch_name: str | None) -> str | None:
-        """Validate sample batch name is not empty or whitespace."""
-        if sample_batch_name is not None and sample_batch_name.strip() == "":
+        """Validate sample batch name is not null, empty or whitespace.
+
+        A field validator does not run on a default, so on an update that
+        leaves the name out this never sees None: a None here is an explicit
+        null, which the NOT NULL column cannot store."""
+        if sample_batch_name is None:
+            raise ValueError("Sample batch name cannot be null.")
+        if sample_batch_name.strip() == "":
             raise ValueError(
                 "Sample batch name cannot be empty or contain only whitespace."
             )
@@ -138,13 +144,19 @@ class SampleBatchUpdate(SampleBatchBaseValidator, BaseModel):
     """
     Model for updating sample batches - only user-editable fields.
 
-    A partial update: a field left out stays as it is. Target collection
+    A partial update: a field left out stays as it is. The name cannot be
+    null (the column is NOT NULL), the description can. Target collection
     associations are handled separately on service level: a list replaces
     them, an empty list detaches them all, and leaving the field out (or
     sending null) leaves them as they are.
     """
 
-    sample_batch_name: str | None = Field(None, description="Name of the sample batch")
+    sample_batch_name: str | None = Field(
+        None,
+        description=(
+            "Name of the sample batch; absent, it stays as it is; null is refused."
+        ),
+    )
     sample_batch_description: str | None = Field(
         None, description="Description of the sample batch"
     )
