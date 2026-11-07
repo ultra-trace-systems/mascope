@@ -1349,6 +1349,8 @@ def predict_resolved_isotopes(
     a merged peak adds are each far under the floor - the 15N, 2H and 17O lines
     of a TOF's 13C peak - and the floor is then applied to the merged lines,
     so the envelope holds the lines it held before, each with its whole share.
+    A merged line under the floor less than one FWHM from a kept line is added
+    to it rather than dropped (:func:`_fold_under_floor`).
 
     :param ion_formula: The ion's formula, no charge sign.
     :param ion_charge: Its charge.
@@ -1370,11 +1372,62 @@ def predict_resolved_isotopes(
     if not intensities.size:
         return mzs, intensities, labels
     keep = intensities >= threshold * intensities.max()
+    mzs, intensities = _fold_under_floor(mzs, intensities, keep, resolution)
     return (
         mzs[keep],
         intensities[keep],
         [label for label, kept in zip(labels, keep) if kept],
     )
+
+
+def _fold_under_floor(
+    mzs: np.ndarray,
+    intensities: np.ndarray,
+    keep: np.ndarray,
+    resolution: Callable[[float], float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fold each merged line under the floor into a kept line it cannot leave.
+
+    :func:`merge_unresolved_lines` bins at half a FWHM from the brightest line,
+    so a line between half and one FWHM from a kept line is a bin of its own,
+    and under the floor it would be dropped - though one peak of that width
+    does not separate it from the kept line (mascope#2591: the 15N line of
+    C4H8NO+ at a resolving power of 8000, 6.3 mDa from the 13C line where half
+    a FWHM is 5.4 mDa). Such a line is added to the nearest kept line less than
+    one FWHM away, read at that kept line, which then sits at their
+    abundance-weighted centre. Distances are read against the kept lines as
+    merged, so the order the lines are folded in decides nothing. Which lines
+    are kept does not change: folding only adds to a kept line's share.
+
+    :return: The m/z values and abundances, same length and order; only the
+        kept lines' entries change.
+    """
+    kept = np.flatnonzero(keep)
+    dropped = np.flatnonzero(~keep)
+    if not kept.size or not dropped.size:
+        return mzs, intensities
+    fwhm = np.full(kept.size, np.nan)
+    for position, index in enumerate(kept):
+        try:
+            resolving_power = float(resolution(float(mzs[index])))
+        except (TypeError, ValueError, ArithmeticError):
+            continue
+        if np.isfinite(resolving_power) and resolving_power > 0:
+            fwhm[position] = float(mzs[index]) / resolving_power
+    weighted = mzs * intensities
+    totals = intensities.copy()
+    for index in dropped:
+        distance = np.abs(mzs[kept] - mzs[index])
+        within = np.flatnonzero(distance < fwhm)
+        if not within.size:
+            continue
+        nearest = int(kept[within[np.argmin(distance[within])]])
+        weighted[nearest] += mzs[index] * intensities[index]
+        totals[nearest] += intensities[index]
+    folded_mzs = mzs.copy()
+    folded = kept[totals[kept] > intensities[kept]]
+    folded_mzs[folded] = weighted[folded] / totals[folded]
+    return folded_mzs, totals
 
 
 def _empty_isotope_data() -> dict[str, np.ndarray | list[str]]:
