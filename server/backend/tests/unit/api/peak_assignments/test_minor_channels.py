@@ -25,6 +25,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     PARTNER_GATE_LIST,
     apply_partner_gates,
     hold_opened_channel_readings,
+    listed_formula_identities,
     untargeted_matches_to_peak_assignments,
 )
 from mascope_backend.api.new.peak_assignments.profiles import (
@@ -72,7 +73,7 @@ def _match(mz, formula, ion, mechanism, score, isotope_label="M0"):
     }
 
 
-def _assign(matches, peaks, minor=frozenset({"[M+NH4]+"})):
+def _assign(matches, peaks, minor=frozenset({"[M+NH4]+"}), listed=None):
     return untargeted_matches_to_peak_assignments(
         pd.DataFrame(matches),
         peaks_df=peaks,
@@ -83,6 +84,7 @@ def _assign(matches, peaks, minor=frozenset({"[M+NH4]+"})):
         mechanism_id_by_notation=MECHANISM_IDS,
         max_alternatives=5,
         minor_channels=minor,
+        listed_formulas=listed,
     )
 
 
@@ -139,9 +141,12 @@ class TestTheCorroborationCap:
         assert rows[0]["provenance"]["minor_channel"] == {
             "corroborated_by": None,
             "capped": True,
+            "isotopologue": False,
         }
 
-    def test_a_confirmed_isotopologue_corroborates(self):
+    def test_an_isotopologue_alone_does_not_lift_the_cap(self):
+        # Step 3.4: a 13C line proves the ion's carbon count, never which
+        # neutral clustered with the channel's carrier.
         peaks = _peaks(("p1", 200.0, 1.0e6), ("p2", 201.0034, 1.0e5))
         rows = _assign(
             [
@@ -150,9 +155,71 @@ class TestTheCorroborationCap:
             ],
             peaks,
         )
-        m0 = [r for r in rows if r["role"] == "M0"][0]
+        (m0,) = [r for r in rows if r["role"] == "M0"]
+        assert m0["tier"] == TIER_CANDIDATE
+        assert m0["provenance"]["minor_channel"] == {
+            "corroborated_by": None,
+            "capped": True,
+            "isotopologue": True,
+        }
+        # The line is still the row's, and still counts toward its band.
+        (line,) = [r for r in rows if r["role"] == "iso_child"]
+        assert line["owner_peak_assignment_id"] == m0["peak_assignment_id"]
+
+    @pytest.mark.parametrize("with_line", [False, True], ids=["alone", "with_line"])
+    def test_a_list_naming_the_neutral_corroborates(self, with_line):
+        specs = [("p1", 200.0, 1.0e6)]
+        matches = [_match(200.0, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.99)]
+        if with_line:
+            specs.append(("p2", 201.0034, 1.0e5))
+            matches.append(
+                _match(201.0034, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.99, "13C")
+            )
+        rows = _assign(matches, _peaks(*specs), listed=frozenset({"C9H14O3"}))
+        (m0,) = [r for r in rows if r["role"] == "M0"]
         assert m0["tier"] == TIER_ASSIGNED
-        assert m0["provenance"]["minor_channel"]["corroborated_by"] == "isotopologue"
+        assert m0["provenance"]["minor_channel"] == {
+            "corroborated_by": "list",
+            "capped": False,
+            "isotopologue": with_line,
+        }
+
+    def test_a_list_naming_another_neutral_does_not(self):
+        peaks = _peaks(("p1", 200.0, 1.0e6))
+        rows = _assign(
+            [_match(200.0, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.99)],
+            peaks,
+            listed=frozenset({"C9H16O3"}),
+        )
+        assert rows[0]["tier"] == TIER_CANDIDATE
+        assert rows[0]["provenance"]["minor_channel"]["corroborated_by"] is None
+
+    def test_a_list_is_read_by_composition_not_spelling(self):
+        listed = listed_formula_identities(
+            pd.DataFrame({"target_compound_formula": ["O3C9H14", None]})
+        )
+        assert listed == frozenset({"C9H14O3"})
+        rows = _assign(
+            [_match(200.0, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.99)],
+            _peaks(("p1", 200.0, 1.0e6)),
+            listed=listed,
+        )
+        assert rows[0]["provenance"]["minor_channel"]["corroborated_by"] == "list"
+
+    def test_the_list_is_named_before_a_second_channel(self):
+        # The list is the corroboration no later pass takes away, so it is the
+        # one recorded where both hold.
+        peaks = _peaks(("p1", 200.0, 1.0e6), ("p2", 300.0, 5.0e5))
+        rows = _assign(
+            [
+                _match(200.0, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.99),
+                _match(300.0, "C9H14O3", "C9H15O3+", "[M+H]+", 0.99),
+            ],
+            peaks,
+            listed=frozenset({"C9H14O3"}),
+        )
+        minor = [r for r in rows if r["ionization_mechanism_id"] == "im-nh4"][0]
+        assert minor["provenance"]["minor_channel"]["corroborated_by"] == "list"
 
     def test_the_same_neutral_on_a_primary_channel_corroborates(self):
         # Two different peaks: the secondary channel owns one that no primary
@@ -170,6 +237,18 @@ class TestTheCorroborationCap:
         assert (
             minor["provenance"]["minor_channel"]["corroborated_by"] == "second_channel"
         )
+
+    def test_the_same_neutral_on_another_secondary_channel_does_not(self):
+        peaks = _peaks(("p1", 200.0, 1.0e6), ("p2", 300.0, 5.0e5))
+        rows = _assign(
+            [
+                _match(200.0, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.99),
+                _match(300.0, "C9H14O3", "C9H15O3+", "[M+H]+", 0.99),
+            ],
+            peaks,
+            minor=frozenset({"[M+NH4]+", "[M+H]+"}),
+        )
+        assert {r["tier"] for r in rows} == {TIER_CANDIDATE}
 
     def test_a_primary_channel_row_carries_no_minor_verdict(self):
         peaks = _peaks(("p1", 200.0, 1.0e6))
@@ -391,12 +470,57 @@ class TestThePartnerGate:
         assert by_peak["p1"]["ionization_mechanism_id"] == "im-formate"
         assert by_peak["p1"]["provenance"]["partner_gate"]["partner"] is True
         assert by_peak["p1"]["tier"] == TIER_ASSIGNED
+        assert by_peak["p1"]["provenance"]["minor_channel"] == {
+            "corroborated_by": "second_channel",
+            "capped": False,
+            "isotopologue": False,
+        }
         # The acid reading the swap back displaced is one the sample
         # settled, not one it failed to bear out: it stays a rival for the
         # cross-channel pass to record as settled.
         [acid] = by_peak["p1"]["alternatives"]
         assert acid["assigned_formula"] == "C11H20O7"
         assert "partner_gate" not in acid
+
+    def test_a_swapped_row_records_its_isotopologue(self):
+        # The gate writes the verdict of a row it swaps onto another
+        # opportunistic reading (and back) itself: it records the row's 13C
+        # line as the policy does, so a later cap's reason can name it.
+        peaks = _peaks(
+            ("p1", 263.1136, 1.0e6), ("p1c", 264.1170, 1.1e5), ("p2", 217.1081, 6.0e5)
+        )
+        rows = self._assign(
+            [
+                {
+                    **_match(263.1136, "C10H18O5", "C11H19O7-", "[M+HCOO]-", 0.99),
+                    "same_ion_alternatives": self._family(
+                        ("C11H20O7", "C11H19O7-", "[M-H]-")
+                    ),
+                },
+                _match(264.1170, "C10H18O5", "C11H19O7-", "[M+HCOO]-", 0.99, "13C"),
+                {
+                    **_match(217.1081, "C9H16O3", "C10H17O5-", "[M+HCOO]-", 0.99),
+                    "same_ion_alternatives": self._family(
+                        ("C10H18O5", "C10H17O5-", "[M-H]-")
+                    ),
+                },
+            ],
+            peaks,
+            self.IDS,
+            minor={"[M+HCOO]-"},
+            gated={"[M+HCOO]-"},
+        )
+        (p1,) = [r for r in rows if r["role"] == "M0" and r["sample_peak_id"] == "p1"]
+        assert p1["assigned_formula"] == "C10H18O5"
+        assert p1["ionization_mechanism_id"] == "im-formate"
+        assert p1["provenance"]["partner_gate"].get("returned") is True
+        assert p1["provenance"]["minor_channel"] == {
+            "corroborated_by": "second_channel",
+            "capped": False,
+            "isotopologue": True,
+        }
+        (line,) = [r for r in rows if r["role"] == "iso_child"]
+        assert line["owner_peak_assignment_id"] == p1["peak_assignment_id"]
 
     def test_a_reference_list_row_is_the_partner_and_lifts_the_cap(self):
         # The C10 product is a Stage A match, not a search row: the policy
@@ -438,6 +562,7 @@ class TestThePartnerGate:
         assert formate[0]["provenance"]["minor_channel"] == {
             "corroborated_by": "second_channel",
             "capped": False,
+            "isotopologue": False,
         }
 
     def test_a_reference_list_acid_is_not_doubted_for_an_unmet_formate_reading(self):
@@ -619,6 +744,21 @@ class TestThePartnerGate:
             "capped": True,
         }
         assert formate["provenance"]["partner_gate"]["recapped"] is True
+
+    def test_a_list_s_corroboration_is_not_taken_back(self):
+        # The same row, corroborated by a list naming its neutral: no partner
+        # is gone, so the cap stays off.
+        below = self._row("b", "C10H18O5", "im-deprot", tier="below_assignability")
+        formate = self._row("f", "C10H18O5", "im-formate")
+        formate["provenance"]["minor_channel"] = {
+            "corroborated_by": "list",
+            "capped": False,
+            "isotopologue": False,
+        }
+        self._gate([below, formate], self.IDS, minor={"[M+HCOO]-"}, gated={"[M+HCOO]-"})
+        assert formate["tier"] == TIER_ASSIGNED
+        assert formate["provenance"]["minor_channel"]["capped"] is False
+        assert "recapped" not in formate["provenance"]["partner_gate"]
 
     @pytest.mark.parametrize(
         "ceiling", [TIER_CANDIDATE, "below_assignability"], ids=["at", "below"]
@@ -812,6 +952,7 @@ class TestTheStrongerPartnerDecides:
         assert benzyl["provenance"]["minor_channel"] == {
             "corroborated_by": "second_channel",
             "capped": False,
+            "isotopologue": False,
         }
         assert benzyl["provenance"]["partner_gate"] == {
             "channel": "[M-H]+",

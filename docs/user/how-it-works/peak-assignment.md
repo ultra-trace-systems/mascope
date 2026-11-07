@@ -204,14 +204,26 @@ them again. The run's snapshot lists a channel as unavailable where its mechanis
 missing all the same, which on a current server means the start could not create it, and
 its log says why.
 
+**What lets a secondary channel's reading reach assigned.** A formula the search reads
+through a secondary channel, carbonate on a nitrate source or ammonium on a uronium one,
+is capped at *candidate* unless something says which molecule clustered with the
+channel's carrier: a loaded reference list or your target library names the molecule, or
+the sample commits the same molecule through one of the mode's own channels. The
+reading's own isotope lines are not enough on their own. A 13C line proves how many
+carbons the ion holds, never which molecule clustered: benzene and methanol read through
+the carbonate channel reached *assigned* on that line alone. The lines still count for
+the reading as any line does, in its fit and as a second peak of its ion (*one peak
+only*, below). The row's verdict records whether it had them.
+
 **A list through the channels a run opens.** A reference list names a compound, not the
 channel it is seen through, so Stage A reads a list through the channels the run opened
 for itself as well as through the mode's own mechanisms. On a charge-transfer source,
 whose mode declares electron transfer alone, a cyclic siloxane's methyl-loss ion, its
 base peak there, and its protonated molecule beside it are named from the list. A
-reading through an opened channel is held to the rules the search's readings through
-that channel are: it is capped at *candidate* unless its own isotope lines or the same
-compound through one of the mode's own channels corroborate it, and through a channel
+reading through an opened channel is capped at *candidate* unless its own isotope lines
+or the same compound through one of the mode's own channels corroborate it. The list
+already names its molecule, which is what a search's reading has to find elsewhere, so
+here an isotope line is enough. Through a channel
 that needs the compound shown elsewhere (hydride abstraction, proton transfer, methyl
 loss, deprotonation on the charge-transfer source, formate on a reagent source), it
 stands only where the sample commits the compound through one of the mode's own
@@ -759,8 +771,10 @@ What caps a row at candidate:
 - **off calibration** and **minor channel only** — caps the run applied earlier, restated
   here so every reason is in one place: a mass error far from the run's own fitted
   calibration with nothing corroborating it; and a commitment through a channel the
-  ionization mode treats as secondary, with no isotopologue or second channel behind it.
-  The last applies to the formula search's own results only. The calibration check
+  ionization mode treats as secondary with nothing naming its molecule: for the formula
+  search's results, no second channel and no list behind it, however many isotope lines
+  it has; for a list's reading through a channel the run opened, no isotope line and no
+  second channel. The calibration check
   exempts only a line one of whose isotopologues tracks its mass error: your library's
   lines help measure the calibration, but a list names a compound rather than where each
   of its lines has to sit, so a line of it far off calibration with no isotopologue

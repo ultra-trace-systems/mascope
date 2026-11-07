@@ -478,14 +478,33 @@ def earlier_reasons(row: dict) -> list[dict]:
     minor_channel = provenance.get("minor_channel") or {}
     if minor_channel.get("capped"):
         reasons.append(
-            _reason(
-                REASON_MINOR_CHANNEL,
-                "committed through a channel this mode treats as secondary, "
-                "with no isotopologue and no second channel behind it",
-                caps=True,
-            )
+            _reason(REASON_MINOR_CHANNEL, minor_channel_detail(row), caps=True)
         )
     return reasons
+
+
+def minor_channel_detail(row: dict) -> str:
+    """What the minor-channel cap says about a row it held at candidate.
+
+    A list's reading through a channel the run opened is held for want of an
+    isotopologue or a second channel (``engine.hold_opened_channel_readings``);
+    a search row for want of a second channel or a list, its isotopologue
+    being no answer to which neutral clustered (step 3.4,
+    ``engine._apply_minor_channel_policy``).
+
+    :param row: A row the cap holds.
+    :return: The reason's sentence.
+    """
+    through = "committed through a channel this mode treats as secondary"
+    if row.get("source") == SOURCE_DATABASE:
+        return f"{through}, with no isotopologue and no second channel behind it"
+    detail = f"{through}, with no second channel and no list behind it"
+    if (_provenance(row).get("minor_channel") or {}).get("isotopologue"):
+        detail += (
+            "; its isotopologue gives the ion's carbon count, not which neutral "
+            "clustered"
+        )
+    return detail
 
 
 def _count_word(count: int) -> str:
