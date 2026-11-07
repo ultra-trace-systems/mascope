@@ -202,6 +202,17 @@ class TestClientContract:
         assert "sample_batch_id" in df.columns
         assert "sample_batch_name" in df.columns
 
+    def test_a_listed_batch_spans_its_samples(self, mascope):
+        """The span ``mascope_viz``'s ``resolve`` passes over a batch by: its
+        samples' own ``datetime_utc``, as the samples listing gives them."""
+        batch = _first_batches(mascope).iloc[0]
+
+        samples = mascope.samples.list(batch["sample_batch_id"])
+
+        assert batch["first_sample_datetime_utc"] == samples["datetime_utc"].min()
+        assert batch["last_sample_datetime_utc"] == samples["datetime_utc"].max()
+        assert list(batch["sample_instruments"]) == sorted(set(samples["instrument"]))
+
     def test_samples_listing_shape(self, mascope):
         batch = _first_batches(mascope).iloc[0]
 

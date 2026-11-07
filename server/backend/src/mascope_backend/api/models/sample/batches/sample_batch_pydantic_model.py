@@ -140,6 +140,36 @@ class SampleBatchRead(SampleBatchBase):
     )
 
 
+class SampleBatchListed(SampleBatchRead):
+    """A batch as the batch listing gives it: with the span of its samples.
+
+    The span lets a caller after a time range pass over a batch that holds
+    none of it without listing its samples (``mascope_viz``'s ``resolve``).
+    A sample's time is its file's start, as the samples listing gives it."""
+
+    first_sample_datetime_utc: datetime | None = Field(
+        None,
+        description=(
+            "The earliest start of a file of the batch's samples; null for a "
+            "batch with no sample"
+        ),
+    )
+    last_sample_datetime_utc: datetime | None = Field(
+        None,
+        description=(
+            "The latest start of a file of the batch's samples; null for a "
+            "batch with no sample"
+        ),
+    )
+    sample_instruments: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The instruments of the batch's samples' files, sorted; empty for "
+            "a batch with no sample"
+        ),
+    )
+
+
 class SampleBatchUpdate(SampleBatchBaseValidator, BaseModel):
     """
     Model for updating sample batches - only user-editable fields.
