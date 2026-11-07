@@ -166,7 +166,11 @@ predicts one line per peak the file can separate, at the file's own resolving po
 the run can read one (`heuristic_filter.merge_unresolved_lines`, carried on
 `PatternScoring.resolution`). From the brightest line not yet taken, every line not yet
 taken within half a FWHM either side of it is one line: $p_i$ is the sum of their shares
-and its m/z their abundance-weighted centre. The targeted path does not do this yet: its
+and its m/z their abundance-weighted centre. The envelope's floor then applies to these
+lines, and a line under it that sits less than one FWHM from a kept line is added to that
+line rather than dropped: one peak of that width does not separate the two (#2591; the
+15N line of C4H8NO+ at a resolving power of 8000 is 6.3 mDa from its 13C line, where
+half a FWHM is 5.4 mDa). The targeted path does not do this yet: its
 TOF library bins with the same half-FWHM width, but only the lines over its 1% floor, so
 its line at the 13C position is still the 13C line alone (#2587). A file with no
 resolution read is scored one line per isotopologue.
