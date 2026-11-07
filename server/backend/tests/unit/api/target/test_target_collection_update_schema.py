@@ -1,9 +1,10 @@
-"""Tests: the collection update schema says its compound fields replace the list.
+"""Tests: the collection update schema says its compound and batch fields replace.
 
 ``update_target_collection`` removes every compound that neither
 ``target_compound_ids`` nor ``target_compounds_create`` names, so a client that
 reads "added" in the schema and sends one new compound empties the rest of the
-collection. The create model's fields do add, and keep their wording.
+collection. ``sample_batch_ids`` is the same: a batch it does not name is
+detached. The create model's fields do add, and keep their wording.
 """
 
 import pytest
@@ -16,18 +17,19 @@ from mascope_backend.app.fast import fast
 
 
 _COMPOUND_FIELDS = ("target_compounds_create", "target_compound_ids")
+_REPLACE_FIELDS = (*_COMPOUND_FIELDS, "sample_batch_ids")
 
 
-@pytest.mark.parametrize("field", _COMPOUND_FIELDS)
-def test_update_compound_fields_say_they_replace(field):
+@pytest.mark.parametrize("field", _REPLACE_FIELDS)
+def test_update_list_fields_say_they_replace(field):
     description = TargetCollectionUpdate.model_json_schema()["properties"][field][
         "description"
     ]
     assert "replace" in description
 
 
-@pytest.mark.parametrize("field", _COMPOUND_FIELDS)
-def test_create_compound_fields_do_not_say_replace(field):
+@pytest.mark.parametrize("field", _REPLACE_FIELDS)
+def test_create_list_fields_do_not_say_replace(field):
     description = TargetCollectionCreate.model_json_schema()["properties"][field][
         "description"
     ]
@@ -40,6 +42,15 @@ def test_update_operation_description_says_it_replaces():
     ]["patch"]
     description = " ".join(operation["description"].split())
     assert "replace the collection's compound list" in description
+    assert "replace the collection's batch list" in description
+
+
+def test_update_batch_field_says_unnamed_batches_are_detached():
+    description = TargetCollectionUpdate.model_json_schema()["properties"][
+        "sample_batch_ids"
+    ]["description"]
+    assert "detached" in description
+    assert "send the current ids too" in description
 
 
 # The guard against changing compounds and batches in one request reads each
