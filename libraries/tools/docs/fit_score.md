@@ -272,7 +272,8 @@ all: it keeps it where its share reads within $40\%$ of the prediction
 file with a curve the window opens down to $\min(0.6,\, \ell(p_i s_0))$, so a
 censored line the curve admits is matched rather than charged as a miss
 (mascope#2502). Its upper end stays at $1.4$, the guard against an unrelated peak, and
-a line with no base SNR keeps the fixed window.
+a line whose base SNR is missing or not above 0, which the score reads as unknown
+too, keeps the fixed window.
 
 ### 3.3 Detectability gate (censoring at the detection limit)
 
