@@ -183,9 +183,14 @@ class FakeAPI:
 
     :ivar calls: Each request, as ``(path, params)``.
     :ivar files: The files the files listing lists.
+    :ivar spans: Whether the batch listing gives each batch's span and
+        instruments, as a server since the span does; one before it does not.
+    :ivar no_span: Batches the listing gives no span, as an empty one.
     """
 
-    def __init__(self):
+    def __init__(self, spans: bool = True):
+        self.spans = spans
+        self.no_span: set[str] = set()
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.failures: list[tuple[re.Pattern, int]] = []
         self.files = copy.deepcopy(FILES)
@@ -239,6 +244,7 @@ class FakeAPI:
                     "sample_batch_name": name,
                     "dataset_id": d,
                     "polarity": "+-" if b == "b2" else "-",
+                    **(self._span(b) if self.spans else {}),
                 }
                 for b, (d, name) in BATCHES.items()
                 if d == params.get("dataset_id")
@@ -295,6 +301,26 @@ class FakeAPI:
             return 200, _envelope(rows, results=len(rows))
         return 404, {"error": "no route"}
 
+    def _span(self, batch: str) -> dict[str, Any]:
+        """A batch's span and instruments, as the listing gives them."""
+        rows = [row for row in SAMPLES.values() if row["sample_batch_id"] == batch]
+        if batch in self.no_span or not rows:
+            return {
+                "first_sample_datetime_utc": None,
+                "last_sample_datetime_utc": None,
+                "sample_instruments": [],
+            }
+        times = [row["datetime_utc"] for row in rows]
+        return {
+            "first_sample_datetime_utc": min(times, key=pd.Timestamp),
+            # The server writes a fraction of a second only where there is
+            # one: a column of both is text to the SDK
+            "last_sample_datetime_utc": pd.Timestamp(
+                max(times, key=pd.Timestamp)
+            ).isoformat(timespec="microseconds" if batch == "b1" else "auto"),
+            "sample_instruments": sorted({row["instrument"] for row in rows}),
+        }
+
     def _file_page(self, params: dict[str, Any]) -> dict[str, Any]:
         rows = self.files
         if "datetime_min" in params:
@@ -313,11 +339,13 @@ class FakeAPI:
         }
 
 
-@pytest.fixture
-def api(monkeypatch) -> FakeAPI:
+@pytest.fixture(params=["spans", "no spans"])
+def api(request, monkeypatch) -> FakeAPI:
+    """Every test runs on a server whose batch listing gives the batches'
+    spans and on one before it: a scope resolves the same on both."""
     from mascope_sdk import _http
 
-    fake = FakeAPI()
+    fake = FakeAPI(spans=request.param == "spans")
     monkeypatch.setattr(_http.requests, "get", fake.get)
     # The SDK backs off between attempts at a transient failure
     monkeypatch.setattr(_http.time, "sleep", lambda seconds: None)
@@ -573,6 +601,220 @@ class TestATimeRange:
 
         assert resolved.timezone is None
         assert resolved.display_tz == "UTC"
+
+
+def _sampled(api: FakeAPI) -> set[str]:
+    """The batches whose samples were listed."""
+    return {params["sample_batch_id"] for params in api.requests_to("samples")}
+
+
+class TestTheBatchesSpans:
+    """A batch the listing says the range cannot reach has its samples left
+    unlisted; a server that gives no span has them all listed, as before."""
+
+    ALL = {"b1", "b2", "b3", "b4", "b5"}
+
+    def test_a_range_lists_the_samples_of_the_batches_it_reaches(self, client, api):
+        resolved = resolve(
+            client,
+            Scope(
+                dataset="Campaign 2026",
+                start=f"{DAYS[1]}T00:00Z",
+                end=f"{DAYS[2]}T00:00Z",
+            ),
+        )
+
+        assert _ids(resolved.batches, "sample_batch_id") == ["b2", "b3"]
+        # The second day's batch reaches 22:30 UTC the day before; the
+        # third's starts at 22:30 UTC on the second
+        assert _sampled(api) == ({"b2", "b3"} if api.spans else self.ALL)
+
+    def test_a_bound_without_a_zone_reaches_a_day_further(self, client, api):
+        """19:00 in Helsinki is 17:00 UTC: read as UTC, the bound would pass
+        over the first day's 20:00 sample (18:00 UTC)."""
+        resolved = resolve(
+            client,
+            Scope(dataset="Campaign 2026", start=f"{DAYS[0]} 19:00", end=DAYS[1]),
+        )
+
+        batches = resolved.batches.set_index("sample_batch_id")
+        assert list(batches.index) == ["b1"]
+        assert batches.loc["b1", "n_samples"] == 1
+        # Its span in the scope, not the listing's of the whole batch
+        assert batches.loc["b1", "first_datetime_utc"] == _utc(DAYS[0], "20:00")
+        assert _sampled(api) == ({"b1", "b2", "b3"} if api.spans else self.ALL)
+
+    def test_a_batch_with_no_span_has_its_samples_listed(self, client, api):
+        api.no_span = {"b1"}
+
+        resolved = resolve(
+            client,
+            Scope(
+                dataset="Campaign 2026",
+                start=f"{DAYS[1]}T00:00Z",
+                end=f"{DAYS[2]}T00:00Z",
+            ),
+        )
+
+        assert _ids(resolved.batches, "sample_batch_id") == ["b2", "b3"]
+        assert _sampled(api) == ({"b1", "b2", "b3"} if api.spans else self.ALL)
+
+    def test_a_range_no_batch_reaches_keeps_the_datasets_instrument(self, client, api):
+        """No sample is listed, but the files in range are still those of the
+        instrument the batches' samples are on, not of every instrument."""
+        resolved = resolve(
+            client,
+            Scope(
+                dataset="Campaign 2026",
+                start=f"{GAP_DAY}T00:00+02:00",
+                end="2026-03-07T00:00+02:00",
+            ),
+        )
+
+        assert resolved.batches.empty
+        assert _ids(resolved.files, "sample_file_id") == [
+            f"f-gap-{n}" for n in range(4)
+        ]
+        assert not resolved.files["in_batch"].any()
+        assert [
+            params.get("instrument") for params in api.requests_to("sample/files")
+        ] == ["instrument X"]
+        assert _sampled(api) == (set() if api.spans else self.ALL)
+
+    def test_a_range_alone_lists_the_files_of_every_instrument_as_before(
+        self, client, api
+    ):
+        """Instrument Y's batches are in January: the range passes over
+        their samples, not over its files."""
+        resolved = resolve(
+            client, Scope(start="2026-03-01T00:00Z", end="2026-03-07T00:00Z")
+        )
+
+        assert _ids(resolved.batches, "sample_batch_id") == ["b1", "b2", "b3", "b4"]
+        assert {params["instrument"] for params in api.requests_to("sample/files")} == {
+            "instrument X",
+            "instrument Y",
+        }
+        assert _sampled(api) == (
+            {"b1", "b2", "b3", "b4"} if api.spans else self.ALL | {"b6", "b7", "b8"}
+        )
+
+    @staticmethod
+    def _add_a_y_file_in_march(api: FakeAPI) -> None:
+        """Instrument Y's January batches are skipped, but their instrument
+        gets a file in range."""
+        moment = pd.Timestamp("2026-03-04T12:00Z")
+        api.files.append(
+            {
+                **RECORDED["file_row"],
+                "sample_file_id": "f-y-march",
+                "filename": "f-y-march.raw",
+                "instrument": "instrument Y",
+                "datetime_utc": moment.isoformat(),
+                "datetime": moment.tz_convert(ZONE).tz_localize(None).isoformat(),
+                "polarity": "+",
+                "acquisition_timezone": ZONE,
+            }
+        )
+        api.files.sort(key=lambda row: row["datetime_utc"])
+
+    @pytest.mark.parametrize(
+        ("narrowed", "n_files"),
+        # A mode keeps every file of its instrument in range; a polarity only
+        # the files of that polarity
+        [({"mode": "im-h"}, 17), ({"polarity": "+"}, 1)],
+        ids=["mode", "polarity"],
+    )
+    def test_a_mode_scope_lists_no_other_instruments_files(
+        self, client, api, narrowed, n_files
+    ):
+        """A mode or a polarity only instrument X's samples have must leave
+        instrument Y's file out, as it does when Y's samples are listed."""
+        self._add_a_y_file_in_march(api)
+
+        resolved = resolve(
+            client,
+            Scope(**narrowed, start="2026-03-01T00:00Z", end="2026-03-07T00:00Z"),
+        )
+
+        assert _ids(resolved.batches, "sample_batch_id") == ["b2"]
+        assert "f-y-march" not in set(resolved.files["sample_file_id"])
+        assert len(resolved.files) == n_files
+        assert {params["instrument"] for params in api.requests_to("sample/files")} == {
+            "instrument X"
+        }
+        # Instrument Y's batches are listed to see that no sample is the
+        # scope's; instrument X's out of range need not be
+        assert _sampled(api) == (
+            {"b1", "b2", "b3", "b4", "b7", "b8"}
+            if api.spans
+            else TestTheBatchesSpans.ALL | {"b6", "b7", "b8"}
+        )
+
+    def test_another_instruments_sample_in_range_does_not_vouch_for_it(
+        self, client, api, monkeypatch
+    ):
+        """An instrument-Y sample of another mode in a batch in range is not
+        the scope's: Y's batches out of range are still listed, and Y's file
+        stays out."""
+        monkeypatch.setitem(
+            SAMPLES,
+            "s-b2-y",
+            {
+                **SAMPLES["s-b2-pos"],
+                "sample_item_id": "s-b2-y",
+                "sample_item_name": "s-b2-y",
+                "sample_file_id": "f-s-b2-y",
+                "instrument": "instrument Y",
+                "ionization_mode_id": "im-no3",
+            },
+        )
+        self._add_a_y_file_in_march(api)
+
+        resolved = resolve(
+            client,
+            Scope(mode="im-h", start="2026-03-01T00:00Z", end="2026-03-07T00:00Z"),
+        )
+
+        assert _ids(resolved.batches, "sample_batch_id") == ["b2"]
+        assert "f-y-march" not in set(resolved.files["sample_file_id"])
+        assert {"b7", "b8"} <= _sampled(api)
+
+    def test_a_scope_naming_its_instrument_lists_no_skipped_batch(self, client, api):
+        """Its files are the instrument's whatever a skipped batch holds."""
+        resolved = resolve(
+            client,
+            Scope(
+                dataset="Campaign 2026",
+                instrument="instrument X",
+                mode="im-h",
+                start=f"{DAYS[2]}T00:00Z",
+                end=f"{DAYS[3]}T00:00Z",
+            ),
+        )
+
+        assert resolved.batches.empty
+        assert len(resolved.files) == 3
+        assert _sampled(api) == ({"b3", "b4"} if api.spans else self.ALL)
+
+    def test_a_batch_ending_on_an_aware_start_is_read(self, client, api):
+        """Its last sample is at the start, which the range holds."""
+        last = _utc(DAYS[0], LOCAL_TIMES[-1])
+
+        resolved = resolve(
+            client,
+            Scope(
+                dataset="Campaign 2026",
+                start=last.isoformat(),
+                end=(last + pd.Timedelta(hours=1)).isoformat(),
+            ),
+        )
+
+        batches = resolved.batches.set_index("sample_batch_id")
+        assert list(batches.index) == ["b1"]
+        assert batches.loc["b1", "n_samples"] == 1
+        assert batches.loc["b1", "first_datetime_utc"] == last
+        assert "b1" in _sampled(api)
 
 
 class TestAmbiguity:

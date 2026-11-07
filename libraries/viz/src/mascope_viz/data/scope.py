@@ -480,6 +480,42 @@ def _batches(client: "MascopeClient", datasets: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+def _outside(
+    batches: pd.DataFrame, lo: pd.Timestamp | None, hi: pd.Timestamp | None
+) -> pd.Series:
+    """Which *batches* the listing says hold no sample from *lo* up to *hi*.
+
+    By the span the batch listing gives each batch (``first_sample_datetime_utc``,
+    ``last_sample_datetime_utc``), which is its samples' ``datetime_utc``. A batch
+    with no span, an empty one or one a server older than the span lists,
+    is not outside: its samples are listed to see."""
+    outside = pd.Series(False, index=batches.index)
+    if "first_sample_datetime_utc" not in batches:
+        return outside
+    # A missing span is NaT, which compares false either way
+    if lo is not None:
+        outside |= _instants(batches["last_sample_datetime_utc"]) < lo
+    if hi is not None:
+        outside |= _instants(batches["first_sample_datetime_utc"]) >= hi
+    return outside
+
+
+def _instants(times: pd.Series) -> pd.Series:
+    """Listed times in UTC. The listing writes a time with whole seconds
+    without its fraction, so the SDK can leave a column of both as text."""
+    return pd.to_datetime(times, utc=True, format="ISO8601")
+
+
+def _around(moment: pd.Timestamp | None, margin: pd.Timedelta) -> pd.Timestamp | None:
+    """*moment* in UTC; one without a zone, which may be in any, read as UTC
+    and moved by *margin*."""
+    if moment is None:
+        return None
+    if moment.tzinfo is not None:
+        return moment.tz_convert("UTC")
+    return moment.tz_localize("UTC") + margin
+
+
 def _samples(client: "MascopeClient", batches: pd.DataFrame) -> pd.DataFrame:
     frames = []
     for batch_id, batch_name, dataset_id in zip(
@@ -742,23 +778,57 @@ def resolve(client: "MascopeClient", scope: Scope) -> ResolvedScope:
             return _undecided(scope, candidates)
         pool = pool[pool["sample_batch_id"].isin(chosen_ids)]
 
-    samples = _samples(client, pool)
+    # The batches the range cannot reach, by their span: before the bounds'
+    # zone is known, so a bound without one is taken a day either way
+    outside = _outside(
+        pool, _around(scope.start, -_ZONE_MARGIN), _around(scope.end, _ZONE_MARGIN)
+    )
+    samples = _samples(client, pool[~outside])
+
+    def kept(listed: pd.DataFrame) -> pd.DataFrame:
+        keep = pd.Series(True, index=listed.index)
+        if instrument is not None:
+            keep &= listed["instrument"] == instrument
+        if scope.polarity is not None:
+            keep &= listed["polarity"] == scope.polarity
+        if mode is not None:
+            keep &= listed["ionization_mode_id"] == mode
+        return listed[keep]
+
+    if (
+        outside.any()
+        and instrument is None
+        and (scope.polarity is not None or mode is not None)
+    ):
+        # The listing names a batch's instruments before the polarity and
+        # mode: a skipped batch that would add one has its samples listed,
+        # to see whether any of them is the scope's. A scope that names its
+        # instrument takes no other's, so it needs none of them
+        known = {str(name) for name in kept(samples)["instrument"].dropna()}
+        unsure = outside & pool["sample_instruments"].map(
+            lambda row: not {str(name) for name in row} <= known
+        )
+        if unsure.any():
+            samples = pd.concat(
+                [samples, _samples(client, pool[unsure])], ignore_index=True
+            )
+            outside &= ~unsure
     of_batches = set(samples["sample_file_id"].dropna())
-    keep = pd.Series(True, index=samples.index)
-    if instrument is not None:
-        keep &= samples["instrument"] == instrument
-    if scope.polarity is not None:
-        keep &= samples["polarity"] == scope.polarity
-    if mode is not None:
-        keep &= samples["ionization_mode_id"] == mode
-    samples = samples[keep]
+    samples = kept(samples)
 
     if instrument is not None:
         instruments: list[str | None] = [instrument]
     else:
-        instruments = sorted(
-            {str(name) for name in samples["instrument"].dropna()}
-        ) or [None]
+        names = {str(name) for name in samples["instrument"].dropna()}
+        if outside.any():
+            # Their samples go unlisted, but their instruments' files in
+            # range are still the scope's
+            names |= {
+                str(name)
+                for row in pool.loc[outside, "sample_instruments"]
+                for name in row
+            }
+        instruments = sorted(names) or [None]
 
     # The bounds in UTC, and the instrument's zone from its files
     naive = [

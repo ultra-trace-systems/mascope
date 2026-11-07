@@ -29,7 +29,10 @@ resolved.key  # the same short hash for every spelling of the scope
 
 A time without a zone is in the instrument's acquisition zone (`tz=` names
 another), and a sample is in the range when its file started in it, the end
-excluded. Names match as literal text, a compiled `re.Pattern` as a regex;
+excluded. With a range, only the batches whose samples reach it have their
+samples listed: the batch listing gives each batch's span, so a month of a
+long dataset reads that month's batches, not the dataset's. A server older
+than that span gives none, and every batch is read. Names match as literal text, a compiled `re.Pattern` as a regex;
 of `batches`, a string names one batch and a pattern every batch it matches.
 `mode=` takes an ionization mode's name, as `mascope.ionization.modes()`
 lists it; with `instrument=`, only that instrument's modes and those of
