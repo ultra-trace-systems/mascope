@@ -9,8 +9,8 @@ for a rematch pass it - the ionization-mode edit
 covered here through their routes, the target collection create, update and
 delete, a target ion edit, a compound formula change and deletion, a sample
 copy into another batch, and a change of a batch's collections. A rematch
-forced on a batch pending a recalibration that fails puts it back at
-``recalibrate``. A batch without samples still goes to ``ready``, and the
+forced on a batch pending a recalibration puts it back at ``recalibrate``,
+whether it fails or ends with any outcome. A batch without samples still goes to ``ready``, and the
 socket event carries the status each batch holds, not the one asked for.
 """
 
@@ -553,3 +553,58 @@ async def test_a_failed_rematch_keeps_a_recalibrate_flagged_meanwhile(
 
     assert resp.status_code == 202, resp.text
     assert await _status(async_session_factory, batch_id) == "recalibrate"
+
+
+# ============= A finished rematch =============
+
+
+def _step(status):
+    """A removal or compute step that reports ``status`` over one sample."""
+
+    async def _run(**_):
+        return {
+            "status": status,
+            "data": {"total_samples_count": 1, "computed_samples_count": 1},
+        }
+
+    return _run
+
+
+# Each outcome of the (removal, compute) pair, and the status it maps to for
+# a batch that was pending a rematch
+_OUTCOMES = [
+    pytest.param("skipped", "skipped", "ready", id="skipped"),
+    pytest.param("success", "success", "ready", id="success"),
+    pytest.param("skipped", "partial", "rematch", id="partial"),
+    pytest.param("success", "failed", "rematch", id="failed"),
+    pytest.param("failed", "success", "rematch", id="fallback"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("remove_status", "compute_status", "outcome"), _OUTCOMES)
+@pytest.mark.parametrize("before", ["recalibrate", "rematch"])
+async def test_a_finished_rematch_keeps_a_pending_recalibrate(
+    owner_client,
+    async_session_factory,
+    status_dataset,
+    monkeypatch,
+    remove_status,
+    compute_status,
+    outcome,
+    before,
+):
+    """A rematch forced on a batch pending a recalibration ends at
+    ``recalibrate`` whatever its outcome; one pending a rematch ends at the
+    outcome's status."""
+    batch_id = await _batch(async_session_factory, status_dataset, before)
+    monkeypatch.setattr(match_controller, "match_remove_batch", _step(remove_status))
+    monkeypatch.setattr(match_controller, "match_compute_batch", _step(compute_status))
+
+    resp = await owner_client.post(
+        f"/api/match/rematch/batch/{batch_id}", params={"force": True}
+    )
+
+    assert resp.status_code == 202, resp.text
+    expected = "recalibrate" if before == "recalibrate" else outcome
+    assert await _status(async_session_factory, batch_id) == expected

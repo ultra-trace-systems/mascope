@@ -131,7 +131,8 @@ modified, matches may be out of date"*. A batch that already waits for an m/z
 recalibration (a scales icon, after its ionization mode's calibration
 collection changed) keeps that icon: once recalibrated, it is flagged for
 a rematch, which picks up the target changes too. A rematch forced on such a
-batch that fails leaves it waiting for the recalibration.
+batch leaves it waiting for the recalibration, whether it succeeds, matches
+only some samples or fails: a rematch does not re-fit the m/z axis.
 
 - **Click the status icon** to refresh the matches, or right-click the batch
   and choose **Process → Refresh matches**. (**Process → Rematch** rebuilds

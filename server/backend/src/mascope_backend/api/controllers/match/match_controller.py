@@ -1242,6 +1242,24 @@ async def rematch_batches(
     }
 
 
+def _status_after_rematch(started_at: str, outcome_status: str) -> str:
+    """
+    The status a batch ends at after a rematch that started at ``started_at``.
+
+    A rematch forced on a batch waiting for a recalibration leaves it waiting
+    for it, whatever the run's outcome: a rematch never re-fits the m/z axis,
+    so the recalibration is still owed. Otherwise the outcome's status holds.
+
+    :param started_at: The batch's status when the rematch was asked for
+    :type started_at: str
+    :param outcome_status: The status the run's outcome maps to
+    :type outcome_status: str
+    :return: The status to write
+    :rtype: str
+    """
+    return "recalibrate" if started_at == "recalibrate" else outcome_status
+
+
 @api_controller_background_task(
     success_notification_rooms=["sample_batch_id"],
     success_reload=[("match", "sample_batch_id")],
@@ -1263,7 +1281,8 @@ async def rematch_batch(
     - Sets batch status to processing during operation, which locks concurrent rematching
     - Removes orphaned/all matches based on full_remove parameter
     - Computes missing matches
-    - Updates batch status to ready on success or rematch on failure
+    - Updates batch status to ready on success or rematch on failure; a batch
+      forced from recalibrate goes back to recalibrate whatever the outcome
 
     Operation status logic:
     - skipped: No changes made to batch (no orphans to remove, no new matches to compute)
@@ -1475,6 +1494,10 @@ async def rematch_batch(
                 "their samples will rematch on their own once it finishes."
             )
 
+        # A batch the rematch was forced on while it waited for a
+        # recalibration goes back to waiting for it, whatever the outcome
+        result_batch_status = _status_after_rematch(batch_status, result_batch_status)
+
         # Update batch status
         await update_sample_batch_status(
             sample_batch_ids=[sample_batch_id],
@@ -1503,12 +1526,11 @@ async def rematch_batch(
         }
 
     except ApiException as e:
-        # Step 7: Revert status on failure to allow retry rematching. A batch
-        # the rematch was forced on while it waited for a recalibration goes
-        # back to waiting for it: the rematch did not re-fit its m/z axis
+        # Step 7: Revert status on failure to allow retry rematching, or to
+        # the recalibration the batch waited for (_status_after_rematch)
         await update_sample_batch_status(
             sample_batch_ids=[sample_batch_id],
-            status="recalibrate" if batch_status == "recalibrate" else "rematch",
+            status=_status_after_rematch(batch_status, "rematch"),
             independent_transaction=True,  # reload UI status icons
             never_lower=True,
         )
