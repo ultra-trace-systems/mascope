@@ -1039,6 +1039,37 @@ class TestStageHandoff:
         assert set(call.kwargs["known"]) == {181.0707}
 
     @pytest.mark.asyncio
+    async def test_the_search_is_told_what_the_lists_name(self):
+        """Every neutral the lists Stage A read name, matched or not: a
+        secondary-channel winner a list names is corroborated by it (3.4)."""
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p3", 300.1234, 500.0)])
+        recorder = _Recorder()
+        patches = _patches(recorder, peaks, _stage_a_rows())
+        unmatched = _mirror_rows()[:1]
+        unmatched[0]["target_compound_formula"] = "O3C9H14"
+        patches["reference"] = patch(
+            f"{_MOD}._fetch_reference_known_isotopes",
+            new_callable=AsyncMock,
+            return_value=pd.DataFrame(unmatched),
+        )
+        patches["stage_b"] = patch(
+            f"{_MOD}.untargeted_matches_to_peak_assignments",
+            wraps=service.untargeted_matches_to_peak_assignments,
+        )
+        mocks = _start(patches)
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        assert mocks["stage_b"].call_args.kwargs["listed_formulas"] == frozenset(
+            {"C6H12O6", "C9H14O3"}
+        )
+
+    @pytest.mark.asyncio
     async def test_untargeted_stage_is_skipped_when_disabled(self):
         """Stage A only means the composition search is never invoked."""
         from mascope_backend.api.new.peak_assignments.config import (

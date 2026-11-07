@@ -123,6 +123,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     hold_opened_channel_readings,
     invert_matches_to_peak_assignments,
     list_readings,
+    listed_formula_identities,
     pattern_scoring_for,
     pattern_scoring_snapshot,
     record_displaced_list_readings,
@@ -3376,7 +3377,7 @@ async def _stage_a_assignments(
     ionization_setup: dict | None = None,
     inherited_accuracy: SampleMassAccuracy | None = None,
     inherited_envelope: RunEnvelopeFit | None = None,
-) -> tuple[list[dict], dict | None, SampleMassAccuracy, RunEnvelopeFit]:
+) -> tuple[list[dict], dict | None, SampleMassAccuracy, RunEnvelopeFit, frozenset[str]]:
     """Stage A: database-first assignment from the known composition set.
 
     The curated target library plus (when loaded) the reference mirror, matched
@@ -3445,6 +3446,9 @@ async def _stage_a_assignments(
         rows are scored at, and the search and its seeded re-score after them.
         Stage A first scores at today's numbers, since it is its commits that
         the fit reads, and scores its frame again at the fitted tolerance.
+        And the neutrals the lists it read name, matched or not
+        (:func:`listed_formula_identities`), which corroborate a search row
+        through a secondary channel (``engine._apply_minor_channel_policy``).
     """
     stage_a_assignments: list[dict] = []
     confidence_calibration: dict | None = None
@@ -3462,6 +3466,7 @@ async def _stage_a_assignments(
     known_isotopes_df = _combine_known_isotopes(
         target_isotopes_df, reference_isotopes_df
     )
+    listed_formulas = listed_formula_identities(known_isotopes_df)
     if not known_isotopes_df.empty:
         match_isotope_df = await compute_match_isotopes(
             filename=sample.filename,
@@ -3538,6 +3543,7 @@ async def _stage_a_assignments(
             confidence_calibration,
             mass_accuracy,
             inherited_envelope,
+            listed_formulas,
         )
     # The tolerance is fitted on what Stage A committed, which a sample with no
     # library match has nothing of: it can still take its siblings' curve.
@@ -3560,7 +3566,13 @@ async def _stage_a_assignments(
             envelope_tolerance=envelope.tolerance,
         )
         stage_a_assignments = assignments_of(match_isotope_df)
-    return stage_a_assignments, confidence_calibration, mass_accuracy, envelope
+    return (
+        stage_a_assignments,
+        confidence_calibration,
+        mass_accuracy,
+        envelope,
+        listed_formulas,
+    )
 
 
 async def _run_sample_assignment(
@@ -3821,6 +3833,7 @@ async def _assign_sample(
             confidence_calibration,
             mass_accuracy,
             envelope,
+            listed_formulas,
         ) = await _stage_a_assignments(
             sample,
             config,
@@ -4044,6 +4057,7 @@ async def _assign_sample(
                     minor_channels=resolved_profile.minor_channels,
                     excluded_peak_ids=assigned_peak_ids - election.released,
                     fit_by_seed=fit_by_seed,
+                    listed_formulas=listed_formulas,
                 )
                 held = record_displaced_list_readings(
                     stage_b_assignments, election.displaced, config.max_alternatives
@@ -4508,7 +4522,7 @@ async def _fold_sample_peaks_without_run(
     # Stage A's rows here are scored at the tolerance it fits, as a run's are,
     # but there is no run to record it on: the sample's later readers read it
     # at today's numbers, and its siblings' pools leave its lines out (#2989).
-    stage_a, _, mass_accuracy, _envelope = await _stage_a_assignments(
+    stage_a, _, mass_accuracy, _envelope, _listed = await _stage_a_assignments(
         sample,
         config,
         match_params,
