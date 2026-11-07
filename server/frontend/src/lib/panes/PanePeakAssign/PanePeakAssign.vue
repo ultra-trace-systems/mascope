@@ -801,6 +801,14 @@ const ownerReasons = computed(() => {
   return tierReasonsOf(detail?.provenance ?? owner.provenance)
 })
 
+// A peak the instrument did not separate from a neighbouring one names that
+// neighbour beside the reason, as a link that focuses it. A neighbour the
+// sample no longer has - its peaks were found again after the run - is named
+// and says so, but is no link: focusing it would do nothing.
+const neighbourPeak = (reason) =>
+  reason.neighbour ? peakOf({ sample_peak_id: reason.neighbour.peakId }) : null
+const focusNeighbour = (reason) => app.data.peak.focus(neighbourPeak(reason))
+
 // --- Where the mass error sits -------------------------------------------------
 // The ppm error is a distance with no scale. The run measures its own mass
 // calibration over the rows it committed and corroborated, together with the
@@ -1491,6 +1499,23 @@ const demotedCount = computed(() => {
             <span class="reason-body">
               <span class="reason-rule">{{ reason.label }}</span>
               <span class="reason-detail">{{ reason.detail }}</span>
+              <template v-if="reason.neighbour">
+                <button
+                  v-if="neighbourPeak(reason)"
+                  type="button"
+                  class="reason-neighbour"
+                  data-testid="reason-neighbour"
+                  :aria-label="`Focus the neighbouring peak at m/z ${num.mz.format(reason.neighbour.mz)}`"
+                  @click="focusNeighbour(reason)"
+                >
+                  <span class="pi ph ph-crosshair" />
+                  neighbour at m/z {{ num.mz.format(reason.neighbour.mz) }}
+                </button>
+                <span v-else class="reason-neighbour stale" data-testid="reason-neighbour">
+                  neighbour at m/z {{ num.mz.format(reason.neighbour.mz) }}, no longer in the
+                  sample's peaks
+                </span>
+              </template>
             </span>
           </li>
           <li
@@ -1503,6 +1528,23 @@ const demotedCount = computed(() => {
             <span class="reason-body">
               <span class="reason-rule">{{ reason.label }}<span class="via"> via M0</span></span>
               <span class="reason-detail">{{ reason.detail }}</span>
+              <template v-if="reason.neighbour">
+                <button
+                  v-if="neighbourPeak(reason)"
+                  type="button"
+                  class="reason-neighbour"
+                  data-testid="reason-neighbour"
+                  :aria-label="`Focus the neighbouring peak at m/z ${num.mz.format(reason.neighbour.mz)}`"
+                  @click="focusNeighbour(reason)"
+                >
+                  <span class="pi ph ph-crosshair" />
+                  neighbour at m/z {{ num.mz.format(reason.neighbour.mz) }}
+                </button>
+                <span v-else class="reason-neighbour stale" data-testid="reason-neighbour">
+                  neighbour at m/z {{ num.mz.format(reason.neighbour.mz) }}, no longer in the
+                  sample's peaks
+                </span>
+              </template>
             </span>
           </li>
         </ul>
@@ -2394,6 +2436,35 @@ const demotedCount = computed(() => {
 .reason-detail {
   opacity: 0.75;
   overflow-wrap: anywhere;
+}
+/* The neighbouring peak a reason names: a link that focuses it. */
+.reason-neighbour {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  align-self: flex-start;
+  margin-top: 0.15rem;
+  padding: 0.05rem 0.35rem;
+  border: none;
+  border-radius: 0.25rem;
+  background: none;
+  color: var(--p-primary-color, inherit);
+  font: inherit;
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+}
+button.reason-neighbour:hover,
+button.reason-neighbour:focus-visible {
+  background: var(--p-content-hover-background, rgba(0, 0, 0, 0.05));
+}
+/* A neighbour the sample no longer has: named, not a link. */
+.reason-neighbour.stale {
+  padding: 0;
+  color: inherit;
+  opacity: 0.6;
+  cursor: default;
 }
 /* Read off the M0 rather than recorded on this peak: dashed, as the pane marks
    every piece of evidence it borrows from another row. */

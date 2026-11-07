@@ -706,6 +706,26 @@ What caps a row at candidate:
   the halogen. The isotopologue table lists the lines that were not found under the
   ones that were, and the spectrum draws them as empty circles at their predicted
   heights.
+- **peak not separated** — another peak sits so close to this one that the instrument did
+  not separate the two. Two lines of one width show as two peaks only where their sum has
+  two maxima, and how far apart that takes depends on their heights: 0.85 widths at half
+  maximum for two lines of equal height, 1.65 for a pair at 1:50, and further still for a
+  small line on a tall one's flank ([Robertson & Fryer 1969][rf69];
+  [Schilling et al. 2002][sw02]). Closer than that, the sum is one peak with a shoulder.
+  The peak picker of a TOF fits several lines to one such peak and can report both, but
+  then neither one's centroid nor its height is a single ion's own: the mass and the
+  intensity the fit scored are a blend. The width is the one the file's resolving power
+  gives at the peak's m/z, the width detection fitted the file's lines with, and a file
+  the run read no resolving power for is not asked. Every other peak of the spectrum with
+  a height counts as a neighbour, a source ion or a peak nothing explains included, except
+  a line of the row's own isotope pattern. The reason names the nearest such neighbour,
+  how many widths away it is and how tall against this peak, and the inspector links it:
+  click **neighbour at m/z** beside the reason to focus that peak. One thing lifts the
+  cap: another ionization channel of the run committing the same neutral on a peak the
+  instrument did separate, whose mass and height were measured. A partner the instrument
+  did not separate either does not lift it, and neither does a list naming the compound
+  or a homologous series of the batch, since the doubt is about the measurement and not
+  about the formula. A hand assignment is not asked. On an Orbitrap, whose lines are a few ppm wide, the rule seldom fires.
 - **a neighbour's isotope line** — a committed neighbouring compound's isotope pattern
   predicts a line on this peak, and the peak is no more than twice as tall as that line,
   so the line could account for all of it. The neighbour must itself be a reading the
@@ -1373,6 +1393,11 @@ engine found, and leave the rest of the table alone.
   molecular formulas obtained by accurate mass spectrometry.* BMC Bioinformatics 2007,
   8:105. [link](https://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-8-105)
   ([open access](https://pmc.ncbi.nlm.nih.gov/articles/PMC1851972/))
+- <a id="rf69"></a>Robertson, C. A.; Fryer, J. G. *Some descriptive properties of normal
+  mixtures.* Skandinavisk Aktuarietidskrift 1969, 52:137–146.
+- <a id="sw02"></a>Schilling, M. F.; Watkins, A. E.; Watkins, W. *Is human height bimodal?*
+  The American Statistician 2002, 56(3):223–229.
+  [link](https://doi.org/10.1198/00031300265)
 - <a id="bl07"></a>Böcker, S.; Lipták, Z. *A fast and simple algorithm for the money
   changing problem.* Algorithmica 2007, 48(4):413–432.
   [link](https://doi.org/10.1007/s00453-007-0162-8)
@@ -1579,6 +1604,8 @@ engine found, and leave the rest of the table alone.
 [kf06]: #kf06
 [kf07]: #kf07
 [bl07]: #bl07
+[rf69]: #rf69
+[sw02]: #sw02
 [bo09]: #bo09
 [du19]: #du19
 [eg07]: #eg07

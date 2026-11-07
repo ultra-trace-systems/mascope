@@ -1171,6 +1171,71 @@ describe('PanePeakAssign tier reasons', () => {
     expect(wrapper.find('.tier-reasons').exists()).toBe(false)
     expect(loadedIds()).not.toContain(M0.peak_assignment_id)
   })
+
+  // Step 3.4f: a peak the instrument did not separate from a neighbouring one
+  // names that neighbour beside the reason, as a link that focuses it.
+  describe('the neighbour an unresolved peak names', () => {
+    const NEIGHBOUR = { peak_id: 'p-nb', mz: 200.1342 }
+    const UNRESOLVED = {
+      rule: 'unresolved_peak',
+      detail: 'its peak sits 0.60 widths from a peak at m/z 200.1342',
+      caps: true,
+      neighbour_peak_id: 'p-nb',
+      neighbour_mz: 200.1342
+    }
+    const neighbourLink = (wrapper) => wrapper.find('[data-testid="reason-neighbour"]')
+
+    beforeEach(() => {
+      peakList = [{ peak_id: M0.sample_peak_id, mz: M0.sample_peak_mz }, NEIGHBOUR]
+    })
+
+    it('names the neighbour beside the reason, and focuses it on a click', async () => {
+      focusedAssignment = M0
+      detailRecord = { provenance: { tier_reasons: [UNRESOLVED] } }
+      const wrapper = await mountPane()
+      const link = neighbourLink(wrapper)
+
+      expect(rules(wrapper)).toEqual(['peak not separated'])
+      expect(link.element.tagName).toBe('BUTTON')
+      expect(link.text()).toBe(`neighbour at m/z ${num.mz.format(NEIGHBOUR.mz)}`)
+      await link.trigger('click')
+      expect(peakFocus).toHaveBeenCalledWith(NEIGHBOUR)
+    })
+
+    it("names it on an isotopologue's card too, under the M0's reasons", async () => {
+      focusedAssignment = isotopologue(M0)
+      familyRows = [M0, focusedAssignment]
+      detailRecord = { provenance: { tier_reasons: [follows(true)] } }
+      otherDetails.set(M0.peak_assignment_id, { provenance: { tier_reasons: [UNRESOLVED] } })
+      const wrapper = await mountPane()
+      const inherited = reasons(wrapper).filter((row) => row.classes().includes('inherited'))
+
+      expect(inherited).toHaveLength(1)
+      await inherited[0].find('[data-testid="reason-neighbour"]').trigger('click')
+      expect(peakFocus).toHaveBeenCalledWith(NEIGHBOUR)
+    })
+
+    it('names a neighbour the sample no longer has, but not as a link', async () => {
+      peakList = [{ peak_id: M0.sample_peak_id, mz: M0.sample_peak_mz }]
+      focusedAssignment = M0
+      detailRecord = { provenance: { tier_reasons: [UNRESOLVED] } }
+      const wrapper = await mountPane()
+      const named = neighbourLink(wrapper)
+
+      expect(named.element.tagName).toBe('SPAN')
+      expect(named.text()).toContain('no longer in the sample')
+      await named.trigger('click')
+      expect(peakFocus).not.toHaveBeenCalled()
+    })
+
+    it('names nothing beside a reason that names no neighbour', async () => {
+      focusedAssignment = M0
+      detailRecord = { provenance: { tier_reasons: [RADICAL] } }
+      const wrapper = await mountPane()
+
+      expect(neighbourLink(wrapper).exists()).toBe(false)
+    })
+  })
 })
 
 // An M+1 is not a second finding to judge - it is the same compound seen through

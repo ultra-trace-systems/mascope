@@ -4,9 +4,11 @@ says so first, with its numbers. Every rule after it can only lower the tier:
 each names what capped the row at *candidate* &mdash; a radical neutral, rivals
 the evidence left standing, an ion another neutral explains as well through
 another channel, a line a neighbour's isotope pattern already predicts, a line of
-its own pattern the spectrum should show and does not &mdash; or what the row
-kept its tier on. A down arrow marks every reason that holds the
-tier down, and an isotopologue lists its M0's reasons beneath its own.
+its own pattern the spectrum should show and does not, a peak the instrument did
+not separate from its neighbour &mdash; or what the row kept its tier on. A down
+arrow marks every reason that holds the tier down, and an isotopologue lists its
+M0's reasons beneath its own. Where a reason names a neighbouring peak,
+**neighbour at m/z** beside it focuses that peak.
 
 **Same ion, read another way** lists the other neutrals this ion reads as
 through the run's other channels. No mass or isotope pattern tells those

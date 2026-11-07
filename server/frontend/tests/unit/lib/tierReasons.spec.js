@@ -21,6 +21,7 @@ const SERVER_RULES = [
   'candidate_density',
   'lone_peak',
   'absent_line',
+  'unresolved_peak',
   'envelope_neighbour',
   'oxygen_lattice',
   'carbon_free',
@@ -109,6 +110,41 @@ describe('tierReasonsOf', () => {
       ]
     })
     expect(reasons.map((reason) => reason.caps)).toEqual([false, false])
+  })
+
+  it('carries the neighbouring peak a reason names', () => {
+    const [reason] = tierReasonsOf({
+      tier_reasons: [
+        {
+          rule: 'unresolved_peak',
+          detail: 'its peak sits 0.60 widths from a peak at m/z 181.0924',
+          caps: true,
+          neighbour_peak_id: 1234,
+          neighbour_mz: 181.0924
+        }
+      ]
+    })
+    expect(reason.label).toBe('peak not separated')
+    expect(reason.neighbour).toEqual({ peakId: '1234', mz: 181.0924 })
+  })
+
+  it('names no neighbour where the reason does not say which and where', () => {
+    const reasons = tierReasonsOf({
+      tier_reasons: [
+        { rule: 'unresolved_peak', caps: true, neighbour_peak_id: 'p-1' },
+        { rule: 'unresolved_peak', caps: true, neighbour_mz: 181.09 },
+        { rule: 'unresolved_peak', caps: true, neighbour_peak_id: '', neighbour_mz: 181.09 },
+        { rule: 'unresolved_peak', caps: true, neighbour_peak_id: 'p-1', neighbour_mz: NaN },
+        { rule: 'unresolved_peak', caps: true, neighbour_peak_id: {}, neighbour_mz: 181.09 }
+      ]
+    })
+    expect(reasons.map((reason) => 'neighbour' in reason)).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false
+    ])
   })
 
   it('drops entries that are not reasons, and keeps one with no sentence', () => {
