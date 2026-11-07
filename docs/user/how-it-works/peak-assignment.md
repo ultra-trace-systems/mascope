@@ -936,8 +936,12 @@ What caps a row at candidate:
   measure the calibration beside the run's corroborated assignments. On a
   charge-transfer source they are the mode's calibration compounds, and on a sample
   with few corroborated assignments they can be what lets it measure a calibration
-  at all. A source's brightest lines can read slightly above its analytes, so where
-  they are much of what the run measures on, the constant centre leans toward them.
+  at all. A source's brightest lines read above its analytes, so on an Orbitrap a
+  line carrying more than 28 % of the ion current is left out of the
+  calibration, by the cap the m/z calibration puts on its calibrants
+  ([mass calibration](calibration.md#the-brightest-calibrants-are-left-out)); the
+  run's record counts such lines as `reagent_capped`. Where the lines under the cap
+  are much of what the run measures on, the constant centre can still lean toward them.
   The calibration's centre can follow the mass range: where the run's assignments show their mass error changing with m/z the
   way a fixed offset in millidaltons does, growing in ppm as the mass falls, each ion is
   measured from the centre at its own m/z, so a small ion a couple of ppm out can sit

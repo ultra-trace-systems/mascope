@@ -64,6 +64,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pandas as pd
 
+from mascope_backend.api.models.calibration.config import calibrants_over_cap
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
     ROLE_M0,
@@ -216,6 +217,9 @@ class MassCalibration:
     #: Of :attr:`anchors`, the source's own lines the reagent pre-pass claimed
     #: (:func:`reagent_line_errors`); the rest are corroborated commits.
     reagent_anchors: int = 0
+    #: The source's monoisotopic lines left out of :attr:`anchors` for being
+    #: brighter than the calibrant cap (:class:`SourceLineCap`).
+    reagent_capped: int = 0
     #: The width a row's distance is actually judged in, which is this fit's
     #: own width or the width the SEARCH scored at, whichever is wider. They
     #: differ because the two describe different populations: the anchors are
@@ -281,6 +285,9 @@ class MassCalibration:
             # are not the run's commits, and a source's brightest lines can sit
             # off its analytes' axis.
             "reagent_anchors": int(self.reagent_anchors),
+            # And the source's lines left out for their brightness, which
+            # read high (SourceLineCap)
+            "reagent_capped": int(self.reagent_capped),
             # What the fit measured, and what a row was judged in. Recorded
             # apart because a reader comparing two runs needs to know whether a
             # row escaped the cap on its own accuracy or on the search's.
@@ -732,7 +739,61 @@ def corroboration_of(
     return corroboration
 
 
-def reagent_line_errors(reagent_lines: Sequence[dict]) -> list[float]:
+@dataclass(frozen=True)
+class SourceLineCap:
+    """The m/z calibration node's cap on a calibrant's brightness, as the
+    mass gate reads the source's own lines by it.
+
+    A source's brightest lines read above the weaker lines of its own ladder
+    on the gate's Orbitrap sets, and above the trend of the file's analytes:
+    the calibration node leaves such a line out of its fit
+    (``calibration_config.ORBI_CALIBRANT_TIC_SHARE_MAX`` has the
+    measurement), and this leaves it out of the gate's anchors, by the same
+    cap (``config.calibrants_over_cap``). A line's share is its height
+    averaged over the sample's scans, as the engine reads every peak
+    (``service.load_sample_peaks``), against their mean ion current per scan,
+    as the node reads a file's calibrants.
+
+    :param tic: The sample's mean total ion current per scan, its polarity's.
+    :param tic_share_max: The largest share of it one line may carry, or None.
+    :param peak_intensity_max: The largest intensity one line may have, or
+        None.
+    """
+
+    tic: float
+    tic_share_max: float | None = None
+    peak_intensity_max: float | None = None
+
+    def over(self, row: dict) -> bool:
+        """Whether a source line is brighter than the cap; one whose
+        intensity is not recorded is not."""
+        intensity = row.get("sample_peak_intensity")
+        if intensity is None:
+            return False
+        intensity = float(intensity)
+        share = intensity / self.tic if self.tic > 0 else math.nan
+        return bool(
+            calibrants_over_cap(
+                [intensity], [share], self.tic_share_max, self.peak_intensity_max
+            )[0]
+        )
+
+
+def _monoisotopic_source_lines(reagent_lines: Sequence[dict]) -> list[dict]:
+    """The rows of the source's monoisotopic lines that carry a finite error."""
+    lines = []
+    for row in reagent_lines:
+        if row.get("role") != ROLE_REAGENT or row.get("isotope_label") is not None:
+            continue
+        error = row.get("mz_error_ppm")
+        if error is not None and math.isfinite(float(error)):
+            lines.append(row)
+    return lines
+
+
+def reagent_line_errors(
+    reagent_lines: Sequence[dict], cap: SourceLineCap | None = None
+) -> list[float]:
     """The mass errors of the source's own monoisotopic lines, as anchors.
 
     A line the reagent pre-pass claimed is the best-known mass in the file: its
@@ -746,28 +807,38 @@ def reagent_line_errors(reagent_lines: Sequence[dict]) -> list[float]:
 
     Monoisotopic lines only, for the reason a committed isotopologue does not
     anchor the fit (:func:`fit_run_mass_accuracy`): it is the same ion measured
-    on a weaker peak.
+    on a weaker peak. And none brighter than the calibrant cap, which reads
+    high (:class:`SourceLineCap`).
 
     :param reagent_lines: The rows the reagent pre-pass built
         (``reagent_pass.build_reagent_assignments``). A row of another role is
         ignored.
+    :param cap: The calibrant cap, or None for none.
     :return: The mass error of each monoisotopic line, in ppm, non-finite ones
-        left out.
+        and the ones over the cap left out.
     """
-    errors: list[float] = []
-    for row in reagent_lines:
-        if row.get("role") != ROLE_REAGENT or row.get("isotope_label") is not None:
-            continue
-        error = row.get("mz_error_ppm")
-        if error is not None and math.isfinite(float(error)):
-            errors.append(float(error))
-    return errors
+    return [
+        float(row["mz_error_ppm"])
+        for row in _monoisotopic_source_lines(reagent_lines)
+        if cap is None or not cap.over(row)
+    ]
+
+
+def capped_source_lines(
+    reagent_lines: Sequence[dict], cap: SourceLineCap | None = None
+) -> int:
+    """How many of the source's monoisotopic lines the cap leaves out of the
+    anchors (:func:`reagent_line_errors`)."""
+    if cap is None:
+        return 0
+    return sum(1 for row in _monoisotopic_source_lines(reagent_lines) if cap.over(row))
 
 
 def fit_run_mass_accuracy(
     assignments: list[dict],
     corroboration: dict[str, str | None],
     reagent_lines: Sequence[dict] = (),
+    source_line_cap: SourceLineCap | None = None,
 ) -> MassCalibration:
     """Fit the run's mass accuracy over the rows it corroborated.
 
@@ -792,8 +863,11 @@ def fit_run_mass_accuracy(
     lines moves neither number; on one whose source's ions are its calibration
     compounds they are what makes a fit possible at all. They can sit off the
     analytes' axis: a source's brightest lines read above the weaker lines of
-    their own ladder on the gate's Orbitrap sets, which is the bright-line
-    shift a calibrant cap is for, and which pooling here does not correct.
+    their own ladder on the gate's Orbitrap sets, so a line brighter than the
+    calibration node's cap on its calibrants is left out here as there
+    (:class:`SourceLineCap`). On the wide-window cylinder set that is N3+, at
+    about 80 % of the ion current and 3 ppm above the analytes' trend, one of
+    the 8 or 9 source lines among 15 to 27 anchors.
 
     Only corroborated rows anchor it, and that is the point rather than a
     limitation: fitting over every commit would measure the spread of the rows
@@ -836,6 +910,8 @@ def fit_run_mass_accuracy(
     :param corroboration: What :func:`corroboration_of` answered for them.
     :param reagent_lines: The rows the reagent pre-pass built, read and never
         modified; empty for a run with no pre-pass.
+    :param source_line_cap: The calibrant cap the source's lines are read by,
+        or None for none.
     :return: The offset and width, each None where too few anchors were found,
         and where both were found, the trend or the rule that refused it.
     """
@@ -846,13 +922,14 @@ def fit_run_mass_accuracy(
         and corroboration.get(str(row.get("peak_assignment_id"))) is not None
         and row.get("mz_error_ppm") is not None
     ]
-    source_errors = reagent_line_errors(reagent_lines)
+    source_errors = reagent_line_errors(reagent_lines, source_line_cap)
     mu, sigma = fit_mass_accuracy(errors + source_errors)
     calibration = MassCalibration(
         mu_ppm=mu,
         sigma_ppm=sigma,
         anchors=len(errors) + len(source_errors),
         reagent_anchors=len(source_errors),
+        reagent_capped=capped_source_lines(reagent_lines, source_line_cap),
     )
     if not calibration.measured:
         return calibration
@@ -880,6 +957,7 @@ def apply_mass_gate(
     lines: SpectrumLines | None = None,
     reagent_lines: Sequence[dict] = (),
     calibration: MassCalibration | None = None,
+    source_line_cap: SourceLineCap | None = None,
 ) -> dict:
     """Record every commit's ``mass_z`` and cap the outliers no envelope confirms.
 
@@ -916,6 +994,8 @@ def apply_mass_gate(
         monoisotopic lines anchor the calibration beside the corroborated
         commits (:func:`fit_run_mass_accuracy`). Read only: a reagent row is
         no commit, so it is neither judged nor modified.
+    :param source_line_cap: The calibrant cap those lines are read by
+        (:class:`SourceLineCap`), or None for none.
     :param calibration: A calibration to judge every commit against instead of
         fitting the run's own: a decoy run's, which is its control's
         (``decoy.inherited_calibration``), recorded with its gate width. A
@@ -937,7 +1017,9 @@ def apply_mass_gate(
     )
     inherited = calibration is not None
     if calibration is None:
-        calibration = fit_run_mass_accuracy(assignments, corroboration, reagent_lines)
+        calibration = fit_run_mass_accuracy(
+            assignments, corroboration, reagent_lines, source_line_cap
+        )
         if calibration.sigma_ppm is not None:
             calibration = replace(
                 calibration,

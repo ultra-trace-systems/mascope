@@ -2818,3 +2818,28 @@ class TestTheRunTakesItsBatchsWord:
         # The file's own claims are its own either way.
         assert by_peak["monomer"]["role"] == "reagent"
         assert "reason" not in by_peak["monomer"]["provenance"]["reagent"]
+
+
+@pytest.mark.asyncio
+async def test_the_mass_gate_reads_the_sources_lines_by_the_calibrant_cap():
+    """The run reads the sample's calibrant cap once and hands it to the
+    mass gate, which leaves a source line brighter than it out of its
+    anchors."""
+    from mascope_backend.api.new.peak_assignments import service
+    from mascope_backend.api.new.peak_assignments.config import (
+        PeakAssignmentConfig,
+    )
+    from mascope_backend.api.new.peak_assignments.mass_gate import SourceLineCap
+
+    cap = SourceLineCap(tic=1.0e6, tic_share_max=0.25)
+    peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+    _start(_patches(_Recorder(), peaks, _stage_a_rows()))
+    read = patch(
+        f"{_MOD}._source_line_cap", new_callable=AsyncMock, return_value=cap
+    ).start()
+    judged = patch(f"{_MOD}.judge_commits", wraps=service.judge_commits).start()
+
+    await _run(PeakAssignmentConfig(run_untargeted=False))
+
+    read.assert_awaited_once()
+    assert judged.call_args.kwargs["source_line_cap"] is cap
