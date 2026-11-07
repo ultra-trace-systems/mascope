@@ -627,8 +627,9 @@ A green assessment is only evidence if its controls can fail.
 weekly and unattended. It brings up a throwaway demo stack on this host and
 weakens it by configuration, one edit at a time. It strips a security header or
 the auth cookie's flags, turns the nginx version banner on, adds a wildcard CORS
-header, serves the API docs or schema, lets a client name its own address, or
-raises the upload cap. Each control the edit should trip must then report a
+header, serves the API docs or schema, lets a client name its own address,
+raises the upload cap, or switches the backend's rate limiter or write-origin
+guard off with their test-only settings, which only a demo stack honours. Each control the edit should trip must then report a
 finding
 (`security/pentest/mutations/README.md`, "The weakened target"). It touches no
 deployment, and spends nothing of the staging target's rate limits.
