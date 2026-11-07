@@ -457,3 +457,83 @@ class TestStoredAnchorAndScanCount:
         assert all(
             record["match"]["ratio_scan_count"] is None for record in records["data"]
         )
+
+
+class TestStoredSignalToNoise:
+    """A line's stored signal-to-noise reaches the DB-read isotope frame.
+
+    The v2 fit score reads it to decide whether a weaker line of the ion
+    should have been seen; without it, every ion read from the database
+    is scored in the no-SNR mode.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_stored_snr_reaches_the_frame(
+        self, match_chain, async_session_factory
+    ):
+        line = make_match_isotope_row(match_chain.item, match_chain.iso1b, 0.9)
+        line.signal_to_noise = 30.0
+        async with async_session_factory() as session:
+            session.add(line)
+            await session.commit()
+
+        df = await aggregate_match_isotope_filtered_data(
+            sample_item_id=match_chain.item,
+            target_ion_id=match_chain.ion1,
+            match_params=MATCH_PARAMS,
+        )
+
+        snr = df.set_index("target_isotope_id")["signal_to_noise"]
+        assert snr[match_chain.iso1b] == 30.0
+        # The main isotope has no stored row: rebuilt unmatched, no SNR
+        assert pd.isna(snr[match_chain.iso1a])
+
+    @pytest.mark.asyncio
+    async def test_the_batch_frame_carries_it(self, match_chain, async_session_factory):
+        line = make_match_isotope_row(match_chain.item, match_chain.iso1b, 0.9)
+        line.signal_to_noise = 30.0
+        async with async_session_factory() as session:
+            session.add(line)
+            await session.commit()
+
+        df = await aggregate_match_isotope_filtered_data(
+            sample_batch_id=match_chain.batch, match_params=MATCH_PARAMS
+        )
+
+        snr = df.set_index("target_isotope_id")["signal_to_noise"]
+        assert snr[match_chain.iso1b] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_the_v2_ion_score_reads_it(
+        self, match_chain, async_session_factory, monkeypatch
+    ):
+        # The main line is found, its minor line (0.1 of it) is not. At an
+        # SNR of 3 the minor line would sit under the noise, so missing it
+        # costs the fit less than the no-SNR mode's abundance rule charges.
+        monkeypatch.setenv("MASCOPE_MATCH_SCORE_VERSION", "2")
+        main = make_match_isotope_row(match_chain.item, match_chain.iso1a, 0.9)
+        main.sample_peak_intensity = 1000.0
+        main.sample_peak_intensity_relative = 1.0
+        main.match_mz_error = 0.5
+        async with async_session_factory() as session:
+            session.add(main)
+            await session.commit()
+
+        async def ion_score():
+            result = await aggregate_sample_match_ion(
+                sample_item_id=match_chain.item,
+                target_ion_id=match_chain.ion1,
+                target_collection_id=match_chain.collection,
+                match_params=MATCH_PARAMS,
+            )
+            (ion,) = result["data"]["match_ions"]
+            return ion["match"]["match_score"]
+
+        without_snr = await ion_score()
+        async with async_session_factory() as session:
+            stored = await session.get(MatchIsotope, main.match_isotope_id)
+            stored.signal_to_noise = 3.0
+            await session.commit()
+        with_snr = await ion_score()
+
+        assert with_snr > without_snr + 0.05

@@ -434,6 +434,7 @@ def _assemble_filtered_isotope_frame(
         "sample_peak_intensity",
         "sample_peak_intensity_relative",
         "ratio_scan_count",
+        "signal_to_noise",
         "sample_peak_mz",
         "sample_peak_tof",
         "match_score",
