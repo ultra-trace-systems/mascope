@@ -815,6 +815,66 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
   })
 })
 
+describe('PaneBrowserBatchPeaks series mark', () => {
+  const SERIES = {
+    formula: 'C6H12O6',
+    unit: 'CH2',
+    units: ['CH2'],
+    step: 1,
+    depth: 1,
+    root_formula: 'C5H10O6',
+    has_anchor: true
+  }
+
+  // Renders the formula cells through a column stub that hands each its row.
+  async function formulaCells(peaks) {
+    const tableRows = ref([])
+    app = makeApp({ peaks })
+    localStorage.clear()
+    setActivePinia(createPinia())
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...DataTableStub,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            ...ColumnStub,
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="column-stub" :data-field="field">' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell"><slot name="body" :data="row" /></div></template></div>'
+          }
+        },
+        directives: { tooltip: {}, help: {} }
+      }
+    })
+    await wrapper.vm.$nextTick()
+    return wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === 'consensus_formula')
+      .findAll('.stub-cell')
+  }
+
+  it('marks a row a series vouches for, and says which', async () => {
+    const cells = await formulaCells([
+      peak('bp-1', 'candidate', 0.7, { series: SERIES }),
+      peak('bp-2', 'assigned', 0.9, { mz: 200.1, series: null })
+    ])
+    const marks = cells.map((cell) => cell.find('.series-mark')).filter((m) => m.exists())
+    expect(cells).toHaveLength(2)
+    expect(marks).toHaveLength(1)
+    expect(marks[0].attributes('aria-label')).toBe(
+      "In the batch's CH2 series: one CH2 heavier than C5H10O6, which the batch assigns."
+    )
+  })
+})
+
 describe('PaneBrowserBatchPeaks selection cap', () => {
   const many = (n) => Array.from({ length: n }, (_, i) => peak(`bp-${i}`, 'assigned', 0.9))
 
@@ -1452,6 +1512,7 @@ describe('PaneBrowserBatchPeaks batch runs', () => {
       ['fold', 'folded samples'],
       ['rebuild', 'a rebuild'],
       ['import', 'an import'],
+      ['detect_series', 'a series detection'],
       ['unknown_action', 'unknown_action']
     ]) {
       await viewEarlierRun(action)

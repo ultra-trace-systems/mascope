@@ -64,6 +64,11 @@ describe('BatchPeakRunSelect', () => {
     ])
   })
 
+  it('names a series detection', () => {
+    const wrapper = mountSelect([run('r4', 'detect_series', { current: true }), ...RUNS])
+    expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Series detection · current')
+  })
+
   it('marks a running run as such', () => {
     const wrapper = mountSelect([run('r4', 'rebuild', { status: 'running' }), ...RUNS])
     expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Rebuild · running…')

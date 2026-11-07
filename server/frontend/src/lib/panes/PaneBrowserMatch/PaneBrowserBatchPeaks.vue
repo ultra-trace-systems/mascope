@@ -28,6 +28,7 @@ import {
   listingTags,
   listingTooltip
 } from '@/lib/referenceListings'
+import { seriesTooltip } from '@/lib/batchSeries'
 import {
   ENGINE_UNSTATED,
   ENGINE_UNSTATED_META,
@@ -77,7 +78,8 @@ const RUN_ACTION_LABELS = {
   fold: 'folded samples',
   rebuild: 'a rebuild',
   search_untargeted: 'an untargeted search',
-  import: 'an import'
+  import: 'an import',
+  detect_series: 'a series detection'
 }
 const viewedRunLabel = computed(() => {
   const run = runs.value.viewing
@@ -1100,6 +1102,16 @@ watch(
                 class="pi ph ph-hand-pointing curated"
                 v-tooltip.top="'Curated by hand for the whole batch'"
               />
+              <!-- A homologous series of the batch proposed this formula
+                   (Detect series); the tooltip names the step and the
+                   assigned peak its chain starts at. -->
+              <span
+                v-if="data.series"
+                class="pi ph ph-stairs series-mark"
+                role="img"
+                :aria-label="seriesTooltip(data.series)"
+                v-tooltip.top="seriesTooltip(data.series)"
+              />
               <span
                 v-if="isotopologueCount(data)"
                 class="iso-count"
@@ -1425,7 +1437,8 @@ watch(
   font-size: 0.86rem;
   opacity: 0.8;
 }
-.curated {
+.curated,
+.series-mark {
   font-size: 0.8rem;
   margin-right: 0.25rem;
   opacity: 0.8;

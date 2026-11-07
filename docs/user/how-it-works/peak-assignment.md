@@ -656,8 +656,9 @@ What caps a row at candidate:
   can settle where it came from. A second ionization channel does not lift the cap, and
   a compound of your own target library is exempt.
 - **rivals left standing** — the peak's own evidence could not separate the committed
-  formula from at least one other, and no second ionization channel of the run committed
-  the same neutral. A compound matched from a list is asked this too. When the run
+  formula from at least one other, no second ionization channel of the run committed
+  the same neutral, and no homologous series of the batch names it (*Detecting series*,
+  below). A compound matched from a list is asked this too. When the run
   searches formulas, the search also looks at that compound's peak: the formulas its
   element ranges hold for the mass are scored beside the list's, and any the evidence
   cannot tell apart count as rivals, named in the reason. A radical does not count,
@@ -666,8 +667,8 @@ What caps a row at candidate:
   nothing plausible competes with it.
 - **one peak only** — the formula search found the formula on one peak, and nothing
   else in the run saw it: no line of its own isotope pattern is committed beside it, no
-  second ionization channel committed the same neutral, and it was not matched from a
-  list. However well it fits, one line is one observation. A faint line matches its
+  second ionization channel committed the same neutral, no homologous series of the
+  batch names it, and it was not matched from a list. However well it fits, one line is one observation. A faint line matches its
   isotope pattern perfectly by having no other line to match, and on a TOF its mass
   error is judged against a width of several ppm, so the top tier asks for a second
   one: the isotope or adduct evidence [Schymanski et al. 2014][sch14] ask of a formula
@@ -802,7 +803,9 @@ What caps a row at candidate:
 
 What a row that keeps its tier kept it on: **second channel** (the same neutral committed
 through two or more of the run's ionization channels), **second line** (a line of its own
-isotope pattern committed with it, named with its m/z), **on a list** (matched from your
+isotope pattern committed with it, named with its m/z), **in a series** (a homologous
+series of the batch proposed the formula: *Detecting series*, below, which the reason
+names with its step and the assigned compound the series starts at), **on a list** (matched from your
 target library or a reference list, named with the list's compound; the formula search
 did not elect it), **same ion, settled** (the ion
 reads as another molecule too, and something settled which: a second channel - for a
@@ -1147,6 +1150,56 @@ It writes no per-sample runs: the results appear in the batch ledger and in each
 sample's view, marked as untargeted. An assignment run on a sample still takes
 precedence for that sample.
 
+### Detecting series
+
+A batch that holds a compound at a confident reading often holds its homologues too: the
+same skeleton one CH2 longer, one oxygen richer, one CO2 further on - a homologous
+series, the rows of constant mass defect on the Kendrick scale
+[Kendrick 1963][ken63], [Hughey et al. 2001][hug01]. Each homologue makes a peak of its
+own, and often a dim one, which the formula search alone either reads some other way or
+holds at *candidate* because one peak is all that saw it.
+
+*Detect series*, beside *Search untargeted*, walks those series. From every batch peak the
+batch holds at *assigned* it steps one unit up and one down - CH2, O, H2O, CO, CO2 and
+C2H2O, and the siloxane (C2H6OSi) and CF2 ladders from a compound that carries silicon
+or fluorine - and wherever a batch peak nothing assigned, or one held only at
+*candidate*, sits at the exact mass of the step's formula through the same ionization,
+it proposes that formula and steps on from it, up to three steps from the assigned
+compound. The window is the formula search's own: 3 ppm on an Orbitrap, 10 ppm on a TOF.
+A batch peak that reads *assigned* because a series proposed its formula is a member of
+that series, not a new start, so detecting series again on an unchanged ledger finds the
+same series and changes nothing. A detection that stops partway, for example because the
+server restarted, leaves the series on the batch peaks it had measured, so detecting series
+again finds the same series.
+
+A dense batch holds peaks one unit apart by chance alone, so every kind of step is walked
+again at six masses shifted by a few hundredths of a dalton, which land on no chemistry
+and so reach only what chance reaches - the target-decoy idea of proteomics
+[Elias and Gygi 2007][eg07]. A kind of step is kept only where it proposes at least 12
+formulas and at least ten times as many as its decoys reach on average; the share of
+its proposals chance would have made, the decoys' mean over its own count, is the run's
+false discovery rate. The thresholds were measured on twenty batches of real data: from
+ten times, no decoy walked as if it were a unit passed, and no family on a TOF did,
+where in the TOF's wider window only about half of the proposals that land on a
+candidate agree with its formula.
+
+A kept proposal is measured, not assigned: it is scored in every sample its batch peak
+is in, as the untargeted search measures what it finds, and a sample whose peak the
+formula's isotope pattern does not reach keeps the peak as it was. Where a sample
+already reads the peak another way, the series' formula takes it only where it measures
+at least as well. A batch peak already held at *candidate* on the proposed formula is
+not measured again; the series is recorded beside it. A row a series vouches for shows
+a stair mark beside its formula, whose tooltip names the step and the assigned compound
+the series starts at, and a sample's next assignment run counts the series as a second
+observation of that formula (*in a series*, above), which lifts it past *one peak only*
+and *rivals left standing* and nothing else. On a source with a 15N-labelled reagent a
+formula carrying C8S or C2F3 is not proposed: its labelled alias makes the same ion and
+takes the same steps. *Detect series* runs as a batch run, its summary listing every kind
+of step against its decoys and the batch's false discovery rate; it writes no per-sample
+runs. When the chemistry of an ionization mode cannot be resolved, for example because a
+sample's file has moved, that mode is not walked, the run says so, and its batch peaks
+keep the series an earlier detection found.
+
 The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
 ledger (CSV)* writes one row per member peak - every sample's reading of every batch
 peak, with the batch peak's consensus beside it - and the browser downloads the file
@@ -1301,6 +1354,13 @@ engine found, and leave the rest of the table alone.
 
 ## References
 
+- <a id="ken63"></a>Kendrick, E. *A mass scale based on CH2 = 14.0000 for high
+  resolution mass spectrometry of organic compounds.* Anal. Chem. 1963, 35(13):2146–2154.
+  [link](https://doi.org/10.1021/ac60206a048)
+- <a id="hug01"></a>Hughey, C. A.; Hendrickson, C. L.; Rodgers, R. P.; Marshall, A. G.;
+  Qian, K. *Kendrick mass defect spectrum: a compact visual analysis for
+  ultrahigh-resolution broadband mass spectra.* Anal. Chem. 2001, 73(19):4676–4681.
+  [link](https://doi.org/10.1021/ac010560w)
 - <a id="kf06"></a>Kind, T.; Fiehn, O. *Metabolomic database annotations via query of
   elemental compositions: mass accuracy is insufficient even at less than 1 ppm.* BMC
   Bioinformatics 2006, 7:234.
@@ -1518,6 +1578,8 @@ engine found, and leave the rest of the table alone.
 [bo09]: #bo09
 [du19]: #du19
 [eg07]: #eg07
+[ken63]: #ken63
+[hug01]: #hug01
 [sch17]: #sch17
 [sch14]: #sch14
 [sum07]: #sum07

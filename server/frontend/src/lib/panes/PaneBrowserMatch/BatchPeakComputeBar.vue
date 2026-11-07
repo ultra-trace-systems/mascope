@@ -91,7 +91,7 @@ async function launchSearch() {
         size="small"
         severity="secondary"
         :loading="compute.searching"
-        :disabled="compute.blockedReason !== null || compute.computing"
+        :disabled="compute.blockedReason !== null || compute.computing || compute.detecting"
         @click="searchVisible = true"
         :pt="
           app.ui.help.left(`
@@ -104,6 +104,36 @@ async function launchSearch() {
             found against every other sample the species was seen in. It
             writes no per-sample runs; the results appear in this ledger and
             in each sample's view.
+            </p>
+          `)
+        "
+      />
+    </span>
+    <!-- The batch's homologous series, walked from what the batch already
+         assigns: no parameters of its own, so it launches straight away.
+         Held while the other two rewrite the ledger. -->
+    <span v-tooltip.left="compute.detectTooltip">
+      <Button
+        label="Detect series"
+        icon="pi ph ph-stairs"
+        size="small"
+        severity="secondary"
+        :loading="compute.detecting"
+        :disabled="compute.blockedReason !== null || compute.computing || compute.searching"
+        @click="compute.detectSeries()"
+        :pt="
+          app.ui.help.left(`
+            <h1>Detect Series</h1>
+            <p>
+            Walks the batch's homologous series &mdash; one CH2, O, H2O, CO,
+            CO2 or C2H2O further, and the siloxane and CF2 ladders &mdash; from
+            every batch peak the batch assigns, and proposes the formula a step
+            makes wherever a batch peak nothing assigned, or one held only as a
+            candidate, sits at its exact mass. Each kind of step is walked again
+            at shifted masses that land on no chemistry, and only the kinds
+            whose proposals beat those decoys are kept. A kept proposal is
+            measured in every sample its batch peak is in, and the row says
+            which series it belongs to. It writes no per-sample runs.
             </p>
           `)
         "

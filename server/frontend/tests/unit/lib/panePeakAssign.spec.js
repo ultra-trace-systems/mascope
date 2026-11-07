@@ -1065,12 +1065,12 @@ describe('PanePeakAssign tier reasons', () => {
     focusedAssignment = M0
     detailRecord = {
       provenance: {
-        tier_reasons: [{ rule: 'series_anchor', detail: 'no series member', caps: true }]
+        tier_reasons: [{ rule: 'flat_background', detail: 'a flat trace', caps: true }]
       }
     }
     const wrapper = await mountPane()
 
-    expect(rules(wrapper)).toEqual(['series anchor'])
+    expect(rules(wrapper)).toEqual(['flat background'])
     expect(reasons(wrapper)[0].classes()).toContain('caps')
   })
 
