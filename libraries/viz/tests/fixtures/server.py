@@ -350,7 +350,20 @@ class FakeClient:
                 ]
             )
 
-        return _Resource(list=mechanisms)
+        def modes(include_system=False):
+            self._call("ionization.modes")
+            # The campaign's one mode, which every sample is of
+            return pd.DataFrame(
+                [
+                    {
+                        "ionization_mode_id": "im-1",
+                        "ionization_mode_name": "Campaign mode",
+                        "instrument": self.dataset_rows[0]["instrument"],
+                    }
+                ]
+            )
+
+        return _Resource(list=mechanisms, modes=modes)
 
     @property
     def batch_peaks(self):
