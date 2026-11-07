@@ -33,8 +33,10 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     UNREAD_LINE,
     LineQuality,
     MassCalibration,
+    SourceLineCap,
     SpectrumLines,
     apply_mass_gate,
+    capped_source_lines,
     corroboration_of,
     fit_run_mass_accuracy,
     isotopologue_tracking,
@@ -643,12 +645,13 @@ class TestWhatAnchorsTheCalibration:
         assert summary["capped"] == 1
 
 
-def _line(row_id, *, ppm=0.0, label=None, mz=100.0, owner=None):
+def _line(row_id, *, ppm=0.0, label=None, mz=100.0, owner=None, intensity=10.0):
     """A line the reagent pre-pass claimed: no formula, the source's ion."""
     return {
         "peak_assignment_id": row_id,
         "sample_peak_id": f"peak-{row_id}",
         "sample_peak_mz": mz,
+        "sample_peak_intensity": intensity,
         "role": "reagent",
         "source": "reagent",
         "assigned_formula": None,
@@ -763,6 +766,82 @@ class TestTheSourcesOwnLines:
         assert not summary["applied"]
         assert (summary["anchors"], summary["reagent_anchors"]) == (7, 0)
         assert rows[-1]["tier"] == TIER_ASSIGNED
+
+
+#: A sample's mean ion current per scan, and the calibration node's cap on how
+#: much of it one calibrant line may carry
+CAP = SourceLineCap(tic=1000.0, tic_share_max=0.25)
+
+
+class TestTheSourcesBrightLines:
+    """A source line brighter than the calibrant cap anchors nothing.
+
+    A source's brightest lines read above the weaker lines of its own ladder,
+    and above its file's analytes: on the wide-window cylinder set N3+ carries
+    about 80 % of the ion current and reads 3 ppm above the analytes' trend.
+    The calibration node leaves such a line out of its fit, and the mass gate
+    out of its anchors, by the same cap.
+    """
+
+    def test_a_line_over_the_cap_is_over(self):
+        assert CAP.over(_line("bright", intensity=800.0))
+        assert not CAP.over(_line("weak", intensity=250.0))
+
+    def test_a_line_of_no_recorded_intensity_is_not(self):
+        assert not CAP.over({**_line("unread"), "sample_peak_intensity": None})
+
+    def test_with_no_ion_current_the_absolute_cap_still_applies(self):
+        cap = SourceLineCap(tic=0.0, tic_share_max=0.25, peak_intensity_max=100.0)
+
+        assert not cap.over(_line("weak", intensity=50.0))
+        assert cap.over(_line("bright", intensity=500.0))
+
+    def test_it_is_left_out_of_the_anchors_and_counted(self):
+        rows = _anchors(7, ppm=-0.3, spread=0.0)
+        corroboration = corroboration_of(rows, precision_ppm=PRECISION)
+        lines = _lines(4, ppm=-0.3, spread=0.0) + [
+            _line("N3+", ppm=3.0, intensity=800.0)
+        ]
+
+        capped = fit_run_mass_accuracy(rows, corroboration, lines, CAP)
+        uncapped = fit_run_mass_accuracy(rows, corroboration, lines)
+
+        assert (capped.anchors, capped.reagent_anchors) == (11, 4)
+        assert capped.reagent_capped == 1
+        assert capped.mu_ppm == pytest.approx(-0.3)
+        assert (uncapped.anchors, uncapped.reagent_anchors) == (12, 5)
+        assert uncapped.reagent_capped == 0
+        assert reagent_line_errors(lines, CAP) == [-0.3] * 4
+
+    def test_only_a_monoisotopic_line_is_counted_as_capped(self):
+        lines = [
+            _line("mono", intensity=800.0),
+            _line("13C", label="13C", owner="mono", intensity=800.0),
+            {**_row("commit", ppm=0.7), "sample_peak_intensity": 800.0},
+        ]
+
+        assert capped_source_lines(lines, CAP) == 1
+        assert capped_source_lines(lines) == 0
+
+    def test_the_gate_reads_them_by_the_cap_and_records_it(self):
+        rows = _anchors(7, spread=0.1) + [_row("off", ppm=2.5)]
+        lines = _lines(9, spread=0.1) + [_line("bright", ppm=4.0, intensity=900.0)]
+
+        summary = apply_mass_gate(
+            rows, fallback_sigma_ppm=PRECISION, reagent_lines=lines, source_line_cap=CAP
+        )
+
+        assert (summary["anchors"], summary["reagent_anchors"]) == (16, 9)
+        assert summary["reagent_capped"] == 1
+
+    def test_a_run_without_a_cap_records_none_capped(self):
+        rows = _anchors(7, spread=0.1)
+
+        summary = apply_mass_gate(
+            rows, fallback_sigma_ppm=PRECISION, reagent_lines=_lines(9)
+        )
+
+        assert summary["reagent_capped"] == 0
 
 
 #: The line the commits of a run follow below: an absolute offset of -0.15 mDa,
