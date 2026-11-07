@@ -40,3 +40,40 @@ def test_update_operation_description_says_it_replaces():
     ]["patch"]
     description = " ".join(operation["description"].split())
     assert "replace the collection's compound list" in description
+
+
+# The guard against changing compounds and batches in one request reads each
+# compound field as the controller does: an empty `target_compound_ids` empties
+# the collection, so beside `sample_batch_ids` it is refused; an empty
+# `target_compounds_create` creates nothing and changes no compound.
+
+
+@pytest.mark.parametrize("compound_ids", [[], ["c1"]])
+def test_update_refuses_compound_ids_beside_batches(compound_ids):
+    with pytest.raises(ValueError, match="simultaneously"):
+        TargetCollectionUpdate(
+            sample_batch_ids=["b1"], target_compound_ids=compound_ids
+        )
+
+
+def test_update_refuses_created_compounds_beside_batches():
+    with pytest.raises(ValueError, match="simultaneously"):
+        TargetCollectionUpdate(
+            sample_batch_ids=["b1"],
+            target_compounds_create=[
+                {"target_compound_name": "x", "target_compound_formula": "H2O"}
+            ],
+        )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"sample_batch_ids": ["b1"]},
+        {"sample_batch_ids": [], "target_compound_ids": None},
+        {"sample_batch_ids": ["b1"], "target_compounds_create": []},
+        {"target_compound_ids": []},
+    ],
+)
+def test_update_allows_one_side_alone(fields):
+    TargetCollectionUpdate(**fields)

@@ -149,12 +149,17 @@ class TargetCollectionUpdate(TargetCollectionValidator, TargetCollectionBase):
     @model_validator(mode="before")
     @classmethod
     def validate_compounds_or_batches(cls, values):
-        """Check compounds and batches are not updated in the same request."""
+        """Check compounds and batches are not updated in the same request.
+
+        Each field is tested as ``update_target_collection`` reads it: an empty
+        ``target_compound_ids`` replaces the compound list with nothing, so it
+        is a compound change; an empty ``target_compounds_create`` is a no-op.
+        """
         compounds_create = values.get("target_compounds_create")
         compound_ids = values.get("target_compound_ids")
         batches = values.get("sample_batch_ids")
 
-        if batches is not None and (compounds_create or compound_ids):
+        if batches is not None and (compounds_create or compound_ids is not None):
             raise ValueError(
                 "Cannot update target compounds and batch associations simultaneously."
             )
