@@ -71,6 +71,7 @@ from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.sample.batches.config import sample_batch_config
 from mascope_backend.api.models.sample.batches.sample_batch_pydantic_model import (
     SampleBatchCreate,
+    SampleBatchListed,
     SampleBatchRead,
     SampleBatchSortColumn,
     SampleBatchUpdate,
@@ -87,6 +88,7 @@ from mascope_backend.db import (
     Dataset,
     SampleBatch,
     SampleFile,
+    SampleItem,
     TargetCollectionInSampleBatch,
     async_session,
 )
@@ -189,15 +191,48 @@ async def get_sample_batches(
         # Step 5: Execute the query
         result = await session.execute(stmt)
         sample_batches = result.scalars().all()
+        spans = await _sample_spans(
+            session, [sample_batch.sample_batch_id for sample_batch in sample_batches]
+        )
 
     # Step 6: Return the total count and the list of validated sample batches
     return {
         "message": "Sample batches retrieved successfully",
         "results": total,
         "data": [
-            SampleBatchRead.model_validate(sample_batch).model_dump()
+            SampleBatchListed.model_validate(
+                {
+                    **SampleBatchRead.model_validate(sample_batch).model_dump(),
+                    **spans.get(sample_batch.sample_batch_id, {}),
+                }
+            ).model_dump()
             for sample_batch in sample_batches
         ],
+    }
+
+
+async def _sample_spans(session, sample_batch_ids: list[str]) -> dict[str, dict]:
+    """Each batch's ``first_sample_datetime_utc``, ``last_sample_datetime_utc`` and
+    ``sample_instruments``, from its samples' files; a batch with no sample is not
+    in it."""
+    rows = await session.execute(
+        select(
+            SampleItem.sample_batch_id,
+            func.min(SampleFile.datetime_utc),
+            func.max(SampleFile.datetime_utc),
+            func.array_agg(func.distinct(SampleFile.instrument)),
+        )
+        .join(SampleFile, SampleFile.sample_file_id == SampleItem.sample_file_id)
+        .where(SampleItem.sample_batch_id.in_(sample_batch_ids))
+        .group_by(SampleItem.sample_batch_id)
+    )
+    return {
+        batch_id: {
+            "first_sample_datetime_utc": first,
+            "last_sample_datetime_utc": last,
+            "sample_instruments": sorted(instruments),
+        }
+        for batch_id, first, last, instruments in rows.all()
     }
 
 
