@@ -21,6 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from proxy_contract import PROD_HOST, PROXY_HEADERS, UPSTREAM_URL
 
 from mascope_backend.app.fast import fast
+from mascope_backend.weakened_controls import DEMO_STACK_MARKER, ORIGIN_GUARD_OFF
 
 
 #: The guard's module. The app package re-exports ``fast`` (the application)
@@ -188,3 +189,43 @@ async def test_the_vite_origin_is_trusted_only_in_development(monkeypatch):
 
     assert allowed.status_code == 404
     assert refused.status_code == 403
+
+
+# --- the weakened target's switch (mascope_backend.weakened_controls) -------
+
+
+@pytest.mark.asyncio
+async def test_the_switch_on_a_demo_stack_lets_a_foreign_write_through(monkeypatch):
+    """The security suite's weakened target turns the guard off, and CSRF-01
+    must then see a foreign-origin write accepted."""
+    monkeypatch.setenv(DEMO_STACK_MARKER, "1")
+    monkeypatch.setenv(ORIGIN_GUARD_OFF, "1")
+    async with _client() as client:
+        resp = await client.post(PROBE, headers={**PROXY_HEADERS, "Origin": FOREIGN})
+
+    assert resp.status_code == 404  # reached the router: the guard is off
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker", [None, "", "0"])
+async def test_the_switch_off_a_demo_stack_keeps_the_guard(monkeypatch, marker):
+    """A production-like environment that carries the switch still refuses."""
+    if marker is None:
+        monkeypatch.delenv(DEMO_STACK_MARKER, raising=False)
+    else:
+        monkeypatch.setenv(DEMO_STACK_MARKER, marker)
+    monkeypatch.setenv(ORIGIN_GUARD_OFF, "1")
+    async with _client() as client:
+        resp = await client.post(PROBE, headers={**PROXY_HEADERS, "Origin": FOREIGN})
+
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_demo_stack_without_the_switch_keeps_the_guard(monkeypatch):
+    monkeypatch.setenv(DEMO_STACK_MARKER, "1")
+    monkeypatch.delenv(ORIGIN_GUARD_OFF, raising=False)
+    async with _client() as client:
+        resp = await client.post(PROBE, headers={**PROXY_HEADERS, "Origin": FOREIGN})
+
+    assert resp.status_code == 403

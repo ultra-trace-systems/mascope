@@ -21,6 +21,7 @@ from fastapi import HTTPException, Request, status
 from mascope_backend.redis_failures import log_control_failure
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage import redis_storage_client
+from mascope_backend.weakened_controls import RATE_LIMIT_OFF, switched_off
 
 
 def client_ip(request: Request) -> str:
@@ -80,9 +81,15 @@ async def _over_fixed_window(key: str, times: int, seconds: int) -> int | None:
     :param key: Redis key namespacing this window.
     :param times: Maximum number of hits allowed within the window.
     :param seconds: Window length in seconds.
-    :return: ``Retry-After`` seconds if the limit is exceeded, else ``None``.
+    :return: ``Retry-After`` seconds if the limit is exceeded, else ``None``,
+        always ``None`` on a demo stack whose limiter the security suite's
+        weakened target switched off (:mod:`mascope_backend.weakened_controls`).
     :raises Exception: On any Redis error, so callers can fail open.
     """
+    # Every limit here counts through this window, so this one check switches
+    # them all off, and counts nothing while they are.
+    if switched_off(RATE_LIMIT_OFF):
+        return None
     client = redis_storage_client.client
     count = await client.incr(key)
     # Start the window's countdown unless it runs already. On every hit, not
