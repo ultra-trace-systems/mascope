@@ -89,6 +89,19 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
       'Search untargeted compositions for the batch peaks nothing has assigned yet - once per species, on its brightest peak.'
   )
 
+  // The series detection: the batch's homologous series walked from its
+  // assigned batch peaks, against decoys, and what they propose measured. No
+  // parameters of its own, so it launches straight from the button, and it
+  // waits on its own task's notification as the search does.
+  const detecting = ref(false)
+  const pendingDetectId = ref(null)
+  let detectTimer = null
+  const detectTooltip = computed(
+    () =>
+      blockedReason.value ??
+      'Detect the homologous series of the batch (CH2, O, CO2 and more) from its assigned batch peaks, and measure the formulas they propose for the ones nothing has assigned or holds only as a candidate.'
+  )
+
   function endComputing() {
     computing.value = false
     pendingProcessId.value = null
@@ -163,6 +176,34 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     }
   }
 
+  function endDetecting() {
+    detecting.value = false
+    pendingDetectId.value = null
+    clearTimeout(detectTimer)
+    detectTimer = null
+  }
+
+  async function detectSeries() {
+    const batchId = app.data.batch.focusedId
+    if (!batchId || detecting.value || blockedReason.value) return
+    detecting.value = true
+    launchError.value = null
+    clearTimeout(detectTimer)
+    detectTimer = setTimeout(endDetecting, COMPUTE_TIMEOUT)
+    try {
+      const response = await api.http.post(
+        `/batch-peaks/batch/${batchId}/detect-series`,
+        {},
+        { type: 'detect_batch_series', errors: 'inline' }
+      )
+      pendingDetectId.value = response?.headers?.['process-id'] ?? null
+    } catch (error) {
+      endDetecting()
+      launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
+      launchError.value = getApiErrorMessage(error, 'Could not start the series detection.')
+    }
+  }
+
   /** Backfill batch peaks from this batch's existing assignments; the ledger and
    *  chart refresh on the peak_assignment_reload event the task emits. */
   async function compute() {
@@ -234,9 +275,18 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     endSearching()
   })
 
+  app.ui.notification.on('detect_batch_series', (notification) => {
+    if (!detecting.value) return
+    if (notification?.status === 'pending') return
+    const id = notification?.process_id
+    if (pendingDetectId.value && id && id !== pendingDetectId.value) return
+    endDetecting()
+  })
+
   function reset() {
     endComputing()
     endSearching()
+    endDetecting()
     endExporting()
     launchError.value = null
     launchRefused.value = false
@@ -252,6 +302,9 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     searching,
     searchTooltip,
     searchUntargeted,
+    detecting,
+    detectTooltip,
+    detectSeries,
     exporting,
     exportLedger,
     reset

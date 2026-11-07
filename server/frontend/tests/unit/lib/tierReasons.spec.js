@@ -30,6 +30,7 @@ const SERVER_RULES = [
   'minor_channel',
   'corroborated',
   'second_line',
+  'series_anchor',
   'on_a_list',
   'same_ion_settled',
   'no_close_rival',
@@ -58,7 +59,7 @@ describe('tierReasonLabel', () => {
   })
 
   it('shows a rule it does not know by its key, rather than hiding it', () => {
-    expect(tierReasonLabel('series_anchor')).toBe('series anchor')
+    expect(tierReasonLabel('flat_background')).toBe('flat background')
   })
 
   it('does not read a label off the object prototype', () => {

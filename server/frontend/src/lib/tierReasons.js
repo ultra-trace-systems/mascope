@@ -37,6 +37,7 @@ export const TIER_REASON_LABELS = Object.freeze({
   // What a row that kept its tier kept it on.
   corroborated: 'second channel',
   second_line: 'second line',
+  series_anchor: 'in a series',
   on_a_list: 'on a list',
   same_ion_settled: 'same ion, settled',
   no_close_rival: 'no close rival',

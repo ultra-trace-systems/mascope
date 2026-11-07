@@ -352,7 +352,11 @@ describe('BatchPeakComputeBar untargeted search', () => {
   it('offers the search beside the compute, under the same gate', () => {
     mountBar()
     const buttons = wrapper.findAll('.compute-button')
-    expect(buttons.map((b) => b.text())).toEqual(['Rebuild batch ledger', 'Search untargeted'])
+    expect(buttons.map((b) => b.text())).toEqual([
+      'Rebuild batch ledger',
+      'Search untargeted',
+      'Detect series'
+    ])
     expect(buttons[1].attributes('disabled')).toBeUndefined()
   })
 
@@ -400,5 +404,96 @@ describe('BatchPeakComputeBar untargeted search', () => {
       handler({ status: 'success', process_id: 'proc-s' })
     }
     expect(compute.searching).toBe(false)
+  })
+})
+
+describe('BatchPeakComputeBar series detection', () => {
+  const detectButton = () =>
+    wrapper.findAll('.compute-button').find((b) => b.text() === 'Detect series')
+  const notifyDetect = (payload) =>
+    (notificationHandlers['detect_batch_series'] ?? []).forEach((cb) => cb(payload))
+
+  it('offers the detection under the same gate', () => {
+    mountBar()
+    expect(detectButton().attributes('disabled')).toBeUndefined()
+    expect(compute.detectTooltip).toMatch(/^Detect the homologous series of the batch/)
+  })
+
+  it('disables it with the compute when no batch is focused, and says why', () => {
+    mountBar({ batch: null })
+    expect(detectButton().attributes('disabled')).toBeDefined()
+    expect(compute.detectTooltip).toBe(compute.blockedReason)
+  })
+
+  it('holds it while the ledger is being rebuilt or searched, and the search while it runs', async () => {
+    mountBar()
+    compute.computing = true
+    await wrapper.vm.$nextTick()
+    expect(detectButton().attributes('disabled')).toBeDefined()
+    compute.computing = false
+    compute.searching = true
+    await wrapper.vm.$nextTick()
+    expect(detectButton().attributes('disabled')).toBeDefined()
+    compute.searching = false
+    compute.detecting = true
+    await wrapper.vm.$nextTick()
+    const search = wrapper.findAll('.compute-button').find((b) => b.text() === 'Search untargeted')
+    expect(search.attributes('disabled')).toBeDefined()
+  })
+
+  it('launches straight from the button and waits for its own task', async () => {
+    mountBar()
+    post.mockResolvedValueOnce(ack('proc-d'))
+    await detectButton().trigger('click')
+    await Promise.resolve()
+    expect(post).toHaveBeenCalledWith(
+      '/batch-peaks/batch/b-1/detect-series',
+      {},
+      expect.objectContaining({ type: 'detect_batch_series', errors: 'inline' })
+    )
+    expect(compute.detecting).toBe(true)
+    expect(detectButton().attributes('data-loading')).toBe('true')
+    notifyDetect({ status: 'pending', process_id: 'proc-d' })
+    notifyDetect({ status: 'success', process_id: 'someone-else' })
+    expect(compute.detecting).toBe(true)
+    notifyDetect({ status: 'success', process_id: 'proc-d' })
+    expect(compute.detecting).toBe(false)
+  })
+
+  it('does not launch twice, nor while blocked', async () => {
+    mountBar()
+    post.mockReturnValueOnce(new Promise(() => {}))
+    // The first launch is still waiting on its acknowledgement.
+    compute.detectSeries()
+    await compute.detectSeries()
+    expect(post).toHaveBeenCalledTimes(1)
+    mountBar({ samples: [] })
+    post.mockClear()
+    await compute.detectSeries()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('gives up after the timeout', async () => {
+    mountBar()
+    await compute.detectSeries()
+    expect(compute.detecting).toBe(true)
+    vi.advanceTimersByTime(5 * 60 * 1000)
+    expect(compute.detecting).toBe(false)
+  })
+
+  it('resets the button and records a refusal', async () => {
+    mountBar()
+    post.mockRejectedValueOnce(apiError(409, 'A batch run is still rewriting this ledger'))
+    await compute.detectSeries()
+    expect(compute.detecting).toBe(false)
+    expect(compute.launchRefused).toBe(true)
+    expect(compute.launchError).toBe('A batch run is still rewriting this ledger')
+  })
+
+  it('ends with the rest when the batch changes', async () => {
+    mountBar()
+    await compute.detectSeries()
+    compute.reset()
+    expect(compute.detecting).toBe(false)
   })
 })

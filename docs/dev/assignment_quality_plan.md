@@ -90,7 +90,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.5c - the targeted matcher reads an isotope line over the scans that hold its anchor | - |  | built: an Orbitrap line's ratio is read over the scans it shares with its anchor, the count stored and shown in the Match tab; TOF unchanged |
 | 3.6 - priors and the dataset's context | - |  | planned; two riders from the reference's 0.10 line (the review section) |
 | 3.7 - stage 3 gate, engine 0.6.0 | - |  | planned; read against the literature and chemical reasoning, not the reference (decision 27) |
-| 4.1 - series detection on the batch ledger | - |  | planned |
+| 4.1 - series detection on the batch ledger | - |  | built: *Detect series* walks CH2, O, H2O, CO, CO2, C2H2O and, from a peak carrying their element, C2H6OSi and CF2 up to three steps from the batch's assigned peaks onto its unassigned and candidate ones within the search's window, commits a unit at 12 proposals and ten times its six decoys' mean (re-derived on the testbed: 3x commits every TOF family), measures each proposal through the propagation chain, records the series with `has_anchor` on the batch peak, and a run counts it as a second observation; tiering rule set 12; MAS-61 |
 | 4.2 - time-series coherence | - |  | planned; five riders from the reference's 0.10 line (the review section) |
 | 4.3 - calibration from verdicts, per profile | - |  | planned |
 | 4.4 - gate automation | - |  | planned |
@@ -1013,6 +1013,90 @@ who edits chemistry and stays last.
 - **Size.** L. Depends on stage 2; no longer on the stage 3 gate
   (decision 33). Starts after the finder fix MAS-444, which edits the
   same search function.
+- **As built.** `mascope_tools.composition.series` holds the units, the
+  walk and the decoy evidence; `batch_series.py` the batch run, route
+  `POST /api/batch-peaks/batch/{id}/detect-series`, the *Detect series*
+  button beside *Search untargeted*.
+  - **The walk.** From every assigned M0 batch peak, per ionization mode,
+    one unit up and one down: the source's neutral counts plus or minus the
+    unit's, read through the source's own mechanism at its exact m/z. The
+    nearest unassigned or candidate batch peak within the search's own
+    window (`mz_precision_ppm`: 3 ppm Orbitrap, 10 ppm TOF) is proposed the
+    formula, and the walk steps on from the proposal's exact mass, never the
+    peak's, up to three units from the assigned peak; a target is reached
+    once, at its shortest distance. A step keeps a carbon and no negative
+    count; a contaminant unit steps only from a formula carrying its
+    element (Si, F): a silicon atom stepped onto a terpene is a mass
+    coincidence, not a series. No shipped profile names contaminant units
+    of its own, so every profile walks both. Below assignability, pinned,
+    claimed and isotope-line batch peaks are neither sources nor targets.
+    An assigned batch peak that reads the formula its series record names
+    is that series' member, measured there by the detection or lifted by a
+    sample's run, and stays a target rather than a source: walked from, it
+    would leave its family short of the proposals it was committed on, and
+    a second detection on an unchanged ledger would take every record off.
+    A pinned one is a source like any assigned pin.
+  - **The decoys.** Each unit is walked again at six mass shifts, with the
+    same formula arithmetic, window, sources and targets; a unit's family
+    is committed at 12 proposals and an enrichment (proposals over the
+    decoys' mean) of 10. The run keeps every unit's counts, its decoy
+    counts and the batch's FDR over the committed families (the decoys'
+    summed mean over the summed proposals).
+  - **What a commit writes.** A proposal on a peak already held at
+    candidate on the same formula is recorded and not measured. Every other
+    one is measured on each member through the untargeted search's
+    propagation chain (`_propagate_to_sample`), and where a member already
+    reads the peak another way it takes the proposal only at no less
+    evidence. The batch peak carries the record under `provenance.series`
+    (unit, step, depth, the assigned peak the chain starts at and its
+    formula, `has_anchor`, the run), written before the members are
+    measured and again after: a detection that stops partway leaves it on
+    every member it measured, so the next one walks to them rather than
+    from them, and a sample folding in mid-run, which takes it off an
+    anchor not measured yet, does not keep it off. The consensus keeps it
+    while it names the proposed formula, and in between, when an anchor
+    still to be measured carries it beside another reading, the ledger,
+    the run's snapshot and a sample's run read none there
+    (`standing_series_record`). A later detection replaces every record
+    but those of a mode whose chemistry it could not resolve, and the
+    batch run's snapshot keeps it. A per-sample run of the batch's
+    sample copies the record onto its row of the same formula and
+    mechanism, the tiering pass reads it as an escape from `lone_peak` and
+    `candidate_density` and names it (`series_anchor`), and nothing else:
+    a radical, an absent line or an off-calibration mass stays what it
+    was, and an envelope claim is not held off by it (tiering rule set 12).
+    A decoy arm copies nothing.
+  - **The reference's rider.** On a labelled-nitrate source a formula
+    holding C8S or C2F3 is not proposed: its 15N alias makes the same ion
+    within 0.3 mDa and takes the same steps (the reference's changelog).
+  - **The measurement behind the thresholds**, on the testbed's 20 batch
+    ledgers (16 Orbitrap, 4 TOF; 2026-11-07). Walked one step at shifts
+    from -100 to +100 mDa in 0.5 mDa steps, the reached count over the 16
+    Orbitrap batches is 5,377 at the unit and peaks again at +-11, +-25,
+    +-36 (the CH4/O swap), +-48, +-62 and +-73 mDa, with its floor between
+    them; the six decoys (-92.5, -67, -31, +30.5, +66.5, +89.5 mDa) sit on
+    that floor for every unit, where two of the reference's three (+31.7
+    and -47.3 mDa) sit on the shoulder of a peak. Six more floor offsets,
+    each walked as if it were a unit, stand for 960 families that are not
+    there: at an enrichment of 10 none reaches 10 proposals, and 12
+    commits the same families as 10. An enrichment of 3 commits every
+    organic unit on the 4 TOF batches, where 40 to 60% of the proposals
+    landing on a candidate agree with its formula (90 to 98% on the
+    Orbitrap batches); from 10 none does. At 12 and 10: 59 families on 12
+    of the 20 batches, 6,123 proposals, a pooled FDR of 3.6% on the
+    decoys, 90% agreement with the candidates they land on (5,545 of them;
+    578 land on unassigned peaks); the first step makes 81% of the
+    proposals, the second 15%, the third 4%. The contaminant units commit
+    nowhere: the testbed holds almost no assigned Si or F batch peak to
+    walk from.
+  - **Not done here.** The Verify line's comparison with the reference's
+    `residual:series` rows reads its run folders and is the planner's pass
+    after the merge. The walk does not open the family's element budget
+    for a targeted re-search (`chemistry_profiles.md`, 4.6), and a
+    contaminant ladder no assigned peak anchors is not detected among the
+    unassigned peaks alone. A candidate anchor the series confirms keeps
+    its tier until its samples are assigned again, which is when the
+    tiering pass reads the series.
 
 ### 4.2 Time-series coherence
 

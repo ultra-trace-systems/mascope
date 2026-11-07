@@ -24,7 +24,8 @@ const ACTION_LABELS = {
   fold: 'Folded samples',
   rebuild: 'Rebuild',
   search_untargeted: 'Untargeted search',
-  import: 'Import'
+  import: 'Import',
+  detect_series: 'Series detection'
 }
 const IN_FLIGHT_STATUSES = ['running']
 
