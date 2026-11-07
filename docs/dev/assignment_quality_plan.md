@@ -85,7 +85,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.4f - a peak that is not separated | - |  | planned, from the same notes; gate G14; the bimodality criterion of the 0.10 review |
 | 3.4g - the chart draws each peak in the trace's unit, and a lone M0 | #2379 | 2026-10-19 | built: the lone M0 drawn, the envelope in the trace's unit; engine and tiers untouched |
 | 3.4h - the inspector links the other channels, and the listing column folds | #2988 | 2026-11-05 | built: the badge opens the other channels' peaks as links, the listed-as column folds to a mark with a view-menu switch in both ledgers, and rows whose peak the sample no longer has are marked (#2025); no tier moves |
-| 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | #2593 (the gate's anchors) |  | in two PRs (decided 2026-10-22). Built: the mass gate's fit takes the reagent pass's monoisotopic lines beside its commits; estimated on the pass-10 ledgers, all seven K3 files fit a calibration. Planned: the cap and the offset report (MAS-469), landing with 3.5b |
+| 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | #2593 (the gate's anchors) |  | in two PRs (decided 2026-10-22). Built: the mass gate's fit takes the reagent pass's monoisotopic lines beside its commits; estimated on the pass-10 ledgers, all seven K3 files fit a calibration. Built (MAS-469, its Orbitrap default open for the plan owner): the node leaves out a calibrant over 25 % of the ion current and reports the offset its calibrants carry; the mass gate leaves such a source line out of its anchors. Refit with the cap: C2's analytes from -0.7 to -0.1 ppm, B toward zero on two files, A 0.01 to 0.03 ppm away, K3 1 ppm away (its axis' offset) |
 | 3.5b - the envelope's tolerance, fitted per run | #2978 |  | built: Stage A fits a response curve per Orbitrap file (pooled with its batch siblings at the same settings, then the defaults) and a centre and width per TOF run; every fit score of the run reads it; pass 11 measures it |
 | 3.5c - the targeted matcher reads an isotope line over the scans that hold its anchor | - |  | built: an Orbitrap line's ratio is read over the scans it shares with its anchor, the count stored and shown in the Match tab; TOF unchanged |
 | 3.6 - priors and the dataset's context | - |  | planned; two riders from the reference's 0.10 line (the review section) |
@@ -587,6 +587,32 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   D it moves at most 0.02, toward the analytes. Across all eleven sets
   three TOF rows would lose a tier and two rows, on K and L, could gain
   one. Pass 11 measures it on the live engine.
+- **Built: the cap and the offset report (MAS-469).** Measured first: the
+  matched calibrants of the gate's Orbitrap files (46 fitted, two
+  instruments), each line held against the trend over m/z of its file's
+  committed analytes (43 files carry enough). The 106 lines at or below
+  16 % of the TIC sit -1.0 to +0.7 ppm from it, 0.3 ppm apart; every line
+  from 32 % up reads +0.6 to +4.0 ppm above it (A's uronium dimer +0.6, B's
+  urea ion +4.0, C2's 15N-nitrate +2.3 and its dimer +1.0, K3's N3+ +3.2).
+  The only lines between are D's two bromide calibrants at 22 to 25 %. Held
+  against the weaker lines of the file instead, without the trend, the low
+  lines' mDa offset masks it: A's urea ion at m/z 61 reads -0.9. The cap is
+  `calibrant_tic_share_max` 0.25 on the Orbitrap, one value for both
+  instruments (their bright lines do not tell them apart), off on TOF, and
+  `peak_intensity_max`, off. A cap that would leave too few lines is set
+  aside and said (`calibrant_cap.fell_back`); none of the gate's files hits
+  it. The offset is fitted on 3 lines or more where `1000 / mz` differs by
+  3 across them: A -0.10 to -0.11 mDa, B +0.17 to +0.18, K3 -0.15, each
+  with a standard error at most 0.032; C, C2, D, K and L span too little.
+  The gate's anchors leave out a source line over the same cap
+  (`reagent_capped`). Refit with the cap against today's lists, the
+  committed analytes' median moves toward zero on C2 (-0.76 to -0.67 ppm
+  becomes -0.16 to -0.08) and on the two B files the cap reaches, 0.01 to
+  0.03 ppm away on A, and 1 ppm away on K3 (-0.43 to -0.28 becomes +0.54 to
+  +0.68): without N3+ the median falls on a low-mass line of an axis
+  carrying -0.15 mDa, which one factor cannot follow. Whether the Orbitrap
+  default ships on is the plan owner's call; applying the offset is
+  MAS-748, after MAS-18's reader change.
 
 ### 3.5b The envelope's tolerance, fitted per run
 

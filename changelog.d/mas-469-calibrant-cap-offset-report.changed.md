@@ -14,7 +14,8 @@
   beside the factor over the calibrants it kept (`offset`), or why the
   calibrants span too little to tell the two apart. A calibrant's share of
   the ion current on a file fitted whole is now of its polarity's ion current
-  alone.
+  alone. Peak assignment's mass gate leaves a source line over the same cap
+  out of its calibration, and its record counts them (`reagent_capped`).
   A new fit moves only a file whose calibrants include such a line; a file
   already calibrated keeps its axis until it is fitted again
   (`docs/user/how-it-works/calibration.md`, *The brightest calibrants are

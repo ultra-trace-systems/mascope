@@ -163,7 +163,8 @@ def calibrants_over_cap(
     two, whichever leaves out more applies. A cap that is None leaves out
     nothing, and neither does a share or an intensity that is not known.
     The m/z calibration node leaves such lines out of its fit
-    (``ORBI_CALIBRANT_TIC_SHARE_MAX`` says why).
+    (``ORBI_CALIBRANT_TIC_SHARE_MAX`` says why), and the assignment engine's
+    mass gate leaves them out of its anchors.
 
     :param intensity: Each line's intensity.
     :param tic_share: Each line's share of the ion current.

@@ -29,6 +29,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
 from mascope_backend.api.new.peak_assignments.envelope_claims import ENVELOPE_CLAIM
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     TRACKING_TRACKS,
+    SourceLineCap,
     apply_mass_gate,
 )
 from mascope_backend.api.new.peak_assignments.service import judge_commits
@@ -170,6 +171,7 @@ def judge(
     second: str = "[M+Na]+",
     reagent_lines: Sequence[dict] = (),
     resolution=None,
+    source_line_cap=None,
 ):
     return judge_commits(
         rows,
@@ -181,12 +183,19 @@ def judge(
         max_alternatives=5,
         reagent_lines=reagent_lines,
         resolution=resolution,
+        source_line_cap=source_line_cap,
     )
 
 
-def source_line(row_id: str, mz: float, ppm: float, label: str | None = None) -> dict:
+def source_line(
+    row_id: str,
+    mz: float,
+    ppm: float,
+    label: str | None = None,
+    intensity: float = 1.0e6,
+) -> dict:
     """A line the reagent pre-pass claimed, as it builds one."""
-    row = commit(row_id, None, "N3+", mz, 1.0e6, role="reagent", ppm=ppm)
+    row = commit(row_id, None, "N3+", mz, intensity, role="reagent", ppm=ppm)
     return row | {
         "source": "reagent",
         "isotope_label": label,
@@ -363,6 +372,20 @@ class TestAClaimIsJudgedAgain:
         assert judged.mass_calibration["reagent_anchors"] == 3
         assert lines == before
         assert not set(by_id(judged.rows)) & {"n3", "no2", "n4", "n3-15n"}
+
+    def test_a_source_line_over_the_calibrant_cap_anchors_no_round(self):
+        rows = anchors() + [*owner(), on_its_line()]
+        lines = [
+            source_line("n3", 42.0087, 3.0, intensity=8.0e6),
+            source_line("no2", 45.9923, -0.2),
+            source_line("n4", 56.0117, 0.1),
+        ]
+        cap = SourceLineCap(tic=1.0e7, tic_share_max=0.25)
+
+        judged = judge(rows, reagent_lines=lines, source_line_cap=cap)
+
+        assert judged.mass_calibration["reagent_anchors"] == 2
+        assert judged.mass_calibration["reagent_capped"] == 1
 
     def test_a_line_the_owner_does_not_predict_leaves_the_ledger(self):
         rows = anchors() + [

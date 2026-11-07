@@ -285,6 +285,7 @@ def inherited_calibration(snapshot: dict) -> MassCalibration:
         sigma_ppm=number("sigma_ppm"),
         anchors=int(snapshot.get("anchors") or 0),
         reagent_anchors=int(snapshot.get("reagent_anchors") or 0),
+        reagent_capped=int(snapshot.get("reagent_capped") or 0),
         gate_sigma_ppm=number("gate_sigma_ppm"),
         trend=trend,
         trend_refused=snapshot.get("trend_refused"),

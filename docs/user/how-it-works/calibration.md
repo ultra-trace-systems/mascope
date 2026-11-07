@@ -100,6 +100,9 @@ The fit's record says what the cap did, under `calibrant_cap` in its quality blo
 A file calibrated range by range has the same block for each range, and the file's counts the lines left out across them.
 Set the parameters in the calibration dialog's request, or leave them out to take the instrument's default.
 
+Peak assignment's mass gate reads the source's own lines by the same cap.
+A reagent line brighter than it does not anchor the gate's calibration, and the run's record counts such lines as `reagent_capped` ([peak assignment](peak-assignment.md)).
+
 ## Outlier Rejection and Model Fitting
 
 To insulate the calibration from false matches, the pipeline splits its outlier rejection strategy based on the size of the qualified match pool.

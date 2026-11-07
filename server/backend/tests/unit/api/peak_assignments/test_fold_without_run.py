@@ -787,3 +787,25 @@ class TestTheFoldClaimsInTheRunsWindow:
 
         assert seen["instrument_type"] is None
         mocks["fold"].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_folds_mass_gate_reads_the_sources_lines_by_the_calibrant_cap():
+    from mascope_backend.api.new.peak_assignments import service
+    from mascope_backend.api.new.peak_assignments.mass_gate import SourceLineCap
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+
+    cap = SourceLineCap(tic=1.0e6, tic_share_max=0.25)
+    stack, _mocks = _patched()
+    with stack:
+        stack.enter_context(
+            patch(f"{_SVC}._source_line_cap", new_callable=AsyncMock, return_value=cap)
+        )
+        gate = stack.enter_context(
+            patch(f"{_SVC}.apply_mass_gate", wraps=service.apply_mass_gate)
+        )
+        await fold_sample_peaks_without_run("si-1")
+
+    assert gate.call_args.kwargs["source_line_cap"] is cap
