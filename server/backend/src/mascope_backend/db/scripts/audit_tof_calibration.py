@@ -17,8 +17,9 @@ per day), and for each ionization mode they were acquired in, it:
    search for five matches or fewer, the same fit - under the mode's
    calibration collection and every named set, in every model asked for;
 3. checks that the refit under the mode's collection, with the tolerance and
-   refine window the record was fitted with, lands on the stored fit to
-   0.01 ppm, on every file the node fitted;
+   refine window the record was fitted with, in the model the node then
+   fitted (mode 0 alone up to its version 1, its own choice since), lands on
+   the stored fit to 0.01 ppm, on every file the node fitted;
 4. evaluates every fit, and the stored record, on every ion any set or
    cluster series matched in the file, and on the file's strong peaks against
    the CHO family of each of the mode's mechanisms.
@@ -68,8 +69,11 @@ Configuration, all through the environment:
   collection would, or to ``{"collection": "<id or name>"}``. The mode's
   own calibration collection is always audited, as ``collection``.
   ``{"proposed": ["C3H9N", "C6H18N2", "C13H25NO2"]}``
-- ``TOF_AUDIT_MODELS``: Tofwerk modes to fit, comma separated; default
-  ``0``. Mode 2 is accepted once the library fits it.
+- ``TOF_AUDIT_MODELS``: the models to fit, comma separated: a Tofwerk mode
+  the node fits (``0``, ``2``) for that mode alone, its calibrants selected
+  under it too, or ``node`` for the node's own choice between them; default
+  ``0``. A fit is named by its set and model: ``collection/mode2``,
+  ``proposed/node``.
 - ``TOF_AUDIT_BANDS``: mass band edges in Th; default
   ``40,100,150,200,300,500``.
 - ``TOF_AUDIT_FAMILIES``: mechanisms whose CHO family is measured, comma
@@ -121,6 +125,7 @@ from mascope_backend.api.controllers.calibration.lib import (
     tof_calibration_audit as audit,
 )
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
+    TOF_MODEL_EQUATIONS,
     TofCalibrationHandler,
 )
 from mascope_backend.api.models.calibration.calibration_pydantic_model import (
@@ -156,6 +161,13 @@ _FILE_CONCURRENCY = 4
 STORED = "stored"
 #: The calibrant set every mode is audited with: its calibration collection.
 COLLECTION = "collection"
+#: The model ``TOF_AUDIT_MODELS`` and the fit names call the node's own
+#: choice between the modes it fits (``audit.MODELS``' None).
+NODE = "node"
+#: The last node version that fitted mode 0 alone (``quality.node_version``;
+#: a record from before the key was, too). A later one chooses between mode
+#: 0 and mode 2, and its records are reproduced by that choice.
+_MODE0_ONLY_NODE_VERSION = 1
 
 #: The refit under the mode's collection must land within this of the stored
 #: fit, over the span of its calibrants, to count as the node's.
@@ -176,7 +188,8 @@ class Config:
     per_day: int
     mode: str | None
     sets: dict
-    models: tuple[int, ...]
+    #: Tofwerk modes, and None for the node's own choice (``audit.MODELS``)
+    models: tuple[int | None, ...]
     band_edges: tuple[float, ...]
     families: tuple[str, ...] | None
     series: dict
@@ -286,14 +299,17 @@ def read_config(today: date | None = None) -> Config:
 
     models_raw = _env("TOF_AUDIT_MODELS") or "0"
     try:
-        models = tuple(int(part) for part in models_raw.split(","))
+        models = tuple(
+            None if part.strip() == NODE else int(part)
+            for part in models_raw.split(",")
+        )
     except ValueError:
         raise ValueError(f"TOF_AUDIT_MODELS={models_raw!r} is not a list of modes.")
     for model in models:
         if model not in audit.MODELS:
             raise ValueError(
-                f"TOF_AUDIT_MODELS: mode {model} cannot be fitted yet; "
-                f"fittable: {', '.join(str(m) for m in sorted(audit.MODELS))}."
+                f"TOF_AUDIT_MODELS: mode {model} cannot be fitted; fittable: "
+                f"{', '.join(model_name(m) for m in audit.MODELS)}."
             )
 
     bands_raw = _env("TOF_AUDIT_BANDS")
@@ -646,9 +662,16 @@ class FileAudit:
     unfitted: bool = False
 
 
-def fit_names(mode_audit: ModeAudit, models: tuple[int, ...]) -> list[str]:
+def model_name(model: int | None) -> str:
+    """A model as fit names and the report name it: ``mode0``, ``node``."""
+    return NODE if model is None else f"mode{model}"
+
+
+def fit_names(mode_audit: ModeAudit, models: tuple[int | None, ...]) -> list[str]:
     """The refits a file gets, by name: set and model."""
-    return [f"{name}/mode{model}" for name in mode_audit.sets for model in models]
+    return [
+        f"{name}/{model_name(model)}" for name in mode_audit.sets for model in models
+    ]
 
 
 def _converter_on_disk(record: dict | None) -> bool:
@@ -672,7 +695,7 @@ def _node_record(record: dict | None) -> bool:
     return (
         isinstance(record, dict)
         and isinstance(record.get("quality"), dict)
-        and record.get("mode") == 0
+        and record.get("mode") in TOF_MODEL_EQUATIONS
         and not is_unfitted_record(record)
     )
 
@@ -736,7 +759,7 @@ async def audit_file(row: FileRow, mode_audit: ModeAudit, config: Config) -> Fil
 
     for set_name, isotopes in mode_audit.sets.items():
         for model in config.models:
-            name = f"{set_name}/mode{model}"
+            name = f"{set_name}/{model_name(model)}"
             result = await _refit(
                 stored, mode_audit.params, isotopes, resolution, model=model
             )
@@ -768,11 +791,19 @@ async def audit_file(row: FileRow, mode_audit: ModeAudit, config: Config) -> Fil
             }
         )
         isotopes = mode_audit.sets[COLLECTION]
+        # The node that made the record fitted mode 0 alone up to version 1,
+        # and chose between mode 0 and mode 2 since
+        model = (
+            0
+            if (quality.get("node_version") or _MODE0_ONLY_NODE_VERSION)
+            <= _MODE0_ONLY_NODE_VERSION
+            else None
+        )
         # The usual record was fitted with the mode's own settings: then the
-        # collection's mode-0 refit above is this refit already
-        result = refits.get(f"{COLLECTION}/mode0")
+        # collection's refit in that model above is this refit already
+        result = refits.get(f"{COLLECTION}/{model_name(model)}")
         if result is None or params != mode_audit.params:
-            result = await _refit(stored, params, isotopes, resolution)
+            result = await _refit(stored, params, isotopes, resolution, model=model)
         reproduction = reproduce(result, record, isotopes, params)
 
     peaks = stored.peaks
@@ -799,7 +830,7 @@ async def _refit(
     params: CalibrationFitParams,
     isotopes: pd.DataFrame,
     resolution,
-    model: int = 0,
+    model: int | None = 0,
 ) -> audit.Refit:
     """One refit, or a failed fit with the reason when the refit raises.
 
@@ -1235,7 +1266,7 @@ async def run_audit(config: Config) -> dict:
         f"TOF calibration audit of {config.instrument}: {len(rows)} file(s) acquired "
         f"{config.first_day} to {config.last_day} (UTC)"
         + (f", {config.per_day} per day" if config.per_day else "")
-        + f"; models {', '.join(str(m) for m in config.models)}."
+        + f"; models {', '.join(model_name(m) for m in config.models)}."
     )
     by_mode = defaultdict(list)
     for row in rows:
@@ -1246,7 +1277,7 @@ async def run_audit(config: Config) -> dict:
         "from": config.first_day.isoformat(),
         "to": config.last_day.isoformat(),
         "per_day": config.per_day,
-        "models": list(config.models),
+        "models": [model_name(model) for model in config.models],
         "modes": [],
         "files": [],
         "unreadable": [],

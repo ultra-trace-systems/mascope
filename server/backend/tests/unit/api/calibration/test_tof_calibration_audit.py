@@ -265,23 +265,29 @@ async def test_a_set_with_no_isotopes_is_not_fitted(filestore):
 
 
 @pytest.mark.asyncio
-async def test_a_refit_fits_the_model_it_is_asked_for(filestore, monkeypatch):
-    """The mode-2 fit plugs in by its number; until then only mode 0 fits."""
+async def test_a_refit_fits_the_model_it_is_asked_for(filestore):
+    """Mode 0 or mode 2 alone, by its number, or the node's own choice
+    between them; no other mode."""
     filename = support.write_file(filestore, support.calibrant_peaks())
-    asked = []
+    isotopes = support.isotopes()
+    params = support.params()
 
-    def model_9(tof, mz, exact):
-        asked.append(len(tof))
-        return audit.mz_calibrate(tof, mz, exact)
+    refits = {
+        model: await _audit_fit(filename, isotopes, params, model=model)
+        for model in audit.MODELS
+    }
+    node = await _node_fit(filename, isotopes, params)
 
-    monkeypatch.setitem(audit.MODELS, 9, model_9)
-    refit = await _audit_fit(filename, support.isotopes(), support.params(), model=9)
-
-    assert refit.fit is not None
-    assert asked
+    assert audit.MODELS == (0, 2, None)
+    assert refits[0].fit["mode"] == 0
+    assert refits[2].fit["mode"] == 2
+    assert len(refits[2].fit["par"]) == 3
+    # The node's own: the peaks sit on a square-root axis, which mode 2
+    # predicts no better, so the node keeps mode 0
+    assert refits[None].fit == node.fit_result == refits[0].fit
 
     with pytest.raises(ValueError, match="cannot be fitted"):
-        await _audit_fit(filename, support.isotopes(), support.params(), model=2)
+        await _audit_fit(filename, isotopes, params, model=1)
 
 
 @pytest.mark.asyncio

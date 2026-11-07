@@ -1,7 +1,7 @@
 # TOF mass calibration
 
 - **Status:** building
-- **As of:** 2026-11-05
+- **As of:** 2026-11-06
 - **Tracked in:** [TOF mass calibration](https://linear.app/ultra-trace/project/tof-mass-calibration-8271ef05d142) (Linear, MAS-171 to MAS-197)
 - **What:** TOF mass calibration across the analysed range: measure, fix calibrants, model, re-calibrate.
 
@@ -503,11 +503,20 @@ compromised one.
 `mz_calibrate` fits Tofwerk's mode 0, `i = p1·√m + p2`, where `i` is the TOF sample index: a
 `scipy.optimize.least_squares` fit (trust-region, soft-L1 loss) started from the linear
 least-squares solution of `i` against `√m`. The record is `{"mode": 0, "par": [p1, p2]}`.
-`tof_to_mass` already evaluates modes 0–5, so a record in another mode applies; only the fit is
-limited to mode 0.
+`tof_to_mass` evaluates modes 0–5, so a record in any of them applies.
 
-A fit needs at least three matched points (`TOF_MINIMUM_CALIBRATION_POINTS`); fewer leaves the file
-with the warning "Not enough calibration peaks". A fit with a zero coefficient fails.
+Since MAS-183 it also fits mode 2, `i = p1·m^p3 + p2`, started from the mode-0 solution and
+p3 = 0.5 under the same loss, with its steps scaled per parameter (`MODE2_P3_SCALE`). The node
+selects the calibrants under mode 0, then fits mode 2 to the ones it kept, and keeps mode 2 when
+its mean error at each calibrant ion left out of the fit, in turn, is more than 0.5 ppm below mode
+0's (`TOF_MODE2_MIN_GAIN_PPM`), on four ions or more (`TOF_MODE2_MIN_IONS`). An ion is left out with
+all its lines, since a bromide ion's two lines 2 Th apart read the axis at one place. A mode-2 fit
+whose offset p2 is at or past index 0 is not kept: mode 2 gives the samples before it no mass.
+
+A fit needs at least three matched points; fewer leaves the file with the warning "Not enough
+calibration peaks". A fit in one model alone, as the audit makes, takes one point more than the
+model has parameters (`TOF_MINIMUM_CALIBRATION_POINTS`: three for mode 0, four for mode 2). A fit
+with a zero coefficient fails.
 
 ### Selection
 
@@ -525,8 +534,9 @@ The fit decides which matches to keep by the 15 ppm residual rule (`TOF_MZ_ERROR
 
 Two consequences matter for this plan. With three ions there is no spare point to outvote a bad
 match. And a model with as many parameters as retained points fits them exactly, with zero
-residual by construction, so the subset ranking would always prefer it: a three-parameter model
-cannot be added without changing the search (milestone 2).
+residual by construction, so the subset ranking would always prefer it. That is why the node
+selects under mode 0 and judges mode 2 on held-out ions, and why a fit in mode 2 alone searches no
+subset smaller than four points (MAS-183).
 
 A fit whose mean post-fit residual exceeds 15 ppm, or whose points all come from one ion, warns
 "Calibration inaccurate".
@@ -554,6 +564,8 @@ Since MAS-182 the block of a TOF fit also says what the fit was made on: every l
 kept or left out, with its ion, residual and S/N (`points`); the m/z span of the lines kept
 (`span`); the collection's id and a hash of its isotopes (`collection`); the `model`; and the
 `node_version` ([calibration.md](../user/how-it-works/calibration.md#what-a-tof-record-says)).
+Since MAS-183 the `model` also lists each model's held-out error (`compared`, null on fewer than
+four ions) and the gain mode 2 needs (`min_gain_ppm`), and the node is version 2.
 A record fitted before then keeps only the counts and means. Two other kinds of record
 exist: the converter's `{"mode": 0, "par": [...]}` with the acquisition software's coefficients,
 stamped `status: "unfitted"` since 2026-09-18 and recognised without the stamp before that

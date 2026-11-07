@@ -41,6 +41,7 @@ import xarray as xr
 import mascope_file.io as m_io
 import mascope_signal.compute as m_compute
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
+    TOF_MODEL_EQUATIONS,
     TofCalibrationHandler,
 )
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
@@ -53,7 +54,7 @@ from mascope_backend.api.models.target.compounds.target_compound_pydantic_model 
     TargetCompoundBase,
 )
 from mascope_backend.db import IonizationMechanism
-from mascope_tofwerk.calibration import mz_calibrate, tof_to_mass
+from mascope_tofwerk.calibration import tof_to_mass
 from mascope_tools.composition.mechanism_notation import (
     MechanismNotationError,
     to_row,
@@ -61,10 +62,11 @@ from mascope_tools.composition.mechanism_notation import (
 from mascope_tools.composition.utils import composition_mass, parse_composition
 
 
-#: The calibration models an audit can fit, by Tofwerk mode number. Mode 2
-#: (``i = p1 * m**p3 + p2``) joins once ``mascope_tofwerk.calibration`` fits
-#: it (milestone 2 of the plan); ``tof_to_mass`` already evaluates it.
-MODELS: dict[int, Callable] = {0: mz_calibrate}
+#: The calibration models an audit can fit: each Tofwerk mode the node fits,
+#: alone, by its number - the calibrants selected under it and fitted in it -
+#: and None for the node's own fit, which selects them under mode 0 and keeps
+#: mode 0 or mode 2 (``TofCalibrationHandler``).
+MODELS: tuple[int | None, ...] = (*TOF_MODEL_EQUATIONS, None)
 
 #: Default mass bands, as edges in Th: ``[40, 100)``, ..., ``[500, inf)``,
 #: and what lies below the first edge as a band of its own.
@@ -172,7 +174,7 @@ class AuditCalibrationHandler(TofCalibrationHandler):
     :param isotopes: The calibrants: target isotopes as the database answers
         them, plus an ``ion_label`` column that names each line in a report
     :param resolution_function: The instrument's, for the overlap filter
-    :param model: A key of :data:`MODELS`
+    :param model: One of :data:`MODELS`
     """
 
     def __init__(
@@ -181,17 +183,12 @@ class AuditCalibrationHandler(TofCalibrationHandler):
         params: CalibrationFitParams,
         isotopes: pd.DataFrame,
         resolution_function: Callable,
-        model: int = 0,
+        model: int | None = 0,
     ):
-        super().__init__(stored.filename, params, notification=None)
-        if model not in MODELS:
-            raise ValueError(
-                f"Model {model} cannot be fitted; fittable: {sorted(MODELS)}"
-            )
+        super().__init__(stored.filename, params, notification=None, model=model)
         self._stored = stored
         self._isotopes = isotopes
         self._resolution_function = resolution_function
-        self.model = model
         #: Every reading that passed the node's match filters, retained by
         #: the fit or not: what presence and held-out accuracy are read from.
         self.good_matches: pd.DataFrame | None = None
@@ -253,13 +250,6 @@ class AuditCalibrationHandler(TofCalibrationHandler):
         self.good_matches = good
         return matches, good
 
-    def _fit_matches(self, matches_df: pd.DataFrame) -> tuple[dict, dict]:
-        return MODELS[self.model](
-            matches_df["sample_peak_tof"],
-            matches_df["sample_peak_mz"],
-            matches_df["mz"],
-        )
-
 
 @dataclass
 class Refit:
@@ -291,9 +281,13 @@ async def refit(
     params: CalibrationFitParams,
     isotopes: pd.DataFrame,
     resolution_function: Callable,
-    model: int = 0,
+    model: int | None = 0,
 ) -> Refit:
-    """Fit one file under one calibrant set and model, as the node would."""
+    """Fit one file under one calibrant set and model, as the node would.
+
+    :param model: One of :data:`MODELS`: a Tofwerk mode alone, or None for
+        the node's own choice.
+    """
     handler = AuditCalibrationHandler(
         stored, params, isotopes, resolution_function, model=model
     )
