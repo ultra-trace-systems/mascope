@@ -564,9 +564,19 @@ async def _search_sample_peaks(
     # re-score below reads it, so the search ranks a reading at the tolerance
     # its row is tiered at.
     envelope_tolerance = await recorded_envelope_tolerance(sample_item_id)
+    # Nor has it fitted an offset. The centre is the one a run of the sample
+    # scored at, or the lines this search's profile claims off the whole peak
+    # list where no run recorded one, taken only beyond the width
+    # (`SampleMassAccuracy.scoring_mu_ppm`). The search ranks its candidates
+    # there, as a run's own search ranks at the run's centre, and the seeded
+    # re-score below measures its commits there where they are too few ions
+    # to fit a centre of their own.
+    reagent_offset = await sample_reagent_offset(
+        sample, peaks_df=peaks_df, resolved_profile=resolved_profile
+    )
     scoring = pattern_scoring_for(
         match_params,
-        SampleMassAccuracy(),
+        SampleMassAccuracy(reagent=reagent_offset),
         get_instrument_type(sample.filename),
         await _resolution_of(sample),
         envelope_tolerance=envelope_tolerance,
@@ -590,12 +600,8 @@ async def _search_sample_peaks(
         untargeted_seeds(
             matches_df, mechanism_id_by_notation, to_custom_element_format
         ),
-        # No Stage A ran on this path, so the centre is the one a run of the
-        # sample scored at, or the lines this search's profile claims off the
-        # whole peak list where no run recorded one.
-        reagent_offset=await sample_reagent_offset(
-            sample, peaks_df=peaks_df, resolved_profile=resolved_profile
-        ),
+        # The centre the search ranked them at, for commits too few to fit one.
+        reagent_offset=reagent_offset,
         envelope_tolerance=envelope_tolerance,
     )
     rows = untargeted_matches_to_peak_assignments(
