@@ -40,9 +40,13 @@ from mascope_tools.composition.envelope_tolerance import (
 )
 from mascope_tools.composition.heuristic_filter import (
     DETECT_SNR_K,
+    _predicted_envelope,
+    score_ion_envelope,
+    score_ion_envelopes,
     score_pattern_v2,
     score_patterns_v2,
 )
+from mascope_tools.composition.models import PatternScoring
 
 
 #: A curve that opens 40% down at an expected S/N of 3 to 10 and closes by 100,
@@ -248,6 +252,97 @@ class TestManyEnvelopesAtOneTolerance:
                 offsets,
             ),
         )
+
+
+#: A curve whose lower end sits under the matcher's fixed 0.6 at an expected
+#: S/N of 3 to 20, as a censoring Orbitrap's does (step 5.3), and above it from
+#: 20 up; absent lines charged from the caller's threshold.
+CENSORING = EnvelopeTolerance(
+    snr_edges=RESPONSE_SNR_EDGES,
+    lower=(0.3, 0.45, 0.9, 0.95, 1.0),
+)
+
+#: An ion whose envelope at a 1% floor is its own line and one 13C line.
+ION = ("C10H15O4", -1)
+
+
+def _scored(path: str, ratio: float, line_snr, tolerance):
+    """The ion scored on a peak list holding its own line and its 13C line read
+    at ``ratio`` of its share, the 13C line's expected S/N ``line_snr`` (None
+    for a list with no S/N), through one-at-a-time or bulk matching."""
+    scoring = PatternScoring(envelope_tolerance=tolerance)
+    mzs, shares, _ = _predicted_envelope(*ION, 0.01, scoring)
+    assert len(mzs) == 2
+    intensities = np.array([1e6, 1e6 * shares[1] * ratio])
+    snrs = None if line_snr is None else np.array([line_snr / shares[1], CLEAN])
+    if path == "alone":
+        score, _, isotopes = score_ion_envelope(
+            *ION, 0.01, mzs, intensities, snrs, scoring
+        )
+        return score, isotopes
+    scores, _, isotopes = score_ion_envelopes(
+        [ION[0]], [ION[1]], [0.01], mzs, intensities, snrs, scoring
+    )
+    return float(scores[0]), isotopes[0]
+
+
+@pytest.mark.parametrize("path", ["alone", "bulk"])
+class TestTheMatchersHeightWindow:
+    """The matcher's 40% window opens down to a fitted curve's lower end
+    (mascope#2502): a dim 13C line censored scan by scan is the ion's own."""
+
+    def test_a_censored_line_on_a_fitted_file_is_matched_not_charged(self, path):
+        # 0.5 of its share at an expected S/N of 15, where the curve's lower
+        # end is 0.45: inside the band, so it costs nothing.
+        score, isotopes = _scored(path, 0.5, 15.0, CENSORING)
+
+        assert isotopes["masses"][1] > 0
+        assert isotopes["intensity_errors"][1] == pytest.approx(-0.5)
+        assert score == pytest.approx(1.0)
+
+    def test_the_same_line_on_an_unfitted_file_is_charged(self, path):
+        score, isotopes = _scored(path, 0.5, 15.0, None)
+
+        assert isotopes["masses"][1] == 0
+        assert score < 0.9
+
+    def test_the_window_opens_at_the_line_s_own_expected_snr(self, path):
+        # The anchor's S/N is over 100, where the curve opens nowhere; the
+        # line's own, the anchor's times its share, is 15.
+        _, isotopes = _scored(path, 0.5, 15.0, CENSORING)
+        assert isotopes["masses"][1] > 0
+        # At an expected S/N of 25 the curve's lower end is 0.9, and the
+        # fixed window's 0.6 decides.
+        _, isotopes = _scored(path, 0.5, 25.0, CENSORING)
+        assert isotopes["masses"][1] == 0
+
+    def test_a_line_below_the_curve_s_lower_end_is_absent(self, path):
+        _, isotopes = _scored(path, 0.4, 15.0, CENSORING)
+
+        assert isotopes["masses"][1] == 0
+
+    def test_a_curve_never_narrows_the_fixed_window(self, path):
+        # 0.65 of its share where the curve's lower end is 0.9.
+        _, isotopes = _scored(path, 0.65, 25.0, CENSORING)
+
+        assert isotopes["masses"][1] > 0
+
+    def test_a_line_read_high_is_still_turned_away(self, path):
+        _, isotopes = _scored(path, 1.5, 15.0, CENSORING)
+
+        assert isotopes["masses"][1] == 0
+
+    def test_a_line_with_no_expected_snr_keeps_the_fixed_window(self, path):
+        _, isotopes = _scored(path, 0.5, None, CENSORING)
+
+        assert isotopes["masses"][1] == 0
+
+    def test_an_anchor_read_at_snr_zero_keeps_the_fixed_window(self, path):
+        # An S/N of 0 is unknown to the score (its snr_known needs > 0), so
+        # the window must not read it as the curve's first bin either.
+        _, isotopes = _scored(path, 0.5, 0.0, CENSORING)
+
+        assert isotopes["masses"][1] == 0
 
 
 class TestTheAdmittedBand:

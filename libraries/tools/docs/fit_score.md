@@ -265,6 +265,16 @@ is `server/backend/.../peak_assignments/envelope_fit.py`; the run records what i
 fitted under `config.envelope_tolerance`, and `EnvelopeTolerance.from_record` rebuilds
 it from that record.
 
+The composition finder's matcher (`heuristic_filter.score_ion_envelope` and its bulk
+form) decides before the score whether a peak in a line's m/z window is the line at
+all: it keeps it where its share reads within $40\%$ of the prediction
+(`ISOTOPE_MATCHING_INTENSITY_TOLERANCE`), and the score sees any other as absent. On a
+file with a curve the window opens down to $\min(0.6,\, \ell(p_i s_0))$, so a
+censored line the curve admits is matched rather than charged as a miss
+(mascope#2502). Its upper end stays at $1.4$, the guard against an unrelated peak, and
+a line whose base SNR is missing or not above 0, which the score reads as unknown
+too, keeps the fixed window.
+
 ### 3.3 Detectability gate (censoring at the detection limit)
 
 A predicted peak that is **absent** ($o_i = 0$) is only evidence *against* the assignment
