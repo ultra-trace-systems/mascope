@@ -873,6 +873,56 @@ class TestWhatTheEarlierPassesDecided:
         assert expected in rules_on(rows, "pa-1")
 
     @pytest.mark.parametrize(
+        "source, isotopologue, detail",
+        [
+            (
+                "untargeted",
+                False,
+                "committed through a channel this mode treats as secondary, "
+                "with no second channel and no list behind it",
+            ),
+            (
+                "untargeted",
+                True,
+                "committed through a channel this mode treats as secondary, "
+                "with no second channel and no list behind it; its isotopologue "
+                "gives the ion's carbon count, not which neutral clustered",
+            ),
+            (
+                "database",
+                False,
+                "committed through a channel this mode treats as secondary, "
+                "with no isotopologue and no second channel behind it",
+            ),
+        ],
+        ids=["search", "search_with_line", "list"],
+    )
+    def test_the_minor_channel_cap_says_what_its_row_lacked(
+        self, source, isotopologue, detail
+    ):
+        # Step 3.4: a search row wants a second channel or a list, and its
+        # isotopologue is no answer; a list's reading wants a line or a second
+        # channel, since the list already names its neutral.
+        verdict = {"corroborated_by": None, "capped": True}
+        if source == "untargeted":
+            verdict["isotopologue"] = isotopologue
+        rows = [
+            row(
+                "pa-1",
+                tier="candidate",
+                source=source,
+                provenance={"minor_channel": verdict},
+            )
+        ]
+        run(rows)
+        (reason,) = [
+            reason
+            for reason in rows[0]["provenance"]["tier_reasons"]
+            if reason["rule"] == REASON_MINOR_CHANNEL
+        ]
+        assert reason["detail"] == detail
+
+    @pytest.mark.parametrize(
         "formula, alternative, via, detail",
         [
             (
@@ -1181,11 +1231,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_10(self):
+    def test_the_rule_set_is_11(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 10
+        assert run([row("pa-1")])["version"] == 11
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])

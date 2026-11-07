@@ -77,7 +77,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.3d - source-solvent clusters | - |  | planned, from the reference engine's reading (its #55): solvent ladders as reagent rows |
 | 3.3e - the chemistry a run searches under is shipped | #2217 | 2026-09-26 | measured (pass 10): the shipped mechanisms are created at every start; no channel unavailable |
 | 3.3f - a list is read through the channels the run opened | #2220 | 2026-09-26 | built: Stage A reads the lists through the channels the run opened; pass 11 measures it |
-| 3.4 - an opportunistic channel needs a second channel | - |  | planned |
+| 3.4 - an opportunistic channel needs a second channel | #3019 |  | built: a search row through a secondary channel reaches assigned only on a list naming its neutral or the neutral through a mode channel; its isotopologue is recorded and no longer lifts the cap; a list's reading through an opened channel keeps 3.3f's rule; tiering rule set 11; MAS-56 |
 | 3.4b - one peak is not enough | #2212 | 2026-09-25 | measured (pass 9): G12 at 0 on every set |
 | 3.4c - measure an alternative before committing | - |  | planned, from the plan owner's reading of 2026-09-25: a close alternative shows its evidence first |
 | 3.4d - the columns of a tiering still in progress | #2223 | 2026-09-26 | built: the listed-as column, the probability hidden while provisional, the reagent anchor by majority |
@@ -364,6 +364,21 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
 - **Verify.** On sets C, C2 and G the carbonate-channel assigned rows drop to
   those with a second channel or a list; G7 stays 0; no other set moves.
 - **Size.** S.
+- **As built (MAS-56).** "A list names it" is read as the lists the sample
+  was read against in Stage A: every neutral of the target library and of
+  the reference lists in the known set, matched or not, compared as
+  compositions (`engine.listed_formula_identities`). The list is recorded
+  ahead of a second channel where both hold (`corroborated_by: "list"`),
+  since the partner gate puts the cap back when the second channel it read
+  is gone and a list cannot go. The search row's verdict records its line
+  (`isotopologue`), and the cap's reason says it lacked a second channel
+  and a list, and that the line gives the carbon count only. A list's own
+  reading through a channel the run opened (3.3f,
+  `hold_opened_channel_readings`) is left as it was, an isotopologue or a
+  second channel lifting it: the list is why it was read, so it is no
+  corroboration of it, and what the search's reading lacks, a name for the
+  neutral, it has. A batch search reads no list, so only a second channel
+  among its own rows lifts its cap.
 
 ### 3.4c Measure an alternative before committing
 
