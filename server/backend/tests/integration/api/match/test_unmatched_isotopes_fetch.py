@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 import pytest_asyncio
+from test_utils import captured_logs
 
 from mascope_backend.api.controllers.match.aggregate.match_aggregate_controller import (
     aggregate_match_isotope_filtered_data,
@@ -537,3 +538,36 @@ class TestStoredSignalToNoise:
         with_snr = await ion_score()
 
         assert with_snr > without_snr + 0.05
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope", ["sample", "batch"])
+    async def test_the_isotope_route_returns_it(
+        self, scope, match_chain, async_session_factory, owner_client
+    ):
+        # The rebuilt unmatched main line has no SNR, a NaN in the frame. The
+        # route sends it as null itself: the response's fallback render would
+        # too, but only after a WARNING that the route left it undecided.
+        line = make_match_isotope_row(match_chain.item, match_chain.iso1b, 0.9)
+        line.signal_to_noise = 30.0
+        async with async_session_factory() as session:
+            session.add(line)
+            await session.commit()
+        scope_id = match_chain.item if scope == "sample" else match_chain.batch
+
+        with captured_logs("WARNING") as records:
+            response = await owner_client.post(
+                f"/api/match/aggregate/{scope}/{scope_id}/isotope",
+                json={
+                    "target_ion_id": match_chain.ion1,
+                    "match_params": MATCH_PARAMS.model_dump(),
+                },
+            )
+
+        assert response.status_code == 200, response.text
+        snr = {
+            row["target_isotope_id"]: row["signal_to_noise"]
+            for row in response.json()["data"]
+        }
+        assert snr[match_chain.iso1b] == 30.0
+        assert snr[match_chain.iso1a] is None
+        assert not [r for r in records if "non-finite" in r["message"]]
