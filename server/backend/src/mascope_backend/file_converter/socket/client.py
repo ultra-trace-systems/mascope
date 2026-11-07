@@ -73,6 +73,13 @@ class FileConverterSocketClient:
         # callbacks, read from the processing threads that emit.
         self._rejections: OrderedDict[str | None, _FileRejections] = OrderedDict()
         self._rejected_lock = threading.Lock()
+        # How many events sent with ``awaited`` the backend has not
+        # acknowledged yet. ``sio.emit`` only queues a packet, and
+        # ``sio.disconnect`` closes the websocket without waiting for the
+        # queue, so an event sent right before it is mostly lost; the stop
+        # waits on this count before it disconnects.
+        self._awaited = 0
+        self._awaited_changed = threading.Condition()
         self.event_handler = SocketEventHandler(
             self,
             peak_recompute_queue=peak_recompute_queue,
@@ -122,10 +129,13 @@ class FileConverterSocketClient:
             transports=["websocket"],
         )
 
-    def emit(self, event: str, data: dict, auth: dict = {}):
+    def emit(self, event: str, data: dict, auth: dict = {}, awaited: bool = False):
         """Emit an event to the server, with optional auth.
         If auth is not provided, will try to fill from file context
         (if filename is in data and context exists).
+        An ``awaited`` event is counted until the backend acknowledges it, so
+        ``wait_for_acknowledgements`` can hold a disconnect until it is
+        delivered.
 
         :param event: Event name to emit
         :type event: str
@@ -133,7 +143,10 @@ class FileConverterSocketClient:
         :type data: dict
         :param auth: Optional auth dict with 'access_token' and 'user_id'.
         :type auth: dict | None, optional
+        :param awaited: Count the event until its acknowledgement arrives.
+        :type awaited: bool, optional
         """
+        counted = False
         try:
             file_context = None
             if "filename" in data:
@@ -159,14 +172,60 @@ class FileConverterSocketClient:
                     "the backend rejected its access token"
                 )
                 return
+            callback = self._acknowledgement_handler(event, file_key, access_token)
+            if awaited:
+                callback = self._counted(callback)
+                with self._awaited_changed:
+                    self._awaited += 1
+                counted = True
             self.sio.emit(
                 event,
                 data,
                 namespace="/file-converter",
-                callback=self._acknowledgement_handler(event, file_key, access_token),
+                callback=callback,
             )
         except Exception:
+            if counted:
+                self._acknowledged()
             runtime.logger.exception(f"Failed to emit {event}")
+
+    def _counted(self, callback):
+        """``callback``, which also counts its event as acknowledged."""
+
+        def on_acknowledgement(*args):
+            try:
+                callback(*args)
+            finally:
+                self._acknowledged()
+
+        return on_acknowledgement
+
+    def _acknowledged(self) -> None:
+        with self._awaited_changed:
+            self._awaited = max(self._awaited - 1, 0)
+            self._awaited_changed.notify_all()
+
+    def forget_awaited(self) -> None:
+        """Stop waiting for acknowledgements the connection took with it.
+
+        Called when the socket disconnects: an event the backend had not
+        acknowledged by then never will be, and a wait for it would only run
+        to its timeout.
+        """
+        with self._awaited_changed:
+            self._awaited = 0
+            self._awaited_changed.notify_all()
+
+    def wait_for_acknowledgements(self, timeout: float) -> bool:
+        """Wait until the backend has acknowledged every ``awaited`` event.
+
+        :param timeout: The most seconds to wait.
+        :type timeout: float
+        :return: Whether all were acknowledged in time
+        :rtype: bool
+        """
+        with self._awaited_changed:
+            return self._awaited_changed.wait_for(lambda: self._awaited == 0, timeout)
 
     def _file_key(self, data: dict) -> str | None:
         """The name rejections are kept under: the file's normalized name, so
