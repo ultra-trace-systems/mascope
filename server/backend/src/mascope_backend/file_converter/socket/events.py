@@ -1,12 +1,14 @@
 from typing import TYPE_CHECKING
 
 from mascope_backend.file_converter.peak_guard import PeakDetectionGuard
+from mascope_backend.file_converter.peak_recompute_worker import report_stopped
 from mascope_backend.file_converter.socket.session import FileContext
 from mascope_backend.runtime import runtime
 
 
 if TYPE_CHECKING:
     from queue import Queue
+    from threading import Event
 
     from .client import FileConverterSocketClient
 
@@ -17,10 +19,12 @@ class SocketEventHandler:
         client: "FileConverterSocketClient",
         peak_recompute_queue: "Queue | None" = None,
         peak_guard: "PeakDetectionGuard | None" = None,
+        shutdown_event: "Event | None" = None,
     ):
         self.client = client
         self._peak_recompute_queue = peak_recompute_queue
         self._peak_guard = peak_guard
+        self._shutdown_event = shutdown_event
         self.register_events()
 
     def register_events(self):
@@ -55,6 +59,13 @@ class SocketEventHandler:
                 runtime.logger.error(
                     "Peak detection queue not available - ignoring request"
                 )
+                return
+
+            # A stopping converter's workers take no new request, and the
+            # queue's leftovers have been answered or are about to be: one
+            # queued now would never be.
+            if self._shutdown_event is not None and self._shutdown_event.is_set():
+                report_stopped(self.client, data)
                 return
 
             if self._peak_guard is not None:

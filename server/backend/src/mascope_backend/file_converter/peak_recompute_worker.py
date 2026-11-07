@@ -33,6 +33,98 @@ from mascope_signal.compute import StalePeakStoreError, check_peak_store
 from mascope_signal.peak import compute_peaks
 
 
+# What the caller of a peak detection request the converter will not run,
+# because it is stopping, is told in place of the result.
+STOPPED_MESSAGE = (
+    "The file converter stopped before this peak detection could run. "
+    "Repeat it once the converter is back."
+)
+
+
+def build_auth(access_token: object, user_id: object) -> dict[str, Any]:
+    """Build auth payload only when a valid access token is present.
+
+    Returning an empty dict allows FileConverterSocketClient.emit() to
+    fall back to context_manager credentials when available.
+    """
+    if not access_token:
+        return {}
+
+    auth = {"access_token": access_token}
+    if user_id is not None:
+        auth["user_id"] = user_id
+    return auth
+
+
+def report_stopped(socket_client, request: dict[str, Any]) -> None:
+    """Tell the caller of a request the stopping converter will not run.
+
+    The backend sent the caller a "pending" notification when it emitted the
+    request, so without a peak_detection_error its progress would stay pending
+    for good. Never raises: the converter is on its way out.
+
+    :param socket_client: File converter socket client for emitting the error.
+    :param request: The peak detection request, as the backend sent it.
+    :type request: dict[str, Any]
+    """
+    filename = request.get("filename")
+    runtime.logger.info(
+        f"Not running peak detection for '{filename}': the converter is stopping"
+    )
+    try:
+        socket_client.emit(
+            "peak_detection_error",
+            {
+                "filename": filename,
+                "sample_file_id": request.get("sample_file_id"),
+                "process_id": request.get("process_id"),
+                "error": STOPPED_MESSAGE,
+            },
+            build_auth(
+                access_token=request.get("access_token"),
+                user_id=request.get("user_id"),
+            ),
+        )
+    except Exception:
+        runtime.logger.exception(
+            f"Could not report the peak detection request for '{filename}' "
+            "left by the stop"
+        )
+
+
+def drain_on_stop(
+    socket_client, peak_recompute_queue: Queue, peak_guard: PeakDetectionGuard
+) -> int:
+    """Report every request still queued once the workers have stopped.
+
+    The workers take no new request once the stop is signalled, so whatever is
+    left on the queue would be lost with the process. Each one is reported
+    with report_stopped and the guard slot its enqueueing took is released.
+    Called after the workers are joined and before the socket disconnects.
+
+    :param socket_client: File converter socket client for emitting the errors.
+    :param peak_recompute_queue: The queue the workers read.
+    :type peak_recompute_queue: Queue
+    :param peak_guard: The guard the requests' slots were taken from.
+    :type peak_guard: PeakDetectionGuard
+    :return: How many requests were reported
+    :rtype: int
+    """
+    reported = 0
+    while True:
+        try:
+            request = peak_recompute_queue.get_nowait()
+        except Empty:
+            return reported
+        if not isinstance(request, dict):
+            continue
+        report_stopped(socket_client, request)
+        filename = request.get("filename")
+        if isinstance(filename, str) and filename:
+            peak_guard.release(filename)
+        reported += 1
+
+
 class PeakRecomputeWorker(Thread):
     """Worker thread that pulls peak detection requests from a shared queue.
 
@@ -79,20 +171,7 @@ class PeakRecomputeWorker(Thread):
             auth,
         )
 
-    @staticmethod
-    def _build_auth(access_token: object, user_id: object) -> dict[str, Any]:
-        """Build auth payload only when a valid access token is present.
-
-        Returning an empty dict allows FileConverterSocketClient.emit() to
-        fall back to context_manager credentials when available.
-        """
-        if not access_token:
-            return {}
-
-        auth = {"access_token": access_token}
-        if user_id is not None:
-            auth["user_id"] = user_id
-        return auth
+    _build_auth = staticmethod(build_auth)
 
     @staticmethod
     def _check_rebuilt_store(filename: str) -> None:
