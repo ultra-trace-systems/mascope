@@ -212,3 +212,40 @@ async def test_update_with_same_list_flags_nothing(
     batch, collections = await _stored(async_session_factory, ctx["batch_id"])
     assert collections == set(ctx["attached"])
     assert batch.status == "ready"
+
+
+@pytest.mark.asyncio
+async def test_update_with_null_name_is_refused(
+    editor_client, async_session_factory, batch_with_collections
+):
+    """A batch name cannot be null: an explicit null answers 422 from the
+    model, not 500 from the NOT NULL column, and the row stays as it was."""
+    ctx = batch_with_collections
+    resp = await editor_client.patch(
+        f"/api/sample/batches/{ctx['batch_id']}",
+        json={"sample_batch_name": None, "sample_batch_description": "after"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "cannot be null" in resp.text
+
+    batch, collections = await _stored(async_session_factory, ctx["batch_id"])
+    assert batch.sample_batch_name == "Partial Update Batch"
+    assert batch.sample_batch_description == "before"
+    assert collections == set(ctx["attached"])
+
+
+@pytest.mark.asyncio
+async def test_update_with_null_description_clears_it(
+    editor_client, async_session_factory, batch_with_collections
+):
+    """The description column is nullable, so its explicit null is stored."""
+    ctx = batch_with_collections
+    resp = await editor_client.patch(
+        f"/api/sample/batches/{ctx['batch_id']}",
+        json={"sample_batch_description": None},
+    )
+    assert resp.status_code == 200, resp.text
+
+    batch, _ = await _stored(async_session_factory, ctx["batch_id"])
+    assert batch.sample_batch_name == "Partial Update Batch"
+    assert batch.sample_batch_description is None
