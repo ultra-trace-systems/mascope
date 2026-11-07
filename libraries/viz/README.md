@@ -7,7 +7,7 @@ report (PDF), for the long time series the app does not draw. The design is
 [`docs/dev/visual_digest.md`](../../docs/dev/visual_digest.md).
 
 The package is young: it has its data layer, the scope, the campaign store
-and the views, and its test backbone.
+and the views, a command line over them, and its test backbone.
 
 ## Scope
 
@@ -158,6 +158,65 @@ What every view does the same way:
   A chart prints them; a run change is flagged, never joined silently. A
   `spectrum` against another period flags a change between the two.
 
+## The command line
+
+`mascope-viz` drives the data layer from a shell or a coding agent. Its
+commands take a scope as options and print a summary, never a frame:
+
+```sh
+mascope-viz scopes --dataset "Spring campaign" --from 2026-03-01
+mascope-viz store sync --dataset "Spring campaign" --from 2026-03-01
+mascope-viz store status --dataset "Spring campaign" --from 2026-03-01
+mascope-viz view series --dataset "Spring campaign" --from 2026-03-01 \
+    --keys ion:... --keys tic --cadence 1h --csv series.csv
+mascope-viz store rm --dataset "Spring campaign" --from 2026-03-01
+```
+
+| Command | What it prints |
+|---|---|
+| `scopes` | the scope's key, its batches, the files acquired in its range and how many no batch holds, the span, the collections, and whether its store is synced; the candidates when a name matches several objects |
+| `store sync` | the batches read and why, those unchanged, failed and removed, and the store's path; `--pause` sets the seconds between two batches' reads (0.5) |
+| `store status` | what the store holds, from the disk alone: when it was synced, whether it is complete and why not, each batch's state, the rows per table, the engine runs that read the formulas and where they change |
+| `store rm` | the store deleted, and its size |
+| `view NAME` | one of the seven views: its rows, span, zone, cadence and normalisation, and per key the number of values, their median and their maximum with its time; `--csv` writes the frame |
+
+The scope options are those of `Scope`: `--dataset`, `--batches` (repeat it
+for several), `--instrument`, `--from`, `--to`, `--polarity`, `--mode`,
+`--collection` and `--tz`, which is the zone a time without one is in and
+the zone times are shown in. The same scope finds the same store: give
+`view` and `store status` the options the sync had.
+
+`view` takes `--keys` (repeated; `series`, `diurnal` and `periods` need
+them, the other views take every key of the store without), `--cadence`,
+`--normalise`, `--stat`, `--by`, `--period`, `-n`, `--min-gap`,
+`--window-from` and `--window-to` (the samples it reads; for `spectrum`,
+the period), and `--other-from` and `--other-to` (the period `spectrum`
+compares with). An option the view does not take is refused, not ignored.
+`view top --by median` lists the store's brightest keys.
+
+Every command prints one JSON object with `--json`, a failure included
+(`error` names its kind, `message` says what to do). `scopes`,
+`store status` and `view` take `--limit`, which caps the lists they print
+(50; 0 for all); the batches a sync or the store's last sync failed on are
+always listed in full. The output is ASCII: names are printed as JSON
+strings and other text with its other characters escaped, so it prints the
+same in any console, `PYTHONUTF8` or not. The exit status is 0 when the
+command did what it was asked, 1 when it failed or a sync left a batch
+behind, and 2 for a usage error, such as an unknown option or view, which
+prints click's message on stderr and no JSON. An ambiguous name is not a
+failure of `scopes`, which lists the candidates; the other commands do
+nothing with it and exit 1. `store rm` fails when the delete leaves files
+behind, as one another program holds open does.
+
+The URL and the token come from the environment or a `.env` file, as the
+SDK reads them (`MASCOPE_URL`, `MASCOPE_ACCESS_TOKEN`), and so does the
+workspace, `MASCOPE_WORKSPACE`, when the token's user has more than one.
+`--server` and `--workspace` override the URL and the workspace; the token
+is read from those two places alone. Stores are kept per server, so
+`--server` also selects the store directory. The SDK's own log lines go to
+stderr at `WARNING` and above, unless `MASCOPE_SDK_LOG_LEVEL` says
+otherwise (`INFO` shows a line or two per call).
+
 ## The synthetic campaign
 
 `tests/fixtures/campaign.py` generates a month of one instrument at one
@@ -187,7 +246,8 @@ uv run pytest libraries/viz/tests/ -v
 ```
 
 `tests/test_viz_scope_contract.py` runs `resolve` on a demo stack,
-`tests/test_viz_store_contract.py` syncs the demo dataset there, and
+`tests/test_viz_store_contract.py` syncs the demo dataset there,
 `tests/test_viz_views_contract.py` checks that normalising by a reagent ion
-gives notebook 06's numbers on it, with the SDK contract tests' switch and
-settings (`MASCOPE_SDK_CONTRACT=1`); all three are skipped without them.
+gives notebook 06's numbers on it, and `tests/test_viz_cli_contract.py`
+runs the command line against it, with the SDK contract tests' switch and
+settings (`MASCOPE_SDK_CONTRACT=1`); all four are skipped without them.
