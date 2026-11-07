@@ -142,8 +142,16 @@ class TargetCollectionUpdate(TargetCollectionValidator, TargetCollectionBase):
             "is removed. To add, send the current ids too."
         ),
     )
+    # Like the compound fields, the batch list is replaced, not added to:
+    # the controller detaches every batch it does not name.
     sample_batch_ids: list[str] | None = Field(
-        None, description="IDs of sample batches associated with the target collection"
+        None,
+        description=(
+            "The batches the collection is to be associated with, all of them; "
+            "they replace its batch list. A batch the request does not name is "
+            "detached, and an empty list detaches every batch. To add one, send "
+            "the current ids too."
+        ),
     )
 
     @model_validator(mode="before")
