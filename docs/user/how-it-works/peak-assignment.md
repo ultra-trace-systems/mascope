@@ -652,6 +652,35 @@ What caps a row at candidate:
   inside the matching window; a line *in doubt* does. A formula matched from your
   target library or a reference list is not asked: the list is its second
   observation.
+- **expected line absent** — the formula's isotope pattern predicts a line the
+  spectrum should show, and no peak is there. A line is expected where the fit
+  score would count it missing (above): where its expected signal-to-noise, the main
+  line's times the line's share, reaches the threshold the run measured for that
+  file, or 3 where it measured none; on a peak with no signal-to-noise, where the line
+  is at least 10% of the main line. It is looked for within the run's matching
+  window, both about where the formula puts it and about where the main line's own
+  mass error moves it. The fit only weighs a missing line by its share, so a bromide
+  reading whose 81Br line, almost as tall as its main line, is missing could still
+  reach the top band; isotope patterns are a constraint on a formula, not a
+  decoration of it ([Kind & Fiehn 2007][kf07]; [Böcker et al. 2009][bo09]). Every
+  committed formula is asked, one from your target library, a reference list or your
+  own hand included, and a second channel does not lift the cap: it says the molecule
+  is in the sample, and cannot put a missing line into the spectrum. A formula you
+  assign by hand is asked when you assign it, at the threshold and window its run
+  asked the run's own rows at; this is the one rule a hand assignment is asked, since
+  the others weigh how the run chose between readings. A peak you assign by hand as
+  one of a compound's isotopologues, such as its 81Br line, is not asked: the rule
+  reads a formula's lines from its main one. On a run made before Mascope looked for
+  missing lines, a hand assignment is not asked either. A line where the
+  only peak is one the run set aside as an *artifact*, a side lobe of a bright
+  neighbour, is not tested: an artifact neither confirms a line nor refutes it, and
+  where a side lobe and another peak share the window, the other peak is read as the
+  line. Neither is a line beyond the first or last peak of the spectrum, which the run
+  takes as the ends of what it measured. On a TOF a bromine or chlorine reading must
+  show its own M+2 line however faint the pattern, since its mass alone cannot tell
+  the halogen. The isotopologue table lists the lines that were not found under the
+  ones that were, and the spectrum draws them as empty circles at their predicted
+  heights.
 - **a neighbour's isotope line** — a committed neighbouring compound's isotope pattern
   predicts a line on this peak, and the peak is no more than twice as tall as that line,
   so the line could account for all of it. The neighbour must itself be a reading the
@@ -1049,6 +1078,13 @@ reagent's unlabelled remainder - its M-1 - reads `[14N]`, its labelled atom at 1
 none of the predicted isotopologues pairs with the family's main peak, the card keeps the
 pattern's numbers and adds a *main peak* line saying which prediction came nearest, how
 far away it lies, and whether it paired with a peak elsewhere.
+
+Under the lines the run found, the table lists the lines it expected and did not
+(*expected line absent*, above): each at its predicted m/z and abundance, reading
+**not found**, or **not tested** where only an artifact's peak sat there or the line
+fell beyond the spectrum. The spectrum draws the same lines as empty circles at their
+predicted heights, beside the theoretical sticks of the lines that were found. A run
+made before Mascope looked for missing lines lists none.
 
 --8<-- "_help/assignment-status.md"
 

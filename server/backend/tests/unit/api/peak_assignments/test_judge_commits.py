@@ -29,10 +29,13 @@ from mascope_backend.api.new.peak_assignments.engine import (
 from mascope_backend.api.new.peak_assignments.envelope_claims import ENVELOPE_CLAIM
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     TRACKING_TRACKS,
+    SpectrumLines,
     apply_mass_gate,
 )
 from mascope_backend.api.new.peak_assignments.service import judge_commits
 from mascope_backend.api.new.peak_assignments.tiering import (
+    PREDICTED_ENVELOPE,
+    REASON_ABSENT_LINE,
     REASON_ENVELOPE_CLAIM,
     REASON_ENVELOPE_NEIGHBOUR,
     REASON_INHERITED,
@@ -40,6 +43,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_SECOND_LINE,
     TIERING_RULES_VERSION,
 )
+from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 
 
 #: Each ion's lines, heights relative to its own, as the tests state them.
@@ -52,6 +56,8 @@ ENVELOPES = {
     "C5H11O5": ([150.0, 150.5], [1.0, 0.1], ["M0", "13C"]),
     "C4H9O4": ([150.5, 151.3], [1.0, 0.5], ["M0", "18O"]),
     "C3H7O3": ([150.8, 151.3], [1.0, 0.5], ["M0", "13C"]),
+    # A chlorine ion whose M+2 line is a third of its own.
+    "C2H4Cl": ([100.0, 102.0], [1.0, 0.32], ["M0", "37Cl"]),
 }
 
 #: The owner's lines where the run read the file's resolving power: one per
@@ -420,6 +426,79 @@ def chain() -> list[dict]:
         seen_again(v, 410.0),
         seen_again(x, 420.0),
     ]
+
+
+class TestTheSpectrumReachesTheTieringPass:
+    """The tiering pass reads which of a row's lines the sample's peaks hold,
+    at the threshold the run's tolerance sets, past the artifact pre-pass's
+    peaks, and on a TOF to a halogen ion's own M+2 line (step 3.4e)."""
+
+    @staticmethod
+    def judged(rows: list[dict], peaks: list[tuple], **kwargs):
+        lines = SpectrumLines(
+            [peak[0] for peak in peaks],
+            [peak[1] for peak in peaks],
+            [peak[2] for peak in peaks],
+            [peak[3] for peak in peaks],
+        )
+        return judge_commits(
+            rows,
+            stage_a_accuracy=SampleMassAccuracy(),
+            fallback_sigma_ppm=0.3,
+            notation_by_id={"im-1": "[M+H]+", "im-2": "[M+Na]+"},
+            mz_tolerance_ppm=5.0,
+            abundance_floor=0.01,
+            max_alternatives=5,
+            lines=lines,
+            **kwargs,
+        )
+
+    #: The owner's own peak and its second channel's, at a signal-to-noise of
+    #: 100, with the 202 line under the gate and nothing at 201: its 13C line
+    #: at an expected 10 is absent.
+    PEAKS = [
+        ("peak-pa-x", 200.0, 1000.0, 100.0),
+        ("peak-pa-x-again", 400.0, 300.0, 30.0),
+    ]
+
+    def test_a_row_whose_line_is_absent_is_held_at_candidate(self):
+        judged = self.judged(owner(), self.PEAKS)
+        row = by_id(judged.rows)["pa-x"]
+        assert row["tier"] == "candidate"
+        assert REASON_ABSENT_LINE in {
+            reason["rule"] for reason in row["provenance"]["tier_reasons"]
+        }
+        assert [
+            line["line"] for line in row["provenance"][PREDICTED_ENVELOPE]["lines"]
+        ] == ["13C"]
+        assert judged.tiering["absent_line"]["asked"] == 1
+
+    def test_the_runs_tolerance_sets_where_it_asks_from(self):
+        judged = self.judged(
+            owner(), self.PEAKS, envelope_tolerance=EnvelopeTolerance(detect_snr=20.0)
+        )
+        assert by_id(judged.rows)["pa-x"]["tier"] == "assigned"
+        assert judged.tiering["absent_line"]["detect_snr"] == 20.0
+
+    def test_an_artifact_s_peak_on_the_line_is_untestable(self):
+        peaks = [*self.PEAKS, ("peak-lobe", 201.0, 20.0, 2.0)]
+        judged = self.judged(owner(), peaks, artifact_peak_ids=frozenset({"peak-lobe"}))
+        assert by_id(judged.rows)["pa-x"]["tier"] == "assigned"
+        assert judged.tiering["absent_line"]["untestable_lines"] == 1
+
+    def test_a_tof_s_chlorine_reading_must_show_its_m2_line(self):
+        # At a signal-to-noise of 4 the 37Cl line's expected 1.3 is under the
+        # gate; on a TOF it is asked all the same.
+        reading = commit("pa-cl", "C2H3Cl", "C2H4Cl+", 100.0, 1000.0)
+        rows = [reading, seen_again(reading, 450.0)]
+        peaks = [
+            ("peak-pa-cl", 100.0, 1000.0, 4.0),
+            ("peak-pa-cl-again", 450.0, 300.0, 30.0),
+        ]
+        on_a_tof = self.judged(copy.deepcopy(rows), peaks, instrument_type="tof")
+        assert by_id(on_a_tof.rows)["pa-cl"]["tier"] == "candidate"
+        elsewhere = self.judged(copy.deepcopy(rows), peaks, instrument_type="orbi")
+        assert by_id(elsewhere.rows)["pa-cl"]["tier"] == "assigned"
 
 
 class TestAChainOfClaims:

@@ -11,6 +11,7 @@ import { BaseProvisionalMark, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula, formatIsotopeLabel, neutralKey } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
+import { notFoundLines, notFoundTooltip, notFoundWord } from '@/lib/predictedEnvelope'
 import { standardMechanism } from '@/lib/mechanism'
 import {
   listingName,
@@ -400,6 +401,21 @@ const m0 = computed(
 const isFamilyHead = (iso) =>
   m0.value != null && iso.peak_assignment_id === m0.value.peak_assignment_id
 
+// The lines of the M0's predicted envelope that its run asked the spectrum for
+// and did not find there (step 3.4e): listed under the found lines, so an
+// absence reads as one rather than as a row the table happens not to have.
+// They are on the M0's own record: the focused row's detail, or for a focused
+// isotopologue the M0's, which the card fetches for the reasons that row
+// follows (`reasonsOwner`) - every isotopologue of a run that asked any line
+// carries one. A derived row's family was never asked.
+const m0Provenance = computed(() => {
+  const head = m0.value
+  if (!head || derivedRun.value) return null
+  const detail = app.data.peakAssignment.peak.detailOf(head.peak_assignment_id)
+  return detail?.provenance ?? head.provenance
+})
+const missingLines = computed(() => notFoundLines(m0Provenance.value))
+
 // Corroboration signal: present only when the same neutral was committed through
 // more than one ionization channel, which is independent evidence for the
 // formula rather than for this peak.
@@ -727,11 +743,20 @@ const withMeasured = (row) => {
 const evidenceRow = computed(() => withMeasured(focusedAssignment.value))
 const familyRows = computed(() => family.value.map(withMeasured))
 // The family's largest predicted abundance relative to the M0 - what the
-// abundance column is a fraction of (see theoreticalRel).
+// abundance column is a fraction of (see theoreticalRel). A line listed as not
+// found counts: a dibromide whose M+2 is missing is still read against it.
 const familyRelReference = computed(() => {
-  const values = familyRows.value.map(relativeToM0).filter((v) => v != null && v > 0)
+  const values = [
+    ...familyRows.value.map(relativeToM0),
+    ...missingLines.value.map((line) => line.predicted_share)
+  ].filter((v) => v != null && v > 0)
   return values.length ? Math.max(...values) : null
 })
+// A not-found line's share, on the abundance column's scale.
+const missingRel = (line) => {
+  const top = familyRelReference.value
+  return top && top > 0 ? line.predicted_share / top : line.predicted_share
+}
 const plausibility = computed(
   () => provenance.value?.plausibility ?? measured.value?.plausibility ?? null
 )
@@ -1538,6 +1563,13 @@ const demotedCount = computed(() => {
               <p>
               Click a row to focus its peak. A warning icon marks a line whose
               abundance or m/z fits the prediction poorly.
+              </p>
+              <p>
+              Below them, a line the run expected the spectrum to show and found
+              no peak for reads <b>not found</b>, at its predicted m/z: it holds
+              the assignment at <i>candidate</i> at most. A line only an
+              artifact's peak sits on, or one beyond the first or last peak of
+              the spectrum, reads <b>not tested</b>, and takes nothing.
               </p>`,
           doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-fit-score-a-pure-measurement')
         }"
@@ -1574,6 +1606,18 @@ const demotedCount = computed(() => {
               iso.mz_error_ppm != null ? `${num.mzError.format(iso.mz_error_ppm)}` : '—'
             }}</span>
             <span class="iso-rel">{{ formatRel(theoreticalRel(iso)) }}</span>
+          </div>
+          <div
+            v-for="line in missingLines"
+            :key="`missing-${line.line}-${line.predicted_mz}`"
+            class="iso-row missing"
+            data-testid="iso-missing"
+            v-tooltip.left="notFoundTooltip(line, m0Provenance)"
+          >
+            <span class="iso-label">{{ formatIsotopeLabel(line.line) || line.line }}</span>
+            <span class="iso-mz">{{ num.mz.format(line.predicted_mz) }}</span>
+            <span class="iso-err iso-missing">{{ notFoundWord(line) }}</span>
+            <span class="iso-rel">{{ formatRel(missingRel(line)) }}</span>
           </div>
         </div>
       </div>
@@ -2191,6 +2235,25 @@ const demotedCount = computed(() => {
 }
 .iso-row.current {
   background: color-mix(in srgb, var(--p-primary-color, #6366f1) 14%, transparent);
+}
+/* A predicted line the spectrum did not hold: no peak to focus, so nothing to
+   click, and its numbers are the prediction's. */
+.iso-row.missing {
+  cursor: default;
+  font-style: italic;
+  opacity: 0.75;
+}
+.iso-row.missing:hover {
+  background: none;
+}
+/* Where a found line's m/z error is: the words take the column's width and
+   run left into the m/z column's gap rather than wrap. */
+.iso-row .iso-missing {
+  font-family: var(--font-sans, inherit);
+  font-size: 0.7rem;
+  white-space: nowrap;
+  overflow: visible;
+  direction: rtl;
 }
 .iso-row .iso-label {
   font-weight: 600;

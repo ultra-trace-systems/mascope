@@ -5,6 +5,7 @@ import { useApp } from '@/stores'
 import { api } from '@/api'
 import { usePreview } from '@/lib/panes'
 import { peakAssignmentEnabled } from '@/lib/features'
+import { notFoundLines, notFoundWord } from '@/lib/predictedEnvelope'
 import { boundaryShapes, segmentColor, segmentDetail, signalStretches } from '@/lib/segments'
 
 // Peak coloring by confidence tier for the annotated spectrum. One Plotly trace
@@ -235,6 +236,14 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
   // rows can exist without the flag (written by the CLI, by processing, or by a
   // prior flag-on deployment), and drawing them would put an unexplained
   // theoretical envelope in a spectrum that opted into nothing.
+  //
+  // A line the run expected the spectrum to show and found no peak for (step
+  // 3.4e) has no row to recover it from, so it is drawn from the prediction its
+  // M0 records: an empty circle at its predicted m/z and at the M0's height
+  // times its predicted share, with no stick, since nothing was measured there.
+  // The record is on the M0's detail, which the inspector beside the chart
+  // fetches for the focused peak's family; it is read here as the store caches
+  // it.
   const envelopeTrace = computed(() => {
     if (!peakAssignmentEnabled) return []
     const focused = app.data.peak.focused
@@ -262,7 +271,8 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
         ? height / iso.sample_peak_intensity
         : null
     }
-    const m0ToHeight = toHeight(assignments.m0Of(assignment)) ?? 1
+    const m0 = assignments.m0Of(assignment)
+    const m0ToHeight = toHeight(m0) ?? 1
     const points = family
       .map((iso) => {
         if (iso.sample_peak_intensity == null) return null
@@ -276,10 +286,20 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
         return { mz: theoreticalMz, height: height / denom }
       })
       .filter(Boolean)
-    if (!points.length) return []
-
-    return [
-      {
+    // The M0's measured height, the not-found lines' heights are its multiples
+    const m0Height =
+      m0?.sample_peak_intensity != null ? m0.sample_peak_intensity * m0ToHeight : null
+    const missing =
+      m0Height != null
+        ? notFoundLines(assignments.detailOf?.(m0.peak_assignment_id)?.provenance).map((line) => ({
+            mz: line.predicted_mz,
+            height: m0Height * line.predicted_share,
+            word: notFoundWord(line)
+          }))
+        : []
+    const traces = []
+    if (points.length) {
+      traces.push({
         name: 'Theoretical Peak',
         type: 'scatter' + gl,
         mode: 'lines+markers',
@@ -299,8 +319,26 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
             'mz: <b>%{customdata[2]:.4f}</b>',
             'expected height: <b>%{customdata[0]:.3e}</b>'
           ].join('<br>') + '<extra></extra>'
-      }
-    ]
+      })
+    }
+    if (missing.length) {
+      traces.push({
+        name: 'Not Found Peak',
+        type: 'scatter' + gl,
+        mode: 'markers',
+        marker: { color: '#d1345b', size: 9, symbol: 'circle-open', line: { width: 1.5 } },
+        x: missing.map(({ mz }) => mz),
+        y: missing.map(({ height }) => height),
+        customdata: missing.map(({ height, mz, word }) => [height, height, mz, word]),
+        hovertemplate:
+          [
+            '<i>Theoretical, %{customdata[3]}</i>',
+            'mz: <b>%{customdata[2]:.4f}</b>',
+            'expected height: <b>%{customdata[0]:.3e}</b>'
+          ].join('<br>') + '<extra></extra>'
+      })
+    }
+    return traces
   })
 
   const traces = computed(() => [

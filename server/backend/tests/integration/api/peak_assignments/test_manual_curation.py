@@ -11,13 +11,21 @@ per test and deletes it afterwards.
 """
 
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
+from mascope_backend.api.new.peak_assignments import curation
 from mascope_backend.api.new.peak_assignments.config import MAX_ALTERNATIVES_CEILING
+from mascope_backend.api.new.peak_assignments.tiering import (
+    DETECT_DEFAULT,
+    LineGate,
+    predicted_envelope,
+)
 from mascope_backend.db import (
     AssignmentVerification,
     IonizationMechanism,
@@ -27,6 +35,8 @@ from mascope_backend.db import (
     TargetIon,
 )
 from mascope_backend.db.id import gen_id
+from mascope_match.compute.axis import current_mz_shift
+from mascope_tools.composition.custom_elements import label_purity
 
 
 @pytest.fixture
@@ -2083,3 +2093,515 @@ class TestTheEnginesOwnTierSurvivesExactlyItsOwnFormula:
         restored = await _row(async_session_factory, curated_run["child_id"])
         assert restored.role == "iso_child"
         assert restored.engine_tier == "below_assignability"
+
+
+# ---------------------------------------------------------------------------
+# An expected isotope line that is absent (step 3.4e)
+# ---------------------------------------------------------------------------
+
+#: A bromine compound under the fixture's protonating mechanism: its 81Br line,
+#: two mass units up, is 97% of its own, and its 13C lines 6.5 and 6.4%.
+BROMO = {"assigned_formula": "C6H11BrO5", "ion_formula": "C6H12BrO5+"}
+
+#: The gate a rule-set-11 run asked its own rows' lines at: a 5 ppm window, a
+#: 1% floor, an expected signal-to-noise of 3 (a share of 10% on a peak with
+#: none), on an Orbitrap.
+ORBITRAP_GATE = LineGate(5.0, 0.01, 3.0, DETECT_DEFAULT, 0.1, False)
+
+
+def _bromo_line(label: str) -> float:
+    mzs, _, labels = predicted_envelope(BROMO["ion_formula"], 0.01, None)
+    return float(mzs[list(labels).index(label)])
+
+
+class _Spectrum:
+    """The sample's peaks as the curation path reads them, handed in.
+
+    Each read records the axis shift and the labelled purity it was read
+    under, which the run's own read is made at.
+    """
+
+    def __init__(self):
+        self.peaks: list[tuple] = []
+        self.reads: list[dict] = []
+        self.fails = False
+
+    def load(self, sample):
+        self.reads.append(
+            {
+                "sample_item_id": sample.sample_item_id,
+                "shift": current_mz_shift(),
+                "purity": label_purity("^N"),
+            }
+        )
+        if self.fails:
+            raise OSError("the peak store is gone")
+        return pd.DataFrame(
+            self.peaks,
+            columns=["sample_peak_id", "mz", "intensity", "signal_to_noise"],
+        )
+
+
+def _bromo_peaks(*, br81: bool = True, br81_peak: str = "cur-2") -> list[tuple]:
+    """Every line of the bromine compound on the blank row's peak, `cur-3`.
+
+    The 81Br line sits on the isotopologue row's peak, `cur-2`, by default, so
+    a read that took every row of the run for an artifact's would find none.
+    """
+    peaks = [
+        ("cur-3", _bromo_line("M0"), 1000.0, 100.0),
+        ("cur-4", _bromo_line("13C"), 65.0, 6.5),
+        ("cur-5", _bromo_line("13C+81Br"), 63.0, 6.3),
+        ("cur-high", 400.0, 30.0, 3.0),
+    ]
+    if br81:
+        peaks.append((br81_peak, _bromo_line("81Br"), 970.0, 97.0))
+    return peaks
+
+
+@pytest_asyncio.fixture
+async def asks_lines(curated_run, async_session_factory, monkeypatch):
+    """The run asked its rows' lines, and the sample's peaks are the test's."""
+    async with async_session_factory() as session:
+        run = await session.get(PeakAssignmentRun, curated_run["run_id"])
+        run.config = {
+            **run.config,
+            "tiering": {
+                "version": 11,
+                "absent_line": {"spectrum": True, **ORBITRAP_GATE.record()},
+            },
+        }
+        await session.commit()
+
+    spectrum = _Spectrum()
+
+    async def no_resolution(sample):
+        return None
+
+    monkeypatch.setattr(curation, "load_sample_peaks", spectrum.load)
+    monkeypatch.setattr(curation, "_resolution_of", no_resolution)
+    return spectrum
+
+
+async def _set_run(async_session_factory, run_id: str, **fields):
+    async with async_session_factory() as session:
+        run = await session.get(PeakAssignmentRun, run_id)
+        for key, value in fields.items():
+            setattr(run, key, value)
+        await session.commit()
+
+
+def _assign_bromo(data: dict, **overrides) -> dict:
+    return {
+        "action": "set_assignment",
+        **BROMO,
+        "ionization_mechanism_id": data["mechanism_id"],
+        "isotope_label": "M0",
+        "fit_score": 0.99,
+        "mz_error_ppm": 0.3,
+        **overrides,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_hand_assignment_whose_81br_line_is_absent_is_held_at_candidate(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """Asked as the run asked its own rows: whoever named the formula, the
+    spectrum holds the same lines. 0.99 clears the run's 0.9 band; the missing
+    81Br line, almost as tall as the row's own, takes the top tier."""
+    asks_lines.peaks = _bromo_peaks(br81=False)
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+
+    assert response.status_code == 200
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.tier == "candidate"
+    (reason,) = row.provenance["tier_reasons"]
+    assert (reason["rule"], reason["line"], reason["caps"]) == (
+        "absent_line",
+        "81Br",
+        True,
+    )
+    record = row.provenance["predicted_envelope"]
+    assert {line["line"]: line["state"] for line in record["lines"]} == {
+        "13C": "found",
+        "81Br": "absent",
+        "13C+81Br": "found",
+    }
+    assert record["detect_snr"] == 3.0
+    # The record the detail serves is the one the response carries.
+    assert response.json()["data"][0]["provenance"]["predicted_envelope"] == record
+    assert (
+        "Its 81Br line is not in the spectrum, which holds it at candidate at most."
+        in response.json()["message"]
+    )
+    assert asks_lines.reads[0]["sample_item_id"] == curated_run["sample_item_id"]
+    # The rest of the hand row's record is as an edit writes it.
+    assert row.provenance["manual"]["scored_by"] == "composition_search"
+
+
+@pytest.mark.asyncio
+async def test_a_hand_assignment_whose_lines_are_there_keeps_its_tier(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """And lists no reason: the one a hand row can list is a missing line.
+
+    The 81Br line is on the isotopologue row's peak, which is no artifact's.
+    """
+    asks_lines.peaks = _bromo_peaks()
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.tier == "assigned"
+    assert "tier_reasons" not in row.provenance
+    br81 = next(
+        line
+        for line in row.provenance["predicted_envelope"]["lines"]
+        if line["line"] == "81Br"
+    )
+    assert (br81["state"], br81["peak_id"]) == ("found", "cur-2")
+    assert "line is not in the spectrum" not in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_promoted_runner_up_is_asked_too(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """The other hand action. Under bands the 0.62 runner-up clears, its 13C
+    line, 7.6% of its own at a signal-to-noise of 100, is asked and missing."""
+    await _set_run(
+        async_session_factory,
+        curated_run["run_id"],
+        tier_bands={"assigned": 0.5, "candidate": 0.2},
+    )
+    asks_lines.peaks = [("cur-1", 181.10705, 1000.0, 100.0), ("cur-high", 400.0, 1, 1)]
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    assert response.status_code == 200
+    row = await _row(async_session_factory, curated_run["m0_id"])
+    assert row.assigned_formula == "C7H16O5"
+    assert row.tier == "candidate"
+    assert [reason["line"] for reason in row.provenance["tier_reasons"]] == ["13C"]
+
+
+@pytest.mark.asyncio
+async def test_a_hand_row_its_evidence_puts_lower_keeps_that_tier(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """The rule holds a row at candidate at most and never lifts one: a fit
+    under the run's candidate band stays below it, and still says why."""
+    asks_lines.peaks = _bromo_peaks(br81=False)
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run, fit_score=0.2),
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.tier == "below_assignability"
+    assert [r["rule"] for r in row.provenance["tier_reasons"]] == ["absent_line"]
+
+
+@pytest.mark.asyncio
+async def test_a_window_only_the_runs_artifact_row_holds_is_not_tested(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """An artifact confirms no line and refutes none, on a hand row as on the
+    run's own: the 81Br window holds only a peak the run claimed as ringing."""
+    async with async_session_factory() as session:
+        session.add(
+            PeakAssignment(
+                peak_assignment_id=gen_id(32),
+                peak_assignment_run_id=curated_run["run_id"],
+                sample_item_id=curated_run["sample_item_id"],
+                sample_peak_id="cur-lobe",
+                sample_peak_mz=_bromo_line("81Br"),
+                sample_peak_intensity=40.0,
+                role="artifact",
+                source="artifact",
+                tier="unassigned",
+            )
+        )
+        await session.commit()
+    asks_lines.peaks = _bromo_peaks(br81=True, br81_peak="cur-lobe")
+
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.tier == "assigned"
+    br81 = next(
+        line
+        for line in row.provenance["predicted_envelope"]["lines"]
+        if line["line"] == "81Br"
+    )
+    assert (br81["state"], br81["untestable"]) == ("untestable", "artifact")
+
+
+@pytest.mark.asyncio
+async def test_another_runs_artifact_rows_are_not_this_runs(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """What the run claimed as an artifact is the run's: a peak another run of
+    the sample set aside is a line here."""
+    other_run = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            PeakAssignmentRun(
+                peak_assignment_run_id=other_run,
+                sample_item_id=curated_run["sample_item_id"],
+                engine_version="0.1.0-test",
+                status="completed",
+                config={},
+            )
+        )
+        await session.flush()
+        session.add(
+            PeakAssignment(
+                peak_assignment_id=gen_id(32),
+                peak_assignment_run_id=other_run,
+                sample_item_id=curated_run["sample_item_id"],
+                sample_peak_id="cur-2",
+                sample_peak_mz=_bromo_line("81Br"),
+                sample_peak_intensity=970.0,
+                role="artifact",
+                source="artifact",
+                tier="unassigned",
+            )
+        )
+        await session.commit()
+    asks_lines.peaks = _bromo_peaks()
+    try:
+        await editor_client.patch(
+            _url(curated_run, curated_run["blank_id"]),
+            json=_assign_bromo(curated_run),
+        )
+        row = await _row(async_session_factory, curated_run["blank_id"])
+        br81 = next(
+            line
+            for line in row.provenance["predicted_envelope"]["lines"]
+            if line["line"] == "81Br"
+        )
+        assert (br81["state"], br81["peak_id"]) == ("found", "cur-2")
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(PeakAssignmentRun).where(
+                    PeakAssignmentRun.peak_assignment_run_id == other_run
+                )
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_peak_with_no_signal_to_noise_is_asked_from_the_runs_share(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """The share the run recorded, not the fit's constant as it reads today:
+    from 5% the 13C lines at 6.5 and 6.4% are asked, which 10% would leave."""
+    async with async_session_factory() as session:
+        run = await session.get(PeakAssignmentRun, curated_run["run_id"])
+        gate = replace(ORBITRAP_GATE, rel_detect_no_snr=0.05)
+        run.config = {
+            **run.config,
+            "tiering": {
+                "version": 11,
+                "absent_line": {"spectrum": True, **gate.record()},
+            },
+        }
+        await session.commit()
+    asks_lines.peaks = [
+        ("cur-3", _bromo_line("M0"), 1000.0, None),
+        ("cur-2", _bromo_line("81Br"), 970.0, None),
+        ("cur-high", 400.0, 30.0, None),
+    ]
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    record = row.provenance["predicted_envelope"]
+    assert record["asks_share"] == 0.05
+    assert {line["line"]: line["state"] for line in record["lines"]} == {
+        "13C": "absent",
+        "81Br": "found",
+        "13C+81Br": "absent",
+    }
+    assert row.tier == "candidate"
+    assert [reason["line"] for reason in row.provenance["tier_reasons"]] == ["13C"]
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_asked_no_line_asks_none_of_its_hand_assignments(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """A run tiered before rule set 11 records no gate: its hand rows are tiered
+    on their band alone, as before, and the sample's peaks are not read."""
+    await _set_run(async_session_factory, curated_run["run_id"], config={})
+    asks_lines.peaks = _bromo_peaks(br81=False)
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.tier == "assigned"
+    assert "predicted_envelope" not in row.provenance
+    assert asks_lines.reads == []
+
+
+@pytest.mark.asyncio
+async def test_an_imported_runs_configuration_is_its_engines_own(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """Even one that names a gate: an import's configuration is opaque."""
+    await _set_run(async_session_factory, curated_run["run_id"], engine="outside")
+    asks_lines.peaks = _bromo_peaks(br81=False)
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.tier == "assigned"
+    assert asks_lines.reads == []
+
+
+@pytest.mark.asyncio
+async def test_an_isotopologue_by_hand_is_not_asked(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """The rule reads a formula's lines from its main one, and a hand
+    isotopologue has no M0 on the run."""
+    asks_lines.peaks = _bromo_peaks(br81=False)
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run, isotope_label="M+1"),
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.role == "iso_child"
+    assert asks_lines.reads == []
+    assert "predicted_envelope" not in row.provenance
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ppm", "da"), [(25.0, None), (None, 0.35)], ids=["relative", "absolute"]
+)
+async def test_a_decoy_run_reads_its_peaks_where_it_read_them(
+    editor_client,
+    curated_run,
+    asks_lines,
+    async_session_factory,
+    monkeypatch,
+    ppm,
+    da,
+):
+    """On the decoy's shifted axis, at the setup's labelled purity: the run's
+    own read, so its lines are where the run looked for them."""
+    async with async_session_factory() as session:
+        run = await session.get(PeakAssignmentRun, curated_run["run_id"])
+        run.config = {
+            **run.config,
+            "decoy": {"mz_shift_ppm": ppm, "mz_shift_da": da},
+        }
+        await session.commit()
+
+    async def purity(sample_item_id):
+        return 0.9
+
+    monkeypatch.setattr(curation, "sample_label_purity", purity)
+    asks_lines.peaks = _bromo_peaks()
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+
+    (read,) = asks_lines.reads
+    assert (read["shift"].ppm, read["shift"].da) == (ppm or 0.0, da or 0.0)
+    assert read["purity"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_unreadable_peaks_leave_the_edit_standing_and_say_so(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    asks_lines.fails = True
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+
+    assert response.status_code == 200
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.assigned_formula == "C6H11BrO5"
+    assert row.tier == "assigned"
+    assert "predicted_envelope" not in row.provenance
+    assert (
+        "Its isotope lines were not checked: the sample's peaks could not be read."
+        in response.json()["message"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_window_follows_the_hand_rows_own_mass_error(
+    editor_client, curated_run, asks_lines, async_session_factory
+):
+    """Two lines of one ion are one measurement of one axis: a row read 4 ppm
+    off finds its 81Br line 8 ppm off, outside the window about the line but
+    inside the one its own error moves there."""
+    peaks = _bromo_peaks(br81=False)
+    peaks.append(("cur-2", _bromo_line("81Br") * (1 + 8e-6), 970.0, 97.0))
+    asks_lines.peaks = peaks
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run, mz_error_ppm=4.0),
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    assert row.tier == "assigned"
+    br81 = next(
+        line
+        for line in row.provenance["predicted_envelope"]["lines"]
+        if line["line"] == "81Br"
+    )
+    # Read against the row's own peak as the run recorded it, 42 counts.
+    assert br81["observed_share"] == pytest.approx(970.0 / 42.0)
+
+
+@pytest.mark.asyncio
+async def test_the_files_resolving_power_shapes_the_prediction(
+    editor_client, curated_run, asks_lines, async_session_factory, monkeypatch
+):
+    """At a resolving power of 5000 the 18O line is one peak with the 81Br
+    line, whose predicted share then holds both."""
+
+    async def tof_resolution(sample):
+        return lambda mz: 5000.0
+
+    monkeypatch.setattr(curation, "_resolution_of", tof_resolution)
+    asks_lines.peaks = _bromo_peaks()
+    await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+
+    row = await _row(async_session_factory, curated_run["blank_id"])
+    br81 = next(
+        line
+        for line in row.provenance["predicted_envelope"]["lines"]
+        if line["line"] == "81Br"
+    )
+    assert br81["predicted_share"] == pytest.approx(0.9848, abs=1e-4)

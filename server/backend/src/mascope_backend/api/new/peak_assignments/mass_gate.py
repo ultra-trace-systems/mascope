@@ -436,7 +436,8 @@ class SpectrumLines:
         self._mz = mz_values[order]
         self._intensity = np.nan_to_num(np.asarray(intensity, dtype=float)[order])
         self._snr = None if snr is None else np.asarray(snr, dtype=float)[order]
-        self._position = {str(peak_ids[index]): at for at, index in enumerate(order)}
+        self._ids = [str(peak_ids[index]) for index in order]
+        self._position = {peak_id: at for at, peak_id in enumerate(self._ids)}
         self._resolution = resolution
         self._read: dict[str, LineQuality] = {}
 
@@ -487,6 +488,29 @@ class SpectrumLines:
                 )
             self._read[key] = quality
         return quality
+
+    def holds(self, peak_id) -> bool:
+        """Whether the peak with this id is one of the sample's."""
+        return str(peak_id) in self._position
+
+    def span(self) -> tuple[float, float] | None:
+        """The m/z of the lightest and the heaviest peak, or None for no peaks."""
+        if not self._mz.size:
+            return None
+        return float(self._mz[0]), float(self._mz[-1])
+
+    def between(self, low: float, high: float) -> list[tuple[str, float]]:
+        """The peaks whose m/z lies in ``[low, high]``, by m/z.
+
+        :param low: The window's lower end.
+        :param high: Its upper end.
+        :return: Each peak's id and intensity.
+        """
+        start = int(np.searchsorted(self._mz, low, side="left"))
+        stop = int(np.searchsorted(self._mz, high, side="right"))
+        return [
+            (self._ids[at], float(self._intensity[at])) for at in range(start, stop)
+        ]
 
     def _push_ppm(self, position: int) -> float:
         mz = float(self._mz[position])

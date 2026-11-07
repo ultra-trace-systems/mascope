@@ -573,8 +573,10 @@ class PeakAssignmentsResource(BaseResource):
         cluster around a neutral with no oxygen (rule ``oxygen_free_cluster``),
         a peak whose evidence left rivals standing with nothing else
         corroborating it, a formula the search found on one peak that nothing
-        else in the run saw (rule ``lone_peak``), a formula shaped like a mass
-        fit, a peak a committed neighbour's envelope already predicts, an
+        else in the run saw (rule ``lone_peak``), a line of its own isotope
+        pattern the spectrum should show and does not (rule ``absent_line``),
+        a formula shaped like a mass fit, a peak a committed neighbour's
+        envelope already predicts, an
         isotopologue whose mass error does not follow its monoisotopic row's, or
         a demote an earlier pass made. A row with no such reason lists what it
         kept its tier ON instead, what saw it a second time first: a second
@@ -591,7 +593,17 @@ class PeakAssignmentsResource(BaseResource):
         height, how its mass error follows the neighbour's, and the reading it
         displaced, which is also its first alternative. The displaced reading's
         ``tier`` is the one its evidence gave it, before any rule of the run
-        held it lower. A list hit of a run that searched carries
+        held it lower. A monoisotopic row of a run that read the sample's
+        peaks carries ``provenance.predicted_envelope``: the signal-to-noise
+        its lines were asked at (``snr``, ``detect_snr``, ``asks_share``) and
+        each line asked, with its ``line`` (the isotopologue's label, such as
+        ``81Br``), ``predicted_mz``, ``predicted_share``, ``expected_snr``,
+        ``tof_m2`` where a TOF asked it as a bromine or chlorine ion's own M+2
+        line whatever its share, and ``state`` (``found``, with the
+        ``peak_id`` and ``observed_share`` of the peak read as it; ``absent``;
+        or ``untestable``, with ``untestable`` saying why: ``artifact`` where
+        only artifact rows' peaks sit in its window, ``out_of_range`` where it
+        lies beyond the peak list). A list hit of a run that searched carries
         ``provenance.grid_rivals``: the known set's own density, how many
         closed-shell formulas the search held for its peak that its evidence
         could not separate (counted into ``candidate_density``), the first few

@@ -2566,6 +2566,174 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
   })
 })
 
+// The lines of the M0's predicted envelope its run asked the spectrum for and
+// did not find there (step 3.4e), listed under the found lines with their
+// predicted m/z and share. They are read off the M0's own record, which for a
+// focused isotopologue is fetched like the focused row's.
+describe('PanePeakAssign lines the run did not find', () => {
+  // C6H12O6 through bromide: its 81Br line, 97 % of its own, is not in the
+  // spectrum; its 13C line was found and committed.
+  const envelope = (lines) => ({ predicted_envelope: { snr: 100, asks_share: 0.03, lines } })
+  const BR81 = {
+    line: '81Br',
+    predicted_mz: 260.98023,
+    predicted_share: 0.9728,
+    expected_snr: 97.28,
+    state: 'absent'
+  }
+  const C13 = {
+    line: '13C',
+    predicted_mz: 259.98563,
+    predicted_share: 0.0654,
+    state: 'found',
+    peak_id: 'p-2'
+  }
+
+  function bromide() {
+    const m0 = {
+      ...assignment({ formula: 'C6H12O6', tier: 'candidate', mz: 258.98227, intensity: 1000 }),
+      ion_formula: 'C6H12O6Br-'
+    }
+    const child = {
+      ...isotopologue(m0),
+      sample_peak_mz: 259.98563,
+      sample_peak_intensity: 65.4,
+      abundance_error: 0,
+      isotope_label: '13C'
+    }
+    return { m0, child }
+  }
+
+  it('lists a line that was not found under the found ones', async () => {
+    const { m0, child } = bromide()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    detailRecord = { provenance: envelope([C13, BR81]) }
+    const wrapper = await mountPane()
+
+    const rows = wrapper.findAll('.isotopologues .iso-row')
+    expect(rows).toHaveLength(3)
+    const missing = wrapper.findAll('[data-testid="iso-missing"]')
+    expect(missing).toHaveLength(1)
+    expect(missing[0].classes()).toContain('missing')
+    expect(missing[0].text()).toContain('[81Br]')
+    expect(missing[0].text()).toContain(num.mz.format(260.98023))
+    expect(missing[0].text()).toContain('not found')
+    // The 13C line is the family's own row, not listed twice.
+    expect(rows[2].text()).toContain('not found')
+    expect(rows[1].text()).not.toContain('not found')
+  })
+
+  it("reads a missing line's share on the column's scale, and counts it in the scale", async () => {
+    // A dibromide's M+2 is twice its own line: missing, it is still the most
+    // abundant line, and the M0 reads as half of it.
+    const m0 = {
+      ...assignment({ formula: 'CH2Br2', tier: 'candidate', intensity: 100 }),
+      ion_formula: 'CH2Br3-'
+    }
+    focusedAssignment = m0
+    familyRows = [m0]
+    detailRecord = {
+      provenance: envelope([{ ...BR81, line: '81Br', predicted_share: 1.95 }])
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.findAll('.isotopologues .iso-rel').map((cell) => cell.text())).toEqual([
+      '51.3%',
+      '100%'
+    ])
+  })
+
+  it('says a line only an artifact sat on was not tested', async () => {
+    const { m0, child } = bromide()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    detailRecord = {
+      provenance: envelope([C13, { ...BR81, state: 'untestable', untestable: 'artifact' }])
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const missing = wrapper.find('[data-testid="iso-missing"]')
+    expect(missing.text()).toContain('not tested')
+    expect(missing.attributes('data-tooltip')).toContain("only an artifact's peak")
+  })
+
+  it('says on hover what a line not found does to the row', async () => {
+    const { m0, child } = bromide()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    detailRecord = { provenance: envelope([C13, BR81]) }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const tip = wrapper.find('[data-testid="iso-missing"]').attributes('data-tooltip')
+    expect(tip).toContain('no peak sits within')
+    expect(tip).toContain("at this peak's signal-to-noise")
+    expect(tip).toContain('holds the row at candidate at most')
+  })
+
+  it('names the share the run asked from on a peak with no signal-to-noise', async () => {
+    const { m0, child } = bromide()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    const { expected_snr: _, ...unscored } = BR81
+    detailRecord = {
+      provenance: { predicted_envelope: { snr: null, asks_share: 0.1, lines: [C13, unscored] } }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const tip = wrapper.find('[data-testid="iso-missing"]').attributes('data-tooltip')
+    expect(tip).toContain("every line from 10% of the row's own line")
+    expect(tip).not.toContain("this peak's signal-to-noise")
+  })
+
+  it("reads the M0's record when one of its isotopologues is focused", async () => {
+    const { m0, child } = bromide()
+    focusedAssignment = child
+    familyRows = [m0, child]
+    detailRecord = {
+      provenance: {
+        tier_reasons: [{ rule: 'inherited_from_owner', detail: 'follows', caps: true }]
+      }
+    }
+    otherDetails.set(m0.peak_assignment_id, { provenance: envelope([C13, BR81]) })
+    const wrapper = await mountPane()
+
+    expect(loadDetail).toHaveBeenCalledWith(m0)
+    expect(wrapper.findAll('[data-testid="iso-missing"]')).toHaveLength(1)
+  })
+
+  it('reads a row that carries its own provenance, from before the slim ledger', async () => {
+    const { m0, child } = bromide()
+    focusedAssignment = { ...m0, provenance: envelope([C13, BR81]) }
+    familyRows = [focusedAssignment, child]
+    const wrapper = await mountPane()
+
+    expect(wrapper.findAll('[data-testid="iso-missing"]')).toHaveLength(1)
+  })
+
+  it('lists nothing for a row whose run asked the spectrum nothing', async () => {
+    const { m0, child } = bromide()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    detailRecord = { provenance: { tier_reasons: [] } }
+    const wrapper = await mountPane()
+
+    expect(wrapper.findAll('[data-testid="iso-missing"]')).toHaveLength(0)
+    expect(wrapper.findAll('.isotopologues .iso-row')).toHaveLength(2)
+  })
+
+  it('lists nothing for a derived row, whose family no run asked', async () => {
+    runRecord = { engine: 'batch' }
+    const { m0, child } = bromide()
+    focusedAssignment = m0
+    familyRows = [m0, child]
+    detailRecord = { provenance: envelope([C13, BR81]) }
+    const wrapper = await mountPane()
+
+    expect(wrapper.findAll('[data-testid="iso-missing"]')).toHaveLength(0)
+  })
+})
+
 // Where a row's mass error sits against the run's own calibration, in that
 // calibration's widths: the number the run's mass gate judged, which the ppm
 // error beside it cannot say without the run's width.

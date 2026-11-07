@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from mascope_backend.api.new.peak_assignments.envelope_claims import (
@@ -19,12 +21,19 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
 )
 from mascope_backend.api.new.peak_assignments.tiering import (
     DENSITY_LIMIT,
+    DETECT_DEFAULT,
+    DETECT_FROM_CURVE,
     ENVELOPE_HEIGHT_TOLERANCE,
     HELD_CORROBORATED,
     HELD_LINE_TAKEN,
     HELD_NEIGHBOUR_NOT_ASSIGNED,
     HELD_TARGET_LIBRARY,
     HELD_UNTRACKED,
+    LINE_ABSENT,
+    LINE_FOUND,
+    LINE_UNTESTABLE,
+    PREDICTED_ENVELOPE,
+    REASON_ABSENT_LINE,
     REASON_AMBIGUOUS_ADDUCT,
     REASON_AMBIGUOUS_NITROGEN,
     REASON_CANDIDATE_DENSITY,
@@ -45,11 +54,16 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_SAME_ION_SETTLED,
     REASON_SECOND_LINE,
     TIERING_RULES_VERSION,
+    UNTESTABLE_ARTIFACT,
+    UNTESTABLE_RANGE,
+    LineGate,
     apply_tiering,
+    ask_absent_line,
     envelope_neighbours,
     find_envelope_claims,
     predicted_envelope,
 )
+from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 
 
 #: A closed-shell neutral nothing in this module has an opinion about.
@@ -147,6 +161,7 @@ def run(rows: list[dict], **kwargs) -> dict:
         notation_by_id=kwargs.pop("notation_by_id", None),
         tier_bands=kwargs.pop("tier_bands", None),
         resolution=kwargs.pop("resolution", None),
+        **kwargs,
     )
 
 
@@ -1181,11 +1196,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_10(self):
+    def test_the_rule_set_is_11(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 10
+        assert run([row("pa-1")])["version"] == 11
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])
@@ -2162,3 +2177,708 @@ class TestALineIsAPeakTheFileResolves:
         )
         assert resolved.released == ()
         assert claims(None).released == ("pa-child-18o",)
+
+
+def spectrum(*peaks: tuple) -> SpectrumLines:
+    """The sample's peaks, each ``(id, m/z, intensity, signal-to-noise)``."""
+    return SpectrumLines(
+        [peak[0] for peak in peaks],
+        [peak[1] for peak in peaks],
+        [peak[2] for peak in peaks],
+        [peak[3] for peak in peaks],
+    )
+
+
+#: A peak above every line the tests predict, so none of them lies beyond the
+#: peak list's span.
+HIGHER = ("p-higher", 400.0, 30.0, 3.0)
+
+
+def envelope_of(rows: list[dict], row_id: str) -> dict:
+    entry = next(r for r in rows if r["peak_assignment_id"] == row_id)
+    return entry["provenance"][PREDICTED_ENVELOPE]
+
+
+def line_named(record: dict, label: str) -> dict:
+    return next(line for line in record["lines"] if line["line"] == label)
+
+
+class TestAnExpectedLineThatIsAbsent:
+    """Step 3.4e: a line the spectrum should have shown and does not hold.
+
+    C6H12O6 read through bromide is C6H12O6Br-, whose 81Br line one 2 Da up is
+    97% of its own and its 13C and 13C+81Br lines 6.5 and 6.4%. At a
+    signal-to-noise of 100 the default gate, an expected signal-to-noise of 3,
+    asks for every line from 3% of the ion's own up: those three, and not its
+    18O lines at 1.2%.
+    """
+
+    M0 = 258.98227
+    C13 = 259.98563
+    BR81 = 260.98023
+    C13_BR81 = 261.98358
+    O18 = 260.98652
+
+    def bromide(self, **kwargs) -> dict:
+        fields = {
+            "mz": self.M0,
+            "peak": "p-m0",
+            "intensity": 1000.0,
+            "ion": "C6H12O6Br-",
+            "channels": SEEN_TWICE,
+        } | kwargs
+        return row("pa-br", PLAIN, **fields)
+
+    def peaks(self, *, br81: bool = True, snr: float | None = 100.0, extra=()):
+        found = [
+            ("p-m0", self.M0, 1000.0, snr),
+            ("p-13c", self.C13, 65.0, 6.5),
+            ("p-13c81br", self.C13_BR81, 63.0, 6.3),
+            HIGHER,
+        ]
+        if br81:
+            found.append(("p-81br", self.BR81, 970.0, 97.0))
+        return spectrum(*found, *extra)
+
+    def test_a_bromine_row_without_its_81br_line_loses_the_top_tier(self):
+        rows = [self.bromide()]
+        summary = run(rows, lines=self.peaks(br81=False))
+        assert tier_of(rows, "pa-br") == "candidate"
+        assert REASON_ABSENT_LINE in rules_on(rows, "pa-br")
+        assert summary["capped_by_rule"] == {REASON_ABSENT_LINE: 1}
+        assert line_named(envelope_of(rows, "pa-br"), "81Br")["state"] == LINE_ABSENT
+
+    def test_the_reason_names_the_line_its_share_and_the_gate(self):
+        rows = [self.bromide()]
+        run(rows, lines=self.peaks(br81=False))
+        (reason,) = [
+            r for r in reasons_of(rows, "pa-br") if r["rule"] == REASON_ABSENT_LINE
+        ]
+        assert reason["caps"] is True
+        assert reason["line"] == "81Br"
+        assert reason["line_mz"] == pytest.approx(self.BR81, abs=1e-5)
+        assert reason["predicted_share"] == pytest.approx(0.9728, abs=1e-4)
+        assert reason["asks_share"] == pytest.approx(0.03)
+        assert reason["absent"] == 1
+        assert reason["detail"] == (
+            "its 81Br line, predicted at m/z 260.9802 at 97.3% of its own line, is "
+            "not in the spectrum, where at this peak's signal-to-noise of 100 the "
+            "gate asks for every line from 3.0% of its own up (an expected "
+            "signal-to-noise of 3, the default)"
+        )
+
+    def test_a_row_with_every_line_found_keeps_its_tier(self):
+        rows = [self.bromide()]
+        run(rows, lines=self.peaks())
+        assert tier_of(rows, "pa-br") == "assigned"
+        assert REASON_ABSENT_LINE not in rules_on(rows, "pa-br")
+        record = envelope_of(rows, "pa-br")
+        assert [line["line"] for line in record["lines"]] == ["13C", "81Br", "13C+81Br"]
+        assert {line["state"] for line in record["lines"]} == {LINE_FOUND}
+        br81 = line_named(record, "81Br")
+        assert br81["peak_id"] == "p-81br"
+        assert br81["observed_share"] == pytest.approx(0.97)
+        assert br81["predicted_mz"] == pytest.approx(self.BR81, abs=1e-5)
+        assert br81["expected_snr"] == pytest.approx(97.28, abs=0.01)
+        assert record["snr"] == 100.0
+        assert record["detect_snr"] == 3.0
+
+    def test_no_second_channel_lifts_it(self):
+        # SEEN_TWICE: the neutral is committed through a second channel, which
+        # says it is in the sample and cannot put a line into the spectrum.
+        rows = [self.bromide()]
+        run(rows, lines=self.peaks(br81=False))
+        assert REASON_CORROBORATED not in rules_on(rows, "pa-br")
+        assert tier_of(rows, "pa-br") == "candidate"
+
+    @pytest.mark.parametrize("source", ["database", "manual"])
+    def test_a_curated_row_and_a_hand_assignment_are_asked(self, source):
+        rows = [self.bromide(source=source, compound="tc-1")]
+        run(rows, lines=self.peaks(br81=False))
+        assert tier_of(rows, "pa-br") == "candidate"
+        assert REASON_ABSENT_LINE in rules_on(rows, "pa-br")
+
+    def test_a_line_under_the_gate_is_not_asked(self):
+        # The 18O line at 1.2% is under the 3% the gate asks from, so the
+        # spectrum not holding it is no evidence: below the noise.
+        rows = [self.bromide()]
+        run(rows, lines=self.peaks())
+        assert "18O" not in [
+            line["line"] for line in envelope_of(rows, "pa-br")["lines"]
+        ]
+        assert tier_of(rows, "pa-br") == "assigned"
+
+    def test_a_dimmer_peak_asks_fewer_lines(self):
+        # At a signal-to-noise of 20 the gate asks from 15%: the 13C lines are
+        # under it, so their absence takes nothing, and the 81Br line is still
+        # asked.
+        rows = [self.bromide()]
+        lines = spectrum(
+            ("p-m0", self.M0, 1000.0, 20.0),
+            ("p-81br", self.BR81, 970.0, 19.4),
+            HIGHER,
+        )
+        run(rows, lines=lines)
+        assert [line["line"] for line in envelope_of(rows, "pa-br")["lines"]] == [
+            "81Br"
+        ]
+        assert tier_of(rows, "pa-br") == "assigned"
+
+    def test_a_line_exactly_at_the_gate_is_asked(self):
+        # At or above, as the fit charges an absence (`pr * snr >= k_detect`):
+        # a gate set to the 13C line's own expected signal-to-noise asks it,
+        # and one a hair above does not.
+        mzs, shares, labels = predicted_envelope("C6H12O6Br-", 0.01, None)
+        at_gate = float(shares[list(labels).index("13C")]) * 100.0
+
+        def asked(detect_snr: float) -> list[str]:
+            rows = [self.bromide()]
+            run(
+                rows,
+                lines=self.peaks(),
+                envelope_tolerance=EnvelopeTolerance(detect_snr=detect_snr),
+            )
+            return [line["line"] for line in envelope_of(rows, "pa-br")["lines"]]
+
+        assert "13C" in asked(at_gate)
+        assert "13C" not in asked(math.nextafter(at_gate, math.inf))
+
+    def test_without_a_signal_to_noise_a_share_exactly_at_the_gate_is_asked(
+        self, monkeypatch
+    ):
+        from mascope_backend.api.new.peak_assignments import tiering as module
+
+        mzs, shares, labels = predicted_envelope("C6H12O6Br-", 0.01, None)
+        at_gate = float(shares[list(labels).index("13C")])
+
+        def asked(rel_detect: float) -> list[str]:
+            monkeypatch.setattr(module, "REL_DETECT_NO_SNR", rel_detect)
+            rows = [self.bromide()]
+            run(rows, lines=self.peaks(snr=None))
+            return [line["line"] for line in envelope_of(rows, "pa-br")["lines"]]
+
+        assert "13C" in asked(at_gate)
+        assert "13C" not in asked(math.nextafter(at_gate, math.inf))
+
+    def test_the_file_s_own_curve_sets_where_a_line_is_asked_from(self):
+        # A file whose 13C lines are usually missing below an expected
+        # signal-to-noise of 10 asks none of the 13C lines at 6.5, which the
+        # default asks.
+        rows = [self.bromide()]
+        lines = spectrum(
+            ("p-m0", self.M0, 1000.0, 100.0),
+            ("p-81br", self.BR81, 970.0, 97.0),
+            HIGHER,
+        )
+        summary = run(
+            rows, lines=lines, envelope_tolerance=EnvelopeTolerance(detect_snr=10.0)
+        )
+        assert tier_of(rows, "pa-br") == "assigned"
+        assert envelope_of(rows, "pa-br")["detect_snr"] == 10.0
+        assert summary["absent_line"]["detect_snr"] == 10.0
+        assert summary["absent_line"]["detect_from"] == DETECT_FROM_CURVE
+
+        rows = [self.bromide()]
+        summary = run(rows, lines=lines, envelope_tolerance=EnvelopeTolerance())
+        assert tier_of(rows, "pa-br") == "candidate"
+        assert summary["absent_line"]["detect_from"] == DETECT_DEFAULT
+        assert "the default" in next(
+            r["detail"]
+            for r in reasons_of(rows, "pa-br")
+            if r["rule"] == REASON_ABSENT_LINE
+        )
+
+    def test_the_curve_s_reason_says_so(self):
+        rows = [self.bromide()]
+        run(
+            rows,
+            lines=self.peaks(br81=False),
+            envelope_tolerance=EnvelopeTolerance(detect_snr=10.0),
+        )
+        detail = next(
+            r["detail"]
+            for r in reasons_of(rows, "pa-br")
+            if r["rule"] == REASON_ABSENT_LINE
+        )
+        assert detail.endswith(
+            "the gate asks for every line from 10.0% of its own up (an expected "
+            "signal-to-noise of 10, the file's own detection curve)"
+        )
+
+    def test_without_a_signal_to_noise_the_gate_asks_by_share(self):
+        # REL_DETECT_NO_SNR: from 10% of the ion's own line, the 81Br line and
+        # not the 13C ones.
+        rows = [self.bromide()]
+        run(rows, lines=self.peaks(br81=False, snr=None))
+        record = envelope_of(rows, "pa-br")
+        assert record["snr"] is None
+        assert record["asks_share"] == pytest.approx(0.10)
+        assert [line["line"] for line in record["lines"]] == ["81Br"]
+        assert tier_of(rows, "pa-br") == "candidate"
+        detail = next(
+            r["detail"]
+            for r in reasons_of(rows, "pa-br")
+            if r["rule"] == REASON_ABSENT_LINE
+        )
+        assert "records no signal-to-noise" in detail
+
+    def test_several_absent_lines_are_named_tallest_first(self):
+        rows = [self.bromide()]
+        lines = spectrum(("p-m0", self.M0, 1000.0, 100.0), HIGHER)
+        run(rows, lines=lines)
+        (reason,) = [
+            r for r in reasons_of(rows, "pa-br") if r["rule"] == REASON_ABSENT_LINE
+        ]
+        assert reason["line"] == "81Br"
+        assert reason["absent"] == 3
+        assert reason["detail"].endswith(
+            "; nor are two more of its lines the gate asks for (13C, 13C+81Br)"
+        )
+
+    def test_a_peak_within_the_window_is_the_line(self):
+        # 4 ppm off the predicted line, inside the run's 5 ppm window.
+        rows = [self.bromide()]
+        off = self.BR81 * (1 + 4e-6)
+        run(rows, lines=self.peaks(br81=False, extra=[("p-near", off, 900.0, 90.0)]))
+        assert line_named(envelope_of(rows, "pa-br"), "81Br")["peak_id"] == "p-near"
+        assert tier_of(rows, "pa-br") == "assigned"
+
+    def test_the_probe_is_the_tallest_peak_in_the_window(self):
+        rows = [self.bromide()]
+        near = self.BR81 * (1 + 2e-6)
+        extra = [("p-small", self.BR81, 30.0, 3.0), ("p-tall", near, 950.0, 95.0)]
+        run(rows, lines=self.peaks(br81=False, extra=extra))
+        br81 = line_named(envelope_of(rows, "pa-br"), "81Br")
+        assert br81["peak_id"] == "p-tall"
+        assert br81["observed_share"] == pytest.approx(0.95)
+
+    def test_a_row_with_no_mass_error_is_read_about_its_line(self):
+        rows = [self.bromide(ppm=None)]
+        run(rows, lines=self.peaks())
+        assert line_named(envelope_of(rows, "pa-br"), "81Br")["state"] == LINE_FOUND
+        assert tier_of(rows, "pa-br") == "assigned"
+
+    def test_a_signal_to_noise_of_zero_is_none(self):
+        # As the fit reads it: no noise estimate, so the gate asks by share.
+        rows = [self.bromide()]
+        run(rows, lines=self.peaks(br81=False, snr=0.0))
+        record = envelope_of(rows, "pa-br")
+        assert record["snr"] is None
+        assert [line["line"] for line in record["lines"]] == ["81Br"]
+
+    def test_a_row_s_own_peak_is_never_its_line(self, monkeypatch):
+        # Every substitution the predictor returns adds mass, so no line lands
+        # on the row's own peak; pinned against one that did.
+        import numpy as np
+
+        from mascope_backend.api.new.peak_assignments import tiering as module
+
+        def onto_itself(ion_formula, charge, threshold, resolution):
+            return (
+                np.array([self.M0, self.M0 * (1 + 1e-6)]),
+                np.array([1.0, 0.5]),
+                ["M0", "impossible"],
+            )
+
+        monkeypatch.setattr(module, "predict_resolved_isotopes", onto_itself)
+        rows = [self.bromide()]
+        run(rows, lines=self.peaks())
+        line = line_named(envelope_of(rows, "pa-br"), "impossible")
+        assert line["state"] == LINE_ABSENT
+        assert tier_of(rows, "pa-br") == "candidate"
+
+    def test_a_peak_outside_the_window_is_not(self):
+        rows = [self.bromide()]
+        off = self.BR81 * (1 + 7e-6)
+        run(rows, lines=self.peaks(br81=False, extra=[("p-far", off, 900.0, 90.0)]))
+        assert tier_of(rows, "pa-br") == "candidate"
+
+    def test_the_window_follows_the_row_s_own_mass_error(self):
+        # Two lines of one ion are one measurement of one axis: a row 4 ppm
+        # off finds its line 8 ppm off, within the window about where its own
+        # error puts it.
+        rows = [self.bromide(ppm=4.0)]
+        off = self.BR81 * (1 + 8e-6)
+        run(rows, lines=self.peaks(br81=False, extra=[("p-moved", off, 900.0, 90.0)]))
+        assert line_named(envelope_of(rows, "pa-br"), "81Br")["peak_id"] == "p-moved"
+        assert tier_of(rows, "pa-br") == "assigned"
+
+    def test_a_window_only_an_artifact_holds_is_untestable(self):
+        # An artifact confirms no line and refutes none.
+        rows = [self.bromide()]
+        lines = self.peaks(br81=False, extra=[("p-lobe", self.BR81, 40.0, 4.0)])
+        summary = run(rows, lines=lines, artifact_peak_ids={"p-lobe"})
+        br81 = line_named(envelope_of(rows, "pa-br"), "81Br")
+        assert br81["state"] == LINE_UNTESTABLE
+        assert br81["untestable"] == UNTESTABLE_ARTIFACT
+        assert "peak_id" not in br81
+        assert tier_of(rows, "pa-br") == "assigned"
+        assert summary["absent_line"]["untestable_lines"] == 1
+
+    def test_the_probe_is_the_tallest_peak_no_artifact_holds(self):
+        # A lobe taller than the line is not the line: the line is the peak
+        # beside it that no artifact row holds.
+        rows = [self.bromide()]
+        near = self.BR81 * (1 + 2e-6)
+        lines = self.peaks(
+            br81=False,
+            extra=[("p-lobe", self.BR81, 5000.0, 500.0), ("p-line", near, 900.0, 90.0)],
+        )
+        run(rows, lines=lines, artifact_peak_ids={"p-lobe"})
+        br81 = line_named(envelope_of(rows, "pa-br"), "81Br")
+        assert br81["state"] == LINE_FOUND
+        assert br81["peak_id"] == "p-line"
+        assert br81["observed_share"] == pytest.approx(0.9)
+
+    def test_an_artifact_counts_as_a_line_where_nothing_says_it_is_one(self):
+        # Without the artifact pre-pass's peaks the lobe is a peak like any.
+        rows = [self.bromide()]
+        lines = self.peaks(br81=False, extra=[("p-lobe", self.BR81, 40.0, 4.0)])
+        run(rows, lines=lines)
+        assert line_named(envelope_of(rows, "pa-br"), "81Br")["state"] == LINE_FOUND
+
+    def test_a_line_beyond_the_peak_list_is_untestable(self):
+        # The scan range ended before the line: the spectrum was never read
+        # there.
+        rows = [self.bromide()]
+        lines = spectrum(
+            ("p-low", 120.0, 50.0, 5.0),
+            ("p-m0", self.M0, 1000.0, 100.0),
+            ("p-13c", self.C13, 65.0, 6.5),
+        )
+        run(rows, lines=lines)
+        record = envelope_of(rows, "pa-br")
+        assert line_named(record, "81Br")["untestable"] == UNTESTABLE_RANGE
+        assert line_named(record, "13C+81Br")["untestable"] == UNTESTABLE_RANGE
+        assert tier_of(rows, "pa-br") == "assigned"
+
+    def test_a_row_whose_peak_the_spectrum_does_not_hold_is_not_asked(self):
+        rows = [self.bromide(peak="p-gone")]
+        summary = run(rows, lines=self.peaks(br81=False))
+        assert PREDICTED_ENVELOPE not in rows[0]["provenance"]
+        assert tier_of(rows, "pa-br") == "assigned"
+        assert summary["absent_line"]["asked"] == 0
+
+    def test_without_the_spectrum_no_row_is_asked(self):
+        rows = [self.bromide()]
+        summary = run(rows)
+        assert PREDICTED_ENVELOPE not in rows[0]["provenance"]
+        assert tier_of(rows, "pa-br") == "assigned"
+        assert summary["absent_line"]["spectrum"] is False
+
+    def test_an_unreadable_ion_is_not_asked(self):
+        rows = [self.bromide(ion="not an ion")]
+        run(rows, lines=self.peaks(br81=False))
+        assert PREDICTED_ENVELOPE not in rows[0]["provenance"]
+        assert tier_of(rows, "pa-br") == "assigned"
+
+    def test_its_isotopologues_follow_it_down(self):
+        rows = [
+            self.bromide(),
+            line_of("pa-br", label="13C", mz=self.C13, peak="p-13c", ion="C6H12O6Br-"),
+        ]
+        summary = run(rows, lines=self.peaks(br81=False))
+        assert tier_of(rows, "pa-br-13C") == "candidate"
+        assert summary["capped_isotopologues"] == 1
+
+    def test_a_row_its_evidence_put_lower_still_says_so(self):
+        rows = [self.bromide(tier="below_assignability")]
+        run(rows, lines=self.peaks(br81=False))
+        assert tier_of(rows, "pa-br") == "below_assignability"
+        assert REASON_ABSENT_LINE in rules_on(rows, "pa-br")
+
+    def test_the_run_records_what_it_asked(self):
+        rows = [self.bromide(), row("pa-2", mz=300.0, peak="p-gone")]
+        summary = run(rows, lines=self.peaks(br81=False))
+        assert summary["absent_line"] == {
+            "spectrum": True,
+            "mz_tolerance_ppm": 5.0,
+            "abundance_floor": 0.01,
+            "detect_snr": 3.0,
+            "detect_from": DETECT_DEFAULT,
+            "rel_detect_no_snr": 0.10,
+            "tof_m2": False,
+            "asked": 1,
+            "with_absent_line": 1,
+            "untestable_lines": 0,
+        }
+
+
+class TestOnATofAHalogenShowsItsM2Line:
+    """The rule's TOF form: a bromine or chlorine reading must show its ion's
+    own M+2 line, whatever the gate says.
+
+    C6H5Cl2O-'s 37Cl line, one peak of the file with what it cannot resolve
+    beside it, is 64% of its own. At a signal-to-noise of 4 its expected
+    signal-to-noise is 2.6, under the gate.
+    """
+
+    M0 = 162.97229
+    CL37 = 164.96939
+
+    @staticmethod
+    def tof(mz: float) -> float:
+        return 5000.0
+
+    def chlorophenol(self) -> dict:
+        return row(
+            "pa-cl",
+            "C6H4Cl2O",
+            mz=self.M0,
+            peak="p-m0",
+            intensity=1000.0,
+            ion="C6H5Cl2O-",
+            channels=SEEN_TWICE,
+        )
+
+    def judged(self, instrument: str, *peaks: tuple) -> list[dict]:
+        rows = [self.chlorophenol()]
+        run(
+            rows,
+            lines=spectrum(("p-m0", self.M0, 1000.0, 4.0), HIGHER, *peaks),
+            resolution=self.tof,
+            instrument_type=instrument,
+        )
+        return rows
+
+    def test_a_tof_reading_without_its_m2_line_loses_the_top_tier(self):
+        rows = self.judged("tof")
+        assert tier_of(rows, "pa-cl") == "candidate"
+        record = envelope_of(rows, "pa-cl")
+        (m2,) = record["lines"]
+        assert (m2["line"], m2["tof_m2"], m2["state"]) == ("37Cl", True, LINE_ABSENT)
+        detail = next(
+            r["detail"]
+            for r in reasons_of(rows, "pa-cl")
+            if r["rule"] == REASON_ABSENT_LINE
+        )
+        assert detail == (
+            "its 37Cl line, predicted at m/z 164.9694 at 64.4% of its own line, is "
+            "not in the spectrum, and on a TOF a chlorine reading must show its own "
+            "M+2 line"
+        )
+
+    def test_the_m2_line_is_the_tallest_two_mass_units_up(self):
+        # Read one isotopologue per line, the 13C2 and 18O lines sit two mass
+        # units up beside the 37Cl line: the M+2 line asked is the 37Cl.
+        rows = [self.chlorophenol()]
+        run(
+            rows,
+            lines=spectrum(("p-m0", self.M0, 1000.0, 4.0), HIGHER),
+            abundance_floor=0.001,
+            instrument_type="tof",
+        )
+        (m2,) = envelope_of(rows, "pa-cl")["lines"]
+        assert m2["line"] == "37Cl"
+        assert m2["tof_m2"] is True
+
+    def test_with_it_the_reading_keeps_its_tier(self):
+        rows = self.judged("tof", ("p-m2", self.CL37, 640.0, 2.6))
+        assert tier_of(rows, "pa-cl") == "assigned"
+
+    @pytest.mark.parametrize(
+        ("ion", "mz", "named"),
+        [
+            # The 81Br line at 99% of its own: an expected signal-to-noise of
+            # 1, under the gate, at a signal-to-noise of 1.
+            ("C6H12O6Br-", 258.98227, "bromine"),
+            # Both halogens, named in M2_HALOGENS' order.
+            ("C6H4BrClO-", 205.91395, "bromine and chlorine"),
+        ],
+    )
+    def test_a_bromine_reading_is_held_to_its_m2_line_too(self, ion, mz, named):
+        rows = [row("pa-br", PLAIN, mz=mz, peak="p-m0", ion=ion, channels=SEEN_TWICE)]
+        run(
+            rows,
+            lines=spectrum(("p-m0", mz, 1000.0, 1.0), HIGHER),
+            resolution=self.tof,
+            instrument_type="tof",
+        )
+        assert tier_of(rows, "pa-br") == "candidate"
+        (m2,) = envelope_of(rows, "pa-br")["lines"]
+        assert (m2["line"], m2["tof_m2"]) == ("81Br", True)
+        detail = next(
+            r["detail"]
+            for r in reasons_of(rows, "pa-br")
+            if r["rule"] == REASON_ABSENT_LINE
+        )
+        assert detail.endswith(
+            f"and on a TOF a {named} reading must show its own M+2 line"
+        )
+
+    def test_an_orbitrap_reading_is_asked_only_what_the_gate_asks(self):
+        rows = self.judged("orbi")
+        assert envelope_of(rows, "pa-cl")["lines"] == []
+        assert tier_of(rows, "pa-cl") == "assigned"
+
+    def test_a_reading_with_no_halogen_is_asked_only_what_the_gate_asks(self):
+        rows = [
+            row(
+                "pa-1",
+                PLAIN,
+                mz=181.0707,
+                peak="p-m0",
+                ion="C6H13O6+",
+                channels=SEEN_TWICE,
+            )
+        ]
+        summary = run(
+            rows,
+            lines=spectrum(("p-m0", 181.0707, 1000.0, 4.0)),
+            resolution=self.tof,
+            instrument_type="tof",
+        )
+        assert envelope_of(rows, "pa-1")["lines"] == []
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert summary["absent_line"]["tof_m2"] is True
+
+
+class TestTheGateARunAskedAt:
+    """`LineGate`: what the run records it asked lines at, which a hand
+    assignment on the run is asked at."""
+
+    BR = TestAnExpectedLineThatIsAbsent
+
+    def test_the_run_s_record_reads_back_as_its_gate(self):
+        summary = run([row("pa-1")], lines=spectrum(("p-1", 181.07, 10.0, 1.0)))
+        assert LineGate.from_record(summary) == LineGate(
+            mz_tolerance_ppm=5.0,
+            abundance_floor=0.01,
+            detect_snr=3.0,
+            detect_from=DETECT_DEFAULT,
+            rel_detect_no_snr=0.10,
+            tof=False,
+        )
+
+    def test_a_curve_and_a_tof_read_back_too(self):
+        summary = run(
+            [row("pa-1")],
+            lines=spectrum(("p-1", 181.07, 10.0, 1.0)),
+            mz_tolerance_ppm=15.0,
+            abundance_floor=0.02,
+            envelope_tolerance=EnvelopeTolerance(detect_snr=7.5),
+            instrument_type="tof",
+        )
+        assert LineGate.from_record(summary) == LineGate(
+            mz_tolerance_ppm=15.0,
+            abundance_floor=0.02,
+            detect_snr=7.5,
+            detect_from=DETECT_FROM_CURVE,
+            rel_detect_no_snr=0.10,
+            tof=True,
+        )
+
+    def test_the_share_asked_with_no_signal_to_noise_is_the_run_s(self, monkeypatch):
+        # The run recorded the fit's constant as it stood; a hand row on the
+        # run is asked at that share, not at what the constant reads today.
+        from mascope_backend.api.new.peak_assignments import tiering as module
+
+        monkeypatch.setattr(module, "REL_DETECT_NO_SNR", 0.05)
+        summary = run([row("pa-1")], lines=spectrum(("p-1", 181.07, 10.0, 1.0)))
+        assert summary["absent_line"]["rel_detect_no_snr"] == 0.05
+        monkeypatch.setattr(module, "REL_DETECT_NO_SNR", 0.10)
+
+        gate = LineGate.from_record(summary)
+        assert gate.rel_detect_no_snr == 0.05
+        # From 5% the 13C lines at 6.5 and 6.4% are asked beside the 81Br line,
+        # which a share of 10% would ask alone.
+        case = self.BR()
+        expected, _ = ask_absent_line(case.bromide(), case.peaks(snr=None), gate)
+        assert expected["asks_share"] == 0.05
+        assert [line["line"] for line in expected["lines"]] == [
+            "13C",
+            "81Br",
+            "13C+81Br",
+        ]
+
+    def test_a_run_that_read_no_spectrum_asked_no_line(self):
+        assert LineGate.from_record(run([row("pa-1")])) is None
+
+    @pytest.mark.parametrize(
+        "tiering",
+        [
+            None,
+            "a string",
+            {},
+            {"absent_line": None},
+            {"absent_line": {"spectrum": True}},
+        ],
+    )
+    def test_a_run_from_before_the_rule_asked_none(self, tiering):
+        assert LineGate.from_record(tiering) is None
+
+    @pytest.mark.parametrize(
+        "broken",
+        [
+            {"mz_tolerance_ppm": None},
+            {"abundance_floor": "0.01"},
+            {"detect_snr": True},
+            {"detect_snr": float("nan")},
+            {"mz_tolerance_ppm": float("inf")},
+            {"mz_tolerance_ppm": 0.0},
+            {"abundance_floor": -0.01},
+            {"rel_detect_no_snr": None},
+            {"rel_detect_no_snr": 0.0},
+        ],
+    )
+    def test_a_record_that_does_not_say_what_it_asked_at_asks_nothing(self, broken):
+        summary = run([row("pa-1")], lines=spectrum(("p-1", 181.07, 10.0, 1.0)))
+        summary["absent_line"].update(broken)
+        assert LineGate.from_record(summary) is None
+
+    def test_asking_one_row_records_its_lines_and_leaves_its_tier(self):
+        # The tiering pass and the curation path each decide what the reason
+        # does to the row: this only reads.
+        case = self.BR()
+        bromide = case.bromide()
+        expected, reason = ask_absent_line(
+            bromide,
+            case.peaks(br81=False),
+            LineGate.from_record(
+                run([row("pa-1")], lines=spectrum(("p-1", 181.07, 10.0, 1.0)))
+            ),
+        )
+        assert bromide["provenance"][PREDICTED_ENVELOPE] is expected
+        assert line_named(expected, "81Br")["state"] == LINE_ABSENT
+        assert reason["rule"] == REASON_ABSENT_LINE
+        assert reason["line"] == "81Br"
+        assert bromide["tier"] == "assigned"
+        assert "tier_reasons" not in bromide["provenance"]
+
+    def test_the_gate_s_window_floor_and_instrument_reach_the_lines(self):
+        # A 15 ppm window reads a peak 10 ppm off as the line; a TOF gate
+        # asks a bromine reading's M+2 line at a signal-to-noise the default
+        # gate would not; a floor above the 13C lines predicts none of them.
+        case = self.BR()
+        off = case.BR81 * (1 + 10e-6)
+        lines = case.peaks(br81=False, extra=[("p-off", off, 900.0, 90.0)])
+        wide = LineGate(15.0, 0.01, 3.0, DETECT_DEFAULT, 0.1, False)
+        expected, reason = ask_absent_line(case.bromide(), lines, wide)
+        assert line_named(expected, "81Br")["peak_id"] == "p-off"
+        assert reason is None
+
+        dim = spectrum(("p-m0", case.M0, 1000.0, 1.0), HIGHER)
+        expected, _ = ask_absent_line(
+            case.bromide(), dim, LineGate(5.0, 0.01, 3.0, DETECT_DEFAULT, 0.1, True)
+        )
+        assert [line["line"] for line in expected["lines"]] == ["81Br"]
+        expected, _ = ask_absent_line(
+            case.bromide(), dim, LineGate(5.0, 0.01, 3.0, DETECT_DEFAULT, 0.1, False)
+        )
+        assert expected["lines"] == []
+
+        expected, _ = ask_absent_line(
+            case.bromide(),
+            case.peaks(),
+            LineGate(5.0, 0.1, 3.0, DETECT_DEFAULT, 0.1, False),
+        )
+        assert [line["line"] for line in expected["lines"]] == ["81Br"]
+
+    def test_the_curve_s_word_reaches_the_reason(self):
+        case = self.BR()
+        _, reason = ask_absent_line(
+            case.bromide(),
+            case.peaks(br81=False),
+            LineGate(5.0, 0.01, 3.0, DETECT_FROM_CURVE, 0.1, False),
+        )
+        assert reason["detail"].endswith("the file's own detection curve)")

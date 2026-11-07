@@ -589,6 +589,83 @@ class TestTheJudgedLedger:
         assert handed["tier_bands"] == {"assigned": 0.8, "candidate": 0.5}
 
     @pytest.mark.asyncio
+    async def test_the_tiering_pass_reads_the_runs_tolerance_and_artifacts(self):
+        # The absent-line rule asks a row's lines from the threshold the
+        # run's fitted tolerance sets, reads the artifact pre-pass's peaks as
+        # no line, and holds a TOF's halogen readings to their M+2 line, so
+        # the run hands it all three.
+        import numpy as np
+
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.envelope_fit import (
+            RunEnvelopeFit,
+        )
+        from mascope_backend.api.new.peak_assignments.tiering import (
+            detect_threshold,
+        )
+        from mascope_tools.composition.envelope_tolerance import (
+            FORM_CURVE,
+            EnvelopeLines,
+            fit_envelope_tolerance,
+        )
+
+        # Lines at an expected signal-to-noise of 5 the file never holds, and
+        # at 15 it always does: an absent line counts from 10.
+        fitted = RunEnvelopeFit(
+            fit_envelope_tolerance(
+                FORM_CURVE,
+                EnvelopeLines(),
+                [
+                    EnvelopeLines(
+                        np.r_[np.full(10, 5.0), np.full(30, 15.0)],
+                        np.r_[np.full(10, np.nan), np.full(30, 0.75)],
+                    )
+                ],
+            ),
+            None,
+        )
+        assert fitted.tolerance.detect_snr == 10.0
+        judge = service.judge_commits
+        handed = {}
+
+        def recording(rows, **kwargs):
+            handed.update(kwargs)
+            return judge(rows, **kwargs)
+
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p-lobe", 181.0750, 5.0),
+            ]
+        )
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+        patch(
+            f"{_MOD}.fit_run_envelope_tolerance",
+            new_callable=AsyncMock,
+            return_value=fitted,
+        ).start()
+        patch(
+            f"{_MOD}.claim_artifact_peaks",
+            side_effect=lambda df, *_args: df[df["sample_peak_id"] == "p-lobe"],
+        ).start()
+        patch(f"{_MOD}.judge_commits", side_effect=recording).start()
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        assert handed["envelope_tolerance"] == fitted.tolerance
+        assert handed["artifact_peak_ids"] == frozenset({"p-lobe"})
+        assert handed["instrument_type"] == "orbi"
+        assert handed["lines"].holds("p1")
+        tiering = recorder.recorded_configs()[-1]["tiering"]
+        assert tiering["absent_line"]["detect_snr"] == 10.0
+        assert detect_threshold(fitted.tolerance)[0] == 10.0
+
+    @pytest.mark.asyncio
     async def test_the_run_records_what_its_claims_did(self):
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
