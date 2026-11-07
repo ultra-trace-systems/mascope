@@ -48,6 +48,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
     candidate_index,
     member_state,
+    resolve_candidate,
     role_code,
     tier_code,
 )
@@ -748,6 +749,7 @@ async def _propagate_to_sample(
     source: str = SOURCE_UNTARGETED,
     skip_candidate: Optional[dict[str, int]] = None,
     displaced: Optional[list] = None,
+    prefer_better: bool = False,
 ) -> int:
     """Measure the annotated anchors' formulas against one other sample and
     write the result onto its members of those anchors.
@@ -765,6 +767,14 @@ async def _propagate_to_sample(
     registry index) and archiving what each re-pointed member read before
     (``displaced``, appended to). ``source`` is recorded on a registry entry
     this write creates.
+
+    The series detection measures its proposals over every member too, and
+    with ``prefer_better``: a member that already reads its peak another way
+    takes the new reading only where its evidence is at least the member's
+    own, one that already reads the same formula is left as it is, and one a
+    pre-pass claimed or read as another peak's isotope line is not touched. A
+    homologue is a reason to measure a formula, not to overrule a better
+    measured reading.
 
     :return: How many members were assigned.
     """
@@ -832,6 +842,10 @@ async def _propagate_to_sample(
             evidence = evidence_for(fit, annotation.formula)
             if fit is None or evidence is None:
                 continue
+            if prefer_better and not _takes_the_member(
+                member, anchors[member.batch_peak_id], annotation, evidence
+            ):
+                continue
             if displaced is not None:
                 displaced.append(member_state(member))
             anchor = anchors[member.batch_peak_id]
@@ -860,6 +874,31 @@ async def _propagate_to_sample(
             assigned += 1
         await session.commit()
     return assigned
+
+
+def _takes_the_member(
+    member: Any, anchor: Any, annotation: Annotation, evidence: float
+) -> bool:
+    """Whether a reading measured at ``evidence`` takes a member that may
+    already read its peak (``_propagate_to_sample``'s ``prefer_better``).
+
+    :param member: The member, as loaded.
+    :param anchor: Its anchor, for the registry its index names.
+    :param annotation: The reading being measured.
+    :param evidence: Its evidence on this member.
+    :return: True where the member has no reading, or a weaker one of another
+        formula; False for a claimed member, an isotope line, the same formula,
+        or a reading at least as well measured.
+    """
+    if member.role in CLAIMED_ROLE_CODES or member.role == role_code(ROLE_ISO_CHILD):
+        return False
+    if member.candidate is None:
+        return True
+    current = resolve_candidate(anchor.candidates, member.candidate)
+    if current.get("formula") == annotation.formula:
+        return False
+    held = evidence_for(member.fit_score, current.get("formula"))
+    return held is None or evidence >= held
 
 
 def _progress(

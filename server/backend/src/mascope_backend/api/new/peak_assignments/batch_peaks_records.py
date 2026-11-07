@@ -18,6 +18,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     instrument_type_of,
     manual_pin_of,
     mz_from_delta,
+    standing_series_record,
     tier_name,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
@@ -58,6 +59,8 @@ def _batch_peak_meta(bp) -> dict:
     (:func:`~mascope_backend.api.new.peak_assignments.listing.consensus_listing`).
     ``engine_tier`` and ``engine_claim`` are what an importing engine said of
     the consensus identity (``batch_import``), None on every other anchor.
+    ``series`` is the homologous series the batch's series detection found
+    for the consensus formula (``batch_series``), None where it found none.
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -85,6 +88,7 @@ def _batch_peak_meta(bp) -> dict:
         "curated": manual_pin_of(bp) is not None,
         "engine_tier": bp.engine_tier,
         "engine_claim": bp.engine_claim,
+        "series": standing_series_record(bp),
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,

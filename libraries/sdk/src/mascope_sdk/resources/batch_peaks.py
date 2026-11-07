@@ -145,10 +145,16 @@ class BatchPeaksResource(BaseResource):
                  ``reference_listing`` (what a reference list calls the
                  consensus formula where a member matched it from one:
                  ``name``, ``source``, ``tags``, ``total``; null otherwise),
-                 and ``engine_tier`` and ``engine_claim`` (what an importing
+                 ``engine_tier`` and ``engine_claim`` (what an importing
                  engine said of the consensus identity; null on every batch
-                 peak no import gave a verdict for). ``consensus_tier`` is
-                 always this server's: the engine's tier stands beside it.
+                 peak no import gave a verdict for), and ``series`` (the
+                 homologous series a *Detect series* run found for the
+                 consensus formula: ``unit``, ``step``, ``depth``,
+                 ``root_formula`` and ``root_batch_peak_id`` of the assigned
+                 batch peak it starts at, ``units``, ``has_anchor``; null
+                 where none, and absent from a server that predates it).
+                 ``consensus_tier`` is always this server's: the engine's tier
+                 stands beside it.
                  None when the batch has no ledger yet.
         :rtype: pd.DataFrame | None
         """

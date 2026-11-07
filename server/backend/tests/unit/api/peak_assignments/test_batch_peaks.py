@@ -14,6 +14,7 @@ import pytest
 
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
+    SERIES_KEY,
     Anchor,
     AnchorSet,
     candidate_index,
@@ -25,6 +26,8 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     resolution_adaptive_tol_ppm,
     resolve_candidate,
     resolve_isotopologue_of,
+    series_record_of,
+    standing_series_record,
 )
 
 
@@ -641,3 +644,75 @@ def test_candidate_index_records_a_source_on_a_new_entry_only():
     ]
     assert candidate_index(registry, "B", "B+", "m") == 1
     assert "source" not in registry[1]
+
+
+# --- the series record --------------------------------------------------------
+#
+# The series detection (``batch_series.py``) records on an anchor the series that
+# proposed its formula. The record is about that formula, not about the peak, so
+# the consensus keeps it while it names the formula and drops it when it moves.
+
+_SERIES = {"formula": "A", "unit": "CH2", "has_anchor": True}
+
+
+def _fit(formula, fit=0.9, intensity=1000.0, tier="assigned"):
+    return _m0(formula, fit_score=fit, intensity=intensity, tier=tier)
+
+
+def test_the_consensus_carries_a_series_on_the_formula_it_proposed():
+    c = compute_consensus([_fit("A"), _fit("A")], series=_SERIES)
+    assert c.provenance[SERIES_KEY] == _SERIES
+
+
+def test_a_consensus_that_moved_to_another_formula_drops_it():
+    c = compute_consensus([_fit("B"), _fit("B")], series=_SERIES)
+    assert c.consensus_formula == "B"
+    assert SERIES_KEY not in c.provenance
+
+
+def test_an_anchor_nothing_reads_drops_it():
+    c = compute_consensus([_bare()], series=_SERIES)
+    assert SERIES_KEY not in c.provenance
+
+
+def test_no_series_leaves_the_provenance_as_the_vote_wrote_it():
+    assert SERIES_KEY not in compute_consensus([_fit("A")]).provenance
+
+
+def test_a_pin_on_the_proposed_formula_keeps_it_beside_the_pin():
+    c = compute_consensus([_fit("A")], manual={"formula": "A"}, series=_SERIES)
+    assert c.provenance["manual"] == {"formula": "A"}
+    assert c.provenance[SERIES_KEY] == _SERIES
+
+
+@pytest.mark.parametrize(
+    "provenance, record",
+    [
+        ({SERIES_KEY: _SERIES}, _SERIES),
+        ({SERIES_KEY: {"unit": "CH2"}}, None),
+        ({SERIES_KEY: "CH2"}, None),
+        ({"manual": {"formula": "A"}}, None),
+        (None, None),
+    ],
+)
+def test_a_series_record_names_a_formula(provenance, record):
+    assert series_record_of({"provenance": provenance}) == record
+
+
+@pytest.mark.parametrize(
+    "consensus_formula, record",
+    [("A", _SERIES), ("B", None), (None, None)],
+)
+def test_a_series_record_stands_beside_the_formula_it_names(consensus_formula, record):
+    # A detection writes its records before it measures them: an anchor it has
+    # not reached yet carries one beside the reading it held before.
+    anchor = {
+        "provenance": {SERIES_KEY: _SERIES},
+        "consensus_formula": consensus_formula,
+    }
+    assert standing_series_record(anchor) == record
+
+
+def test_a_malformed_record_stands_nowhere():
+    anchor = {"provenance": {SERIES_KEY: {"unit": "CH2"}}, "consensus_formula": "A"}
+    assert standing_series_record(anchor) is None

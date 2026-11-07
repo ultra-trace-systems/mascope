@@ -1206,7 +1206,7 @@ class BatchPeakRunRecord(BaseModel):
 
     batch_peak_run_id: str
     sample_batch_id: str
-    #: fold | rebuild | search_untargeted | import
+    #: fold | rebuild | search_untargeted | import | detect_series
     action: str
     engine: str
     engine_version: str

@@ -5,6 +5,8 @@ completion prunes. No DB. See ``batch_runs.py``."""
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     _batch_peak_meta,
 )
@@ -130,6 +132,23 @@ def test_a_snapshot_row_serves_every_field_the_live_ledger_does():
         SimpleNamespace(**anchor_snapshot_row("run-1", anchor, [])), "sb-1"
     )
     assert set(snap) - {"batch_peak_run_id"} == set(live)
+
+
+@pytest.mark.parametrize("reads, served", [("C6H12O6", True), ("C7H14O6", False)])
+def test_the_ledger_and_a_snapshot_serve_a_series_only_beside_its_formula(
+    reads, served
+):
+    # A detection that has not measured an anchor yet has already put its
+    # record on it: the consensus there is still the reading it held before.
+    record = {"formula": "C6H12O6", "unit": "CH2", "has_anchor": True}
+    anchor = _anchor(
+        sample_batch_id="sb-1",
+        consensus_formula=reads,
+        provenance={"series": record},
+    )
+    expected = record if served else None
+    assert _batch_peak_meta(anchor)["series"] == expected
+    assert anchor_snapshot_row("run-1", anchor, [])["series"] == expected
 
 
 def test_the_series_off_a_snapshot_names_tiers_and_narrows_to_samples():

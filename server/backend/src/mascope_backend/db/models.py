@@ -3515,7 +3515,8 @@ class BatchPeakRun(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "action IN ('fold', 'rebuild', 'search_untargeted', 'import')",
+            "action IN "
+            "('fold', 'rebuild', 'search_untargeted', 'import', 'detect_series')",
             name="action_valid",
         ),
         CheckConstraint(
@@ -3560,6 +3561,9 @@ class BatchPeakRunAnchor(Base):
     curated: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
     engine_tier: Mapped[Optional[str]] = mapped_column(String(24))
     engine_claim: Mapped[Optional[str]] = mapped_column(String(1024))
+    # The homologous series the anchor was in as the run left it
+    # (``batch_peaks.series_record_of``), NULL for none.
+    series: Mapped[Optional[dict]] = mapped_column(JSON)
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 

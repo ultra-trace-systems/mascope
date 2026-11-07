@@ -98,16 +98,29 @@ it was and its envelope reason says which.
 
 ``lone_peak`` - decision 25: the assigned tier needs a second observation. A row
 the formula search elected on one peak, with no line of its own isotope pattern
-committed beside it, no second channel committing its neutral and no list it
-was matched from, is a candidate at most, whatever its fit
-(:func:`lone_peak_reason`). The bands cannot ask this: a lone line at the noise
+committed beside it, no second channel committing its neutral, no homologous
+series of its batch anchoring it and no list it was matched from, is a
+candidate at most, whatever its fit (:func:`lone_peak_reason`). The bands cannot ask this: a lone line at the noise
 floor scores a perfect abundance error, because M0 is the only line the pattern
 had to match, and on a TOF the mass error is judged against a width of
 several ppm. Measured on the chamber sets before the rule, such rows were 5 to
 44% of a set's assigned rows and under 5% of its assigned intensity, the dim
 ones. A row that keeps its tier names the observation it stands on
-(``second_line``, ``corroborated``, ``on_a_list``), so every assigned row says
-what saw it twice.
+(``second_line``, ``corroborated``, ``series_anchor``, ``on_a_list``), so every
+assigned row says what saw it twice.
+
+``series_anchor`` - step 4.1: the batch's series detection
+(``batch_series.py``) found the row's formula one repeat unit from a reading
+the batch holds at assigned, in a family whose proposals beat the decoys, and
+the run copied that record onto the row (:data:`SERIES`). It is evidence from
+outside the peak, as a second channel is - a homologue predicted this formula
+at this mass before the peak was read - so it is an escape from the two rules
+that ask whether anything outside the peak saw the reading, ``lone_peak`` and
+``candidate_density``, and a reason a row keeps its tier on. It lifts nothing
+else: a radical, an absent line or a mass off the calibration is still what
+it was, whatever series it sits in. Nor does it hold a row against being read
+as a neighbour's isotope line, which a second channel does: a series says the
+formula has homologues, not that the peak is not a line.
 
 ``absent_line`` - step 3.4e: a line the spectrum should have shown is not
 there. Each committed monoisotopic row's envelope is predicted as the claims
@@ -226,7 +239,7 @@ from mascope_tools.composition.implausibility import implausible_signatures
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 11
+TIERING_RULES_VERSION = 12
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -322,9 +335,17 @@ REASON_INHERITED = "inherited_from_owner"
 
 #: The second observations a row keeps the top tier on besides a second
 #: channel, which ``corroborated`` names: a line of its own isotope pattern
-#: committed with it, and the list it was matched from.
+#: committed with it, a homologous series of its batch, and the list it was
+#: matched from.
 REASON_SECOND_LINE = "second_line"
+REASON_SERIES_ANCHOR = "series_anchor"
 REASON_ON_A_LIST = "on_a_list"
+
+#: The provenance block a row carries where its batch's series detection
+#: vouches for its formula (``batch_series.series_record``): the unit, the
+#: anchor it was stepped from and that anchor's formula, and ``has_anchor``.
+#: Written by the run before this pass reads it (``service.stamp_series``).
+SERIES = "series"
 
 #: A row whose ion reads another way, where something settled which reading it
 #: is (the cross-channel pass's record of the same name).
@@ -395,6 +416,18 @@ def corroborating_channels(row: dict) -> int:
 def is_corroborated(row: dict) -> bool:
     """Whether anything outside this reading saw the same neutral."""
     return corroborating_channels(row) >= CHANNELS_FOR_CORROBORATION
+
+
+def series_anchor(row: dict) -> dict | None:
+    """The batch series that anchors this row's formula, or None.
+
+    :param row: A committed assignment.
+    :return: The row's :data:`SERIES` block where it says ``has_anchor``.
+    """
+    block = _provenance(row).get(SERIES)
+    if isinstance(block, dict) and block.get("has_anchor"):
+        return block
+    return None
 
 
 def _reason(rule: str, detail: str, *, caps: bool) -> dict:
@@ -804,18 +837,20 @@ def polyhalide_cluster_reason(row: dict, notation_by_id: dict[str, str]) -> dict
 def density_reason(row: dict) -> dict | None:
     """The evidence left rivals standing, and nothing else saw the neutral.
 
-    The only escape is a second channel. A committed isotopologue envelope is
+    The escapes are a second channel and a series of the batch
+    (:func:`series_anchor`). A committed isotopologue envelope is
     one of the corroboration flags the plan lists, and it is deliberately not
     an escape here, on the measurement: of the 2,636 assigned rows this rule
     takes on the assignment gate, 54 own a committed isotopologue row, and the
     reference confirms 6 of those and contradicts 13. An envelope is already
     inside the fit that failed to separate the rivals, so it cannot break a tie
-    the fit left; a second channel is evidence from outside the peak.
+    the fit left; a second channel is evidence from outside the peak, and so
+    is a homologue one unit away, which names this formula among the rivals.
     """
     density = _provenance(row).get(CANDIDATE_DENSITY)
     if not isinstance(density, int) or density < DENSITY_LIMIT:
         return None
-    if is_corroborated(row):
+    if is_corroborated(row) or series_anchor(row) is not None:
         return None
     grid = _provenance(row).get(GRID_RIVALS)
     added = grid.get("added") if isinstance(grid, dict) else None
@@ -871,10 +906,11 @@ def follows_its_owner(line: dict) -> bool:
 def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
     """One peak is all that saw the row's neutral (decision 25).
 
-    Three things are a second observation, and each is an escape: a line of the
+    Four things are a second observation, and each is an escape: a line of the
     row's own isotope pattern the run committed with it; a second channel of
     the run committing the same neutral, read off the cross-channel pass's
-    record as the density rule reads it; and a list, so a row Stage A matched
+    record as the density rule reads it; a homologous series of the batch
+    (:func:`series_anchor`); and a list, so a row Stage A matched
     from the target library or a reference list is not asked. Unlike the density
     rule this one counts an isotopologue, because it asks a different question:
     density asks whether the envelope can break a tie the fit left, which it
@@ -897,7 +933,9 @@ def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
         cross_channel.get("channels"), list
     ):
         return None
-    if is_corroborated(row) or any(follows_its_owner(line) for line in lines):
+    if is_corroborated(row) or series_anchor(row) is not None:
+        return None
+    if any(follows_its_owner(line) for line in lines):
         return None
     if lines:
         one = len(lines) == 1
@@ -912,8 +950,8 @@ def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
     return _reason(
         REASON_LONE_PEAK,
         f"one peak is all that saw {row.get('assigned_formula')}: {seen}, no "
-        "second channel of this run committed the same neutral, and it was not "
-        "matched from a list",
+        "second channel of this run committed the same neutral, no series of "
+        "its batch anchors it, and it was not matched from a list",
         caps=True,
     )
 
@@ -1336,6 +1374,35 @@ def second_line_reason(lines: Sequence[dict]) -> dict | None:
     return _reason(REASON_SECOND_LINE, detail, caps=False)
 
 
+def series_anchor_reason(row: dict) -> dict | None:
+    """The homologous series a row keeps its tier on.
+
+    :param row: A committed monoisotopic row.
+    :return: The reason naming the unit and the assigned homologue its chain
+        starts at, or None where no series anchors the row.
+    """
+    block = series_anchor(row)
+    if block is None:
+        return None
+    unit = block.get("unit") or "repeat unit"
+    root = block.get("root_formula")
+    depth = block.get("depth")
+    if not root or not isinstance(depth, int) or depth < 1:
+        return _reason(
+            REASON_SERIES_ANCHOR,
+            f"a homologous series of its batch anchors it, in {unit}",
+            caps=False,
+        )
+    steps = "one" if depth == 1 else _count_word(depth)
+    heavier = "heavier" if block.get("step") == 1 else "lighter"
+    return _reason(
+        REASON_SERIES_ANCHOR,
+        f"a homologous series of its batch anchors it: {steps} {unit} {heavier} "
+        f"than {root}, which the batch holds at assigned",
+        caps=False,
+    )
+
+
 def on_a_list_reason(row: dict) -> dict | None:
     """The list a Stage A row was matched from, which the search did not elect.
 
@@ -1566,7 +1633,11 @@ def standing_reasons(row: dict, lines: Sequence[dict] = ()) -> list[dict]:
                 caps=False,
             )
         )
-    for reason in (second_line_reason(lines), on_a_list_reason(row)):
+    for reason in (
+        second_line_reason(lines),
+        series_anchor_reason(row),
+        on_a_list_reason(row),
+    ):
         if reason:
             reasons.append(reason)
     settled = (_provenance(row).get("cross_channel") or {}).get(SAME_ION_SETTLED)

@@ -892,6 +892,71 @@ class TestAListHitMeetsTheGrid:
         # Measured against the grid all the same.
         assert reading.keeps_peak is True
 
+    #: What the batch's series detection recorded for p1's batch peak: a
+    #: homologue one CH2 above an assigned C5H10O6 proposed this reading.
+    SERIES = {
+        "formula": "C6H12O6",
+        "ionization_mechanism_id": "[M+H]+",
+        "has_anchor": True,
+        "unit": "CH2",
+        "step": 1,
+        "depth": 1,
+        "root_formula": "C5H10O6",
+    }
+
+    def _with_series(self, record):
+        return patch(
+            f"{_MOD}.batch_series_by_peak",
+            new_callable=AsyncMock,
+            return_value={"p1": record},
+        ).start()
+
+    @pytest.mark.asyncio
+    async def test_a_series_of_the_batch_settles_the_rivals_it_names(self):
+        # The same contested reading as below, on a peak whose batch peak a
+        # homologous series vouches for: the series is evidence from outside
+        # the peak, so the density rule does not take its tier (step 4.1).
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        recorder = _Recorder()
+        self._start_with(recorder, [self._kept([self.RIVAL])])
+        series = self._with_series(self.SERIES)
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        series.assert_awaited_once_with("si-1")
+        row = {row["sample_peak_id"]: row for row in recorder.rows}["p1"]
+        assert row["provenance"]["series"] == self.SERIES
+        rules = {reason["rule"] for reason in row["provenance"]["tier_reasons"]}
+        assert "series_anchor" in rules
+        assert "candidate_density" not in rules
+        assert row["tier"] == "assigned"
+        assert recorder.recorded_configs()[-1]["tiering"]["series_anchored"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "change",
+        [{"formula": "C7H16O5"}, {"ionization_mechanism_id": "[M+NH4]+"}],
+        ids=["another formula", "another mechanism"],
+    )
+    async def test_a_series_of_another_reading_is_not_this_rows(self, change):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        recorder = _Recorder()
+        self._start_with(recorder, [self._kept([self.RIVAL])])
+        self._with_series({**self.SERIES, **change})
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        row = {row["sample_peak_id"]: row for row in recorder.rows}["p1"]
+        assert "series" not in row["provenance"]
+        assert row["tier"] == "candidate"
+        assert recorder.recorded_configs()[-1]["tiering"]["series_anchored"] == 0
+
     @pytest.mark.asyncio
     async def test_a_kept_reading_counts_its_rivals_and_keeps_its_row(self):
         from mascope_backend.api.new.peak_assignments.config import (

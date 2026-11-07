@@ -17,7 +17,7 @@ import asyncio
 import copy
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime as dt
 from datetime import timezone
@@ -73,8 +73,10 @@ from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     is_stale,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    SERIES_KEY,
     mz_from_delta,
     resolve_candidate,
+    standing_series_record,
 )
 from mascope_backend.api.new.peak_assignments.calibration_store import (
     load_calibration,
@@ -112,6 +114,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     PARTNER_GATE_KEY,
     PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
+    ROLE_M0,
     SEARCH_SCOPE_KEY,
     SOURCE_DATABASE,
     STAGE_A_FIT_MIN_IONS,
@@ -1958,6 +1961,81 @@ class JudgedCommits:
     cross_channel: dict
     tiering: dict
     partner_gate: dict
+
+
+async def batch_series_by_peak(sample_item_id: str) -> dict[str, dict]:
+    """The series records of the batch peaks a sample's peaks sit in.
+
+    The batch's series detection (``batch_series.py``) records on a batch peak
+    the homologous series that proposed its formula; a run of one of the
+    batch's samples reads them here, by the peak each of its members is.
+
+    :param sample_item_id: The sample.
+    :return: Sample peak id -> the record of its batch peak, for the peaks
+        whose batch peak carries one beside the formula it names
+        (``batch_peaks.standing_series_record``).
+    """
+    async with async_session() as session:
+        rows = (
+            await session.execute(
+                select(
+                    BatchPeakOccurrence.sample_peak_id,
+                    BatchPeak.provenance,
+                    BatchPeak.consensus_formula,
+                )
+                .join(
+                    BatchPeak,
+                    BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
+                )
+                .where(
+                    BatchPeakOccurrence.sample_item_id == sample_item_id,
+                    BatchPeak.provenance[SERIES_KEY].is_not(None),
+                )
+            )
+        ).all()
+    records: dict[str, dict] = {}
+    for peak_id, provenance, formula in rows:
+        record = standing_series_record(
+            {"provenance": provenance, "consensus_formula": formula}
+        )
+        if record is not None:
+            records[str(peak_id)] = record
+    return records
+
+
+def stamp_series(rows: Iterable[dict], series_by_peak: dict[str, dict]) -> int:
+    """Copy the batch's series records onto the run's rows of the same reading.
+
+    A record says a homologous series of the batch proposed this formula for
+    this peak, through this mechanism; a row that reads the peak so carries it
+    (``tiering.SERIES``), and the tiering pass counts it as a second
+    observation of the row (``tiering.series_anchor``). A row that reads the
+    peak another way does not: the series vouches for its formula, not for the
+    peak. Only monoisotopic rows: an isotope line is judged through its owner.
+
+    :param rows: The run's committed rows, written into.
+    :param series_by_peak: :func:`batch_series_by_peak`'s answer.
+    :return: How many rows carry a record.
+    """
+    stamped = 0
+    for row in rows:
+        if row.get("role") != ROLE_M0:
+            continue
+        record = series_by_peak.get(str(row.get("sample_peak_id")))
+        if (
+            record is None
+            or record.get("formula") != row.get("assigned_formula")
+            or record.get("ionization_mechanism_id")
+            != row.get("ionization_mechanism_id")
+        ):
+            continue
+        provenance = row.get("provenance")
+        if not isinstance(provenance, dict):
+            provenance = {}
+            row["provenance"] = provenance
+        provenance[SERIES_KEY] = dict(record)
+        stamped += 1
+    return stamped
 
 
 def judge_commits(
@@ -4131,6 +4209,17 @@ async def _assign_sample(
         # and never which tier a row ends on. A line one of them finds on an
         # assigned neighbour's envelope is read as that neighbour's, and then
         # all three run again over the ledger that leaves (`judge_commits`).
+        # - and before all three, the homologous series the batch's series
+        #   detection found for any of these readings, a second observation
+        #   of it the tiering pass counts (step 4.1). Not on a decoy arm: the
+        #   batch ledger is the control's chemistry, not the arm's.
+        series_anchored = (
+            0
+            if decoy_plan is not None
+            else stamp_series(
+                fragments.rows, await batch_series_by_peak(sample_item_id)
+            )
+        )
         lines = SpectrumLines.from_peaks(peaks_df, resolution)
         judged = judge_commits(
             fragments.rows,
@@ -4155,7 +4244,7 @@ async def _assign_sample(
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel
-        tiering = judged.tiering
+        tiering = {**judged.tiering, "series_anchored": series_anchored}
         partner_gate = judged.partner_gate
         if mass_calibration["applied"]:
             trend = mass_calibration["trend"]
