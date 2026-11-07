@@ -26,6 +26,7 @@ export const TIER_REASON_LABELS = Object.freeze({
   candidate_density: 'rivals left standing',
   lone_peak: 'one peak only',
   absent_line: 'expected line absent',
+  unresolved_peak: 'peak not separated',
   envelope_neighbour: "a neighbour's isotope line",
   oxygen_lattice: 'oxygen lattice',
   carbon_free: 'carbon-free formula',
@@ -66,24 +67,45 @@ export function tierReasonLabel(rule) {
 }
 
 /**
+ * The peak a reason names beside its sentence: the neighbour an unresolved
+ * peak was not separated from (`neighbour_peak_id`, `neighbour_mz`).
+ *
+ * @param {object} reason - one entry of `provenance.tier_reasons`
+ * @returns {{peakId: string, mz: number}|null}
+ */
+function neighbourOf(reason) {
+  const id = reason.neighbour_peak_id
+  const mz = reason.neighbour_mz
+  if ((typeof id !== 'string' && typeof id !== 'number') || id === '') return null
+  if (typeof mz !== 'number' || !Number.isFinite(mz)) return null
+  return { peakId: String(id), mz }
+}
+
+/**
  * The reasons a row's provenance carries, named - or an empty list when it
  * carries none, which is a row no tiering pass judged: a run from before the
- * pass, an imported run, a row assigned by hand.
+ * pass, an imported run, a row assigned by hand. A reason that names a
+ * neighbouring peak carries it as `neighbour`.
  *
  * @param {object|null} provenance - the row's provenance, from the detail fetch
- * @returns {Array<{rule: string|null, label: string, detail: string, caps: boolean}>}
+ * @returns {Array<{rule: string|null, label: string, detail: string, caps: boolean,
+ *   neighbour?: {peakId: string, mz: number}}>}
  */
 export function tierReasonsOf(provenance) {
   const reasons = provenance?.tier_reasons
   if (!Array.isArray(reasons)) return []
   return reasons
     .filter((reason) => reason && typeof reason === 'object')
-    .map((reason) => ({
-      rule: typeof reason.rule === 'string' ? reason.rule : null,
-      label: tierReasonLabel(reason.rule),
-      detail: typeof reason.detail === 'string' ? reason.detail : '',
-      caps: reason.caps === true
-    }))
+    .map((reason) => {
+      const neighbour = neighbourOf(reason)
+      return {
+        rule: typeof reason.rule === 'string' ? reason.rule : null,
+        label: tierReasonLabel(reason.rule),
+        detail: typeof reason.detail === 'string' ? reason.detail : '',
+        caps: reason.caps === true,
+        ...(neighbour ? { neighbour } : {})
+      }
+    })
 }
 
 /**

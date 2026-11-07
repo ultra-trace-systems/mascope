@@ -82,7 +82,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.4c - measure an alternative before committing | - |  | planned, from the plan owner's reading of 2026-09-25: a close alternative shows its evidence first |
 | 3.4d - the columns of a tiering still in progress | #2223 | 2026-09-26 | built: the listed-as column, the probability hidden while provisional, the reagent anchor by majority |
 | 3.4e - an expected line that is absent | - |  | built: a committed monoisotopic row whose predicted envelope holds a line the fit's detectability gate asks for (the file's curve threshold, else an expected S/N of 3) and the spectrum lacks is capped at candidate with the reason `absent_line`, every source asked (a hand assignment when it is made, at the gate its run recorded), no second channel lifting it; a window only artifact rows hold, or a line beyond the peak list, is untestable; on a TOF a bromine or chlorine reading must show its own M+2 line; each row records its asked lines (`predicted_envelope`), which the inspector lists and the chart draws as empty circles; tiering rule set 11; the next pass measures G13 |
-| 3.4f - a peak that is not separated | - |  | planned, from the same notes; gate G14; the bimodality criterion of the 0.10 review |
+| 3.4f - a peak that is not separated | - |  | built: a committed monoisotopic row whose peak another peak of the spectrum sits closer to than the bimodality criterion for their height ratio (0.85 widths at equal heights, 1.65 at 1:50, the width from the file's resolving power at the peak's m/z) is capped at candidate with the reason `unresolved_peak`, naming the nearest such neighbour; the row's own envelope lines are no neighbours; the one escape is another channel committing the neutral on a separated peak (`cross_channel.separated_through`), no list or series; each row records `peak_separation`; the inspector links the neighbour; tiering rule set 13; read on E, F and J before it was fixed (below); the next pass measures G14 |
 | 3.4g - the chart draws each peak in the trace's unit, and a lone M0 | #2379 | 2026-10-19 | built: the lone M0 drawn, the envelope in the trace's unit; engine and tiers untouched |
 | 3.4h - the inspector links the other channels, and the listing column folds | #2988 | 2026-11-05 | built: the badge opens the other channels' peaks as links, the listed-as column folds to a mark with a view-menu switch in both ledgers, and rows whose peak the sample no longer has are marked (#2025); no tier moves |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | #2593 (the gate's anchors) |  | in two PRs (decided 2026-10-22). Built: the mass gate's fit takes the reagent pass's monoisotopic lines beside its commits; estimated on the pass-10 ledgers, all seven K3 files fit a calibration. Planned: the cap and the offset report (MAS-469), landing with 3.5b |
@@ -493,6 +493,28 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   E, F and J the rows that move, read by hand; the Orbitrap sets report
   what moves, expected next to nothing; G1 and G2 as readings.
 - **Size.** M. Beside 3.4e; the TOF sets are where it is read.
+- **As built (MAS-55).** The threshold is the criterion itself, height-ratio
+  aware and symmetric, from its closed form (Robertson and Fryer 1969) rather
+  than a table: equal heights at 2 sigma, 0.85 widths at half maximum, a 1:50
+  pair at 1.65. The width is the file's resolving power at the peak's m/z, as
+  detection fitted it: the peak store keeps no width of its own per peak.
+  Every other peak of the spectrum with a height is a neighbour, a source ion
+  or an unexplained peak included; a peak within the match window of one of
+  the row's own predicted lines is not. A hand assignment is not asked. The
+  reading before it was fixed, read-only over the testbed's newest stored
+  ledger of each gate sample (rule set 11) and the sample's own peaks:
+  - Assigned monoisotopic rows the rule caps: E 14 of 111 (13%), F's bromide
+    half 96 of 363 (26%), F's nitrate half 399 of 733 (54%), J 46 of 368
+    (13%); on the Orbitrap sets A 0 of 883, B 8 of 4,021, C 0 of 364 and D 0
+    of 733. A separated partner lifts 12, 19, 48 and 39 assigned TOF rows.
+  - The capped pairs sit a median 0.84 to 0.94 widths apart. In the raw
+    summed TOF profile, 546 of the 555 capped pairs show no dip between the
+    two centroids: the spectrum holds one peak with a shoulder there, and the
+    picker's fit reported two.
+  - On 224 of the 555 the row's peak is the taller of the pair (7, 43, 157
+    and 17). A taller line's centroid moves less than its shoulder's, and
+    capping only the shorter of a pair would take 331 rows instead of 555: a
+    call for the plan owner, raised on the PR.
 
 ### 3.4h The inspector links the other channels, and the listing column folds
 
