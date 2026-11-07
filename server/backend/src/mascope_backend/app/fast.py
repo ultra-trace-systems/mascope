@@ -36,6 +36,7 @@ from mascope_backend.origins import (
 )
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage import redis_storage_client, stop_worker_heartbeat
+from mascope_backend.weakened_controls import ORIGIN_GUARD_OFF, announce, switched_off
 
 
 @asynccontextmanager
@@ -65,6 +66,8 @@ async def lifespan(app: FastAPI):
     runtime.logger.info(
         f"Fast App startup: starting initialization [Worker {worker_pid}]"
     )
+    # A weakened demo stack says so in every worker's log before it serves.
+    announce()
     # Initialize database
     runtime.logger.info(
         f"Fast App startup: initializing database [Worker {worker_pid}]"
@@ -276,11 +279,17 @@ async def origin_guard(request: Request, call_next):
     value. Socket.IO traffic never reaches this guard (the ASGI wrapper
     answers it first); its handshake makes the same check itself, from the
     same policy module.
+
+    The security suite's weakened target switches the guard off on a demo
+    stack (:mod:`mascope_backend.weakened_controls`); anywhere else the switch
+    is ignored.
     """
     # upper(): the ASGI spec promises an uppercased method, but uvicorn's h11
     # implementation forwards the request-line token verbatim, and a raw
     # "patch" must not slip the net.
-    if request.method.upper() in _STATE_CHANGING_METHODS:
+    if request.method.upper() in _STATE_CHANGING_METHODS and not switched_off(
+        ORIGIN_GUARD_OFF
+    ):
         claimed = request.headers.get("Origin")
         if claimed is None:
             claimed = origin_of(request.headers.get("Referer"))
