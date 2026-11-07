@@ -143,13 +143,14 @@ async def _orbi_shares(n_scans):
         calibration_collection_id="tc-1",
         ionization_mechanism_ids=["im-1"],
         polarity="-",
-        **OrbiCalibrationParams().model_dump(),
+        # Shares of a few lines alone, far over any cap on them
+        **{**OrbiCalibrationParams().model_dump(), "calibrant_tic_share_max": None},
     )
     handler = OrbiCalibrationHandler("OrbiFile_2026.10.20_12h00m00s_x", params)
     matches = _orbi_matches()
 
     def kept_as_they_are(matches_df):
-        return {"par": {}}, matches_df.assign(
+        return {"par": {"old_factor": 1.0}}, matches_df.assign(
             match_mz_error=0.0, calibration_mz_error=0.0
         )
 

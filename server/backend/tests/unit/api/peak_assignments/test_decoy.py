@@ -286,6 +286,7 @@ class TestTheControlsMeasurementIsInherited:
             sigma_ppm=0.12,
             anchors=140,
             reagent_anchors=6,
+            reagent_capped=1,
             gate_sigma_ppm=0.58,
             trend=MassTrend(
                 intercept_ppm=0.1,

@@ -23,6 +23,7 @@ from datetime import datetime as dt
 from datetime import timezone
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 from fastapi import status
 from sqlalchemy import and_, func, insert, or_, select, update
@@ -40,6 +41,10 @@ from mascope_backend.api.lib.api_features import (
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     CodedHTTPException,
     NotFoundException,
+)
+from mascope_backend.api.models.calibration.calibration_pydantic_model import (
+    OrbiCalibrationParams,
+    TofCalibrationParams,
 )
 from mascope_backend.api.new.cheminfo.utils import (
     to_custom_element_format,
@@ -155,6 +160,7 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
 from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     MassCalibration,
+    SourceLineCap,
     SpectrumLines,
     apply_mass_gate,
 )
@@ -208,6 +214,7 @@ from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes, shift_mz, shifted_mz_axis
 from mascope_reference import iter_known_compositions, known_state_fingerprint
 from mascope_reference.scope import SAMPLE_POLARITIES
+from mascope_signal.compute import get_tic_per_scan
 from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.calibration import (
     InsufficientCalibrationData,
@@ -1975,6 +1982,7 @@ def judge_commits(
     reagent_lines: Sequence[dict] = (),
     resolution: Callable[[float], float] | None = None,
     inherited_calibration: MassCalibration | None = None,
+    source_line_cap: SourceLineCap | None = None,
 ) -> JudgedCommits:
     """Run the mass gate, the partner gate, the cross-channel pass and the
     tiering pass, and read the lines they find in doubt as their neighbours'.
@@ -2014,6 +2022,8 @@ def judge_commits(
     :param inherited_calibration: The calibration the mass gate judges every
         round against instead of fitting one: a decoy run's control's. None
         fits each round's own (``mass_gate.apply_mass_gate``).
+    :param source_line_cap: The calibrant cap the source's lines anchor the
+        mass gate under (:func:`_source_line_cap`), or None for none.
     :return: The judged rows and each pass's summary.
     """
     claims: dict[str, EnvelopeClaim] = {}
@@ -2030,6 +2040,7 @@ def judge_commits(
             lines=lines,
             reagent_lines=reagent_lines,
             calibration=inherited_calibration,
+            source_line_cap=source_line_cap,
         )
         partner_gate = apply_partner_gates(
             judged,
@@ -2456,6 +2467,47 @@ async def _resolution_of(sample) -> Callable[[float], float] | None:
         )
         return None
     return resolution
+
+
+async def _source_line_cap(sample) -> SourceLineCap | None:
+    """The calibrant cap the mass gate reads the source's own lines by.
+
+    The m/z calibration node's default for the file's instrument class
+    (``OrbiCalibrationParams``, ``TofCalibrationParams``), held against the
+    mean ion current per scan of the sample's polarity, which a line's
+    averaged height (:func:`load_sample_peaks`) is a share of. None where the
+    class has no cap, the TOF's, and where the ion current cannot be read:
+    the source's lines then anchor the gate as they did before there was a
+    cap, which is said.
+
+    :param sample: The sample view row.
+    :return: The cap, or None for none.
+    """
+    try:
+        instrument_type = get_instrument_type(sample.filename)
+    except ValueError:
+        return None
+    params = (
+        OrbiCalibrationParams() if instrument_type == "orbi" else TofCalibrationParams()
+    )
+    if params.calibrant_tic_share_max is None and params.peak_intensity_max is None:
+        return None
+    try:
+        _, tic_per_scan = await asyncio.to_thread(
+            get_tic_per_scan, sample.filename, polarity=sample.polarity
+        )
+        tic = float(np.mean(tic_per_scan))
+    except Exception as exc:  # noqa: BLE001 - the lines anchor uncapped
+        runtime.logger.info(
+            f"No ion current for sample '{sample.sample_item_name}' ({exc}); "
+            "its source's lines anchor the mass gate however bright"
+        )
+        return None
+    return SourceLineCap(
+        tic=tic,
+        tic_share_max=params.calibrant_tic_share_max,
+        peak_intensity_max=params.peak_intensity_max,
+    )
 
 
 def count_sample_peaks(sample: Sample) -> int:
@@ -3773,6 +3825,9 @@ async def _assign_sample(
         # for every pass that predicts an isotope line - the reagent pre-pass,
         # the envelope match, the mass gate and the tiering pass.
         resolution = await _resolution_of(sample)
+        # And the cap on how bright a source line may be to anchor the mass
+        # gate, which the m/z calibration node puts on its calibrants
+        source_line_cap = await _source_line_cap(sample)
 
         # -- The reagent pre-pass, ahead of both stages: the source's own
         # cluster ions are the brightest peaks in the spectrum and none of them
@@ -4119,6 +4174,7 @@ async def _assign_sample(
             inherited_calibration=(
                 None if decoy_plan is None else decoy_plan.calibration
             ),
+            source_line_cap=source_line_cap,
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel
@@ -4553,6 +4609,7 @@ async def _fold_sample_peaks_without_run(
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
         lines=SpectrumLines.from_peaks(peaks_df, resolution),
         reagent_lines=reagent,
+        source_line_cap=await _source_line_cap(sample),
     )
     # ...and the run's same-ion check, through the channels a run would read,
     # so a reference-list row whose ion reads as well another way is not held

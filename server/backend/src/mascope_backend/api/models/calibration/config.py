@@ -4,6 +4,7 @@ Calibration configuration settings.
 Centralized configuration for calibration parameters and rules.
 """
 
+import numpy as np
 from pydantic import BaseModel
 
 
@@ -15,6 +16,42 @@ class CalibrationConfig(BaseModel):
     DEFAULT_MATCH_SCORE_MIN: float = 0.0
     DEFAULT_PEAK_INTENSITY_MIN: float = 0.0
     DEFAULT_ISOTOPE_ABUNDANCE_MIN: float = 0.15
+
+    # The brightest lines are the worst calibrants: an Orbitrap line that
+    # carries a large share of the ion current reads high against the weaker
+    # lines of its own file. Measured on the matched calibrants of the
+    # assignment gate's Orbitrap files on two instruments, each line held
+    # against the trend over m/z of its file's committed analytes (43
+    # files): the 106 lines at or below 16 % of the TIC sit -1.0 to +0.7 ppm
+    # from it, 0.3 ppm apart, and every line from 32 % up reads +0.6 to
+    # +4.0 ppm above it (five lines on four sets, both instruments). The
+    # knee lies between, and the cap at 25 %. The only lines in between are
+    # a bromide set's two calibrants, at 22 to 25 %, which a lower cap would
+    # leave out only to fit on them again (the fallback below). The two
+    # instruments' bright lines do not tell them apart, so the cap is the
+    # class's. A line's share is of the TIC of its own stream for a fit
+    # stream by stream, of its polarity's for a fit of the file. TOF off:
+    # unmeasured there. An absolute cap on a line's intensity has no default.
+    #
+    # A cap that leaves fewer calibrants than the fit needs is set aside and
+    # the fit made on every line, as with no cap, the fit's record saying so:
+    # a fit on the bright lines is the fit the file had before, and the
+    # quality bar still judges it.
+    ORBI_CALIBRANT_TIC_SHARE_MAX: float | None = 0.25
+    TOF_CALIBRANT_TIC_SHARE_MAX: float | None = None
+    DEFAULT_PEAK_INTENSITY_MAX: float | None = None
+
+    # The offset the Orbitrap fit reports beside its factor, the
+    # `ppm = factor + offset * 1000 / mz` line over the calibrants it kept,
+    # is fitted only where those can tell the two terms apart: three lines
+    # or more, so that one is left over to measure the line's scatter by,
+    # and spread over m/z so that 1000 / mz differs by at least
+    # ORBI_OFFSET_MIN_INVERSE_SPAN across them. That is where an offset of
+    # 0.1 mDa, the size of the one measured on the sparse uronium set,
+    # moves the error 0.3 ppm across the lines, which is their scatter
+    # (above). Over a narrower span an offset reads as a factor.
+    ORBI_OFFSET_MIN_LINES: int = 3
+    ORBI_OFFSET_MIN_INVERSE_SPAN: float = 3.0
 
     # Pre-calibration m/z error above which the applied fit is reported as
     # acquisition-side drift: the software corrects it, but the instrument's
@@ -111,3 +148,36 @@ class CalibrationConfig(BaseModel):
 
 # Global calibration configuration instance
 calibration_config = CalibrationConfig()
+
+
+def calibrants_over_cap(
+    intensity,
+    tic_share,
+    tic_share_max: float | None,
+    peak_intensity_max: float | None,
+) -> np.ndarray:
+    """Which calibrant lines are brighter than the cap allows.
+
+    A line is over the cap when its share of the ion current exceeds
+    ``tic_share_max`` or its intensity exceeds ``peak_intensity_max``: of the
+    two, whichever leaves out more applies. A cap that is None leaves out
+    nothing, and neither does a share or an intensity that is not known.
+    The m/z calibration node leaves such lines out of its fit
+    (``ORBI_CALIBRANT_TIC_SHARE_MAX`` says why), and the assignment engine's
+    mass gate leaves them out of its anchors.
+
+    :param intensity: Each line's intensity.
+    :param tic_share: Each line's share of the ion current.
+    :param tic_share_max: The largest share one line may carry, or None.
+    :param peak_intensity_max: The largest intensity, or None.
+    :return: True for each line over the cap.
+    :rtype: np.ndarray
+    """
+    intensity = np.asarray(intensity, dtype=float)
+    tic_share = np.asarray(tic_share, dtype=float)
+    over = np.zeros(intensity.shape, dtype=bool)
+    if tic_share_max is not None:
+        over |= tic_share > tic_share_max
+    if peak_intensity_max is not None:
+        over |= intensity > peak_intensity_max
+    return over
