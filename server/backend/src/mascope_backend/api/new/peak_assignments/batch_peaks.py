@@ -28,7 +28,9 @@ This module holds the PURE logic (no DB, no I/O) behind the batch overview:
   (:func:`resolve_isotopologue_of`), which an anchor has no way to carry itself.
   An anchor most of whose members a pre-pass claimed is read by the role they
   carry instead - the source's ion, the detector's ringing - with that ion, as
-  the per-sample ledger reads such a peak.
+  the per-sample ledger reads such a peak. A homologous series the batch's
+  series detection found for the anchor's formula travels with the consensus
+  for as long as the consensus names that formula (:func:`series_record_of`).
 
 The DB controller (fold-in on arrival, backfill, consensus persistence) calls into
 these functions. Design: ``docs/dev/peak_assignment_batch_primary.md`` (section 12: the
@@ -502,6 +504,46 @@ def manual_pin_of(anchor: Any) -> Optional[dict]:
     return None
 
 
+#: The anchor's provenance key the batch's series detection
+#: (``batch_series.py``) writes its record under: the formula a homologous
+#: series proposed for the anchor, the unit, the assigned anchor its chain
+#: starts at, and ``has_anchor``. The same key a per-sample row carries it
+#: under (``tiering.SERIES``).
+SERIES_KEY = "series"
+
+
+def series_record_of(anchor: Any) -> Optional[dict]:
+    """The series record an anchor carries under ``provenance.series``, or None.
+
+    A record names a formula; anything else under that key is not one.
+    """
+    provenance = _member(anchor, "provenance")
+    if not isinstance(provenance, dict):
+        return None
+    record = provenance.get(SERIES_KEY)
+    if isinstance(record, dict) and record.get("formula"):
+        return record
+    return None
+
+
+def standing_series_record(anchor: Any) -> Optional[dict]:
+    """The series record an anchor carries, where it names the anchor's
+    consensus formula; None otherwise.
+
+    The consensus keeps a record only while it names the record's formula
+    (:func:`compute_consensus`). While a detection measures its proposals,
+    though, an anchor it has not measured yet carries this run's record beside
+    the reading it held before. What a reader serves - the ledger, a run's
+    snapshot, a sample's run - is this, so a series never vouches for a
+    formula it did not propose. The consensus itself is computed from the raw
+    record (:func:`series_record_of`), which it keeps or takes off.
+    """
+    record = series_record_of(anchor)
+    if record is None or record["formula"] != _member(anchor, "consensus_formula"):
+        return None
+    return record
+
+
 def member_state(member: Any) -> dict:
     """What a member reads - the fields a curation may overwrite and a release
     puts back. ``tier`` and ``role`` stay as the codes the row stores."""
@@ -583,6 +625,37 @@ def _source_consensus(
 
 
 def compute_consensus(
+    members: Iterable[Any],
+    batch_peak_id: Optional[str] = None,
+    manual: Optional[dict] = None,
+    series: Optional[dict] = None,
+) -> Consensus:
+    """:func:`vote_consensus`, with the anchor's series record carried along.
+
+    The record says a homologous series proposed a formula for this anchor. It
+    is about that formula and not about the peak, so it stays in the
+    consensus's provenance for as long as the consensus names the formula, and
+    comes off when a new sample's vote, a curation or a re-fold moves the
+    anchor to another reading: a series never vouches for a formula it did not
+    propose.
+
+    :param members: The batch peak's occurrences.
+    :param batch_peak_id: This batch peak's own id.
+    :param manual: A manual curation pinned on the anchor.
+    :param series: The series record the anchor carries
+        (:func:`series_record_of`), or None.
+    """
+    consensus = vote_consensus(members, batch_peak_id=batch_peak_id, manual=manual)
+    if (
+        isinstance(series, dict)
+        and consensus.consensus_formula
+        and series.get("formula") == consensus.consensus_formula
+    ):
+        consensus.provenance[SERIES_KEY] = series
+    return consensus
+
+
+def vote_consensus(
     members: Iterable[Any],
     batch_peak_id: Optional[str] = None,
     manual: Optional[dict] = None,

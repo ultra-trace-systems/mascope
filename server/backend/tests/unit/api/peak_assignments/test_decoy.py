@@ -683,6 +683,31 @@ class TestADecoyRun:
         mocks["fold"].assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_the_batch_s_series_reaches_no_decoy(self):
+        # The batch ledger is the control's chemistry: a homologous series it
+        # holds is no observation of a reading on a shifted axis.
+        self._start(_plan())
+        series = patch(
+            f"{_MOD}.batch_series_by_peak",
+            new_callable=AsyncMock,
+            return_value={
+                "p1": {
+                    "formula": "C6H12O6",
+                    "ionization_mechanism_id": "[M+H]+",
+                    "has_anchor": True,
+                }
+            },
+        ).start()
+
+        await _run(PeakAssignmentConfig(decoy=SHIFT))
+
+        series.assert_not_awaited()
+        assert all(
+            "series" not in (row.get("provenance") or {}) for row in self.recorder.rows
+        )
+        assert self.recorder.recorded_configs()[-1]["tiering"]["series_anchored"] == 0
+
+    @pytest.mark.asyncio
     async def test_the_adduct_arm_searches_the_swapped_channels_alone(self):
         sodium = _mechanism("im-na", "[M+Na]+")
         plan = _plan(SWAP, mechanisms=(sodium,), swapped={"[M+H]+": "[M+Na]+"})

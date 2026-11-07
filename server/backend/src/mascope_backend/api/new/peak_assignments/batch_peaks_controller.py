@@ -48,6 +48,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     resolve_candidate,
     role_code,
     role_name,
+    series_record_of,
     tier_code,
     tier_name,
 )
@@ -561,7 +562,10 @@ async def _recompute_consensus_chunk(
         _apply_consensus(
             bp,
             compute_consensus(
-                members, batch_peak_id=bp.batch_peak_id, manual=manual_pin_of(bp)
+                members,
+                batch_peak_id=bp.batch_peak_id,
+                manual=manual_pin_of(bp),
+                series=series_record_of(bp),
             ),
             now,
         )

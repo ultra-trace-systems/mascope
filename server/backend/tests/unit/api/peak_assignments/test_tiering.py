@@ -53,6 +53,8 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_POLYHALIDE_CLUSTER,
     REASON_SAME_ION_SETTLED,
     REASON_SECOND_LINE,
+    REASON_SERIES_ANCHOR,
+    SERIES,
     TIERING_RULES_VERSION,
     UNTESTABLE_ARTIFACT,
     UNTESTABLE_RANGE,
@@ -77,6 +79,17 @@ RADICAL = "C6H11O6"
 #: gives its row this second observation, so that it reads that rule alone and
 #: not one peak being all that saw the row (decision 25) as well.
 SEEN_TWICE = ["[M+H]+", "[M+NH4]+"]
+
+#: What a run copies onto a row whose formula a homologous series of its batch
+#: proposed (``service.stamp_series``): one CH2 above an assigned C5H10O6.
+SERIES_BLOCK = {
+    "formula": PLAIN,
+    "has_anchor": True,
+    "unit": "CH2",
+    "step": 1,
+    "depth": 1,
+    "root_formula": "C5H10O6",
+}
 
 
 def row(
@@ -458,6 +471,14 @@ class TestTheDensityRule:
         run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
 
+    def test_a_series_of_the_batch_keeps_it(self):
+        # A homologue one unit away is evidence from outside the peak too, and
+        # it names this formula among the rivals.
+        rows = [row("pa-1", density=DENSITY_LIMIT, provenance={SERIES: SERIES_BLOCK})]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_CANDIDATE_DENSITY not in rules_on(rows, "pa-1")
+
     def test_an_uncontested_reading_keeps_it(self):
         # Its 13C line is the second observation; density does not count it.
         rows = [row("pa-1", density=DENSITY_LIMIT - 1), line_of("pa-1")]
@@ -499,7 +520,8 @@ class TestOnePeakIsNotEnough:
             "detail": (
                 "one peak is all that saw C11H11N3O11S: no other line of its "
                 "isotope pattern is committed, no second channel of this run "
-                "committed the same neutral, and it was not matched from a list"
+                "committed the same neutral, no series of its batch anchors it, "
+                "and it was not matched from a list"
             ),
             "caps": True,
         }
@@ -533,6 +555,62 @@ class TestOnePeakIsNotEnough:
         assert tier_of(rows, "pa-1") == "assigned"
         assert REASON_CORROBORATED in rules_on(rows, "pa-1")
         assert REASON_LONE_PEAK not in rules_on(rows, "pa-1")
+
+    def test_a_series_of_the_batch_keeps_it_and_names_it(self):
+        rows = [row("pa-1", provenance={SERIES: SERIES_BLOCK})]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_LONE_PEAK not in rules_on(rows, "pa-1")
+        assert self.reason(rows, REASON_SERIES_ANCHOR) == {
+            "rule": REASON_SERIES_ANCHOR,
+            "detail": (
+                "a homologous series of its batch anchors it: one CH2 heavier "
+                "than C5H10O6, which the batch holds at assigned"
+            ),
+            "caps": False,
+        }
+
+    @pytest.mark.parametrize(
+        "block, named",
+        [
+            ({"depth": 2, "step": -1}, "two CH2 lighter than C5H10O6"),
+            ({"depth": 4, "step": 1}, "4 CH2 heavier than C5H10O6"),
+        ],
+    )
+    def test_the_series_reason_counts_its_steps(self, block, named):
+        rows = [row("pa-1", provenance={SERIES: {**SERIES_BLOCK, **block}})]
+        run(rows)
+        assert named in self.reason(rows, REASON_SERIES_ANCHOR)["detail"]
+
+    def test_a_series_record_without_its_chain_is_still_named(self):
+        rows = [row("pa-1", provenance={SERIES: {"has_anchor": True, "unit": "O"}})]
+        run(rows)
+        assert self.reason(rows, REASON_SERIES_ANCHOR)["detail"] == (
+            "a homologous series of its batch anchors it, in O"
+        )
+
+    @pytest.mark.parametrize(
+        "block", [{**SERIES_BLOCK, "has_anchor": False}, "CH2", None]
+    )
+    def test_a_series_that_does_not_say_it_has_an_anchor_is_none(self, block):
+        rows = [row("pa-1", provenance={SERIES: block})]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert REASON_SERIES_ANCHOR not in rules_on(rows, "pa-1")
+
+    def test_a_series_lifts_no_other_rule(self):
+        # A radical in a series is still a radical.
+        rows = [
+            row(
+                "pa-1",
+                RADICAL,
+                ion="C6H12O6+",
+                provenance={SERIES: SERIES_BLOCK},
+            )
+        ]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert REASON_ODD_ELECTRON in rules_on(rows, "pa-1")
 
     def test_the_target_library_keeps_it(self):
         rows = [row("pa-1", source="database", compound="compound-7")]
@@ -572,8 +650,8 @@ class TestOnePeakIsNotEnough:
             "one peak is all that saw C6H12O6: the line of its isotope pattern "
             "committed with it does not follow its mass error, even allowing for "
             "the line's own noise and the peaks close beside it, no second "
-            "channel of this run committed the same neutral, and it was not "
-            "matched from a list"
+            "channel of this run committed the same neutral, no series of its "
+            "batch anchors it, and it was not matched from a list"
         )
 
     def test_one_line_that_follows_it_is_enough_beside_one_that_does_not(self):
@@ -638,11 +716,15 @@ class TestOnePeakIsNotEnough:
         assert REASON_LONE_PEAK not in rules_on(rows, "pa-1")
 
     def test_what_saw_it_twice_is_named_first(self):
-        rows = [row("pa-1", channels=SEEN_TWICE), line_of("pa-1")]
+        rows = [
+            row("pa-1", channels=SEEN_TWICE, provenance={SERIES: SERIES_BLOCK}),
+            line_of("pa-1"),
+        ]
         run(rows)
         assert [r["rule"] for r in reasons_of(rows, "pa-1")] == [
             REASON_CORROBORATED,
             REASON_SECOND_LINE,
+            REASON_SERIES_ANCHOR,
             REASON_NO_CLOSE_RIVAL,
         ]
 
@@ -1246,11 +1328,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_11(self):
+    def test_the_rule_set_is_12(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 11
+        assert run([row("pa-1")])["version"] == 12
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])

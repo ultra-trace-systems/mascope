@@ -49,6 +49,9 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     run_record,
     start_run,
 )
+from mascope_backend.api.new.peak_assignments.batch_series import (
+    detect_batch_series,
+)
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     search_batch_untargeted,
 )
@@ -433,6 +436,68 @@ async def search_untargeted_batch_peaks_route(
     return {
         "message": (
             "Searching untargeted compositions for the unassigned batch peaks of "
+            f"'{sample_batch.sample_batch_name}', please wait."
+        ),
+        "process_id": process_id,
+    }
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/detect-series",
+    # A write into the batch ledger, gated exactly like the search above. Not
+    # opened to API tokens: no client needs it there, and a token write is
+    # opened one route at a time (test_token_access_coverage.py).
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202)
+async def detect_series_batch_peaks_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    body: AssignSamplePeaksBody | None = None,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Detect the batch's homologous series and measure what they propose.
+
+    Walks the repeat units (CH2, O, H2O, CO, CO2, C2H2O, and the siloxane and
+    CF2 ladders from an anchor carrying their element) from every assigned
+    batch peak, proposes the stepped formula wherever an unassigned or
+    candidate batch peak sits at its exact mass, and commits only the units
+    whose proposals beat the decoy offsets. A committed proposal is measured
+    against every member of its batch peak through the untargeted search's
+    propagation chain, and the batch peak carries the series it is in. Writes
+    no per-sample run; runs as a background task, as a batch run, and emits
+    ``peak_assignment_reload`` on completion.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param body: Optional settings; the tier bands and the m/z precision are
+        read, the rest is the search's and is ignored. Engine defaults when
+        omitted.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: Acknowledgement message with the background process id.
+    """
+    sample_batch = await fetch_sample_batch(sample_batch_id)
+    config = body.config if body is not None and body.config else PeakAssignmentConfig()
+    if config.decoy is not None:
+        raise ApiException(
+            "A decoy is a run of one sample, launched on the sample; the series "
+            "detection takes none.",
+            {"sample_batch_id": sample_batch_id},
+            422,
+        )
+    await check_no_run_in_flight(sample_batch_id=sample_batch_id)
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        detect_batch_series,
+        sample_batch_id=sample_batch_id,
+        config=config,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    return {
+        "message": (
+            "Detecting the homologous series of the batch peaks of "
             f"'{sample_batch.sample_batch_name}', please wait."
         ),
         "process_id": process_id,

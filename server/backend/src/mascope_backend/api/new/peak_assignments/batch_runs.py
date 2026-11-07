@@ -47,6 +47,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     manual_pin_of,
+    standing_series_record,
     tier_name,
 )
 from mascope_backend.api.new.peak_assignments.config import (
@@ -69,7 +70,8 @@ ACTION_FOLD = "fold"
 ACTION_REBUILD = "rebuild"
 ACTION_SEARCH = "search_untargeted"
 ACTION_IMPORT = "import"
-ACTIONS = (ACTION_FOLD, ACTION_REBUILD, ACTION_SEARCH, ACTION_IMPORT)
+ACTION_SERIES = "detect_series"
+ACTIONS = (ACTION_FOLD, ACTION_REBUILD, ACTION_SEARCH, ACTION_IMPORT, ACTION_SERIES)
 
 STATUS_RUNNING = "running"
 STATUS_COMPLETED = "completed"
@@ -165,6 +167,7 @@ def anchor_snapshot_row(run_id: str, anchor: Any, members: Iterable[Any]) -> dic
         "curated": int(manual_pin_of(anchor) is not None),
         "engine_tier": anchor.engine_tier,
         "engine_claim": anchor.engine_claim,
+        "series": standing_series_record(anchor),
         "candidates": list(anchor.candidates or []),
         "members": member_arrays(members),
     }
@@ -192,6 +195,7 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "curated": bool(row.curated),
         "engine_tier": row.engine_tier,
         "engine_claim": row.engine_claim,
+        "series": row.series,
         "reference_listing": consensus_listing(
             row.candidates,
             row.consensus_formula,
@@ -560,6 +564,7 @@ __all__ = [
     "ACTION_IMPORT",
     "ACTION_REBUILD",
     "ACTION_SEARCH",
+    "ACTION_SERIES",
     "BATCH_RUN_KEEP",
     "BatchRunInFlightException",
     "MEMBER_FIELDS",
