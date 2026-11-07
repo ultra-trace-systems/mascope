@@ -10,6 +10,7 @@ anchor, the other sample is measured and takes a fit of its own or stays
 unassigned, and the consensus follows. See ``batch_untargeted.py``.
 """
 
+import math
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -53,6 +54,11 @@ from mascope_tools.composition.envelope_tolerance import (
     EnvelopeTolerance,
     fit_envelope_tolerance,
 )
+from mascope_tools.composition.mass_accuracy import (
+    PRED_SIGMA_PPM,
+    SampleMassAccuracy,
+)
+from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 from mascope_tools.composition.reagents import reagent_library
 
 
@@ -425,23 +431,27 @@ async def test_a_secondary_channel_the_mode_declares_is_searched_once(
     assert all(ids.count("mech-nh4") == 1 for ids in searched)
 
 
+def _urea_lines(shift_ppm):
+    """The urea reagent's first three rungs, read ``shift_ppm`` off the axis."""
+    ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+    factor = 1.0 + shift_ppm * 1e-6
+    return [
+        ("r1", ladder["[CH4N2O+H]+"] * factor, 2.0e6),
+        ("r2", ladder["[(CH4N2O)2+H]+"] * factor, 3.0e6),
+        ("r3", ladder["[(CH4N2O)3+H]+"] * factor, 1.0e5),
+    ]
+
+
 async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
     folded_batch, stubbed_engine, monkeypatch
 ):
     # No run's pre-pass is on this path, so the search reads the sample's
     # reagent lines off its own peak list and the re-score of its commits is
     # centred there, as a run of the sample centres its own.
-    ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
-    low = 1.0 - 1.3e-6
-    urea = [
-        ("r1", ladder["[CH4N2O+H]+"] * low, 2.0e6),
-        ("r2", ladder["[(CH4N2O)2+H]+"] * low, 3.0e6),
-        ("r3", ladder["[(CH4N2O)3+H]+"] * low, 1.0e5),
-    ]
     monkeypatch.setattr(
         batch_untargeted,
         "load_sample_peaks",
-        lambda sample: _frame(_PEAKS["S1"] + urea),
+        lambda sample: _frame(_PEAKS["S1"] + _urea_lines(-1.3)),
     )
 
     await run_batch_untargeted_search(
@@ -516,17 +526,10 @@ async def test_a_sample_with_a_run_is_re_scored_where_that_run_scored(
     # and its reagent lines sit beyond the width at -1.3 ppm. A run scored it
     # at the library's fit, so the search's re-score is centred there too.
     samples = folded_batch["samples"]
-    ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
-    low = 1.0 - 1.3e-6
-    urea = [
-        ("r1", ladder["[CH4N2O+H]+"] * low, 2.0e6),
-        ("r2", ladder["[(CH4N2O)2+H]+"] * low, 3.0e6),
-        ("r3", ladder["[(CH4N2O)3+H]+"] * low, 1.0e5),
-    ]
     monkeypatch.setattr(
         batch_untargeted,
         "load_sample_peaks",
-        lambda sample: _frame(_PEAKS["S1"] + urea),
+        lambda sample: _frame(_PEAKS["S1"] + _urea_lines(-1.3)),
     )
     # The latest completed in-app run is the one read: not an older one, nor
     # one still running or failed since, nor a newer import, whose config is
@@ -579,6 +582,63 @@ async def test_a_sample_with_a_run_is_re_scored_where_that_run_scored(
         async_session_factory, samples["S2"], "completed", 1, _scoring(0.0, "none")
     )
     assert await service.sample_reagent_offset(sample, config) is None
+
+
+@pytest.mark.parametrize(
+    "shift_ppm, recorded, centre_ppm",
+    [
+        # No run recorded a centre, so the lines are claimed: beyond the width
+        # they centre the sample...
+        pytest.param(-1.3, None, -1.3, id="lines-beyond-the-width"),
+        # ...and inside it they leave it at its nominal masses, as in a run.
+        pytest.param(-0.3, None, 0.0, id="lines-inside-the-width"),
+        # A run whose library fitted its own offset scored the sample there,
+        # not on the lines.
+        pytest.param(-1.3, (-0.05, "fitted"), -0.05, id="run-fitted-offset"),
+        # A run that scored the sample uncorrected leaves it so, lines or not.
+        pytest.param(-1.3, (0.0, "none"), 0.0, id="run-uncorrected"),
+    ],
+)
+async def test_the_search_ranks_the_sample_at_the_centre_a_run_scores_it_at(
+    async_session_factory,
+    folded_batch,
+    stubbed_engine,
+    monkeypatch,
+    shift_ppm,
+    recorded,
+    centre_ppm,
+):
+    # A run's untargeted stage ranks its candidates at the centre it scores
+    # the sample at. A batch search ranked them at zero, so on an axis beyond
+    # the width it chose readings a run of the sample would not.
+    samples = folded_batch["samples"]
+    monkeypatch.setattr(
+        batch_untargeted,
+        "load_sample_peaks",
+        lambda sample: _frame(_PEAKS["S1"] + _urea_lines(shift_ppm)),
+    )
+    if recorded is not None:
+        await _record_run(
+            async_session_factory, samples["S1"], "completed", 30, _scoring(*recorded)
+        )
+
+    await run_batch_untargeted_search(
+        folded_batch["batch_id"], PeakAssignmentConfig(profile="UR")
+    )
+
+    [scoring] = stubbed_engine["scoring"]
+    assert scoring.mu_ppm == pytest.approx(centre_ppm, abs=1e-6)
+    # The re-score of its commits is handed the same centre, under the same
+    # rule: taken only beyond the width.
+    [offset] = stubbed_engine["seeded_offsets"]
+    assert (SampleMassAccuracy(reagent=offset).scoring_mu_ppm or 0.0) == (
+        scoring.mu_ppm
+    )
+    # Only the centre: nothing on this path measured the sample's width, so
+    # it is still the instrument class's.
+    assert scoring.sigma_ppm == pytest.approx(
+        math.hypot(INSTRUMENT_FALLBACK_SIGMA_PPM["orbi"], PRED_SIGMA_PPM)
+    )
 
 
 async def test_a_sample_with_a_run_is_searched_at_that_runs_line_tolerance(
