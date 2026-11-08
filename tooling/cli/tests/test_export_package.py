@@ -749,5 +749,6 @@ def test_the_builders_log_is_shown_as_it_goes_and_its_outcome_kept(capfd):
     )
     status, outcome = export_cmd._stream([sys.executable, "-c", script])
     assert (status, outcome) == (0, {"package": {"files": 4}})
-    shown = capfd.readouterr().out
-    assert shown == "Packaging dataset\nWrote it\n"
+    shown = capfd.readouterr()
+    assert shown.err == "Packaging dataset\nWrote it\n"
+    assert shown.out == ""
