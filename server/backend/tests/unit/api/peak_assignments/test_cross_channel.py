@@ -820,11 +820,11 @@ class TestARivalTheSampleShows:
             "ratio": 0.02,
         }
 
-    def test_a_settled_row_names_the_sharpest_reading_with_what_settled_it(self):
+    def test_a_settled_row_names_the_weighed_reading_with_what_settled_it(self):
         # The sample shows C3H9NO2 a hundred times more faintly than
         # dimethylformamide, which settles that reading. The nitrogen reading
-        # it does not show is the sharper doubt, settled by the second channel,
-        # and it is the one the row names.
+        # it does not show is the sharper doubt, but the row names the one the
+        # sample shows: that one was weighed, and the record says by how much.
         rows = [
             row("a", "C3H7NO", "h3o", displaced=self.DMF_HYDRONIUM),
             row("b", "C3H7NO", PROTON, intensity=1.0e5),
@@ -834,13 +834,13 @@ class TestARivalTheSampleShows:
             rows, notation_by_id={**POSITIVE, "h3o": "[M+H3O]+"}
         )
         assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
-            "alternative": "C3H6O2",
-            "via": "[M+NH4]+",
-            "by": SETTLED_BY_SECOND_CHANNEL,
-            "through": ["[M+H]+"],
+            "alternative": "C3H9NO2",
+            "via": "[M+H]+",
+            "by": SETTLED_BY_PARTNER,
+            "ratio": 100.0,
         }
-        assert summary["settled"][SETTLED_BY_SECOND_CHANNEL] == 1
-        assert summary["settled"][SETTLED_BY_PARTNER] == 0
+        assert summary["settled"][SETTLED_BY_SECOND_CHANNEL] == 0
+        assert summary["settled"][SETTLED_BY_PARTNER] == 1
 
     def test_a_row_nothing_corroborates_names_the_sharper_doubt_as_before(self):
         # And says nothing of what the sample shows: no second channel was
@@ -1011,6 +1011,47 @@ class TestTheDeclaredChannelsPrior:
             1,
             0,
         )
+
+    def test_the_weighed_rival_is_named_before_a_sharper_one_not_shown(self):
+        # A nitrogen reading the sample does not show comes first and is the
+        # sharper doubt; nopinone, shown at twice the acid, was weighed. The
+        # record names nopinone, with the ratio, and the run counts it.
+        rows = [
+            row(
+                "pinonic",
+                "C10H16O3",
+                DEPROT,
+                displaced=[("C8H12N2O2", FORMATE), ("C9H14O", FORMATE)],
+            ),
+            through_nitrate("acid", "C10H16O3", intensity=1.0e5),
+            through_nitrate("nopinone", "C9H14O", intensity=2.0e5),
+        ]
+        summary = self.gate(rows)
+        assert rows[0]["tier"] == "assigned"
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
+            "alternative": "C9H14O",
+            "via": "[M+HCOO]-",
+            "by": SETTLED_BY_SECOND_CHANNEL,
+            "ratio": 0.5,
+            "through": ["[M+NO3]-"],
+        }
+        assert summary["shown_rival_weighed"] == 1
+
+    def test_with_the_weighed_rival_twenty_times_as_bright_it_stays_held(self):
+        rows = [
+            row(
+                "pinonic",
+                "C10H16O3",
+                DEPROT,
+                displaced=[("C8H12N2O2", FORMATE), ("C9H14O", FORMATE)],
+            ),
+            through_nitrate("acid", "C10H16O3", intensity=1.0e5),
+            through_nitrate("nopinone", "C9H14O", intensity=2.0e6),
+        ]
+        summary = self.gate(rows)
+        assert rows[0]["tier"] == "candidate"
+        assert SAME_ION_SETTLED not in rows[0]["provenance"]["cross_channel"]
+        assert summary["shown_rival_weighed"] == 0
 
     def test_nor_does_one_the_sample_shows_more_faintly_than_the_rows_own(self):
         # Short of the margin from the row's side too, so the stronger partner

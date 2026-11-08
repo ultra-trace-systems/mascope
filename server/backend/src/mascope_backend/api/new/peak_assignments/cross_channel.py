@@ -429,7 +429,8 @@ def same_ion_question(
     of that, the declared reading stands on its second channel.
 
     Where nothing is left in doubt, the row names the reading that doubted it
-    most sharply and what settled that one.
+    most sharply and what settled that one, a reading the sample shows first:
+    its weighing is on the record.
 
     :param row: A committed monoisotopic row.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
@@ -487,7 +488,13 @@ def same_ion_question(
 
     doubts = [reading for reading in molecules if doubts_it(reading)]
     if not doubts:
-        settled = sharpest(row, molecules)
+        # A reading the sample shows was weighed, and the weighing is what
+        # the record can say beyond the tier: the ratio, and whether the
+        # stronger partner or the second channel settled it. So such a
+        # reading is named before a sharper one the sample does not show.
+        settled = sharpest(
+            row, [reading for reading in molecules if weight[id(reading)] is not None]
+        ) or sharpest(row, molecules)
         found = weight[id(settled)]
         if found is not None and found["decisive"]:
             return SAME_ION_SETTLED, {
@@ -709,7 +716,9 @@ def apply_cross_channel(
         "shown_rival": 0,
         # Rows read through the mode's own channel that a second channel
         # settled against the rival they name, which the sample shows too,
-        # but not by the margin that would doubt the mode's own reading.
+        # but not by the margin that would doubt the mode's own reading. A
+        # settled row names a rival the sample shows before one it does not,
+        # so every such row is counted here.
         "shown_rival_weighed": 0,
         # Rows whose ion reads another way and that something settled, by what.
         "settled": {
