@@ -60,6 +60,7 @@ Updates  no pending migration recorded
 Backups  5 local dump(s) · newest 8h ago
 Images   11 images · 6.2GB (2.1GB reclaimable)
 Units    scripts in place
+Secrets  readable by uid 1000
 ```
 
 It exits `0` when the stack is healthy, the running images match the release
@@ -106,6 +107,16 @@ differs, or one the release adds and the host lacks, is named and flagged
 the templates with the deploy account and the `mascope` executable the
 installed `mascope.service` names, so a unit installed with `--bin` is
 compared as it was installed.
+
+**Secrets** checks that the published images, which run as uid 1000, can
+read the secret files in `.runtime/secrets` that `db_init` and the backend
+mount. `mascope init` writes them readable by their owner alone, so a home
+made by another user holds secrets the containers cannot open, and the stack
+stops in `db_init` with `Permission denied`. A secret they cannot read is
+named with its owner and flagged `UNREADABLE`, with the command that gives
+it to uid 1000. An image built with its own `MASCOPE_UID` reads them as that
+uid instead, so the flag does not change the exit code. `mascope init` and
+every `mascope prod up` print the same warning. The check runs on Linux only.
 
 **Version** compares the tag the containers are actually running against the
 one this deployment would deploy right now (the `MASCOPE_VERSION` pin, else the

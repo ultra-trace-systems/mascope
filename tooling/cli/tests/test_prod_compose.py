@@ -18,10 +18,12 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 
 import pytest
 import typer
 
+from mascope_cli.cmd import init as init_cmd
 from mascope_cli.cmd.init import AUTO_PROVISIONED_SECRETS, GENERATED_SECRETS
 
 
@@ -272,3 +274,48 @@ def test_the_long_standing_secrets_are_the_ones_not_auto_provisioned():
     assert set(LONG_STANDING_SECRETS) == set(GENERATED_SECRETS) - set(
         AUTO_PROVISIONED_SECRETS
     )
+
+
+# --- secrets the image cannot read ---
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="the check runs on Linux only"
+)
+@pytest.mark.parametrize("args", UP_SHAPES, ids=lambda a: " ".join(a))
+def test_every_up_warns_when_the_image_cannot_read_the_secrets(
+    compose_env, secrets_dir, monkeypatch, args
+):
+    # A home another user made holds 0600 secrets the image's uid cannot
+    # open, and db_init would stop on them with a bare "Permission denied".
+    # Warned on every "up", the unattended update's included, never refused:
+    # an image built with its own MASCOPE_UID reads them as that uid.
+    compose_env(0)
+    monkeypatch.setattr(init_cmd, "IMAGE_UID", os.getuid() + 1)
+    monkeypatch.setattr(init_cmd, "IMAGE_GID", os.getgid() + 1)
+    warnings = []
+    monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
+
+    prod_main._run_compose(args)
+
+    owner = [w for w in warnings if "Permission denied" in w]
+    assert len(owner) == 1, warnings
+    assert AUTO_SECRET in owner[0] and "turnstile_secret_key.txt" in owner[0]
+    assert f"chown {init_cmd.IMAGE_UID} {secrets_dir}/*" in owner[0]
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="the check runs on Linux only"
+)
+def test_up_is_quiet_when_the_image_can_read_the_secrets(
+    compose_env, secrets_dir, monkeypatch
+):
+    compose_env(0)
+    monkeypatch.setattr(init_cmd, "IMAGE_UID", os.getuid())
+    monkeypatch.setattr(init_cmd, "IMAGE_GID", os.getgid())
+    warnings = []
+    monkeypatch.setattr(prod_main.runtime.logger, "warning", warnings.append)
+
+    prod_main._run_compose(["up", "--detach"])
+
+    assert not [w for w in warnings if "Permission denied" in w]
