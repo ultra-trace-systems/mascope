@@ -460,6 +460,11 @@ class SpectrumLines:
             resolution,
         )
 
+    @property
+    def widths_known(self) -> bool:
+        """Whether the run read the file's resolving power, its lines' widths."""
+        return self._resolution is not None
+
     def fwhm_ppm(self, mz: float) -> float | None:
         """A line's full width at half maximum at ``mz``, or None if unknown."""
         if self._resolution is None:
@@ -511,6 +516,34 @@ class SpectrumLines:
         return [
             (self._ids[at], float(self._intensity[at])) for at in range(start, stop)
         ]
+
+    def peak(self, peak_id) -> tuple[float, float] | None:
+        """The m/z and intensity of the peak with this id, or None if not one."""
+        position = self._position.get(str(peak_id))
+        if position is None:
+            return None
+        return float(self._mz[position]), float(self._intensity[position])
+
+    def around(self, mz: float, reach: float) -> list[tuple[str, float, float]]:
+        """The peaks within ``reach`` of ``mz``, both ends included, by m/z.
+
+        :param mz: The middle of the window.
+        :param reach: Its half-width, in m/z.
+        :return: Each peak's id, m/z and intensity.
+        """
+        start = int(np.searchsorted(self._mz, mz - reach, side="left"))
+        stop = int(np.searchsorted(self._mz, mz + reach, side="right"))
+        return [
+            (self._ids[at], float(self._mz[at]), float(self._intensity[at]))
+            for at in range(start, stop)
+        ]
+
+    def intensity_span(self) -> tuple[float, float] | None:
+        """The least positive and the greatest intensity, or None for none."""
+        positive = self._intensity[self._intensity > 0]
+        if not positive.size:
+            return None
+        return float(positive.min()), float(positive.max())
 
     def _push_ppm(self, position: int) -> float:
         mz = float(self._mz[position])

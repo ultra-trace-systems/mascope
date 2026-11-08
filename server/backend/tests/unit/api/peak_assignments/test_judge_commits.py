@@ -41,6 +41,8 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_INHERITED,
     REASON_LONE_PEAK,
     REASON_SECOND_LINE,
+    REASON_UNRESOLVED_PEAK,
+    SEPARATED_THROUGH,
     TIERING_RULES_VERSION,
 )
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
@@ -499,6 +501,61 @@ class TestTheSpectrumReachesTheTieringPass:
         assert by_id(on_a_tof.rows)["pa-cl"]["tier"] == "candidate"
         elsewhere = self.judged(copy.deepcopy(rows), peaks, instrument_type="orbi")
         assert by_id(elsewhere.rows)["pa-cl"]["tier"] == "assigned"
+
+
+class TestTheWidthsReachTheTieringPass:
+    """The tiering pass reads each row's peak against its neighbours at the
+    file's resolving power, which the spectrum carries, and the other channels'
+    peaks by the same test (step 3.4f). The cross-channel pass writes its
+    record afresh every round, and the partners' separation goes on it after."""
+
+    @staticmethod
+    def judged(rows: list[dict], peaks: list[tuple]):
+        lines = SpectrumLines(
+            [peak[0] for peak in peaks],
+            [peak[1] for peak in peaks],
+            [peak[2] for peak in peaks],
+            None,
+            lambda mz: 5000.0,
+        )
+        return judge_commits(
+            rows,
+            stage_a_accuracy=SampleMassAccuracy(),
+            fallback_sigma_ppm=0.3,
+            notation_by_id={"im-1": "[M+H]+", "im-2": "[M+Na]+"},
+            mz_tolerance_ppm=5.0,
+            abundance_floor=0.01,
+            max_alternatives=5,
+            lines=lines,
+        )
+
+    #: The owner at m/z 200 with its 13C line, 40 mDa wide; a peak 0.5 widths
+    #: above it at the same height.
+    PEAKS = [
+        ("peak-pa-x", 200.0, 1000.0),
+        ("peak-pa-x-13c", 201.0, 100.0),
+        ("peak-beside", 200.02, 1000.0),
+    ]
+
+    def test_a_partner_on_a_separated_peak_holds_the_row(self):
+        judged = self.judged(owner(), [*self.PEAKS, ("peak-pa-x-again", 400.0, 300.0)])
+        row = by_id(judged.rows)["pa-x"]
+        assert row["tier"] == "assigned"
+        assert row["provenance"]["cross_channel"][SEPARATED_THROUGH] == ["[M+Na]+"]
+        assert judged.tiering["unresolved_peak"]["lifted_by_partner"] == 1
+
+    def test_a_partner_the_instrument_did_not_separate_either_does_not(self):
+        peaks = [
+            *self.PEAKS,
+            ("peak-pa-x-again", 400.0, 300.0),
+            ("peak-again-beside", 400.03, 300.0),
+        ]
+        judged = self.judged(owner(), peaks)
+        row = by_id(judged.rows)["pa-x"]
+        assert row["tier"] == "candidate"
+        assert REASON_UNRESOLVED_PEAK in rules(row)
+        assert row["provenance"]["cross_channel"][SEPARATED_THROUGH] == []
+        assert judged.tiering["version"] == TIERING_RULES_VERSION
 
 
 class TestAChainOfClaims:

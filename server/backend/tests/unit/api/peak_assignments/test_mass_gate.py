@@ -1146,6 +1146,31 @@ class TestReadingTheSpectrum:
 
         assert lines.fwhm_ppm(200.0) is None
         assert lines.of("a") == LineQuality(snr=5.0, push_ppm=0.0)
+        assert lines.widths_known is False
+
+    def test_a_peak_is_read_by_its_id(self):
+        lines = _spectrum([("b", 201.0, 40.0, 5.0), ("a", 200.0, 100.0, 50.0)])
+        assert lines.peak("a") == (200.0, 100.0)
+        assert lines.peak("missing") is None
+        assert lines.widths_known is True
+
+    def test_the_peaks_around_an_m_z_include_both_ends(self):
+        lines = _spectrum(
+            [("a", 199.0, 10.0, 5.0), ("b", 200.0, 20.0, 5.0), ("c", 201.0, 30.0, 5.0)]
+        )
+        assert lines.around(200.0, 1.0) == [
+            ("a", 199.0, 10.0),
+            ("b", 200.0, 20.0),
+            ("c", 201.0, 30.0),
+        ]
+        assert lines.around(200.0, 0.5) == [("b", 200.0, 20.0)]
+
+    def test_the_intensity_span_leaves_out_peaks_with_none(self):
+        lines = _spectrum(
+            [("a", 199.0, 0.0, 5.0), ("b", 200.0, 20.0, 5.0), ("c", 201.0, 30.0, 5.0)]
+        )
+        assert lines.intensity_span() == (20.0, 30.0)
+        assert _spectrum([("a", 199.0, 0.0, 5.0)]).intensity_span() is None
 
     @pytest.mark.parametrize(
         "resolution",
