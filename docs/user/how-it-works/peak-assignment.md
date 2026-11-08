@@ -809,7 +809,8 @@ reads as another molecule too, and something settled which: a second channel - f
 reading through one of the mode's own channels, even where the sample shows the other
 molecule too, short of ten times as brightly - the sample showing this molecule
 decisively more strongly than the other (see *Auto* above), your target library, or the
-other reading being a radical - the sentence says which), **no close
+other reading being a radical - the sentence says which; where the ion reads as several
+molecules, it names one the sample shows before one it does not, with how brightly), **no close
 rival** (the evidence separated the formula from every other candidate the run competed
 for the peak; where the ion reads another way, it separated the ion from every other ion,
 since two readings of one ion are one measurement), or **not measured** (nothing the pass
