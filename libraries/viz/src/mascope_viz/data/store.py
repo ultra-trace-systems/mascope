@@ -978,6 +978,11 @@ def _ledger_runs(
     flight, and after one failed: the current run's ID then reads the live
     ledger as that run left it, which is no longer what the current run
     made.
+
+    The current run carries ``ledger_utc_modified``, when its live ledger
+    was last written: a curation, a sample folded again, a search's rows
+    write the ledger and make no run. None from a server that has no such
+    stamp, or whose ledger nothing has written since it had one.
     """
     try:
         runs = client.batch_peaks.runs(batch_id)
@@ -990,7 +995,11 @@ def _ledger_runs(
     newest = _run_record(runs.iloc[0], ("batch_peak_run_id", "action", "status"))
     current = runs[runs["current"].astype(bool)] if "current" in runs else runs
     names = ("batch_peak_run_id", "action", "engine", "engine_version", "status")
-    run = None if current.empty else _run_record(current.iloc[0], (*names, "config"))
+    run = None
+    if not current.empty:
+        row = current.iloc[0]
+        run = _run_record(row, (*names, "config"))
+        run["ledger_utc_modified"] = _iso(row.get("ledger_utc_modified"))
     return run, newest
 
 
@@ -1016,6 +1025,10 @@ def _why_fetch(
         return "ledger run"
     if stamp.get("newest_run") != newest:
         return "batch run"
+    if (stamp.get("run") or {}).get("ledger_utc_modified") != (run or {}).get(
+        "ledger_utc_modified"
+    ):
+        return "ledger edited"
     if batch.last_datetime_utc >= now - LIVE:
         return "today"
     return None
@@ -1143,7 +1156,9 @@ class SyncReport:
     :ivar fetched: The batches fetched, by ID, with why: ``new``,
         ``modified``, ``sample count``, ``ledger run`` (its current run
         changed), ``batch run`` (a batch run started or ended since, however
-        it ended: its newest run or that run's status changed), ``today`` (it
+        it ended: its newest run or that run's status changed), ``ledger
+        edited`` (its live ledger was written since under the same run: a
+        curation, a sample folded again), ``today`` (it
         holds a sample from the last day), ``failed before``.
     :ivar unchanged: The batches left as they were.
     :ivar failed: The batches whose fetch or runs listing failed, by ID,
@@ -1252,7 +1267,9 @@ def sync(
     first), then goes through its batches oldest first, one at a time. A
     batch is fetched again only when the server's listing has it modified
     since, its sample count changed, its ledger's current run changed, a
-    batch run started or ended on its ledger, it holds a sample acquired
+    batch run started or ended on its ledger, its live ledger was written
+    under the same run (the run's ``ledger_utc_modified`` moved: a curation,
+    a sample folded again), it holds a sample acquired
     within the last day (the batch holding today), or its last fetch
     failed; a batch the scope no longer holds is deleted. A fetch reads the
     batch's ion series (one call per collection, or one for the scope's

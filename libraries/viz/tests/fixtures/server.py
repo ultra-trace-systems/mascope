@@ -62,6 +62,9 @@ class FakeClient:
         first: a batch run started or ended since.
     :ivar imports: The batches whose current run is an import, with the
         number of rows it was sent.
+    :ivar edited: Each batch's live-ledger stamp, as its current run's
+        ``ledger_utc_modified`` gives it; a batch left out gets none, as
+        from a server too old to stamp its ledger. :meth:`curate` moves it.
     """
 
     url = "http://mascope.test:8090"
@@ -163,6 +166,26 @@ class FakeClient:
         for b, rows in points.groupby(batch):
             self.runs[b] = f"{run_of.loc[rows.index[0]]}:{b}"
             self.points[b], self.anchors[b] = self._ledger(b, rows, twin)
+        self.edited = {b: pd.Timestamp("2026-07-02T00:00:00Z") for b in self.runs}
+
+    def curate(self, batch_id: str, formula: str, ion_formula: str) -> str:
+        """Pin *formula* on the batch's batch peak without one, as a curation
+        by hand does: the live ledger's consensus changes under the same
+        current run, and only the ledger's stamp moves. Returns its ID."""
+        batch_peak_id = f"{batch_id}-unassigned"
+        consensus = {
+            "consensus_formula": formula,
+            "consensus_ion_formula": ion_formula,
+            "consensus_tier": "assigned",
+        }
+        for table in (self.points, self.anchors):
+            frame = table[batch_id]
+            at = frame["batch_peak_id"] == batch_peak_id
+            assert at.any()
+            for column, value in consensus.items():
+                frame.loc[at, column] = value
+        self.edited[batch_id] += pd.Timedelta(minutes=5)
+        return batch_peak_id
 
     def _ledger(self, batch_id: str, rows: pd.DataFrame, twin: bool) -> tuple[Any, Any]:
         """A batch's points and anchors, with an isotopologue anchor, an
@@ -394,6 +417,11 @@ class FakeClient:
                         "engine_version": VERSIONS[run_id.split(":")[0]],
                         "status": "completed",
                         "current": True,
+                        **(
+                            {"ledger_utc_modified": self.edited[batch_id]}
+                            if batch_id in self.edited
+                            else {}
+                        ),
                         # As the import route records it
                         "config": None
                         if rows is None

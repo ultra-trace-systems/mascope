@@ -107,6 +107,21 @@ def test_the_runs_are_the_ledgers_current_ones(client, synced):  # noqa: F811
         assert (None if pd.isna(row["run_id"]) else row["run_id"]) == current
 
 
+def test_each_batch_holds_the_ledger_stamp_its_current_run_gives(client, synced):  # noqa: F811
+    for batch_id, stamp in synced.store.meta["batches"].items():
+        runs = client.batch_peaks.runs(batch_id)
+        if runs is None:
+            assert stamp["run"] is None
+            continue
+        current = runs[runs["current"].astype(bool)].iloc[0]
+        given = current.get("ledger_utc_modified")
+        held = stamp["run"]["ledger_utc_modified"]
+        if given is None or pd.isna(given):
+            assert held is None
+        else:
+            assert pd.Timestamp(held) == pd.Timestamp(given)
+
+
 def test_a_second_sync_makes_no_series_calls(client, dataset, synced, monkeypatch):  # noqa: F811
     calls = []
     for resource, method in (

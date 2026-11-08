@@ -75,8 +75,11 @@ The tables are those of section 2.2 of the note, in UTC:
 A batch is fetched again when the server lists it modified since, its
 sample count or its ledger's current run changed, a batch run (a rebuild,
 a search, an import) started or ended on its ledger however it ended, its
-last fetch failed, or it holds a sample from the last day: the batch
-holding today, still filling. Batches are read one at a time, `pause=`
+ledger was edited under the same run (a batch peak curated by hand, a
+sample folded again), its last fetch failed, or it holds a sample from the
+last day: the batch holding today, still filling. An edit is seen by the
+ledger's own modified time, which the runs listing gives; a server too old
+to give it leaves such an edit unseen until the store is removed. Batches are read one at a time, `pause=`
 seconds apart (half a second by default). A batch whose fetch fails is
 skipped and recorded; the store keeps what an earlier sync gave for it,
 `status()` marks it `failed` or `stale`, and the next sync tries it again.
