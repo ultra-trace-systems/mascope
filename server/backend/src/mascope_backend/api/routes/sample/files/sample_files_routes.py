@@ -493,8 +493,10 @@ async def get_sample_file_raw_route(
     Each account may start at most 60 downloads in ten minutes; past that
     the route answers 429.
 
-    `POST /api/file/download` remains the web app's way to fetch one or
-    several files at once.
+    The web app asks for files with `POST /api/file/download`. Several come
+    back as one zip in the user's temp store; a single one is named by its id
+    and fetched from here, so it is never copied, and counts towards the
+    same limit.
 
     :param sample_file_id: ID of the sample file.
     :param user: Authenticated user.

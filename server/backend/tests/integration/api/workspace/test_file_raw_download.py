@@ -1,8 +1,10 @@
 """
 Tests: the raw-file download task behind ``POST /api/file/download``.
 
-What it leaves in the user's temp directory: one file is copied there, more
-are written into one zip there, and nothing else is. Each sample file of this
+What it leaves in the user's temp directory: more than one file is written
+into one zip there, and nothing else is; one file is not copied at all, but
+named by its id for the web app to fetch from where it is stored
+(``GET /api/sample/files/{id}/raw``, ``test_sample_file_raw_route.py``). Each sample file of this
 module resolves to a raw file of its own under ``tmp_path``; the route's
 access checks are ``test_file_download_access.py``'s.
 
@@ -22,6 +24,7 @@ import pytest
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.new.file import service
 from mascope_backend.db import SampleFile
+from mascope_file import name as mascope_name
 
 
 #: The task without its notification wrapper, which keeps a warning to the
@@ -40,6 +43,15 @@ def stored(monkeypatch, tmp_path):
     monkeypatch.setattr(service, "get_instrument_type", lambda _name: "orbi")
     monkeypatch.setattr(
         service, "parse_path_from_item_filename", lambda name: str(store / name)
+    )
+    # The same for the single file, which the source data route's own lookup
+    # finds.
+    monkeypatch.setattr(mascope_name.runtime.meta, "filestore", str(store))
+    monkeypatch.setattr(mascope_name, "get_sample_file_type", lambda _f: "orbi_raw")
+    monkeypatch.setattr(
+        mascope_name,
+        "parse_path_from_item_filename",
+        lambda name: os.path.join(str(store), name),
     )
     with patch(
         "mascope_backend.api.new.temp.storage.user_temp_dir",
@@ -177,85 +189,146 @@ async def test_a_failed_zip_leaves_nothing_behind(
 
 
 @pytest.mark.asyncio
-async def test_one_file_is_copied_under_its_own_name(
+async def test_one_file_is_named_by_its_id_and_not_copied(
     stored, async_session_factory, sample_file
 ):
     (name,) = await _store(stored, async_session_factory, sample_file)
 
     result = await download_files(sample_file_ids=[sample_file], user_id=1)
 
-    download = result["_notification_data"]["download"]
-    assert download == f"{name}.raw"
-    # The copy's working name is gone: the download is all the temp dir holds.
-    assert os.listdir(stored) == [download]
-    assert (stored / download).read_bytes() == name.encode()
+    notification = result["_notification_data"]
+    assert notification == {"download": None, "source_download": sample_file}
+    assert result["message"] == "File download: retrieved 1 file"
+    assert [f["filename"] for f in result["data"]["found"]] == [name]
+    assert result["data"]["not_found"] == []
+    # Nothing is copied: the temp dir stays empty.
+    assert os.listdir(stored) == []
 
 
 @pytest.mark.asyncio
-async def test_the_copy_is_written_off_the_event_loop(
-    stored, async_session_factory, sample_file, monkeypatch
+async def test_one_missing_file_is_a_warning_with_nothing_to_fetch(
+    stored, async_session_factory, sample_file
 ):
-    # A single raw file can be gigabytes; copied on the loop's own thread, it
-    # would hold every other request until done.
-    await _store(stored, async_session_factory, sample_file)
-    copy_into_place = service._copy_into_place
-    threads = []
+    missing = await _filename(async_session_factory, sample_file)
 
-    def recording(*args, **kwargs):
-        threads.append(threading.get_ident())
-        return copy_into_place(*args, **kwargs)
-
-    monkeypatch.setattr(service, "_copy_into_place", recording)
-    await download_files(sample_file_ids=[sample_file], user_id=1)
-
-    assert len(threads) == 1
-    assert threads[0] != threading.get_ident()
-
-
-@pytest.mark.asyncio
-async def test_a_second_download_replaces_the_copy_whole(
-    stored, async_session_factory, sample_file, monkeypatch
-):
-    # The second download of one file writes beside the first's copy and
-    # moves over it: the name never holds a partial copy, nor none at all.
-    (name,) = await _store(stored, async_session_factory, sample_file)
-    await download_files(sample_file_ids=[sample_file], user_id=1)
-    download = stored / f"{name}.raw"
-    first = download.stat().st_ino
-    seen = []
-    copyfile = service.shutil.copyfile
-
-    def watching(src, dst):
-        seen.append((dst, download.read_bytes()))
-        return copyfile(src, dst)
-
-    monkeypatch.setattr(service.shutil, "copyfile", watching)
-    await download_files(sample_file_ids=[sample_file], user_id=1)
-
-    ((written, during),) = seen
-    assert os.path.dirname(written) == str(stored)
-    assert os.path.basename(written) != download.name
-    assert during == name.encode()
-    assert download.stat().st_ino != first
-    assert os.listdir(stored) == [download.name]
-    assert download.read_bytes() == name.encode()
-
-
-@pytest.mark.asyncio
-async def test_a_failed_copy_leaves_the_earlier_one(
-    stored, async_session_factory, sample_file, monkeypatch
-):
-    (name,) = await _store(stored, async_session_factory, sample_file)
-    await download_files(sample_file_ids=[sample_file], user_id=1)
-
-    def unwritable(_src, dst):
-        with open(dst, "wb") as partial:
-            partial.write(b"half")
-        raise OSError("no space left on device")
-
-    monkeypatch.setattr(service.shutil, "copyfile", unwritable)
-    with pytest.raises(OSError):
+    with pytest.raises(ApiException) as warning:
         await download_files(sample_file_ids=[sample_file], user_id=1)
 
-    assert os.listdir(stored) == [f"{name}.raw"]
-    assert (stored / f"{name}.raw").read_bytes() == name.encode()
+    data = warning.value.tech_message["data"]
+    assert data["download"] is None
+    assert "source_download" not in data
+    assert data["not_found"] == [missing]
+    assert os.listdir(stored) == []
+
+
+@pytest.mark.asyncio
+async def test_one_file_whose_name_leaves_its_directory_is_not_found(
+    stored, async_session_factory, sample_file
+):
+    # A name with a separator would lead out of the sample's own directory:
+    # here to a raw file planted beside the store. It is not offered.
+    (stored.parent / "store").mkdir()
+    planted = stored.parent / "elsewhere"
+    planted.mkdir()
+    (planted / "data.raw").write_bytes(b"not this sample's")
+    steered = "../elsewhere"
+    assert os.path.isfile(os.path.join(stored.parent / "store", steered, "data.raw"))
+
+    async with async_session_factory() as session:
+        row = await session.get(SampleFile, sample_file)
+        original = row.filename
+        row.filename = steered
+        await session.commit()
+    try:
+        with pytest.raises(ApiException) as warning:
+            await download_files(sample_file_ids=[sample_file], user_id=1)
+    finally:
+        async with async_session_factory() as session:
+            (await session.get(SampleFile, sample_file)).filename = original
+            await session.commit()
+
+    assert warning.value.tech_message["data"]["not_found"] == [steered]
+    assert os.listdir(stored) == []
+
+
+@pytest.mark.asyncio
+async def test_one_file_whose_instrument_part_leaves_the_filestore_is_not_found(
+    async_session_factory, sample_file, monkeypatch, tmp_path
+):
+    # Through the real layout, <filestore>/<instrument>/<date>/<name>: a ".."
+    # instrument part leads beside the store, where a raw file is planted.
+    store = tmp_path / "store"
+    store.mkdir()
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(mascope_name.runtime.meta, "filestore", str(store))
+    monkeypatch.setattr(mascope_name, "get_sample_file_type", lambda _f: "orbi_raw")
+    steered = ".._2024.01.01_12h00m00s"
+    planted = tmp_path / "2024.01.01" / steered
+    planted.mkdir(parents=True)
+    (planted / "data.raw").write_bytes(b"not this sample's")
+    assert os.path.isfile(mascope_name.filename_to_datafile_path(steered))
+
+    async with async_session_factory() as session:
+        row = await session.get(SampleFile, sample_file)
+        original = row.filename
+        row.filename = steered
+        await session.commit()
+    try:
+        with (
+            patch(
+                "mascope_backend.api.new.temp.storage.user_temp_dir",
+                return_value=str(temp),
+            ),
+            pytest.raises(ApiException) as warning,
+        ):
+            await download_files(sample_file_ids=[sample_file], user_id=1)
+    finally:
+        async with async_session_factory() as session:
+            (await session.get(SampleFile, sample_file)).filename = original
+            await session.commit()
+
+    assert warning.value.tech_message["data"]["not_found"] == [steered]
+    assert os.listdir(temp) == []
+
+
+@pytest.mark.asyncio
+async def test_one_file_whose_name_leads_into_another_samples_directory_is_not_found(
+    async_session_factory, sample_file, monkeypatch, tmp_path
+):
+    # Through the real layout a leading "./" puts "instB" first, and the path
+    # normalises to the directory of the sample named after the rest: inside
+    # the filestore, so only the one-segment check refuses it.
+    store = tmp_path / "store"
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(mascope_name.runtime.meta, "filestore", str(store))
+    monkeypatch.setattr(mascope_name, "get_sample_file_type", lambda _f: "orbi_raw")
+    other = "instB_2024.01.01_13h00m00s"
+    planted = store / "instB" / "2024.01.01" / other
+    planted.mkdir(parents=True)
+    (planted / "data.raw").write_bytes(b"another sample's")
+    steered = f"./{other}"
+    assert os.path.isfile(mascope_name.filename_to_datafile_path(steered))
+
+    async with async_session_factory() as session:
+        row = await session.get(SampleFile, sample_file)
+        original = row.filename
+        row.filename = steered
+        await session.commit()
+    try:
+        with (
+            patch(
+                "mascope_backend.api.new.temp.storage.user_temp_dir",
+                return_value=str(temp),
+            ),
+            pytest.raises(ApiException) as warning,
+        ):
+            await download_files(sample_file_ids=[sample_file], user_id=1)
+    finally:
+        async with async_session_factory() as session:
+            (await session.get(SampleFile, sample_file)).filename = original
+            await session.commit()
+
+    assert warning.value.tech_message["data"]["not_found"] == [steered]
+    assert os.listdir(temp) == []

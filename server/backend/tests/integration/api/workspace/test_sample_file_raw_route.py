@@ -16,7 +16,9 @@ Fixtures used:
 - ``orphan_sample_file`` - no sample item references
 """
 
+import contextlib
 import os
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -24,6 +26,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
 from mascope_backend.api.controllers.sample.files import sample_files_controller
+from mascope_backend.api.new.file import service as file_service
 from mascope_backend.api.routes.sample.files import sample_files_routes
 from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken, SampleFile, hash_access_token
@@ -73,6 +76,7 @@ def filestore(monkeypatch, tmp_path):
         ``data=None``; it returns the file's path.
     """
     kind = {"type": "orbi_raw"}
+    monkeypatch.setattr(mascope_name.runtime.meta, "filestore", str(tmp_path))
     monkeypatch.setattr(mascope_name, "get_sample_file_type", lambda _f: kind["type"])
     monkeypatch.setattr(
         mascope_name,
@@ -251,6 +255,163 @@ async def test_an_unknown_file_is_not_found_for_an_admin(admin_client, filestore
     resp = await admin_client.get(f"/api/sample/files/{gen_id()}/raw")
 
     assert resp.status_code == 404
+
+
+@contextlib.asynccontextmanager
+async def _renamed(async_session_factory, sample_file_id: str, filename: str):
+    """Give the (session-wide) sample file record another name for a while."""
+    async with async_session_factory() as session:
+        row = await session.get(SampleFile, sample_file_id)
+        original = row.filename
+        row.filename = filename
+        await session.commit()
+    try:
+        yield
+    finally:
+        async with async_session_factory() as session:
+            (await session.get(SampleFile, sample_file_id)).filename = original
+            await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("steered", ["../elsewhere", "other/../../elsewhere", ".."])
+async def test_a_name_that_leaves_its_directory_is_not_served(
+    guest_client,
+    sample_file,
+    alpha_item,
+    async_session_factory,
+    monkeypatch,
+    tmp_path,
+    steered,
+):
+    # The directory is the store joined with the name, as in the filestore,
+    # and a raw file is planted where a name with a separator would lead.
+    store = tmp_path / "store"
+    (store / "other").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "data.raw").write_bytes(RAW_BYTES)
+    (tmp_path / "data.raw").write_bytes(RAW_BYTES)
+    monkeypatch.setattr(mascope_name.runtime.meta, "filestore", str(store))
+    monkeypatch.setattr(mascope_name, "get_sample_file_type", lambda _f: "orbi_raw")
+    monkeypatch.setattr(
+        mascope_name,
+        "parse_path_from_item_filename",
+        lambda name: os.path.join(str(store), name),
+    )
+    assert os.path.isfile(mascope_name.filename_to_datafile_path(steered))
+
+    async with _renamed(async_session_factory, sample_file, steered):
+        resp = await guest_client.get(f"/api/sample/files/{sample_file}/raw")
+
+    assert resp.status_code == 404, resp.text
+    assert RAW_BYTES not in resp.content
+
+
+@pytest.mark.asyncio
+async def test_a_name_whose_instrument_part_leaves_the_filestore_is_not_served(
+    guest_client,
+    sample_file,
+    alpha_item,
+    async_session_factory,
+    monkeypatch,
+    tmp_path,
+):
+    # One path segment, but the real layout puts its instrument part, before
+    # the first "_", first: <filestore>/<instrument>/<date>/<name>. A ".."
+    # there leads beside the filestore, where a raw file is planted.
+    store = tmp_path / "store"
+    store.mkdir()
+    steered = ".._2024.01.01_12h00m00s"
+    planted = tmp_path / "2024.01.01" / steered
+    planted.mkdir(parents=True)
+    (planted / "data.raw").write_bytes(RAW_BYTES)
+    monkeypatch.setattr(mascope_name.runtime.meta, "filestore", str(store))
+    monkeypatch.setattr(mascope_name, "get_sample_file_type", lambda _f: "orbi_raw")
+    assert os.path.isfile(mascope_name.filename_to_datafile_path(steered))
+
+    async with _renamed(async_session_factory, sample_file, steered):
+        resp = await guest_client.get(f"/api/sample/files/{sample_file}/raw")
+
+    assert resp.status_code == 404, resp.text
+    assert RAW_BYTES not in resp.content
+
+
+@pytest.mark.asyncio
+async def test_a_name_that_leads_into_another_samples_directory_is_not_served(
+    guest_client,
+    sample_file,
+    alpha_item,
+    async_session_factory,
+    monkeypatch,
+    tmp_path,
+):
+    # Inside the filestore, but not this sample's: through the real layout a
+    # leading "./" puts the rest of the name's instrument part, "instB", first,
+    # so the path normalises to the directory of the sample named after it.
+    # Only the one-segment check refuses it; the filestore check cannot.
+    store = tmp_path / "store"
+    other = "instB_2024.01.01_13h00m00s"
+    planted = store / "instB" / "2024.01.01" / other
+    planted.mkdir(parents=True)
+    (planted / "data.raw").write_bytes(RAW_BYTES)
+    monkeypatch.setattr(mascope_name.runtime.meta, "filestore", str(store))
+    monkeypatch.setattr(mascope_name, "get_sample_file_type", lambda _f: "orbi_raw")
+    steered = f"./{other}"
+    assert os.path.isfile(mascope_name.filename_to_datafile_path(steered))
+
+    async with _renamed(async_session_factory, sample_file, steered):
+        resp = await guest_client.get(f"/api/sample/files/{sample_file}/raw")
+
+    assert resp.status_code == 404, resp.text
+    assert RAW_BYTES not in resp.content
+
+
+# ============= The web app's single-file download =============
+
+
+@pytest.mark.asyncio
+async def test_a_single_file_download_names_the_stored_bytes_and_copies_none(
+    guest_client, sample_file, alpha_item, filestore, tmp_path
+):
+    # POST /api/file/download of one file names it by id; the web app then
+    # fetches it here, and gets the stored file without a copy in temp.
+    filestore("orbi_raw")
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    accepted = await guest_client.post(
+        "/api/file/download", json={"sample_file_ids": [sample_file]}
+    )
+    assert accepted.status_code == 202, accepted.text
+
+    with patch(
+        "mascope_backend.api.new.temp.storage.user_temp_dir", return_value=str(temp)
+    ):
+        result = await file_service.download_files.__wrapped__(
+            sample_file_ids=[sample_file], user_id=1
+        )
+    source = result["_notification_data"]["source_download"]
+    resp = await guest_client.get(f"/api/sample/files/{source}/raw")
+
+    assert source == sample_file
+    assert resp.status_code == 200, resp.text
+    assert resp.content == RAW_BYTES
+    assert os.listdir(temp) == []
+
+
+@pytest.mark.asyncio
+async def test_a_single_file_download_is_refused_out_of_reach(
+    guest_client, beta_sample_file, beta_item, filestore
+):
+    # Both steps check the same access: the request, and the fetch it names.
+    filestore("orbi_raw")
+
+    accepted = await guest_client.post(
+        "/api/file/download", json={"sample_file_ids": [beta_sample_file]}
+    )
+    fetched = await guest_client.get(f"/api/sample/files/{beta_sample_file}/raw")
+
+    assert (accepted.status_code, fetched.status_code) == (403, 403)
+    assert RAW_BYTES not in fetched.content
 
 
 # ============= Who may download it =============
