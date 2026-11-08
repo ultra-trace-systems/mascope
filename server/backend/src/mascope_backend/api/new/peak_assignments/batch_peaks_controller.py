@@ -273,6 +273,9 @@ async def fold_sample_into_batch_peaks(
             )
             resolution_func = None
         tol_fn = _tolerance_fn(resolution_func)
+        # The instrument type, read before the lock below: it may read the
+        # sample's props off disk, which the critical section should not wait on.
+        intensity_variable = _intensity_variable(filename)
 
         # Everything from here to the commit is one batch's critical section: the
         # anchor read, the mint, and the insert have to be one indivisible step or
@@ -294,13 +297,22 @@ async def fold_sample_into_batch_peaks(
         # mints that run, so the ledger's history has a first entry.
         await ensure_current_run(session, sample_batch_id)
 
-        # Existing frozen anchors for this (batch, ionization mode).
+        # Existing frozen anchors for this (batch, ionization mode, instrument
+        # type). The instrument type is read off the unit its anchors are in:
+        # an Orbitrap member's intensity is a height and a TOF member's an
+        # area, so the two cannot share a trace, and a sample of the other
+        # instrument folds into anchors of its own beside this one's. That is
+        # the alignment path's rule (one instrument type per alignment), kept
+        # here by partitioning rather than by refusing, so no sample's peaks
+        # are left out of the batch view. A single-instrument batch has one
+        # unit on every anchor, which this filter leaves whole.
         existing = (
             (
                 await session.execute(
                     select(BatchPeak).where(
                         BatchPeak.sample_batch_id == sample_batch_id,
                         BatchPeak.ionization_mode_id == ionization_mode_id,
+                        BatchPeak.intensity_variable == intensity_variable,
                     )
                 )
             )
@@ -348,7 +360,6 @@ async def fold_sample_into_batch_peaks(
             for r in rows
         ]
         now = datetime.now(timezone.utc)
-        intensity_variable = _intensity_variable(filename)
 
         folded = fold_in_sample(
             anchor_set, peaks, new_id=lambda: gen_id(16), tol_fn=tol_fn

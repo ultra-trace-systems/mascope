@@ -727,3 +727,40 @@ async def test_a_batch_peak_of_another_mode_is_not_the_lines_parent(
     )
     assert refused.status_code == 422, refused.text
     assert f"('{m0.batch_peak_id}')" in refused.text
+
+
+async def test_a_batch_peak_of_another_instrument_type_is_not_the_lines_parent(
+    async_session_factory, editor_client, line_batch, assignment_enabled
+):
+    """Batch peaks are kept per instrument type as well. One of the batch's
+    other instrument at the monoisotopic m/z, in the line's own mode and nearer
+    the m/z than its M0, is another trace and not the ion's."""
+    m0 = line_batch["m0"]
+    other_unit = (
+        "sum_peak_areas"
+        if m0.intensity_variable == "sum_peak_heights"
+        else "sum_peak_heights"
+    )
+    async with async_session_factory() as session:
+        session.add(
+            BatchPeak(
+                batch_peak_id=gen_id(),
+                sample_batch_id=line_batch["batch_id"],
+                ionization_mode_id=m0.ionization_mode_id,
+                mz=181.07066,
+                mz_tol_ppm=m0.mz_tol_ppm,
+                intensity_variable=other_unit,
+                n_present=1,
+            )
+        )
+        await session.commit()
+
+    refused = await editor_client.post(
+        f"/api/batch-peaks/batch/{line_batch['batch_id']}/curate",
+        json={
+            "batch_peak_id": line_batch["line"].batch_peak_id,
+            "candidate": line_batch["line_entry"],
+        },
+    )
+    assert refused.status_code == 422, refused.text
+    assert f"('{m0.batch_peak_id}')" in refused.text

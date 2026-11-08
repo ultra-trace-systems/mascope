@@ -100,6 +100,20 @@ def test_the_ledger_shape_off_a_snapshot_matches_the_live_ones():
     assert meta["max_intensity"] == 5000.0
 
 
+def test_the_ledger_names_the_instrument_partition_live_and_off_a_snapshot():
+    # A batch of both instrument types has a partition of each: the row says
+    # which, by the instrument type its unit belongs to.
+    for unit, instrument_type in (
+        ("sum_peak_heights", "orbi"),
+        ("sum_peak_areas", "tof"),
+        (None, None),
+    ):
+        anchor = _anchor(sample_batch_id="sb-1", intensity_variable=unit)
+        row = SimpleNamespace(**anchor_snapshot_row("run-1", anchor, []))
+        assert _batch_peak_meta(anchor)["instrument_type"] == instrument_type
+        assert snapshot_anchor_meta(row, "sb-1")["instrument_type"] == instrument_type
+
+
 def test_a_snapshot_keeps_the_importing_engines_verdict():
     # The run selector shows an import's verdicts as that run left them.
     anchor = _anchor(engine_tier="candidate", engine_claim="level 3")

@@ -1,5 +1,6 @@
+import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { MAX_SELECTED_BATCH_PEAKS } from '@/lib/batchChart'
+import { INSTRUMENT_TYPE_LABELS, MAX_SELECTED_BATCH_PEAKS } from '@/lib/batchChart'
 
 import { api } from '@/api'
 import { useData } from '@/lib/store'
@@ -64,11 +65,48 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
     }
   )
 
+  // --- The instrument partition ------------------------------------------------
+  //
+  // A batch that holds both instrument types has a ledger of each: their
+  // intensities are in different units and cannot share a trace. The ledger
+  // shows one partition at a time, and the batch chart draws only that one's
+  // selection. A batch of one instrument type has one partition, and none of
+  // this shows.
+
+  /** The batch's instrument types, in the order the ledger offers them. */
+  const instrumentTypes = computed(() => {
+    const present = new Set(data.list.value.map((bp) => bp.instrument_type))
+    return Object.keys(INSTRUMENT_TYPE_LABELS).filter((type) => present.has(type))
+  })
+  const instrumentChoice = ref(null)
+  /**
+   * The partition shown, or null when the batch has only one: the user's
+   * choice, else the first the batch holds. A batch of two holds both types,
+   * so any choice made is one it has.
+   */
+  const instrumentType = computed(() => {
+    const types = instrumentTypes.value
+    if (types.length < 2) return null
+    return instrumentChoice.value ?? types[0]
+  })
+  /** Whether a batch peak is in the partition shown. */
+  const inPartition = (bp) =>
+    instrumentType.value == null || bp?.instrument_type === instrumentType.value
+  /**
+   * Show another partition. The selection keeps only that partition's rows,
+   * so the chart, which draws the selection, never mixes the two units.
+   */
+  function showInstrument(type) {
+    instrumentChoice.value = type
+    const kept = data.selected.value.filter(inPartition)
+    if (kept.length !== data.selected.value.length) data.selected.value = kept
+  }
+
   // No tier histogram here. The strip it feeds counts SPECIES rather than
   // anchors, and which anchors are species is decided by resolving the
   // `isotopologue_of` links against the whole loaded list - chains onto their root,
   // a link out of the list back to top level. That resolution lives in the pane
   // (PaneBrowserBatchPeaks.vue), which is also what renders the rows the chips
   // filter, so the count and the rows it promises come from one rule.
-  return { ...data }
+  return { ...data, instrumentTypes, instrumentType, inPartition, showInstrument }
 })

@@ -14,7 +14,22 @@ const mockApp = reactive({
   ui: { darkmode: { active: false } },
   data: {
     batch: { focusedId: 'batch-1' },
-    batchPeak: { selectedIds: [] }, // the ledger selection that drives the chart
+    // The ledger selection that drives the chart, and the instrument partition
+    // it is held to: null on a batch of one instrument type.
+    batchPeak: {
+      selectedIds: [],
+      instrumentTypeOf: {},
+      instrumentType: null,
+      get selected() {
+        return this.selectedIds.map((batch_peak_id) => ({
+          batch_peak_id,
+          instrument_type: this.instrumentTypeOf[batch_peak_id]
+        }))
+      },
+      inPartition(record) {
+        return this.instrumentType == null || record.instrument_type === this.instrumentType
+      }
+    },
     sample: {
       list: [
         {
@@ -77,6 +92,8 @@ describe('chart.batch.assignments data store (selection-driven)', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     mockApp.data.batchPeak.selectedIds = []
+    mockApp.data.batchPeak.instrumentTypeOf = {}
+    mockApp.data.batchPeak.instrumentType = null
     store = useChartAssignmentsData()
   })
 
@@ -107,6 +124,38 @@ describe('chart.batch.assignments data store (selection-driven)', () => {
     expect(peak.assignmentData.batch_peak_id).toBe('bp1')
     expect(peak.marker.symbol).toBe('square') // assigned
     expect(tic.name).toBe('TIC')
+  })
+
+  it("draws only the shown instrument type's selection on a batch of two", async () => {
+    // Heights and areas cannot share an axis: a selection that reaches the
+    // other partition's batch peaks by some route still plots only this one's.
+    api.http.post.mockImplementation(async (_url, body) =>
+      body.batch_peak_ids.map((id) =>
+        peakRecord(id, { sample_item_ids: ['s1'], intensities: [5], tiers: ['assigned'] })
+      )
+    )
+    mockApp.data.batchPeak.instrumentTypeOf = { bp1: 'orbi', bp2: 'tof' }
+    mockApp.data.batchPeak.instrumentType = 'orbi'
+    mockApp.data.batchPeak.selectedIds = ['bp1', 'bp2']
+    await flushAsync()
+
+    expect(api.http.post).toHaveBeenLastCalledWith(
+      '/batch-peaks/records/series',
+      { sample_batch_id: 'batch-1', batch_peak_ids: ['bp1'] },
+      expect.anything()
+    )
+    expect(store.selectedCount).toBe(1)
+    expect(store.traces.map((trace) => trace.assignmentData?.batch_peak_id)).toEqual([
+      'bp1',
+      undefined
+    ])
+
+    mockApp.data.batchPeak.instrumentType = 'tof'
+    await flushAsync()
+    expect(store.traces.map((trace) => trace.assignmentData?.batch_peak_id)).toEqual([
+      'bp2',
+      undefined
+    ])
   })
 
   it('fans sample_peak_ids onto the sample axis, aligned with y', async () => {

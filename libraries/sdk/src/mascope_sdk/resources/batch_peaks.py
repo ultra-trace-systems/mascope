@@ -136,7 +136,10 @@ class BatchPeaksResource(BaseResource):
                  names; null otherwise),
                  ``best_fit_score``, ``support_fraction``, ``n_present``,
                  ``is_ambiguous``, ``max_intensity`` (in
-                 ``intensity_variable``), ``isotopologue_of`` (the batch peak
+                 ``intensity_variable``), ``instrument_type`` (``orbi`` or
+                 ``tof``: a batch of both keeps each type's batch peaks
+                 apart, as their intensities are in different units),
+                 ``isotopologue_of`` (the batch peak
                  this one is an isotopologue of, or null), ``curated``
                  (pinned by hand for the whole batch),
                  ``reference_listing`` (what a reference list calls the

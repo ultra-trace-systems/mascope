@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 
-import { MAX_SELECTED_BATCH_PEAKS } from '@/lib/batchChart'
+import { INSTRUMENT_TYPE_LABELS, MAX_SELECTED_BATCH_PEAKS } from '@/lib/batchChart'
 import { useApp } from '@/stores'
 
 /**
@@ -12,7 +12,9 @@ import { useApp } from '@/stores'
  * run's row and carried by a derived one), and that batch peak is what gets
  * selected. The ledger's cap holds here as it does in the Batch peaks pane -
  * the chart draws at most `MAX_SELECTED_BATCH_PEAKS` species - and a species
- * the ledger has not loaded is said rather than silently skipped.
+ * the ledger has not loaded is said rather than silently skipped. On a batch
+ * of both instrument types the chart draws one at a time, so a species of the
+ * other type switches the ledger to that type, and the user is told.
  */
 export const useBatchChartSelection = defineStore('browser.match.batchChartSelection', () => {
   const app = useApp()
@@ -40,9 +42,20 @@ export const useBatchChartSelection = defineStore('browser.match.batchChartSelec
       store.unselect(key)
       return true
     }
-    if (!store.list.some((bp) => bp.batch_peak_id === row.batch_peak_id)) {
+    const record = store.list.find((bp) => bp.batch_peak_id === row.batch_peak_id)
+    if (!record) {
       notify('The batch ledger has not loaded this species yet; open the Batch peaks tab first.')
       return false
+    }
+    if (!store.inPartition(record)) {
+      const from = INSTRUMENT_TYPE_LABELS[store.instrumentType]
+      const to = INSTRUMENT_TYPE_LABELS[record.instrument_type]
+      store.showInstrument(record.instrument_type)
+      notify(
+        `The batch chart now draws the batch's ${to} species; its ${from} ones are ` +
+          'in another unit and were taken out of the chart.',
+        'info'
+      )
     }
     if (store.selected.length >= MAX_SELECTED_BATCH_PEAKS) {
       notify(

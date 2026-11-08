@@ -50,8 +50,19 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
 
   // --- What the chart plots ---------------------------------------------------
 
-  /** The ledger selection, in the order the table selected it. */
-  const selectedIds = computed(() => app.data.batchPeak.selectedIds ?? [])
+  /**
+   * The ledger selection, in the order the table selected it, within the
+   * instrument partition the ledger shows. A batch of both instrument types
+   * has batch peaks in heights and in areas, which one axis cannot hold; the
+   * ledger keeps its selection to one partition, and this holds the chart to
+   * it whatever route the selection took.
+   */
+  const selectedIds = computed(() => {
+    const ledger = app.data.batchPeak
+    return (ledger.selected ?? [])
+      .filter((record) => ledger.inPartition?.(record) ?? true)
+      .map((record) => record.batch_peak_id)
+  })
   /**
    * The head of that selection the chart will actually plot.
    *

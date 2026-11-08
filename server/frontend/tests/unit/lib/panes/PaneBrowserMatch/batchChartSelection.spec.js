@@ -10,10 +10,21 @@ const { useBatchChartSelection } =
   await import('@/lib/panes/PaneBrowserMatch/stores/batchChartSelection.js')
 
 /** A batch ledger store stand-in with the selection helper's shape. */
-function ledger(ids, selectedIds = []) {
-  const list = ids.map((batch_peak_id) => ({ batch_peak_id }))
+function ledger(ids, selectedIds = [], instrumentTypeOf = {}) {
+  const list = ids.map((batch_peak_id) => ({
+    batch_peak_id,
+    instrument_type: instrumentTypeOf[batch_peak_id]
+  }))
   const store = {
     list,
+    // The instrument partition shown: null on a batch of one instrument type.
+    instrumentType: Object.keys(instrumentTypeOf).length ? 'orbi' : null,
+    inPartition: (bp) =>
+      store.instrumentType == null || bp.instrument_type === store.instrumentType,
+    showInstrument: vi.fn((type) => {
+      store.instrumentType = type
+      store.selected = store.selected.filter(store.inPartition)
+    }),
     selected: selectedIds.map((batch_peak_id) => ({ batch_peak_id })),
     isSelected: (arg) => store.selected.some((r) => r.batch_peak_id === arg.batch_peak_id),
     select: vi.fn((arg) => {
@@ -70,6 +81,29 @@ describe('useBatchChartSelection', () => {
     expect(app.ui.notification.push).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'warning', message: expect.stringContaining('not loaded') })
     )
+  })
+
+  it("switches the chart to a species' instrument type, and says so", () => {
+    app = makeApp(ledger(['bp-1', 'bp-2'], ['bp-1'], { 'bp-1': 'orbi', 'bp-2': 'tof' }))
+    const chart = useBatchChartSelection()
+    expect(chart.toggle({ batch_peak_id: 'bp-2' })).toBe(true)
+    const store = app.data.batchPeak
+    expect(store.showInstrument).toHaveBeenCalledWith('tof')
+    expect(store.selected.map((r) => r.batch_peak_id)).toEqual(['bp-2'])
+    expect(app.ui.notification.push).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'info',
+        message: expect.stringMatching(/draws the batch's TOF species; its Orbitrap ones/)
+      })
+    )
+  })
+
+  it('plots a species of the shown instrument type without a word', () => {
+    app = makeApp(ledger(['bp-1', 'bp-2'], ['bp-1'], { 'bp-1': 'orbi', 'bp-2': 'orbi' }))
+    const chart = useBatchChartSelection()
+    expect(chart.toggle({ batch_peak_id: 'bp-2' })).toBe(true)
+    expect(app.data.batchPeak.showInstrument).not.toHaveBeenCalled()
+    expect(app.ui.notification.push).not.toHaveBeenCalled()
   })
 
   it('holds the chart cap and says so', () => {
