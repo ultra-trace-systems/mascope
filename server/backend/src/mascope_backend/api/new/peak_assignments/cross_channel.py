@@ -717,8 +717,9 @@ def apply_cross_channel(
         # Rows read through the mode's own channel that a second channel
         # settled against the rival they name, which the sample shows too,
         # but not by the margin that would doubt the mode's own reading. A
-        # settled row names a rival the sample shows before one it does not,
-        # so every such row is counted here.
+        # settled row names a weighed rival before one the sample does not
+        # show, so this counts every row whose named rival was weighed short
+        # of the margin.
         "shown_rival_weighed": 0,
         # Rows whose ion reads another way and that something settled, by what.
         "settled": {

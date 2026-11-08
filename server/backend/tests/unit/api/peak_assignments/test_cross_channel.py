@@ -3,6 +3,8 @@ nothing measured tells apart."""
 
 from __future__ import annotations
 
+import pytest
+
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     CHANNELS_FOR_CORROBORATION,
     REASON_AMBIGUOUS_ADDUCT,
@@ -1036,6 +1038,36 @@ class TestTheDeclaredChannelsPrior:
             "through": ["[M+NO3]-"],
         }
         assert summary["shown_rival_weighed"] == 1
+
+    @pytest.mark.parametrize(
+        "displaced",
+        [
+            [("C9H14O", FORMATE), ("C8H12N2O2", FORMATE)],
+            [("C8H12N2O2", FORMATE), ("C9H14O", FORMATE)],
+        ],
+    )
+    def test_of_two_weighed_rivals_the_sharper_is_named(self, displaced):
+        # Nopinone is shown at twice the acid; the nitrogen reading, far
+        # fainter, is the sharper of the two weighed, in either order. The record
+        # names it, settled by the partner, and the run counts no row whose
+        # named rival was weighed short of the margin.
+        rows = [
+            row(
+                "pinonic",
+                "C10H16O3",
+                DEPROT,
+                displaced=displaced,
+            ),
+            through_nitrate("acid", "C10H16O3", intensity=1.0e5),
+            through_nitrate("nopinone", "C9H14O", intensity=2.0e5),
+            through_nitrate("nitro", "C8H12N2O2", intensity=1.0e3),
+        ]
+        summary = self.gate(rows)
+        record = rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED]
+        assert record["alternative"] == "C8H12N2O2"
+        assert record["by"] == SETTLED_BY_PARTNER
+        assert record["ratio"] == 100.0
+        assert summary["shown_rival_weighed"] == 0
 
     def test_with_the_weighed_rival_twenty_times_as_bright_it_stays_held(self):
         rows = [
