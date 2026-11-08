@@ -531,6 +531,90 @@ def unit_scripts(systemd_dir: Optional[Path] = None) -> list[UnitScript]:
     return [unit_script(directory / name) for name in SCRIPT_UNITS]
 
 
+def _installed_values(unit_file: Path) -> Optional[tuple[str, str]]:
+    """
+    The deploy account and the mascope executable an installed
+    ``mascope.service`` was written with: its ``User=`` and the command of its
+    ``ExecStart``. None when the unit is not installed or names neither.
+    """
+    try:
+        text = unit_file.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    user = executable = None
+    for line in text.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if not sep:
+            continue
+        if key.strip() == "User":
+            user = value.strip()
+        elif key.strip() == "ExecStart":
+            try:
+                argv = shlex.split(value)
+            except ValueError:
+                argv = value.split()
+            executable = argv[0] if argv else None
+    if not user or not executable:
+        return None
+    return user, executable
+
+
+def _differs(installed: Path, expected: bytes) -> bool:
+    """
+    Whether an installed file is not ``expected``: a missing one is, one that
+    cannot be read is not (nothing can be said about it).
+    """
+    try:
+        return installed.read_bytes() != expected
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def outdated_units(mascope_path: str, systemd_dir: Optional[Path] = None) -> list[str]:
+    """
+    The installed units and copied scripts that differ from what
+    `mascope prod units install` would write now, as paths; empty when the
+    units are not installed.
+
+    An update moves the deployment to a newer release but leaves the units and
+    the copies in /usr/local/lib/mascope as the release that installed them
+    wrote them: they are root's, and the update runs without sudo. So the
+    expected content is rendered from this release's templates (the
+    checkout's, else the CLI's bundled ones), with the deploy account and the
+    executable the installed ``mascope.service`` names, so that only a change
+    of release reads as a difference. A unit or a copy this release adds and
+    the host lacks is one too.
+    """
+    directory = systemd_dir or prod_units.SYSTEMD_DIR
+    values = _installed_values(directory / "mascope.service")
+    if values is None:
+        return []
+    user, executable = values
+    home = Path(mascope_path).absolute()
+    sources = prod_units.sources_for(home)
+    try:
+        rendered = prod_units.render(
+            sources, user=user, mascope_bin=executable, home=home
+        )
+    except (OSError, ValueError):
+        return []
+    outdated = [
+        str(directory / name)
+        for name, text in rendered.items()
+        if _differs(directory / name, text.encode("utf-8"))
+    ]
+    for name, target in prod_units.copied_scripts(sources).items():
+        try:
+            expected = sources.files[name].read_bytes()
+        except OSError:
+            continue
+        if _differs(target, expected):
+            outdated.append(str(target))
+    return outdated
+
+
 # --- Report ---
 
 
@@ -545,6 +629,8 @@ class Report:
     backups: BackupStatus
     images: ImageFootprint
     units: list[UnitScript] = field(default_factory=list)
+    # Installed units and copied scripts this release would write otherwise.
+    units_outdated: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -552,7 +638,8 @@ class Report:
         Healthy stack, no version drift, no filesystem below its floor, and
         no installed unit without its script (the remaining sections are
         info-only, a unit whose script is inside a venv is flagged but still
-        runs, and a filesystem that is only projected to reach its floor is a
+        runs, so does a unit or a copied script an older release wrote, and
+        a filesystem that is only projected to reach its floor is a
         warning - see ``filling``).
         """
         return (
@@ -586,6 +673,7 @@ class Report:
             "backups": asdict(self.backups),
             "images": asdict(self.images),
             "units": [asdict(u) for u in self.units],
+            "units_outdated": list(self.units_outdated),
         }
 
 
@@ -624,6 +712,7 @@ def build_report(
         backups=backup_status(backups_dir, now=now),
         images=image_footprint(),
         units=unit_scripts(systemd_dir),
+        units_outdated=outdated_units(mascope_path, systemd_dir),
     )
 
 
@@ -688,13 +777,16 @@ def _disk_line(d: DiskUsage, label: str) -> str:
     return " · ".join(parts) + flag
 
 
-def _units_line(units: list[UnitScript]) -> str:
-    """The units' scripts: in place, or which unit lost or may lose its own."""
+def _units_line(units: list[UnitScript], outdated: list[str]) -> str:
+    """
+    The units' scripts: in place, or which unit lost or may lose its own, and
+    which installed files an older release wrote.
+    """
     installed = [u for u in units if u.state != "absent"]
-    if not installed:
+    if not installed and not outdated:
         return "not installed"
     flagged = [u for u in installed if u.state in ("venv", "missing")]
-    if not flagged:
+    if not flagged and not outdated:
         return "scripts in place"
     parts = []
     for u in flagged:
@@ -702,6 +794,9 @@ def _units_line(units: list[UnitScript]) -> str:
             parts.append(f"{u.unit} cannot find {u.script or 'its script'}  MISSING")
         else:
             parts.append(f"{u.unit} runs {u.script} inside a venv  STALE")
+    if outdated:
+        names = ", ".join(Path(p).name for p in outdated)
+        parts.append(f"{names} not as this release writes them  OUTDATED")
     return " · ".join(parts) + " · re-run 'mascope prod units install'"
 
 
@@ -764,7 +859,7 @@ def format_text(report: Report) -> str:
             ("Images", f"{im.count} images · {im.size} ({im.reclaimable} reclaimable)")
         )
 
-    lines.append(("Units", _units_line(report.units)))
+    lines.append(("Units", _units_line(report.units, report.units_outdated)))
 
     header = {0: "OK", 1: "ATTENTION", EXIT_FILLING: "WARNING"}[report.exit_code]
     body = "\n".join(f"{label.ljust(9)}{value}" for label, value in lines)

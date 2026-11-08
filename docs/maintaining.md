@@ -95,6 +95,18 @@ mends either: it copies the scripts to `/usr/local/lib/mascope` (see
 [the systemd units](#the-systemd-units-without-the-script)). A host without
 the units reads `not installed`.
 
+Units also compares every installed unit, and every script copied to
+`/usr/local/lib/mascope`, with what `units install` of the release now
+deployed would write. An update moves the deployment to a newer release but
+leaves those files as the release that installed them wrote them, so a newer
+update script or disk check never reaches the units on its own. A file that
+differs, or one the release adds and the host lacks, is named and flagged
+`OUTDATED`. The units still run, so the exit code does not change. Re-run
+`mascope prod units install` to bring them up to date. The comparison fills
+the templates with the deploy account and the `mascope` executable the
+installed `mascope.service` names, so a unit installed with `--bin` is
+compared as it was installed.
+
 **Version** compares the tag the containers are actually running against the
 one this deployment would deploy right now (the `MASCOPE_VERSION` pin, else the
 release tag checked out, else on a wheel install the release its CLI was cut
@@ -220,15 +232,17 @@ mascope prod units remove              # stop, disable and delete them; /etc/mas
 - The units read `MASCOPE_PATH` from `/etc/environment`. It adds the line
   there when it is missing, and refuses when the file names another home.
 - A checkout's units come from its `tooling/systemd`. A wheel install's come
-  from the copies in the CLI, which are the same files. Re-run it after a
-  release that changes the units: an update does not rewrite them.
+  from the copies in the CLI, which are the same files. An update does not
+  rewrite the units or the copied scripts: the update runs without `sudo`,
+  and they are root's. Re-run it after an update whenever
+  `mascope prod doctor` reports them `OUTDATED`.
 - The scripts the units run are copied to `/usr/local/lib/mascope`, so a
   rollback to an older CLI leaves the update and the disk check working. A
   checkout's disk check runs its own `tooling/disk-check.sh`.
   `mascope prod doctor` flags a unit that still runs a script from inside a
   venv.
-- A re-run keeps each existing settings file and says so. It leaves an
-  enabled update timer enabled.
+- A re-run keeps each existing settings file and says so. It never changes
+  the update timer's state: an enabled timer stays enabled.
 
 > The provisioning user is the deploy user. `mascope.service` and
 > `mascope-update.service` run as that user, from the deployment checkout
