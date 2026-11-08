@@ -497,6 +497,131 @@ def test_build_report_reads_the_units(monkeypatch, tmp_path):
     assert report.ok is False
 
 
+# --- units an older release wrote ---
+
+_REPO = Path(__file__).resolve().parents[3]
+
+
+def _install(tmp_path, monkeypatch, home, *, user="deploy", mascope_bin=None):
+    """
+    Write the units and copies as `units install` of this release would, into
+    stand-ins for /etc/systemd/system and /usr/local/lib/mascope.
+    """
+    units = importlib.import_module("mascope_cli.cmd.prod.units")
+    monkeypatch.setattr(units, "SCRIPT_DIR", tmp_path / "lib")
+    systemd = tmp_path / "systemd"
+    systemd.mkdir()
+    mascope_bin = mascope_bin or "/home/deploy/.local/bin/mascope"
+    sources = units.sources_for(home)
+    rendered = units.render(sources, user=user, mascope_bin=mascope_bin, home=home)
+    for name, text in rendered.items():
+        (systemd / name).write_text(text, encoding="utf-8")
+    copies = units.copied_scripts(sources)
+    for name, target in copies.items():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(sources.files[name], target)
+    return systemd, copies
+
+
+def test_units_as_this_release_writes_them_are_not_outdated(monkeypatch, tmp_path):
+    # A wheel install (no checkout at the home): the bundled templates, and
+    # both scripts copied.
+    home = tmp_path / "home"
+    systemd, copies = _install(tmp_path, monkeypatch, home)
+    assert set(copies) == {"disk-check.sh", "mascope-update.sh"}
+    assert doctor.outdated_units(str(home), systemd) == []
+
+
+def test_outdated_units_renders_with_the_installed_account_and_executable(
+    monkeypatch, tmp_path
+):
+    # Installed by another account with --bin elsewhere than the one running
+    # the doctor: only a change of release may read as a difference.
+    home = tmp_path / "home"
+    systemd, _ = _install(
+        tmp_path, monkeypatch, home, user="svc-mascope", mascope_bin="/opt/m/mascope"
+    )
+    assert doctor.outdated_units(str(home), systemd) == []
+
+
+def test_a_unit_an_older_release_wrote_is_outdated(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    systemd, _ = _install(tmp_path, monkeypatch, home)
+    unit = systemd / "mascope-update.service"
+    unit.write_text(unit.read_text(encoding="utf-8") + "# older\n", encoding="utf-8")
+    timer = systemd / "mascope-disk-check.timer"
+    timer.write_text("[Timer]\nOnCalendar=hourly\n", encoding="utf-8")
+    assert doctor.outdated_units(str(home), systemd) == [str(unit), str(timer)]
+
+
+def test_a_unit_this_release_adds_is_outdated_until_installed(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    systemd, _ = _install(tmp_path, monkeypatch, home)
+    (systemd / "mascope-assignment-prune.service").unlink()
+    assert doctor.outdated_units(str(home), systemd) == [
+        str(systemd / "mascope-assignment-prune.service")
+    ]
+
+
+def test_a_copied_script_an_older_release_wrote_is_outdated(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    systemd, copies = _install(tmp_path, monkeypatch, home)
+    copies["mascope-update.sh"].write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    copies["disk-check.sh"].unlink()
+    assert doctor.outdated_units(str(home), systemd) == [
+        str(copies["disk-check.sh"]),
+        str(copies["mascope-update.sh"]),
+    ]
+
+
+def test_a_checkouts_disk_check_runs_in_place_and_is_not_compared(
+    monkeypatch, tmp_path
+):
+    # The repository is a checkout: its units come from tooling/systemd, and
+    # only the update script is copied.
+    systemd, copies = _install(tmp_path, monkeypatch, _REPO)
+    assert set(copies) == {"mascope-update.sh"}
+    assert not (tmp_path / "lib" / "disk-check.sh").exists()
+    assert doctor.outdated_units(str(_REPO), systemd) == []
+
+
+def test_outdated_units_empty_when_not_installed(tmp_path):
+    assert doctor.outdated_units(str(tmp_path), tmp_path / "systemd") == []
+
+
+def test_an_unreadable_installed_file_is_not_called_outdated(monkeypatch, tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root reads any file")
+    home = tmp_path / "home"
+    systemd, _ = _install(tmp_path, monkeypatch, home)
+    unit = systemd / "mascope-update.service"
+    unit.write_text("changed\n", encoding="utf-8")
+    unit.chmod(0)
+    try:
+        assert doctor.outdated_units(str(home), systemd) == []
+    finally:
+        unit.chmod(0o644)
+
+
+def test_build_report_reads_outdated_units(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor, "_run", lambda cmd, **k: _completed(returncode=1))
+    home = tmp_path / "home"
+    systemd, copies = _install(tmp_path, monkeypatch, home)
+    copies["mascope-update.sh"].write_text("#!/bin/bash\n", encoding="utf-8")
+    report = doctor.build_report(
+        mascope_path=str(home),
+        container_specs=[],
+        versioned_specs=[],
+        expected_version=None,
+        disk_specs=[],
+        backups_dir=tmp_path / "backups",
+        min_free_gb=1.0,
+        systemd_dir=systemd,
+    )
+    assert report.units_outdated == [str(copies["mascope-update.sh"])]
+    assert report.ok is True
+
+
 # --- report / rendering ---
 
 
@@ -603,6 +728,39 @@ def test_a_unit_running_from_a_venv_is_flagged_but_ok():
     assert "mascope-disk-check.service runs /v/site-packages/disk-check.sh" in text
     assert "STALE" in text and "re-run 'mascope prod units install'" in text
     assert report.to_dict()["units"][0]["state"] == "venv"
+
+
+def test_outdated_units_are_flagged_but_ok():
+    report = _healthy_report()
+    report.units = [
+        doctor.UnitScript(name, f"/usr/local/lib/mascope/{name}.sh", "in-place")
+        for name in doctor.SCRIPT_UNITS
+    ]
+    report.units_outdated = [
+        "/etc/systemd/system/mascope-update.service",
+        "/usr/local/lib/mascope/mascope-update.sh",
+    ]
+    assert report.ok is True and report.exit_code == 0
+    text = doctor.format_text(report)
+    assert text.startswith("[OK]")
+    assert (
+        "Units    mascope-update.service, mascope-update.sh not as this release "
+        "writes them  OUTDATED · re-run 'mascope prod units install'"
+    ) in text
+    assert report.to_dict()["units_outdated"] == report.units_outdated
+
+
+def test_outdated_units_show_when_no_script_unit_is_installed():
+    # mascope.service is installed but neither script unit is: a host an old
+    # release set up, before those units.
+    report = _healthy_report()
+    report.units = [
+        doctor.UnitScript(name, None, "absent") for name in doctor.SCRIPT_UNITS
+    ]
+    report.units_outdated = ["/etc/systemd/system/mascope-update.service"]
+    assert "mascope-update.service not as this release writes them  OUTDATED" in (
+        doctor.format_text(report)
+    )
 
 
 def test_a_unit_missing_its_script_is_attention():

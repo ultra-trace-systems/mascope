@@ -480,10 +480,13 @@ def install(
     home and the mascope executable filled in, copies the scripts they run to
     /usr/local/lib/mascope, where a CLI change leaves them, seeds the settings
     files in /etc/mascope once (never overwriting one), and enables the boot service,
-    the disk check and the assignment-run retention. The unattended update is
-    installed but left disabled: enable mascope-update.timer when ready.
-    Runs its privileged steps through sudo; run it as the deploy account,
-    again after a release changes the units.
+    the disk check and the assignment-run retention. It never changes the
+    unattended update's timer: a first install leaves it disabled (enable
+    mascope-update.timer when ready), a re-run leaves it as it was.
+    Runs its privileged steps through sudo; run it as the deploy account.
+
+    An update does not rewrite the units or the copied scripts: run this
+    again after one, whenever `mascope prod doctor` reports them OUTDATED.
     """
     _require_linux()
     user = getpass.getuser()
