@@ -1223,6 +1223,10 @@ class BatchPeakRunRecord(BaseModel):
     batch_peak_run_utc_completed: datetime | None = None
     #: When this run's ledger state was captured - set as the next run started.
     snapshot_utc: datetime | None = None
+    #: When the live ledger was last written while this run was current: a
+    #: fold, a curation, or a search's or an import's rows, which make no run
+    #: of their own. Null until the first such write.
+    ledger_utc_modified: datetime | None = None
 
 
 class BatchPeakRunsResponse(BaseModel):

@@ -3512,6 +3512,12 @@ class BatchPeakRun(Base):
     snapshot_utc: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    #: When the live ledger was last written while this run was current - a
+    #: fold, a curation, a search's or an import's rows (``touch_ledger``).
+    #: The stamp a client compares to see a ledger edit that makes no run.
+    ledger_utc_modified: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(
