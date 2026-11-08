@@ -12,6 +12,9 @@ deploys rely on (MASCOPE_VERSION pinning, log level/grep propagation).
 
 import json
 import os
+import re
+import subprocess
+import sys
 
 import pytest
 
@@ -116,3 +119,32 @@ def test_entrypoint_survives_an_unreadable_state_file(
     assert str(mascope_home) in result.output
     # The startup write repaired the file instead of leaving it corrupt.
     assert json.loads(state_path.read_text())["env"]["override"] is None
+
+
+@pytest.mark.parametrize("group, sub", [("prod", "units"), ("dev", "db")])
+def test_logs_go_to_stderr_and_stdout_holds_only_the_output(group, sub, mascope_home):
+    # A real process, so the console sink is bound to the streams a shell
+    # redirects: a `--dry-run` plan saved with `> plan.txt` must hold the plan
+    # alone. The group callback logs its "Running at env" line before the
+    # subcommand runs, and the subcommand's help is its output on stdout.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from mascope_cli.main import app; app()",
+            group,
+            sub,
+            "--help",
+        ],
+        env={**os.environ, "MASCOPE_PATH": str(mascope_home)},
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Running at env" in result.stderr
+    assert "Running at env" not in result.stdout
+    # CI forces colour, so the help itself may carry colour codes.
+    help_text = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    assert help_text.lstrip().startswith("Usage:"), help_text[:300]

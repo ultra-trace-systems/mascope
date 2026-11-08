@@ -43,6 +43,10 @@ Everything below assumes an Ubuntu host provisioned with
 | Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
 | Assignment-run retention history | `journalctl -u mascope-assignment-prune.service` |
 
+The `mascope` commands write their log lines to stderr and their output to
+stdout. So `> plan.txt` saves only a `--dry-run` plan, and `| jq` gets only
+the `--json` report. Add `2>&1` to keep the log lines too.
+
 ## Health at a glance
 
 `mascope prod doctor` gathers the signals you would otherwise check across

@@ -506,8 +506,11 @@ class RuntimeLogging:
             retention=datetime.timedelta(days=14),  # retain two weeks of files
             compression="zip",  # compress rotated files (~10x smaller on disk)
         )
+        # stderr, so a command's stdout holds only its output: a redirected
+        # `--dry-run` plan or a piped report carries no log line. The
+        # containers, systemd units and the File Agent's console show both.
         terminal_handler = dict(
-            sink=sys.stdout,
+            sink=sys.stderr,
             format=self.formatter(),
             colorize=True,
             level=self.runtime.module.config.log_level.upper(),

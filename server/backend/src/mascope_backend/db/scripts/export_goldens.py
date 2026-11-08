@@ -41,8 +41,8 @@ Usage:
 
 The ``--json <path>`` and ``--ms2-json <path>`` forms are what the
 reproducibility test uses to export the produced peaks and MS2 spectra from
-inside the backend container (the logger owns stdout, so the rows go to a
-file rather than the console).
+inside the backend container (the logger shared stdout before it moved to
+stderr, so the rows go to a file rather than the console).
 """
 
 import asyncio
