@@ -6,6 +6,11 @@ scans read half the share (GitHub #2845). A TOF peak's area is its bins'
 ion rate summed times the sample interval in ns, so on TOF the TIC takes
 the interval on too and the share is a fraction of the ions.
 
+On a polarity-switching file fitted whole, the intensities are averaged over
+the fitted polarity's scans, so the TIC is read over those scans alone:
+against every scan's, the other polarity's ion current moved the share
+(GitHub #2949).
+
 The per-stream fit's shares and its summary are pinned in
 ``tests/unit/libraries/signal/test_calibration_per_stream.py``.
 """
@@ -33,8 +38,10 @@ from mascope_signal.peak import DEFAULT_SAMPLE_INTERVAL_NS
 
 NODE = "mascope_backend.api.controllers.calibration.lib.calibration_mz_fit"
 
-#: Every scan's TIC, whatever the file's length
+#: Every negative scan's TIC, whatever the file's length
 TIC_PER_SCAN = 50.0
+#: Every positive scan's: a share read against both polarities moves
+POSITIVE_TIC_PER_SCAN = 3 * TIC_PER_SCAN
 AREA = 100.0
 #: A file whose props hold no sample interval at all
 UNRECORDED = object()
@@ -48,10 +55,19 @@ def filestore(tmp_path, monkeypatch):
 
 
 def _tic(n_scans):
-    return patch(
-        f"{NODE}.m_compute.get_tic_per_scan",
-        return_value=(np.arange(n_scans), np.full(n_scans, TIC_PER_SCAN)),
-    )
+    """A polarity-switching file of ``n_scans`` scans of each polarity."""
+
+    def get_tic_per_scan(filename, polarity=None, **selection):
+        assert not selection, "a fit of the whole file reads no stream"
+        negative = np.full(n_scans, TIC_PER_SCAN)
+        positive = np.full(n_scans, POSITIVE_TIC_PER_SCAN)
+        if polarity == "-":
+            return np.arange(n_scans), negative
+        if polarity == "+":
+            return np.arange(n_scans), positive
+        return np.arange(2 * n_scans), np.ravel([negative, positive], order="F")
+
+    return patch(f"{NODE}.m_compute.get_tic_per_scan", side_effect=get_tic_per_scan)
 
 
 def _set_sample_interval(root, filename, interval):
@@ -138,11 +154,11 @@ def _orbi_matches():
     )
 
 
-async def _orbi_shares(n_scans):
+async def _orbi_shares(n_scans, polarity="-"):
     params = CalibrationFitParams(
         calibration_collection_id="tc-1",
         ionization_mechanism_ids=["im-1"],
-        polarity="-",
+        polarity=polarity,
         **OrbiCalibrationParams().model_dump(),
     )
     handler = OrbiCalibrationHandler("OrbiFile_2026.10.20_12h00m00s_x", params)
@@ -192,3 +208,22 @@ async def test_an_orbitrap_file_of_twice_the_scans_has_the_same_share():
     )
     assert long_total == pytest.approx(short_total, rel=1e-12)
     assert short_total == pytest.approx(60 / TIC_PER_SCAN)
+
+
+@pytest.mark.asyncio
+async def test_an_orbitrap_share_is_of_the_fitted_polaritys_scans_alone():
+    """Of each polarity's own TIC, not of a mean over both."""
+    negative, _ = await _orbi_shares(4, polarity="-")
+    positive, positive_total = await _orbi_shares(4, polarity="+")
+
+    assert negative == pytest.approx(
+        [30 / TIC_PER_SCAN, 20 / TIC_PER_SCAN, 10 / TIC_PER_SCAN]
+    )
+    assert positive == pytest.approx(
+        [
+            30 / POSITIVE_TIC_PER_SCAN,
+            20 / POSITIVE_TIC_PER_SCAN,
+            10 / POSITIVE_TIC_PER_SCAN,
+        ]
+    )
+    assert positive_total == pytest.approx(60 / POSITIVE_TIC_PER_SCAN)
