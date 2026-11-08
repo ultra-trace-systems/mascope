@@ -26,6 +26,9 @@ from mascope_backend.api.new.peak_assignments import (
     batch_peaks_routes,
     batch_untargeted,
 )
+from mascope_backend.api.new.peak_assignments.batch_coherence import (
+    _write_records as _write_co_variation_records,
+)
 from mascope_backend.api.new.peak_assignments.batch_curation import (
     ISOTOPE_LINE_CODE,
     NOT_CURATED_CODE,
@@ -901,6 +904,16 @@ async def test_a_series_detections_records_move_the_stamp(
         anchor["batch_id"], {anchor["batch_peak_id"]: {"homologues": 2}}
     )
     assert touched == {anchor["batch_peak_id"]}
+    assert await _moved(async_session_factory, anchor["batch_id"])
+
+
+async def test_a_co_variation_readings_records_move_the_stamp(
+    async_session_factory, anchor
+):
+    await _set_stamp(async_session_factory, anchor["batch_id"])
+    await _write_co_variation_records(
+        anchor["batch_id"], {anchor["batch_peak_id"]: {"verdict": "co_varying"}}
+    )
     assert await _moved(async_session_factory, anchor["batch_id"])
 
 

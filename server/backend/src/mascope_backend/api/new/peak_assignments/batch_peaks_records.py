@@ -18,6 +18,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     instrument_type_of,
     manual_pin_of,
     mz_from_delta,
+    standing_co_variation_record,
     standing_series_record,
     tier_name,
 )
@@ -61,6 +62,9 @@ def _batch_peak_meta(bp) -> dict:
     the consensus identity (``batch_import``), None on every other anchor.
     ``series`` is the homologous series the batch's series detection found
     for the consensus formula (``batch_series``), None where it found none.
+    ``co_variation`` is how the anchor's trace follows the same neutral's
+    other channels, as the batch's co-variation reading left it
+    (``batch_coherence``), None where it read none for the consensus.
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -89,6 +93,7 @@ def _batch_peak_meta(bp) -> dict:
         "engine_tier": bp.engine_tier,
         "engine_claim": bp.engine_claim,
         "series": standing_series_record(bp),
+        "co_variation": standing_co_variation_record(bp),
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,

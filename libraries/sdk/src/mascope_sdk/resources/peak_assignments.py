@@ -650,8 +650,14 @@ class PeakAssignmentsResource(BaseResource):
                                    :meth:`get`).
         :type peak_assignment_id: str
         :return: The full assignment record: every :meth:`get` column plus
-                 ``alternatives`` (list) and ``provenance`` (dict). Returns
-                 None if the response carries no record.
+                 ``alternatives`` (list) and ``provenance`` (dict), and
+                 ``batch_co_variation``: what the batch's *Read co-variation*
+                 run says of the batch peak the row's peak is in, where the
+                 row reads it as that run did (the ledger's
+                 ``co_variation``, read with
+                 :meth:`~mascope_sdk.resources.batch_peaks.BatchPeaksResource.list`);
+                 None otherwise, and absent from a server that predates it.
+                 Returns None if the response carries no record.
         :rtype: dict | None
         :raises AuthenticationError: If authentication fails.
         :raises NotFoundError: If the sample or assignment is not found.

@@ -76,6 +76,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     SERIES_KEY,
     mz_from_delta,
     resolve_candidate,
+    row_co_variation,
     standing_series_record,
 )
 from mascope_backend.api.new.peak_assignments.calibration_store import (
@@ -763,6 +764,30 @@ async def get_peak_assignments(
     }
 
 
+async def _batch_peak_of(
+    session, sample_item_id: str, sample_peak_id: object
+) -> BatchPeak | None:
+    """The batch peak a sample's peak sits in, or None: one indexed scan over
+    the sample's members, as the ledger's ``batch_peak_id`` is looked up."""
+    if sample_peak_id is None:
+        return None
+    return (
+        await session.execute(
+            select(BatchPeak)
+            .join(
+                BatchPeakOccurrence,
+                BatchPeakOccurrence.batch_peak_id == BatchPeak.batch_peak_id,
+            )
+            .where(
+                BatchPeakOccurrence.sample_item_id == sample_item_id,
+                BatchPeakOccurrence.sample_peak_id == str(sample_peak_id),
+            )
+            .order_by(BatchPeak.batch_peak_id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 @api_controller()
 async def get_peak_assignment_detail(
     sample_item_id: str,
@@ -793,6 +818,7 @@ async def get_peak_assignment_detail(
                     f"'{sample.sample_item_name}'"
                 )
             derived = member_detail(*found)
+            derived["batch_co_variation"] = row_co_variation(derived, found[1])
         else:
             derived = None
             assignment = await session.get(PeakAssignment, peak_assignment_id)
@@ -802,6 +828,12 @@ async def get_peak_assignment_detail(
                     f"'{sample.sample_item_name}'"
                 )
             record = assignment.to_dict()
+            record["batch_co_variation"] = row_co_variation(
+                record,
+                await _batch_peak_of(
+                    session, sample_item_id, record.get("sample_peak_id")
+                ),
+            )
             run = await session.get(
                 PeakAssignmentRun, assignment.peak_assignment_run_id
             )

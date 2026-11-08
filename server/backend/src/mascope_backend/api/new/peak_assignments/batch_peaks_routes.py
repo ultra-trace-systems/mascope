@@ -14,6 +14,9 @@ from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.models.base_pydantic_model import RequestBodyModel
 from mascope_backend.api.new.auth.dependencies import current_active_user
+from mascope_backend.api.new.peak_assignments.batch_coherence import (
+    read_batch_co_variation,
+)
 from mascope_backend.api.new.peak_assignments.batch_curation import (
     curate_batch_peak,
     release_batch_peak_curation,
@@ -498,6 +501,55 @@ async def detect_series_batch_peaks_route(
     return {
         "message": (
             "Detecting the homologous series of the batch peaks of "
+            f"'{sample_batch.sample_batch_name}', please wait."
+        ),
+        "process_id": process_id,
+    }
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/read-co-variation",
+    # A write into the batch ledger's anchors, gated like the series detection
+    # above and, like it, not opened to API tokens.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202)
+async def read_co_variation_batch_peaks_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Read how the channels of every compound the batch sees through two
+    ionization channels follow each other across the batch.
+
+    For each pair of batch peaks reading one neutral through two channels, per
+    ionization mode and instrument type, the two members' traces are read in
+    log intensity, divided by each spectrum's reagent signal, with the batch's
+    common mode removed, and correlated over the spectra both hold: at r 0.6
+    or above the two co-vary, below they do not, and under ten shared spectra
+    or on a flat trace the pair is untestable. Each batch peak records the
+    reading under ``provenance.co_variation`` and the ledger serves it as
+    ``co_variation``. Display-only: no tier moves. Runs as a background task,
+    as a batch run, and emits ``peak_assignment_reload`` on completion.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: Acknowledgement message with the background process id.
+    """
+    sample_batch = await fetch_sample_batch(sample_batch_id)
+    await check_no_run_in_flight(sample_batch_id=sample_batch_id)
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        read_batch_co_variation,
+        sample_batch_id=sample_batch_id,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    return {
+        "message": (
+            "Reading the co-variation of the batch peaks' channels in "
             f"'{sample_batch.sample_batch_name}', please wait."
         ),
         "process_id": process_id,
