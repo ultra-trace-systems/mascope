@@ -81,13 +81,20 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
   const instrumentChoice = ref(null)
   /**
    * The partition shown, or null when the batch has only one: the user's
-   * choice, else the first the batch holds. A batch of two holds both types,
-   * so any choice made is one it has.
+   * choice, else the selection's, else the first the batch holds. A batch of
+   * two holds both types, so any choice made is one it has. The selection's
+   * comes before the first so that a batch going from one type to two - a
+   * sample of the other type folding in - keeps showing what was selected
+   * rather than hiding it from the chart.
    */
   const instrumentType = computed(() => {
     const types = instrumentTypes.value
     if (types.length < 2) return null
-    return instrumentChoice.value ?? types[0]
+    if (instrumentChoice.value) return instrumentChoice.value
+    const selectedType = data.selected.value.find((bp) =>
+      types.includes(bp?.instrument_type)
+    )?.instrument_type
+    return selectedType ?? types[0]
   })
   /** Whether a batch peak is in the partition shown. */
   const inPartition = (bp) =>
@@ -95,11 +102,14 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
   /**
    * Show another partition. The selection keeps only that partition's rows,
    * so the chart, which draws the selection, never mixes the two units.
+   * @returns {number} how many selected rows of the other partition it dropped
    */
   function showInstrument(type) {
     instrumentChoice.value = type
     const kept = data.selected.value.filter(inPartition)
-    if (kept.length !== data.selected.value.length) data.selected.value = kept
+    const dropped = data.selected.value.length - kept.length
+    if (dropped) data.selected.value = kept
+    return dropped
   }
 
   // No tier histogram here. The strip it feeds counts SPECIES rather than

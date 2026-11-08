@@ -227,9 +227,9 @@ const ION_TOOLTIP = 'Ion formula: the peak names an ion, and no compound of the 
 
 // A batch import can carry the engine's own verdict on each identity it lands,
 // kept beside the consensus tier this server measures rather than in its
-// place. Offered only where some batch peak carries one, as the sample
-// ledger's column is.
-const hasEngineTiers = computed(() => ledger.value.list.some((bp) => bp.engine_tier != null))
+// place. Offered only where some batch peak of the instrument type shown
+// carries one, as the sample ledger's column is: an import lands on one type.
+const hasEngineTiers = computed(() => shown.value.some((bp) => bp.engine_tier != null))
 
 // The engine-tier view: the strip counts, and its chips filter, by the engine's
 // tier, so an imported run can be read in its engine's words. Off by default
@@ -1448,14 +1448,14 @@ watch(
   order: 1;
 }
 
-/* Matches the sample ledger's strip (PaneBrowserAssignment.vue): the two sit in
-   the same tab position, and a reader switching between a sample and its batch
-   should recognize the same control. */
 .instrument-partition {
   display: flex;
   align-items: center;
 }
 
+/* Matches the sample ledger's strip (PaneBrowserAssignment.vue): the two sit in
+   the same tab position, and a reader switching between a sample and its batch
+   should recognize the same control. */
 .tier-strip {
   display: flex;
   flex-flow: row wrap;

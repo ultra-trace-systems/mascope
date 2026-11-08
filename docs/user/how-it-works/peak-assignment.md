@@ -1178,11 +1178,13 @@ holds mixed batch peaks until *Rebuild batch ledger* folds its samples again, wh
 separates them. This is the rule batch alignment keeps too: it
 refuses a batch of two instrument types, since one alignment has one intensity unit.
 The ledger route and the SDK's `batch_peaks.list` name each batch peak's type in
-`instrument_type` (`orbi` or `tof`).
+`instrument_type` (`orbi` or `tof`). A verdict or a pin is on one batch peak, so on
+such a batch it covers one instrument type's samples: the Orbitrap and the TOF row of
+one species each take their own.
 
 The *Verdict* column, last in the ledger, records and shows a
 [batch-level verdict](#batch-level-verdicts) on the species: one judgment that covers
-every sample in the batch without a verdict of its own.
+every sample of the batch peak's instrument type without a verdict of its own.
 
 The rows you tick in the *Batch peaks* ledger are what the batch chart draws, one
 trace per batch peak. The ledger lists every anchor in the batch, which on a large

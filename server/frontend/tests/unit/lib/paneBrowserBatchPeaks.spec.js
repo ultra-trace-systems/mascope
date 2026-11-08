@@ -1674,7 +1674,8 @@ describe('PaneBrowserBatchPeaks on a batch of two instrument types', () => {
   const rowIds = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
 
   it('offers no picker on a batch of one instrument type', async () => {
-    wrapper = await mountPane({ peaks: [ORBI] })
+    // The real store's answer on a single-type batch: one type, no partition.
+    wrapper = await mountPane({ peaks: [ORBI], ledger: { instrumentTypes: ['orbi'] } })
     expect(picker().exists()).toBe(false)
     expect(rowIds()).toEqual(['bp-orbi'])
   })
@@ -1700,5 +1701,16 @@ describe('PaneBrowserBatchPeaks on a batch of two instrument types', () => {
     expect(app.data.batchPeak.showInstrument).toHaveBeenCalledWith('tof')
     expect(rowIds()).toEqual(['bp-tof'])
     expect(wrapper.vm.intensityTooltip).toMatch(/summed peak area/)
+  })
+
+  it("offers the engine tier view only where the shown type's batch peaks carry one", async () => {
+    // A batch import lands on one partition: here the Orbitrap one.
+    const imported = { ...ORBI, engine_tier: 'assigned' }
+    wrapper = await mountPane({ peaks: [imported, TOF], ledger: partitioned() })
+    expect(wrapper.vm.hasEngineTiers).toBe(true)
+
+    picker().vm.$emit('update:modelValue', 'tof')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.hasEngineTiers).toBe(false)
   })
 })

@@ -50,10 +50,12 @@ export const useBatchChartSelection = defineStore('browser.match.batchChartSelec
     if (!store.inPartition(record)) {
       const from = INSTRUMENT_TYPE_LABELS[store.instrumentType]
       const to = INSTRUMENT_TYPE_LABELS[record.instrument_type]
-      store.showInstrument(record.instrument_type)
+      const dropped = store.showInstrument(record.instrument_type)
       notify(
-        `The batch chart now draws the batch's ${to} species; its ${from} ones are ` +
-          'in another unit and were taken out of the chart.',
+        dropped
+          ? `The batch chart now draws the batch's ${to} species; its ${from} ones are ` +
+              'in another unit and were taken out of the chart.'
+          : `The Batch peaks ledger now shows the batch's ${to} species.`,
         'info'
       )
     }
