@@ -325,6 +325,7 @@ async def compute_sample_file_peaks_route(
         compute_sample_file_peaks,
         sample_file_id=sample_file_id,
         user=user,
+        user_id=user.id,
         access_token=access_token,
         process_id=process_id,
         independent_transaction=True,
