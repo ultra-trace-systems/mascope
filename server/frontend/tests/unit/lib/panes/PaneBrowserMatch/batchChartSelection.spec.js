@@ -23,9 +23,11 @@ function ledger(ids, selectedIds = [], instrumentTypeOf = {}) {
       store.instrumentType == null || bp.instrument_type === store.instrumentType,
     showInstrument: vi.fn((type) => {
       store.instrumentType = type
+      const before = store.selected.length
       store.selected = store.selected.filter(store.inPartition)
+      return before - store.selected.length
     }),
-    selected: selectedIds.map((batch_peak_id) => ({ batch_peak_id })),
+    selected: selectedIds.map((id) => list.find((r) => r.batch_peak_id === id)),
     isSelected: (arg) => store.selected.some((r) => r.batch_peak_id === arg.batch_peak_id),
     select: vi.fn((arg) => {
       const record = list.find((r) => r.batch_peak_id === arg.batch_peak_id)
@@ -96,6 +98,15 @@ describe('useBatchChartSelection', () => {
         message: expect.stringMatching(/draws the batch's TOF species; its Orbitrap ones/)
       })
     )
+  })
+
+  it('says only that the ledger switched when the selection held nothing of the other type', () => {
+    app = makeApp(ledger(['bp-1', 'bp-2'], [], { 'bp-1': 'orbi', 'bp-2': 'tof' }))
+    const chart = useBatchChartSelection()
+    expect(chart.toggle({ batch_peak_id: 'bp-2' })).toBe(true)
+    expect(app.data.batchPeak.showInstrument).toHaveBeenCalledWith('tof')
+    const { message } = app.ui.notification.push.mock.calls[0][0]
+    expect(message).toBe("The Batch peaks ledger now shows the batch's TOF species.")
   })
 
   it('plots a species of the shown instrument type without a word', () => {

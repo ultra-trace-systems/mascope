@@ -320,10 +320,12 @@ async def get_batch_peak_counterpart(
     samples can fail to share a species: the source peak was never folded (its
     sample has no completed run, or batch peaks were never computed for the
     batch), the anchor was never observed in the target sample, or the two
-    samples belong to different batches or ionization modes. The last case needs
-    no enforcement branch because it cannot match: a batch peak is stamped with
-    its ``sample_batch_id`` and ``ionization_mode_id`` when it is minted, and a
-    sample's batch is a scalar column, so a cross-batch pair simply finds no row.
+    samples belong to different batches, ionization modes or instrument types.
+    The last case needs no enforcement branch because it cannot match: a batch
+    peak is stamped with its ``sample_batch_id``, ``ionization_mode_id`` and
+    ``intensity_variable`` (the unit that names its instrument type) when it is
+    minted, and a sample's batch is a scalar column, so a cross-batch pair - or
+    an Orbitrap and a TOF sample of one batch - simply finds no row.
 
     Two caveats worth knowing when a lookup comes back empty. Recomputing a
     sample's peaks mints fresh ``peak_id`` values, so that sample's stored

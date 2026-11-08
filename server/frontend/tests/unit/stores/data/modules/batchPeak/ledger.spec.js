@@ -74,10 +74,28 @@ describe('batchPeak ledger store: the instrument partition', () => {
     ])
 
     store.select({ batch_peak_id: 'bp-o' })
-    store.showInstrument('tof')
+    expect(store.showInstrument('tof')).toBe(1)
     expect(store.instrumentType).toBe('tof')
     expect(store.selectedIds).toEqual([])
     store.select({ batch_peak_id: 'bp-t' })
     expect(store.selectedIds).toEqual(['bp-t'])
+    // Nothing of the other type left to drop.
+    expect(store.showInstrument('tof')).toBe(0)
+  })
+
+  it('keeps showing the selected type when a batch of one type gains the other', async () => {
+    get.mockResolvedValue([row('bp-t', 'tof'), row('bp-t2', 'tof')])
+    const store = useBatchPeakLedger()
+    await store.load('test')
+    store.select({ batch_peak_id: 'bp-t' })
+    expect(store.instrumentType).toBeNull()
+
+    // An Orbitrap sample folds in, and the ledger reloads with both types.
+    get.mockResolvedValue([row('bp-t', 'tof'), row('bp-t2', 'tof'), row('bp-o', 'orbi')])
+    await store.load('test')
+    expect(store.instrumentTypes).toEqual(['orbi', 'tof'])
+    expect(store.selectedIds).toEqual(['bp-t'])
+    expect(store.instrumentType).toBe('tof')
+    expect(store.selected.every(store.inPartition)).toBe(true)
   })
 })
