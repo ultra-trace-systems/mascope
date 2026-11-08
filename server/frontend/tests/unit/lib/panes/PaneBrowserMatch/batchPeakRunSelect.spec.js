@@ -69,6 +69,11 @@ describe('BatchPeakRunSelect', () => {
     expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Series detection · current')
   })
 
+  it('names a co-variation reading', () => {
+    const wrapper = mountSelect([run('r4', 'read_co_variation', { current: true }), ...RUNS])
+    expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Co-variation reading · current')
+  })
+
   it('marks a running run as such', () => {
     const wrapper = mountSelect([run('r4', 'rebuild', { status: 'running' }), ...RUNS])
     expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Rebuild · running…')

@@ -102,6 +102,18 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
       'Detect the homologous series of the batch (CH2, O, CO2 and more) from its assigned batch peaks, and measure the formulas they propose for the ones nothing has assigned or holds only as a candidate.'
   )
 
+  // The co-variation reading: how the channels of every compound the batch
+  // sees through two of them follow each other across the batch. It moves no
+  // tier, has no parameters, and waits on its own task as the detection does.
+  const reading = ref(false)
+  const pendingReadId = ref(null)
+  let readTimer = null
+  const readTooltip = computed(
+    () =>
+      blockedReason.value ??
+      'Read how the channels of every compound seen through two of them follow each other across the batch. Moves no tier.'
+  )
+
   function endComputing() {
     computing.value = false
     pendingProcessId.value = null
@@ -204,6 +216,34 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     }
   }
 
+  function endReading() {
+    reading.value = false
+    pendingReadId.value = null
+    clearTimeout(readTimer)
+    readTimer = null
+  }
+
+  async function readCoVariation() {
+    const batchId = app.data.batch.focusedId
+    if (!batchId || reading.value || blockedReason.value) return
+    reading.value = true
+    launchError.value = null
+    clearTimeout(readTimer)
+    readTimer = setTimeout(endReading, COMPUTE_TIMEOUT)
+    try {
+      const response = await api.http.post(
+        `/batch-peaks/batch/${batchId}/read-co-variation`,
+        {},
+        { type: 'read_batch_co_variation', errors: 'inline' }
+      )
+      pendingReadId.value = response?.headers?.['process-id'] ?? null
+    } catch (error) {
+      endReading()
+      launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
+      launchError.value = getApiErrorMessage(error, 'Could not start the co-variation reading.')
+    }
+  }
+
   /** Backfill batch peaks from this batch's existing assignments; the ledger and
    *  chart refresh on the peak_assignment_reload event the task emits. */
   async function compute() {
@@ -283,10 +323,19 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     endDetecting()
   })
 
+  app.ui.notification.on('read_batch_co_variation', (notification) => {
+    if (!reading.value) return
+    if (notification?.status === 'pending') return
+    const id = notification?.process_id
+    if (pendingReadId.value && id && id !== pendingReadId.value) return
+    endReading()
+  })
+
   function reset() {
     endComputing()
     endSearching()
     endDetecting()
+    endReading()
     endExporting()
     launchError.value = null
     launchRefused.value = false
@@ -305,6 +354,9 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     detecting,
     detectTooltip,
     detectSeries,
+    reading,
+    readTooltip,
+    readCoVariation,
     exporting,
     exportLedger,
     reset

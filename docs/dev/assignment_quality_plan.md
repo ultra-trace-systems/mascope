@@ -91,7 +91,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.6 - priors and the dataset's context | - |  | planned; two riders from the reference's 0.10 line (the review section) |
 | 3.7 - stage 3 gate, engine 0.6.0 | - |  | planned; read against the literature and chemical reasoning, not the reference (decision 27) |
 | 4.1 - series detection on the batch ledger | - |  | built: *Detect series* walks CH2, O, H2O, CO, CO2, C2H2O and, from a peak carrying their element, C2H6OSi and CF2 up to three steps from the batch's assigned peaks onto its unassigned and candidate ones within the search's window, commits a unit at 12 proposals and ten times its six decoys' mean (re-derived on the testbed: 3x commits every TOF family), measures each proposal through the propagation chain, records the series with `has_anchor` on the batch peak, and a run counts it as a second observation; tiering rule set 12; MAS-61 |
-| 4.2 - time-series coherence | - |  | planned; five riders from the reference's 0.10 line (the review section) |
+| 4.2 - time-series coherence | - |  | built, the co-variation reading (decision 35): *Read co-variation* reads every neutral the batch sees through two channels, per mode and instrument type, as Pearson r of the log traces, reagent-normalised, the common mode (each spectrum's median of the persistent traces) removed; co-varying at r >= 0.6, untestable under 10 shared spectra or a residual spread under 0.02 in log10 (both measured against decoy pairs on the testbed's 20 batch ledgers); recorded on the batch peak, shown in the ledger and the inspector, no tier moves. The nine riders are steps of their own (MAS-777); MAS-62 |
 | 4.3 - calibration from verdicts, per profile | - |  | planned |
 | 4.4 - gate automation | - |  | planned |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
@@ -1200,6 +1200,63 @@ who edits chemistry and stays last.
 - **Verify.** On the two 400-600-sample testbed batches; compare with
   peaky's pass-7 skips.
 - **Size.** M. Depends on 2.3 and 2.4.
+- **As built (the co-variation reading; MAS-62).** The pure half is
+  `mascope_tools.composition.coherence`: `batch_residuals` puts a
+  partition's traces in log10, divides each spectrum by its summed reagent
+  signal where the partition holds reagent ions, and removes the common
+  mode, each spectrum's median of the persistent traces (present in half
+  the spectra or more) taken from their own medians, read where five or
+  more hold it: one sweep of Tukey's median polish. Under that median a
+  per-spectrum factor every trace shares, the reagent normaliser's
+  included, comes out anyway; the normalisation is kept so the common mode
+  is read off normalised traces, the unit 4.11's ratio series shares.
+  `read_co_variation` is Pearson's r over the spectra both residual traces
+  hold, with the count, co-varying at 0.6 or more, untestable under 10
+  shared spectra or a residual spread under 0.02 in log10. The batch half is
+  `batch_coherence.py`: *Read co-variation*
+  (`POST /api/batch-peaks/batch/{id}/read-co-variation`), a batch run
+  (action `read_co_variation`), pairs every two monoisotopic, unclaimed
+  batch peaks of one neutral (`cross_channel.neutral_key`) through two
+  different mechanisms at any tier that commits a formula; two through one
+  mechanism are not partners. The common mode is read off every
+  monoisotopic, unclaimed batch peak of the partition, the normaliser off
+  its reagent batch peaks, their isotope lines left out. Each batch peak of
+  a pair carries `provenance.co_variation`: its formula and mechanism, the
+  strongest partner's verdict, r, count, reason and spread, every partner
+  strongest first, whether the traces were normalised, and the run. The
+  consensus keeps it while it names that formula through that mechanism; a
+  new reading replaces every record. The ledger and a run's snapshot serve
+  it as `co_variation` (`batch_peak_run_anchor.co_variation`, one
+  migration), and a sample's detail read as `batch_co_variation` on a
+  monoisotopic row reading its peak as the batch did. The ledger shows a
+  *Co-variation* column once a reading has run; the inspector a line. No
+  tier, reason or member moves.
+  - **The measurement behind the thresholds**, on the testbed's 20 batch
+    ledgers (2026-11-08), each neutral's channel pair read against a decoy
+    pair: its first trace against one of another neutral in the same
+    partition, of a prevalence within a quarter of its partner's. Over 3 to
+    9 shared spectra 28 % of decoy pairs read r >= 0.6 (45 % of channel
+    pairs), over 10 to 19 14 % (23 %), over 20 to 49 5 % (12 %): hence 10.
+    Over ten or more spectra, channel pairs whose flatter residual trace
+    spreads under 0.02 read co-varying in 4 % of 185 pairs, against 19 %
+    between 0.02 and 0.04 and 39 % or more above 0.04: hence 0.02. At the
+    thresholds the reading finds 3,775 channel pairs: 385 co-varying, 738
+    not, 2,465 on too few spectra (the 6-sample gate sets) and 187 flat;
+    channel pairs read co-varying 2.6 times as often as decoy pairs, a ratio
+    4.13's null model has to turn into a likelihood ratio before any tier
+    reads it. Over 200 spectra or more, decoy pairs read co-varying in 28 %
+    of cases on the raw log traces and in 15 % on the residuals. The largest
+    batch (8,368 batch peaks, 546 spectra) reads in 0.3 s.
+  - **Not done here.** The four riders of the 0.8 line and the five of the
+    0.10 line: none is built. The plan owner decided on 2026-11-10
+    (MAS-777) that each becomes a step of its own, measured on its own
+    pass, rather than a part of this one. The
+    Verify line's comparison with the reference's pass-7 skips and its
+    `tables/iso_checks.csv` reads the reference's run folders and is the
+    planner's pass after the merge. The electron-attachment check could not
+    be read on the testbed's copy: its batch ledgers hold no radical anion
+    beside another channel of the same neutral (33 radical cations do, 21
+    co-varying, none anti-correlated).
 
 ### 4.3 Calibration from verdicts, per profile
 

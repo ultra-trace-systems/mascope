@@ -29,6 +29,7 @@ import {
   listingTooltip
 } from '@/lib/referenceListings'
 import { seriesTooltip } from '@/lib/batchSeries'
+import { coVariationLabel, coVariationRank, coVariationTooltip } from '@/lib/batchCoVariation'
 import {
   ENGINE_UNSTATED,
   ENGINE_UNSTATED_META,
@@ -79,7 +80,8 @@ const RUN_ACTION_LABELS = {
   rebuild: 'a rebuild',
   search_untargeted: 'an untargeted search',
   import: 'an import',
-  detect_series: 'a series detection'
+  detect_series: 'a series detection',
+  read_co_variation: 'a co-variation reading'
 }
 const viewedRunLabel = computed(() => {
   const run = runs.value.viewing
@@ -257,6 +259,14 @@ const engineTierTooltip = (row) => {
         `members' measurements says ${row.consensus_tier}${said}`
 }
 
+// --- The co-variation reading ---------------------------------------------------
+
+// How a species' trace follows the same compound through the mode's other
+// channels, as a "Read co-variation" run left it. Offered only where some batch
+// peak shown carries a reading, as the engine's tier is; display-only, so
+// nothing but its own column sorts on it.
+const hasCoVariation = computed(() => shown.value.some((bp) => bp.co_variation != null))
+
 // The ledger's records with the tier's confidence rank attached, which is what
 // the tier column sorts on: the raw tier string sorts alphabetically, and
 // "below_assignability" before "candidate" is not an ordering anyone asked for.
@@ -282,6 +292,8 @@ const decorated = computed(() => {
       // Null rather than a rank where no engine stated one, so the column
       // sorts those last in both directions.
       engineTierRank: batchPeak.engine_tier != null ? tierRank(batchPeak.engine_tier) : null,
+      // The strongest partner's r, null where none was read, so those sort last.
+      coVariationRank: coVariationRank(batchPeak.co_variation),
       verdictRank: verdictRank(batchPeak),
       parentId: rootParentId(batchPeak, index),
       listing,
@@ -724,6 +736,10 @@ const HEADER_TOOLTIPS = {
   engineTier:
     'The tier the engine that imported this identity stated for it, beside the consensus ' +
     'this server measured from the members. Nothing sorts, folds or rolls up on it',
+  coVariation:
+    "How this species' intensity follows the same compound through the mode's other " +
+    'channels across the batch: Pearson r of the log intensities, reagent-normalised, with ' +
+    "the batch's common mode taken out. 0.6 or more co-varies. No tier moves on it",
   samples: 'Number of samples this species is seen in',
   verdict:
     'Batch-level verdict: one judgment per species, covering every sample without a ' +
@@ -1258,6 +1274,34 @@ watch(
           </template>
         </Column>
 
+        <!-- The co-variation reading: the strongest partner channel's r, or
+             that the pair could not be read. A reading aid alone - the tier
+             column is what the table sorts, filters and folds on. -->
+        <Column v-if="hasCoVariation" field="coVariationRank" sortable style="min-width: 6rem">
+          <template #header>
+            <span
+              v-tooltip.top="HEADER_TOOLTIPS.coVariation"
+              v-help.top="{
+                title: 'Co-variation',
+                helpKey: 'batch-co-variation',
+                doc: app.ui.help.docUrl('how-it-works/peak-assignment/#reading-co-variation')
+              }"
+              >Co-variation</span
+            >
+          </template>
+          <template #body="{ data }">
+            <span
+              v-if="data.co_variation"
+              class="co-variation"
+              :class="data.co_variation.verdict"
+              data-testid="co-variation"
+              v-tooltip.top="coVariationTooltip(data.co_variation)"
+              >{{ coVariationLabel(data.co_variation) }}</span
+            >
+            <span v-else-if="!data.parentId" class="no-co-variation">&mdash;</span>
+          </template>
+        </Column>
+
         <Column field="n_present" sortable style="min-width: 6rem">
           <template #header>
             <span v-tooltip.top="HEADER_TOOLTIPS.samples">Samples</span>
@@ -1436,6 +1480,17 @@ watch(
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.86rem;
   opacity: 0.8;
+}
+.co-variation {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.86rem;
+  white-space: nowrap;
+}
+/* Display-only, so no tier colour: co-varying reads plain, the rest muted. */
+.co-variation.not_co_varying,
+.co-variation.untestable,
+.no-co-variation {
+  opacity: 0.55;
 }
 .curated,
 .series-mark {

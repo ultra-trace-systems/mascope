@@ -595,10 +595,14 @@ async def test_the_inspector_reads_it_on_a_sample_s_row_of_the_same_reading(
         [row] = response.json()["data"]
         return row
 
-    # A run's own row reads the record of the batch peak its peak is in.
+    # A run's own row reads the record of the batch peak its peak is in - its
+    # own, whichever of the sample's batch peaks sorts first.
     run_rows = coherence_batch["run_rows"]
     own = await detail(samples[RUN_SAMPLE], run_rows["p-a"])
     assert own["batch_co_variation"] == record
+    other = await detail(samples[RUN_SAMPLE], run_rows["q-a"])
+    assert other["batch_co_variation"] == _record(anchors["q-a"])
+    assert other["batch_co_variation"] != record
     # An isotope line, and a compound the batch sees through one channel, show
     # none.
     assert (await detail(samples[RUN_SAMPLE], run_rows["p-a-13c"]))[

@@ -871,7 +871,9 @@ the neutral's other readings in this ledger, strongest first: each names its cha
 its m/z and its tier, and clicking one focuses its peak. A focused isotopologue opens its
 M0's. The badge counts what the run recorded, and the links are the ledger's rows of
 that neutral, so a ledger that holds none of them, such as one the batch serves, leaves
-the badge as a count only.
+the badge as a count only. Below it, where the batch has read how the neutral's channels
+follow each other across the batch, the inspector says so in one line
+([reading co-variation](#reading-co-variation)).
 
 A run keeps the peaks it read. When a sample's peaks are found again after a run - the
 file re-ingested, the peaks detected again - the run's rows name peaks the sample no
@@ -1232,6 +1234,61 @@ runs. When the chemistry of an ionization mode cannot be resolved, for example b
 sample's file has moved, that mode is not walked, the run says so, and its batch peaks
 keep the series an earlier detection found.
 
+### Reading co-variation
+
+--8<-- "_help/batch-co-variation.md"
+
+A compound the batch sees through two channels is two batch peaks at two masses, and each
+is a trace across the batch's spectra: its height in every sample, or its area on a TOF.
+Where both readings are one molecule, the two traces rise and fall with that molecule's
+abundance. Where a formula coincidence put two different compounds under one neutral,
+they need not. *Read co-variation*, beside *Detect series*, reads every such pair, per
+ionization mode and instrument type:
+
+- **In log intensity.** A source state that favours one channel over the other
+  multiplies that channel's signal by a factor. In log space a constant factor shifts the
+  whole trace and leaves the correlation as it was.
+- **Divided by the reagent signal.** Each spectrum's values are divided by the summed
+  intensity of the batch peaks the reagent pass claimed, which is how chemical-ionization
+  measurements are normalised [Lee et al. 2014][lee14]. A ledger whose batch peaks hold no
+  reagent ion is read without it, and the tooltip says so.
+- **With the batch's common mode taken out.** Much of what moves one peak moves all of
+  them: the source's sensitivity, the sample flow, a dilution, the day's cycle. Two
+  unrelated compounds that both follow it correlate. So in every spectrum the median of
+  all persistent peaks, each taken from its own median, is subtracted first: one sweep of
+  Tukey's median polish [Tukey 1977][tuk77]. A persistent peak is one present in at least
+  half the spectra, and a spectrum with fewer than five of them is left out.
+- **Correlated where both are present.** Pearson's r [Pearson 1895][pea95] over the
+  spectra both peaks are in, with that count. At 0.6 or more the two channels co-vary,
+  below they do not.
+
+Two readings are withheld as *untestable*. With fewer than ten spectra in common, r says
+nothing: on twenty batches of real data, more than a quarter of the pairs chance puts
+together read as co-varying there. And where one of the two traces spreads by less than
+0.02 in log10, about 5 %, it holds nothing to follow, and r against it is its noise's.
+Most single sets of a few samples are untestable throughout: co-variation needs a batch.
+
+The reading is shown, never weighed. No tier and no reason reads it until a benchmark
+against a null model has measured what it is worth as evidence. A pair running against
+each other demotes nothing either: a correct composition can be anti-correlated with its
+own parent channel when the source state moves, as an acid read as its radical anion
+beside its deprotonated ion is over a multi-day batch. On the same twenty batches, two
+channels of one compound read as co-varying about two and a half times as often as two
+unrelated peaks of the same prevalence do, which is a reason to look and not yet a
+reason to change a tier.
+
+Each batch peak of a pair records the reading, and the ledger shows it in a
+**Co-variation** column, which appears once a reading has run: the strongest partner's r,
+or *untestable*, with every partner channel on hover. The column sorts by r, the
+untestable rows last. The inspector shows the same reading on a sample's peak where the
+sample reads the peak as the batch does: *Co-varies with [M+NO3]- across the batch*,
+with r. A batch peak keeps its reading for as long as its consensus names the formula
+and the ionization it was read for; a new sample's vote, a curation or a rebuild that
+moves it takes the reading off, and the next *Read co-variation* replaces every reading.
+It runs as a batch run, whose summary counts each verdict per ionization mode and
+instrument type and names the thresholds; it changes no tier, no member and no
+per-sample run.
+
 The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
 ledger (CSV)* writes one row per member peak - every sample's reading of every batch
 peak, with the batch peak's consensus beside it - and the browser downloads the file
@@ -1397,6 +1454,14 @@ engine found, and leave the rest of the table alone.
   Qian, K. *Kendrick mass defect spectrum: a compact visual analysis for
   ultrahigh-resolution broadband mass spectra.* Anal. Chem. 2001, 73(19):4676–4681.
   [link](https://doi.org/10.1021/ac010560w)
+- <a id="pea95"></a>Pearson, K. *Note on regression and inheritance in the case of two
+  parents.* Proc. R. Soc. Lond. 1895, 58:240–242.
+  [link](https://doi.org/10.1098/rspl.1895.0041)
+- <a id="tuk77"></a>Tukey, J. W. *Exploratory Data Analysis.* Addison-Wesley, 1977.
+- <a id="lee14"></a>Lee, B. H.; Lopez-Hilfiker, F. D.; Mohr, C.; Kurtén, T.; Worsnop, D. R.;
+  Thornton, J. A. *An iodide-adduct high-resolution time-of-flight chemical-ionization mass
+  spectrometer: application to atmospheric inorganic and organic compounds.* Environ. Sci.
+  Technol. 2014, 48(11):6309–6317. [link](https://doi.org/10.1021/es500362a)
 - <a id="kf06"></a>Kind, T.; Fiehn, O. *Metabolomic database annotations via query of
   elemental compositions: mass accuracy is insufficient even at less than 1 ppm.* BMC
   Bioinformatics 2006, 7:234.
@@ -1673,3 +1738,6 @@ engine found, and leave the rest of the table alone.
 [sch03]: #sch03
 [ver08]: #ver08
 [ber11]: #ber11
+[pea95]: #pea95
+[tuk77]: #tuk77
+[lee14]: #lee14

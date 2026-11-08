@@ -875,6 +875,125 @@ describe('PaneBrowserBatchPeaks series mark', () => {
   })
 })
 
+describe('PaneBrowserBatchPeaks co-variation column', () => {
+  const reading = (verdict, r, extra = {}) => ({
+    formula: 'C6H12O6',
+    ionization_mechanism_id: 'm-1',
+    channel: '[M-H]-',
+    verdict,
+    r,
+    n_spectra: 412,
+    reason: null,
+    partner_batch_peak_id: 'bp-other',
+    partner_channel: '[M+NO3]-',
+    partners: [
+      { batch_peak_id: 'bp-other', channel: '[M+NO3]-', verdict, r, n_spectra: 412, reason: null }
+    ],
+    normalised: true,
+    ...extra
+  })
+  const peaks = () => [
+    peak('bp-1', 'assigned', 0.9, { mz: 100.1, co_variation: reading('co_varying', 0.82) }),
+    peak('bp-2', 'candidate', 0.6, { mz: 200.1, co_variation: reading('not_co_varying', -0.4) }),
+    peak('bp-3', 'assigned', 0.8, {
+      mz: 300.1,
+      co_variation: reading('untestable', null, { reason: 'flat' })
+    }),
+    peak('bp-4', 'assigned', 0.95, { mz: 400.1, co_variation: null }),
+    peak('bp-5', 'assigned', 0.7, { mz: 401.1, isotopologue_of: 'bp-4' })
+  ]
+
+  // Renders a column's cells through a stub that hands each its row.
+  async function cellsOf(field, rows) {
+    const tableRows = ref([])
+    app = makeApp({ peaks: rows })
+    localStorage.clear()
+    setActivePinia(createPinia())
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...DataTableStub,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            ...ColumnStub,
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="column-stub" :data-field="field">' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell" :data-row="row.batch_peak_id">' +
+              '<slot name="body" :data="row" /></div></template></div>'
+          }
+        },
+        directives: { tooltip: {}, help: {} }
+      }
+    })
+    await wrapper.vm.$nextTick()
+    const column = wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === field)
+    if (!column) return null
+    return Object.fromEntries(
+      column.findAll('.stub-cell').map((cell) => [cell.attributes('data-row'), cell])
+    )
+  }
+
+  it('is absent from a ledger no reading reached', async () => {
+    wrapper = await mountPane({ peaks: peaks().map(({ co_variation, ...bp }) => bp) })
+    expect(columnFor('coVariationRank')).toBeUndefined()
+  })
+
+  it("shows the strongest partner's r, or that the pair cannot be read", async () => {
+    const cells = await cellsOf('coVariationRank', peaks())
+    expect(cells['bp-1'].find('[data-testid="co-variation"]').text()).toBe('r 0.82')
+    expect(cells['bp-1'].find('.co-variation').classes()).toContain('co_varying')
+    expect(cells['bp-2'].find('.co-variation').text()).toBe('r -0.40')
+    expect(cells['bp-2'].find('.co-variation').classes()).toContain('not_co_varying')
+    expect(cells['bp-3'].find('.co-variation').text()).toBe('untestable')
+    // No reading: a dash.
+    expect(cells['bp-4'].find('.co-variation').exists()).toBe(false)
+    expect(cells['bp-4'].find('.no-co-variation').exists()).toBe(true)
+  })
+
+  it('leaves an unfolded isotopologue row blank', async () => {
+    await cellsOf('coVariationRank', peaks())
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    const column = wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === 'coVariationRank')
+    const child = column.findAll('.stub-cell').find((c) => c.attributes('data-row') === 'bp-5')
+    expect(child.exists()).toBe(true)
+    expect(child.text()).toBe('')
+  })
+
+  it('sorts on r, an unread pair last in both directions', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    expect(columnFor('coVariationRank').props('sortable')).toBe(true)
+    const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
+    expect(byId['bp-1'].coVariationRank).toBe(0.82)
+    expect(byId['bp-3'].coVariationRank).toBeNull()
+    wrapper.vm.sortField = 'coVariationRank'
+    wrapper.vm.sortOrder = -1
+    await wrapper.vm.$nextTick()
+    const top = () => wrapper.vm.rows.filter((row) => !row.parentId).map((row) => row.batch_peak_id)
+    expect(top().slice(0, 2)).toEqual(['bp-1', 'bp-2'])
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(top().slice(0, 2)).toEqual(['bp-2', 'bp-1'])
+  })
+
+  it('explains the column, and that no tier moves on it', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    expect(wrapper.vm.HEADER_TOOLTIPS.coVariation).toMatch(/0\.6 or more co-varies/)
+    expect(wrapper.vm.HEADER_TOOLTIPS.coVariation).toMatch(/No tier moves on it$/)
+  })
+})
+
 describe('PaneBrowserBatchPeaks selection cap', () => {
   const many = (n) => Array.from({ length: n }, (_, i) => peak(`bp-${i}`, 'assigned', 0.9))
 
@@ -1513,6 +1632,7 @@ describe('PaneBrowserBatchPeaks batch runs', () => {
       ['rebuild', 'a rebuild'],
       ['import', 'an import'],
       ['detect_series', 'a series detection'],
+      ['read_co_variation', 'a co-variation reading'],
       ['unknown_action', 'unknown_action']
     ]) {
       await viewEarlierRun(action)
