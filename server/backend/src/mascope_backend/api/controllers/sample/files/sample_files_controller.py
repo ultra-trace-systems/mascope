@@ -1707,6 +1707,7 @@ async def get_sample_file_peaks(
 async def compute_sample_file_peaks(
     sample_file_id: str,
     user: User,
+    user_id: int,
     access_token: str,
     independent_transaction: bool = False,
     process_id: str | None = None,
@@ -1725,6 +1726,10 @@ async def compute_sample_file_peaks(
     :type sample_file_id: str
     :param user: The authenticated user performing the operation, used for notifications.
     :type user: User
+    :param user_id: ID of that user. The decorator addresses the success and the
+        error notification to it: it reads ``user_id`` from the kwargs and
+        never from ``user``, and an error has no result to carry one.
+    :type user_id: int
     :param access_token: Pre-validated user's access token for file converter service.
     :type access_token: str
     :param independent_transaction: Flag to indicate if the operation should be treated as an independent transaction.
