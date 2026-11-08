@@ -94,6 +94,7 @@ from mascope_file.name import (
     parse_path_from_item_filename,
     validate_instrument_name,
 )
+from mascope_file.runtime import runtime as file_runtime
 from mascope_signal.peak import get_peaks
 
 
@@ -2030,13 +2031,27 @@ def _stored_data_file(filename: str) -> str | None:
     :param filename: Sample file name.
     :type filename: str
     :return: The path of ``data.raw`` or ``data.h5`` in the sample's
-        directory, or None when it keeps neither (only its zarr is left) or
-        its kind cannot be told.
+        directory, or None when it keeps neither (only its zarr is left), its
+        kind cannot be told, the name is not one path segment, or the path it
+        leads to is not inside the filestore.
     :rtype: str | None
     """
+    # The name is the last segment of the sample's directory. Upload keeps
+    # only a name's base, so a stored one never holds a separator; one that
+    # did, such as "./<another sample's name>", would lead to another sample's
+    # directory inside the filestore, which the check below cannot tell. A
+    # name such as ".." has no timestamp, so the path below cannot be made.
+    if os.path.basename(filename) != filename:
+        return None
     try:
         path = filename_to_datafile_path(filename)
     except (OSError, ValueError):
+        return None
+    # The directory's other segments come from the name too: its instrument
+    # part, before the first "_", is the first one, so a name such as
+    # ".._<date>" would still lead out of the filestore through it.
+    store = os.path.normpath(file_runtime.filestore())
+    if os.path.commonpath([store, os.path.normpath(path)]) != store:
         return None
     return path if os.path.isfile(path) else None
 

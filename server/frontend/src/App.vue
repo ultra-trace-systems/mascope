@@ -8,7 +8,7 @@ import Toast from 'primevue/toast'
 import { useToast } from 'primevue/usetoast'
 
 import { api } from '@/api'
-import { downloadTempFile } from '@/lib/tempDownload'
+import { downloadFromNotification } from '@/lib/tempDownload'
 import { toastFor } from '@/lib/toastTitles'
 import { BaseBrandLogo, BaseLegalFooter } from '@/lib/base'
 import BaseUpdateBanner from '@/lib/base/BaseUpdateBanner.vue'
@@ -38,16 +38,12 @@ useUpdate().start()
 // toaster; lives as long as the app
 app.ui.notification.on('*', (notification) => {
   if (notification === null) return
-  const { status, data, error } = notification
+  const { status } = notification
   if (status !== 'pending') {
     const toast = toastFor(notification)
     if (toast) toaster.show(toast)
 
-    const download = data?.download ?? error?.detail?.data?.download
-
-    if ((status === 'success' || status === 'warning') && download) {
-      downloadTempFile(download)
-    }
+    downloadFromNotification(notification)
   }
 })
 </script>

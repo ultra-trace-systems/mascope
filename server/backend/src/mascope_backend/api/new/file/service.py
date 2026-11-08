@@ -8,6 +8,9 @@ import zipfile
 from sqlalchemy import select
 
 from mascope_backend import vocabulary
+from mascope_backend.api.controllers.sample.files.sample_files_controller import (
+    _stored_data_file,
+)
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
@@ -39,32 +42,6 @@ def _zip_files(zipfile_path: str, members: list[tuple[str, str]]) -> None:
             archive.write(from_path, arcname)
 
 
-def _copy_into_place(from_path: str, to_path: str) -> None:
-    """
-    Copy a file to ``to_path`` through a name of its own beside it.
-
-    The copy is written under a unique name and moved over ``to_path`` once
-    complete, so ``to_path`` always holds a whole copy: a second download of
-    the same file replaces the first's in one step, and a download already
-    reading the first keeps its open handle.
-
-    :param from_path: The file to copy.
-    :param to_path: Where the copy is offered for download.
-    """
-    fd, part_path = tempfile.mkstemp(
-        prefix=f".{os.path.basename(to_path)}.",
-        suffix=".part",
-        dir=os.path.dirname(to_path),
-    )
-    os.close(fd)
-    try:
-        shutil.copyfile(from_path, part_path)
-        os.replace(part_path, to_path)
-    except BaseException:
-        os.remove(part_path)
-        raise
-
-
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     error_notification_rooms=["user_id"],
@@ -82,8 +59,10 @@ async def download_files(
     Steps:
     1. Fetch all sample files from the database using the provided IDs
     2. For multiple files, write the files found into one zip in the user's
-       temp directory
-    3. For a single file, copy it directly to the temp directory
+       temp directory, named by ``download`` in the notification
+    3. For a single file, check that the filestore keeps it, and name it by
+       ``source_download``, its sample file id: the web app fetches it from
+       ``GET /api/sample/files/{id}/raw``, and nothing is copied
     4. Return information about found and not found files
 
     :param sample_file_ids: List of IDs of the sample files to download
@@ -118,6 +97,7 @@ async def download_files(
     not_found = []
     found = []
     download = None
+    source = None
     if len(sample_files) > 1:
         # The raw files are written straight into the zip, from where they are
         # stored: a folder of copies beside it would take their size twice.
@@ -150,17 +130,13 @@ async def download_files(
                 raise
             download = os.path.basename(zipfile_path)
     else:
-        # derive sample file path
+        # One file is not copied: the web app fetches it from where it is
+        # stored, through GET /api/sample/files/{id}/raw, which checks the
+        # caller's access again. A copy would take the file's size a second
+        # time, and keep the user waiting for it before the download starts.
         sample_file = sample_files[0]
-        file_path = parse_path_from_item_filename(sample_file.filename)
-        instrument_type = get_instrument_type(sample_file.filename)
-        extension = "raw" if instrument_type == "orbi" else "h5"
-        from_path = os.path.join(file_path, f"data.{extension}")
-        # copy the sample file to the temp folder
-        if os.path.exists(from_path):
-            download = f"{sample_file.filename}.{extension}"
-            to_path = user_temp_path(user_id, download)
-            await asyncio.to_thread(_copy_into_place, from_path, to_path)
+        if await asyncio.to_thread(_stored_data_file, sample_file.filename):
+            source = sample_file.sample_file_id
             found.append(sample_file.to_dict())
         else:
             not_found.append(sample_file.to_dict())
@@ -199,6 +175,7 @@ async def download_files(
             },
             "_notification_data": {
                 "download": download,
+                "source_download": source,
             },
         }
 

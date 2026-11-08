@@ -1159,7 +1159,10 @@ dataset's [deposit package](#packaging-a-dataset-for-deposit) - goes into the
 user's own directory under the env's `temp/`, from which the browser fetches
 it. The bundle zips raw files and the package copies them, so either can be
 as large as a dataset. The bundle is one zip, written straight from the stored
-raw files, with no folder of copies beside it. A download stays for
+raw files, with no folder of copies beside it. A single raw file is not
+written there at all: the browser fetches it from the filestore through
+`GET /api/sample/files/{id}/raw`, which checks the user's access to it again,
+so it takes no space in `temp/`. A download stays for
 **24 hours** after it was written: each new export removes every user's
 downloads older than that. So `temp/` holds about one day of downloads. While
 no one exports, the older ones wait for the next export. A restart empties
