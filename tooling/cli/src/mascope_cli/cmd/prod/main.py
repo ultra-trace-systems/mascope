@@ -722,13 +722,16 @@ def _ensure_secrets() -> None:
     deployment. A new auto-provisioned secret is mode 0600, as `mascope init`
     writes them (see `create_secret`); so is a placeholder the operator later
     writes a secret into, and the others are left at the umask (see
-    `create_placeholder`).
+    `create_placeholder`). Last, it warns, without refusing to start, when the
+    image could not read the secrets (see `secrets_unreadable_by_image`).
     """
     from mascope_cli.cmd.init import (
         AUTO_PROVISIONED_SECRETS,
         PLACEHOLDER_SECRETS,
         create_placeholder,
         create_secret,
+        secrets_owner_warning,
+        secrets_unreadable_by_image,
     )
 
     secrets_dir = Path(runtime.path(".runtime", "secrets"))
@@ -745,6 +748,9 @@ def _ensure_secrets() -> None:
             continue
         create_placeholder(target)
         runtime.logger.info(f"Created an empty placeholder for {target}")
+    unreadable = secrets_unreadable_by_image(secrets_dir)
+    if unreadable:
+        runtime.logger.warning(secrets_owner_warning(secrets_dir, unreadable))
 
 
 # --- Commands ---
@@ -1684,8 +1690,9 @@ def doctor(
     Gathers container health, the deployed version, free disk on the state,
     filestore and docker filesystems with how fast each is filling (from the
     disk-check timer's history), the recorded pending update, local backup
-    freshness, the docker image footprint, and the scripts the systemd units
-    run. Read-only and network-free - safe to run anytime or to poll.
+    freshness, the docker image footprint, the scripts the systemd units
+    run, and whether the published images can read the secrets. Read-only
+    and network-free - safe to run anytime or to poll.
 
     Exits 0 when everything looks healthy, 1 when a container is not running,
     the running images do not match the release this deployment would deploy,
@@ -1695,7 +1702,9 @@ def doctor(
     CLI reinstall moves it, is flagged STALE without changing the exit code,
     and so is an installed unit or copied script that differs from what this
     release would write (OUTDATED: an update does not rewrite them);
-    re-running `mascope prod units install` mends all three. Exits 3 when the stack is otherwise
+    re-running `mascope prod units install` mends all three. A secret the
+    published images (uid 1000) could not read is flagged UNREADABLE without
+    changing the exit code either. Exits 3 when the stack is otherwise
     healthy but a filesystem is filling fast enough to reach that floor within
     MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR days (default 7) - a warning, which the
     fleet playbooks let a rollout pass and doctor-push.sh reports on its

@@ -15,6 +15,8 @@ import json
 import os
 import secrets as _secrets
 import shutil
+import stat
+import sys
 import uuid
 from dataclasses import dataclass
 from importlib import resources
@@ -81,6 +83,17 @@ PLACEHOLDER_SECRETS = ("origin_pull_ca.pem", "turnstile_secret_key.txt")
 # operator writes into the file, which keeps its mode. The CA holds nothing
 # secret and is left at the umask.
 PRIVATE_PLACEHOLDER_SECRETS = ("turnstile_secret_key.txt",)
+
+# The uid and gid the published backend image runs as (MASCOPE_UID and
+# MASCOPE_GID in server/backend/Dockerfile), and so reads the secrets as:
+# compose mounts each secret file with its host owner and mode.
+IMAGE_UID = 1000
+IMAGE_GID = 1000
+
+# The secret files the backend image reads (db_init and the backend): the
+# generated ones and the private placeholder. The TLS files go to the frontend
+# image, whose server reads them as root.
+IMAGE_READ_SECRETS = GENERATED_SECRETS + PRIVATE_PLACEHOLDER_SECRETS
 
 # Directories the containers bind-mount from the home. Docker creates missing
 # mount sources as root, so pre-create them owned by the invoking user.
@@ -239,6 +252,67 @@ def create_placeholder(path: Path) -> None:
         path.touch()
 
 
+def _readable_by(st: os.stat_result, uid: int, gid: int) -> bool:
+    """
+    Whether a file with stat ``st`` is readable by ``uid`` and ``gid``, as
+    POSIX decides it: the owner's bits for its owner, else the group's bits
+    for its group, else the others' bits.
+    """
+    if st.st_uid == uid:
+        return bool(st.st_mode & stat.S_IRUSR)
+    if st.st_gid == gid:
+        return bool(st.st_mode & stat.S_IRGRP)
+    return bool(st.st_mode & stat.S_IROTH)
+
+
+def secrets_unreadable_by_image(secrets_dir: Path) -> list[tuple[str, int]]:
+    """
+    The secrets the backend image, running as ``IMAGE_UID`` and
+    ``IMAGE_GID``, could not read, with each one's owner.
+
+    `create_secret` writes them owner-only, so a home made by any user but
+    ``IMAGE_UID`` holds secrets the containers cannot open, and db_init stops with a
+    bare "Permission denied" on the first one. Checked on Linux alone: Docker
+    Desktop (macOS, Windows) shares host files into its VM under ownership
+    rules of its own. A missing file is skipped: compose names that itself.
+
+    :param secrets_dir: The home's ``.runtime/secrets``.
+    :return: ``(file name, owner uid)`` of each unreadable secret, in
+        ``IMAGE_READ_SECRETS`` order; empty when the image can read them all.
+    """
+    if not sys.platform.startswith("linux"):
+        return []
+    unreadable = []
+    for name in IMAGE_READ_SECRETS:
+        try:
+            st = (secrets_dir / name).stat()
+        except OSError:
+            continue
+        if not _readable_by(st, IMAGE_UID, IMAGE_GID):
+            unreadable.append((name, st.st_uid))
+    return unreadable
+
+
+def secrets_owner_warning(secrets_dir: Path, unreadable: list[tuple[str, int]]) -> str:
+    """
+    The warning for what `secrets_unreadable_by_image` found, naming the fix.
+
+    A warning, never a refusal: an image built with its own ``MASCOPE_UID``
+    reads the secrets as that uid instead.
+    """
+    uid = IMAGE_UID
+    owners = ", ".join(sorted({str(owner) for _, owner in unreadable}))
+    names = ", ".join(name for name, _ in unreadable)
+    return (
+        f"The secrets {names} in {secrets_dir} belong to uid {owners}, and the "
+        f"published images read them as uid {uid}: the stack would stop in "
+        "db_init with 'Permission denied'. Give them to that uid "
+        f"(sudo chown {uid} {secrets_dir}/*), or run mascope as the user with "
+        f"uid {uid}. An image built with its own MASCOPE_UID reads them as that "
+        "uid instead."
+    )
+
+
 def _write_secrets(home: Path) -> list[str]:
     """Generate missing app secrets; existing secrets are never touched."""
     written = []
@@ -309,6 +383,13 @@ def init(
         typer.echo(
             "\nThis is not the default home - set MASCOPE_PATH for other commands:"
             f'\n  MASCOPE_PATH="{home}"'
+        )
+
+    secrets_dir = home / ".runtime" / "secrets"
+    unreadable = secrets_unreadable_by_image(secrets_dir)
+    if unreadable:
+        typer.echo(
+            "\nWARNING: " + secrets_owner_warning(secrets_dir, unreadable), err=True
         )
 
     ssl_pem = home / ".runtime" / "secrets" / "mascope.app.pem"

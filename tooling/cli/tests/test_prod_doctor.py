@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -699,6 +700,7 @@ def test_format_text_contains_sections():
         "Backups",
         "Images",
         "Units",
+        "Secrets",
     ):
         assert section in text
     assert "Units    not installed" in text
@@ -761,6 +763,65 @@ def test_outdated_units_show_when_no_script_unit_is_installed():
     assert "mascope-update.service not as this release writes them  OUTDATED" in (
         doctor.format_text(report)
     )
+
+
+# --- secrets the image cannot read ---
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="the check runs on Linux only"
+)
+def test_build_report_reads_the_secrets_the_image_cannot(monkeypatch, tmp_path):
+    # The image runs as a uid the runner is not, as for a home another user
+    # made: the runner's 0600 secrets are closed to it.
+    monkeypatch.setattr(doctor, "_run", lambda cmd, **k: _completed(returncode=1))
+    monkeypatch.setattr(doctor.init_cmd, "IMAGE_UID", os.getuid() + 1)
+    monkeypatch.setattr(doctor.init_cmd, "IMAGE_GID", os.getgid() + 1)
+    secrets = tmp_path / ".runtime" / "secrets"
+    secrets.mkdir(parents=True)
+    secret = secrets / "postgres_password.txt"
+    secret.write_text("x\n")
+    secret.chmod(0o600)
+    report = doctor.build_report(
+        mascope_path=str(tmp_path),
+        container_specs=[],
+        versioned_specs=[],
+        expected_version=None,
+        disk_specs=[],
+        backups_dir=tmp_path / "backups",
+        min_free_gb=1.0,
+        systemd_dir=tmp_path / "systemd",
+    )
+    assert report.secrets_unreadable == [
+        doctor.UnreadableSecret(str(secret), os.getuid())
+    ]
+    # Flagged, not failed: an image built with its own MASCOPE_UID reads them.
+    assert report.ok is True
+
+
+def test_readable_secrets_read_as_such():
+    text = doctor.format_text(_healthy_report())
+    assert "Secrets  readable by uid 1000" in text
+
+
+def test_secrets_the_image_cannot_read_are_flagged_but_ok():
+    report = _healthy_report()
+    report.secrets_unreadable = [
+        doctor.UnreadableSecret("/srv/m/.runtime/secrets/postgres_password.txt", 1001),
+        doctor.UnreadableSecret("/srv/m/.runtime/secrets/jwt_secret_key.txt", 1001),
+    ]
+    assert report.ok is True and report.exit_code == 0
+    text = doctor.format_text(report)
+    assert text.startswith("[OK]")
+    assert (
+        "Secrets  postgres_password.txt, jwt_secret_key.txt owned by uid 1001, "
+        "unreadable to uid 1000 the published images run as  UNREADABLE · "
+        "sudo chown 1000 /srv/m/.runtime/secrets/*"
+    ) in text
+    assert report.to_dict()["secrets_unreadable"] == [
+        {"path": "/srv/m/.runtime/secrets/postgres_password.txt", "owner_uid": 1001},
+        {"path": "/srv/m/.runtime/secrets/jwt_secret_key.txt", "owner_uid": 1001},
+    ]
 
 
 def test_a_unit_missing_its_script_is_attention():

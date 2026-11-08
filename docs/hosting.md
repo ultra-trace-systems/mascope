@@ -67,7 +67,9 @@ and the checkout.
    as the uid its image runs as, so create them as the user with that uid:
    1000 for the published image (the first user on Ubuntu), or the
    `MASCOPE_UID` the image was built with. `mascope init` and `mascope prod up`
-   write the secrets they generate 0600 already.
+   write the secrets they generate 0600 already, and warn when the published
+   image's uid could not read them; `mascope prod doctor` flags them
+   `UNREADABLE`.
 
    `mascope prod up` generates a missing *newly introduced* secret on its own
    (today that is `mfa_encryption_key.txt`) - the CLI does that, so an existing

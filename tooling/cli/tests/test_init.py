@@ -9,12 +9,15 @@ pre-existing environment.
 
 import os
 import stat
+import sys
 
 import pytest
 
+from mascope_cli.cmd import init as init_cmd
 from mascope_cli.cmd.init import (
     CONFIG_FILES,
     GENERATED_SECRETS,
+    IMAGE_READ_SECRETS,
     PLACEHOLDER_SECRETS,
     RUNTIME_DIRS,
 )
@@ -181,3 +184,147 @@ def test_init_hints_when_not_the_default_home(cli_runner, tmp_path):
 
     assert result.exit_code == 0
     assert "MASCOPE_PATH" in result.output
+
+
+# --- secrets the image cannot read ---
+#
+# The published backend image runs as uid 1000 and compose mounts each secret
+# with its host owner and mode, so a home made by any other user holds 0600
+# secrets the containers cannot open. The tests play "another user" by setting
+# the image's uid and gid to ones the runner does not have, rather than
+# chowning, which needs root.
+
+linux_only = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="the check runs on Linux only"
+)
+
+
+@pytest.fixture
+def image_is_another_user(monkeypatch):
+    """The image runs as a uid and gid other than the runner's."""
+    monkeypatch.setattr(init_cmd, "IMAGE_UID", os.getuid() + 1)
+    monkeypatch.setattr(init_cmd, "IMAGE_GID", os.getgid() + 1)
+
+
+@pytest.fixture
+def image_is_this_user(monkeypatch):
+    """The image runs as the runner's uid and gid."""
+    monkeypatch.setattr(init_cmd, "IMAGE_UID", os.getuid())
+    monkeypatch.setattr(init_cmd, "IMAGE_GID", os.getgid())
+
+
+def _secrets(home):
+    return home / ".runtime" / "secrets"
+
+
+@linux_only
+def test_secrets_another_user_made_are_unreadable_to_the_image(
+    cli_runner, tmp_path, image_is_another_user
+):
+    home = tmp_path / "home"
+    _init(cli_runner, home)
+
+    unreadable = init_cmd.secrets_unreadable_by_image(_secrets(home))
+
+    assert unreadable == [(name, os.getuid()) for name in IMAGE_READ_SECRETS]
+    # The ones the backend mounts: the generated secrets and the Turnstile key.
+    assert set(GENERATED_SECRETS) <= set(IMAGE_READ_SECRETS)
+    assert "turnstile_secret_key.txt" in IMAGE_READ_SECRETS
+    # Not the TLS files nor the CA, which the frontend reads as root.
+    assert "origin_pull_ca.pem" not in IMAGE_READ_SECRETS
+
+
+@linux_only
+def test_secrets_the_images_user_made_are_readable(
+    cli_runner, tmp_path, image_is_this_user
+):
+    home = tmp_path / "home"
+    _init(cli_runner, home)
+
+    assert init_cmd.secrets_unreadable_by_image(_secrets(home)) == []
+
+
+@linux_only
+@pytest.mark.parametrize(
+    ("mode", "same_group", "readable"),
+    [
+        (0o640, True, True),  # the image's group may read it
+        (0o600, True, False),  # its group may not
+        (0o604, False, True),  # anyone may read it
+        (0o640, False, False),  # another group's file
+    ],
+)
+def test_a_secret_of_another_owner_is_read_by_group_or_others(
+    tmp_path, monkeypatch, mode, same_group, readable
+):
+    monkeypatch.setattr(init_cmd, "IMAGE_UID", os.getuid() + 1)
+    monkeypatch.setattr(
+        init_cmd, "IMAGE_GID", os.getgid() if same_group else os.getgid() + 1
+    )
+    secret = tmp_path / "postgres_password.txt"
+    secret.write_text("x\n")
+    secret.chmod(mode)
+
+    unreadable = init_cmd.secrets_unreadable_by_image(tmp_path)
+
+    assert unreadable == ([] if readable else [("postgres_password.txt", os.getuid())])
+
+
+@linux_only
+def test_the_owners_bits_decide_for_the_owner(
+    tmp_path, monkeypatch, image_is_this_user
+):
+    # POSIX reads the owner's bits alone for the owner: a group-readable file
+    # its owner may not read stays closed to the owner.
+    secret = tmp_path / "jwt_secret_key.txt"
+    secret.write_text("x\n")
+    secret.chmod(0o044)
+
+    unreadable = init_cmd.secrets_unreadable_by_image(tmp_path)
+
+    assert unreadable == [("jwt_secret_key.txt", os.getuid())]
+
+
+@linux_only
+def test_a_missing_secret_is_not_reported(tmp_path, image_is_another_user):
+    assert init_cmd.secrets_unreadable_by_image(tmp_path) == []
+
+
+@linux_only
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_secrets_are_not_checked_off_linux(
+    cli_runner, tmp_path, monkeypatch, image_is_another_user, platform
+):
+    # Docker Desktop shares host files into its VM under rules of its own.
+    home = tmp_path / "home"
+    _init(cli_runner, home)
+    monkeypatch.setattr(init_cmd.sys, "platform", platform)
+
+    assert init_cmd.secrets_unreadable_by_image(_secrets(home)) == []
+
+
+@linux_only
+def test_init_warns_when_the_image_cannot_read_the_secrets(
+    cli_runner, tmp_path, image_is_another_user
+):
+    home = tmp_path / "home"
+
+    result = _init(cli_runner, home)
+
+    # A warning, not a refusal: an image built with its own MASCOPE_UID reads
+    # them as that uid.
+    assert result.exit_code == 0
+    assert "WARNING" in result.stderr
+    assert "postgres_password.txt" in result.stderr
+    assert f"belong to uid {os.getuid()}" in result.stderr
+    assert f"chown {init_cmd.IMAGE_UID} {_secrets(home.resolve())}/*" in result.stderr
+
+
+@linux_only
+def test_init_is_quiet_when_the_image_can_read_the_secrets(
+    cli_runner, tmp_path, image_is_this_user
+):
+    result = _init(cli_runner, tmp_path / "home")
+
+    assert result.exit_code == 0
+    assert "WARNING" not in result.output

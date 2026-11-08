@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from mascope_cli.cmd import init as init_cmd
 from mascope_cli.cmd.prod import auto_update
 from mascope_cli.cmd.prod import units as prod_units
 
@@ -615,6 +616,29 @@ def outdated_units(mascope_path: str, systemd_dir: Optional[Path] = None) -> lis
     return outdated
 
 
+# --- Secrets ---
+
+
+@dataclass
+class UnreadableSecret:
+    """A secret file the backend image cannot read, and who owns it."""
+
+    path: str
+    owner_uid: int
+
+
+def unreadable_secrets(mascope_path: str) -> list[UnreadableSecret]:
+    """
+    The home's secrets the published images, running as ``IMAGE_UID``, cannot
+    read: those of a home made by another user, whose stack stops in db_init.
+    """
+    secrets_dir = Path(mascope_path) / ".runtime" / "secrets"
+    return [
+        UnreadableSecret(str(secrets_dir / name), owner)
+        for name, owner in init_cmd.secrets_unreadable_by_image(secrets_dir)
+    ]
+
+
 # --- Report ---
 
 
@@ -631,6 +655,9 @@ class Report:
     units: list[UnitScript] = field(default_factory=list)
     # Installed units and copied scripts this release would write otherwise.
     units_outdated: list[str] = field(default_factory=list)
+    # Secrets the published images could not read. Flagged without failing
+    # the report: an image built with its own MASCOPE_UID reads them as that.
+    secrets_unreadable: list[UnreadableSecret] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -638,9 +665,10 @@ class Report:
         Healthy stack, no version drift, no filesystem below its floor, and
         no installed unit without its script (the remaining sections are
         info-only, a unit whose script is inside a venv is flagged but still
-        runs, so does a unit or a copied script an older release wrote, and
-        a filesystem that is only projected to reach its floor is a
-        warning - see ``filling``).
+        runs, so does a unit or a copied script an older release wrote, so
+        do secrets the published images could not read, and a filesystem
+        that is only projected to reach its floor is a warning - see
+        ``filling``).
         """
         return (
             all(c.ok for c in self.containers)
@@ -674,6 +702,7 @@ class Report:
             "images": asdict(self.images),
             "units": [asdict(u) for u in self.units],
             "units_outdated": list(self.units_outdated),
+            "secrets_unreadable": [asdict(s) for s in self.secrets_unreadable],
         }
 
 
@@ -713,6 +742,7 @@ def build_report(
         images=image_footprint(),
         units=unit_scripts(systemd_dir),
         units_outdated=outdated_units(mascope_path, systemd_dir),
+        secrets_unreadable=unreadable_secrets(mascope_path),
     )
 
 
@@ -800,6 +830,22 @@ def _units_line(units: list[UnitScript], outdated: list[str]) -> str:
     return " · ".join(parts) + " · re-run 'mascope prod units install'"
 
 
+def _secrets_line(unreadable: list[UnreadableSecret]) -> str:
+    """The secrets: readable by the images, or which are not and the fix."""
+    if not unreadable:
+        return f"readable by uid {init_cmd.IMAGE_UID}"
+    uid = init_cmd.IMAGE_UID
+    names = ", ".join(Path(s.path).name for s in unreadable)
+    owners = ", ".join(sorted({str(s.owner_uid) for s in unreadable}))
+    secrets_dir = Path(unreadable[0].path).parent
+    return (
+        f"{names} owned by uid {owners}, unreadable to uid {uid} the "
+        f"published images run as  UNREADABLE · sudo chown {uid} "
+        f"{secrets_dir}/* (an image built with another MASCOPE_UID reads "
+        "them as that uid)"
+    )
+
+
 def format_text(report: Report) -> str:
     """Render the report as an aligned, human-readable block."""
     lines = []
@@ -860,6 +906,7 @@ def format_text(report: Report) -> str:
         )
 
     lines.append(("Units", _units_line(report.units, report.units_outdated)))
+    lines.append(("Secrets", _secrets_line(report.secrets_unreadable)))
 
     header = {0: "OK", 1: "ATTENTION", EXIT_FILLING: "WARNING"}[report.exit_code]
     body = "\n".join(f"{label.ljust(9)}{value}" for label, value in lines)
