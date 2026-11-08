@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 
 from mascope_backend.api.new.peak_assignments.envelope_claims import (
@@ -24,6 +25,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     DETECT_DEFAULT,
     DETECT_FROM_CURVE,
     ENVELOPE_HEIGHT_TOLERANCE,
+    FWHM_IN_SIGMA,
     HELD_CORROBORATED,
     HELD_LINE_TAKEN,
     HELD_NEIGHBOUR_NOT_ASSIGNED,
@@ -32,6 +34,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     LINE_ABSENT,
     LINE_FOUND,
     LINE_UNTESTABLE,
+    PEAK_SEPARATION,
     PREDICTED_ENVELOPE,
     REASON_ABSENT_LINE,
     REASON_AMBIGUOUS_ADDUCT,
@@ -54,6 +57,8 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_SAME_ION_SETTLED,
     REASON_SECOND_LINE,
     REASON_SERIES_ANCHOR,
+    REASON_UNRESOLVED_PEAK,
+    SEPARATED_THROUGH,
     SERIES,
     TIERING_RULES_VERSION,
     UNTESTABLE_ARTIFACT,
@@ -61,9 +66,12 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     LineGate,
     apply_tiering,
     ask_absent_line,
+    critical_separation,
     envelope_neighbours,
     find_envelope_claims,
     predicted_envelope,
+    separated,
+    separation_reach,
 )
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 
@@ -1328,11 +1336,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_12(self):
+    def test_the_rule_set_is_13(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 12
+        assert run([row("pa-1")])["version"] == 13
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])
@@ -3014,3 +3022,423 @@ class TestTheGateARunAskedAt:
             LineGate(5.0, 0.01, 3.0, DETECT_FROM_CURVE, 0.1, False),
         )
         assert reason["detail"].endswith("the file's own detection curve)")
+
+
+def tof_widths(mz: float) -> float:
+    """A TOF whose lines are 200 ppm wide at every m/z."""
+    return 5000.0
+
+
+def orbitrap_widths(mz: float) -> float:
+    """An Orbitrap at 120,000 at m/z 200, its resolving power falling as 1/sqrt(m)."""
+    return 120000.0 * math.sqrt(200.0 / mz)
+
+
+def widths_spectrum(*peaks: tuple, resolution=tof_widths) -> SpectrumLines:
+    """The sample's peaks, each ``(id, m/z, intensity)``, at a resolving power.
+
+    No signal-to-noise, so the absent-line rule asks only lines of a tenth of
+    the ion's own and up, which C6H13O6+ has none of.
+    """
+    return SpectrumLines(
+        [peak[0] for peak in peaks],
+        [peak[1] for peak in peaks],
+        [peak[2] for peak in peaks],
+        None,
+        resolution,
+    )
+
+
+def count_maxima(sigmas: float, ratio: float) -> int:
+    """The maxima of two unit Gaussians ``sigmas`` apart, one ``ratio`` as tall."""
+    x = np.linspace(-6.0, sigmas + 6.0, 200001)
+    curve = np.exp(-(x**2) / 2.0) + ratio * np.exp(-((x - sigmas) ** 2) / 2.0)
+    rise = np.diff(curve)
+    return int(np.sum((rise[:-1] > 0) & (rise[1:] <= 0)))
+
+
+class TestTheBimodalityCriterion:
+    """Two lines of one width show as two peaks only once their sum has two
+    maxima, and how far apart that takes depends on their heights."""
+
+    def test_equal_heights_turn_bimodal_at_two_standard_deviations(self):
+        assert critical_separation(1.0) == pytest.approx(2.0 / FWHM_IN_SIGMA, rel=1e-9)
+        assert critical_separation(1.0) == pytest.approx(0.849, abs=5e-4)
+        # In half widths, the number the reference engine's table read 2.36.
+        assert 2.0 * critical_separation(1.0) == pytest.approx(1.699, abs=5e-4)
+
+    def test_a_pair_at_one_to_fifty_needs_1_65_widths(self):
+        assert critical_separation(1 / 50) == pytest.approx(1.651, abs=5e-4)
+
+    def test_it_reads_the_heights_either_way_round(self):
+        assert critical_separation(50.0) == critical_separation(1 / 50)
+        assert separated(1.64, 50.0) is False
+        assert separated(1.66, 1 / 50) is True
+
+    @pytest.mark.parametrize("ratio", [1.0, 0.5, 0.1, 1 / 50, 1e-3])
+    def test_it_is_where_the_sum_of_two_gaussians_has_two_maxima(self, ratio):
+        critical = critical_separation(ratio) * FWHM_IN_SIGMA
+        assert count_maxima(critical * 0.99, ratio) == 1
+        assert count_maxima(critical * 1.01, ratio) == 2
+
+    def test_at_the_criterion_itself_the_pair_is_one_peak(self):
+        assert separated(0.849, 1.0) is False
+        assert separated(0.85, 1.0) is True
+
+    def test_the_reach_is_the_criterion_at_the_most_lopsided_pair(self):
+        lines = widths_spectrum(("a", 100.0, 1.0), ("b", 200.0, 1000.0))
+        assert separation_reach(lines) == critical_separation(1e-3)
+        assert separation_reach(widths_spectrum(("a", 100.0, 0.0))) == 0.0
+
+
+class TestAPeakThatIsNotSeparated:
+    """Step 3.4f: the instrument did not separate the row's peak from a
+    neighbour's, so the peak's centroid and height are not the ion's own.
+
+    C6H12O6 read as C6H13O6+ on a TOF whose lines are 200 ppm wide: 36.2 mDa
+    at its m/z of 181.0707.
+    """
+
+    M = 181.0707
+    WIDTH = M / 5000.0
+
+    def own(self, **kwargs) -> dict:
+        fields = {"mz": self.M, "peak": "p-own", "channels": SEEN_TWICE} | kwargs
+        return row("pa-1", **fields)
+
+    def beside(self, widths: float, intensity: float = 800.0, peak: str = "p-nb"):
+        return (peak, self.M + widths * self.WIDTH, intensity)
+
+    def lines(self, *others: tuple, resolution=tof_widths) -> SpectrumLines:
+        return widths_spectrum(
+            ("p-own", self.M, 1000.0), *others, resolution=resolution
+        )
+
+    def reason(self, rows: list[dict], row_id: str = "pa-1") -> dict:
+        (found,) = [
+            r for r in reasons_of(rows, row_id) if r["rule"] == REASON_UNRESOLVED_PEAK
+        ]
+        return found
+
+    def test_an_overlapped_peak_loses_the_top_tier(self):
+        rows = [self.own()]
+        summary = run(rows, lines=self.lines(self.beside(0.6)))
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert REASON_UNRESOLVED_PEAK in rules_on(rows, "pa-1")
+        assert summary["capped_by_rule"] == {REASON_UNRESOLVED_PEAK: 1}
+
+    def test_the_reason_names_the_neighbour_its_distance_and_its_height(self):
+        rows = [self.own()]
+        run(rows, lines=self.lines(self.beside(0.6)))
+        reason = self.reason(rows)
+        assert reason["caps"] is True
+        assert reason["neighbour_peak_id"] == "p-nb"
+        assert reason["neighbour_mz"] == pytest.approx(self.M + 0.6 * self.WIDTH)
+        assert reason["widths"] == pytest.approx(0.6)
+        assert reason["height_ratio"] == pytest.approx(0.8)
+        assert reason["critical_widths"] == pytest.approx(0.976)
+        assert reason["unseparated"] == 1
+        assert reason["detail"] == (
+            "its peak sits 0.60 widths from a peak at m/z 181.0924 at 80.0% of its "
+            "height, short of the 0.98 widths two lines of these heights need to "
+            "show as two peaks: the instrument did not separate them, so neither "
+            "the peak's mass nor its height is the ion's own"
+        )
+
+    def test_a_taller_neighbour_is_named_by_how_much_taller(self):
+        rows = [self.own()]
+        run(rows, lines=self.lines(self.beside(-0.9, 2500.0)))
+        reason = self.reason(rows)
+        assert reason["height_ratio"] == pytest.approx(2.5)
+        assert "a peak at m/z 181.0381 2.5 times as tall," in reason["detail"]
+
+    def test_the_heights_decide_how_far_apart_is_apart(self):
+        # 1.2 widths parts two lines of equal height, and not a line fifty
+        # times smaller from the taller one: a shoulder on its flank.
+        equal = [self.own()]
+        run(equal, lines=self.lines(self.beside(1.2, 1000.0)))
+        assert tier_of(equal, "pa-1") == "assigned"
+        assert envelope_of_separation(equal)["separated"] is True
+
+        shoulder = [self.own()]
+        run(shoulder, lines=self.lines(self.beside(1.2, 20.0)))
+        assert tier_of(shoulder, "pa-1") == "candidate"
+
+    def test_a_small_line_on_the_flank_is_found_as_far_as_the_criterion_reaches(
+        self,
+    ):
+        # At a thousandth of its height a line merges with the peak out to 1.99
+        # widths.
+        near = [self.own()]
+        run(near, lines=self.lines(self.beside(1.95, 1.0)))
+        assert tier_of(near, "pa-1") == "candidate"
+        clear = [self.own()]
+        run(clear, lines=self.lines(self.beside(2.0, 1.0)))
+        assert tier_of(clear, "pa-1") == "assigned"
+
+    def test_the_record_names_the_nearest_and_counts_the_rest(self):
+        rows = [self.own()]
+        run(
+            rows,
+            lines=self.lines(
+                self.beside(0.7, 900.0), self.beside(-0.4, 300.0, peak="p-near")
+            ),
+        )
+        record = envelope_of_separation(rows)
+        assert record["fwhm_ppm"] == pytest.approx(200.0)
+        assert record["separated"] is False
+        assert record["unseparated"] == 2
+        assert record["neighbour"]["peak_id"] == "p-near"
+        assert record["neighbour"]["widths"] == pytest.approx(0.4)
+        assert self.reason(rows)["detail"].endswith(
+            "is the ion's own; nor is one more peak beside it"
+        )
+
+    def test_a_peak_with_no_height_is_no_neighbour(self):
+        rows = [self.own()]
+        run(rows, lines=self.lines(self.beside(0.3, 0.0)))
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert envelope_of_separation(rows) == {
+            "fwhm_ppm": 200.0,
+            "separated": True,
+            "unseparated": 0,
+        }
+
+    def test_a_list_naming_the_compound_is_no_escape(self):
+        rows = [self.own(source="database", compound="tc-1")]
+        run(rows, lines=self.lines(self.beside(0.6)))
+        assert tier_of(rows, "pa-1") == "candidate"
+
+    def test_a_series_of_the_batch_is_no_escape(self):
+        # A homologue vouches for the formula, not for the peak's mass.
+        rows = [self.own(provenance={SERIES: SERIES_BLOCK})]
+        run(rows, lines=self.lines(self.beside(0.6)))
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert REASON_UNRESOLVED_PEAK in rules_on(rows, "pa-1")
+
+    def test_a_line_of_its_own_envelope_is_no_neighbour(self):
+        # At a resolving power of 200 a line is 0.91 Da wide, so the ion's 13C
+        # line one mass unit up sits 1.1 widths from it at 6.6% of its height,
+        # inside the 1.49 widths such a pair needs. A peak as far below is a
+        # neighbour; the one on the 13C line is the ion's own.
+        def low(mz: float) -> float:
+            return 200.0
+
+        c13_mz, c13_share = line_at("C6H13O6+", "13C")
+        own_line = [self.own()]
+        # 2 ppm off the predicted line, inside the run's 5 ppm match window.
+        on_the_line = c13_mz * (1 + 2e-6)
+        run(
+            own_line,
+            lines=self.lines(
+                ("p-13c", on_the_line, 1000.0 * c13_share), resolution=low
+            ),
+        )
+        assert tier_of(own_line, "pa-1") == "assigned"
+        assert envelope_of_separation(own_line)["separated"] is True
+
+        below = [self.own()]
+        run(
+            below,
+            lines=self.lines(
+                ("p-below", 2 * self.M - c13_mz, 1000.0 * c13_share), resolution=low
+            ),
+        )
+        assert tier_of(below, "pa-1") == "candidate"
+
+    def test_a_peak_inside_its_own_match_window_is_a_neighbour(self):
+        # 4 ppm from the row's peak, a fiftieth of a width: no line of its own
+        # envelope, which starts a mass unit up.
+        rows = [self.own()]
+        run(rows, lines=self.lines(("p-twin", self.M * (1 + 4e-6), 500.0)))
+        assert tier_of(rows, "pa-1") == "candidate"
+
+    def test_a_row_whose_own_peak_has_no_height_is_not_asked(self):
+        rows = [self.own()]
+        run(rows, lines=widths_spectrum(("p-own", self.M, 0.0), self.beside(0.6)))
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert PEAK_SEPARATION not in rows[0]["provenance"]
+
+    def test_a_row_whose_ion_predicts_no_envelope_is_still_read(self):
+        rows = [self.own(ion=None)]
+        run(rows, lines=self.lines(self.beside(0.6)))
+        assert tier_of(rows, "pa-1") == "candidate"
+
+    def test_a_resolved_orbitrap_pair_is_untouched(self):
+        # 10 ppm apart: 1.26 widths on an Orbitrap, where a line here is 7.9
+        # ppm wide, and a twentieth of one on the TOF.
+        other = ("p-nb", self.M * (1 + 10e-6), 1000.0)
+        orbitrap = [self.own()]
+        run(orbitrap, lines=self.lines(other, resolution=orbitrap_widths))
+        assert tier_of(orbitrap, "pa-1") == "assigned"
+        assert envelope_of_separation(orbitrap)["fwhm_ppm"] == pytest.approx(7.929)
+        tof = [self.own()]
+        run(tof, lines=self.lines(other))
+        assert tier_of(tof, "pa-1") == "candidate"
+
+    def test_a_spectrum_without_widths_asks_nothing(self):
+        rows = [self.own()]
+        lines = widths_spectrum(
+            ("p-own", self.M, 1000.0), self.beside(0.1), resolution=None
+        )
+        summary = run(rows, lines=lines)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert PEAK_SEPARATION not in rows[0]["provenance"]
+        assert summary["unresolved_peak"] == {
+            "widths": False,
+            "asked": 0,
+            "unseparated": 0,
+            "lifted_by_partner": 0,
+        }
+
+    def test_a_row_whose_peak_the_spectrum_lacks_is_not_asked(self):
+        rows = [self.own(peak="p-elsewhere")]
+        summary = run(rows, lines=self.lines(self.beside(0.1)))
+        assert PEAK_SEPARATION not in rows[0]["provenance"]
+        assert summary["unresolved_peak"]["asked"] == 0
+
+    def test_its_isotopologues_go_with_it(self):
+        rows = [self.own(), line_of("pa-1")]
+        summary = run(rows, lines=self.lines(self.beside(0.6)))
+        assert tier_of(rows, "pa-1-13C") == "candidate"
+        assert summary["capped_isotopologues"] == 1
+
+    def test_the_run_records_what_the_rule_read(self):
+        rows = [
+            self.own(),
+            row("pa-2", mz=300.0, peak="p-far"),
+            row("pa-3", mz=350.0, peak="p-further"),
+        ]
+        far = (("p-far", 300.0, 500.0), ("p-further", 350.0, 500.0))
+        summary = run(rows, lines=self.lines(self.beside(0.6), *far))
+        assert summary["unresolved_peak"] == {
+            "widths": True,
+            "asked": 3,
+            "unseparated": 1,
+            "lifted_by_partner": 0,
+        }
+
+
+def envelope_of_separation(rows: list[dict], row_id: str = "pa-1") -> dict:
+    entry = next(r for r in rows if r["peak_assignment_id"] == row_id)
+    return entry["provenance"][PEAK_SEPARATION]
+
+
+class TestASecondChannelOnASeparatedPeak:
+    """The one escape: the neutral committed through another channel on a peak
+    the instrument separated, read by the same test. A partner it did not
+    separate either corroborates a mass it did not measure."""
+
+    M = TestAPeakThatIsNotSeparated.M
+    WIDTH = TestAPeakThatIsNotSeparated.WIDTH
+    #: C6H12O6 through ammonium, C6H16NO6+.
+    PARTNER_MZ = 198.0972
+    NOTATION = {"im-h": "[M+H]+", "im-nh4": "[M+NH4]+"}
+
+    def reading(self, row_id: str, mz: float, peak: str, mechanism: str) -> dict:
+        entry = row(row_id, mz=mz, peak=peak, channels=SEEN_TWICE)
+        entry["ionization_mechanism_id"] = mechanism
+        return entry
+
+    def rows(self, *extra: dict) -> list[dict]:
+        return [
+            self.reading("pa-1", self.M, "p-own", "im-h"),
+            self.reading("pa-2", self.PARTNER_MZ, "p-partner", "im-nh4"),
+            *extra,
+        ]
+
+    def lines(self, *, partner_overlapped: bool, extra=()) -> SpectrumLines:
+        width = self.PARTNER_MZ / 5000.0
+        peaks = [
+            ("p-own", self.M, 1000.0),
+            ("p-nb", self.M + 0.6 * self.WIDTH, 800.0),
+            ("p-partner", self.PARTNER_MZ, 400.0),
+            *extra,
+        ]
+        if partner_overlapped:
+            peaks.append(("p-partner-nb", self.PARTNER_MZ - 0.5 * width, 400.0))
+        return widths_spectrum(*peaks)
+
+    def test_a_separated_partner_lifts_it(self):
+        rows = self.rows()
+        summary = run(
+            rows,
+            lines=self.lines(partner_overlapped=False),
+            notation_by_id=self.NOTATION,
+        )
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_UNRESOLVED_PEAK not in rules_on(rows, "pa-1")
+        assert rows[0]["provenance"]["cross_channel"][SEPARATED_THROUGH] == ["[M+NH4]+"]
+        assert rows[1]["provenance"]["cross_channel"][SEPARATED_THROUGH] == []
+        assert summary["unresolved_peak"]["lifted_by_partner"] == 1
+
+    def test_a_separated_row_with_a_separated_partner_lifts_nothing(self):
+        rows = self.rows()
+        lines = widths_spectrum(
+            ("p-own", self.M, 1000.0), ("p-partner", self.PARTNER_MZ, 400.0)
+        )
+        summary = run(rows, lines=lines, notation_by_id=self.NOTATION)
+        assert rows[0]["provenance"]["cross_channel"][SEPARATED_THROUGH] == ["[M+NH4]+"]
+        assert summary["unresolved_peak"]["lifted_by_partner"] == 0
+
+    def test_an_overlapped_partner_does_not(self):
+        rows = self.rows()
+        summary = run(
+            rows,
+            lines=self.lines(partner_overlapped=True),
+            notation_by_id=self.NOTATION,
+        )
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert tier_of(rows, "pa-2") == "candidate"
+        assert rows[0]["provenance"]["cross_channel"][SEPARATED_THROUGH] == []
+        assert summary["unresolved_peak"]["lifted_by_partner"] == 0
+        (reason,) = [
+            r for r in reasons_of(rows, "pa-1") if r["rule"] == REASON_UNRESOLVED_PEAK
+        ]
+        assert reason["detail"].endswith(
+            "; C6H12O6 is also committed through [M+NH4]+, on a peak the instrument "
+            "did not separate either"
+        )
+
+    def test_a_reading_through_its_own_channel_is_no_escape(self):
+        again = self.reading("pa-3", 250.0, "p-again", "im-h")
+        rows = [self.reading("pa-1", self.M, "p-own", "im-h"), again]
+        run(
+            rows,
+            lines=self.lines(
+                partner_overlapped=False, extra=[("p-again", 250.0, 500.0)]
+            ),
+            notation_by_id=self.NOTATION,
+        )
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert SEPARATED_THROUGH not in rows[0]["provenance"]["cross_channel"]
+
+    def test_a_partner_whose_peak_was_not_read_is_no_escape(self):
+        rows = self.rows()
+        rows[1]["sample_peak_id"] = "p-gone"
+        run(
+            rows,
+            lines=self.lines(partner_overlapped=False),
+            notation_by_id=self.NOTATION,
+        )
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert SEPARATED_THROUGH not in rows[0]["provenance"]["cross_channel"]
+        (reason,) = [
+            r for r in reasons_of(rows, "pa-1") if r["rule"] == REASON_UNRESOLVED_PEAK
+        ]
+        assert "also committed" not in reason["detail"]
+
+    def test_one_separated_reading_through_a_channel_is_enough(self):
+        # The partner channel holds two readings of the neutral, one on a peak
+        # the instrument did not separate and one on a peak it did.
+        overlapped = self.reading("pa-3", 260.0, "p-third", "im-nh4")
+        rows = self.rows(overlapped)
+        width = 260.0 / 5000.0
+        extra = [("p-third", 260.0, 300.0), ("p-third-nb", 260.0 + 0.3 * width, 300.0)]
+        run(
+            rows,
+            lines=self.lines(partner_overlapped=False, extra=extra),
+            notation_by_id=self.NOTATION,
+        )
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert rows[0]["provenance"]["cross_channel"][SEPARATED_THROUGH] == ["[M+NH4]+"]

@@ -144,6 +144,23 @@ spectrum chart draws. The run records the gate it asked at (:class:`LineGate`),
 and a hand assignment on the run is asked at that gate when it is made
 (``curation.curate_assignment``), the one rule of this pass a hand row meets.
 
+``unresolved_peak`` - step 3.4f: the instrument did not separate the row's peak
+from a neighbouring one. Two lines of one width show as two peaks only once
+their sum has two maxima, and how far apart that takes depends on their
+heights: 0.85 widths at half maximum for equal ones, 1.65 for a pair at 1:50
+(the bimodality criterion, :func:`separated`). A peak picker that fits the
+lines, as a TOF's does, can still report both; their centroids and heights then
+carry neither the mass nor the intensity the fit scored. Each committed
+monoisotopic row's peak is read against every other peak of the spectrum at the
+width the file's resolving power gives at its m/z, its own envelope's lines
+aside (:func:`peak_separation`), and a peak not separated from one caps the row
+at candidate, naming the nearest such neighbour. One escape: another channel
+committing the neutral on a peak the same test calls separated. A list is none,
+for the absent-line rule's reason: the statement is about the measurement; nor
+is a series of the batch, which vouches for the formula, not the peak. A
+spectrum whose widths the run did not read asks nothing, and a hand assignment
+is not asked.
+
 Rules the earlier passes already applied
 ----------------------------------------
 
@@ -190,6 +207,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     SETTLED_BY_RADICAL,
     SETTLED_BY_SECOND_CHANNEL,
     SETTLED_BY_TARGET_LIBRARY,
+    neutral_key,
     nitrogen_count,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
@@ -239,7 +257,7 @@ from mascope_tools.composition.implausibility import implausible_signatures
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 12
+TIERING_RULES_VERSION = 13
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -317,6 +335,22 @@ UNTESTABLE_RANGE = "out_of_range"
 #: The halogens whose reading on a TOF must show the ion's own M+2 line, in
 #: the order a reason names them, each with the word it is named by.
 M2_HALOGENS = {"Br": "bromine", "Cl": "chlorine"}
+
+#: A row's peak the instrument did not separate from a neighbouring peak, so
+#: neither its centroid nor its height is the ion's own.
+REASON_UNRESOLVED_PEAK = "unresolved_peak"
+
+#: The provenance block a monoisotopic row carries where the run read its
+#: peak's width: whether the instrument separated the peak from every peak
+#: beside it, and the nearest one it did not.
+PEAK_SEPARATION = "peak_separation"
+
+#: What the tiering pass adds to a row's cross-channel record: the run's other
+#: channels that commit the row's neutral on a peak the instrument separated.
+SEPARATED_THROUGH = "separated_through"
+
+#: A Gaussian line's full width at half maximum, in its standard deviations.
+FWHM_IN_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
 
 #: Where the detectability threshold came from: the file's own response curve
 #: (step 3.5b), or the fit's default.
@@ -1326,6 +1360,240 @@ def ask_absent_line(
     return expected, absent_line_reason(row, expected, detect_from=gate.detect_from)
 
 
+def _lopsided(ratio: float) -> float:
+    """A height ratio as the smaller line over the taller, in (0, 1]."""
+    ratio = float(ratio)
+    return ratio if ratio <= 1.0 else 1.0 / ratio
+
+
+def _bimodality_margin(sigmas: float, ratio: float) -> float:
+    """How far past turning into two peaks two Gaussian lines are.
+
+    Two Gaussians of one standard deviation, ``sigmas`` of it apart, sum to a
+    curve with two maxima exactly where ``sigmas`` exceeds 2 and
+
+        sigmas * s / 2 - 2 ln((sigmas + s) / 2),  s = sqrt(sigmas**2 - 4),
+
+    exceeds ``|ln ratio|``, the log of their height ratio (Robertson and
+    Fryer 1969; Schilling, Watkins and Watkins 2002). At equal heights that
+    is any separation over 2 standard deviations. The left side grows with
+    the separation, its derivative being ``s``, so the difference is
+    positive past the one separation where the pair turns bimodal and
+    negative short of it.
+
+    :param sigmas: The lines' distance, in their standard deviations.
+    :param ratio: The smaller line's height over the taller's, in (0, 1].
+    :return: The difference, positive for two maxima; -inf at or under 2.
+    """
+    if sigmas <= 2.0:
+        return -math.inf
+    s = math.sqrt(sigmas * sigmas - 4.0)
+    return sigmas * s / 2.0 - 2.0 * math.log((sigmas + s) / 2.0) + math.log(ratio)
+
+
+def separated(widths: float, ratio: float) -> bool:
+    """Whether two lines show as two peaks: the bimodality criterion.
+
+    Two lines of one shape, one width at half maximum, show as two peaks
+    only once their sum has two maxima. Short of that the sum is one peak
+    with a shoulder, whatever a fit of it reports: its centroid lies between
+    the two lines and its height holds some of both. Where that separation
+    lies depends on the heights (:func:`critical_separation`); the lines are
+    read as Gaussians.
+
+    :param widths: Their distance, in full widths at half maximum.
+    :param ratio: One's height over the other's, either way round.
+    :return: True where the sum of the two has two maxima.
+    """
+    return _bimodality_margin(widths * FWHM_IN_SIGMA, _lopsided(ratio)) > 0.0
+
+
+def critical_separation(ratio: float) -> float:
+    """The distance at which two lines turn into two peaks, in widths.
+
+    Equal heights at 2 standard deviations, 0.85 widths at half maximum (1.70
+    half widths); a pair at 1:50 at 1.65 widths; and the further apart the
+    heights, the further: a small line on a tall one's flank is a shoulder
+    until it stands well clear of it. Found by bisection on
+    :func:`_bimodality_margin`, which rises with the distance.
+
+    :param ratio: One line's height over the other's, either way round,
+        greater than zero.
+    :return: The distance in full widths at half maximum.
+    """
+    lopsided = _lopsided(ratio)
+    low, high = 2.0, 4.0 + 2.0 * math.sqrt(-math.log(lopsided))
+    for _ in range(64):
+        middle = (low + high) / 2.0
+        if _bimodality_margin(middle, lopsided) > 0.0:
+            high = middle
+        else:
+            low = middle
+    return high / FWHM_IN_SIGMA
+
+
+def separation_reach(spectrum: SpectrumLines) -> float:
+    """How far, in widths, a peak of this spectrum can be from one it merges with.
+
+    The criterion at the most lopsided pair the spectrum holds, its least
+    intense peak beside its most intense: no two of its peaks further apart
+    than this can fail to show as two.
+
+    :param spectrum: The sample's peaks.
+    :return: The distance in full widths at half maximum; 0 for a spectrum
+        with no peak of any height.
+    """
+    span = spectrum.intensity_span()
+    return 0.0 if span is None else critical_separation(span[0] / span[1])
+
+
+def _significant(value: float, digits: int = 4) -> float:
+    return float(f"{value:.{digits}g}")
+
+
+def peak_separation(
+    peak_id,
+    spectrum: SpectrumLines,
+    *,
+    reach_fwhm: float,
+    envelope_mzs: Sequence[float] = (),
+    line_window_ppm: float = 0.0,
+) -> dict | None:
+    """How the instrument separated one peak from the peaks beside it.
+
+    The width is the one the file's own resolving power gives at the peak's
+    m/z (``SpectrumLines.fwhm_ppm``), what detection fitted the file's lines
+    to, and every other peak of the spectrum with a height is asked against
+    it (:func:`separated`): a source's ion and a peak nothing explains merge
+    with it as surely as a committed one. A peak within the run's match
+    window of one of the row's own predicted lines is not asked, since the
+    envelope is one ion's and the fit scored its lines together.
+
+    :param peak_id: The peak.
+    :param spectrum: The sample's peaks, with their widths.
+    :param reach_fwhm: How far to look (:func:`separation_reach`).
+    :param envelope_mzs: The row's own predicted lines, its own line left out.
+    :param line_window_ppm: The run's match window about each of those.
+    :return: The record (:data:`PEAK_SEPARATION`): the width read, whether
+        the peak is separated, how many peaks it is not separated from, and
+        the nearest of them, in widths, with its height against the peak's
+        and the distance the two would need; None where the spectrum does
+        not hold the peak, the peak has no height, or the file gives no
+        width at its m/z.
+    """
+    read = spectrum.peak(peak_id)
+    if read is None:
+        return None
+    mz, height = read
+    fwhm_ppm = spectrum.fwhm_ppm(mz)
+    if fwhm_ppm is None or height <= 0:
+        return None
+    width = mz * fwhm_ppm * 1e-6
+    merged: list[tuple[float, str, float, float]] = []
+    for other_id, other_mz, other_height in spectrum.around(mz, reach_fwhm * width):
+        if other_id == str(peak_id) or other_height <= 0:
+            continue
+        if any(
+            abs(other_mz - line) <= line * line_window_ppm * 1e-6
+            for line in envelope_mzs
+        ):
+            continue
+        widths = abs(other_mz - mz) / width
+        ratio = other_height / height
+        if not separated(widths, ratio):
+            merged.append((widths, other_id, other_mz, ratio))
+    record: dict = {
+        "fwhm_ppm": round(fwhm_ppm, 3),
+        "separated": not merged,
+        "unseparated": len(merged),
+    }
+    if merged:
+        widths, other_id, other_mz, ratio = min(merged)
+        record["neighbour"] = {
+            "peak_id": other_id,
+            "mz": round(other_mz, 6),
+            "widths": round(widths, 3),
+            "height_ratio": _significant(ratio),
+            "critical_widths": round(critical_separation(ratio), 3),
+        }
+    return record
+
+
+def _height_against(ratio: float) -> str:
+    """A neighbour's height against the peak's, as a reason words it."""
+    if ratio >= 1.0:
+        return f"{ratio:.1f} times as tall"
+    return f"at {_percent(ratio)} of its height"
+
+
+def unresolved_peak_reason(
+    row: dict,
+    record: dict | None,
+    *,
+    separated_through: Sequence[str] = (),
+    unseparated_through: Sequence[str] = (),
+) -> dict | None:
+    """The instrument did not separate the row's peak from a neighbour's.
+
+    A centroid and a height read off two lines the instrument did not
+    separate carry neither the mass nor the intensity the fit scored, and
+    nothing in the evidence bands can know. Asked of every committed
+    monoisotopic row, whoever named its formula: a list naming the compound
+    says what the peak may be, not that its mass was measured, and a series
+    of the batch says the formula has homologues. One escape:
+    a second channel of the run committing the neutral on a peak the
+    instrument did separate, read by the same test, whose mass and height
+    were measured. A partner the instrument did not separate either is no
+    escape: it corroborates a mass it did not measure.
+
+    Names the nearest such neighbour, its distance and height against the
+    peak's and the distance the pair would need, and carries them beside the
+    sentence.
+
+    :param row: A committed monoisotopic row.
+    :param record: What :func:`peak_separation` read for its peak, or None.
+    :param separated_through: The run's other channels committing its
+        neutral on a separated peak.
+    :param unseparated_through: Those committing it on a peak the instrument
+        did not separate either.
+    :return: The reason, or None where the peak is separated, could not be
+        read, or a separated partner commits the neutral.
+    """
+    if not record or record.get("separated") is not False or separated_through:
+        return None
+    neighbour = record["neighbour"]
+    ratio = float(neighbour["height_ratio"])
+    detail = (
+        f"its peak sits {float(neighbour['widths']):.2f} widths from a peak at m/z "
+        f"{float(neighbour['mz']):.4f} {_height_against(ratio)}, short of the "
+        f"{float(neighbour['critical_widths']):.2f} widths two lines of these "
+        "heights need to show as two peaks: the instrument did not separate "
+        "them, so neither the peak's mass nor its height is the ion's own"
+    )
+    others = int(record.get("unseparated") or 1) - 1
+    if others:
+        detail += (
+            f"; nor {'is' if others == 1 else 'are'} {_count_word(others)} more "
+            f"{'peak' if others == 1 else 'peaks'} beside it"
+        )
+    if unseparated_through:
+        one = len(unseparated_through) == 1
+        detail += (
+            f"; {row.get('assigned_formula')} is also committed through "
+            f"{', '.join(unseparated_through)}, on "
+            f"{'a peak' if one else 'peaks'} the instrument did not separate either"
+        )
+    return {
+        **_reason(REASON_UNRESOLVED_PEAK, detail, caps=True),
+        "neighbour_peak_id": neighbour["peak_id"],
+        "neighbour_mz": neighbour["mz"],
+        "widths": neighbour["widths"],
+        "height_ratio": neighbour["height_ratio"],
+        "critical_widths": neighbour["critical_widths"],
+        "unseparated": record.get("unseparated"),
+    }
+
+
 def held_for_its_one_peak(row: dict) -> bool:
     """Whether one peak being all that saw a row is all that holds it at candidate.
 
@@ -1675,6 +1943,100 @@ def standing_reasons(row: dict, lines: Sequence[dict] = ()) -> list[dict]:
     return reasons
 
 
+def peak_separations(
+    m0_rows: Sequence[dict],
+    lines: SpectrumLines | None,
+    *,
+    mz_tolerance_ppm: float,
+    abundance_floor: float,
+    resolution: Callable[[float], float] | None = None,
+) -> dict[str, dict]:
+    """How the instrument separated each committed monoisotopic row's peak.
+
+    Records each read on its row (:data:`PEAK_SEPARATION`). A row's own
+    predicted lines (:func:`predicted_envelope`) are no neighbours of its
+    peak. They lie a mass unit or two from it, so they are predicted only for
+    a peak that has a neighbour it is not separated from.
+
+    :param m0_rows: The run's committed monoisotopic rows.
+    :param lines: The sample's peaks, with their widths, or None.
+    :param mz_tolerance_ppm: The run's match window.
+    :param abundance_floor: The run's envelope floor.
+    :param resolution: The file's resolving power, the envelope's lines are
+        predicted at.
+    :return: Row id -> its record, for the rows whose peak could be read;
+        empty where the spectrum gives no widths.
+    """
+    if lines is None:
+        return {}
+    reach = separation_reach(lines)
+    found: dict[str, dict] = {}
+    for row in m0_rows:
+        record = peak_separation(row.get("sample_peak_id"), lines, reach_fwhm=reach)
+        if record is not None and not record["separated"]:
+            envelope = predicted_envelope(
+                row.get("ion_formula"), abundance_floor, resolution
+            )
+            if envelope is not None:
+                record = peak_separation(
+                    row.get("sample_peak_id"),
+                    lines,
+                    reach_fwhm=reach,
+                    envelope_mzs=envelope[0][1:].tolist(),
+                    line_window_ppm=mz_tolerance_ppm,
+                )
+        if record is not None:
+            _provenance(row)[PEAK_SEPARATION] = record
+            found[str(row.get("peak_assignment_id"))] = record
+    return found
+
+
+def separated_partners(
+    m0_rows: Sequence[dict],
+    separations: dict[str, dict],
+    notation_by_id: dict[str, str],
+) -> dict[str, tuple[list[str], list[str]]]:
+    """The other channels committing each row's neutral, by their separation.
+
+    A partner is a committed monoisotopic row of the same neutral through
+    another of the run's channels, as the cross-channel pass counts one
+    (``cross_channel.channels_by_neutral``); its peak is read by the same
+    test as the row's (:func:`peak_separations`).
+
+    :param m0_rows: The run's committed monoisotopic rows.
+    :param separations: What :func:`peak_separations` read.
+    :param notation_by_id: The run's mechanisms, by the id the rows carry.
+    :return: Row id -> the channels committing its neutral on a separated
+        peak, and those committing it only on peaks the instrument did not
+        separate, each sorted; a row with no partner whose peak was read
+        is left out.
+    """
+    readings: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for row in m0_rows:
+        channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
+        if channel:
+            readings[neutral_key(row.get("assigned_formula"))].append(
+                (channel, str(row.get("peak_assignment_id")))
+            )
+    found: dict[str, tuple[list[str], list[str]]] = {}
+    for row in m0_rows:
+        own = notation_by_id.get(str(row.get("ionization_mechanism_id")))
+        by_channel: dict[str, bool] = {}
+        for channel, partner_id in readings.get(
+            neutral_key(row.get("assigned_formula")), ()
+        ):
+            record = separations.get(partner_id)
+            if channel == own or record is None:
+                continue
+            by_channel[channel] = by_channel.get(channel, False) or record["separated"]
+        if by_channel:
+            found[str(row.get("peak_assignment_id"))] = (
+                sorted(c for c, separate in by_channel.items() if separate),
+                sorted(c for c, separate in by_channel.items() if not separate),
+            )
+    return found
+
+
 def _cap(row: dict) -> bool:
     """Take a row's top tier, if it still has one. Never promotes."""
     if row.get("tier") != TIER_ASSIGNED:
@@ -1744,6 +2106,15 @@ def apply_tiering(
     )
     artifacts = frozenset(str(peak_id) for peak_id in artifact_peak_ids)
     asked = with_absent = untestable = 0
+    separations = peak_separations(
+        m0,
+        lines,
+        mz_tolerance_ppm=mz_tolerance_ppm,
+        abundance_floor=abundance_floor,
+        resolution=resolution,
+    )
+    partners = separated_partners(m0, separations, notation_by_id)
+    lifted = 0
 
     on_a_neighbours_line = envelope_neighbours(
         m0,
@@ -1782,6 +2153,16 @@ def apply_tiering(
             )
         reasons = earlier_reasons(row)
         with_absent += absent is not None
+        row_id = str(row.get("peak_assignment_id"))
+        separation = separations.get(row_id)
+        separated_through, unseparated_through = partners.get(row_id, ((), ()))
+        if separated_through or unseparated_through:
+            cross_channel = _provenance(row).get("cross_channel")
+            if isinstance(cross_channel, dict):
+                cross_channel[SEPARATED_THROUGH] = list(separated_through)
+        lifted += bool(
+            separation and separation["separated"] is False and separated_through
+        )
         for reason in (
             odd_electron_reason(row),
             oxygen_free_cluster_reason(row, notation_by_id),
@@ -1789,6 +2170,12 @@ def apply_tiering(
             density_reason(row),
             lone_peak_reason(row, own_lines),
             absent,
+            unresolved_peak_reason(
+                row,
+                separation,
+                separated_through=separated_through,
+                unseparated_through=unseparated_through,
+            ),
             envelope_reason(row, on_a_neighbours_line),
         ):
             if reason:
@@ -1819,7 +2206,6 @@ def apply_tiering(
                     capped_by_rule.get(reason["rule"], 0) + 1
                 )
         _provenance(row)["tier_reasons"] = reasons
-        row_id = str(row.get("peak_assignment_id"))
         if mine:
             capped_here.add(row_id)
         elif held_down:
@@ -1917,6 +2303,18 @@ def apply_tiering(
             "asked": asked,
             "with_absent_line": with_absent,
             "untestable_lines": untestable,
+        },
+        # What the unresolved-peak rule read: whether the spectrum gave its
+        # peaks' widths, how many rows' peaks it read, how many of those the
+        # instrument did not separate, and how many of those a partner on a
+        # separated peak lifted.
+        "unresolved_peak": {
+            "widths": lines is not None and lines.widths_known,
+            "asked": len(separations),
+            "unseparated": sum(
+                record["separated"] is False for record in separations.values()
+            ),
+            "lifted_by_partner": lifted,
         },
     }
 

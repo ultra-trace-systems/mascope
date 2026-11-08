@@ -575,8 +575,12 @@ class PeakAssignmentsResource(BaseResource):
         corroborating it, a formula the search found on one peak that nothing
         else in the run saw (rule ``lone_peak``), a line of its own isotope
         pattern the spectrum should show and does not (rule ``absent_line``),
-        a formula shaped like a mass fit, a peak a committed neighbour's
-        envelope already predicts, an
+        a peak the instrument did not separate from a neighbouring one (rule
+        ``unresolved_peak``, with the neighbour's ``neighbour_peak_id`` and
+        ``neighbour_mz``, its distance in widths at half maximum
+        (``widths``), its ``height_ratio`` against the peak's and the
+        ``critical_widths`` the pair would need), a formula shaped like a mass
+        fit, a peak a committed neighbour's envelope already predicts, an
         isotopologue whose mass error does not follow its monoisotopic row's, or
         a demote an earlier pass made. A row with no such reason lists what it
         kept its tier ON instead, what saw it a second time first: a second
@@ -603,7 +607,16 @@ class PeakAssignmentsResource(BaseResource):
         ``peak_id`` and ``observed_share`` of the peak read as it; ``absent``;
         or ``untestable``, with ``untestable`` saying why: ``artifact`` where
         only artifact rows' peaks sit in its window, ``out_of_range`` where it
-        lies beyond the peak list). A list hit of a run that searched carries
+        lies beyond the peak list). Where the run read the file's line widths
+        such a row also carries ``provenance.peak_separation``: the width at
+        its peak's m/z (``fwhm_ppm``), whether the instrument ``separated`` the
+        peak from every other peak with a height, how many it did not
+        (``unseparated``), and the nearest of those as ``neighbour``
+        (``peak_id``, ``mz``, ``widths``, ``height_ratio``,
+        ``critical_widths``). Its ``cross_channel`` block then lists, under
+        ``separated_through``, the run's other channels that commit the
+        neutral on a peak the instrument separated, the one escape from
+        ``unresolved_peak``. A list hit of a run that searched carries
         ``provenance.grid_rivals``: the known set's own density, how many
         closed-shell formulas the search held for its peak that its evidence
         could not separate (counted into ``candidate_density``), the first few
