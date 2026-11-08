@@ -664,15 +664,36 @@ class BaseCalibrationHandler:
             scans they are then read over; None reads them over the scans of
             the polarity.
         """
-        selection = (
-            {"polarity": self.params.polarity} if stream is None else {"stream": stream}
-        )
         scan_timestamps = await asyncio.to_thread(
-            m_compute.get_scan_timestamps, self.filename, **selection
+            m_compute.get_scan_timestamps, self.filename, **self._scans(stream)
         )
         return (await m_compute.load_peak_timeseries(self.filename, peak_mzs)).sel(
             time=scan_timestamps, method="nearest"
         )
+
+    def _scans(self, stream: str | None = None) -> dict:
+        """The scans a fit reads its calibrants over: the stream's, or the polarity's.
+
+        :param stream: Key of the scan stream the fit is of, or None for a
+            fit of the whole file
+        :return: The selection, as keyword arguments of the readers
+        """
+        return (
+            {"polarity": self.params.polarity} if stream is None else {"stream": stream}
+        )
+
+    def _mean_tic_per_scan(self) -> float:
+        """Mean TIC per scan of a fit of the whole file, over the polarity's scans.
+
+        A calibrant's intensity is its mean over the scans of the polarity
+        (:meth:`_load_peak_timeseries`), so its share is of the mean TIC of
+        those same scans: not of their sum, which grows with the file's
+        length, and not of every scan, which on a polarity-switching file
+        mixes in the other polarity's ion current (GitHub #2949). A fit of
+        one stream reads its own stream's TIC instead.
+        """
+        _, tic_per_scan = m_compute.get_tic_per_scan(self.filename, **self._scans())
+        return float(np.mean(tic_per_scan))
 
     def _drop_empty_peak_timeseries(self, peak_timeseries):
         """Drop peaks with empty timeseries (all None values)
@@ -1002,25 +1023,25 @@ class TofCalibrationHandler(BaseCalibrationHandler):
     def _total_ion_current(self) -> float:
         """The ion current a calibrant's peak area is a share of.
 
-        A calibrant's area is the mean over the file's scans, so it is held
-        against the mean TIC per scan, not their sum, which grows with the
-        file's length. A TOF peak's area is its spectrum's ion rate summed
-        over its bins times the sample interval in ns (``calculate_peak_area``
-        in ``mascope_signal.fitting``), so the TIC takes the interval on too
-        and the share is a fraction of the ions.
+        A calibrant's area is the mean over the polarity's scans, so it is
+        held against the mean TIC per scan of those scans
+        (:meth:`_mean_tic_per_scan`). A TOF peak's area is its spectrum's
+        ion rate summed over its bins times the sample interval in ns
+        (``calculate_peak_area`` in ``mascope_signal.fitting``), so the TIC
+        takes the interval on too and the share is a fraction of the ions.
 
         A method of its own so that a refit that only reads
         (``tof_calibration_audit``) can leave it out: on a Tofwerk file it
         reads every scan, and nothing in the fit depends on it.
         """
-        _, tic_per_scan = m_compute.get_tic_per_scan(self.filename)
+        tic = self._mean_tic_per_scan()
         # The interval the detector integrated the areas with. A file that
         # records None had its areas integrated in m/z instead, which no
         # interval turns into a sum over bins.
         sample_interval = m_io.read_props(self.filename).get(
             "sample_interval", DEFAULT_SAMPLE_INTERVAL_NS
         )
-        return float(np.mean(tic_per_scan)) * (sample_interval or 1.0)
+        return tic * (sample_interval or 1.0)
 
     @api_controller()
     async def fit(self):
@@ -1326,12 +1347,7 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
             self.warning = "No calibration peaks found"
             return
 
-        # A calibrant's height is the mean over the file's scans, so its
-        # share is of the mean TIC per scan, not their sum.
-        _, tic_per_scan = await asyncio.to_thread(
-            m_compute.get_tic_per_scan, self.filename
-        )
-        tic = np.mean(tic_per_scan)
+        tic = await asyncio.to_thread(self._mean_tic_per_scan)
         calibrant_signal_intensity = good_matches_df["sample_peak_intensity"]
         calibrant_to_tic = calibrant_signal_intensity / tic
 
